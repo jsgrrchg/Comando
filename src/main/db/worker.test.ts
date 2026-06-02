@@ -13,6 +13,7 @@ describe("db worker bootstrap", () => {
                 "secret.ai.codex.openai_api_key",
                 "secret.ai.gemini.gemini_api_key",
                 "secret.ai.gemini.google_api_key",
+                "secret.ai.grok.xai_api_key",
                 "secret.ai.kilo.kilo_api_key",
             ]),
         );

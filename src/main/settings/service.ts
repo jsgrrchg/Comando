@@ -220,6 +220,10 @@ export interface SettingsGateway {
         settings: GeminiRuntimeSettings,
         secrets: readonly SecretRecordPatch[],
     ): Promise<void>;
+    saveGrokAuth?(
+        settings: GrokRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void>;
     saveKiloAuth?(
         settings: KiloRuntimeSettings,
         secrets: readonly SecretRecordPatch[],

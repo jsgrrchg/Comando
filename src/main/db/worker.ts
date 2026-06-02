@@ -7,6 +7,7 @@ import type {
     DatabaseStatus,
     GeminiRuntimeSettings,
     GetAiSessionTranscriptPageInput,
+    GrokRuntimeSettings,
     KiloRuntimeSettings,
     ListAiSessionHistoryInput,
     OpenCodeRuntimeSettings,
@@ -77,6 +78,7 @@ const runtimeIds = [
     "claude",
     "codex",
     "gemini",
+    "grok",
     "kilo",
     "opencode",
 ] as const satisfies readonly AiRuntimeId[];
@@ -89,6 +91,7 @@ export const bootstrapSecretKeys = [
     "secret.ai.codex.openai_api_key",
     "secret.ai.gemini.gemini_api_key",
     "secret.ai.gemini.google_api_key",
+    "secret.ai.grok.xai_api_key",
     "secret.ai.kilo.kilo_api_key",
     "secret.github.token",
 ] as const;
@@ -459,6 +462,17 @@ function dispatchMethod(method: string, params: unknown): unknown {
             });
             return null;
         }
+        case "ai.saveGrokAuth": {
+            const settings = requireSettingsService();
+            const input = params as {
+                readonly secrets: readonly SecretRecordMutation[];
+                readonly settings: GrokRuntimeSettings;
+            };
+            runAuthSettingsTransaction(input.secrets, () => {
+                settings.saveGrokRuntimeSettings(input.settings);
+            });
+            return null;
+        }
         case "ai.saveKiloAuth": {
             const settings = requireSettingsService();
             const input = params as {
@@ -537,6 +551,13 @@ function dispatchMethod(method: string, params: unknown): unknown {
             settingsService.saveGeminiRuntimeSettings(
                 params as Parameters<
                     SettingsService["saveGeminiRuntimeSettings"]
+                >[0],
+            );
+            return null;
+        case "settings.saveGrokRuntimeSettings":
+            settingsService.saveGrokRuntimeSettings(
+                params as Parameters<
+                    SettingsService["saveGrokRuntimeSettings"]
                 >[0],
             );
             return null;

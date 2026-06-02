@@ -96,6 +96,7 @@ const runtimeIds = [
     "claude",
     "codex",
     "gemini",
+    "grok",
     "kilo",
     "opencode",
 ] as const satisfies readonly AiRuntimeId[];
@@ -498,6 +499,24 @@ class SettingsClient implements SettingsGateway {
             });
         } catch (error) {
             this.#setGeminiRuntimeSettings(previousSettings);
+            throw error;
+        }
+    }
+
+    async saveGrokAuth(
+        settings: GrokRuntimeSettings,
+        secrets: readonly SecretRecordPatch[],
+    ): Promise<void> {
+        const records = serializeSecretRecordPatches(secrets);
+        const previousSettings = this.loadGrokRuntimeSettings();
+        this.#setGrokRuntimeSettings(settings);
+        try {
+            await this.#rpc.call("ai.saveGrokAuth", {
+                secrets: records,
+                settings,
+            });
+        } catch (error) {
+            this.#setGrokRuntimeSettings(previousSettings);
             throw error;
         }
     }
