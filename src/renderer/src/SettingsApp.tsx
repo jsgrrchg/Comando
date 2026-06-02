@@ -9,6 +9,7 @@ import type {
     AppAiChatSettings,
     AppAppearanceSettings,
     AppPrivacyAccessState,
+    AppTerminalSettings,
     ClaudeRuntimeSettingsInput,
     CodexRuntimeSettingsInput,
     ProjectSummary,
@@ -34,6 +35,7 @@ import {
     saveAiChatSettings,
     saveAppEditorSettings,
     saveAppAppearanceSettings,
+    saveAppTerminalSettings,
 } from "./app/settings/client";
 import {
     buildSelectableFontFamilyOptions,
@@ -47,6 +49,10 @@ import {
     getDefaultAppEditorSettings,
     THEME_PRESET_OPTIONS,
 } from "./app/settings/theme";
+import {
+    DEFAULT_APP_TERMINAL_SETTINGS,
+    normalizeAppTerminalSettings,
+} from "@shared/terminal-settings";
 import { useResolvedAppearance } from "./app/hooks/use-resolved-appearance";
 import { useSettingsStore } from "./app/store/settings-store";
 import { shortcutDefinitions, formatShortcut } from "./app/shortcuts/registry";
@@ -64,6 +70,9 @@ export function SettingsApp() {
     );
     const [aiChat, setAiChat] = useState<AppAiChatSettings>(
         getDefaultAiChatSettings(),
+    );
+    const [terminal, setTerminal] = useState<AppTerminalSettings>(
+        DEFAULT_APP_TERMINAL_SETTINGS,
     );
     const [runtimeStatuses, setRuntimeStatuses] = useState<
         Record<AiRuntimeId, AiRuntimeStatus | null>
@@ -126,6 +135,7 @@ export function SettingsApp() {
     const storeAiChat = useSettingsStore((state) => state.aiChat);
     const storeAppAppearance = useSettingsStore((state) => state.appearance);
     const storeAppEditor = useSettingsStore((state) => state.editor);
+    const storeTerminal = useSettingsStore((state) => state.terminal);
     const latestSettingsRevisionRef = useRef(0);
 
     useResolvedAppearance();
@@ -321,6 +331,10 @@ export function SettingsApp() {
     }, [storeAppEditor]);
 
     useEffect(() => {
+        setTerminal(storeTerminal);
+    }, [storeTerminal]);
+
+    useEffect(() => {
         if (settingsRevision <= 0) {
             return;
         }
@@ -479,6 +493,15 @@ export function SettingsApp() {
         const next: AppAiChatSettings = { ...aiChat, ...patch };
         setAiChat(next);
         void saveAiChatSettings(next);
+    };
+
+    const updateTerminal = (patch: Partial<AppTerminalSettings>) => {
+        const next = normalizeAppTerminalSettings({
+            ...terminal,
+            ...patch,
+        });
+        setTerminal(next);
+        void saveAppTerminalSettings(next);
     };
 
     const runProviderSettingsAction = useCallback(
@@ -783,6 +806,30 @@ export function SettingsApp() {
                 onMinimapEnabledChange: handleAppEditorMinimapEnabledChange,
                 onSuggestionsEnabledChange:
                     handleAppEditorSuggestionsEnabledChange,
+            }}
+            terminal={{
+                claudeCodeAvailable: null,
+                claudeCodeContinueSession: terminal.claudeCodeContinueSession,
+                claudeCodeMaxTurns: terminal.claudeCodeMaxTurns,
+                claudeCodeModel: terminal.claudeCodeModel,
+                claudeCodeOptimized: terminal.claudeCodeOptimized,
+                claudeCodeSkipPermissions: terminal.claudeCodeSkipPermissions,
+                onClaudeCodeContinueSessionChange: (value) =>
+                    updateTerminal({ claudeCodeContinueSession: value }),
+                onClaudeCodeMaxTurnsChange: (value) =>
+                    updateTerminal({ claudeCodeMaxTurns: value }),
+                onClaudeCodeModelChange: (value) =>
+                    updateTerminal({ claudeCodeModel: value }),
+                onClaudeCodeOptimizedChange: (value) =>
+                    updateTerminal({ claudeCodeOptimized: value }),
+                onClaudeCodeSkipPermissionsChange: (value) =>
+                    updateTerminal({ claudeCodeSkipPermissions: value }),
+                onTerminalFontFamilyChange: (value) =>
+                    updateTerminal({ terminalFontFamily: value }),
+                onTerminalFontSizeChange: (value) =>
+                    updateTerminal({ terminalFontSize: value }),
+                terminalFontFamily: terminal.terminalFontFamily,
+                terminalFontSize: terminal.terminalFontSize,
             }}
             aiProviders={{
                 busyProviderId: savingRuntimeId,
