@@ -1075,7 +1075,7 @@ function mapProviderRuntimeStatuses(
                 status ? { ...status, runtimeId: providerId } : null,
             ];
         }),
-    ) as Partial<Record<AiProviderId, AiProviderRuntimeStatus | null>>;
+    );
 }
 
 function mapEnvironmentDiagnostics(
