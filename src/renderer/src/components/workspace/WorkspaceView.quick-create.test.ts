@@ -21,6 +21,7 @@ describe("WorkspaceView quick create agents menu", () => {
                 "Claude",
                 "Claude Code",
                 "Gemini",
+                "Grok",
                 "Kilo",
                 "OpenCode",
             ]);
@@ -32,6 +33,9 @@ describe("WorkspaceView quick create agents menu", () => {
             (entry) =>
                 entry.type !== "separator" && entry.label === "Claude Code",
         );
+        const grokEntry = entries.find(
+            (entry) => entry.type !== "separator" && entry.label === "Grok",
+        );
 
         if (claudeEntry?.type === "separator" || !claudeEntry?.action) {
             throw new Error("Expected Claude entry.");
@@ -42,16 +46,25 @@ describe("WorkspaceView quick create agents menu", () => {
         ) {
             throw new Error("Expected Claude Code entry.");
         }
+        if (grokEntry?.type === "separator" || !grokEntry?.action) {
+            throw new Error("Expected Grok entry.");
+        }
 
         claudeEntry.action();
         claudeCodeEntry.action();
+        grokEntry.action();
 
         expect(createChatTab).toHaveBeenCalledWith(
             "project-1",
             "worktree-1",
             "claude",
         );
-        expect(createChatTab).toHaveBeenCalledTimes(1);
+        expect(createChatTab).toHaveBeenCalledWith(
+            "project-1",
+            "worktree-1",
+            "grok",
+        );
+        expect(createChatTab).toHaveBeenCalledTimes(2);
         expect(openClaudeCodeTerminal).toHaveBeenCalledTimes(1);
     });
 

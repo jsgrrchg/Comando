@@ -74,7 +74,7 @@ function createWorkspaceFileTab(id: string, relativePath: string) {
 function createWorkspaceChatTab(
     id: string,
     sessionId: string,
-    runtimeId: "claude" | "codex" | "gemini" | "kilo" | "opencode",
+    runtimeId: "claude" | "codex" | "gemini" | "grok" | "kilo" | "opencode",
 ) {
     return {
         createdAt: "2026-04-14T00:00:00.000Z",
@@ -240,6 +240,25 @@ describe("workspace file opening", () => {
         });
         expect(state.lastFocusedRuntimeId).toBe("opencode");
         expect(state.lastQuickCreateAction).toBe("opencode");
+    });
+
+    it("creates Grok chat tabs with Grok titles", async () => {
+        await useWorkspaceStore
+            .getState()
+            .createChatTab("project-1", null, "grok");
+
+        const state = useWorkspaceStore.getState();
+        const chatTab = Object.values(state.tabsById).find(
+            (tab) => tab.kind === "chat" && tab.runtimeId === "grok",
+        );
+
+        expect(chatTab).toMatchObject({
+            kind: "chat",
+            runtimeId: "grok",
+            title: "Grok 1",
+        });
+        expect(state.lastFocusedRuntimeId).toBe("grok");
+        expect(state.lastQuickCreateAction).toBe("grok");
     });
 
     it("opens a file in the requested pane instead of the globally active pane", async () => {

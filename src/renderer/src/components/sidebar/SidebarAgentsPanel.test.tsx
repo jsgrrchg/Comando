@@ -204,6 +204,7 @@ describe("SidebarAgentsPanel new agent menu", () => {
                 "New Codex thread",
                 "New Claude thread",
                 "New Gemini thread",
+                "New Grok thread",
                 "New Kilo thread",
                 "New OpenCode thread",
                 "New Claude Code Terminal",
@@ -219,6 +220,11 @@ describe("SidebarAgentsPanel new agent menu", () => {
                 entry.type !== "separator" &&
                 entry.label === "New Claude Code Terminal",
         );
+        const grokEntry = entries.find(
+            (entry) =>
+                entry.type !== "separator" &&
+                entry.label === "New Grok thread",
+        );
 
         if (claudeEntry?.type === "separator" || !claudeEntry?.action) {
             throw new Error("Expected Claude thread entry.");
@@ -229,12 +235,17 @@ describe("SidebarAgentsPanel new agent menu", () => {
         ) {
             throw new Error("Expected Claude Code terminal entry.");
         }
+        if (grokEntry?.type === "separator" || !grokEntry?.action) {
+            throw new Error("Expected Grok thread entry.");
+        }
 
         claudeEntry.action();
         claudeCodeEntry.action();
+        grokEntry.action();
 
         expect(createAgent).toHaveBeenCalledWith("claude");
-        expect(createAgent).toHaveBeenCalledTimes(1);
+        expect(createAgent).toHaveBeenCalledWith("grok");
+        expect(createAgent).toHaveBeenCalledTimes(2);
         expect(openClaudeCodeTerminal).toHaveBeenCalledTimes(1);
     });
 

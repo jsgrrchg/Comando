@@ -10,6 +10,8 @@ export function getHistoryRuntimeLabel(runtimeId: AiRuntimeId): string {
             return "Claude";
         case "gemini":
             return "Gemini";
+        case "grok":
+            return "Grok";
         case "kilo":
             return "Kilo";
         case "opencode":

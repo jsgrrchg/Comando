@@ -1,27 +1,28 @@
 # ACP (Agent Client Protocol) — Architecture Reference
 
-Comando currently integrates five AI runtimes through the Agent Client Protocol:
+Comando currently integrates six AI runtimes through the Agent Client Protocol:
 
 - **Claude**
 - **Codex**
 - **Gemini**
+- **Grok**
 - **Kilo**
 - **OpenCode**
 
-All five communicate with the app over ACP / JSON-RPC on stdio.
+All six communicate with the app over ACP / JSON-RPC on stdio.
 
 ---
 
 ## Runtimes at a Glance
 
-| | Claude | Codex | Gemini | Kilo | OpenCode |
-|---|---|---|---|---|---|
-| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.37.0`, vendored upstream snapshot) | Rust (`codex-acp` `0.15.0`, vendored on top of `openai/codex` `rust-v0.133.0` + local patches) | External Gemini CLI binary | External Kilo CLI binary | External OpenCode CLI binary |
-| **Runtime command** | `node .../claude-agent-acp/dist/index.js` or `claude-agent-acp` | `codex-acp` | `gemini --acp` | `kilo acp` | `opencode acp` |
-| **Release packaging** | Embedded Node runtime + embedded vendor JS project | Bundled native binary under `resources/ai/binaries/` | Not bundled today | Not bundled today | Not bundled today |
-| **Auth methods exposed by Comando** | `claude-ai-login`, `claude-login`, `console-login`, `gateway` | `chatgpt`, `codex-api-key`, `openai-api-key` | `login_with_google`, `use_gemini` | `kilo-login` | `opencode-login` |
-| **Runtime discovery** | env, settings, vendor JS, embedded bundle, PATH fallback | env, settings, bundled binary, embedded target cache, legacy vendor target cache, PATH fallback | env, settings, PATH | env, settings, PATH | env, settings, PATH |
-| **Notes** | Debug builds prefer vendored JS directly. Gateway auth is supported. | Detects and rejects plain `codex` CLI because current integration still expects ACP. | Login readiness is inferred from `~/.gemini/settings.json`. | Login readiness is inferred from system-level Kilo auth stores (`XDG_DATA_HOME`, `LOCALAPPDATA`, `~/.local/share`). | Auth is owned by the OpenCode CLI. Comando treats `OPENCODE_API_KEY`, `auth.json`, and selected external auth as valid setup signals without storing OpenCode secrets. |
+| | Claude | Codex | Gemini | Grok | Kilo | OpenCode |
+|---|---|---|---|---|---|---|
+| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.37.0`, vendored upstream snapshot) | Rust (`codex-acp` `0.15.0`, vendored on top of `openai/codex` `rust-v0.133.0` + local patches) | External Gemini CLI binary | External Grok CLI binary | External Kilo CLI binary | External OpenCode CLI binary |
+| **Runtime command** | `node .../claude-agent-acp/dist/index.js` or `claude-agent-acp` | `codex-acp` | `gemini --acp` | `grok --no-auto-update agent stdio` | `kilo acp` | `opencode acp` |
+| **Release packaging** | Embedded Node runtime + embedded vendor JS project | Bundled native binary under `resources/ai/binaries/` | Not bundled today | Not bundled today | Not bundled today | Not bundled today |
+| **Auth methods exposed by Comando** | `claude-ai-login`, `claude-login`, `console-login`, `gateway` | `chatgpt`, `codex-api-key`, `openai-api-key` | `login_with_google`, `use_gemini` | `grok-login`, `xai-api-key` | `kilo-login` | `opencode-login` |
+| **Runtime discovery** | env, settings, vendor JS, embedded bundle, PATH fallback | env, settings, bundled binary, embedded target cache, legacy vendor target cache, PATH fallback | env, settings, PATH | env, settings, PATH, macOS Homebrew fallbacks | env, settings, PATH | env, settings, PATH |
+| **Notes** | Debug builds prefer vendored JS directly. Gateway auth is supported. | Detects and rejects plain `codex` CLI because current integration still expects ACP. | Login readiness is inferred from `~/.gemini/settings.json`. | API-key auth uses `XAI_API_KEY`; login readiness is inferred from Grok's external CLI auth store under `~/.grok/auth`. | Login readiness is inferred from system-level Kilo auth stores (`XDG_DATA_HOME`, `LOCALAPPDATA`, `~/.local/share`). | Auth is owned by the OpenCode CLI. Comando treats `OPENCODE_API_KEY`, `auth.json`, and selected external auth as valid setup signals without storing OpenCode secrets. |
 
 Notes:
 
@@ -32,7 +33,7 @@ Notes:
 - The vendored Codex ACP snapshot currently includes a local Fast Mode patch carried over into Comando. It exposes the ACP session config option `service_tier`, the `/fast` slash command, and rehydrates `service_tier` when a session is resumed.
 - The vendored Codex ACP snapshot also carries a local image-generation bridge: live Codex `ImageGenerationBegin` / `ImageGenerationEnd` events and replayed `ResponseItem::ImageGenerationCall` items are emitted as ACP tool updates with `codexAcpEventType = "image_generation"` and `codex-acp:image:` IDs so Comando can render generated images inline instead of as generic status activity. `TurnItem::ImageGeneration` is intentionally ignored for the live bridge because Codex also emits the begin/end events, and handling both would duplicate image cards.
 - The current Codex vendor also carries compatibility glue for the `rust-v0.133.0` runtime API shape, including state DB/thread-store wiring, installation IDs, async auth reload/logout, permission-profile modes, newer event payloads, and local custom prompt handling.
-- Gemini, Kilo and OpenCode are integrated in the UI and service layer, but they are not part of the staging/bundling pipeline today.
+- Gemini, Grok, Kilo and OpenCode are integrated in the UI and service layer, but they are not part of the staging/bundling pipeline today.
 - Status metadata currently uses `codexAcp*` names while Comando keeps app-branded `comando*` aliases for compatibility paths it owns.
 
 ---
@@ -42,7 +43,7 @@ Notes:
 Comando separates provider authentication into two user-visible actions:
 
 - **Log out from provider** is a remote/runtime logout. In this iteration only Codex exposes a real ACP logout capability. If remote logout fails, Comando keeps local settings and secrets intact.
-- **Disconnect from Comando** is local cleanup. It removes Comando-managed secrets or marks external runtime login as signed out, but it never deletes external CLI stores such as `~/.claude.json`, `~/.gemini/settings.json`, or Kilo's own auth databases.
+- **Disconnect from Comando** is local cleanup. It removes Comando-managed secrets or marks external runtime login as signed out, but it never deletes external CLI stores such as `~/.claude.json`, `~/.gemini/settings.json`, `~/.grok/auth`, Kilo's own auth databases, or OpenCode's own auth state.
 
 Disconnect/logout affect new runtime sessions. Active ACP sessions may continue using credentials that were already loaded when their process launched.
 
@@ -64,6 +65,8 @@ Credential precedence is runtime-specific:
 | Claude | login methods | External Claude CLI login |
 | Gemini | `use_gemini` | `GEMINI_API_KEY`/`GOOGLE_API_KEY` environment variables, then Comando-managed secrets |
 | Gemini | `login_with_google` | External Gemini CLI login |
+| Grok | `xai-api-key` | `XAI_API_KEY` environment variable, then `secret.ai.grok.xai_api_key` |
+| Grok | `grok-login` | External Grok CLI login |
 | Kilo | `kilo-login` | External Kilo auth stores |
 | OpenCode | `opencode-login` | External OpenCode auth state, `OPENCODE_API_KEY`, provider env vars, project `.env`, or providers configured with `/connect` |
 
@@ -127,6 +130,48 @@ so the effective command is:
 ```text
 gemini --acp
 ```
+
+### Grok (`grok/setup.ts` → `resolveGrokRuntime`)
+
+1. `COMANDO_GROK_ACP_BIN`
+2. Custom path from settings
+3. `grok` in PATH
+4. On macOS, common Homebrew installs such as `/opt/homebrew/bin/grok` and `/usr/local/bin/grok`
+
+When spawned, Comando appends:
+
+```text
+--no-auto-update agent stdio
+```
+
+so the effective command is:
+
+```text
+grok --no-auto-update agent stdio
+```
+
+Grok supports two Comando auth methods:
+
+- `xai-api-key`
+  - uses `XAI_API_KEY` from the environment when present
+  - otherwise injects the Comando-managed `secret.ai.grok.xai_api_key`
+  - authenticates with ACP method `xai.api_key`
+- `grok-login`
+  - opens a detached terminal and runs:
+
+```text
+grok login
+```
+
+  - readiness is inferred from non-empty files in:
+
+```text
+~/.grok/auth
+```
+
+  - authenticates with ACP method `cached_token`
+
+The runtime auth handshake is headless. After `initialize`, Comando selects `xai.api_key` for environment or Comando-stored API-key credentials and `cached_token` for external Grok login credentials. If Grok does not advertise the expected ACP auth method, Comando surfaces an actionable setup error before creating or loading a session.
 
 ### Kilo (`kilo/setup.ts` → `resolveKiloBinary`)
 
@@ -192,7 +237,7 @@ Today `stage:ai` stages:
 - **Codex**
 - **Claude**
 
-It does **not** stage Gemini, Kilo, or OpenCode.
+It does **not** stage Gemini, Grok, Kilo, or OpenCode. Those external CLIs are resolved from the user's machine at runtime.
 
 ### Codex staging (`scripts/ai/stage-codex-runtime.mjs`)
 
@@ -292,7 +337,7 @@ The macOS packaging flow builds a packaged AI payload under `build/package-resou
 ]
 ```
 
-Gemini and Kilo are still expected to come from the user's machine at runtime.
+Gemini, Grok, Kilo and OpenCode are still expected to come from the user's machine at runtime.
 
 ### Windows packaging (`scripts/package-windows-app.mjs`)
 
@@ -468,6 +513,36 @@ $XDG_DATA_HOME/kilo/kilo.db
 
 For the SQLite store, Comando inspects `account_state`, `account`, and `control_account` when those tables exist.
 
+### Grok
+
+Configured through SQLite settings keys under the `ai.grok.*` namespace.
+
+Secrets stored by Comando:
+
+- `secret.ai.grok.xai_api_key`
+
+Supported methods:
+
+- **`grok-login`**
+  - Opens a detached terminal and runs:
+
+```text
+grok login
+```
+
+  - Readiness is inferred from non-empty files under:
+
+```text
+~/.grok/auth
+```
+
+  - Uses the ACP auth method `cached_token` before creating or loading a session
+
+- **`xai-api-key`**
+  - Uses `XAI_API_KEY` when it already exists in the environment
+  - Otherwise injects Comando's stored `secret.ai.grok.xai_api_key`
+  - Uses the ACP auth method `xai.api_key` before creating or loading a session
+
 ---
 
 ## ACP Protocol Basics
@@ -477,7 +552,7 @@ For the SQLite store, Comando inspects `account_state`, `account`, and `control_
 ### Client → Agent requests used by Comando
 
 - `initialize`
-- `authenticate` during Codex auth launch
+- `authenticate` during Codex auth launch and Grok session startup
 - `session/new`
 - `session/load`
 - `session/close` through `closeSession`
@@ -596,8 +671,12 @@ src/main/
 │   │   └── setup.ts                  # Codex auth methods and env injection
 │   ├── gemini/
 │   │   └── setup.ts                  # Gemini runtime resolution and auth detection
-│   └── kilo/
-│       └── setup.ts                  # Kilo runtime resolution and auth detection
+│   ├── grok/
+│   │   └── setup.ts                  # Grok runtime resolution, auth handshake and env injection
+│   ├── kilo/
+│   │   └── setup.ts                  # Kilo runtime resolution and auth detection
+│   └── opencode/
+│       └── setup.ts                  # OpenCode runtime resolution and auth detection
 │
 ├── db/
 │   ├── awaitable.ts                  # Promise coordination helpers for the DB worker
@@ -664,12 +743,13 @@ External auth state also used:
 ```text
 ~/.claude.json
 ~/.gemini/settings.json
+~/.grok/auth
 ~/.local/share/kilo/auth.json
 ~/.local/share/kilo/kilo.db
 ~/.local/share/opencode/auth.json
 ```
 
-On Linux and Windows, Kilo and OpenCode paths can vary through `XDG_DATA_HOME` and `LOCALAPPDATA`.
+On Linux and Windows, Kilo and OpenCode paths can vary through `XDG_DATA_HOME` and `LOCALAPPDATA`. Grok login remains owned by the Grok CLI and is treated as external runtime auth.
 
 ---
 
@@ -681,6 +761,7 @@ On Linux and Windows, Kilo and OpenCode paths can vary through `XDG_DATA_HOME` a
 | `COMANDO_CODEX_ACP_BIN` | Codex runtime / staging | Override Codex runtime path |
 | `COMANDO_CODEX_ACP_BUNDLE_BIN` | Codex staging | Override the binary copied into bundled resources |
 | `COMANDO_GEMINI_ACP_BIN` | Gemini runtime | Override Gemini CLI path or command |
+| `COMANDO_GROK_ACP_BIN` | Grok runtime | Override Grok CLI path or command |
 | `COMANDO_KILO_ACP_BIN` | Kilo runtime | Override Kilo CLI path or command |
 | `COMANDO_OPENCODE_ACP_BIN` | OpenCode runtime | Override OpenCode CLI path or command |
 | `COMANDO_EMBEDDED_NODE_BIN` | Claude staging | Override the Node binary embedded for Claude |
@@ -695,6 +776,7 @@ On Linux and Windows, Kilo and OpenCode paths can vary through `XDG_DATA_HOME` a
 | `GOOGLE_CLOUD_PROJECT` | Gemini process | Google Cloud project hint |
 | `GOOGLE_CLOUD_LOCATION` | Gemini process | Google Cloud location hint |
 | `GEMINI_DEFAULT_AUTH_TYPE` | Gemini process | Default Gemini auth mode |
+| `XAI_API_KEY` | Grok process | xAI API key; environment value wins over Comando's stored Grok secret |
 | `OPENCODE_API_KEY` | OpenCode process | External OpenCode API key recognized by diagnostics/status but not stored by Comando |
 | `OPENAI_API_KEY` | OpenCode process | Provider API key recognized by OpenCode readiness when OpenCode owns provider selection |
 | `ANTHROPIC_API_KEY` | OpenCode process | Provider API key recognized by OpenCode readiness when OpenCode owns provider selection |
@@ -712,7 +794,7 @@ On Linux and Windows, Kilo and OpenCode paths can vary through `XDG_DATA_HOME` a
 ## Current Caveats
 
 - Only **Claude** and **Codex** are staged and packaged by Comando today.
-- **Gemini** and **Kilo** are integrated end-to-end in the app layer, but the user must provide those CLIs on the machine.
+- **Gemini**, **Grok**, **Kilo** and **OpenCode** are integrated end-to-end in the app layer, but the user must provide those CLIs on the machine.
 - Claude runtime resolution still keeps a legacy standalone `claude-agent-acp` binary fallback even though the normal path prefers embedded Node + vendored JS.
 - Codex PATH fallback explicitly rejects plain `codex` because Comando still targets ACP, not the App Server / MCP surface.
 - The current vendored Codex runtime includes newer upstream support for MCP approval elicitation, `RequestUserInput`, guardian-assessment activity and cleaner shutdown handling, while Comando keeps legacy metadata fallbacks so older sessions can still be replayed safely.
