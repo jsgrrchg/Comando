@@ -21,6 +21,7 @@ import {
     type ResolveClaudeRuntimeOptions,
 } from "./claude/setup";
 import { getGeminiRuntimeStatus, resolveGeminiRuntime } from "./gemini/setup";
+import { getGrokRuntimeStatus, resolveGrokRuntime } from "./grok/setup";
 import { getKiloRuntimeStatus, resolveKiloRuntime } from "./kilo/setup";
 import {
     getOpenCodeRuntimeStatus,
@@ -49,6 +50,7 @@ const EXECUTABLE_PROBES = [
     "codex-acp",
     "codex",
     "gemini",
+    "grok",
     "kilo",
     "opencode",
     "node",
@@ -69,6 +71,10 @@ const RUNTIME_PATH_OVERRIDES: readonly {
     {
         name: "COMANDO_GEMINI_ACP_BIN",
         runtimeId: "gemini",
+    },
+    {
+        name: "COMANDO_GROK_ACP_BIN",
+        runtimeId: "grok",
     },
     {
         name: "COMANDO_KILO_ACP_BIN",
@@ -119,6 +125,10 @@ const CREDENTIAL_ENVIRONMENT: readonly {
     {
         name: "GOOGLE_API_KEY",
         runtimeId: "gemini",
+    },
+    {
+        name: "XAI_API_KEY",
+        runtimeId: "grok",
     },
     {
         name: "KILO_API_KEY",
@@ -220,6 +230,9 @@ function createRuntimeDiagnostics(
     const geminiStatus = readRuntimeStatus("gemini", settings.gemini, () =>
         getGeminiRuntimeStatus(settings.gemini, secretStore),
     );
+    const grokStatus = readRuntimeStatus("grok", settings.grok, () =>
+        getGrokRuntimeStatus(settings.grok, secretStore),
+    );
     const kiloStatus = readRuntimeStatus("kilo", settings.kilo, () =>
         getKiloRuntimeStatus(settings.kilo, secretStore),
     );
@@ -243,6 +256,11 @@ function createRuntimeDiagnostics(
         toRuntimeDiagnostic(
             geminiStatus,
             resolveRuntimeExecutable("gemini", input),
+            env,
+        ),
+        toRuntimeDiagnostic(
+            grokStatus,
+            resolveRuntimeExecutable("grok", input),
             env,
         ),
         toRuntimeDiagnostic(
@@ -307,7 +325,10 @@ function resolveRuntimeExecutable(
                     input.secretStore,
                 ).program;
             case "grok":
-                return null;
+                return resolveGrokRuntime(
+                    input.settings.grok,
+                    input.secretStore,
+                ).program;
             case "kilo":
                 return resolveKiloRuntime(
                     input.settings.kilo,
