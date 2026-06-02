@@ -1258,6 +1258,203 @@ describe("ai-store queue", () => {
         });
     });
 
+    it("does not let a stale manual dispatch finally clear a newer queued dispatch", async () => {
+        const firstDispatch = createDeferred<void>();
+        const secondDispatch = createDeferred<void>();
+        const sendAiPrompt = vi
+            .fn()
+            .mockImplementationOnce(() => firstDispatch.promise)
+            .mockImplementationOnce(() => secondDispatch.promise)
+            .mockResolvedValue(undefined);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        const firstSendPromise = useAiStore
+            .getState()
+            .sendPrompt(TAB, "first");
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        });
+        expect(sendAiPrompt.mock.calls[0][0]).toMatchObject({
+            prompt: "first",
+        });
+
+        await useAiStore.getState().sendPrompt(TAB, "second");
+        await useAiStore.getState().sendPrompt(TAB, "third");
+        await useAiStore.getState().sendPrompt(TAB, "fourth");
+
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.queue.map((item) => item.prompt),
+        ).toEqual(["second", "third", "fourth"]);
+
+        // The backend reports idle before the first IPC promise resolves, so
+        // the queue is allowed to dispatch the next prompt.
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(2);
+        });
+        expect(sendAiPrompt.mock.calls[1][0]).toMatchObject({
+            prompt: "second",
+        });
+
+        firstDispatch.resolve(undefined);
+        await firstSendPromise;
+        await Promise.resolve();
+
+        const sessionAfterStaleFinally =
+            useAiStore.getState().sessions[TAB.sessionId];
+        expect(sendAiPrompt).toHaveBeenCalledTimes(2);
+        expect(sessionAfterStaleFinally?.isDispatching).toBe(true);
+        expect(
+            sessionAfterStaleFinally?.queue.map((item) => item.prompt),
+        ).toEqual(["third", "fourth"]);
+
+        secondDispatch.resolve(undefined);
+        await vi.waitFor(() => {
+            expect(
+                useAiStore.getState().sessions[TAB.sessionId]?.isDispatching,
+            ).toBe(false);
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(3);
+        });
+        expect(sendAiPrompt.mock.calls[2][0]).toMatchObject({
+            prompt: "third",
+        });
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.queue.map((item) => item.prompt),
+        ).toEqual(["fourth"]);
+    });
+
+    it("drains several queued prompts in FIFO order on successive idle snapshots", async () => {
+        const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
+
+        await useAiStore.getState().sendPrompt(TAB, "first");
+        await useAiStore.getState().sendPrompt(TAB, "second");
+        await useAiStore.getState().sendPrompt(TAB, "third");
+
+        for (const [index, prompt] of ["first", "second", "third"].entries()) {
+            useAiStore.getState().applySessionSnapshot(
+                createSnapshot({
+                    status: "idle",
+                    updatedAt: `2026-04-14T00:00:0${index + 1}.000Z`,
+                }),
+            );
+
+            await vi.waitFor(() => {
+                expect(sendAiPrompt).toHaveBeenCalledTimes(index + 1);
+            });
+            expect(sendAiPrompt.mock.calls[index][0]).toMatchObject({
+                prompt,
+            });
+            await vi.waitFor(() => {
+                expect(
+                    useAiStore.getState().sessions[TAB.sessionId]
+                    ?.isDispatching,
+                ).toBe(false);
+            });
+        }
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.queue,
+        ).toHaveLength(0);
+    });
+
+    it("restores a busy automatic dispatch to its original queued position", async () => {
+        const sendAiPrompt = vi
+            .fn()
+            .mockRejectedValueOnce(createIpcBusyError());
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
+
+        await useAiStore.getState().sendPrompt(TAB, "first");
+        await useAiStore.getState().sendPrompt(TAB, "second");
+        await useAiStore.getState().sendPrompt(TAB, "third");
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        });
+        await vi.waitFor(() => {
+            const queuedSession = useAiStore.getState().sessions[TAB.sessionId];
+            expect(
+                queuedSession?.queue.map((item) => ({
+                    prompt: item.prompt,
+                    status: item.status,
+                })),
+            ).toEqual([
+                { prompt: "first", status: "queued" },
+                { prompt: "second", status: "queued" },
+                { prompt: "third", status: "queued" },
+            ]);
+            expect(queuedSession?.isDispatching).toBe(false);
+        });
+    });
+
     it("allows retrying a failed queued prompt with sendQueuedPromptNow", async () => {
         const sendAiPrompt = vi
             .fn()
