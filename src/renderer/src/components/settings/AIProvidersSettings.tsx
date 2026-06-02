@@ -30,6 +30,7 @@ import {
     type ClaudeProviderAuthMethodId,
     type CodexProviderAuthMethodId,
     type GeminiProviderAuthMethodId,
+    type GrokProviderAuthMethodId,
     type KiloProviderAuthMethodId,
     type OpenCodeProviderAuthMethodId,
 } from "./aiProviderSettingsModel";
@@ -60,6 +61,7 @@ interface ProviderDrafts {
     readonly claude: ClaudeProviderDraft;
     readonly codex: CodexProviderDraft;
     readonly gemini: GeminiProviderDraft;
+    readonly grok: GrokProviderDraft;
     readonly kilo: KiloProviderDraft;
     readonly opencode: OpenCodeProviderDraft;
 }
@@ -88,6 +90,12 @@ interface GeminiProviderDraft {
     readonly googleApiKey: AiProviderSecretDraft;
     readonly googleCloudLocation: string;
     readonly googleCloudProject: string;
+}
+
+interface GrokProviderDraft {
+    readonly authMethod: GrokProviderAuthMethodId | null;
+    readonly binaryPath: string;
+    readonly xaiApiKey: AiProviderSecretDraft;
 }
 
 interface KiloProviderDraft {
@@ -291,6 +299,23 @@ export function AIProvidersSettings({
                 kilo: {
                     ...current.kilo,
                     kiloApiKey: createEmptySecretDraft(),
+                },
+            }));
+        });
+    };
+
+    const saveGrok = () => {
+        runProviderAction("grok", async () => {
+            await onSaveProviderSettings?.("grok", {
+                authMethod: drafts.grok.authMethod,
+                binaryPath: normalizeNullableText(drafts.grok.binaryPath),
+                xaiApiKey: buildSecretPatch(drafts.grok.xaiApiKey),
+            });
+            setDrafts((current) => ({
+                ...current,
+                grok: {
+                    ...current.grok,
+                    xaiApiKey: createEmptySecretDraft(),
                 },
             }));
         });
@@ -576,6 +601,81 @@ export function AIProvidersSettings({
                         ),
                         providerId: "gemini",
                         save: saveGemini,
+                    })}
+                </ProviderCard>
+
+                <ProviderCard
+                    error={errorByProviderId?.grok ?? localErrors.grok}
+                    expanded={expandedProviderIds.has("grok")}
+                    methodId={resolveMethodId(
+                        "grok",
+                        drafts.grok.authMethod,
+                        runtimeStatuses?.grok,
+                    )}
+                    providerId="grok"
+                    status={runtimeStatuses?.grok ?? null}
+                    onToggle={() => toggleExpanded("grok")}
+                >
+                    <CommonFields
+                        binaryPath={drafts.grok.binaryPath}
+                        binaryPathPlaceholder="Custom Grok runtime path, for example grok"
+                        notice={getRuntimeNotice(runtimeStatuses?.grok)}
+                        onBinaryPathChange={(binaryPath) =>
+                            setDrafts((current) => ({
+                                ...current,
+                                grok: { ...current.grok, binaryPath },
+                            }))
+                        }
+                    />
+                    <MethodPicker
+                        methods={getAvailableProviderMethods(
+                            "grok",
+                            runtimeStatuses?.grok,
+                        )}
+                        value={resolveMethodId(
+                            "grok",
+                            drafts.grok.authMethod,
+                            runtimeStatuses?.grok,
+                        )}
+                        onChange={(authMethod) =>
+                            setDrafts((current) => ({
+                                ...current,
+                                grok: { ...current.grok, authMethod },
+                            }))
+                        }
+                    />
+                    {resolveMethodId(
+                        "grok",
+                        drafts.grok.authMethod,
+                        runtimeStatuses?.grok,
+                    ) === "xai-api-key" ? (
+                        <SecretField
+                            draft={drafts.grok.xaiApiKey}
+                            label="xAI API key"
+                            placeholder="Optional XAI_API_KEY"
+                            stored={Boolean(runtimeSettings?.grok?.hasXaiApiKey)}
+                            onChange={(xaiApiKey) =>
+                                setDrafts((current) => ({
+                                    ...current,
+                                    grok: { ...current.grok, xaiApiKey },
+                                }))
+                            }
+                        />
+                    ) : (
+                        <InfoNote>
+                            Grok uses the local Grok CLI login state or
+                            XAI_API_KEY. Run Grok login in a terminal or save an
+                            xAI API key for this machine.
+                        </InfoNote>
+                    )}
+                    {renderActions({
+                        methodId: resolveMethodId(
+                            "grok",
+                            drafts.grok.authMethod,
+                            runtimeStatuses?.grok,
+                        ),
+                        providerId: "grok",
+                        save: saveGrok,
                     })}
                 </ProviderCard>
 
@@ -1789,6 +1889,7 @@ function createInitialDrafts(
     const claudeAuthMethod = settings?.claude?.authMethod;
     const codexAuthMethod = settings?.codex?.authMethod;
     const geminiAuthMethod = settings?.gemini?.authMethod;
+    const grokAuthMethod = settings?.grok?.authMethod;
     const kiloAuthMethod = settings?.kilo?.authMethod;
     const opencodeAuthMethod = settings?.opencode?.authMethod;
 
@@ -1821,6 +1922,13 @@ function createInitialDrafts(
             googleApiKey: createEmptySecretDraft(),
             googleCloudLocation: settings?.gemini?.googleCloudLocation ?? "",
             googleCloudProject: settings?.gemini?.googleCloudProject ?? "",
+        },
+        grok: {
+            authMethod: isMethodIdForProvider("grok", grokAuthMethod)
+                ? grokAuthMethod
+                : null,
+            binaryPath: settings?.grok?.binaryPath ?? "",
+            xaiApiKey: createEmptySecretDraft(),
         },
         kilo: {
             authMethod: isMethodIdForProvider("kilo", kiloAuthMethod)

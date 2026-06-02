@@ -17,6 +17,7 @@ import type {
     AppEditorSettings,
     ChatFontFamily,
     GeminiRuntimeSettingsInput,
+    GrokRuntimeSettingsInput,
     GitHubAuthStatus,
     KiloRuntimeSettingsInput,
     OpenCodeRuntimeSettingsInput,
@@ -62,6 +63,7 @@ const AI_PROVIDER_RUNTIME_IDS = [
     "codex",
     "claude",
     "gemini",
+    "grok",
     "kilo",
     "opencode",
 ] as const satisfies readonly AiProviderId[];
@@ -155,12 +157,13 @@ export function SettingsApp() {
             return;
         }
 
-        const [settingsSnapshot, codex, claude, gemini, kilo, opencode] =
+        const [settingsSnapshot, codex, claude, gemini, grok, kilo, opencode] =
             await Promise.all([
                 window.comando.getSettingsSnapshot(),
                 window.comando.getAiRuntimeStatus("codex"),
                 window.comando.getAiRuntimeStatus("claude"),
                 window.comando.getAiRuntimeStatus("gemini"),
+                window.comando.getAiRuntimeStatus("grok"),
                 window.comando.getAiRuntimeStatus("kilo"),
                 window.comando.getAiRuntimeStatus("opencode"),
             ]);
@@ -170,7 +173,7 @@ export function SettingsApp() {
             claude,
             codex,
             gemini,
-            grok: null,
+            grok,
             kilo,
             opencode,
         });
@@ -562,6 +565,10 @@ export function SettingsApp() {
                 case "gemini":
                     return await window.comando.saveGeminiRuntimeSettings(
                         settings as GeminiRuntimeSettingsInput,
+                    );
+                case "grok":
+                    return await window.comando.saveGrokRuntimeSettings(
+                        settings as GrokRuntimeSettingsInput,
                     );
                 case "kilo":
                     return await window.comando.saveKiloRuntimeSettings(
@@ -1060,7 +1067,7 @@ function getRuntimeName(runtimeId: AiRuntimeId): string {
 }
 
 function isAiProviderId(runtimeId: AiRuntimeId): runtimeId is AiProviderId {
-    return AI_PROVIDER_RUNTIME_IDS.includes(runtimeId as AiProviderId);
+    return AI_PROVIDER_RUNTIME_IDS.includes(runtimeId);
 }
 
 function mapProviderRuntimeStatuses(
