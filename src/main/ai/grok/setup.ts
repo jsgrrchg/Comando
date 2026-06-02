@@ -1,5 +1,14 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { Readable, Writable } from "node:stream";
+
+import {
+    ClientSideConnection,
+    PROTOCOL_VERSION,
+    ndJsonStream,
+    type Client,
+} from "@agentclientprotocol/sdk";
 
 import type {
     AiAuthCredentialSource,
@@ -30,6 +39,7 @@ const GROK_MACOS_FALLBACK_DIRS = [
     "/opt/homebrew/bin",
     "/usr/local/bin",
 ] as const;
+const GROK_AUTH_PROBE_TIMEOUT_MS = 2_000;
 
 interface ResolvedGrokBinary {
     readonly args: readonly string[];
@@ -321,6 +331,78 @@ export function isGrokExternalCredentialReady(
     return grokLoginAvailable(settings);
 }
 
+export async function probeGrokCachedTokenAuth(
+    settings: GrokRuntimeSettings,
+    secretStore?: SecretStoreGateway | null,
+    options: {
+        readonly cwd?: string | null;
+        readonly timeoutMs?: number;
+    } = {},
+): Promise<boolean> {
+    let resolved: ResolvedGrokRuntimeCommand;
+    try {
+        resolved = resolveGrokRuntime(settings, secretStore);
+    } catch {
+        return false;
+    }
+
+    const child = spawn(resolved.program, [...resolved.args], {
+        cwd: options.cwd ?? undefined,
+        env: applyGrokAuthEnv(process.env, settings, secretStore),
+        stdio: ["pipe", "pipe", "pipe"],
+    });
+    const client: Client = {
+        readTextFile: () => {
+            throw new Error("Grok auth probe does not support file reads.");
+        },
+        requestPermission: () => {
+            throw new Error(
+                "Grok auth probe does not support permission requests.",
+            );
+        },
+        sessionUpdate: () => Promise.resolve(undefined),
+        writeTextFile: () => {
+            throw new Error("Grok auth probe does not support file writes.");
+        },
+    };
+    const stream = ndJsonStream(
+        toWebByteWritable(child.stdin),
+        toWebByteReadable(child.stdout),
+    );
+    const connection = new ClientSideConnection(() => client, stream);
+
+    try {
+        const initializeResponse = await withTimeout(
+            connection.initialize({
+                clientCapabilities: {
+                    fs: {
+                        readTextFile: true,
+                        writeTextFile: true,
+                    },
+                },
+                clientInfo: {
+                    name: "comando",
+                    title: "Comando",
+                    version: process.versions.electron,
+                },
+                protocolVersion: PROTOCOL_VERSION,
+            }),
+            options.timeoutMs ?? GROK_AUTH_PROBE_TIMEOUT_MS,
+        );
+        const advertisedMethodIds =
+            initializeResponse.authMethods?.map((method) => method.id) ?? [];
+        return advertisedMethodIds.includes("cached_token");
+    } catch (error) {
+        debugBenignError("ai.grok.probeCachedTokenAuth", error);
+        return false;
+    } finally {
+        child.kill();
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+    }
+}
+
 export function markGrokAuthInvalidated(
     settings: GrokRuntimeSettings,
 ): GrokRuntimeSettings {
@@ -488,6 +570,39 @@ function readGrokAuthStoreStatus(authDir: string): GrokAuthStoreStatus {
 
 function envSecretPresent(env: NodeJS.ProcessEnv, key: typeof XAI_API_KEY_ENV) {
     return Boolean(env[key]?.trim());
+}
+
+function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
+    return Writable.toWeb(stream) as WritableStream<Uint8Array>;
+}
+
+function toWebByteReadable(stream: Readable): ReadableStream<Uint8Array> {
+    return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            reject(new Error("Grok auth probe timed out."));
+        }, timeoutMs);
+
+        promise.then(
+            (value) => {
+                clearTimeout(timeout);
+                resolve(value);
+            },
+            (error: unknown) => {
+                clearTimeout(timeout);
+                reject(
+                    error instanceof Error
+                        ? error
+                        : new Error("Grok auth probe failed.", {
+                              cause: error,
+                          }),
+                );
+            },
+        );
+    });
 }
 
 function getCredentialSourceLabel(source: AiAuthCredentialSource): string {

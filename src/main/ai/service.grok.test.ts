@@ -14,9 +14,21 @@ import { launchTerminalLoginCommand } from "./auth/terminal-login";
 import type { AiWorkerGateway } from "./contracts";
 import { AiService } from "./service";
 
+const probeGrokCachedTokenAuthMock = vi.hoisted(() =>
+    vi.fn(() => Promise.resolve(false)),
+);
+
 vi.mock("./auth/terminal-login", () => ({
     launchTerminalLoginCommand: vi.fn(() => Promise.resolve()),
 }));
+
+vi.mock("./grok/setup", async (importOriginal) => {
+    const original = await importOriginal<typeof import("./grok/setup")>();
+    return {
+        ...original,
+        probeGrokCachedTokenAuth: probeGrokCachedTokenAuthMock,
+    };
+});
 
 const originalXaiApiKey = process.env.XAI_API_KEY;
 const originalGrokBin = process.env.COMANDO_GROK_ACP_BIN;
@@ -25,6 +37,8 @@ beforeEach(() => {
     delete process.env.XAI_API_KEY;
     delete process.env.COMANDO_GROK_ACP_BIN;
     vi.mocked(launchTerminalLoginCommand).mockClear();
+    probeGrokCachedTokenAuthMock.mockReset();
+    probeGrokCachedTokenAuthMock.mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -84,7 +98,7 @@ describe("AiService Grok branch", () => {
         }
     });
 
-    it("prefers XAI_API_KEY from the environment over saved Grok settings", () => {
+    it("prefers XAI_API_KEY from the environment over saved Grok settings", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-grok-env-"),
         );
@@ -104,11 +118,65 @@ describe("AiService Grok branch", () => {
                 }),
             });
 
-            const status = service.getRuntimeStatus("grok");
+            const status = await service.getRuntimeStatus("grok");
 
             expect(status.authMethod).toBe("xai-api-key");
             expect(status.authCredentialSource).toBe("environment");
             expect(status.authReady).toBe(true);
+            expect(probeGrokCachedTokenAuthMock).not.toHaveBeenCalled();
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("hydrates Grok login from the ACP cached token probe", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-grok-probe-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "grok");
+            const invalidatedAtMs = Date.now();
+            let savedSettings: GrokRuntimeSettings | null = null;
+            const runtimeStatusEvents: AiRuntimeStatus[] = [];
+            probeGrokCachedTokenAuthMock.mockResolvedValueOnce(true);
+
+            const service = createService({
+                onRuntimeStatus: (status) => runtimeStatusEvents.push(status),
+                settingsService: createSettingsService({
+                    loadGrokRuntimeSettings: vi.fn(() =>
+                        createGrokSettings({
+                            authInvalidatedAtMs: invalidatedAtMs,
+                            binaryPath,
+                        }),
+                    ),
+                    saveGrokRuntimeSettings: (
+                        settings: GrokRuntimeSettings,
+                    ) => {
+                        savedSettings = settings;
+                    },
+                }),
+            });
+
+            const status = await service.getRuntimeStatus("grok");
+
+            expect(probeGrokCachedTokenAuthMock).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    authInvalidatedAtMs: invalidatedAtMs,
+                    binaryPath,
+                }),
+                expect.any(Object),
+            );
+            expect(savedSettings).toMatchObject({
+                authInvalidatedAtMs: null,
+                authMethod: "grok-login",
+                binaryPath,
+            });
+            expect(status.authMethod).toBe("grok-login");
+            expect(status.authCredentialSource).toBe("external-runtime");
+            expect(status.authReady).toBe(true);
+            expect(status.onboardingRequired).toBe(false);
+            expect(runtimeStatusEvents.at(-1)?.authMethod).toBe("grok-login");
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }

@@ -145,6 +145,7 @@ import {
     launchGrokLogin,
     loadGrokSecretBundle,
     markGrokAuthInvalidated,
+    probeGrokCachedTokenAuth,
     resolveGrokRuntime,
 } from "./grok/setup";
 import {
@@ -306,10 +307,14 @@ export class AiService {
         await Promise.allSettled(relaunches);
     }
 
-    getRuntimeStatus(runtimeId: AiRuntimeId): AiRuntimeStatus {
-        const status = this.#withPersistedRuntimeCatalog(
+    async getRuntimeStatus(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus> {
+        const resolvedStatus = this.#withPersistedRuntimeCatalog(
             this.#resolveRuntimeStatus(runtimeId),
         );
+        const status =
+            runtimeId === "grok"
+                ? await this.#resolveGrokRuntimeStatusWithProbe(resolvedStatus)
+                : resolvedStatus;
         this.#onRuntimeStatus(status);
         return status;
     }
@@ -1990,6 +1995,39 @@ export class AiService {
             modelId: catalog.modelId,
             models: catalog.models,
         };
+    }
+
+    async #resolveGrokRuntimeStatusWithProbe(
+        status: AiRuntimeStatus,
+    ): Promise<AiRuntimeStatus> {
+        if (
+            status.state !== "ready" ||
+            status.authReady ||
+            status.authCredentialSource === "environment" ||
+            status.authCredentialSource === "comando-secret"
+        ) {
+            return status;
+        }
+
+        const settings = this.#settingsService.loadGrokRuntimeSettings();
+        const hasCachedToken = await probeGrokCachedTokenAuth(
+            settings,
+            this.#secretStore,
+        );
+        if (!hasCachedToken) {
+            return status;
+        }
+
+        const nextSettings = {
+            ...settings,
+            authInvalidatedAtMs: null,
+            authMethod: "grok-login",
+        } satisfies GrokRuntimeSettings;
+        await this.#saveGrokAuthSettings(nextSettings);
+
+        return this.#withPersistedRuntimeCatalog(
+            getGrokRuntimeStatus(nextSettings, this.#secretStore),
+        );
     }
 
     #resolveRuntimeCommand(
