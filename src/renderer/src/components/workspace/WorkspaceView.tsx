@@ -1894,6 +1894,13 @@ function WorkspacePaneView({
                     "gemini",
                 );
                 return;
+            case "grok":
+                void createChatTab(
+                    defaultProjectId,
+                    defaultWorktreeId ?? null,
+                    "grok",
+                );
+                return;
             case "kilo":
                 void createChatTab(
                     defaultProjectId,
@@ -2900,7 +2907,7 @@ function QuickCreateMenu({
     );
 }
 
-function getQuickCreateButtonTitle(
+export function getQuickCreateButtonTitle(
     action: WorkspaceQuickCreateAction,
     hasProject: boolean,
 ) {
@@ -2909,6 +2916,8 @@ function getQuickCreateButtonTitle(
             return "Open last item: Claude chat";
         case "gemini":
             return "Open last item: Gemini chat";
+        case "grok":
+            return "Open last item: Grok chat";
         case "kilo":
             return "Open last item: Kilo chat";
         case "opencode":

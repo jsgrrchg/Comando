@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { buildWorkspaceAgentsQuickCreateEntries } from "./WorkspaceView";
+import {
+    buildWorkspaceAgentsQuickCreateEntries,
+    getQuickCreateButtonTitle,
+} from "./WorkspaceView";
 
 describe("WorkspaceView quick create agents menu", () => {
     it("includes Claude Code after Claude and keeps Claude as a runtime thread", () => {
@@ -87,5 +90,11 @@ describe("WorkspaceView quick create agents menu", () => {
             title:
                 "The claude command was not found in Comando's PATH. Your shell may still resolve it.",
         });
+    });
+
+    it("labels Grok as the last quick-create action", () => {
+        expect(getQuickCreateButtonTitle("grok", true)).toBe(
+            "Open last item: Grok chat",
+        );
     });
 });
