@@ -391,7 +391,20 @@ export async function probeGrokCachedTokenAuth(
         );
         const advertisedMethodIds =
             initializeResponse.authMethods?.map((method) => method.id) ?? [];
-        return advertisedMethodIds.includes("cached_token");
+        if (!advertisedMethodIds.includes("cached_token")) {
+            return false;
+        }
+
+        await withTimeout(
+            connection.authenticate({
+                _meta: {
+                    headless: true,
+                },
+                methodId: "cached_token",
+            }),
+            options.timeoutMs ?? GROK_AUTH_PROBE_TIMEOUT_MS,
+        );
+        return true;
     } catch (error) {
         debugBenignError("ai.grok.probeCachedTokenAuth", error);
         return false;

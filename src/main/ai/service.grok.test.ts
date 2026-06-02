@@ -371,6 +371,79 @@ describe("AiService Grok branch", () => {
         const nextSettings = savedSettings as unknown as GrokRuntimeSettings;
         expect(nextSettings.authInvalidatedAtMs).toEqual(expect.any(Number));
     });
+
+    it("clears a stored xAI API key after a Grok API key authentication error", async () => {
+        let savedSettings: GrokRuntimeSettings | null = null;
+        const runtimeStatusEvents: AiRuntimeStatus[] = [];
+        const secretValues = new Map<string, string>([
+            ["ai.grok:xai_api_key", "invalid-xai-key"],
+        ]);
+        const service = createService({
+            onRuntimeStatus: (status) => runtimeStatusEvents.push(status),
+            secretValues,
+            settingsService: createSettingsService({
+                loadGrokRuntimeSettings: vi.fn(() =>
+                    createGrokSettings({
+                        authMethod: "xai-api-key",
+                        binaryPath: "/opt/homebrew/bin/grok",
+                        hasXaiApiKey: true,
+                    }),
+                ),
+                saveGrokRuntimeSettings: (settings: GrokRuntimeSettings) => {
+                    savedSettings = settings;
+                },
+            }),
+        });
+
+        service.handleWorkerSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: {
+                ...createSessionSnapshot(),
+                lastError: "invalid api key",
+            },
+        });
+        await flushAsyncWork();
+
+        expect(savedSettings).toMatchObject({
+            authMethod: null,
+            hasXaiApiKey: false,
+        });
+        expect(secretValues.has("ai.grok:xai_api_key")).toBe(false);
+        expect(runtimeStatusEvents.at(-1)).toMatchObject({
+            authCredentialSource: "none",
+            authMethod: null,
+            authReady: false,
+            runtimeId: "grok",
+        });
+    });
+
+    it("does not rewrite environment xAI API key errors to Grok login", () => {
+        process.env.XAI_API_KEY = "invalid-env-key";
+        let savedSettings: GrokRuntimeSettings | null = null;
+        const service = createService({
+            settingsService: createSettingsService({
+                loadGrokRuntimeSettings: vi.fn(() =>
+                    createGrokSettings({
+                        authMethod: "xai-api-key",
+                        binaryPath: "/opt/homebrew/bin/grok",
+                    }),
+                ),
+                saveGrokRuntimeSettings: (settings: GrokRuntimeSettings) => {
+                    savedSettings = settings;
+                },
+            }),
+        });
+
+        service.handleWorkerSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: {
+                ...createSessionSnapshot(),
+                lastError: "Unauthorized: invalid api key",
+            },
+        });
+
+        expect(savedSettings).toBeNull();
+    });
 });
 
 function createService(overrides: {
@@ -459,7 +532,30 @@ function createSettingsService(overrides: Record<string, unknown>) {
 
 function createSecretStore(secretValues: Map<string, string>) {
     return {
-        cacheSecretPatches: vi.fn(),
+        cacheSecretPatches: vi.fn(
+            (
+                patches: readonly {
+                    readonly key: string;
+                    readonly value: string | null;
+                }[],
+            ) => {
+                for (const patch of patches) {
+                    const parsed = parseTestSecretStorageKey(patch.key);
+                    if (!parsed) {
+                        continue;
+                    }
+
+                    const normalized = patch.value?.trim() ?? "";
+                    const key = `${parsed.namespace}:${parsed.secretId}`;
+                    if (!normalized) {
+                        secretValues.delete(key);
+                        continue;
+                    }
+
+                    secretValues.set(key, normalized);
+                }
+            },
+        ),
         getStorageStatus: vi.fn(() => ({
             encryptionAvailable: true,
             isWeakBackend: false,
@@ -483,6 +579,26 @@ function createSecretStore(secretValues: Map<string, string>) {
 
             secretValues.set(key, normalized);
         },
+    };
+}
+
+function parseTestSecretStorageKey(
+    key: string,
+): { readonly namespace: string; readonly secretId: string } | null {
+    const prefix = "secret.";
+    if (!key.startsWith(prefix)) {
+        return null;
+    }
+
+    const body = key.slice(prefix.length);
+    const separatorIndex = body.lastIndexOf(".");
+    if (separatorIndex <= 0 || separatorIndex === body.length - 1) {
+        return null;
+    }
+
+    return {
+        namespace: body.slice(0, separatorIndex),
+        secretId: body.slice(separatorIndex + 1),
     };
 }
 
@@ -567,4 +683,9 @@ function restoreEnv(name: string, value: string | undefined): void {
     }
 
     process.env[name] = value;
+}
+
+async function flushAsyncWork(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
 }

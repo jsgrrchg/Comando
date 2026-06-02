@@ -2275,10 +2275,45 @@ export class AiService {
         }
 
         if (runtimeId === "grok" && isGrokAuthenticationError(message)) {
-            const nextSettings = markGrokAuthInvalidated({
-                ...this.#settingsService.loadGrokRuntimeSettings(),
-                authMethod: "grok-login",
+            const currentSettings =
+                this.#settingsService.loadGrokRuntimeSettings();
+            const currentStatus = getGrokRuntimeStatus(
+                currentSettings,
+                this.#secretStore,
+            );
+
+            if (currentStatus.authCredentialSource === "external-runtime") {
+                const nextSettings = markGrokAuthInvalidated({
+                    ...currentSettings,
+                    authMethod: "grok-login",
+                });
+                this.#settingsService.saveGrokRuntimeSettings(nextSettings);
+                this.#onRuntimeStatus(
+                    this.#withPersistedRuntimeCatalog(
+                        getGrokRuntimeStatus(nextSettings, this.#secretStore),
+                    ),
+                );
+                return;
+            }
+
+            if (currentStatus.authCredentialSource !== "comando-secret") {
+                return;
+            }
+
+            const secretPatch = buildGrokSecretPatches(this.#secretStore, {
+                xaiApiKey: null,
             });
+            const nextSettings = {
+                ...currentSettings,
+                authMethod: null,
+                hasXaiApiKey: secretPatch.flags.hasXaiApiKey,
+            } satisfies GrokRuntimeSettings;
+            this.#secretStore.cacheSecretPatches?.(secretPatch.patches);
+            void this.#saveSecretPatches(secretPatch.patches).catch(
+                (error: unknown) => {
+                    debugBenignError("ai.grok.invalidateStoredApiKey", error);
+                },
+            );
             this.#settingsService.saveGrokRuntimeSettings(nextSettings);
             this.#onRuntimeStatus(
                 this.#withPersistedRuntimeCatalog(
