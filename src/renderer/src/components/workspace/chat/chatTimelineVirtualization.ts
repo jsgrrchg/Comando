@@ -7,6 +7,7 @@ export const CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD = 200;
 export const CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN = 10;
 export const CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT = 720;
 export const CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX = 8;
+export const CHAT_TIMELINE_VIRTUAL_WIDTH_BUCKET_PX = 24;
 
 interface ShouldVirtualizeChatTimelineOptions {
     readonly enabled?: boolean;
@@ -51,18 +52,32 @@ export function getChatTimelineRowMeasurementKey(
     row: ChatTimelineRow,
     context: ChatTimelineRowMeasurementContext,
 ): string {
+    const measurementWidth = getChatTimelineVirtualMeasurementWidth(
+        context.width,
+    );
     const layoutSignature = [
         context.chatFontFamily ?? "default",
         context.chatFontSize ?? "default",
         context.gapPx ?? 0,
         context.isLatestStreamingTool ? "latest" : "history",
         context.toolCardExpansionMode,
-        Math.max(0, Math.round(context.width)),
+        measurementWidth,
     ].join(":");
 
     return `${row.id}:${layoutSignature}:${getRowContentMeasurementSignature(
         row,
     )}`;
+}
+
+export function getChatTimelineVirtualMeasurementWidth(width: number): number {
+    if (!Number.isFinite(width) || width <= 0) {
+        return 0;
+    }
+
+    return (
+        Math.round(width / CHAT_TIMELINE_VIRTUAL_WIDTH_BUCKET_PX) *
+        CHAT_TIMELINE_VIRTUAL_WIDTH_BUCKET_PX
+    );
 }
 
 export function calculateChatTimelineVirtualScrollMarginTop({

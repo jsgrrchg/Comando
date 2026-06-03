@@ -14,6 +14,7 @@ import {
     MeasuredVirtualList,
     type MeasuredVirtualListHandle,
     type MeasuredVirtualRange,
+    type MeasuredVirtualViewportAnchor,
 } from "@renderer/components/virtual/MeasuredVirtualList";
 
 import type { ChatTimelineRow } from "./chatTimelineModel";
@@ -24,6 +25,7 @@ import {
     estimateChatTimelineRowHeight,
     getChatTimelineRowMeasurementKey,
     getChatTimelineRowKey,
+    getChatTimelineVirtualMeasurementWidth,
     getChatTimelineVirtualRowGapPx,
     shouldVirtualizeChatTimeline,
 } from "./chatTimelineVirtualization";
@@ -37,11 +39,13 @@ interface ChatTimelineHistoryRowsProps {
         handle: MeasuredVirtualListHandle | null,
     ) => void;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
+    readonly onVirtualResizeAutoFollow?: () => void;
     readonly renderRow: (params: {
         readonly isLatestStreamingTool: boolean;
         readonly row: ChatTimelineRow;
     }) => ReactNode;
     readonly scrollRef: RefObject<HTMLElement | null>;
+    readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
 }
 
@@ -53,20 +57,80 @@ export const ChatTimelineHistoryRows = memo(
         latestStreamingEditedFileToolRowId,
         onVirtualListReady,
         onVirtualRangeChange,
+        onVirtualResizeAutoFollow,
         renderRow,
         scrollRef,
+        shouldPreserveVirtualResizeAnchor,
         toolCardExpansionMode,
     }: ChatTimelineHistoryRowsProps) {
         const historyRef = useRef<HTMLDivElement | null>(null);
+        const pendingResizeAnchorFrameRef = useRef<number | null>(null);
+        const pendingResizeAnchorRef =
+            useRef<MeasuredVirtualViewportAnchor | null>(null);
+        const previousScrollContainerWidthRef = useRef<number | null>(null);
+        const virtualListHandleRef = useRef<MeasuredVirtualListHandle | null>(
+            null,
+        );
         const [scrollMarginTop, setScrollMarginTop] = useState(0);
         const [scrollContainerWidth, setScrollContainerWidth] = useState(0);
         const shouldVirtualize = shouldVirtualizeChatTimeline(
             historyRows.length,
         );
 
+        const restorePendingResizeAnchor = useCallback(() => {
+            const anchor = pendingResizeAnchorRef.current;
+            pendingResizeAnchorRef.current = null;
+
+            if (!anchor) {
+                return;
+            }
+
+            virtualListHandleRef.current?.scrollToViewportAnchor?.(anchor);
+        }, []);
+
+        const scheduleResizeAnchorRestore = useCallback(() => {
+            if (typeof window === "undefined") {
+                restorePendingResizeAnchor();
+                return;
+            }
+
+            if (pendingResizeAnchorFrameRef.current !== null) {
+                window.cancelAnimationFrame(
+                    pendingResizeAnchorFrameRef.current,
+                );
+            }
+
+            pendingResizeAnchorFrameRef.current = window.requestAnimationFrame(
+                () => {
+                    pendingResizeAnchorFrameRef.current = null;
+                    restorePendingResizeAnchor();
+                },
+            );
+        }, [restorePendingResizeAnchor]);
+
         const syncLayoutMetrics = useCallback(() => {
             const historyElement = historyRef.current;
             const scrollContainer = scrollRef.current;
+            const nextScrollContainerWidth = scrollContainer?.clientWidth ?? 0;
+            const previousScrollContainerWidth =
+                previousScrollContainerWidthRef.current;
+            previousScrollContainerWidthRef.current = nextScrollContainerWidth;
+
+            if (
+                shouldVirtualize &&
+                previousScrollContainerWidth !== null &&
+                previousScrollContainerWidth !== nextScrollContainerWidth
+            ) {
+                if (shouldPreserveVirtualResizeAnchor?.() ?? true) {
+                    pendingResizeAnchorRef.current =
+                        virtualListHandleRef.current?.captureViewportAnchor?.() ??
+                        null;
+                    scheduleResizeAnchorRestore();
+                } else {
+                    pendingResizeAnchorRef.current = null;
+                    onVirtualResizeAutoFollow?.();
+                }
+            }
 
             setScrollMarginTop(
                 calculateChatTimelineVirtualScrollMarginTop({
@@ -74,8 +138,26 @@ export const ChatTimelineHistoryRows = memo(
                     scrollContainer,
                 }),
             );
-            setScrollContainerWidth(scrollContainer?.clientWidth ?? 0);
-        }, [scrollRef]);
+            setScrollContainerWidth(
+                getChatTimelineVirtualMeasurementWidth(
+                    nextScrollContainerWidth,
+                ),
+            );
+        }, [
+            onVirtualResizeAutoFollow,
+            scheduleResizeAnchorRestore,
+            scrollRef,
+            shouldPreserveVirtualResizeAnchor,
+            shouldVirtualize,
+        ]);
+
+        const handleVirtualListReady = useCallback(
+            (handle: MeasuredVirtualListHandle | null) => {
+                virtualListHandleRef.current = handle;
+                onVirtualListReady?.(handle);
+            },
+            [onVirtualListReady],
+        );
 
         useLayoutEffect(() => {
             if (!shouldVirtualize) {
@@ -111,6 +193,21 @@ export const ChatTimelineHistoryRows = memo(
                 window.removeEventListener("resize", syncLayoutMetrics);
             };
         }, [scrollRef, shouldVirtualize, syncLayoutMetrics]);
+
+        useLayoutEffect(() => {
+            restorePendingResizeAnchor();
+        }, [restorePendingResizeAnchor, scrollContainerWidth]);
+
+        useEffect(() => {
+            return () => {
+                if (pendingResizeAnchorFrameRef.current !== null) {
+                    window.cancelAnimationFrame(
+                        pendingResizeAnchorFrameRef.current,
+                    );
+                    pendingResizeAnchorFrameRef.current = null;
+                }
+            };
+        }, []);
 
         const estimateSize = useCallback(
             (row: ChatTimelineRow, index: number) =>
@@ -220,7 +317,7 @@ export const ChatTimelineHistoryRows = memo(
                     getItemMeasurementKey={getItemMeasurementKey}
                     items={historyRows}
                     onRangeChange={onVirtualRangeChange}
-                    onReady={onVirtualListReady}
+                    onReady={handleVirtualListReady}
                     overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}
                     preserveScrollAnchorOnMeasure
                     scrollContainerRef={scrollRef}

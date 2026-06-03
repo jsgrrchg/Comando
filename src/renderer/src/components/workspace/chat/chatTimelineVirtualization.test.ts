@@ -10,6 +10,7 @@ import {
     estimateChatTimelineRowHeight,
     getChatTimelineRowMeasurementKey,
     getChatTimelineRowKey,
+    getChatTimelineVirtualMeasurementWidth,
     getChatTimelineVirtualRowGapPx,
     shouldVirtualizeChatTimeline,
 } from "./chatTimelineVirtualization";
@@ -323,9 +324,19 @@ describe("chatTimelineVirtualization", () => {
                 gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
                 isLatestStreamingTool: false,
                 toolCardExpansionMode: "collapsed",
-                width: 641,
+                width: 672,
             }),
         ).not.toBe(base);
+        expect(
+            getChatTimelineRowMeasurementKey(row, {
+                chatFontFamily: "Inter",
+                chatFontSize: 13,
+                gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+                isLatestStreamingTool: false,
+                toolCardExpansionMode: "collapsed",
+                width: 641,
+            }),
+        ).toBe(base);
         expect(
             getChatTimelineRowMeasurementKey(
                 createMessageRow({ content: "hello, changed" }),
@@ -339,5 +350,13 @@ describe("chatTimelineVirtualization", () => {
                 },
             ),
         ).not.toBe(base);
+    });
+
+    it("buckets virtual measurement widths to reduce resize churn", () => {
+        expect(getChatTimelineVirtualMeasurementWidth(0)).toBe(0);
+        expect(getChatTimelineVirtualMeasurementWidth(Number.NaN)).toBe(0);
+        expect(getChatTimelineVirtualMeasurementWidth(640)).toBe(648);
+        expect(getChatTimelineVirtualMeasurementWidth(641)).toBe(648);
+        expect(getChatTimelineVirtualMeasurementWidth(672)).toBe(672);
     });
 });

@@ -798,6 +798,14 @@ export const ChatTabView = memo(function ChatTabView({
         }
     }, [scheduleScrollToBottom]);
 
+    const handleTimelineVirtualResizeAutoFollow = useCallback(() => {
+        scheduleScrollToBottom();
+    }, [scheduleScrollToBottom]);
+
+    const shouldPreserveTimelineVirtualResizeAnchor = useCallback(() => {
+        return !shouldAutoFollowRef.current;
+    }, []);
+
     const persistCurrentViewState = useCallback(
         (overrides?: {
             readonly isNearBottom?: boolean;
@@ -1539,9 +1547,15 @@ export const ChatTabView = memo(function ChatTabView({
                     onScroll={handleScroll}
                     onVirtualListReady={handleTimelineVirtualListReady}
                     onVirtualRangeChange={handleTimelineVirtualRangeChange}
+                    onVirtualResizeAutoFollow={
+                        handleTimelineVirtualResizeAutoFollow
+                    }
                     projectId={tab.projectId}
                     resolveFileReference={resolveChatFileReference}
                     scrollRef={scrollRef}
+                    shouldPreserveVirtualResizeAnchor={
+                        shouldPreserveTimelineVirtualResizeAnchor
+                    }
                     timelineContentRef={timelineContentRef}
                     worktreeId={tab.worktreeId ?? null}
                 />
@@ -1990,9 +2004,11 @@ const ChatTimeline = memo(function ChatTimeline({
     onScroll,
     onVirtualListReady,
     onVirtualRangeChange,
+    onVirtualResizeAutoFollow,
     projectId,
     resolveFileReference,
     scrollRef,
+    shouldPreserveVirtualResizeAnchor,
     timelineContentRef,
     toolCardExpansionMode,
     worktreeId,
@@ -2029,11 +2045,13 @@ const ChatTimeline = memo(function ChatTimeline({
         handle: MeasuredVirtualListHandle | null,
     ) => void;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
+    readonly onVirtualResizeAutoFollow?: () => void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
+    readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly timelineContentRef: RefObject<HTMLDivElement | null>;
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
@@ -2076,12 +2094,16 @@ const ChatTimeline = memo(function ChatTimeline({
                     onRevealFileReference={onRevealFileReference}
                     onVirtualListReady={onVirtualListReady}
                     onVirtualRangeChange={onVirtualRangeChange}
+                    onVirtualResizeAutoFollow={onVirtualResizeAutoFollow}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
                     latestStreamingEditedFileToolRowId={
                         latestStreamingEditedFileToolRowId
                     }
                     scrollRef={scrollRef}
+                    shouldPreserveVirtualResizeAnchor={
+                        shouldPreserveVirtualResizeAnchor
+                    }
                     toolCardExpansionMode={toolCardExpansionMode}
                     worktreeId={worktreeId}
                 />
@@ -2125,10 +2147,12 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     onRevealFileReference,
     onVirtualListReady,
     onVirtualRangeChange,
+    onVirtualResizeAutoFollow,
     projectId,
     resolveFileReference,
     latestStreamingEditedFileToolRowId,
     scrollRef,
+    shouldPreserveVirtualResizeAnchor,
     toolCardExpansionMode,
     worktreeId,
 }: {
@@ -2160,12 +2184,14 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
         handle: MeasuredVirtualListHandle | null,
     ) => void;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
+    readonly onVirtualResizeAutoFollow?: () => void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly latestStreamingEditedFileToolRowId: string | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
+    readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
 }) {
@@ -2223,8 +2249,12 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             }
             onVirtualListReady={onVirtualListReady}
             onVirtualRangeChange={onVirtualRangeChange}
+            onVirtualResizeAutoFollow={onVirtualResizeAutoFollow}
             renderRow={renderRow}
             scrollRef={scrollRef}
+            shouldPreserveVirtualResizeAnchor={
+                shouldPreserveVirtualResizeAnchor
+            }
             toolCardExpansionMode={toolCardExpansionMode}
         />
     );
@@ -2424,11 +2454,13 @@ function areChatTimelinePropsEqual(
             handle: MeasuredVirtualListHandle | null,
         ) => void;
         readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
+        readonly onVirtualResizeAutoFollow?: () => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
         ) => ResolvedProjectFileReference | null;
         readonly scrollRef: RefObject<HTMLDivElement | null>;
+        readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
         readonly timelineContentRef: RefObject<HTMLDivElement | null>;
         readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
@@ -2462,11 +2494,13 @@ function areChatTimelinePropsEqual(
             handle: MeasuredVirtualListHandle | null,
         ) => void;
         readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
+        readonly onVirtualResizeAutoFollow?: () => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
         ) => ResolvedProjectFileReference | null;
         readonly scrollRef: RefObject<HTMLDivElement | null>;
+        readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
         readonly timelineContentRef: RefObject<HTMLDivElement | null>;
         readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
@@ -2489,9 +2523,12 @@ function areChatTimelinePropsEqual(
         previous.onScroll === next.onScroll &&
         previous.onVirtualListReady === next.onVirtualListReady &&
         previous.onVirtualRangeChange === next.onVirtualRangeChange &&
+        previous.onVirtualResizeAutoFollow === next.onVirtualResizeAutoFollow &&
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.scrollRef === next.scrollRef &&
+        previous.shouldPreserveVirtualResizeAnchor ===
+            next.shouldPreserveVirtualResizeAnchor &&
         previous.timelineContentRef === next.timelineContentRef &&
         previous.toolCardExpansionMode === next.toolCardExpansionMode &&
         previous.worktreeId === next.worktreeId
@@ -2524,12 +2561,14 @@ function areChatTimelineHistoryPropsEqual(
             handle: MeasuredVirtualListHandle | null,
         ) => void;
         readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
+        readonly onVirtualResizeAutoFollow?: () => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
         ) => ResolvedProjectFileReference | null;
         readonly latestStreamingEditedFileToolRowId: string | null;
         readonly scrollRef: RefObject<HTMLDivElement | null>;
+        readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
         readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
@@ -2558,12 +2597,14 @@ function areChatTimelineHistoryPropsEqual(
             handle: MeasuredVirtualListHandle | null,
         ) => void;
         readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
+        readonly onVirtualResizeAutoFollow?: () => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
         ) => ResolvedProjectFileReference | null;
         readonly latestStreamingEditedFileToolRowId: string | null;
         readonly scrollRef: RefObject<HTMLDivElement | null>;
+        readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
         readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
@@ -2581,11 +2622,14 @@ function areChatTimelineHistoryPropsEqual(
         previous.onRevealFileReference === next.onRevealFileReference &&
         previous.onVirtualListReady === next.onVirtualListReady &&
         previous.onVirtualRangeChange === next.onVirtualRangeChange &&
+        previous.onVirtualResizeAutoFollow === next.onVirtualResizeAutoFollow &&
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.latestStreamingEditedFileToolRowId ===
             next.latestStreamingEditedFileToolRowId &&
         previous.scrollRef === next.scrollRef &&
+        previous.shouldPreserveVirtualResizeAnchor ===
+            next.shouldPreserveVirtualResizeAnchor &&
         previous.toolCardExpansionMode === next.toolCardExpansionMode &&
         previous.worktreeId === next.worktreeId
     );

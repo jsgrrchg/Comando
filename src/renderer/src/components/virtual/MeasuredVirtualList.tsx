@@ -19,13 +19,23 @@ export interface MeasuredVirtualRange {
     readonly visibleEndIndex: number;
 }
 
+export interface MeasuredVirtualViewportAnchor {
+    readonly index: number;
+    readonly key: string;
+    readonly offset: number;
+}
+
 export interface MeasuredVirtualListHandle {
+    readonly captureViewportAnchor?: () => MeasuredVirtualViewportAnchor | null;
     readonly scrollToIndex: (
         index: number,
         options?: {
             readonly align?: "center" | "end" | "start";
             readonly offset?: number;
         },
+    ) => void;
+    readonly scrollToViewportAnchor?: (
+        anchor: MeasuredVirtualViewportAnchor,
     ) => void;
 }
 
@@ -600,6 +610,54 @@ export function MeasuredVirtualList<T>({
         onRangeChange(layout.range);
     }, [layout.range, onRangeChange]);
 
+    const getItemStart = useCallback(
+        (index: number): number => {
+            const targetItem =
+                layout.virtualItems.find((item) => item.index === index) ??
+                null;
+
+            if (targetItem) {
+                return targetItem.start;
+            }
+
+            let total = 0;
+            for (let cursor = 0; cursor < index; cursor += 1) {
+                total +=
+                    measuredSizes.get(itemMeasurementKeys[cursor]) ??
+                    estimateSize(items[cursor], cursor);
+            }
+            return total;
+        },
+        [
+            estimateSize,
+            itemMeasurementKeys,
+            items,
+            layout.virtualItems,
+            measuredSizes,
+        ],
+    );
+
+    const getItemSize = useCallback(
+        (index: number): number => {
+            const targetItem =
+                layout.virtualItems.find((item) => item.index === index) ??
+                null;
+
+            return (
+                targetItem?.size ??
+                measuredSizes.get(itemMeasurementKeys[index]) ??
+                estimateSize(items[index], index)
+            );
+        },
+        [
+            estimateSize,
+            itemMeasurementKeys,
+            items,
+            layout.virtualItems,
+            measuredSizes,
+        ],
+    );
+
     const setMeasuredElement = useCallback(
         (key: string, node: HTMLDivElement | null) => {
             const previousElement = elementByKeyRef.current.get(key);
@@ -641,28 +699,10 @@ export function MeasuredVirtualList<T>({
 
             const align = options?.align ?? "start";
             const offset = options?.offset ?? 0;
-            const targetItem =
-                layout.virtualItems.find((item) => item.index === index) ??
-                null;
-            const itemStart = targetItem
-                ? targetItem.start
-                : (() => {
-                      let total = 0;
-                      for (let cursor = 0; cursor < index; cursor += 1) {
-                          total +=
-                              measuredSizes.get(itemMeasurementKeys[cursor]) ??
-                              estimateSize(items[cursor], cursor);
-                      }
-                      return total;
-                  })();
-            const itemSize =
-                targetItem?.size ??
-                measuredSizes.get(itemMeasurementKeys[index]) ??
-                estimateSize(items[index], index);
             container.scrollTop = calculateMeasuredVirtualScrollTop({
                 align,
-                itemSize,
-                itemStart,
+                itemSize: getItemSize(index),
+                itemStart: getItemStart(index),
                 offset,
                 scrollMarginTop: normalizedScrollMarginTop,
                 totalSize: layout.totalSize,
@@ -670,23 +710,81 @@ export function MeasuredVirtualList<T>({
             });
         },
         [
-            estimateSize,
-            itemMeasurementKeys,
+            getItemSize,
+            getItemStart,
             items,
-            layout,
-            measuredSizes,
+            layout.totalSize,
             normalizedScrollMarginTop,
             scrollContainerRef,
         ],
     );
 
+    const captureViewportAnchor = useCallback(():
+        | MeasuredVirtualViewportAnchor
+        | null => {
+        const container = scrollContainerRef.current;
+
+        if (!container || items.length === 0) {
+            return null;
+        }
+
+        const index = clamp(
+            layout.range.visibleStartIndex,
+            0,
+            items.length - 1,
+        );
+        const effectiveScrollTop = Math.max(
+            0,
+            container.scrollTop - normalizedScrollMarginTop,
+        );
+        const itemStart = getItemStart(index);
+
+        return {
+            index,
+            key: itemKeys[index],
+            offset: Math.max(0, Math.round(effectiveScrollTop - itemStart)),
+        };
+    }, [
+        getItemStart,
+        itemKeys,
+        items.length,
+        layout.range.visibleStartIndex,
+        normalizedScrollMarginTop,
+        scrollContainerRef,
+    ]);
+
+    const scrollToViewportAnchor = useCallback(
+        (anchor: MeasuredVirtualViewportAnchor) => {
+            const keyedIndex = itemKeys.indexOf(anchor.key);
+            const index =
+                keyedIndex >= 0
+                    ? keyedIndex
+                    : clamp(anchor.index, 0, items.length - 1);
+
+            scrollToIndex(index, {
+                align: "start",
+                offset: anchor.offset,
+            });
+        },
+        [itemKeys, items.length, scrollToIndex],
+    );
+
     useEffect(() => {
-        onReady?.({ scrollToIndex });
+        onReady?.({
+            captureViewportAnchor,
+            scrollToIndex,
+            scrollToViewportAnchor,
+        });
 
         return () => {
             onReady?.(null);
         };
-    }, [onReady, scrollToIndex]);
+    }, [
+        captureViewportAnchor,
+        onReady,
+        scrollToIndex,
+        scrollToViewportAnchor,
+    ]);
 
     if (items.length === 0) {
         return null;
