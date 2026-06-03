@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -40,6 +41,7 @@ export interface MeasuredVirtualListProps<T> {
     readonly getItemMeasurementKey?: (item: T, index: number) => string;
     readonly onRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onReady?: (handle: MeasuredVirtualListHandle | null) => void;
+    readonly preserveScrollAnchorOnMeasure?: boolean;
     readonly renderItem: (params: {
         readonly index: number;
         readonly isVisible: boolean;
@@ -84,8 +86,25 @@ interface CalculateMeasuredVirtualScrollTopOptions {
     readonly viewportHeight: number;
 }
 
+interface CalculateMeasuredVirtualScrollAnchorAdjustmentOptions {
+    readonly itemIndex: number;
+    readonly nextSize: number;
+    readonly preserveScrollAnchorOnMeasure: boolean;
+    readonly previousSize: number;
+    readonly virtualizationEnabled: boolean;
+    readonly visibleStartIndex: number;
+}
+
 function clamp(value: number, min: number, max: number): number {
     return Math.min(Math.max(value, min), max);
+}
+
+function normalizeMeasuredVirtualSize(value: number): number {
+    if (!Number.isFinite(value)) {
+        return 1;
+    }
+
+    return Math.max(1, Math.ceil(value));
 }
 
 function areRangesEqual(
@@ -238,6 +257,32 @@ export function calculateMeasuredVirtualScrollTop({
     return clamp(nextScrollTop, 0, maxScrollTop);
 }
 
+export function calculateMeasuredVirtualScrollAnchorAdjustment({
+    itemIndex,
+    nextSize,
+    preserveScrollAnchorOnMeasure,
+    previousSize,
+    virtualizationEnabled,
+    visibleStartIndex,
+}: CalculateMeasuredVirtualScrollAnchorAdjustmentOptions): number {
+    if (
+        !preserveScrollAnchorOnMeasure ||
+        !virtualizationEnabled ||
+        itemIndex < 0 ||
+        itemIndex >= visibleStartIndex
+    ) {
+        return 0;
+    }
+
+    const delta = nextSize - previousSize;
+
+    if (!Number.isFinite(delta)) {
+        return 0;
+    }
+
+    return delta;
+}
+
 export function MeasuredVirtualList<T>({
     items,
     enabled = true,
@@ -250,6 +295,7 @@ export function MeasuredVirtualList<T>({
     getItemMeasurementKey,
     onRangeChange,
     onReady,
+    preserveScrollAnchorOnMeasure = false,
     renderItem,
 }: MeasuredVirtualListProps<T>) {
     const isBrowser = typeof window !== "undefined";
@@ -257,6 +303,7 @@ export function MeasuredVirtualList<T>({
     const [measuredSizes, setMeasuredSizes] = useState<Map<string, number>>(
         () => new Map(),
     );
+    const measuredSizesRef = useRef(measuredSizes);
     const [scrollState, setScrollState] = useState(() => ({
         scrollTop: 0,
         viewportHeight: isBrowser
@@ -265,6 +312,8 @@ export function MeasuredVirtualList<T>({
     }));
     const elementByKeyRef = useRef(new Map<string, HTMLDivElement>());
     const keyByElementRef = useRef(new WeakMap<Element, string>());
+    const layoutRangeRef = useRef<MeasuredVirtualRange | null>(null);
+    const pendingScrollAnchorAdjustmentRef = useRef(0);
     const resizeObserverRef = useRef<ResizeObserver | null>(null);
     const previousRangeRef = useRef<MeasuredVirtualRange | null>(null);
     const itemKeys = useMemo(
@@ -280,22 +329,59 @@ export function MeasuredVirtualList<T>({
             ),
         [getItemMeasurementKey, itemKeys, items],
     );
+    const itemIndexByMeasurementKey = useMemo(() => {
+        const next = new Map<string, number>();
+
+        itemMeasurementKeys.forEach((key, index) => {
+            next.set(key, index);
+        });
+
+        return next;
+    }, [itemMeasurementKeys]);
     const virtualizationEnabled = enabled && isBrowser;
 
     const updateMeasuredSize = useCallback((key: string, nextSize: number) => {
-        const normalizedSize = Math.max(1, Math.ceil(nextSize));
-        setMeasuredSizes((current) => {
-            const previousSize = current.get(key);
+        const normalizedSize = normalizeMeasuredVirtualSize(nextSize);
+        const currentSizes = measuredSizesRef.current;
+        const previousMeasuredSize = currentSizes.get(key);
 
-            if (previousSize === normalizedSize) {
-                return current;
-            }
+        if (previousMeasuredSize === normalizedSize) {
+            return;
+        }
 
-            const next = new Map(current);
-            next.set(key, normalizedSize);
-            return next;
-        });
-    }, []);
+        const itemIndex = itemIndexByMeasurementKey.get(key) ?? -1;
+        const previousKnownSize =
+            previousMeasuredSize ??
+            (itemIndex >= 0 && itemIndex < items.length
+                ? estimateSize(items[itemIndex], itemIndex)
+                : normalizedSize);
+        const range = layoutRangeRef.current;
+        const anchorAdjustment = calculateMeasuredVirtualScrollAnchorAdjustment(
+            {
+                itemIndex,
+                nextSize: normalizedSize,
+                preserveScrollAnchorOnMeasure,
+                previousSize: previousKnownSize,
+                virtualizationEnabled,
+                visibleStartIndex: range?.visibleStartIndex ?? 0,
+            },
+        );
+
+        if (anchorAdjustment !== 0) {
+            pendingScrollAnchorAdjustmentRef.current += anchorAdjustment;
+        }
+
+        const nextSizes = new Map(currentSizes);
+        nextSizes.set(key, normalizedSize);
+        measuredSizesRef.current = nextSizes;
+        setMeasuredSizes(nextSizes);
+    }, [
+        estimateSize,
+        itemIndexByMeasurementKey,
+        items,
+        preserveScrollAnchorOnMeasure,
+        virtualizationEnabled,
+    ]);
 
     useEffect(() => {
         if (!virtualizationEnabled || typeof ResizeObserver === "undefined") {
@@ -471,6 +557,34 @@ export function MeasuredVirtualList<T>({
         overscan,
         scrollState.scrollTop,
         scrollState.viewportHeight,
+        virtualizationEnabled,
+    ]);
+
+    layoutRangeRef.current = layout.range;
+
+    useLayoutEffect(() => {
+        if (!preserveScrollAnchorOnMeasure || !virtualizationEnabled) {
+            pendingScrollAnchorAdjustmentRef.current = 0;
+            return;
+        }
+
+        const adjustment = pendingScrollAnchorAdjustmentRef.current;
+        pendingScrollAnchorAdjustmentRef.current = 0;
+
+        if (adjustment === 0) {
+            return;
+        }
+
+        const container = scrollContainerRef.current;
+        if (!container) {
+            return;
+        }
+
+        container.scrollTop = Math.max(0, container.scrollTop + adjustment);
+    }, [
+        measuredSizes,
+        preserveScrollAnchorOnMeasure,
+        scrollContainerRef,
         virtualizationEnabled,
     ]);
 

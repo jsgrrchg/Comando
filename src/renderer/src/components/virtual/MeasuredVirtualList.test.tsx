@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
+    calculateMeasuredVirtualScrollAnchorAdjustment,
     calculateMeasuredVirtualRange,
     calculateMeasuredVirtualScrollTop,
     MeasuredVirtualList,
@@ -139,6 +140,52 @@ describe("MeasuredVirtualList", () => {
             visibleEndIndex: 9,
             visibleStartIndex: 0,
         });
+    });
+
+    it("calculates scroll anchoring adjustments only for measured rows above the viewport", () => {
+        expect(
+            calculateMeasuredVirtualScrollAnchorAdjustment({
+                itemIndex: 3,
+                nextSize: 52,
+                preserveScrollAnchorOnMeasure: true,
+                previousSize: 20,
+                virtualizationEnabled: true,
+                visibleStartIndex: 5,
+            }),
+        ).toBe(32);
+
+        expect(
+            calculateMeasuredVirtualScrollAnchorAdjustment({
+                itemIndex: 3,
+                nextSize: 12,
+                preserveScrollAnchorOnMeasure: true,
+                previousSize: 20,
+                virtualizationEnabled: true,
+                visibleStartIndex: 5,
+            }),
+        ).toBe(-8);
+
+        expect(
+            calculateMeasuredVirtualScrollAnchorAdjustment({
+                itemIndex: 5,
+                nextSize: 52,
+                preserveScrollAnchorOnMeasure: true,
+                previousSize: 20,
+                virtualizationEnabled: true,
+                visibleStartIndex: 5,
+            }),
+        ).toBe(0);
+
+        expect(
+            calculateMeasuredVirtualScrollAnchorAdjustment({
+                itemIndex: 3,
+                nextSize: 52,
+                preserveScrollAnchorOnMeasure: false,
+                previousSize: 20,
+                virtualizationEnabled: true,
+                visibleStartIndex: 5,
+            }),
+        ).toBe(0);
     });
 
     it("renders every item during server rendering", () => {

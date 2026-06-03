@@ -233,6 +233,29 @@ describe("chatTimelineVirtualization", () => {
         expect(expandedToolHeight).toBeGreaterThan(collapsedToolHeight);
     });
 
+    it("uses the available width when estimating message wrapping", () => {
+        const longMessage = createMessageRow({
+            content: "A measured timeline should keep long text stable. ".repeat(
+                24,
+            ),
+        });
+
+        const narrowHeight = estimateChatTimelineRowHeight(longMessage, {
+            chatFontSize: 13,
+            gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+            toolCardExpansionMode: "collapsed",
+            width: 320,
+        });
+        const wideHeight = estimateChatTimelineRowHeight(longMessage, {
+            chatFontSize: 13,
+            gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+            toolCardExpansionMode: "collapsed",
+            width: 960,
+        });
+
+        expect(narrowHeight).toBeGreaterThan(wideHeight);
+    });
+
     it("calculates scroll margin from the history offset inside the scroller", () => {
         const scrollContainer = {
             getBoundingClientRect: () => ({ top: 20 }) as DOMRect,

@@ -18,6 +18,7 @@ export interface ChatTimelineRowEstimateContext {
     readonly gapPx?: number;
     readonly isLatestStreamingTool?: boolean;
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
+    readonly width?: number;
 }
 
 export interface ChatTimelineRowMeasurementContext
@@ -102,8 +103,7 @@ export function estimateChatTimelineRowHeight(
 
     if (row.kind === "message") {
         return Math.ceil(
-            estimateMessageRowHeight(row.message, context.chatFontSize) +
-                gapPx,
+            estimateMessageRowHeight(row.message, context) + gapPx,
         );
     }
 
@@ -112,11 +112,15 @@ export function estimateChatTimelineRowHeight(
 
 function estimateMessageRowHeight(
     message: Extract<ChatTimelineRow, { readonly kind: "message" }>["message"],
-    chatFontSize: number | undefined,
+    context: ChatTimelineRowEstimateContext,
 ): number {
+    const chatFontSize = context.chatFontSize;
     const fontScale = getFontScale(chatFontSize);
     const content = message.content ?? "";
-    const estimatedLines = estimateTextLines(content, 96);
+    const estimatedLines = estimateTextLines(
+        content,
+        estimateCharactersPerLine(context.width, chatFontSize),
+    );
     const contentHeight = Math.min(340, estimatedLines * 18 * fontScale);
     const codeBlockCount = countCodeBlocks(content);
     const attachmentHeight = message.attachments.length * 48;
@@ -134,6 +138,25 @@ function estimateMessageRowHeight(
         Math.min(260, codeBlockCount * 92) +
         attachmentHeight +
         imageHeight
+    );
+}
+
+function estimateCharactersPerLine(
+    width: number | undefined,
+    chatFontSize: number | undefined,
+): number {
+    if (!width || !Number.isFinite(width) || width <= 0) {
+        return 96;
+    }
+
+    const safeFontSize =
+        chatFontSize && Number.isFinite(chatFontSize) ? chatFontSize : 13;
+    const contentWidth = Math.max(160, width - 72);
+    const averageCharacterWidth = Math.max(6, safeFontSize * 0.56);
+
+    return Math.max(
+        24,
+        Math.min(140, Math.floor(contentWidth / averageCharacterWidth)),
     );
 }
 

@@ -123,11 +123,13 @@ export const ChatTimelineHistoryRows = memo(
                     isLatestStreamingTool:
                         row.id === latestStreamingEditedFileToolRowId,
                     toolCardExpansionMode,
+                    width: scrollContainerWidth,
                 }),
             [
                 chatFontSize,
                 historyRows.length,
                 latestStreamingEditedFileToolRowId,
+                scrollContainerWidth,
                 toolCardExpansionMode,
             ],
         );
@@ -220,6 +222,7 @@ export const ChatTimelineHistoryRows = memo(
                     onRangeChange={onVirtualRangeChange}
                     onReady={onVirtualListReady}
                     overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}
+                    preserveScrollAnchorOnMeasure
                     scrollContainerRef={scrollRef}
                     scrollMarginTop={scrollMarginTop}
                     renderItem={renderVirtualItem}
