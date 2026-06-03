@@ -2517,13 +2517,7 @@ function isIncomingSnapshotFreshEnough(
     currentSnapshot: AiSessionSnapshot,
     incomingSnapshot: AiSessionSnapshot,
 ): boolean {
-    const currentMs = Date.parse(currentSnapshot.updatedAt);
-    const incomingMs = Date.parse(incomingSnapshot.updatedAt);
-    if (!Number.isFinite(currentMs) || !Number.isFinite(incomingMs)) {
-        return incomingSnapshot.updatedAt >= currentSnapshot.updatedAt;
-    }
-
-    return incomingMs >= currentMs;
+    return isUpdatedAtAtLeast(currentSnapshot.updatedAt, incomingSnapshot.updatedAt);
 }
 
 function getLatestIncomingSnapshotUpdatedAt(
@@ -2534,15 +2528,9 @@ function getLatestIncomingSnapshotUpdatedAt(
         return incomingUpdatedAt;
     }
 
-    const currentMs = Date.parse(currentUpdatedAt);
-    const incomingMs = Date.parse(incomingUpdatedAt);
-    if (!Number.isFinite(currentMs) || !Number.isFinite(incomingMs)) {
-        return incomingUpdatedAt >= currentUpdatedAt
-            ? incomingUpdatedAt
-            : currentUpdatedAt;
-    }
-
-    return incomingMs >= currentMs ? incomingUpdatedAt : currentUpdatedAt;
+    return isUpdatedAtAtLeast(currentUpdatedAt, incomingUpdatedAt)
+        ? incomingUpdatedAt
+        : currentUpdatedAt;
 }
 
 function resolveIncomingSnapshotProgress(
@@ -2562,10 +2550,7 @@ function resolveIncomingSnapshotProgress(
         session?.lastIncomingSnapshotUpdatedAt ?? null;
     const shouldCountIncoming =
         !lastIncomingSnapshotUpdatedAt ||
-        isIncomingUpdatedAtAtLeast(
-            lastIncomingSnapshotUpdatedAt,
-            incomingUpdatedAt,
-        );
+        isUpdatedAtAtLeast(lastIncomingSnapshotUpdatedAt, incomingUpdatedAt);
 
     return {
         incomingSnapshotVersion:
@@ -2578,7 +2563,7 @@ function resolveIncomingSnapshotProgress(
     };
 }
 
-function isIncomingUpdatedAtAtLeast(
+function isUpdatedAtAtLeast(
     currentUpdatedAt: string,
     incomingUpdatedAt: string,
 ): boolean {
@@ -2786,12 +2771,13 @@ async function drainQueueIfNeeded(
         return;
     }
 
-    const nextQueuedPrompt = session.queue.find(
-        (queuedPrompt) => queuedPrompt.status === "queued",
-    );
     const nextQueuedPromptIndex = session.queue.findIndex(
         (queuedPrompt) => queuedPrompt.status === "queued",
     );
+    const nextQueuedPrompt =
+        nextQueuedPromptIndex >= 0
+            ? session.queue[nextQueuedPromptIndex]
+            : null;
     if (!nextQueuedPrompt || nextQueuedPromptIndex < 0) {
         return;
     }
