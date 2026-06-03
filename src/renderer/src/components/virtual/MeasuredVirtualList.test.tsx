@@ -6,6 +6,7 @@ import {
     calculateMeasuredVirtualRange,
     calculateMeasuredVirtualScrollTop,
     MeasuredVirtualList,
+    pruneMeasuredSizesToKeys,
 } from "./MeasuredVirtualList";
 
 const ITEM_HEIGHT = 20;
@@ -205,5 +206,57 @@ describe("MeasuredVirtualList", () => {
         expect(markup).toContain("Item 0");
         expect(markup).toContain("Item 4");
         expect(markup.match(/data-row-index=/g)).toHaveLength(5);
+    });
+});
+
+describe("pruneMeasuredSizesToKeys", () => {
+    it("drops entries whose keys are no longer valid", () => {
+        const sizes = new Map([
+            ["a", 10],
+            ["b", 20],
+            ["c", 30],
+        ]);
+
+        const result = pruneMeasuredSizesToKeys(sizes, new Set(["a", "c"]));
+
+        expect([...result.entries()]).toEqual([
+            ["a", 10],
+            ["c", 30],
+        ]);
+    });
+
+    it("returns the same reference when nothing is stale", () => {
+        const sizes = new Map([
+            ["a", 10],
+            ["b", 20],
+        ]);
+
+        // Lets the caller skip the state update when there is nothing to prune.
+        expect(pruneMeasuredSizesToKeys(sizes, new Set(["a", "b", "c"]))).toBe(
+            sizes,
+        );
+    });
+
+    it("never mutates the input map", () => {
+        const sizes = new Map([
+            ["a", 10],
+            ["b", 20],
+        ]);
+
+        pruneMeasuredSizesToKeys(sizes, new Set(["a"]));
+
+        expect([...sizes.entries()]).toEqual([
+            ["a", 10],
+            ["b", 20],
+        ]);
+    });
+
+    it("returns a fresh empty map when no key survives", () => {
+        const sizes = new Map([["a", 10]]);
+
+        const result = pruneMeasuredSizesToKeys(sizes, new Set());
+
+        expect(result.size).toBe(0);
+        expect(result).not.toBe(sizes);
     });
 });
