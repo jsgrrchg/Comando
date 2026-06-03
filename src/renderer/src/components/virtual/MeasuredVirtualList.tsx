@@ -433,6 +433,32 @@ export function MeasuredVirtualList<T>({
             resizeObserverRef.current?.unobserve(element);
             elementByKeyRef.current.delete(key);
         }
+
+        // Prune superseded measurements so the cache stays bounded to the
+        // current rows. Measurement keys are derived from row content and
+        // layout, so they churn over a long-lived session (resize, expansion
+        // toggles, review-state changes). Without pruning, the map grows
+        // without bound and each measurement clone gets progressively more
+        // expensive. Keys for current rows always live in validKeys, so only
+        // stale revisions — never an in-use measurement — get dropped.
+        const currentSizes = measuredSizesRef.current;
+        let prunedSizes: Map<string, number> | null = null;
+
+        for (const key of currentSizes.keys()) {
+            if (validKeys.has(key)) {
+                continue;
+            }
+
+            if (!prunedSizes) {
+                prunedSizes = new Map(currentSizes);
+            }
+            prunedSizes.delete(key);
+        }
+
+        if (prunedSizes) {
+            measuredSizesRef.current = prunedSizes;
+            setMeasuredSizes(prunedSizes);
+        }
     }, [itemMeasurementKeys]);
 
     useEffect(() => {
