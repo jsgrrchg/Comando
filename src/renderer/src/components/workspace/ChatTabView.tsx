@@ -2114,7 +2114,7 @@ const ChatTimeline = memo(function ChatTimeline({
             </div>
         </div>
     );
-}, areChatTimelinePropsEqual);
+});
 
 ChatTimeline.displayName = "ChatTimeline";
 
@@ -2239,7 +2239,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             toolCardExpansionMode={toolCardExpansionMode}
         />
     );
-}, areChatTimelineHistoryPropsEqual);
+});
 
 ChatTimelineHistory.displayName = "ChatTimelineHistory";
 
@@ -2320,7 +2320,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
             worktreeId={worktreeId}
         />
     );
-}, areChatTimelineLiveTailPropsEqual);
+});
 
 ChatTimelineLiveTail.displayName = "ChatTimelineLiveTail";
 
@@ -2405,169 +2405,9 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
             worktreeId={worktreeId}
         />
     );
-}, areChatTimelineRowViewPropsEqual);
+});
 
 ChatTimelineRowView.displayName = "ChatTimelineRowView";
-
-type PropEqualityPlan<P> = Readonly<Record<keyof P, boolean>>;
-
-// Memo equality driven by an explicit, exhaustive plan. Because the plan is
-// keyed by `keyof Props`, adding a prop to a memoized component forces a
-// compile-time decision on whether to compare it — a prop can no longer
-// silently fall out of the check (the failure mode that left `onScroll`
-// uncompared until it was caught in review). Props mapped to `true` are
-// compared by identity; `false` opts a prop out intentionally.
-function arePropsEqualByPlan<P extends object>(
-    previous: Readonly<P>,
-    next: Readonly<P>,
-    plan: PropEqualityPlan<P>,
-): boolean {
-    for (const key of Object.keys(plan) as (keyof P)[]) {
-        if (plan[key] && !Object.is(previous[key], next[key])) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-const CHAT_TIMELINE_EQUALITY_PLAN: PropEqualityPlan<ChatTimelineProps> = {
-    // Intentionally not compared — treated as a stable callback. TODO: confirm
-    // this is deliberate and not a latent stale-UI bug (pending review item).
-    canRenderRawFileReference: false,
-    chatFontFamily: true,
-    chatFontSize: true,
-    elapsed: true,
-    historyRows: true,
-    isStreaming: true,
-    liveTailRow: true,
-    onAddFileReferenceToChat: true,
-    onOpenFile: true,
-    onOpenImage: true,
-    onOpenResolvedFileReference: true,
-    onOpenSession: true,
-    onRevealFileReference: true,
-    onScroll: true,
-    onVirtualRangeChange: true,
-    onVirtualResizeAutoFollow: true,
-    projectId: true,
-    resolveFileReference: true,
-    scrollRef: true,
-    shouldPreserveVirtualResizeAnchor: true,
-    timelineContentRef: true,
-    toolCardExpansionMode: true,
-    worktreeId: true,
-};
-
-function areChatTimelinePropsEqual(
-    previous: Readonly<ChatTimelineProps>,
-    next: Readonly<ChatTimelineProps>,
-): boolean {
-    return arePropsEqualByPlan(previous, next, CHAT_TIMELINE_EQUALITY_PLAN);
-}
-
-const CHAT_TIMELINE_HISTORY_EQUALITY_PLAN: PropEqualityPlan<ChatTimelineHistoryProps> =
-    {
-        // Intentionally not compared — treated as a stable callback. TODO:
-        // confirm this is deliberate and not a latent stale-UI bug (pending
-        // review item).
-        canRenderRawFileReference: false,
-        chatFontFamily: true,
-        chatFontSize: true,
-        historyRows: true,
-        latestStreamingEditedFileToolRowId: true,
-        onAddFileReferenceToChat: true,
-        onOpenFile: true,
-        onOpenImage: true,
-        onOpenResolvedFileReference: true,
-        onOpenSession: true,
-        onRevealFileReference: true,
-        onVirtualRangeChange: true,
-        onVirtualResizeAutoFollow: true,
-        projectId: true,
-        resolveFileReference: true,
-        scrollRef: true,
-        shouldPreserveVirtualResizeAnchor: true,
-        toolCardExpansionMode: true,
-        worktreeId: true,
-    };
-
-function areChatTimelineHistoryPropsEqual(
-    previous: Readonly<ChatTimelineHistoryProps>,
-    next: Readonly<ChatTimelineHistoryProps>,
-): boolean {
-    return arePropsEqualByPlan(
-        previous,
-        next,
-        CHAT_TIMELINE_HISTORY_EQUALITY_PLAN,
-    );
-}
-
-const CHAT_TIMELINE_LIVE_TAIL_EQUALITY_PLAN: PropEqualityPlan<ChatTimelineLiveTailProps> =
-    {
-        // Intentionally not compared — treated as a stable callback. TODO:
-        // confirm this is deliberate and not a latent stale-UI bug (pending
-        // review item).
-        canRenderRawFileReference: false,
-        chatFontFamily: true,
-        chatFontSize: true,
-        latestStreamingEditedFileToolRowId: true,
-        onAddFileReferenceToChat: true,
-        onOpenFile: true,
-        onOpenImage: true,
-        onOpenResolvedFileReference: true,
-        onOpenSession: true,
-        onRevealFileReference: true,
-        projectId: true,
-        resolveFileReference: true,
-        row: true,
-        toolCardExpansionMode: true,
-        worktreeId: true,
-    };
-
-function areChatTimelineLiveTailPropsEqual(
-    previous: Readonly<ChatTimelineLiveTailProps>,
-    next: Readonly<ChatTimelineLiveTailProps>,
-): boolean {
-    return arePropsEqualByPlan(
-        previous,
-        next,
-        CHAT_TIMELINE_LIVE_TAIL_EQUALITY_PLAN,
-    );
-}
-
-const CHAT_TIMELINE_ROW_VIEW_EQUALITY_PLAN: PropEqualityPlan<ChatTimelineRowViewProps> =
-    {
-        // Intentionally not compared — treated as a stable callback. TODO:
-        // confirm this is deliberate and not a latent stale-UI bug (pending
-        // review item).
-        canRenderRawFileReference: false,
-        chatFontFamily: true,
-        chatFontSize: true,
-        isLatestStreamingTool: true,
-        onAddFileReferenceToChat: true,
-        onOpenFile: true,
-        onOpenImage: true,
-        onOpenResolvedFileReference: true,
-        onOpenSession: true,
-        onRevealFileReference: true,
-        projectId: true,
-        resolveFileReference: true,
-        row: true,
-        toolCardExpansionMode: true,
-        worktreeId: true,
-    };
-
-function areChatTimelineRowViewPropsEqual(
-    previous: Readonly<ChatTimelineRowViewProps>,
-    next: Readonly<ChatTimelineRowViewProps>,
-): boolean {
-    return arePropsEqualByPlan(
-        previous,
-        next,
-        CHAT_TIMELINE_ROW_VIEW_EQUALITY_PLAN,
-    );
-}
 
 function UserInputRequestCard({
     onRespond,
