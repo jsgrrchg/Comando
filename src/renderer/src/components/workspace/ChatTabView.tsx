@@ -1695,7 +1695,7 @@ export const ChatTabView = memo(function ChatTabView({
             </div>
         </div>
     );
-}, areChatTabViewPropsEqual);
+});
 
 ChatTabView.displayName = "ChatTabView";
 
@@ -2566,19 +2566,6 @@ function areChatTimelineRowViewPropsEqual(
         previous,
         next,
         CHAT_TIMELINE_ROW_VIEW_EQUALITY_PLAN,
-    );
-}
-
-function areChatTabViewPropsEqual(
-    previous: Readonly<ChatTabViewProps>,
-    next: Readonly<ChatTabViewProps>,
-) {
-    return (
-        previous.onDraftChange === next.onDraftChange &&
-        previous.onOpenFile === next.onOpenFile &&
-        previous.onOpenImage === next.onOpenImage &&
-        previous.onOpenReview === next.onOpenReview &&
-        previous.tab === next.tab
     );
 }
 
