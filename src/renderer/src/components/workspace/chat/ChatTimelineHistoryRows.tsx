@@ -35,9 +35,6 @@ interface ChatTimelineHistoryRowsProps {
     readonly chatFontSize?: number;
     readonly historyRows: readonly ChatTimelineRow[];
     readonly latestStreamingEditedFileToolRowId: string | null;
-    readonly onVirtualListReady?: (
-        handle: MeasuredVirtualListHandle | null,
-    ) => void;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onVirtualResizeAutoFollow?: () => void;
     readonly renderRow: (params: {
@@ -55,7 +52,6 @@ export const ChatTimelineHistoryRows = memo(
         chatFontSize,
         historyRows,
         latestStreamingEditedFileToolRowId,
-        onVirtualListReady,
         onVirtualRangeChange,
         onVirtualResizeAutoFollow,
         renderRow,
@@ -154,9 +150,8 @@ export const ChatTimelineHistoryRows = memo(
         const handleVirtualListReady = useCallback(
             (handle: MeasuredVirtualListHandle | null) => {
                 virtualListHandleRef.current = handle;
-                onVirtualListReady?.(handle);
             },
-            [onVirtualListReady],
+            [],
         );
 
         useLayoutEffect(() => {

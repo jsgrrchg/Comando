@@ -135,7 +135,6 @@ function renderHistoryRows(historyRows: readonly ChatTimelineRow[]) {
         <ChatTimelineHistoryRows
             historyRows={historyRows}
             latestStreamingEditedFileToolRowId={null}
-            onVirtualListReady={() => {}}
             onVirtualRangeChange={() => {}}
             renderRow={({ isLatestStreamingTool, row }) => (
                 <div
