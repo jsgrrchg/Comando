@@ -47,11 +47,16 @@ import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceFileReviewContext,
 } from "@renderer/app/workspace/tree";
+import type {
+    MeasuredVirtualListHandle,
+    MeasuredVirtualRange,
+} from "@renderer/components/virtual/MeasuredVirtualList";
 
 import { AIChatAgentControls } from "./AIChatAgentControls";
 import { LanguageIcon } from "./LanguageIcon";
 import { AIChatComposer } from "./chat/AIChatComposer";
 import { AIChatContextUsageBar } from "./chat/AIChatContextUsageBar";
+import { ChatTimelineHistoryRows } from "./chat/ChatTimelineHistoryRows";
 import { ChatMessageRow } from "./chat/ChatMessageRow";
 import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
 import {
@@ -246,6 +251,8 @@ export const ChatTabView = memo(function ChatTabView({
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const timelineContentRef = useRef<HTMLDivElement | null>(null);
+    const timelineVirtualListHandleRef =
+        useRef<MeasuredVirtualListHandle | null>(null);
     const shouldAutoFollowRef = useRef(true);
     const pendingScrollFrameRef = useRef<number | null>(null);
     const restoreScrollFrameRef = useRef<number | null>(null);
@@ -777,6 +784,19 @@ export const ChatTabView = memo(function ChatTabView({
             scrollToBottom();
         });
     }, [scrollToBottom]);
+
+    const handleTimelineVirtualListReady = useCallback(
+        (handle: MeasuredVirtualListHandle | null) => {
+            timelineVirtualListHandleRef.current = handle;
+        },
+        [],
+    );
+
+    const handleTimelineVirtualRangeChange = useCallback(() => {
+        if (shouldAutoFollowRef.current) {
+            scheduleScrollToBottom();
+        }
+    }, [scheduleScrollToBottom]);
 
     const persistCurrentViewState = useCallback(
         (overrides?: {
@@ -1517,6 +1537,8 @@ export const ChatTabView = memo(function ChatTabView({
                     onOpenSession={openAiSessionById}
                     onRevealFileReference={handleRevealResolvedFileReference}
                     onScroll={handleScroll}
+                    onVirtualListReady={handleTimelineVirtualListReady}
+                    onVirtualRangeChange={handleTimelineVirtualRangeChange}
                     projectId={tab.projectId}
                     resolveFileReference={resolveChatFileReference}
                     scrollRef={scrollRef}
@@ -1966,6 +1988,8 @@ const ChatTimeline = memo(function ChatTimeline({
     onOpenSession,
     onRevealFileReference,
     onScroll,
+    onVirtualListReady,
+    onVirtualRangeChange,
     projectId,
     resolveFileReference,
     scrollRef,
@@ -2001,6 +2025,10 @@ const ChatTimeline = memo(function ChatTimeline({
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onScroll: () => void;
+    readonly onVirtualListReady?: (
+        handle: MeasuredVirtualListHandle | null,
+    ) => void;
+    readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
         reference: string,
@@ -2046,11 +2074,14 @@ const ChatTimeline = memo(function ChatTimeline({
                     onOpenResolvedFileReference={onOpenResolvedFileReference}
                     onOpenSession={onOpenSession}
                     onRevealFileReference={onRevealFileReference}
+                    onVirtualListReady={onVirtualListReady}
+                    onVirtualRangeChange={onVirtualRangeChange}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
                     latestStreamingEditedFileToolRowId={
                         latestStreamingEditedFileToolRowId
                     }
+                    scrollRef={scrollRef}
                     toolCardExpansionMode={toolCardExpansionMode}
                     worktreeId={worktreeId}
                 />
@@ -2092,9 +2123,12 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     onOpenResolvedFileReference,
     onOpenSession,
     onRevealFileReference,
+    onVirtualListReady,
+    onVirtualRangeChange,
     projectId,
     resolveFileReference,
     latestStreamingEditedFileToolRowId,
+    scrollRef,
     toolCardExpansionMode,
     worktreeId,
 }: {
@@ -2122,36 +2156,78 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     readonly onRevealFileReference?: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onVirtualListReady?: (
+        handle: MeasuredVirtualListHandle | null,
+    ) => void;
+    readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly latestStreamingEditedFileToolRowId: string | null;
+    readonly scrollRef: RefObject<HTMLDivElement | null>;
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
 }) {
-    return historyRows.map((row) => (
-        <ChatTimelineRowView
-            canRenderRawFileReference={canRenderRawFileReference}
+    const renderRow = useCallback(
+        ({
+            isLatestStreamingTool,
+            row,
+        }: {
+            readonly isLatestStreamingTool: boolean;
+            readonly row: ChatTimelineRow;
+        }) => (
+            <ChatTimelineRowView
+                canRenderRawFileReference={canRenderRawFileReference}
+                chatFontFamily={chatFontFamily}
+                chatFontSize={chatFontSize}
+                key={row.id}
+                onAddFileReferenceToChat={onAddFileReferenceToChat}
+                onOpenFile={onOpenFile}
+                onOpenImage={onOpenImage}
+                onOpenResolvedFileReference={onOpenResolvedFileReference}
+                onOpenSession={onOpenSession}
+                onRevealFileReference={onRevealFileReference}
+                projectId={projectId}
+                resolveFileReference={resolveFileReference}
+                row={row}
+                isLatestStreamingTool={isLatestStreamingTool}
+                toolCardExpansionMode={toolCardExpansionMode}
+                worktreeId={worktreeId}
+            />
+        ),
+        [
+            canRenderRawFileReference,
+            chatFontFamily,
+            chatFontSize,
+            onAddFileReferenceToChat,
+            onOpenFile,
+            onOpenImage,
+            onOpenResolvedFileReference,
+            onOpenSession,
+            onRevealFileReference,
+            projectId,
+            resolveFileReference,
+            toolCardExpansionMode,
+            worktreeId,
+        ],
+    );
+
+    return (
+        <ChatTimelineHistoryRows
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
-            key={row.id}
-            onAddFileReferenceToChat={onAddFileReferenceToChat}
-            onOpenFile={onOpenFile}
-            onOpenImage={onOpenImage}
-            onOpenResolvedFileReference={onOpenResolvedFileReference}
-            onOpenSession={onOpenSession}
-            onRevealFileReference={onRevealFileReference}
-            projectId={projectId}
-            resolveFileReference={resolveFileReference}
-            row={row}
-            isLatestStreamingTool={
-                row.id === latestStreamingEditedFileToolRowId
+            historyRows={historyRows}
+            latestStreamingEditedFileToolRowId={
+                latestStreamingEditedFileToolRowId
             }
+            onVirtualListReady={onVirtualListReady}
+            onVirtualRangeChange={onVirtualRangeChange}
+            renderRow={renderRow}
+            scrollRef={scrollRef}
             toolCardExpansionMode={toolCardExpansionMode}
-            worktreeId={worktreeId}
         />
-    ));
+    );
 }, areChatTimelineHistoryPropsEqual);
 
 ChatTimelineHistory.displayName = "ChatTimelineHistory";
@@ -2344,6 +2420,10 @@ function areChatTimelinePropsEqual(
             reference: ResolvedProjectFileReference,
         ) => void;
         readonly onScroll: () => void;
+        readonly onVirtualListReady?: (
+            handle: MeasuredVirtualListHandle | null,
+        ) => void;
+        readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -2378,6 +2458,10 @@ function areChatTimelinePropsEqual(
             reference: ResolvedProjectFileReference,
         ) => void;
         readonly onScroll: () => void;
+        readonly onVirtualListReady?: (
+            handle: MeasuredVirtualListHandle | null,
+        ) => void;
+        readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
@@ -2402,6 +2486,9 @@ function areChatTimelinePropsEqual(
             next.onOpenResolvedFileReference &&
         previous.onOpenSession === next.onOpenSession &&
         previous.onRevealFileReference === next.onRevealFileReference &&
+        previous.onScroll === next.onScroll &&
+        previous.onVirtualListReady === next.onVirtualListReady &&
+        previous.onVirtualRangeChange === next.onVirtualRangeChange &&
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.scrollRef === next.scrollRef &&
@@ -2433,11 +2520,16 @@ function areChatTimelineHistoryPropsEqual(
         readonly onRevealFileReference?: (
             reference: ResolvedProjectFileReference,
         ) => void;
+        readonly onVirtualListReady?: (
+            handle: MeasuredVirtualListHandle | null,
+        ) => void;
+        readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
         ) => ResolvedProjectFileReference | null;
         readonly latestStreamingEditedFileToolRowId: string | null;
+        readonly scrollRef: RefObject<HTMLDivElement | null>;
         readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
@@ -2462,11 +2554,16 @@ function areChatTimelineHistoryPropsEqual(
         readonly onRevealFileReference?: (
             reference: ResolvedProjectFileReference,
         ) => void;
+        readonly onVirtualListReady?: (
+            handle: MeasuredVirtualListHandle | null,
+        ) => void;
+        readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
         readonly projectId: string | null;
         readonly resolveFileReference: (
             reference: string,
         ) => ResolvedProjectFileReference | null;
         readonly latestStreamingEditedFileToolRowId: string | null;
+        readonly scrollRef: RefObject<HTMLDivElement | null>;
         readonly toolCardExpansionMode: AiToolCardExpansionMode;
         readonly worktreeId: string | null;
     }>,
@@ -2482,10 +2579,13 @@ function areChatTimelineHistoryPropsEqual(
             next.onOpenResolvedFileReference &&
         previous.onOpenSession === next.onOpenSession &&
         previous.onRevealFileReference === next.onRevealFileReference &&
+        previous.onVirtualListReady === next.onVirtualListReady &&
+        previous.onVirtualRangeChange === next.onVirtualRangeChange &&
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.latestStreamingEditedFileToolRowId ===
             next.latestStreamingEditedFileToolRowId &&
+        previous.scrollRef === next.scrollRef &&
         previous.toolCardExpansionMode === next.toolCardExpansionMode &&
         previous.worktreeId === next.worktreeId
     );

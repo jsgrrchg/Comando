@@ -20,6 +20,12 @@ export interface ChatTimelineRowEstimateContext {
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
 }
 
+export interface ChatTimelineRowMeasurementContext
+    extends ChatTimelineRowEstimateContext {
+    readonly chatFontFamily?: string;
+    readonly width: number;
+}
+
 export interface ChatTimelineVirtualScrollMarginOptions {
     readonly historyElement: HTMLElement | null;
     readonly scrollContainer: HTMLElement | null;
@@ -36,11 +42,26 @@ export function shouldVirtualizeChatTimeline(
     return enabled && rowCount >= threshold;
 }
 
-export function getChatTimelineRowKey(
-    row: ChatTimelineRow,
-    _index: number,
-): string {
+export function getChatTimelineRowKey(row: ChatTimelineRow): string {
     return row.id;
+}
+
+export function getChatTimelineRowMeasurementKey(
+    row: ChatTimelineRow,
+    context: ChatTimelineRowMeasurementContext,
+): string {
+    const layoutSignature = [
+        context.chatFontFamily ?? "default",
+        context.chatFontSize ?? "default",
+        context.gapPx ?? 0,
+        context.isLatestStreamingTool ? "latest" : "history",
+        context.toolCardExpansionMode,
+        Math.max(0, Math.round(context.width)),
+    ].join(":");
+
+    return `${row.id}:${layoutSignature}:${getRowContentMeasurementSignature(
+        row,
+    )}`;
 }
 
 export function calculateChatTimelineVirtualScrollMarginTop({
@@ -59,36 +80,10 @@ export function calculateChatTimelineVirtualScrollMarginTop({
     return Math.max(0, marginTop);
 }
 
-export function getChatTimelineVirtualMeasurementKey({
-    chatFontFamily,
-    chatFontSize,
-    hasFollowingTimelineContent,
-    latestStreamingEditedFileToolRowId,
-    toolCardExpansionMode,
-    width,
-}: {
-    readonly chatFontFamily?: string;
-    readonly chatFontSize?: number;
-    readonly hasFollowingTimelineContent: boolean;
-    readonly latestStreamingEditedFileToolRowId: string | null;
-    readonly toolCardExpansionMode: AiToolCardExpansionMode;
-    readonly width: number;
-}): string {
-    return [
-        chatFontFamily ?? "default",
-        chatFontSize ?? "default",
-        hasFollowingTimelineContent ? "tail" : "end",
-        latestStreamingEditedFileToolRowId ?? "none",
-        toolCardExpansionMode,
-        Math.max(0, Math.round(width)),
-    ].join(":");
-}
-
 export function getChatTimelineVirtualRowGapPx({
     index,
     rowCount,
 }: {
-    readonly hasFollowingTimelineContent: boolean;
     readonly index: number;
     readonly rowCount: number;
 }): number {
@@ -255,4 +250,76 @@ function isFileToolLike(
         normalizedKind === "update" ||
         normalizedKind === "write"
     );
+}
+
+function getRowContentMeasurementSignature(row: ChatTimelineRow): string {
+    if (row.kind === "message") {
+        const message = row.message;
+
+        return [
+            "message",
+            message.status,
+            message.kind,
+            hashString(message.content),
+            message.attachments
+                .map(
+                    (attachment) =>
+                        `${attachment.id}:${attachment.mimeType}:${attachment.sizeBytes ?? "unknown"}`,
+                )
+                .join(","),
+            message.generatedImage
+                ? [
+                      message.generatedImage.status,
+                      message.generatedImage.path ?? "",
+                      hashString(message.generatedImage.result ?? ""),
+                      hashString(message.generatedImage.revisedPrompt ?? ""),
+                      hashString(message.generatedImage.title ?? ""),
+                  ].join("/")
+                : "none",
+        ].join(":");
+    }
+
+    const activity = row.reviewEntry.activity;
+    return [
+        "tool",
+        activity.status,
+        activity.updatedAt,
+        activity.kind,
+        activity.exitCode ?? "none",
+        hashString(activity.title),
+        hashString(activity.summary ?? ""),
+        hashString(activity.terminalOutput ?? ""),
+        hashString(activity.rawInputJson ?? ""),
+        hashString(activity.rawOutputJson ?? ""),
+        activity.locations
+            .map(
+                (location) =>
+                    `${location.path}:${location.line ?? ""}:${location.endLine ?? ""}`,
+            )
+            .join(","),
+        activity.diffs
+            .map(
+                (diff) =>
+                    `${diff.kind}:${diff.path}:${diff.previousPath ?? ""}:${hashString(
+                        diff.oldText ?? "",
+                    )}:${hashString(diff.newText ?? "")}:${diff.hunks.length}`,
+            )
+            .join(","),
+        row.reviewEntry.trackedFiles
+            .map(
+                (trackedFile) =>
+                    `${trackedFile.identityKey}:${trackedFile.updatedAt}:${trackedFile.reviewState}`,
+            )
+            .join(","),
+    ].join(":");
+}
+
+function hashString(value: string): string {
+    let hash = 0;
+
+    for (let index = 0; index < value.length; index += 1) {
+        hash = (hash * 31 + value.charCodeAt(index)) | 0;
+    }
+
+    return `${value.length}:${Math.abs(hash)}`;
 }

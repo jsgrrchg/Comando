@@ -8,8 +8,8 @@ import {
     CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
     calculateChatTimelineVirtualScrollMarginTop,
     estimateChatTimelineRowHeight,
+    getChatTimelineRowMeasurementKey,
     getChatTimelineRowKey,
-    getChatTimelineVirtualMeasurementKey,
     getChatTimelineVirtualRowGapPx,
     shouldVirtualizeChatTimeline,
 } from "./chatTimelineVirtualization";
@@ -139,27 +139,24 @@ describe("chatTimelineVirtualization", () => {
     it("preserves row ids as virtual keys", () => {
         const row = createMessageRow({ id: "message-42" });
 
-        expect(getChatTimelineRowKey(row, 0)).toBe("message:message-42");
+        expect(getChatTimelineRowKey(row)).toBe("message:message-42");
     });
 
     it("calculates measured row gaps without duplicating the parent gap", () => {
         expect(
             getChatTimelineVirtualRowGapPx({
-                hasFollowingTimelineContent: false,
                 index: 0,
                 rowCount: 2,
             }),
         ).toBe(CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX);
         expect(
             getChatTimelineVirtualRowGapPx({
-                hasFollowingTimelineContent: false,
                 index: 1,
                 rowCount: 2,
             }),
         ).toBe(0);
         expect(
             getChatTimelineVirtualRowGapPx({
-                hasFollowingTimelineContent: true,
                 index: 1,
                 rowCount: 2,
             }),
@@ -254,7 +251,7 @@ describe("chatTimelineVirtualization", () => {
                 scrollContainer: {
                     ...scrollContainer,
                     scrollTop: 0,
-                } as HTMLElement,
+                },
             }),
         ).toBe(0);
         expect(
@@ -265,45 +262,59 @@ describe("chatTimelineVirtualization", () => {
         ).toBe(0);
     });
 
-    it("changes the measurement key when layout-affecting inputs change", () => {
-        const base = getChatTimelineVirtualMeasurementKey({
+    it("changes row measurement keys when layout or row content changes", () => {
+        const row = createMessageRow({ content: "hello" });
+        const base = getChatTimelineRowMeasurementKey(row, {
             chatFontFamily: "Inter",
             chatFontSize: 13,
-            hasFollowingTimelineContent: false,
-            latestStreamingEditedFileToolRowId: null,
+            gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+            isLatestStreamingTool: false,
             toolCardExpansionMode: "collapsed",
             width: 640,
         });
 
         expect(
-            getChatTimelineVirtualMeasurementKey({
+            getChatTimelineRowMeasurementKey(row, {
                 chatFontFamily: "Inter",
                 chatFontSize: 14,
-                hasFollowingTimelineContent: false,
-                latestStreamingEditedFileToolRowId: null,
+                gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+                isLatestStreamingTool: false,
                 toolCardExpansionMode: "collapsed",
                 width: 640,
             }),
         ).not.toBe(base);
         expect(
-            getChatTimelineVirtualMeasurementKey({
+            getChatTimelineRowMeasurementKey(row, {
                 chatFontFamily: "Inter",
                 chatFontSize: 13,
-                hasFollowingTimelineContent: false,
-                latestStreamingEditedFileToolRowId: null,
+                gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+                isLatestStreamingTool: false,
                 toolCardExpansionMode: "expanded",
                 width: 640,
             }),
         ).not.toBe(base);
         expect(
-            getChatTimelineVirtualMeasurementKey({
+            getChatTimelineRowMeasurementKey(row, {
                 chatFontFamily: "Inter",
                 chatFontSize: 13,
-                hasFollowingTimelineContent: false,
-                latestStreamingEditedFileToolRowId: null,
+                gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+                isLatestStreamingTool: false,
                 toolCardExpansionMode: "collapsed",
                 width: 641,
             }),
+        ).not.toBe(base);
+        expect(
+            getChatTimelineRowMeasurementKey(
+                createMessageRow({ content: "hello, changed" }),
+                {
+                    chatFontFamily: "Inter",
+                    chatFontSize: 13,
+                    gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+                    isLatestStreamingTool: false,
+                    toolCardExpansionMode: "collapsed",
+                    width: 640,
+                },
+            ),
         ).not.toBe(base);
     });
 });

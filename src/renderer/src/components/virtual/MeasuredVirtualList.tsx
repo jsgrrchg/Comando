@@ -37,6 +37,7 @@ export interface MeasuredVirtualListProps<T> {
     readonly scrollContainerRef: RefObject<HTMLElement | null>;
     readonly estimateSize: (item: T, index: number) => number;
     readonly getItemKey: (item: T, index: number) => string;
+    readonly getItemMeasurementKey?: (item: T, index: number) => string;
     readonly onRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onReady?: (handle: MeasuredVirtualListHandle | null) => void;
     readonly renderItem: (params: {
@@ -51,6 +52,7 @@ interface MeasuredVirtualItem<T> {
     readonly isVisible: boolean;
     readonly item: T;
     readonly key: string;
+    readonly measurementKey: string;
     readonly size: number;
     readonly start: number;
 }
@@ -245,6 +247,7 @@ export function MeasuredVirtualList<T>({
     scrollContainerRef,
     estimateSize,
     getItemKey,
+    getItemMeasurementKey,
     onRangeChange,
     onReady,
     renderItem,
@@ -267,6 +270,15 @@ export function MeasuredVirtualList<T>({
     const itemKeys = useMemo(
         () => items.map((item, index) => getItemKey(item, index)),
         [getItemKey, items],
+    );
+    const itemMeasurementKeys = useMemo(
+        () =>
+            items.map((item, index) =>
+                getItemMeasurementKey
+                    ? getItemMeasurementKey(item, index)
+                    : itemKeys[index],
+            ),
+        [getItemMeasurementKey, itemKeys, items],
     );
     const virtualizationEnabled = enabled && isBrowser;
 
@@ -315,7 +327,7 @@ export function MeasuredVirtualList<T>({
     }, [updateMeasuredSize, virtualizationEnabled]);
 
     useEffect(() => {
-        const validKeys = new Set(itemKeys);
+        const validKeys = new Set(itemMeasurementKeys);
 
         for (const [key, element] of elementByKeyRef.current.entries()) {
             if (validKeys.has(key)) {
@@ -325,7 +337,7 @@ export function MeasuredVirtualList<T>({
             resizeObserverRef.current?.unobserve(element);
             elementByKeyRef.current.delete(key);
         }
-    }, [itemKeys]);
+    }, [itemMeasurementKeys]);
 
     useEffect(() => {
         if (!virtualizationEnabled) {
@@ -378,7 +390,7 @@ export function MeasuredVirtualList<T>({
 
     const layout = useMemo((): LayoutSnapshot<T> => {
         const sizes = items.map((item, index) => {
-            const key = itemKeys[index];
+            const key = itemMeasurementKeys[index];
             return measuredSizes.get(key) ?? estimateSize(item, index);
         });
         const offsets = new Array<number>(items.length);
@@ -417,6 +429,7 @@ export function MeasuredVirtualList<T>({
                     isVisible: true,
                     item,
                     key: itemKeys[index],
+                    measurementKey: itemMeasurementKeys[index],
                     size: sizes[index],
                     start: offsets[index],
                 })),
@@ -437,6 +450,7 @@ export function MeasuredVirtualList<T>({
                     index <= range.visibleEndIndex,
                 item: items[index],
                 key: itemKeys[index],
+                measurementKey: itemMeasurementKeys[index],
                 size: sizes[index],
                 start: offsets[index],
             });
@@ -449,6 +463,7 @@ export function MeasuredVirtualList<T>({
         };
     }, [
         estimateSize,
+        itemMeasurementKeys,
         itemKeys,
         items,
         measuredSizes,
@@ -521,14 +536,14 @@ export function MeasuredVirtualList<T>({
                       let total = 0;
                       for (let cursor = 0; cursor < index; cursor += 1) {
                           total +=
-                              measuredSizes.get(itemKeys[cursor]) ??
+                              measuredSizes.get(itemMeasurementKeys[cursor]) ??
                               estimateSize(items[cursor], cursor);
                       }
                       return total;
                   })();
             const itemSize =
                 targetItem?.size ??
-                measuredSizes.get(itemKeys[index]) ??
+                measuredSizes.get(itemMeasurementKeys[index]) ??
                 estimateSize(items[index], index);
             container.scrollTop = calculateMeasuredVirtualScrollTop({
                 align,
@@ -542,7 +557,7 @@ export function MeasuredVirtualList<T>({
         },
         [
             estimateSize,
-            itemKeys,
+            itemMeasurementKeys,
             items,
             layout,
             measuredSizes,
@@ -575,7 +590,7 @@ export function MeasuredVirtualList<T>({
                             }
 
                             updateMeasuredSize(
-                                itemKeys[index],
+                                itemMeasurementKeys[index],
                                 node.getBoundingClientRect().height,
                             );
                         }}
@@ -600,7 +615,7 @@ export function MeasuredVirtualList<T>({
                 <div
                     key={virtualItem.key}
                     ref={(node) => {
-                        setMeasuredElement(virtualItem.key, node);
+                        setMeasuredElement(virtualItem.measurementKey, node);
                     }}
                     style={{
                         left: 0,
