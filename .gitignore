@@ -28,3 +28,6 @@ resources/ai/prebuilt/
 scripts/package-macos-nosign-temp.mjs
 resources/ai/embedded/*
 !resources/ai/embedded/.gitkeep
+.neverwrite/
+.neverwrite/sessions/
+.neverwrite-cache/
