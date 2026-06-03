@@ -54,6 +54,7 @@ import { LanguageIcon } from "./LanguageIcon";
 import { AIChatComposer } from "./chat/AIChatComposer";
 import { AIChatContextUsageBar } from "./chat/AIChatContextUsageBar";
 import { ChatTimelineHistoryRows } from "./chat/ChatTimelineHistoryRows";
+import { ToolExpansionStoreProvider } from "./chat/toolExpansionStore";
 import { ChatMessageRow } from "./chat/ChatMessageRow";
 import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
 import {
@@ -2056,63 +2057,67 @@ const ChatTimeline = memo(function ChatTimeline({
     });
 
     return (
-        <div
-            ref={scrollRef}
-            className="chat-scroll min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3"
-            onScroll={onScroll}
-        >
+        <ToolExpansionStoreProvider>
             <div
-                ref={timelineContentRef}
-                className="min-w-0 space-y-2"
-                style={{ fontFamily: chatFontFamily }}
+                ref={scrollRef}
+                className="chat-scroll min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3"
+                onScroll={onScroll}
             >
-                <ChatTimelineHistory
-                    canRenderRawFileReference={canRenderRawFileReference}
-                    chatFontFamily={chatFontFamily}
-                    chatFontSize={chatFontSize}
-                    historyRows={historyRows}
-                    onAddFileReferenceToChat={onAddFileReferenceToChat}
-                    onOpenFile={onOpenFile}
-                    onOpenImage={onOpenImage}
-                    onOpenResolvedFileReference={onOpenResolvedFileReference}
-                    onOpenSession={onOpenSession}
-                    onRevealFileReference={onRevealFileReference}
-                    onVirtualRangeChange={onVirtualRangeChange}
-                    onVirtualResizeAutoFollow={onVirtualResizeAutoFollow}
-                    projectId={projectId}
-                    resolveFileReference={resolveFileReference}
-                    latestStreamingEditedFileToolRowId={
-                        latestStreamingEditedFileToolRowId
-                    }
-                    scrollRef={scrollRef}
-                    shouldPreserveVirtualResizeAnchor={
-                        shouldPreserveVirtualResizeAnchor
-                    }
-                    toolCardExpansionMode={toolCardExpansionMode}
-                    worktreeId={worktreeId}
-                />
-                <ChatTimelineLiveTail
-                    canRenderRawFileReference={canRenderRawFileReference}
-                    chatFontFamily={chatFontFamily}
-                    chatFontSize={chatFontSize}
-                    onAddFileReferenceToChat={onAddFileReferenceToChat}
-                    onOpenFile={onOpenFile}
-                    onOpenImage={onOpenImage}
-                    onOpenResolvedFileReference={onOpenResolvedFileReference}
-                    onOpenSession={onOpenSession}
-                    onRevealFileReference={onRevealFileReference}
-                    projectId={projectId}
-                    resolveFileReference={resolveFileReference}
-                    row={liveTailRow}
-                    latestStreamingEditedFileToolRowId={
-                        latestStreamingEditedFileToolRowId
-                    }
-                    toolCardExpansionMode={toolCardExpansionMode}
-                    worktreeId={worktreeId}
-                />
-                {isStreaming ? <StreamingIndicator elapsed={elapsed} /> : null}
+                <div
+                    ref={timelineContentRef}
+                    className="min-w-0 space-y-2"
+                    style={{ fontFamily: chatFontFamily }}
+                >
+                    <ChatTimelineHistory
+                        canRenderRawFileReference={canRenderRawFileReference}
+                        chatFontFamily={chatFontFamily}
+                        chatFontSize={chatFontSize}
+                        historyRows={historyRows}
+                        onAddFileReferenceToChat={onAddFileReferenceToChat}
+                        onOpenFile={onOpenFile}
+                        onOpenImage={onOpenImage}
+                        onOpenResolvedFileReference={onOpenResolvedFileReference}
+                        onOpenSession={onOpenSession}
+                        onRevealFileReference={onRevealFileReference}
+                        onVirtualRangeChange={onVirtualRangeChange}
+                        onVirtualResizeAutoFollow={onVirtualResizeAutoFollow}
+                        projectId={projectId}
+                        resolveFileReference={resolveFileReference}
+                        latestStreamingEditedFileToolRowId={
+                            latestStreamingEditedFileToolRowId
+                        }
+                        scrollRef={scrollRef}
+                        shouldPreserveVirtualResizeAnchor={
+                            shouldPreserveVirtualResizeAnchor
+                        }
+                        toolCardExpansionMode={toolCardExpansionMode}
+                        worktreeId={worktreeId}
+                    />
+                    <ChatTimelineLiveTail
+                        canRenderRawFileReference={canRenderRawFileReference}
+                        chatFontFamily={chatFontFamily}
+                        chatFontSize={chatFontSize}
+                        onAddFileReferenceToChat={onAddFileReferenceToChat}
+                        onOpenFile={onOpenFile}
+                        onOpenImage={onOpenImage}
+                        onOpenResolvedFileReference={onOpenResolvedFileReference}
+                        onOpenSession={onOpenSession}
+                        onRevealFileReference={onRevealFileReference}
+                        projectId={projectId}
+                        resolveFileReference={resolveFileReference}
+                        row={liveTailRow}
+                        latestStreamingEditedFileToolRowId={
+                            latestStreamingEditedFileToolRowId
+                        }
+                        toolCardExpansionMode={toolCardExpansionMode}
+                        worktreeId={worktreeId}
+                    />
+                    {isStreaming ? (
+                        <StreamingIndicator elapsed={elapsed} />
+                    ) : null}
+                </div>
             </div>
-        </div>
+        </ToolExpansionStoreProvider>
     );
 });
 
