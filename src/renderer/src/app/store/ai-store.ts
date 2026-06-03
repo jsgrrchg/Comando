@@ -99,7 +99,21 @@ interface QueuedPromptEditState {
     readonly queueIndex: number;
 }
 
+interface QueuedPromptPositionState {
+    readonly nextPromptId: string | null;
+    readonly previousPromptId: string | null;
+    readonly queueIndex: number;
+}
+
+interface ActiveQueuedPromptState {
+    readonly activatedAfterIncomingSnapshotVersion: number;
+    readonly position: QueuedPromptPositionState;
+    readonly queuedPrompt: QueuedPrompt;
+}
+
 interface AiSessionClientState {
+    readonly activeDispatchToken: string | null;
+    readonly activeQueuedPrompt: ActiveQueuedPromptState | null;
     readonly draftAttachments: readonly AiImageAttachment[];
     readonly draftComposerParts: readonly AiComposerDraftPart[];
     readonly draftFileContexts: readonly AiFileContextAttachment[];
@@ -108,8 +122,10 @@ interface AiSessionClientState {
     readonly editingQueuedPromptState: QueuedPromptEditState | null;
     readonly editingQueuedPrompt: QueuedPrompt | null;
     readonly hydrated: boolean;
+    readonly incomingSnapshotVersion: number;
     readonly isDispatching: boolean;
     readonly isHydrating: boolean;
+    readonly lastIncomingSnapshotUpdatedAt: string | null;
     readonly localError: string | null;
     readonly meta: RegisteredSessionMeta | null;
     readonly queue: readonly QueuedPrompt[];
@@ -282,6 +298,9 @@ interface AiStore {
 type SetAiState = typeof useAiStore.setState;
 type GetAiState = () => AiStore;
 
+const activeQueueDrainSessionIds = new Set<string>();
+const pendingQueueDrainSessionIds = new Set<string>();
+
 export const useAiStore = create<AiStore>((set, get) => ({
     claudeSettings: createEmptyClaudeSettings(),
     codexBinaryPath: "",
@@ -447,6 +466,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     ...state.sessions,
                     [sessionId]: {
                         ...session,
+                        activeQueuedPrompt: null,
                         editingQueuedPromptState: null,
                         editingQueuedPrompt: null,
                         queue: [],
@@ -505,8 +525,15 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     ...state.sessions,
                     [event.sessionId]: {
                         ...session,
+                        ...reconcileDispatchStateForIncomingSnapshot(
+                            session,
+                            nextSnapshot,
+                        ),
                         hydrated: true,
-                        isDispatching: false,
+                        ...resolveIncomingSnapshotProgress(
+                            session,
+                            nextSnapshot.updatedAt,
+                        ),
                         isHydrating: false,
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
@@ -603,8 +630,15 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             ...state.sessions,
                             [update.patch.sessionId]: {
                                 ...session,
+                                ...reconcileDispatchStateForIncomingSnapshot(
+                                    session,
+                                    nextSnapshot,
+                                ),
                                 hydrated: true,
-                                isDispatching: false,
+                                ...resolveIncomingSnapshotProgress(
+                                    session,
+                                    incomingSnapshot.updatedAt,
+                                ),
                                 isHydrating: false,
                                 localError: nextSnapshot.lastError,
                                 meta: nextMeta,
@@ -671,8 +705,15 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     ...state.sessions,
                     [update.patch.sessionId]: {
                         ...session,
+                        ...reconcileDispatchStateForIncomingSnapshot(
+                            session,
+                            incomingSnapshot,
+                        ),
                         hydrated: true,
-                        isDispatching: false,
+                        ...resolveIncomingSnapshotProgress(
+                            session,
+                            incomingSnapshot.updatedAt,
+                        ),
                         isHydrating: false,
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
@@ -733,8 +774,15 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     ...state.sessions,
                     [snapshot.sessionId]: {
                         ...session,
+                        ...reconcileDispatchStateForIncomingSnapshot(
+                            session,
+                            nextSnapshot,
+                        ),
                         hydrated: true,
-                        isDispatching: false,
+                        ...resolveIncomingSnapshotProgress(
+                            session,
+                            nextSnapshot.updatedAt,
+                        ),
                         isHydrating: false,
                         localError: resolvedSnapshot.lastError,
                         meta: nextMeta,
@@ -926,6 +974,19 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             ...(state.sessions[tab.sessionId] ??
                                 createSessionState()),
                             hydrated: true,
+                            ...(snapshot
+                                ? resolveIncomingSnapshotProgress(
+                                      currentSession,
+                                      incomingSnapshot.updatedAt,
+                                  )
+                                : {
+                                      incomingSnapshotVersion:
+                                          currentSession?.incomingSnapshotVersion ??
+                                          0,
+                                      lastIncomingSnapshotUpdatedAt:
+                                          currentSession?.lastIncomingSnapshotUpdatedAt ??
+                                          null,
+                                  }),
                             isHydrating: false,
                             meta: buildSessionMeta(tab),
                             snapshot: nextSnapshot,
@@ -1561,7 +1622,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
         }
 
         if (
-            latestSession.isDispatching ||
+            hasActiveLocalDispatch(latestSession) ||
             isBusySession(latestSession.snapshot)
         ) {
             try {
@@ -1682,7 +1743,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             prompt: trimmedPrompt,
         });
         if (
-            session.isDispatching ||
+            hasActiveLocalDispatch(session) ||
             (session.snapshot ? isBusySession(session.snapshot) : false)
         ) {
             if (editingQueuedPrompt) {
@@ -1764,6 +1825,8 @@ function createSessionState(
     preferences?: SessionReviewPreferences | null,
 ): AiSessionClientState {
     return {
+        activeDispatchToken: null,
+        activeQueuedPrompt: null,
         draftAttachments: [],
         draftComposerParts: createEmptyComposerDraftParts(),
         draftFileContexts: [],
@@ -1772,8 +1835,10 @@ function createSessionState(
         editingQueuedPromptState: null,
         editingQueuedPrompt: null,
         hydrated: false,
+        incomingSnapshotVersion: 0,
         isDispatching: false,
         isHydrating: false,
+        lastIncomingSnapshotUpdatedAt: null,
         localError: null,
         meta: null,
         queue: [],
@@ -2452,10 +2517,60 @@ function isIncomingSnapshotFreshEnough(
     currentSnapshot: AiSessionSnapshot,
     incomingSnapshot: AiSessionSnapshot,
 ): boolean {
-    const currentMs = Date.parse(currentSnapshot.updatedAt);
-    const incomingMs = Date.parse(incomingSnapshot.updatedAt);
+    return isUpdatedAtAtLeast(currentSnapshot.updatedAt, incomingSnapshot.updatedAt);
+}
+
+function getLatestIncomingSnapshotUpdatedAt(
+    currentUpdatedAt: string | null,
+    incomingUpdatedAt: string,
+): string {
+    if (!currentUpdatedAt) {
+        return incomingUpdatedAt;
+    }
+
+    return isUpdatedAtAtLeast(currentUpdatedAt, incomingUpdatedAt)
+        ? incomingUpdatedAt
+        : currentUpdatedAt;
+}
+
+function resolveIncomingSnapshotProgress(
+    session:
+        | Pick<
+              AiSessionClientState,
+              "incomingSnapshotVersion" | "lastIncomingSnapshotUpdatedAt"
+          >
+        | null
+        | undefined,
+    incomingUpdatedAt: string,
+): Pick<
+    AiSessionClientState,
+    "incomingSnapshotVersion" | "lastIncomingSnapshotUpdatedAt"
+> {
+    const lastIncomingSnapshotUpdatedAt =
+        session?.lastIncomingSnapshotUpdatedAt ?? null;
+    const shouldCountIncoming =
+        !lastIncomingSnapshotUpdatedAt ||
+        isUpdatedAtAtLeast(lastIncomingSnapshotUpdatedAt, incomingUpdatedAt);
+
+    return {
+        incomingSnapshotVersion:
+            (session?.incomingSnapshotVersion ?? 0) +
+            (shouldCountIncoming ? 1 : 0),
+        lastIncomingSnapshotUpdatedAt: getLatestIncomingSnapshotUpdatedAt(
+            lastIncomingSnapshotUpdatedAt,
+            incomingUpdatedAt,
+        ),
+    };
+}
+
+function isUpdatedAtAtLeast(
+    currentUpdatedAt: string,
+    incomingUpdatedAt: string,
+): boolean {
+    const currentMs = Date.parse(currentUpdatedAt);
+    const incomingMs = Date.parse(incomingUpdatedAt);
     if (!Number.isFinite(currentMs) || !Number.isFinite(incomingMs)) {
-        return incomingSnapshot.updatedAt >= currentSnapshot.updatedAt;
+        return incomingUpdatedAt >= currentUpdatedAt;
     }
 
     return incomingMs >= currentMs;
@@ -2523,6 +2638,8 @@ async function dispatchPrompt(
     attachments: readonly AiImageAttachment[],
     set: SetAiState,
 ): Promise<"deferred" | "sent"> {
+    const dispatchToken = crypto.randomUUID();
+
     set((state) => {
         const session = state.sessions[meta.sessionId] ?? createSessionState();
 
@@ -2531,6 +2648,7 @@ async function dispatchPrompt(
                 ...state.sessions,
                 [meta.sessionId]: {
                     ...session,
+                    activeDispatchToken: dispatchToken,
                     isDispatching: true,
                     localError: null,
                 },
@@ -2557,6 +2675,9 @@ async function dispatchPrompt(
             set((state) => {
                 const session =
                     state.sessions[meta.sessionId] ?? createSessionState();
+                if (session.activeDispatchToken !== dispatchToken) {
+                    return state;
+                }
 
                 return {
                     sessions: {
@@ -2582,12 +2703,16 @@ async function dispatchPrompt(
         set((state) => {
             const session =
                 state.sessions[meta.sessionId] ?? createSessionState();
+            if (session.activeDispatchToken !== dispatchToken) {
+                return state;
+            }
 
             return {
                 sessions: {
                     ...state.sessions,
                     [meta.sessionId]: {
                         ...session,
+                        activeDispatchToken: null,
                         isDispatching: false,
                         localError:
                             error instanceof Error
@@ -2602,12 +2727,16 @@ async function dispatchPrompt(
         set((state) => {
             const session =
                 state.sessions[meta.sessionId] ?? createSessionState();
+            if (session.activeDispatchToken !== dispatchToken) {
+                return state;
+            }
 
             return {
                 sessions: {
                     ...state.sessions,
                     [meta.sessionId]: {
                         ...session,
+                        activeDispatchToken: null,
                         isDispatching: false,
                     },
                 },
@@ -2623,10 +2752,15 @@ async function drainQueueIfNeeded(
     get: GetAiState,
     set: SetAiState,
 ): Promise<void> {
+    if (activeQueueDrainSessionIds.has(sessionId)) {
+        pendingQueueDrainSessionIds.add(sessionId);
+        return;
+    }
+
     const session = get().sessions[sessionId];
     if (
         !session ||
-        session.isDispatching ||
+        hasActiveLocalDispatch(session) ||
         !session.meta ||
         !session.snapshot ||
         session.queue.length === 0 ||
@@ -2637,33 +2771,44 @@ async function drainQueueIfNeeded(
         return;
     }
 
-    const nextQueuedPrompt = session.queue.find(
-        (queuedPrompt) => queuedPrompt.status === "queued",
-    );
     const nextQueuedPromptIndex = session.queue.findIndex(
         (queuedPrompt) => queuedPrompt.status === "queued",
     );
+    const nextQueuedPrompt =
+        nextQueuedPromptIndex >= 0
+            ? session.queue[nextQueuedPromptIndex]
+            : null;
     if (!nextQueuedPrompt || nextQueuedPromptIndex < 0) {
         return;
     }
 
-    removeQueuedPromptById(sessionId, nextQueuedPrompt.id, set);
+    const activeQueuedPrompt = activateQueuedPromptForDrain(
+        sessionId,
+        nextQueuedPrompt.id,
+        set,
+    );
+    if (!activeQueuedPrompt) {
+        return;
+    }
 
+    activeQueueDrainSessionIds.add(sessionId);
+    let shouldDrainAfterUnlock = false;
     try {
         const result = await dispatchPrompt(
             {
                 additionalRoots: collectExternalComposerRoots(
-                    nextQueuedPrompt.composerPartsSnapshot,
+                    activeQueuedPrompt.queuedPrompt.composerPartsSnapshot,
                 ),
-                composerParts: nextQueuedPrompt.composerPartsSnapshot,
+                composerParts:
+                    activeQueuedPrompt.queuedPrompt.composerPartsSnapshot,
                 projectId: session.meta.projectId,
                 runtimeId: session.meta.runtimeId,
                 sessionId,
                 title: session.meta.title,
                 worktreeId: session.meta.worktreeId,
             },
-            nextQueuedPrompt.prompt,
-            nextQueuedPrompt.attachments,
+            activeQueuedPrompt.queuedPrompt.prompt,
+            activeQueuedPrompt.queuedPrompt.attachments,
             set,
         );
 
@@ -2672,30 +2817,38 @@ async function drainQueueIfNeeded(
             // next queued item here — it would race the "starting" patch and
             // get rejected as busy. The patch pipeline (applySessionPatch /
             // applySessionSnapshot) calls drainQueueIfNeeded whenever the
-            // session transitions back to idle, which is the only moment the
-            // next prompt can be dispatched safely.
+            // session transitions back to idle. If that idle snapshot already
+            // arrived while IPC was still resolving, reconcile it after this
+            // drain lock is released.
+            shouldDrainAfterUnlock =
+                completeActiveQueuedPromptIfSnapshotAdvanced(
+                    sessionId,
+                    activeQueuedPrompt,
+                    get,
+                    set,
+                );
             return;
         }
 
-        insertQueuedPromptAtIndex(
+        restoreActiveQueuedPrompt(
             sessionId,
-            {
-                ...nextQueuedPrompt,
-                status: "queued",
-            },
-            nextQueuedPromptIndex,
+            activeQueuedPrompt,
+            "queued",
             set,
         );
     } catch {
-        insertQueuedPromptAtIndex(
+        restoreActiveQueuedPrompt(
             sessionId,
-            {
-                ...nextQueuedPrompt,
-                status: "failed",
-            },
-            nextQueuedPromptIndex,
+            activeQueuedPrompt,
+            "failed",
             set,
         );
+    } finally {
+        activeQueueDrainSessionIds.delete(sessionId);
+        const hasPendingDrain = pendingQueueDrainSessionIds.delete(sessionId);
+        if (shouldDrainAfterUnlock || hasPendingDrain) {
+            await drainQueueIfNeeded(sessionId, get, set);
+        }
     }
 }
 
@@ -2727,11 +2880,13 @@ function createQueuedPromptEditState(input: {
     readonly queueIndex: number;
     readonly session: AiSessionClientState;
 }): QueuedPromptEditState {
-    const normalizedQueueIndex =
-        input.queueIndex < 0 ? input.queue.length : input.queueIndex;
+    const position = createQueuedPromptPositionState(
+        input.queue,
+        input.queueIndex,
+    );
 
     return {
-        nextPromptId: input.queue[normalizedQueueIndex + 1]?.id ?? null,
+        ...position,
         previousComposerParts: cloneComposerDraftParts(
             input.currentComposerParts,
         ),
@@ -2741,9 +2896,20 @@ function createQueuedPromptEditState(input: {
         previousDraftFileContexts: cloneDraftFileContexts(
             input.session.draftFileContexts,
         ),
+    };
+}
+
+function createQueuedPromptPositionState(
+    queue: readonly QueuedPrompt[],
+    queueIndex: number,
+): QueuedPromptPositionState {
+    const normalizedQueueIndex = queueIndex < 0 ? queue.length : queueIndex;
+
+    return {
+        nextPromptId: queue[normalizedQueueIndex + 1]?.id ?? null,
         previousPromptId:
             normalizedQueueIndex > 0
-                ? (input.queue[normalizedQueueIndex - 1]?.id ?? null)
+                ? (queue[normalizedQueueIndex - 1]?.id ?? null)
                 : null,
         queueIndex: normalizedQueueIndex,
     };
@@ -2754,16 +2920,24 @@ function insertQueuedPromptAtEditPosition(
     queuedPrompt: QueuedPrompt,
     editState: QueuedPromptEditState | null,
 ): QueuedPrompt[] {
+    return insertQueuedPromptAtPosition(queue, queuedPrompt, editState);
+}
+
+function insertQueuedPromptAtPosition(
+    queue: readonly QueuedPrompt[],
+    queuedPrompt: QueuedPrompt,
+    position: QueuedPromptPositionState | null,
+): QueuedPrompt[] {
     const remainingQueue = queue.filter(
         (candidate) => candidate.id !== queuedPrompt.id,
     );
-    if (!editState) {
+    if (!position) {
         return [queuedPrompt, ...remainingQueue];
     }
 
-    if (editState.nextPromptId) {
+    if (position.nextPromptId) {
         const nextIndex = remainingQueue.findIndex(
-            (candidate) => candidate.id === editState.nextPromptId,
+            (candidate) => candidate.id === position.nextPromptId,
         );
         if (nextIndex >= 0) {
             return [
@@ -2774,9 +2948,9 @@ function insertQueuedPromptAtEditPosition(
         }
     }
 
-    if (editState.previousPromptId) {
+    if (position.previousPromptId) {
         const previousIndex = remainingQueue.findIndex(
-            (candidate) => candidate.id === editState.previousPromptId,
+            (candidate) => candidate.id === position.previousPromptId,
         );
         if (previousIndex >= 0) {
             const insertionIndex = previousIndex + 1;
@@ -2789,7 +2963,7 @@ function insertQueuedPromptAtEditPosition(
     }
 
     const insertionIndex = Math.min(
-        Math.max(editState.queueIndex, 0),
+        Math.max(position.queueIndex, 0),
         remainingQueue.length,
     );
 
@@ -2930,6 +3104,136 @@ function insertQueuedPromptAtIndex(
             },
         };
     });
+}
+
+function activateQueuedPromptForDrain(
+    sessionId: string,
+    promptId: string,
+    set: SetAiState,
+): ActiveQueuedPromptState | null {
+    let activeQueuedPrompt: ActiveQueuedPromptState | null = null;
+
+    set((state) => {
+        const session = state.sessions[sessionId];
+        if (!session || session.activeQueuedPrompt) {
+            return state;
+        }
+
+        const queueIndex = session.queue.findIndex(
+            (candidate) => candidate.id === promptId,
+        );
+        const queuedPrompt = session.queue[queueIndex];
+        if (!queuedPrompt || queuedPrompt.status !== "queued") {
+            return state;
+        }
+
+        activeQueuedPrompt = {
+            activatedAfterIncomingSnapshotVersion:
+                session.incomingSnapshotVersion,
+            position: createQueuedPromptPositionState(
+                session.queue,
+                queueIndex,
+            ),
+            queuedPrompt: {
+                ...queuedPrompt,
+                status: "sending",
+            },
+        };
+
+        return {
+            sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                    ...session,
+                    activeQueuedPrompt,
+                    queue: session.queue.filter(
+                        (candidate) => candidate.id !== promptId,
+                    ),
+                },
+            },
+        };
+    });
+
+    return activeQueuedPrompt;
+}
+
+function restoreActiveQueuedPrompt(
+    sessionId: string,
+    activeQueuedPrompt: ActiveQueuedPromptState,
+    status: QueuedPrompt["status"],
+    set: SetAiState,
+): void {
+    set((state) => {
+        const session = state.sessions[sessionId];
+        if (
+            !session ||
+            session.activeQueuedPrompt?.queuedPrompt.id !==
+                activeQueuedPrompt.queuedPrompt.id
+        ) {
+            return state;
+        }
+
+        return {
+            sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                    ...session,
+                    activeQueuedPrompt: null,
+                    queue: insertQueuedPromptAtPosition(
+                        session.queue,
+                        {
+                            ...activeQueuedPrompt.queuedPrompt,
+                            status,
+                        },
+                        activeQueuedPrompt.position,
+                    ),
+                },
+            },
+        };
+    });
+}
+
+function completeActiveQueuedPromptIfSnapshotAdvanced(
+    sessionId: string,
+    activeQueuedPrompt: ActiveQueuedPromptState,
+    get: GetAiState,
+    set: SetAiState,
+): boolean {
+    let shouldDrainAfterUnlock = false;
+
+    set((state) => {
+        const session = state.sessions[sessionId];
+        if (
+            !session ||
+            session.activeQueuedPrompt?.queuedPrompt.id !==
+                activeQueuedPrompt.queuedPrompt.id ||
+            !session.snapshot ||
+            !hasIncomingSnapshotVersionAdvancedPastActiveQueuedPrompt(
+                session,
+                activeQueuedPrompt,
+            )
+        ) {
+            return state;
+        }
+
+        shouldDrainAfterUnlock =
+            session.queue.some((queuedPrompt) => queuedPrompt.status === "queued") &&
+            !session.queuePaused &&
+            !isBusySession(session.snapshot) &&
+            !isClosedSubagentSession(session.snapshot);
+
+        return {
+            sessions: {
+                ...state.sessions,
+                [sessionId]: {
+                    ...session,
+                    activeQueuedPrompt: null,
+                },
+            },
+        };
+    });
+
+    return shouldDrainAfterUnlock && Boolean(get().sessions[sessionId]);
 }
 
 function clearEditingQueuedPromptState(
@@ -3225,6 +3529,69 @@ function isBusySession(snapshot: AiSessionSnapshot): boolean {
         snapshot.status === "streaming" ||
         snapshot.status === "waiting_permission" ||
         snapshot.status === "waiting_user_input"
+    );
+}
+
+function hasActiveLocalDispatch(session: AiSessionClientState): boolean {
+    return Boolean(session.isDispatching || session.activeQueuedPrompt);
+}
+
+function reconcileDispatchStateForIncomingSnapshot(
+    session: AiSessionClientState,
+    snapshot: AiSessionSnapshot,
+): Pick<
+    AiSessionClientState,
+    "activeDispatchToken" | "activeQueuedPrompt" | "isDispatching"
+> {
+    if (!session.activeQueuedPrompt) {
+        return {
+            activeDispatchToken: null,
+            activeQueuedPrompt: null,
+            isDispatching: false,
+        };
+    }
+
+    if (
+        !session.activeDispatchToken &&
+        doesIncomingSnapshotAdvancePastActiveQueuedPrompt(
+            session,
+            snapshot,
+            session.activeQueuedPrompt,
+        )
+    ) {
+        return {
+            activeDispatchToken: null,
+            activeQueuedPrompt: null,
+            isDispatching: false,
+        };
+    }
+
+    return {
+        activeDispatchToken: session.activeDispatchToken,
+        activeQueuedPrompt: session.activeQueuedPrompt,
+        isDispatching: session.isDispatching,
+    };
+}
+
+function doesIncomingSnapshotAdvancePastActiveQueuedPrompt(
+    session: AiSessionClientState,
+    snapshot: AiSessionSnapshot,
+    activeQueuedPrompt: ActiveQueuedPromptState,
+): boolean {
+    return (
+        resolveIncomingSnapshotProgress(session, snapshot.updatedAt)
+            .incomingSnapshotVersion >
+        activeQueuedPrompt.activatedAfterIncomingSnapshotVersion
+    );
+}
+
+function hasIncomingSnapshotVersionAdvancedPastActiveQueuedPrompt(
+    session: AiSessionClientState,
+    activeQueuedPrompt: ActiveQueuedPromptState,
+): boolean {
+    return (
+        session.incomingSnapshotVersion >
+        activeQueuedPrompt.activatedAfterIncomingSnapshotVersion
     );
 }
 
