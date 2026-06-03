@@ -379,6 +379,20 @@ export function MeasuredVirtualList<T>({
     }, [itemMeasurementKeys]);
     const virtualizationEnabled = enabled && isBrowser;
 
+    // Keep the latest values in refs so updateMeasuredSize — and therefore the
+    // ResizeObserver effect that depends on it — stay referentially stable as
+    // items change. The observer must keep observing the same nodes during
+    // streaming; recreating it on every reconciliation would re-measure every
+    // visible row needlessly.
+    const itemsRef = useRef(items);
+    const estimateSizeRef = useRef(estimateSize);
+    const itemIndexByMeasurementKeyRef = useRef(itemIndexByMeasurementKey);
+    useEffect(() => {
+        itemsRef.current = items;
+        estimateSizeRef.current = estimateSize;
+        itemIndexByMeasurementKeyRef.current = itemIndexByMeasurementKey;
+    });
+
     const updateMeasuredSize = useCallback((key: string, nextSize: number) => {
         const normalizedSize = normalizeMeasuredVirtualSize(nextSize);
         const currentSizes = measuredSizesRef.current;
@@ -388,11 +402,12 @@ export function MeasuredVirtualList<T>({
             return;
         }
 
-        const itemIndex = itemIndexByMeasurementKey.get(key) ?? -1;
+        const currentItems = itemsRef.current;
+        const itemIndex = itemIndexByMeasurementKeyRef.current.get(key) ?? -1;
         const previousKnownSize =
             previousMeasuredSize ??
-            (itemIndex >= 0 && itemIndex < items.length
-                ? estimateSize(items[itemIndex], itemIndex)
+            (itemIndex >= 0 && itemIndex < currentItems.length
+                ? estimateSizeRef.current(currentItems[itemIndex], itemIndex)
                 : normalizedSize);
         const range = layoutRangeRef.current;
         const anchorAdjustment = calculateMeasuredVirtualScrollAnchorAdjustment(
@@ -414,13 +429,7 @@ export function MeasuredVirtualList<T>({
         nextSizes.set(key, normalizedSize);
         measuredSizesRef.current = nextSizes;
         setMeasuredSizes(nextSizes);
-    }, [
-        estimateSize,
-        itemIndexByMeasurementKey,
-        items,
-        preserveScrollAnchorOnMeasure,
-        virtualizationEnabled,
-    ]);
+    }, [preserveScrollAnchorOnMeasure, virtualizationEnabled]);
 
     useEffect(() => {
         if (!virtualizationEnabled || typeof ResizeObserver === "undefined") {
