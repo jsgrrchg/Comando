@@ -64,9 +64,30 @@ export function getChatTimelineRowMeasurementKey(
         measurementWidth,
     ].join(":");
 
-    return `${row.id}:${layoutSignature}:${getRowContentMeasurementSignature(
+    return `${row.id}:${layoutSignature}:${getCachedRowContentMeasurementSignature(
         row,
     )}`;
+}
+
+// The content signature hashes the full text of every row, so recomputing it
+// on each measurement key rebuild dominates resize/font changes (where only
+// the layout signature actually changes). Cache it by row identity: the
+// timeline model reconciles rows immutably (createRowById reuses the same
+// reference when content is unchanged and allocates a fresh object when it
+// changes), so "same reference" means "byte-identical content" — the cached
+// signature is always valid for that reference. A WeakMap keeps it bounded:
+// rows dropped from the timeline are collected automatically.
+const rowContentSignatureCache = new WeakMap<ChatTimelineRow, string>();
+
+function getCachedRowContentMeasurementSignature(row: ChatTimelineRow): string {
+    const cached = rowContentSignatureCache.get(row);
+    if (cached !== undefined) {
+        return cached;
+    }
+
+    const signature = getRowContentMeasurementSignature(row);
+    rowContentSignatureCache.set(row, signature);
+    return signature;
 }
 
 export function getChatTimelineVirtualMeasurementWidth(width: number): number {

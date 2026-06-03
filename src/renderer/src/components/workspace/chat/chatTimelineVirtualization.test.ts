@@ -359,4 +359,36 @@ describe("chatTimelineVirtualization", () => {
         expect(getChatTimelineVirtualMeasurementWidth(641)).toBe(648);
         expect(getChatTimelineVirtualMeasurementWidth(672)).toBe(672);
     });
+
+    it("caches the content signature by row identity", () => {
+        const context = {
+            chatFontFamily: "Inter",
+            chatFontSize: 13,
+            gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+            isLatestStreamingTool: false,
+            toolCardExpansionMode: "collapsed" as const,
+            width: 640,
+        };
+        const row = createMessageRow({ content: "original" });
+        if (row.kind !== "message") {
+            throw new Error("expected a message row");
+        }
+
+        const initialKey = getChatTimelineRowMeasurementKey(row, context);
+
+        // Mutating the same row reference in place must NOT change the key:
+        // the content signature is cached by identity. Production rows are
+        // immutable (the timeline model swaps references on change), so this
+        // pins the exact invariant the cache relies on — same reference means
+        // byte-identical content.
+        (row.message as { content: string }).content = "mutated in place";
+        expect(getChatTimelineRowMeasurementKey(row, context)).toBe(initialKey);
+
+        // A fresh row object recomputes the signature, so changed content is
+        // still reflected once the model allocates a new reference.
+        const replacedRow = createMessageRow({ content: "mutated in place" });
+        expect(getChatTimelineRowMeasurementKey(replacedRow, context)).not.toBe(
+            initialKey,
+        );
+    });
 });
