@@ -1974,31 +1974,7 @@ function getLatestEditedFileToolRowId(
     return null;
 }
 
-const ChatTimeline = memo(function ChatTimeline({
-    canRenderRawFileReference,
-    chatFontFamily,
-    chatFontSize,
-    elapsed,
-    historyRows,
-    isStreaming,
-    liveTailRow,
-    onAddFileReferenceToChat,
-    onOpenFile,
-    onOpenImage,
-    onOpenResolvedFileReference,
-    onOpenSession,
-    onRevealFileReference,
-    onScroll,
-    onVirtualRangeChange,
-    onVirtualResizeAutoFollow,
-    projectId,
-    resolveFileReference,
-    scrollRef,
-    shouldPreserveVirtualResizeAnchor,
-    timelineContentRef,
-    toolCardExpansionMode,
-    worktreeId,
-}: {
+type ChatTimelineProps = {
     readonly canRenderRawFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
@@ -2038,7 +2014,33 @@ const ChatTimeline = memo(function ChatTimeline({
     readonly timelineContentRef: RefObject<HTMLDivElement | null>;
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
-}) {
+};
+
+const ChatTimeline = memo(function ChatTimeline({
+    canRenderRawFileReference,
+    chatFontFamily,
+    chatFontSize,
+    elapsed,
+    historyRows,
+    isStreaming,
+    liveTailRow,
+    onAddFileReferenceToChat,
+    onOpenFile,
+    onOpenImage,
+    onOpenResolvedFileReference,
+    onOpenSession,
+    onRevealFileReference,
+    onScroll,
+    onVirtualRangeChange,
+    onVirtualResizeAutoFollow,
+    projectId,
+    resolveFileReference,
+    scrollRef,
+    shouldPreserveVirtualResizeAnchor,
+    timelineContentRef,
+    toolCardExpansionMode,
+    worktreeId,
+}: ChatTimelineProps) {
     const latestStreamingEditedFileToolRowId = useMemo(
         () =>
             isStreaming
@@ -2116,27 +2118,7 @@ const ChatTimeline = memo(function ChatTimeline({
 
 ChatTimeline.displayName = "ChatTimeline";
 
-const ChatTimelineHistory = memo(function ChatTimelineHistory({
-    canRenderRawFileReference,
-    chatFontFamily,
-    chatFontSize,
-    historyRows,
-    onAddFileReferenceToChat,
-    onOpenFile,
-    onOpenImage,
-    onOpenResolvedFileReference,
-    onOpenSession,
-    onRevealFileReference,
-    onVirtualRangeChange,
-    onVirtualResizeAutoFollow,
-    projectId,
-    resolveFileReference,
-    latestStreamingEditedFileToolRowId,
-    scrollRef,
-    shouldPreserveVirtualResizeAnchor,
-    toolCardExpansionMode,
-    worktreeId,
-}: {
+type ChatTimelineHistoryProps = {
     readonly canRenderRawFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
@@ -2172,7 +2154,29 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
-}) {
+};
+
+const ChatTimelineHistory = memo(function ChatTimelineHistory({
+    canRenderRawFileReference,
+    chatFontFamily,
+    chatFontSize,
+    historyRows,
+    onAddFileReferenceToChat,
+    onOpenFile,
+    onOpenImage,
+    onOpenResolvedFileReference,
+    onOpenSession,
+    onRevealFileReference,
+    onVirtualRangeChange,
+    onVirtualResizeAutoFollow,
+    projectId,
+    resolveFileReference,
+    latestStreamingEditedFileToolRowId,
+    scrollRef,
+    shouldPreserveVirtualResizeAnchor,
+    toolCardExpansionMode,
+    worktreeId,
+}: ChatTimelineHistoryProps) {
     const renderRow = useCallback(
         ({
             isLatestStreamingTool,
@@ -2401,200 +2405,97 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
 
 ChatTimelineRowView.displayName = "ChatTimelineRowView";
 
-function areChatTimelinePropsEqual(
-    previous: Readonly<{
-        readonly chatFontFamily?: string;
-        readonly chatFontSize?: number;
-        readonly elapsed: string;
-        readonly historyRows: readonly ChatTimelineRow[];
-        readonly isStreaming: boolean;
-        readonly liveTailRow: ChatTimelineRow | null;
-        readonly onAddFileReferenceToChat?: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onOpenFile: (
-            projectId: string,
-            relativePath: string,
-            worktreeId?: string | null,
-            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
-        ) => Promise<void>;
-        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
-        readonly onOpenResolvedFileReference: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
-        readonly onRevealFileReference?: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onScroll: () => void;
-        readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
-        readonly onVirtualResizeAutoFollow?: () => void;
-        readonly projectId: string | null;
-        readonly resolveFileReference: (
-            reference: string,
-        ) => ResolvedProjectFileReference | null;
-        readonly scrollRef: RefObject<HTMLDivElement | null>;
-        readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
-        readonly timelineContentRef: RefObject<HTMLDivElement | null>;
-        readonly toolCardExpansionMode: AiToolCardExpansionMode;
-        readonly worktreeId: string | null;
-    }>,
-    next: Readonly<{
-        readonly chatFontFamily?: string;
-        readonly chatFontSize?: number;
-        readonly elapsed: string;
-        readonly historyRows: readonly ChatTimelineRow[];
-        readonly isStreaming: boolean;
-        readonly liveTailRow: ChatTimelineRow | null;
-        readonly onAddFileReferenceToChat?: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onOpenFile: (
-            projectId: string,
-            relativePath: string,
-            worktreeId?: string | null,
-            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
-        ) => Promise<void>;
-        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
-        readonly onOpenResolvedFileReference: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
-        readonly onRevealFileReference?: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onScroll: () => void;
-        readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
-        readonly onVirtualResizeAutoFollow?: () => void;
-        readonly projectId: string | null;
-        readonly resolveFileReference: (
-            reference: string,
-        ) => ResolvedProjectFileReference | null;
-        readonly scrollRef: RefObject<HTMLDivElement | null>;
-        readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
-        readonly timelineContentRef: RefObject<HTMLDivElement | null>;
-        readonly toolCardExpansionMode: AiToolCardExpansionMode;
-        readonly worktreeId: string | null;
-    }>,
-) {
-    return (
-        previous.chatFontFamily === next.chatFontFamily &&
-        previous.chatFontSize === next.chatFontSize &&
-        previous.elapsed === next.elapsed &&
-        previous.historyRows === next.historyRows &&
-        previous.isStreaming === next.isStreaming &&
-        previous.liveTailRow === next.liveTailRow &&
-        previous.onAddFileReferenceToChat === next.onAddFileReferenceToChat &&
-        previous.onOpenFile === next.onOpenFile &&
-        previous.onOpenImage === next.onOpenImage &&
-        previous.onOpenResolvedFileReference ===
-            next.onOpenResolvedFileReference &&
-        previous.onOpenSession === next.onOpenSession &&
-        previous.onRevealFileReference === next.onRevealFileReference &&
-        previous.onScroll === next.onScroll &&
-        previous.onVirtualRangeChange === next.onVirtualRangeChange &&
-        previous.onVirtualResizeAutoFollow === next.onVirtualResizeAutoFollow &&
-        previous.projectId === next.projectId &&
-        previous.resolveFileReference === next.resolveFileReference &&
-        previous.scrollRef === next.scrollRef &&
-        previous.shouldPreserveVirtualResizeAnchor ===
-            next.shouldPreserveVirtualResizeAnchor &&
-        previous.timelineContentRef === next.timelineContentRef &&
-        previous.toolCardExpansionMode === next.toolCardExpansionMode &&
-        previous.worktreeId === next.worktreeId
-    );
+type PropEqualityPlan<P> = Readonly<Record<keyof P, boolean>>;
+
+// Memo equality driven by an explicit, exhaustive plan. Because the plan is
+// keyed by `keyof Props`, adding a prop to a memoized component forces a
+// compile-time decision on whether to compare it — a prop can no longer
+// silently fall out of the check (the failure mode that left `onScroll`
+// uncompared until it was caught in review). Props mapped to `true` are
+// compared by identity; `false` opts a prop out intentionally.
+function arePropsEqualByPlan<P extends object>(
+    previous: Readonly<P>,
+    next: Readonly<P>,
+    plan: PropEqualityPlan<P>,
+): boolean {
+    for (const key of Object.keys(plan) as (keyof P)[]) {
+        if (plan[key] && !Object.is(previous[key], next[key])) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
+const CHAT_TIMELINE_EQUALITY_PLAN: PropEqualityPlan<ChatTimelineProps> = {
+    // Intentionally not compared — treated as a stable callback. TODO: confirm
+    // this is deliberate and not a latent stale-UI bug (pending review item).
+    canRenderRawFileReference: false,
+    chatFontFamily: true,
+    chatFontSize: true,
+    elapsed: true,
+    historyRows: true,
+    isStreaming: true,
+    liveTailRow: true,
+    onAddFileReferenceToChat: true,
+    onOpenFile: true,
+    onOpenImage: true,
+    onOpenResolvedFileReference: true,
+    onOpenSession: true,
+    onRevealFileReference: true,
+    onScroll: true,
+    onVirtualRangeChange: true,
+    onVirtualResizeAutoFollow: true,
+    projectId: true,
+    resolveFileReference: true,
+    scrollRef: true,
+    shouldPreserveVirtualResizeAnchor: true,
+    timelineContentRef: true,
+    toolCardExpansionMode: true,
+    worktreeId: true,
+};
+
+function areChatTimelinePropsEqual(
+    previous: Readonly<ChatTimelineProps>,
+    next: Readonly<ChatTimelineProps>,
+): boolean {
+    return arePropsEqualByPlan(previous, next, CHAT_TIMELINE_EQUALITY_PLAN);
+}
+
+const CHAT_TIMELINE_HISTORY_EQUALITY_PLAN: PropEqualityPlan<ChatTimelineHistoryProps> =
+    {
+        // Intentionally not compared — treated as a stable callback. TODO:
+        // confirm this is deliberate and not a latent stale-UI bug (pending
+        // review item).
+        canRenderRawFileReference: false,
+        chatFontFamily: true,
+        chatFontSize: true,
+        historyRows: true,
+        latestStreamingEditedFileToolRowId: true,
+        onAddFileReferenceToChat: true,
+        onOpenFile: true,
+        onOpenImage: true,
+        onOpenResolvedFileReference: true,
+        onOpenSession: true,
+        onRevealFileReference: true,
+        onVirtualRangeChange: true,
+        onVirtualResizeAutoFollow: true,
+        projectId: true,
+        resolveFileReference: true,
+        scrollRef: true,
+        shouldPreserveVirtualResizeAnchor: true,
+        toolCardExpansionMode: true,
+        worktreeId: true,
+    };
+
 function areChatTimelineHistoryPropsEqual(
-    previous: Readonly<{
-        readonly chatFontFamily?: string;
-        readonly chatFontSize?: number;
-        readonly historyRows: readonly ChatTimelineRow[];
-        readonly onAddFileReferenceToChat?: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onOpenFile: (
-            projectId: string,
-            relativePath: string,
-            worktreeId?: string | null,
-            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
-        ) => Promise<void>;
-        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
-        readonly onOpenResolvedFileReference: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
-        readonly onRevealFileReference?: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
-        readonly onVirtualResizeAutoFollow?: () => void;
-        readonly projectId: string | null;
-        readonly resolveFileReference: (
-            reference: string,
-        ) => ResolvedProjectFileReference | null;
-        readonly latestStreamingEditedFileToolRowId: string | null;
-        readonly scrollRef: RefObject<HTMLDivElement | null>;
-        readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
-        readonly toolCardExpansionMode: AiToolCardExpansionMode;
-        readonly worktreeId: string | null;
-    }>,
-    next: Readonly<{
-        readonly chatFontFamily?: string;
-        readonly chatFontSize?: number;
-        readonly historyRows: readonly ChatTimelineRow[];
-        readonly onAddFileReferenceToChat?: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onOpenFile: (
-            projectId: string,
-            relativePath: string,
-            worktreeId?: string | null,
-            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
-        ) => Promise<void>;
-        readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
-        readonly onOpenResolvedFileReference: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
-        readonly onRevealFileReference?: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
-        readonly onVirtualResizeAutoFollow?: () => void;
-        readonly projectId: string | null;
-        readonly resolveFileReference: (
-            reference: string,
-        ) => ResolvedProjectFileReference | null;
-        readonly latestStreamingEditedFileToolRowId: string | null;
-        readonly scrollRef: RefObject<HTMLDivElement | null>;
-        readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
-        readonly toolCardExpansionMode: AiToolCardExpansionMode;
-        readonly worktreeId: string | null;
-    }>,
-) {
-    return (
-        previous.chatFontFamily === next.chatFontFamily &&
-        previous.chatFontSize === next.chatFontSize &&
-        previous.historyRows === next.historyRows &&
-        previous.onAddFileReferenceToChat === next.onAddFileReferenceToChat &&
-        previous.onOpenFile === next.onOpenFile &&
-        previous.onOpenImage === next.onOpenImage &&
-        previous.onOpenResolvedFileReference ===
-            next.onOpenResolvedFileReference &&
-        previous.onOpenSession === next.onOpenSession &&
-        previous.onRevealFileReference === next.onRevealFileReference &&
-        previous.onVirtualRangeChange === next.onVirtualRangeChange &&
-        previous.onVirtualResizeAutoFollow === next.onVirtualResizeAutoFollow &&
-        previous.projectId === next.projectId &&
-        previous.resolveFileReference === next.resolveFileReference &&
-        previous.latestStreamingEditedFileToolRowId ===
-            next.latestStreamingEditedFileToolRowId &&
-        previous.scrollRef === next.scrollRef &&
-        previous.shouldPreserveVirtualResizeAnchor ===
-            next.shouldPreserveVirtualResizeAnchor &&
-        previous.toolCardExpansionMode === next.toolCardExpansionMode &&
-        previous.worktreeId === next.worktreeId
+    previous: Readonly<ChatTimelineHistoryProps>,
+    next: Readonly<ChatTimelineHistoryProps>,
+): boolean {
+    return arePropsEqualByPlan(
+        previous,
+        next,
+        CHAT_TIMELINE_HISTORY_EQUALITY_PLAN,
     );
 }
 
