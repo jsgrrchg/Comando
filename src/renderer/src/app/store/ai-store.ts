@@ -106,7 +106,7 @@ interface QueuedPromptPositionState {
 }
 
 interface ActiveQueuedPromptState {
-    readonly activatedAfterIncomingSnapshotUpdatedAt: string | null;
+    readonly activatedAfterIncomingSnapshotVersion: number;
     readonly position: QueuedPromptPositionState;
     readonly queuedPrompt: QueuedPrompt;
 }
@@ -122,6 +122,7 @@ interface AiSessionClientState {
     readonly editingQueuedPromptState: QueuedPromptEditState | null;
     readonly editingQueuedPrompt: QueuedPrompt | null;
     readonly hydrated: boolean;
+    readonly incomingSnapshotVersion: number;
     readonly isDispatching: boolean;
     readonly isHydrating: boolean;
     readonly lastIncomingSnapshotUpdatedAt: string | null;
@@ -529,12 +530,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             nextSnapshot,
                         ),
                         hydrated: true,
+                        ...resolveIncomingSnapshotProgress(
+                            session,
+                            nextSnapshot.updatedAt,
+                        ),
                         isHydrating: false,
-                        lastIncomingSnapshotUpdatedAt:
-                            getLatestIncomingSnapshotUpdatedAt(
-                                session.lastIncomingSnapshotUpdatedAt,
-                                nextSnapshot.updatedAt,
-                            ),
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: nextSnapshot,
@@ -635,12 +635,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
                                     nextSnapshot,
                                 ),
                                 hydrated: true,
+                                ...resolveIncomingSnapshotProgress(
+                                    session,
+                                    incomingSnapshot.updatedAt,
+                                ),
                                 isHydrating: false,
-                                lastIncomingSnapshotUpdatedAt:
-                                    getLatestIncomingSnapshotUpdatedAt(
-                                        session.lastIncomingSnapshotUpdatedAt,
-                                        incomingSnapshot.updatedAt,
-                                    ),
                                 localError: nextSnapshot.lastError,
                                 meta: nextMeta,
                                 snapshot: nextSnapshot,
@@ -711,12 +710,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             incomingSnapshot,
                         ),
                         hydrated: true,
+                        ...resolveIncomingSnapshotProgress(
+                            session,
+                            incomingSnapshot.updatedAt,
+                        ),
                         isHydrating: false,
-                        lastIncomingSnapshotUpdatedAt:
-                            getLatestIncomingSnapshotUpdatedAt(
-                                session.lastIncomingSnapshotUpdatedAt,
-                                incomingSnapshot.updatedAt,
-                            ),
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: nextSnapshot,
@@ -781,12 +779,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             nextSnapshot,
                         ),
                         hydrated: true,
+                        ...resolveIncomingSnapshotProgress(
+                            session,
+                            nextSnapshot.updatedAt,
+                        ),
                         isHydrating: false,
-                        lastIncomingSnapshotUpdatedAt:
-                            getLatestIncomingSnapshotUpdatedAt(
-                                session.lastIncomingSnapshotUpdatedAt,
-                                nextSnapshot.updatedAt,
-                            ),
                         localError: resolvedSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: resolvedSnapshot,
@@ -977,15 +974,20 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             ...(state.sessions[tab.sessionId] ??
                                 createSessionState()),
                             hydrated: true,
-                            isHydrating: false,
-                            lastIncomingSnapshotUpdatedAt: snapshot
-                                ? getLatestIncomingSnapshotUpdatedAt(
-                                      currentSession?.lastIncomingSnapshotUpdatedAt ??
-                                          null,
+                            ...(snapshot
+                                ? resolveIncomingSnapshotProgress(
+                                      currentSession,
                                       incomingSnapshot.updatedAt,
                                   )
-                                : (currentSession?.lastIncomingSnapshotUpdatedAt ??
-                                  null),
+                                : {
+                                      incomingSnapshotVersion:
+                                          currentSession?.incomingSnapshotVersion ??
+                                          0,
+                                      lastIncomingSnapshotUpdatedAt:
+                                          currentSession?.lastIncomingSnapshotUpdatedAt ??
+                                          null,
+                                  }),
+                            isHydrating: false,
                             meta: buildSessionMeta(tab),
                             snapshot: nextSnapshot,
                             transcript: nextTranscript,
@@ -1833,6 +1835,7 @@ function createSessionState(
         editingQueuedPromptState: null,
         editingQueuedPrompt: null,
         hydrated: false,
+        incomingSnapshotVersion: 0,
         isDispatching: false,
         isHydrating: false,
         lastIncomingSnapshotUpdatedAt: null,
@@ -2542,6 +2545,52 @@ function getLatestIncomingSnapshotUpdatedAt(
     return incomingMs >= currentMs ? incomingUpdatedAt : currentUpdatedAt;
 }
 
+function resolveIncomingSnapshotProgress(
+    session:
+        | Pick<
+              AiSessionClientState,
+              "incomingSnapshotVersion" | "lastIncomingSnapshotUpdatedAt"
+          >
+        | null
+        | undefined,
+    incomingUpdatedAt: string,
+): Pick<
+    AiSessionClientState,
+    "incomingSnapshotVersion" | "lastIncomingSnapshotUpdatedAt"
+> {
+    const lastIncomingSnapshotUpdatedAt =
+        session?.lastIncomingSnapshotUpdatedAt ?? null;
+    const shouldCountIncoming =
+        !lastIncomingSnapshotUpdatedAt ||
+        isIncomingUpdatedAtAtLeast(
+            lastIncomingSnapshotUpdatedAt,
+            incomingUpdatedAt,
+        );
+
+    return {
+        incomingSnapshotVersion:
+            (session?.incomingSnapshotVersion ?? 0) +
+            (shouldCountIncoming ? 1 : 0),
+        lastIncomingSnapshotUpdatedAt: getLatestIncomingSnapshotUpdatedAt(
+            lastIncomingSnapshotUpdatedAt,
+            incomingUpdatedAt,
+        ),
+    };
+}
+
+function isIncomingUpdatedAtAtLeast(
+    currentUpdatedAt: string,
+    incomingUpdatedAt: string,
+): boolean {
+    const currentMs = Date.parse(currentUpdatedAt);
+    const incomingMs = Date.parse(incomingUpdatedAt);
+    if (!Number.isFinite(currentMs) || !Number.isFinite(incomingMs)) {
+        return incomingUpdatedAt >= currentUpdatedAt;
+    }
+
+    return incomingMs >= currentMs;
+}
+
 function applyCatalogPatchToCatalog(
     catalog: AiRuntimeCatalog,
     changes: AiSessionPatch["changes"],
@@ -3093,8 +3142,8 @@ function activateQueuedPromptForDrain(
         }
 
         activeQueuedPrompt = {
-            activatedAfterIncomingSnapshotUpdatedAt:
-                session.lastIncomingSnapshotUpdatedAt,
+            activatedAfterIncomingSnapshotVersion:
+                session.incomingSnapshotVersion,
             position: createQueuedPromptPositionState(
                 session.queue,
                 queueIndex,
@@ -3173,7 +3222,7 @@ function completeActiveQueuedPromptIfSnapshotAdvanced(
             session.activeQueuedPrompt?.queuedPrompt.id !==
                 activeQueuedPrompt.queuedPrompt.id ||
             !session.snapshot ||
-            !hasIncomingSnapshotAdvancedPastActiveQueuedPrompt(
+            !hasIncomingSnapshotVersionAdvancedPastActiveQueuedPrompt(
                 session,
                 activeQueuedPrompt,
             )
@@ -3518,7 +3567,8 @@ function reconcileDispatchStateForIncomingSnapshot(
 
     if (
         !session.activeDispatchToken &&
-        isIncomingSnapshotNewerThanActiveQueuedPrompt(
+        doesIncomingSnapshotAdvancePastActiveQueuedPrompt(
+            session,
             snapshot,
             session.activeQueuedPrompt,
         )
@@ -3537,32 +3587,25 @@ function reconcileDispatchStateForIncomingSnapshot(
     };
 }
 
-function isIncomingSnapshotNewerThanActiveQueuedPrompt(
+function doesIncomingSnapshotAdvancePastActiveQueuedPrompt(
+    session: AiSessionClientState,
     snapshot: AiSessionSnapshot,
     activeQueuedPrompt: ActiveQueuedPromptState,
 ): boolean {
-    const activatedAfterIncomingSnapshotUpdatedAt =
-        activeQueuedPrompt.activatedAfterIncomingSnapshotUpdatedAt;
-
     return (
-        !activatedAfterIncomingSnapshotUpdatedAt ||
-        snapshot.updatedAt > activatedAfterIncomingSnapshotUpdatedAt
+        resolveIncomingSnapshotProgress(session, snapshot.updatedAt)
+            .incomingSnapshotVersion >
+        activeQueuedPrompt.activatedAfterIncomingSnapshotVersion
     );
 }
 
-function hasIncomingSnapshotAdvancedPastActiveQueuedPrompt(
+function hasIncomingSnapshotVersionAdvancedPastActiveQueuedPrompt(
     session: AiSessionClientState,
     activeQueuedPrompt: ActiveQueuedPromptState,
 ): boolean {
-    const activatedAfterIncomingSnapshotUpdatedAt =
-        activeQueuedPrompt.activatedAfterIncomingSnapshotUpdatedAt;
-    const lastIncomingSnapshotUpdatedAt = session.lastIncomingSnapshotUpdatedAt;
-
-    return Boolean(
-        lastIncomingSnapshotUpdatedAt &&
-            (!activatedAfterIncomingSnapshotUpdatedAt ||
-                lastIncomingSnapshotUpdatedAt >
-                    activatedAfterIncomingSnapshotUpdatedAt),
+    return (
+        session.incomingSnapshotVersion >
+        activeQueuedPrompt.activatedAfterIncomingSnapshotVersion
     );
 }
 
