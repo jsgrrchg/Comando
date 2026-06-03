@@ -799,7 +799,7 @@ describe("ai-store queue", () => {
             {
                 endLine: 88,
                 label: "(85:88) - elimina",
-                path: ".personal/pruebas/untitled.cpp",
+                path: "fixtures/sample-project/untitled.cpp",
                 selectedText: "elimina",
                 startLine: 85,
                 type: "selection_mention" as const,
@@ -809,7 +809,7 @@ describe("ai-store queue", () => {
 
         await useAiStore
             .getState()
-            .sendPrompt(TAB, ".personal/pruebas/untitled.cpp:85-88", {
+            .sendPrompt(TAB, "fixtures/sample-project/untitled.cpp:85-88", {
                 composerPartsSnapshot,
             });
 

@@ -16,8 +16,8 @@ afterEach(() => {
 
 describe("Claude Code transcript IPC helpers", () => {
     it("encodes cwd like Claude Code project transcript directories", () => {
-        expect(encodeClaudeCodeProjectPath("/Users/jfg/Project A")).toBe(
-            "-Users-jfg-Project-A",
+        expect(encodeClaudeCodeProjectPath("/Users/example/Project A")).toBe(
+            "-Users-example-Project-A",
         );
     });
 

@@ -99,14 +99,14 @@ describe("workspaceExternalDrop", () => {
 
     it("previews native files inside the active root", () => {
         const dataTransfer = createNativeFileDataTransfer(
-            "/Users/jfg/project/src/app.ts",
+            "/Users/example/project/src/app.ts",
             "text/typescript",
         );
 
         expect(
             resolveWorkspacePaneFileDragOverIntent({
                 dataTransfer,
-                projectRootPath: "/Users/jfg/project",
+                projectRootPath: "/Users/example/project",
                 target: paneTarget,
             }),
         ).toEqual({
@@ -116,7 +116,7 @@ describe("workspaceExternalDrop", () => {
         expect(
             getWorkspacePaneFileDropEntries({
                 dataTransfer,
-                projectRootPath: "/Users/jfg/project",
+                projectRootPath: "/Users/example/project",
             }),
         ).toEqual([
             {
@@ -129,14 +129,14 @@ describe("workspaceExternalDrop", () => {
 
     it("accepts but does not preview native files outside the active root", () => {
         const dataTransfer = createNativeFileDataTransfer(
-            "/Users/jfg/Downloads/outside.ts",
+            "/Users/example/Downloads/outside.ts",
             "text/typescript",
         );
 
         expect(
             resolveWorkspacePaneFileDragOverIntent({
                 dataTransfer,
-                projectRootPath: "/Users/jfg/project",
+                projectRootPath: "/Users/example/project",
                 target: paneTarget,
             }),
         ).toEqual({
@@ -146,21 +146,21 @@ describe("workspaceExternalDrop", () => {
         expect(
             getWorkspacePaneFileDropEntries({
                 dataTransfer,
-                projectRootPath: "/Users/jfg/project",
+                projectRootPath: "/Users/example/project",
             }),
         ).toEqual([]);
     });
 
     it("clears preview intent when a drag is over a workspace gap", () => {
         const dataTransfer = createNativeFileDataTransfer(
-            "/Users/jfg/project/src/app.ts",
+            "/Users/example/project/src/app.ts",
             "text/typescript",
         );
 
         expect(
             resolveWorkspacePaneFileDragOverIntent({
                 dataTransfer,
-                projectRootPath: "/Users/jfg/project",
+                projectRootPath: "/Users/example/project",
                 target: null,
             }),
         ).toEqual({
