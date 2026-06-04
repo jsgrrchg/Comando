@@ -19,6 +19,11 @@ import {
     type ResolvedProjectFileReference,
 } from "../projectFileReferences";
 import { ChangeReviewPanel } from "./ChangeReviewPanel";
+import {
+    isFileToolActivity,
+    isTerminalToolActivity,
+    isTurnStartedActivity,
+} from "./toolActivityKinds";
 import { usePersistentToolExpansion } from "./toolExpansionStore";
 
 /* ─── Tool icon SVGs ─── */
@@ -138,19 +143,6 @@ function Chevron({ expanded }: { readonly expanded: boolean }) {
 
 /* ─── Helpers ─── */
 
-const FILE_TOOL_KINDS = new Set([
-    "create",
-    "delete",
-    "edit",
-    "move",
-    "read",
-    "remove",
-    "rename",
-    "search",
-    "update",
-    "write",
-]);
-
 const EDITED_FILE_TOOL_KINDS = new Set([
     "create",
     "delete",
@@ -185,17 +177,6 @@ function getToolIcon(kind: string) {
     return <DefaultIcon />;
 }
 
-function isFileToolActivity(
-    activity: AiToolActivity,
-    trackedFiles: readonly AiTrackedFile[],
-): boolean {
-    if (trackedFiles.length > 0) return true;
-    if (FILE_TOOL_KINDS.has(activity.kind.toLowerCase())) return true;
-    if (activity.locations.length > 0) return true;
-    if (activity.diffs.length > 0) return true;
-    return false;
-}
-
 export function isEditedFileToolActivity(
     activity: AiToolActivity,
     trackedFiles: readonly AiTrackedFile[],
@@ -203,13 +184,6 @@ export function isEditedFileToolActivity(
     if (trackedFiles.length > 0) return true;
     if (activity.diffs.length > 0) return true;
     return EDITED_FILE_TOOL_KINDS.has(activity.kind.toLowerCase());
-}
-
-function isTurnStartedActivity(activity: AiToolActivity): boolean {
-    return (
-        activity.id.startsWith("codex-acp:status:turn:") ||
-        activity.id.startsWith("comando:status:turn:")
-    );
 }
 
 function summarizeDiff(oldText: string | null, newText: string | null): string {
@@ -848,12 +822,6 @@ function FileToolMessage({
 }
 
 /* ─── Terminal tool message (card style for bash/shell/execute) ─── */
-
-const TERMINAL_TOOL_KINDS = new Set(["bash", "shell", "execute"]);
-
-function isTerminalToolActivity(activity: AiToolActivity): boolean {
-    return TERMINAL_TOOL_KINDS.has(activity.kind.toLowerCase());
-}
 
 function parseJsonValue(raw: string): unknown {
     return JSON.parse(raw) as unknown;

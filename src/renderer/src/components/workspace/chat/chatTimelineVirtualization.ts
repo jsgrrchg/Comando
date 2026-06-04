@@ -1,6 +1,11 @@
 import type { AiToolCardExpansionMode } from "@shared/ipc";
 
 import type { ChatTimelineRow } from "./chatTimelineModel";
+import {
+    isFileToolActivity,
+    isTerminalToolActivity,
+    isTurnStartedActivity,
+} from "./toolActivityKinds";
 
 export const CHAT_TIMELINE_VIRTUALIZATION_ENABLED = true;
 export const CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD = 200;
@@ -265,11 +270,11 @@ function estimateToolRowHeight(
         (context.toolCardExpansionMode === "latest" &&
             context.isLatestStreamingTool === true);
 
-    if (isTurnStartedActivityId(activity.id)) {
+    if (isTurnStartedActivity(activity)) {
         return 48;
     }
 
-    if (isTerminalToolKind(activity.kind)) {
+    if (isTerminalToolActivity(activity)) {
         const startsExpanded =
             hasTerminalOutput &&
             (activity.status === "failed" ||
@@ -285,7 +290,7 @@ function estimateToolRowHeight(
         return isExpandedByMode ? 132 + detailHeight : 96;
     }
 
-    if (isFileToolLike(row)) {
+    if (isFileToolActivity(activity, trackedFiles)) {
         const hasDetail = hasSummary || hasLocations || activity.diffs.length > 0;
         const detailHeight =
             (hasSummary ? 76 : 0) +
@@ -323,43 +328,4 @@ function estimateTextLines(content: string, charactersPerLine: number): number {
 
 function countCodeBlocks(content: string): number {
     return Math.floor((content.match(/```/g)?.length ?? 0) / 2);
-}
-
-function isTurnStartedActivityId(activityId: string): boolean {
-    return (
-        activityId.startsWith("codex-acp:status:turn:") ||
-        activityId.startsWith("comando:status:turn:")
-    );
-}
-
-function isTerminalToolKind(kind: string): boolean {
-    const normalizedKind = kind.toLowerCase();
-    return (
-        normalizedKind === "bash" ||
-        normalizedKind === "shell" ||
-        normalizedKind === "execute"
-    );
-}
-
-function isFileToolLike(
-    row: Extract<ChatTimelineRow, { readonly kind: "tool" }>,
-) {
-    const activity = row.reviewEntry.activity;
-    const normalizedKind = activity.kind.toLowerCase();
-
-    return (
-        row.reviewEntry.trackedFiles.length > 0 ||
-        activity.locations.length > 0 ||
-        activity.diffs.length > 0 ||
-        normalizedKind === "create" ||
-        normalizedKind === "delete" ||
-        normalizedKind === "edit" ||
-        normalizedKind === "move" ||
-        normalizedKind === "read" ||
-        normalizedKind === "remove" ||
-        normalizedKind === "rename" ||
-        normalizedKind === "search" ||
-        normalizedKind === "update" ||
-        normalizedKind === "write"
-    );
 }
