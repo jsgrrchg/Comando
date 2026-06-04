@@ -24,6 +24,7 @@ import {
     CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN,
     calculateChatTimelineVirtualScrollMarginTop,
     estimateChatTimelineRowHeight,
+    getChatTimelineRowIdentityKey,
     getChatTimelineRowMeasurementKey,
     getChatTimelineRowKey,
     getChatTimelineVirtualMeasurementWidth,
@@ -251,6 +252,33 @@ export const ChatTimelineHistoryRows = memo(
             ],
         );
 
+        // Width-invariant identity (the row's measurement key minus the width
+        // bucket), so a resize reuses each row's last measured height instead of
+        // collapsing the timeline back to estimates.
+        const getItemIdentityKey = useCallback(
+            (row: ChatTimelineRow, index: number) =>
+                getChatTimelineRowIdentityKey(row, {
+                    chatFontFamily,
+                    chatFontSize,
+                    gapPx: getChatTimelineVirtualRowGapPx({
+                        index,
+                        rowCount: historyRows.length,
+                    }),
+                    isLatestStreamingTool:
+                        row.id === latestStreamingEditedFileToolRowId,
+                    toolCardExpansionMode,
+                    width: scrollContainerWidth,
+                }),
+            [
+                chatFontFamily,
+                chatFontSize,
+                historyRows.length,
+                latestStreamingEditedFileToolRowId,
+                scrollContainerWidth,
+                toolCardExpansionMode,
+            ],
+        );
+
         const renderVirtualItem = useCallback(
             ({
                 index,
@@ -313,6 +341,7 @@ export const ChatTimelineHistoryRows = memo(
                     }
                     estimateSize={estimateSize}
                     getItemKey={getChatTimelineRowKey}
+                    getItemIdentityKey={getItemIdentityKey}
                     getItemMeasurementKey={getItemMeasurementKey}
                     items={historyRows}
                     onRangeChange={onVirtualRangeChange}

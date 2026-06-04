@@ -48,23 +48,55 @@ export function getChatTimelineRowKey(row: ChatTimelineRow): string {
     return row.id;
 }
 
-export function getChatTimelineRowMeasurementKey(
-    row: ChatTimelineRow,
+// Height-affecting layout dimensions that are independent of the row's width.
+// Shared by the measurement key and the width-invariant identity key below.
+function getChatTimelineRowLayoutBase(
     context: ChatTimelineRowMeasurementContext,
 ): string {
-    const measurementWidth = getChatTimelineVirtualMeasurementWidth(
-        context.width,
-    );
-    const layoutSignature = [
+    return [
         context.chatFontFamily ?? "default",
         context.chatFontSize ?? "default",
         context.gapPx ?? 0,
         context.isLatestStreamingTool ? "latest" : "history",
         context.toolCardExpansionMode,
-        measurementWidth,
     ].join(":");
+}
 
-    return `${row.id}:${layoutSignature}:${getRowMeasurementToken(row)}`;
+// Only message rows reflow their height with the available width; tool cards
+// lay out at width-invariant heights (fixed-height summaries, internally
+// scrolled diffs). So only messages fold the width bucket into their
+// measurement key — tool rows keep a stable key across a resize and never have
+// their measurement invalidated, which is what let the scroll settle during a
+// drag instead of collapsing the whole cache to rough estimates.
+export function isWidthSensitiveChatTimelineRow(row: ChatTimelineRow): boolean {
+    return row.kind === "message";
+}
+
+export function getChatTimelineRowMeasurementKey(
+    row: ChatTimelineRow,
+    context: ChatTimelineRowMeasurementContext,
+): string {
+    const widthSegment = isWidthSensitiveChatTimelineRow(row)
+        ? getChatTimelineVirtualMeasurementWidth(context.width)
+        : "static";
+
+    return `${row.id}:${getChatTimelineRowLayoutBase(
+        context,
+    )}:${widthSegment}:${getRowMeasurementToken(row)}`;
+}
+
+// Stable across width changes for the same row revision. The virtual list uses
+// it to carry a row's last measured height over a resize: when a width-sensitive
+// row's measurement key churns (the width bucket changed), the layout falls back
+// to this row's last real measurement instead of the heuristic estimate, so the
+// total size never snaps to a rough value mid-resize.
+export function getChatTimelineRowIdentityKey(
+    row: ChatTimelineRow,
+    context: ChatTimelineRowMeasurementContext,
+): string {
+    return `${row.id}:${getChatTimelineRowLayoutBase(
+        context,
+    )}:${getRowMeasurementToken(row)}`;
 }
 
 // The measurement key must change exactly when a row could render at a new

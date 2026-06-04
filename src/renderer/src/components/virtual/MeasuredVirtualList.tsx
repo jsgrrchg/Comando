@@ -49,6 +49,13 @@ export interface MeasuredVirtualListProps<T> {
     readonly estimateSize: (item: T, index: number) => number;
     readonly getItemKey: (item: T, index: number) => string;
     readonly getItemMeasurementKey?: (item: T, index: number) => string;
+    /**
+     * Width-invariant identity for a row revision. When a row's measurement key
+     * churns (e.g. a resize re-buckets the width) the list reuses the row's last
+     * measured height under this key as the estimate, instead of snapping back
+     * to estimateSize. Defaults to the measurement key (no carry-over).
+     */
+    readonly getItemIdentityKey?: (item: T, index: number) => string;
     readonly onRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onReady?: (handle: MeasuredVirtualListHandle | null) => void;
     readonly preserveScrollAnchorOnMeasure?: boolean;
@@ -303,6 +310,10 @@ interface ResolvePreviousMeasuredSizeOptions<T> {
     readonly items: readonly T[];
     readonly key: string;
     readonly previousMeasuredSize: number | undefined;
+    // Last measured height for this row's width-invariant identity, if any. It
+    // is what the layout is currently assuming after a measurement-key churn,
+    // so it must take precedence over the estimate as the compensation baseline.
+    readonly previousIdentitySize?: number | undefined;
 }
 
 /**
@@ -327,6 +338,7 @@ export function resolvePreviousMeasuredSize<T>({
     items,
     key,
     previousMeasuredSize,
+    previousIdentitySize,
 }: ResolvePreviousMeasuredSizeOptions<T>): {
     readonly itemIndex: number;
     readonly previousKnownSize: number;
@@ -334,6 +346,7 @@ export function resolvePreviousMeasuredSize<T>({
     const itemIndex = itemIndexByMeasurementKey.get(key) ?? -1;
     const previousKnownSize =
         previousMeasuredSize ??
+        previousIdentitySize ??
         (itemIndex >= 0 && itemIndex < items.length
             ? estimateSize(items[itemIndex], itemIndex)
             : fallbackSize);
@@ -377,6 +390,7 @@ export function MeasuredVirtualList<T>({
     estimateSize,
     getItemKey,
     getItemMeasurementKey,
+    getItemIdentityKey,
     onRangeChange,
     onReady,
     preserveScrollAnchorOnMeasure = false,
@@ -422,6 +436,20 @@ export function MeasuredVirtualList<T>({
 
         return next;
     }, [itemMeasurementKeys]);
+    const itemIdentityKeys = useMemo(
+        () =>
+            items.map((item, index) =>
+                getItemIdentityKey
+                    ? getItemIdentityKey(item, index)
+                    : itemMeasurementKeys[index],
+            ),
+        [getItemIdentityKey, itemMeasurementKeys, items],
+    );
+    // Last measured height per width-invariant identity. Mutated in place (like
+    // the element maps below) and read during layout to bridge a row's height
+    // across a measurement-key churn; pruned to the live identities alongside
+    // measuredSizes so it stays bounded.
+    const measuredByIdentityRef = useRef(new Map<string, number>());
     const virtualizationEnabled = enabled && isBrowser;
 
     // Keep the latest values in refs so updateMeasuredSize — and therefore the
@@ -441,9 +469,11 @@ export function MeasuredVirtualList<T>({
     const itemsRef = useRef(items);
     const estimateSizeRef = useRef(estimateSize);
     const itemIndexByMeasurementKeyRef = useRef(itemIndexByMeasurementKey);
+    const itemIdentityKeysRef = useRef(itemIdentityKeys);
     itemsRef.current = items;
     estimateSizeRef.current = estimateSize;
     itemIndexByMeasurementKeyRef.current = itemIndexByMeasurementKey;
+    itemIdentityKeysRef.current = itemIdentityKeys;
 
     const updateMeasuredSize = useCallback((key: string, nextSize: number) => {
         const normalizedSize = normalizeMeasuredVirtualSize(nextSize);
@@ -454,6 +484,18 @@ export function MeasuredVirtualList<T>({
             return;
         }
 
+        const measuredByIdentity = measuredByIdentityRef.current;
+        const itemIndexForKey =
+            itemIndexByMeasurementKeyRef.current.get(key) ?? -1;
+        const identityKey =
+            itemIndexForKey >= 0
+                ? itemIdentityKeysRef.current[itemIndexForKey]
+                : undefined;
+        const previousIdentitySize =
+            identityKey !== undefined
+                ? measuredByIdentity.get(identityKey)
+                : undefined;
+
         const { itemIndex, previousKnownSize } = resolvePreviousMeasuredSize({
             estimateSize: estimateSizeRef.current,
             fallbackSize: normalizedSize,
@@ -461,6 +503,7 @@ export function MeasuredVirtualList<T>({
             items: itemsRef.current,
             key,
             previousMeasuredSize,
+            previousIdentitySize,
         });
         const range = layoutRangeRef.current;
         const anchorAdjustment = calculateMeasuredVirtualScrollAnchorAdjustment(
@@ -476,6 +519,13 @@ export function MeasuredVirtualList<T>({
 
         if (anchorAdjustment !== 0) {
             pendingScrollAnchorAdjustmentRef.current += anchorAdjustment;
+        }
+
+        // Record the height under the row's identity so a later measurement-key
+        // churn (e.g. a resize re-buckets the width) can reuse it as the
+        // estimate instead of snapping back to estimateSize.
+        if (identityKey !== undefined) {
+            measuredByIdentity.set(identityKey, normalizedSize);
         }
 
         const nextSizes = new Map(currentSizes);
@@ -535,7 +585,19 @@ export function MeasuredVirtualList<T>({
             measuredSizesRef.current = prunedSizes;
             setMeasuredSizes(prunedSizes);
         }
-    }, [itemMeasurementKeys]);
+
+        // Keep the identity-keyed estimate cache bounded the same way. Rows
+        // still present (even if scrolled out of view) keep their identity in
+        // validIdentityKeys; only removed rows get dropped. It is a pure
+        // estimate cache mutated in place, so no re-render is needed.
+        const validIdentityKeys = new Set(itemIdentityKeys);
+        const measuredByIdentity = measuredByIdentityRef.current;
+        for (const identityKey of measuredByIdentity.keys()) {
+            if (!validIdentityKeys.has(identityKey)) {
+                measuredByIdentity.delete(identityKey);
+            }
+        }
+    }, [itemIdentityKeys, itemMeasurementKeys]);
 
     useEffect(() => {
         if (!virtualizationEnabled) {
@@ -586,11 +648,37 @@ export function MeasuredVirtualList<T>({
         };
     }, [scrollContainerRef, virtualizationEnabled]);
 
+    // Resolve a row's height: an exact measurement wins; otherwise the row's
+    // last measurement under its width-invariant identity (so a resize doesn't
+    // snap it back to the estimate); the heuristic estimate is the final
+    // fallback for a never-measured row.
+    const resolveItemSize = useCallback(
+        (index: number): number => {
+            const measured = measuredSizes.get(itemMeasurementKeys[index]);
+            if (measured !== undefined) {
+                return measured;
+            }
+
+            const byIdentity = measuredByIdentityRef.current.get(
+                itemIdentityKeys[index],
+            );
+            if (byIdentity !== undefined) {
+                return byIdentity;
+            }
+
+            return estimateSize(items[index], index);
+        },
+        [
+            estimateSize,
+            itemIdentityKeys,
+            itemMeasurementKeys,
+            items,
+            measuredSizes,
+        ],
+    );
+
     const layout = useMemo((): LayoutSnapshot<T> => {
-        const sizes = items.map((item, index) => {
-            const key = itemMeasurementKeys[index];
-            return measuredSizes.get(key) ?? estimateSize(item, index);
-        });
+        const sizes = items.map((_item, index) => resolveItemSize(index));
         const offsets = new Array<number>(items.length);
         let totalSize = 0;
 
@@ -660,13 +748,12 @@ export function MeasuredVirtualList<T>({
             virtualItems,
         };
     }, [
-        estimateSize,
         itemMeasurementKeys,
         itemKeys,
         items,
-        measuredSizes,
         normalizedScrollMarginTop,
         overscan,
+        resolveItemSize,
         scrollState.scrollTop,
         scrollState.viewportHeight,
         virtualizationEnabled,
@@ -724,19 +811,11 @@ export function MeasuredVirtualList<T>({
 
             let total = 0;
             for (let cursor = 0; cursor < index; cursor += 1) {
-                total +=
-                    measuredSizes.get(itemMeasurementKeys[cursor]) ??
-                    estimateSize(items[cursor], cursor);
+                total += resolveItemSize(cursor);
             }
             return total;
         },
-        [
-            estimateSize,
-            itemMeasurementKeys,
-            items,
-            layout.virtualItems,
-            measuredSizes,
-        ],
+        [layout.virtualItems, resolveItemSize],
     );
 
     const getItemSize = useCallback(
@@ -745,19 +824,9 @@ export function MeasuredVirtualList<T>({
                 layout.virtualItems.find((item) => item.index === index) ??
                 null;
 
-            return (
-                targetItem?.size ??
-                measuredSizes.get(itemMeasurementKeys[index]) ??
-                estimateSize(items[index], index)
-            );
+            return targetItem?.size ?? resolveItemSize(index);
         },
-        [
-            estimateSize,
-            itemMeasurementKeys,
-            items,
-            layout.virtualItems,
-            measuredSizes,
-        ],
+        [layout.virtualItems, resolveItemSize],
     );
 
     const setMeasuredElement = useCallback(

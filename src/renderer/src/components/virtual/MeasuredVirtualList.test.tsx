@@ -262,6 +262,39 @@ describe("resolvePreviousMeasuredSize", () => {
         ).toBe(90 - ITEM_HEIGHT);
     });
 
+    it("prefers the last identity measurement over the estimate after a width re-key", () => {
+        // The resize case: the row's measurement key churned (new width bucket),
+        // so previousMeasuredSize is undefined, but the layout is showing the
+        // row at its last real measurement carried over by identity. That height
+        // — not the heuristic estimate — must be the compensation baseline.
+        const { itemIndex, previousKnownSize } = resolvePreviousMeasuredSize({
+            estimateSize,
+            fallbackSize: 90,
+            itemIndexByMeasurementKey: indexByKey,
+            items,
+            key: "key-4",
+            previousMeasuredSize: undefined,
+            previousIdentitySize: 130,
+        });
+
+        expect(itemIndex).toBe(4);
+        expect(previousKnownSize).toBe(130);
+
+        // The compensation is computed against the carried-over height, so a row
+        // above the viewport that re-measures from 130 to 96 nudges the scroll by
+        // the real delta rather than a spurious estimate-vs-measurement jump.
+        expect(
+            calculateMeasuredVirtualScrollAnchorAdjustment({
+                itemIndex,
+                nextSize: 96,
+                preserveScrollAnchorOnMeasure: true,
+                previousSize: previousKnownSize,
+                virtualizationEnabled: true,
+                visibleStartIndex: 6,
+            }),
+        ).toBe(96 - 130);
+    });
+
     it("degrades to the fallback size when the key is absent from the index map", () => {
         // A stale index map (the bug this guards against) makes the lookup miss:
         // itemIndex = -1 and previousKnownSize collapses onto the measurement, so

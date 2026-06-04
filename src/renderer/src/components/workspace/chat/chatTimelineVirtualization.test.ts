@@ -11,10 +11,12 @@ import {
     CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
     calculateChatTimelineVirtualScrollMarginTop,
     estimateChatTimelineRowHeight,
+    getChatTimelineRowIdentityKey,
     getChatTimelineRowMeasurementKey,
     getChatTimelineRowKey,
     getChatTimelineVirtualMeasurementWidth,
     getChatTimelineVirtualRowGapPx,
+    isWidthSensitiveChatTimelineRow,
     shouldVirtualizeChatTimeline,
 } from "./chatTimelineVirtualization";
 
@@ -353,6 +355,88 @@ describe("chatTimelineVirtualization", () => {
                 },
             ),
         ).not.toBe(base);
+    });
+
+    it("keys tool rows independent of width but messages by width bucket", () => {
+        const baseContext = {
+            chatFontFamily: "Inter",
+            chatFontSize: 13,
+            gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+            isLatestStreamingTool: false,
+            toolCardExpansionMode: "collapsed" as const,
+        };
+        const toolRow = createToolRow();
+        const messageRow = createMessageRow({ content: "hello" });
+
+        expect(isWidthSensitiveChatTimelineRow(toolRow)).toBe(false);
+        expect(isWidthSensitiveChatTimelineRow(messageRow)).toBe(true);
+
+        // A tool card lays out at a width-invariant height, so crossing a width
+        // bucket must NOT churn its measurement key — that is what kept the whole
+        // cache from collapsing to estimates mid-resize.
+        expect(
+            getChatTimelineRowMeasurementKey(toolRow, {
+                ...baseContext,
+                width: 640,
+            }),
+        ).toBe(
+            getChatTimelineRowMeasurementKey(toolRow, {
+                ...baseContext,
+                width: 960,
+            }),
+        );
+
+        // A message reflows with width, so a bucket change still invalidates it.
+        expect(
+            getChatTimelineRowMeasurementKey(messageRow, {
+                ...baseContext,
+                width: 640,
+            }),
+        ).not.toBe(
+            getChatTimelineRowMeasurementKey(messageRow, {
+                ...baseContext,
+                width: 960,
+            }),
+        );
+    });
+
+    it("keeps the identity key stable across width changes for one revision", () => {
+        const baseContext = {
+            chatFontFamily: "Inter",
+            chatFontSize: 13,
+            gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+            isLatestStreamingTool: false,
+            toolCardExpansionMode: "collapsed" as const,
+        };
+        const messageRow = createMessageRow({ content: "hello" });
+
+        // The identity key carries a measured height over a resize, so it must
+        // ignore the width even for a width-sensitive row...
+        expect(
+            getChatTimelineRowIdentityKey(messageRow, {
+                ...baseContext,
+                width: 640,
+            }),
+        ).toBe(
+            getChatTimelineRowIdentityKey(messageRow, {
+                ...baseContext,
+                width: 960,
+            }),
+        );
+
+        // ...but still react to a real layout change like the expansion mode.
+        expect(
+            getChatTimelineRowIdentityKey(messageRow, {
+                ...baseContext,
+                toolCardExpansionMode: "expanded",
+                width: 640,
+            }),
+        ).not.toBe(
+            getChatTimelineRowIdentityKey(messageRow, {
+                ...baseContext,
+                width: 640,
+            }),
+        );
     });
 
     it("buckets virtual measurement widths to reduce resize churn", () => {
