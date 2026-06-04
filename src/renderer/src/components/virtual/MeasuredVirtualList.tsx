@@ -296,6 +296,51 @@ export function pruneMeasuredSizesToKeys(
     return pruned ?? sizes;
 }
 
+interface ResolvePreviousMeasuredSizeOptions<T> {
+    readonly estimateSize: (item: T, index: number) => number;
+    readonly fallbackSize: number;
+    readonly itemIndexByMeasurementKey: ReadonlyMap<string, number>;
+    readonly items: readonly T[];
+    readonly key: string;
+    readonly previousMeasuredSize: number | undefined;
+}
+
+/**
+ * Resolves the row index for a measurement key and the size the layout is
+ * currently assuming for it, so a fresh measurement can be compared against the
+ * right baseline for scroll-anchor compensation.
+ *
+ * The index map MUST reflect the same render that produced the measured node.
+ * A measurement key changes whenever a row could render at a new height (resize,
+ * expansion toggle, content reconciliation); when it does, the new key has no
+ * entry in measuredSizes yet, so the layout is showing the row at its ESTIMATE.
+ * Returning that estimate as previousKnownSize lets updateMeasuredSize compute a
+ * real delta. If the index map lagged a render behind, the lookup would miss
+ * (itemIndex = -1) and fall back to the measured size — a zero delta — which
+ * silently drops the compensation and lets an above-viewport row shift the
+ * total height without adjusting scrollTop.
+ */
+export function resolvePreviousMeasuredSize<T>({
+    estimateSize,
+    fallbackSize,
+    itemIndexByMeasurementKey,
+    items,
+    key,
+    previousMeasuredSize,
+}: ResolvePreviousMeasuredSizeOptions<T>): {
+    readonly itemIndex: number;
+    readonly previousKnownSize: number;
+} {
+    const itemIndex = itemIndexByMeasurementKey.get(key) ?? -1;
+    const previousKnownSize =
+        previousMeasuredSize ??
+        (itemIndex >= 0 && itemIndex < items.length
+            ? estimateSize(items[itemIndex], itemIndex)
+            : fallbackSize);
+
+    return { itemIndex, previousKnownSize };
+}
+
 export function calculateMeasuredVirtualScrollAnchorAdjustment({
     itemIndex,
     nextSize,
@@ -384,14 +429,21 @@ export function MeasuredVirtualList<T>({
     // items change. The observer must keep observing the same nodes during
     // streaming; recreating it on every reconciliation would re-measure every
     // visible row needlessly.
+    //
+    // These are assigned during render (not in an effect) on purpose: a ref
+    // callback measures a freshly-keyed node during the commit phase, BEFORE
+    // passive effects run. If the index map lagged behind in an effect, that
+    // first measurement would look the new measurementKey up against the
+    // previous render's map, get -1, and skip the scroll-anchor compensation —
+    // letting an above-viewport row change the total height without adjusting
+    // scrollTop (a visible jump on expansion/font re-keys). Mirrors the
+    // layoutRangeRef assignment below.
     const itemsRef = useRef(items);
     const estimateSizeRef = useRef(estimateSize);
     const itemIndexByMeasurementKeyRef = useRef(itemIndexByMeasurementKey);
-    useEffect(() => {
-        itemsRef.current = items;
-        estimateSizeRef.current = estimateSize;
-        itemIndexByMeasurementKeyRef.current = itemIndexByMeasurementKey;
-    });
+    itemsRef.current = items;
+    estimateSizeRef.current = estimateSize;
+    itemIndexByMeasurementKeyRef.current = itemIndexByMeasurementKey;
 
     const updateMeasuredSize = useCallback((key: string, nextSize: number) => {
         const normalizedSize = normalizeMeasuredVirtualSize(nextSize);
@@ -402,13 +454,14 @@ export function MeasuredVirtualList<T>({
             return;
         }
 
-        const currentItems = itemsRef.current;
-        const itemIndex = itemIndexByMeasurementKeyRef.current.get(key) ?? -1;
-        const previousKnownSize =
-            previousMeasuredSize ??
-            (itemIndex >= 0 && itemIndex < currentItems.length
-                ? estimateSizeRef.current(currentItems[itemIndex], itemIndex)
-                : normalizedSize);
+        const { itemIndex, previousKnownSize } = resolvePreviousMeasuredSize({
+            estimateSize: estimateSizeRef.current,
+            fallbackSize: normalizedSize,
+            itemIndexByMeasurementKey: itemIndexByMeasurementKeyRef.current,
+            items: itemsRef.current,
+            key,
+            previousMeasuredSize,
+        });
         const range = layoutRangeRef.current;
         const anchorAdjustment = calculateMeasuredVirtualScrollAnchorAdjustment(
             {

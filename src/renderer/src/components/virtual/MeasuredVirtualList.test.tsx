@@ -7,6 +7,7 @@ import {
     calculateMeasuredVirtualScrollTop,
     MeasuredVirtualList,
     pruneMeasuredSizesToKeys,
+    resolvePreviousMeasuredSize,
 } from "./MeasuredVirtualList";
 
 const ITEM_HEIGHT = 20;
@@ -206,6 +207,88 @@ describe("MeasuredVirtualList", () => {
         expect(markup).toContain("Item 0");
         expect(markup).toContain("Item 4");
         expect(markup.match(/data-row-index=/g)).toHaveLength(5);
+    });
+});
+
+describe("resolvePreviousMeasuredSize", () => {
+    const items = createItems(10);
+    const estimateSize = () => ITEM_HEIGHT;
+    const indexByKey = new Map(
+        items.map((_, index) => [`key-${index}`, index]),
+    );
+
+    it("uses the existing measured size when the key was already measured", () => {
+        const { itemIndex, previousKnownSize } = resolvePreviousMeasuredSize({
+            estimateSize,
+            fallbackSize: 80,
+            itemIndexByMeasurementKey: indexByKey,
+            items,
+            key: "key-3",
+            previousMeasuredSize: 52,
+        });
+
+        expect(itemIndex).toBe(3);
+        expect(previousKnownSize).toBe(52);
+    });
+
+    it("falls back to the row estimate for a freshly-keyed row the layout has not measured", () => {
+        // This is the re-key case (expansion/font/resize): the new key is in the
+        // current index map but not yet in measuredSizes, so the layout is
+        // showing the row at its estimate. The estimate must be the baseline so
+        // the caller computes a real anchor delta against the new measurement.
+        const { itemIndex, previousKnownSize } = resolvePreviousMeasuredSize({
+            estimateSize,
+            fallbackSize: 90,
+            itemIndexByMeasurementKey: indexByKey,
+            items,
+            key: "key-4",
+            previousMeasuredSize: undefined,
+        });
+
+        expect(itemIndex).toBe(4);
+        expect(previousKnownSize).toBe(ITEM_HEIGHT);
+
+        // The resolved values feed a non-zero compensation for a row above the
+        // viewport — exactly what a stale index map (itemIndex = -1) would drop.
+        expect(
+            calculateMeasuredVirtualScrollAnchorAdjustment({
+                itemIndex,
+                nextSize: 90,
+                preserveScrollAnchorOnMeasure: true,
+                previousSize: previousKnownSize,
+                virtualizationEnabled: true,
+                visibleStartIndex: 6,
+            }),
+        ).toBe(90 - ITEM_HEIGHT);
+    });
+
+    it("degrades to the fallback size when the key is absent from the index map", () => {
+        // A stale index map (the bug this guards against) makes the lookup miss:
+        // itemIndex = -1 and previousKnownSize collapses onto the measurement, so
+        // the anchor adjustment below is silently zeroed for the above-viewport
+        // row that actually changed height.
+        const { itemIndex, previousKnownSize } = resolvePreviousMeasuredSize({
+            estimateSize,
+            fallbackSize: 90,
+            itemIndexByMeasurementKey: indexByKey,
+            items,
+            key: "key-unknown",
+            previousMeasuredSize: undefined,
+        });
+
+        expect(itemIndex).toBe(-1);
+        expect(previousKnownSize).toBe(90);
+
+        expect(
+            calculateMeasuredVirtualScrollAnchorAdjustment({
+                itemIndex,
+                nextSize: 90,
+                preserveScrollAnchorOnMeasure: true,
+                previousSize: previousKnownSize,
+                virtualizationEnabled: true,
+                visibleStartIndex: 6,
+            }),
+        ).toBe(0);
     });
 });
 
