@@ -63,7 +63,7 @@ export function ResizableDiffContainer({
             const delta = event.clientY - startYRef.current;
             setHeight(Math.max(minHeight, startHeightRef.current + delta));
         },
-        [minHeight],
+        [minHeight, setHeight],
     );
 
     const handlePointerUp = useCallback(() => {
