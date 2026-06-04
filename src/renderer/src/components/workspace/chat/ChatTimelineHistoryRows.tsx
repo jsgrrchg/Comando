@@ -31,6 +31,7 @@ import {
     getChatTimelineVirtualMeasurementWidth,
     getChatTimelineVirtualRowGapPx,
     shouldVirtualizeChatTimeline,
+    type ChatTimelineRowMeasurementContext,
 } from "./chatTimelineVirtualization";
 
 interface ChatTimelineHistoryRowsProps {
@@ -252,77 +253,67 @@ export const ChatTimelineHistoryRows = memo(
             syncLayoutMetrics();
         }, [frozenContentWidth, shouldVirtualize, syncLayoutMetrics]);
 
-        const estimateSize = useCallback(
-            (row: ChatTimelineRow, index: number) =>
-                estimateChatTimelineRowHeight(row, {
-                    chatFontSize,
-                    gapPx: getChatTimelineVirtualRowGapPx({
-                        index,
-                        rowCount: historyRows.length,
-                    }),
-                    isLatestStreamingTool:
-                        row.id === latestStreamingEditedFileToolRowId,
-                    toolCardExpansionMode,
-                    width: scrollContainerWidth,
+        // The gap below a row depends only on its position in the list, so it is
+        // resolved once here and shared by the row context and the rendered
+        // wrapper — keeping it off buildRowContext's dependency churn so the row
+        // renderer stays as stable as historyRows.length.
+        const resolveRowGapPx = useCallback(
+            (index: number) =>
+                getChatTimelineVirtualRowGapPx({
+                    index,
+                    rowCount: historyRows.length,
                 }),
-            [
+            [historyRows.length],
+        );
+
+        // The estimate, the measurement key and the width-invariant identity key
+        // all derive from the same per-row layout inputs and must stay in
+        // lockstep — a divergence would key a fresh measurement against the wrong
+        // estimate. Build that context once. ChatTimelineRowMeasurementContext
+        // extends the estimate context, so one object satisfies all three; the
+        // identity key simply ignores the width bucket it carries.
+        const buildRowContext = useCallback(
+            (
+                row: ChatTimelineRow,
+                index: number,
+            ): ChatTimelineRowMeasurementContext => ({
+                chatFontFamily,
                 chatFontSize,
-                historyRows.length,
+                gapPx: resolveRowGapPx(index),
+                isLatestStreamingTool:
+                    row.id === latestStreamingEditedFileToolRowId,
+                toolCardExpansionMode,
+                width: scrollContainerWidth,
+            }),
+            [
+                chatFontFamily,
+                chatFontSize,
                 latestStreamingEditedFileToolRowId,
+                resolveRowGapPx,
                 scrollContainerWidth,
                 toolCardExpansionMode,
             ],
+        );
+
+        const estimateSize = useCallback(
+            (row: ChatTimelineRow, index: number) =>
+                estimateChatTimelineRowHeight(row, buildRowContext(row, index)),
+            [buildRowContext],
         );
 
         const getItemMeasurementKey = useCallback(
             (row: ChatTimelineRow, index: number) =>
-                getChatTimelineRowMeasurementKey(row, {
-                    chatFontFamily,
-                    chatFontSize,
-                    gapPx: getChatTimelineVirtualRowGapPx({
-                        index,
-                        rowCount: historyRows.length,
-                    }),
-                    isLatestStreamingTool:
-                        row.id === latestStreamingEditedFileToolRowId,
-                    toolCardExpansionMode,
-                    width: scrollContainerWidth,
-                }),
-            [
-                chatFontFamily,
-                chatFontSize,
-                historyRows.length,
-                latestStreamingEditedFileToolRowId,
-                scrollContainerWidth,
-                toolCardExpansionMode,
-            ],
+                getChatTimelineRowMeasurementKey(
+                    row,
+                    buildRowContext(row, index),
+                ),
+            [buildRowContext],
         );
 
-        // Width-invariant identity (the row's measurement key minus the width
-        // bucket), so a resize reuses each row's last measured height instead of
-        // collapsing the timeline back to estimates.
         const getItemIdentityKey = useCallback(
             (row: ChatTimelineRow, index: number) =>
-                getChatTimelineRowIdentityKey(row, {
-                    chatFontFamily,
-                    chatFontSize,
-                    gapPx: getChatTimelineVirtualRowGapPx({
-                        index,
-                        rowCount: historyRows.length,
-                    }),
-                    isLatestStreamingTool:
-                        row.id === latestStreamingEditedFileToolRowId,
-                    toolCardExpansionMode,
-                    width: scrollContainerWidth,
-                }),
-            [
-                chatFontFamily,
-                chatFontSize,
-                historyRows.length,
-                latestStreamingEditedFileToolRowId,
-                scrollContainerWidth,
-                toolCardExpansionMode,
-            ],
+                getChatTimelineRowIdentityKey(row, buildRowContext(row, index)),
+            [buildRowContext],
         );
 
         const renderVirtualItem = useCallback(
@@ -334,10 +325,7 @@ export const ChatTimelineHistoryRows = memo(
                 readonly isVisible: boolean;
                 readonly item: ChatTimelineRow;
             }) => {
-                const gapPx = getChatTimelineVirtualRowGapPx({
-                    index,
-                    rowCount: historyRows.length,
-                });
+                const gapPx = resolveRowGapPx(index);
 
                 return (
                     <div
@@ -356,9 +344,9 @@ export const ChatTimelineHistoryRows = memo(
                 );
             },
             [
-                historyRows.length,
                 latestStreamingEditedFileToolRowId,
                 renderRow,
+                resolveRowGapPx,
             ],
         );
 
