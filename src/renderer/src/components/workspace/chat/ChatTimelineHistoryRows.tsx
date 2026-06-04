@@ -11,6 +11,7 @@ import {
 } from "react";
 
 import type { AiToolCardExpansionMode } from "@shared/ipc";
+import { useShellStore } from "@renderer/app/store/shell-store";
 import {
     MeasuredVirtualList,
     type MeasuredVirtualListHandle,
@@ -71,6 +72,17 @@ export const ChatTimelineHistoryRows = memo(
         );
         const [scrollMarginTop, setScrollMarginTop] = useState(0);
         const [scrollContainerWidth, setScrollContainerWidth] = useState(0);
+        // While the pane splitter is being dragged we freeze the timeline: the
+        // content keeps its pre-drag width (so rows don't reflow) and all metric
+        // updates are skipped, then we re-sync once on release. frozenContentWidth
+        // is the pinned width (null = not frozen); the ref mirrors it for the
+        // synchronous early-return inside syncLayoutMetrics.
+        const isResizingPanel = useShellStore((state) => state.isResizingPanel);
+        const [frozenContentWidth, setFrozenContentWidth] = useState<
+            number | null
+        >(null);
+        const isFreezeActiveRef = useRef(false);
+        isFreezeActiveRef.current = frozenContentWidth !== null;
         const shouldVirtualize = shouldVirtualizeChatTimeline(
             historyRows.length,
         );
@@ -107,6 +119,13 @@ export const ChatTimelineHistoryRows = memo(
         }, [restorePendingResizeAnchor]);
 
         const syncLayoutMetrics = useCallback(() => {
+            // Frozen during an active splitter drag: skip every metric/anchor
+            // update so the scroll stays put. The single re-sync happens when the
+            // freeze lifts (see the freeze effects below).
+            if (isFreezeActiveRef.current) {
+                return;
+            }
+
             const historyElement = historyRef.current;
             const scrollContainer = scrollRef.current;
             const nextScrollContainerWidth = scrollContainer?.clientWidth ?? 0;
@@ -205,6 +224,33 @@ export const ChatTimelineHistoryRows = memo(
                 }
             };
         }, []);
+
+        // Engage/lift the freeze as the splitter drag starts/ends. Captured
+        // before the first width change lands (pointerdown precedes pointermove),
+        // so the pinned width matches the pre-drag layout exactly.
+        useLayoutEffect(() => {
+            if (!shouldVirtualize) {
+                return;
+            }
+
+            if (isResizingPanel) {
+                const width =
+                    historyRef.current?.getBoundingClientRect().width ?? 0;
+                setFrozenContentWidth(width > 0 ? width : null);
+            } else {
+                setFrozenContentWidth(null);
+            }
+        }, [isResizingPanel, shouldVirtualize]);
+
+        // Once the freeze lifts the DOM holds the real width again, so adopt it
+        // and re-anchor exactly once — instead of on every drag frame.
+        useLayoutEffect(() => {
+            if (!shouldVirtualize || frozenContentWidth !== null) {
+                return;
+            }
+
+            syncLayoutMetrics();
+        }, [frozenContentWidth, shouldVirtualize, syncLayoutMetrics]);
 
         const estimateSize = useCallback(
             (row: ChatTimelineRow, index: number) =>
@@ -334,7 +380,18 @@ export const ChatTimelineHistoryRows = memo(
         }
 
         return (
-            <div ref={historyRef} className="relative w-full">
+            <div
+                ref={historyRef}
+                className="relative w-full"
+                // Pin the content width while dragging the splitter so rows keep
+                // their pre-drag layout (no reflow); clip any overhang instead of
+                // letting it spill. Released to fluid width on drag end.
+                style={
+                    frozenContentWidth !== null
+                        ? { width: frozenContentWidth, overflowX: "clip" }
+                        : undefined
+                }
+            >
                 <MeasuredVirtualList
                     defaultViewportHeight={
                         CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT
