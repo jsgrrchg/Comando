@@ -139,6 +139,19 @@ export function getChatTimelineVirtualRowGapPx({
     return 0;
 }
 
+// Estimates a row's pixel height BEFORE it is rendered, so the virtual list can
+// size its scrollbar and place off-screen rows. These are deliberately rough
+// guesses: once a row scrolls into view its real height is measured and the
+// layout self-corrects, so a wrong estimate only causes a brief scroll wobble,
+// never incorrect output.
+//
+// The magic numbers below (base heights, per-detail increments, expansion
+// caps) are hand-tuned to approximate the real layout of `ChatMessageRow` and
+// `ToolActivityItem`/`ChangeReviewPanel`. They are NOT derived from those
+// components, so they can silently drift: if you change a tool card's or
+// message row's heights/padding/expanded layout, revisit the matching branch
+// here. The symptom of staleness is subtle — scroll jitter while flinging
+// through a long history — so it is worth updating in the same change.
 export function estimateChatTimelineRowHeight(
     row: ChatTimelineRow,
     context: ChatTimelineRowEstimateContext,
