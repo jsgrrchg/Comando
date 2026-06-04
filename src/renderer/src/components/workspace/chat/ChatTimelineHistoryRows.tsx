@@ -1,4 +1,5 @@
 import {
+    Fragment,
     memo,
     useCallback,
     useEffect,
@@ -290,13 +291,16 @@ export const ChatTimelineHistoryRows = memo(
         if (!shouldVirtualize) {
             return (
                 <>
-                    {historyRows.map((row) =>
-                        renderRow({
-                            isLatestStreamingTool:
-                                row.id === latestStreamingEditedFileToolRowId,
-                            row,
-                        }),
-                    )}
+                    {historyRows.map((row) => (
+                        <Fragment key={row.id}>
+                            {renderRow({
+                                isLatestStreamingTool:
+                                    row.id ===
+                                    latestStreamingEditedFileToolRowId,
+                                row,
+                            })}
+                        </Fragment>
+                    ))}
                 </>
             );
         }

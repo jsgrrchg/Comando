@@ -2190,11 +2190,13 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             readonly isLatestStreamingTool: boolean;
             readonly row: ChatTimelineRow;
         }) => (
+            // The list `key` is owned by each call site (the virtual list keys
+            // its row wrapper; the non-virtual path keys via Fragment), so this
+            // renderer only describes a row's content.
             <ChatTimelineRowView
                 canRenderRawFileReference={canRenderRawFileReference}
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
-                key={row.id}
                 onAddFileReferenceToChat={onAddFileReferenceToChat}
                 onOpenFile={onOpenFile}
                 onOpenImage={onOpenImage}
