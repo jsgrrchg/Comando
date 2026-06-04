@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { AiSessionSnapshot, AiToolActivity, AiTrackedFile } from "@shared/ipc";
 
-import type { ChatTimelineRow } from "./chatTimelineModel";
+import {
+    reconcileChatTimelineModel,
+    type ChatTimelineRow,
+} from "./chatTimelineModel";
 import {
     CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
     CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
@@ -360,7 +363,7 @@ describe("chatTimelineVirtualization", () => {
         expect(getChatTimelineVirtualMeasurementWidth(672)).toBe(672);
     });
 
-    it("caches the content signature by row identity", () => {
+    it("keys measurement by row identity, not by content", () => {
         const context = {
             chatFontFamily: "Inter",
             chatFontSize: 13,
@@ -376,19 +379,62 @@ describe("chatTimelineVirtualization", () => {
 
         const initialKey = getChatTimelineRowMeasurementKey(row, context);
 
-        // Mutating the same row reference in place must NOT change the key:
-        // the content signature is cached by identity. Production rows are
-        // immutable (the timeline model swaps references on change), so this
-        // pins the exact invariant the cache relies on — same reference means
-        // byte-identical content.
+        // The key is derived from the row's identity, so mutating the same
+        // reference in place must NOT change it. Production rows are immutable
+        // (the model swaps references on change), and the same reference is
+        // never re-rendered, so its height cannot change either.
         (row.message as { content: string }).content = "mutated in place";
         expect(getChatTimelineRowMeasurementKey(row, context)).toBe(initialKey);
 
-        // A fresh row object recomputes the signature, so changed content is
-        // still reflected once the model allocates a new reference.
+        // A fresh row object is a new identity, so its measurement is keyed
+        // separately — changed content is reflected once the model allocates a
+        // new reference.
         const replacedRow = createMessageRow({ content: "mutated in place" });
         expect(getChatTimelineRowMeasurementKey(replacedRow, context)).not.toBe(
             initialKey,
+        );
+    });
+
+    it("invalidates the measurement key exactly when the model reconciles a new row reference", () => {
+        const context = {
+            chatFontFamily: "Inter",
+            chatFontSize: 13,
+            gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+            isLatestStreamingTool: false,
+            toolCardExpansionMode: "collapsed" as const,
+            width: 640,
+        };
+        const reconcile = (summary: string, updatedAt: string) =>
+            (previous: Parameters<typeof reconcileChatTimelineModel>[0]) =>
+                reconcileChatTimelineModel(previous, {
+                    messages: [],
+                    status: "idle",
+                    toolActivity: [
+                        createActivity({ id: "tool-1", summary, updatedAt }),
+                    ],
+                    trackedFiles: [],
+                });
+
+        const model1 = reconcile("first", "2026-04-14T00:00:00.000Z")(null);
+        const row1 = model1.historyRows[0];
+        const key1 = row1 && getChatTimelineRowMeasurementKey(row1, context);
+
+        // A real content change (the model sees a new updatedAt) allocates a
+        // fresh row reference, so the measurement key must change.
+        const model2 = reconcile("second", "2026-04-14T00:00:05.000Z")(model1);
+        const row2 = model2.historyRows[0];
+        expect(row2).not.toBe(row1);
+        expect(row2 && getChatTimelineRowMeasurementKey(row2, context)).not.toBe(
+            key1,
+        );
+
+        // An identical snapshot reuses the same reference, so the key is reused
+        // and the measured height is kept.
+        const model3 = reconcile("second", "2026-04-14T00:00:05.000Z")(model2);
+        const row3 = model3.historyRows[0];
+        expect(row3).toBe(row2);
+        expect(row3 && getChatTimelineRowMeasurementKey(row3, context)).toBe(
+            row2 && getChatTimelineRowMeasurementKey(row2, context),
         );
     });
 });

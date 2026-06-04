@@ -64,30 +64,38 @@ export function getChatTimelineRowMeasurementKey(
         measurementWidth,
     ].join(":");
 
-    return `${row.id}:${layoutSignature}:${getCachedRowContentMeasurementSignature(
-        row,
-    )}`;
+    return `${row.id}:${layoutSignature}:${getRowMeasurementToken(row)}`;
 }
 
-// The content signature hashes the full text of every row, so recomputing it
-// on each measurement key rebuild dominates resize/font changes (where only
-// the layout signature actually changes). Cache it by row identity: the
-// timeline model reconciles rows immutably (createRowById reuses the same
-// reference when content is unchanged and allocates a fresh object when it
-// changes), so "same reference" means "byte-identical content" — the cached
-// signature is always valid for that reference. A WeakMap keeps it bounded:
-// rows dropped from the timeline are collected automatically.
-const rowContentSignatureCache = new WeakMap<ChatTimelineRow, string>();
+// The measurement key must change exactly when a row could render at a new
+// height. The timeline model reconciles rows immutably: createRowById reuses
+// the same ChatTimelineRow reference while the row is equivalent and allocates
+// a fresh one as soon as any compared field changes. An unchanged reference is
+// never re-rendered, so its height cannot change either — which makes row
+// IDENTITY a sufficient and exact trigger.
+//
+// Keying off identity (rather than a content hash) avoids a hidden coupling:
+// a hash would have to mirror exactly which fields the model's equivalence
+// checks compare, and could go stale if the model reused a reference whose
+// content the hash inspected but the equivalence ignored. It also skips
+// hashing every row's text on each rebuild.
+//
+// Each distinct reference gets a stable token; a fresh reference (the model
+// decided the row changed) gets a new one, invalidating the cached
+// measurement. The WeakMap keeps it bounded — dropped rows are collected.
+let nextRowMeasurementToken = 0;
+const rowMeasurementTokens = new WeakMap<ChatTimelineRow, number>();
 
-function getCachedRowContentMeasurementSignature(row: ChatTimelineRow): string {
-    const cached = rowContentSignatureCache.get(row);
-    if (cached !== undefined) {
-        return cached;
+function getRowMeasurementToken(row: ChatTimelineRow): number {
+    const existing = rowMeasurementTokens.get(row);
+    if (existing !== undefined) {
+        return existing;
     }
 
-    const signature = getRowContentMeasurementSignature(row);
-    rowContentSignatureCache.set(row, signature);
-    return signature;
+    const token = nextRowMeasurementToken;
+    nextRowMeasurementToken += 1;
+    rowMeasurementTokens.set(row, token);
+    return token;
 }
 
 export function getChatTimelineVirtualMeasurementWidth(width: number): number {
@@ -309,76 +317,4 @@ function isFileToolLike(
         normalizedKind === "update" ||
         normalizedKind === "write"
     );
-}
-
-function getRowContentMeasurementSignature(row: ChatTimelineRow): string {
-    if (row.kind === "message") {
-        const message = row.message;
-
-        return [
-            "message",
-            message.status,
-            message.kind,
-            hashString(message.content),
-            message.attachments
-                .map(
-                    (attachment) =>
-                        `${attachment.id}:${attachment.mimeType}:${attachment.sizeBytes ?? "unknown"}`,
-                )
-                .join(","),
-            message.generatedImage
-                ? [
-                      message.generatedImage.status,
-                      message.generatedImage.path ?? "",
-                      hashString(message.generatedImage.result ?? ""),
-                      hashString(message.generatedImage.revisedPrompt ?? ""),
-                      hashString(message.generatedImage.title ?? ""),
-                  ].join("/")
-                : "none",
-        ].join(":");
-    }
-
-    const activity = row.reviewEntry.activity;
-    return [
-        "tool",
-        activity.status,
-        activity.updatedAt,
-        activity.kind,
-        activity.exitCode ?? "none",
-        hashString(activity.title),
-        hashString(activity.summary ?? ""),
-        hashString(activity.terminalOutput ?? ""),
-        hashString(activity.rawInputJson ?? ""),
-        hashString(activity.rawOutputJson ?? ""),
-        activity.locations
-            .map(
-                (location) =>
-                    `${location.path}:${location.line ?? ""}:${location.endLine ?? ""}`,
-            )
-            .join(","),
-        activity.diffs
-            .map(
-                (diff) =>
-                    `${diff.kind}:${diff.path}:${diff.previousPath ?? ""}:${hashString(
-                        diff.oldText ?? "",
-                    )}:${hashString(diff.newText ?? "")}:${diff.hunks.length}`,
-            )
-            .join(","),
-        row.reviewEntry.trackedFiles
-            .map(
-                (trackedFile) =>
-                    `${trackedFile.identityKey}:${trackedFile.updatedAt}:${trackedFile.reviewState}`,
-            )
-            .join(","),
-    ].join(":");
-}
-
-function hashString(value: string): string {
-    let hash = 0;
-
-    for (let index = 0; index < value.length; index += 1) {
-        hash = (hash * 31 + value.charCodeAt(index)) | 0;
-    }
-
-    return `${value.length}:${Math.abs(hash)}`;
 }
