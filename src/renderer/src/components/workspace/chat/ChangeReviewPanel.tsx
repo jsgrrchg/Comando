@@ -1,10 +1,4 @@
-import {
-    memo,
-    useCallback,
-    useMemo,
-    useState,
-    type CSSProperties,
-} from "react";
+import { memo, useCallback, useMemo, type CSSProperties } from "react";
 
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
 import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/tree";
@@ -20,6 +14,7 @@ import {
     type ChangeReviewItem,
 } from "./toolActivityReviewModel";
 import { ResizableDiffContainer } from "./ResizableDiffContainer";
+import { usePersistentToolExpansion } from "./toolExpansionStore";
 import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 
 const TOOL_ACTION_BUTTON_STYLE: CSSProperties = {
@@ -206,18 +201,18 @@ function ChangeReviewFileCard({
     readonly item: ChangeReviewItem;
     readonly onOpen: (() => void) | null;
 }) {
+    // Persist expansion (and the diff height below) in the timeline scroller so
+    // it survives this card unmounting when its virtualized row scrolls out of
+    // view. The reset key still encodes the expansion mode, so switching modes
+    // re-hydrates to the mode's default exactly as before.
     const resetKey = `${activity.id}:${item.key}:${
         defaultExpanded ? "open" : "closed"
     }:${forceExpanded ? "forced" : "free"}`;
-    const [expansionState, setExpansionState] = useState({
-        expanded: defaultExpanded,
+    const [expanded, setExpanded] = usePersistentToolExpansion(
         resetKey,
-    });
-    const currentExpanded =
-        expansionState.resetKey === resetKey
-            ? expansionState.expanded
-            : defaultExpanded;
-    const resolvedExpanded = forceExpanded ? true : currentExpanded;
+        defaultExpanded,
+    );
+    const resolvedExpanded = forceExpanded ? true : expanded;
     const accent = getPanelAccent(activity);
     const actionLabel = getActivityActionLabel(activity.kind);
     const summaryLabel = `${actionLabel} ${getFileNameFromPath(item.path)}`;
@@ -253,17 +248,7 @@ function ChangeReviewFileCard({
                             return;
                         }
 
-                        setExpansionState((current) => {
-                            const expanded =
-                                current.resetKey === resetKey
-                                    ? current.expanded
-                                    : defaultExpanded;
-
-                            return {
-                                expanded: !expanded,
-                                resetKey,
-                            };
-                        });
+                        setExpanded((previous) => !previous);
                     }}
                     style={{
                         alignItems: "center",
@@ -373,7 +358,10 @@ function ChangeReviewFileCard({
             </div>
 
             {resolvedExpanded ? (
-                <ResizableDiffContainer accent={accent}>
+                <ResizableDiffContainer
+                    accent={accent}
+                    persistKey={`${activity.id}:${item.key}:diff-height`}
+                >
                     <EditedFileDiffPreview
                         compactLineNumbers
                         diff={item.diff}
