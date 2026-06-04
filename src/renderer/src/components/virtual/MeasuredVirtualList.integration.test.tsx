@@ -1,26 +1,36 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+    afterEach,
+    beforeEach,
+    describe,
+    expect,
+    it,
+    vi,
+    type MockInstance,
+} from "vitest";
 
 import { MeasuredVirtualList } from "./MeasuredVirtualList";
 
-// Integration coverage for the scroll-anchor compensation (mechanism B in the
-// resize hardening): when a row ABOVE the viewport re-measures to a new height,
-// the list must nudge scrollTop by the delta so the visible content stays put.
-// The pure math is unit-tested elsewhere; this drives the real component under
-// react-dom so the effect ordering, ResizeObserver wiring, and the actual
-// scrollTop mutation are exercised end to end.
+// Integration coverage for the virtualized measurement path under react-dom:
+// the scroll-anchor compensation (a row above the viewport re-measures → scroll
+// stays put), that a row attaches/measures exactly once instead of on every
+// render, that the ResizeObserver's border-box size is the one used, and that a
+// measurement-key churn on a reused node re-routes to the new key. The pure math
+// is unit-tested elsewhere; this exercises the real effect ordering, the
+// ResizeObserver wiring, and the actual scrollTop / layout mutations.
 
 const ITEM_HEIGHT = 20;
 const VIEWPORT_HEIGHT = 100;
 
 // jsdom has no layout engine and no ResizeObserver, so we drive measurements by
 // hand: a fake observer records the elements the list observes and lets a test
-// fire a contentRect height for any of them — exactly the channel the list uses
-// for the virtualized measurement path.
+// fire a size for any of them. The list reads the border-box size (with a
+// content-box fallback), so an entry carries both.
 interface FakeResizeEntry {
     readonly target: Element;
+    readonly borderBoxSize: readonly { readonly blockSize: number }[];
     readonly contentRect: { readonly height: number };
 }
 
@@ -35,6 +45,8 @@ class FakeResizeObserver {
         observers.push(this);
     }
 
+    // The list observes with { box: "border-box" }; the fake ignores the option
+    // (extra call args are harmless at runtime), so it takes only the element.
     observe(element: Element) {
         this.elements.add(element);
     }
@@ -51,25 +63,34 @@ class FakeResizeObserver {
         }
     }
 
-    fire(element: Element, height: number) {
+    fire(element: Element, borderBoxHeight: number, contentHeight: number) {
         if (this.elements.has(element)) {
-            this.callback([{ target: element, contentRect: { height } }]);
+            this.callback([
+                {
+                    target: element,
+                    borderBoxSize: [{ blockSize: borderBoxHeight }],
+                    contentRect: { height: contentHeight },
+                },
+            ]);
         }
     }
 }
 
-// A real browser keeps an element's measured height and its ResizeObserver
-// report in sync. The list re-measures via getBoundingClientRect on every
-// render (its ref callback is a fresh closure each time), so the stub MUST
-// reflect the latest "resized" height — otherwise a constant stub would revert
-// a just-reported resize on the next render. This map is the single source of
-// truth for both channels.
+// A real browser keeps an element's measured height (getBoundingClientRect, used
+// once on attach) and its ResizeObserver report in sync. The stub backs
+// getBoundingClientRect off this map so a fired resize stays reflected if the row
+// is ever re-measured; fireRowResize updates it alongside firing the observer.
 const heightByElement = new WeakMap<Element, number>();
 
-function fireRowResize(element: Element, height: number) {
+function fireRowResize(
+    element: Element,
+    height: number,
+    options?: { readonly contentHeight?: number },
+) {
     heightByElement.set(element, height);
+    const contentHeight = options?.contentHeight ?? height;
     for (const observer of observers) {
-        observer.fire(element, height);
+        observer.fire(element, height, contentHeight);
     }
 }
 
@@ -83,21 +104,25 @@ function createItems(count: number): Item[] {
     }));
 }
 
+interface MountConfig {
+    readonly items: readonly Item[];
+    readonly overscan: number;
+    readonly preserveScrollAnchorOnMeasure: boolean;
+    readonly getItemMeasurementKey?: (item: Item, index: number) => string;
+    readonly getItemIdentityKey?: (item: Item, index: number) => string;
+}
+
 interface MountedList {
     readonly scrollContainer: HTMLElement;
     readonly mountNode: HTMLElement;
     readonly root: Root;
+    readonly rerender: (next?: {
+        readonly items?: readonly Item[];
+        readonly getItemMeasurementKey?: (item: Item, index: number) => string;
+    }) => void;
 }
 
-function mountList({
-    items,
-    overscan,
-    preserveScrollAnchorOnMeasure,
-}: {
-    readonly items: readonly Item[];
-    readonly overscan: number;
-    readonly preserveScrollAnchorOnMeasure: boolean;
-}): MountedList {
+function mountList(config: MountConfig): MountedList {
     const scrollContainer = document.createElement("div");
     Object.defineProperty(scrollContainer, "clientHeight", {
         configurable: true,
@@ -112,25 +137,44 @@ function mountList({
     const root = createRoot(mountNode);
     const scrollContainerRef = { current: scrollContainer };
 
+    let currentItems = config.items;
+    let currentMeasurementKey = config.getItemMeasurementKey;
+
+    const element = () => (
+        <MeasuredVirtualList
+            defaultViewportHeight={VIEWPORT_HEIGHT}
+            estimateSize={() => ITEM_HEIGHT}
+            getItemIdentityKey={config.getItemIdentityKey}
+            getItemKey={(item) => item.id}
+            getItemMeasurementKey={currentMeasurementKey}
+            items={currentItems}
+            overscan={config.overscan}
+            preserveScrollAnchorOnMeasure={config.preserveScrollAnchorOnMeasure}
+            scrollContainerRef={scrollContainerRef}
+            scrollMarginTop={0}
+            renderItem={({ index, item }) => (
+                <div data-idx={index}>{item.id}</div>
+            )}
+        />
+    );
+
     act(() => {
-        root.render(
-            <MeasuredVirtualList
-                defaultViewportHeight={VIEWPORT_HEIGHT}
-                estimateSize={() => ITEM_HEIGHT}
-                getItemKey={(item) => item.id}
-                items={items}
-                overscan={overscan}
-                preserveScrollAnchorOnMeasure={preserveScrollAnchorOnMeasure}
-                scrollContainerRef={scrollContainerRef}
-                scrollMarginTop={0}
-                renderItem={({ index, item }) => (
-                    <div data-idx={index}>{item.id}</div>
-                )}
-            />,
-        );
+        root.render(element());
     });
 
-    return { scrollContainer, mountNode, root };
+    const rerender: MountedList["rerender"] = (next) => {
+        if (next?.items) {
+            currentItems = next.items;
+        }
+        if (next?.getItemMeasurementKey) {
+            currentMeasurementKey = next.getItemMeasurementKey;
+        }
+        act(() => {
+            root.render(element());
+        });
+    };
+
+    return { scrollContainer, mountNode, root, rerender };
 }
 
 function scrollTo(list: MountedList, scrollTop: number) {
@@ -156,6 +200,25 @@ function rowWrapper(mountNode: HTMLElement, index: number): Element {
     return content.parentElement;
 }
 
+function totalHeightPx(list: MountedList): string | undefined {
+    const listRoot = list.mountNode.firstElementChild as HTMLElement | null;
+    return listRoot?.style.height;
+}
+
+// Spy captured each test so call counts can be read without referencing the
+// (unbound) prototype method.
+let getBoundingClientRectSpy: MockInstance<() => DOMRect>;
+
+// Number of getBoundingClientRect calls made against row wrappers (they carry a
+// data-list-key). Equal to the number of attach measurements the list has done.
+function rowMeasureCount(): number {
+    return getBoundingClientRectSpy.mock.contexts.filter(
+        (context) =>
+            context instanceof HTMLElement &&
+            context.dataset.listKey !== undefined,
+    ).length;
+}
+
 beforeEach(() => {
     (
         globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -165,11 +228,14 @@ beforeEach(() => {
     ).ResizeObserver = FakeResizeObserver;
 
     // jsdom has no layout, so getBoundingClientRect() reports 0 — but the list
-    // measures each row's height that way on attach (setMeasuredElement). Back
-    // it with heightByElement so the initial layout matches a real render and a
-    // fired resize stays reflected on subsequent re-measures.
-    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
-        function getBoundingClientRect(this: Element): DOMRect {
+    // measures each row's height that way on attach. Back it with heightByElement
+    // so the initial layout matches a real render and a fired resize stays
+    // reflected if the row is re-measured.
+    getBoundingClientRectSpy = vi
+        .spyOn(Element.prototype, "getBoundingClientRect")
+        .mockImplementation(function getBoundingClientRect(
+            this: Element,
+        ): DOMRect {
             const height = heightByElement.get(this) ?? ITEM_HEIGHT;
             return {
                 height,
@@ -182,8 +248,7 @@ beforeEach(() => {
                 y: 0,
                 toJSON: () => ({}),
             };
-        },
-    );
+        });
 });
 
 afterEach(() => {
@@ -279,6 +344,91 @@ describe("MeasuredVirtualList scroll anchoring (integration)", () => {
         });
 
         expect(list.scrollContainer.scrollTop).toBe(300);
+
+        list.root.unmount();
+    });
+});
+
+describe("MeasuredVirtualList measurement wiring (integration)", () => {
+    it("measures each row once on attach, not on every render", () => {
+        const list = mountList({
+            items: createItems(60),
+            overscan: 10,
+            preserveScrollAnchorOnMeasure: true,
+        });
+
+        scrollTo(list, 300);
+        const afterScroll = rowMeasureCount();
+        expect(afterScroll).toBeGreaterThan(0); // rows attached and measured
+
+        // Re-render with no row changes. The row ref is stable, so React must not
+        // detach/reattach it, and no row is re-measured. An inline-closure ref
+        // (the pre-fix behavior) would re-measure every visible row per render.
+        list.rerender();
+        list.rerender();
+
+        expect(rowMeasureCount()).toBe(afterScroll);
+
+        list.root.unmount();
+    });
+
+    it("uses the ResizeObserver border-box size, not the content-box rect", () => {
+        const list = mountList({
+            items: createItems(60),
+            overscan: 10,
+            preserveScrollAnchorOnMeasure: true,
+        });
+
+        scrollTo(list, 300);
+        const aboveIndex = renderedIndexes(list.mountNode)[0];
+
+        // Border-box 60 but a divergent content-box 999. The list must use the
+        // border-box value so it matches its getBoundingClientRect channel.
+        act(() => {
+            fireRowResize(rowWrapper(list.mountNode, aboveIndex), 60, {
+                contentHeight: 999,
+            });
+        });
+
+        // Compensation uses 60 (border-box): 300 + (60 - 20) = 340. A content-box
+        // read would have moved it to 300 + (999 - 20).
+        expect(list.scrollContainer.scrollTop).toBe(340);
+
+        list.root.unmount();
+    });
+
+    it("re-routes measurements to the new key when a reused row's measurement key churns", () => {
+        const list = mountList({
+            items: createItems(60),
+            overscan: 10,
+            preserveScrollAnchorOnMeasure: true,
+            getItemMeasurementKey: (item) => `${item.id}:v1`,
+            // Width-invariant identity, stable across the churn, so the row keeps
+            // its measured height via carry-over instead of snapping to estimate.
+            getItemIdentityKey: (item) => item.id,
+        });
+
+        scrollTo(list, 300);
+        const aboveIndex = renderedIndexes(list.mountNode)[0];
+
+        act(() => {
+            fireRowResize(rowWrapper(list.mountNode, aboveIndex), 60);
+        });
+        // One row measured 20 → 60 grows the total by 40 (60 rows × 20 = 1200).
+        expect(totalHeightPx(list)).toBe("1240px");
+
+        // Churn every row's measurement key while reusing the same DOM nodes.
+        list.rerender({ getItemMeasurementKey: (item) => `${item.id}:v2` });
+        // Carry-over keeps the row at 60 across the churn.
+        expect(totalHeightPx(list)).toBe("1240px");
+
+        // A resize after the churn must land on the new key (:v2). If the
+        // observer were still keyed to :v1, this 80 would be dropped and the
+        // total would stay 1240.
+        act(() => {
+            fireRowResize(rowWrapper(list.mountNode, aboveIndex), 80);
+        });
+        expect(totalHeightPx(list)).toBe("1260px");
 
         list.root.unmount();
     });

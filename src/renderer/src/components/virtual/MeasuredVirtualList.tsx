@@ -408,8 +408,13 @@ export function MeasuredVirtualList<T>({
             ? defaultViewportHeight
             : Number.POSITIVE_INFINITY,
     }));
-    const elementByKeyRef = useRef(new Map<string, HTMLDivElement>());
-    const keyByElementRef = useRef(new WeakMap<Element, string>());
+    // Element bookkeeping is keyed by the STABLE list key (getItemKey), not the
+    // volatile measurement key: the wrapper's React key is the list key, so its
+    // DOM node is reused across measurement-key churn (resize, content edits).
+    // The live measurement key is resolved from the list key at measure time
+    // (measurementKeyByListKey), which lets the row ref attach exactly once.
+    const elementByListKeyRef = useRef(new Map<string, HTMLDivElement>());
+    const listKeyByElementRef = useRef(new WeakMap<Element, string>());
     const layoutRangeRef = useRef<MeasuredVirtualRange | null>(null);
     const pendingScrollAnchorAdjustmentRef = useRef(0);
     const resizeObserverRef = useRef<ResizeObserver | null>(null);
@@ -445,6 +450,18 @@ export function MeasuredVirtualList<T>({
             ),
         [getItemIdentityKey, itemMeasurementKeys, items],
     );
+    // Live list-key -> measurement-key map. The row ref is keyed by the stable
+    // list key, so a measurement must resolve the row's CURRENT measurement key
+    // here (it changes on resize/content edits while the DOM node is reused).
+    const measurementKeyByListKey = useMemo(() => {
+        const next = new Map<string, string>();
+
+        itemKeys.forEach((listKey, index) => {
+            next.set(listKey, itemMeasurementKeys[index]);
+        });
+
+        return next;
+    }, [itemKeys, itemMeasurementKeys]);
     // Last measured height per width-invariant identity. Mutated in place (like
     // the element maps below) and read during layout to bridge a row's height
     // across a measurement-key churn; pruned to the live identities alongside
@@ -470,10 +487,12 @@ export function MeasuredVirtualList<T>({
     const estimateSizeRef = useRef(estimateSize);
     const itemIndexByMeasurementKeyRef = useRef(itemIndexByMeasurementKey);
     const itemIdentityKeysRef = useRef(itemIdentityKeys);
+    const measurementKeyByListKeyRef = useRef(measurementKeyByListKey);
     itemsRef.current = items;
     estimateSizeRef.current = estimateSize;
     itemIndexByMeasurementKeyRef.current = itemIndexByMeasurementKey;
     itemIdentityKeysRef.current = itemIdentityKeys;
+    measurementKeyByListKeyRef.current = measurementKeyByListKey;
 
     const updateMeasuredSize = useCallback((key: string, nextSize: number) => {
         const normalizedSize = normalizeMeasuredVirtualSize(nextSize);
@@ -541,20 +560,34 @@ export function MeasuredVirtualList<T>({
 
         const observer = new ResizeObserver((entries) => {
             for (const entry of entries) {
-                const key = keyByElementRef.current.get(entry.target);
-                if (!key) {
+                const listKey = listKeyByElementRef.current.get(entry.target);
+                if (listKey === undefined) {
                     continue;
                 }
 
-                updateMeasuredSize(key, entry.contentRect.height);
+                // Resolve the row's CURRENT measurement key from its stable list
+                // key, so a measurement-key churn on a reused node is reported
+                // under the new key without re-attaching the ref.
+                const measurementKey =
+                    measurementKeyByListKeyRef.current.get(listKey);
+                if (measurementKey === undefined) {
+                    continue;
+                }
+
+                // Border-box to match the synchronous getBoundingClientRect
+                // measurement on attach, so the two channels can never disagree
+                // by the wrapper's padding/border.
+                const height =
+                    entry.borderBoxSize?.[0]?.blockSize ??
+                    entry.contentRect.height;
+                updateMeasuredSize(measurementKey, height);
             }
         });
 
         resizeObserverRef.current = observer;
 
-        for (const [key, element] of elementByKeyRef.current.entries()) {
-            keyByElementRef.current.set(element, key);
-            observer.observe(element);
+        for (const element of elementByListKeyRef.current.values()) {
+            observer.observe(element, { box: "border-box" });
         }
 
         return () => {
@@ -564,22 +597,29 @@ export function MeasuredVirtualList<T>({
     }, [updateMeasuredSize, virtualizationEnabled]);
 
     useEffect(() => {
-        const validKeys = new Set(itemMeasurementKeys);
+        // Drop elements for rows that no longer exist. Elements are keyed by the
+        // stable list key, so validate against itemKeys (not measurement keys).
+        const validListKeys = new Set(itemKeys);
 
-        for (const [key, element] of elementByKeyRef.current.entries()) {
-            if (validKeys.has(key)) {
+        for (const [listKey, element] of elementByListKeyRef.current.entries()) {
+            if (validListKeys.has(listKey)) {
                 continue;
             }
 
             resizeObserverRef.current?.unobserve(element);
-            elementByKeyRef.current.delete(key);
+            elementByListKeyRef.current.delete(listKey);
         }
 
         // Prune superseded measurements so the cache stays bounded to the
-        // current rows. Keys for current rows always live in validKeys, so
-        // only stale revisions — never an in-use measurement — get dropped.
+        // current rows. measuredSizes is keyed by measurement key (which churns
+        // more often than the list key), so validate it against those; keys for
+        // current rows always survive, only stale revisions get dropped.
+        const validMeasurementKeys = new Set(itemMeasurementKeys);
         const currentSizes = measuredSizesRef.current;
-        const prunedSizes = pruneMeasuredSizesToKeys(currentSizes, validKeys);
+        const prunedSizes = pruneMeasuredSizesToKeys(
+            currentSizes,
+            validMeasurementKeys,
+        );
 
         if (prunedSizes !== currentSizes) {
             measuredSizesRef.current = prunedSizes;
@@ -597,7 +637,7 @@ export function MeasuredVirtualList<T>({
                 measuredByIdentity.delete(identityKey);
             }
         }
-    }, [itemIdentityKeys, itemMeasurementKeys]);
+    }, [itemIdentityKeys, itemKeys, itemMeasurementKeys]);
 
     useEffect(() => {
         if (!virtualizationEnabled) {
@@ -829,27 +869,43 @@ export function MeasuredVirtualList<T>({
         [layout.virtualItems, resolveItemSize],
     );
 
-    const setMeasuredElement = useCallback(
-        (key: string, node: HTMLDivElement | null) => {
-            const previousElement = elementByKeyRef.current.get(key);
-
-            if (previousElement === node) {
-                return;
-            }
-
-            if (previousElement) {
-                resizeObserverRef.current?.unobserve(previousElement);
-                elementByKeyRef.current.delete(key);
-            }
-
+    // Stable ref for a measured row, keyed off the wrapper's data-list-key. Its
+    // identity only changes when updateMeasuredSize does (rarely), so React
+    // attaches it ONCE per row and runs the returned cleanup on unmount — rather
+    // than re-running an inline closure (and forcing a synchronous reflow) on
+    // every render. The ResizeObserver tracks every size change after attach, so
+    // the single getBoundingClientRect here is just the immediate first paint;
+    // a measurement-key churn on a reused node is handled by the observer.
+    const registerMeasuredElement = useCallback(
+        (node: HTMLDivElement | null) => {
             if (!node) {
                 return;
             }
 
-            elementByKeyRef.current.set(key, node);
-            keyByElementRef.current.set(node, key);
-            updateMeasuredSize(key, node.getBoundingClientRect().height);
-            resizeObserverRef.current?.observe(node);
+            const listKey = node.dataset.listKey;
+            if (listKey === undefined) {
+                return;
+            }
+
+            elementByListKeyRef.current.set(listKey, node);
+            listKeyByElementRef.current.set(node, listKey);
+
+            const measurementKey =
+                measurementKeyByListKeyRef.current.get(listKey);
+            if (measurementKey !== undefined) {
+                updateMeasuredSize(
+                    measurementKey,
+                    node.getBoundingClientRect().height,
+                );
+            }
+            resizeObserverRef.current?.observe(node, { box: "border-box" });
+
+            return () => {
+                resizeObserverRef.current?.unobserve(node);
+                if (elementByListKeyRef.current.get(listKey) === node) {
+                    elementByListKeyRef.current.delete(listKey);
+                }
+            };
         },
         [updateMeasuredSize],
     );
@@ -997,9 +1053,8 @@ export function MeasuredVirtualList<T>({
             {layout.virtualItems.map((virtualItem) => (
                 <div
                     key={virtualItem.key}
-                    ref={(node) => {
-                        setMeasuredElement(virtualItem.measurementKey, node);
-                    }}
+                    data-list-key={virtualItem.key}
+                    ref={registerMeasuredElement}
                     style={{
                         left: 0,
                         position: "absolute",
