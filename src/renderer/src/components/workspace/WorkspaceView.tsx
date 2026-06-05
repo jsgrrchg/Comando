@@ -69,7 +69,11 @@ import {
     saveAppEditorSettings,
 } from "@renderer/app/settings/client";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
-import { useRenderProbe } from "@renderer/app/debug/renderProbe";
+import {
+    recordProbeLifecycleEvent,
+    useLifecycleProbe,
+    useRenderProbe,
+} from "@renderer/app/debug/renderProbe";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
 import {
@@ -3361,6 +3365,14 @@ function FileTabView({
     readonly tab: RuntimeWorkspaceFileTab;
 }) {
     const document = tab.document;
+    useRenderProbe("FileTabView", {
+        path: tab.relativePath,
+        tabId: tab.id,
+    });
+    useLifecycleProbe("FileTabView", {
+        path: tab.relativePath,
+        tabId: tab.id,
+    });
     const projectSummary = useProjectsStore((state) =>
         state.projects.find((project) => project.id === tab.projectId) ?? null,
     );
@@ -4834,6 +4846,15 @@ function FileTabView({
                                 editor: MonacoEditor.IStandaloneDiffEditor,
                                 monaco: MonacoNamespace,
                             ) => {
+                                recordProbeLifecycleEvent(
+                                    "WorkspaceInlineReviewDiffEditor",
+                                    "mount",
+                                    {
+                                        language: monacoLanguageId,
+                                        path: tab.relativePath,
+                                        tabId: tab.id,
+                                    },
+                                );
                                 diffEditorRef.current = editor;
                                 void runtime?.ensureMonacoTextMateForLanguage(
                                     monacoLanguageId,
@@ -4931,6 +4952,15 @@ function FileTabView({
                                 applyInlineReviewModels(inlineReviewTrackedFile);
 
                                 editor.onDidDispose(() => {
+                                    recordProbeLifecycleEvent(
+                                        "WorkspaceInlineReviewDiffEditor",
+                                        "dispose",
+                                        {
+                                            language: monacoLanguageId,
+                                            path: tab.relativePath,
+                                            tabId: tab.id,
+                                        },
+                                    );
                                     const ownedModels =
                                         inlineReviewOwnedModelsRef.current;
                                     cleanupOriginalTokenDebug?.dispose();
@@ -5012,6 +5042,15 @@ function FileTabView({
                             onDraftChange(tab.id, value ?? "")
                         }
                         onMount={(editor) => {
+                            recordProbeLifecycleEvent(
+                                "WorkspaceMonacoEditor",
+                                "mount",
+                                {
+                                    language: monacoLanguageId,
+                                    path: tab.relativePath,
+                                    tabId: tab.id,
+                                },
+                            );
                             editorRef.current = editor;
                             void runtime?.ensureMonacoTextMateForLanguage(
                                 monacoLanguageId,
@@ -5079,6 +5118,15 @@ function FileTabView({
                             setEditorMountVersion((previous) => previous + 1);
 
                             editor.onDidDispose(() => {
+                                recordProbeLifecycleEvent(
+                                    "WorkspaceMonacoEditor",
+                                    "dispose",
+                                    {
+                                        language: monacoLanguageId,
+                                        path: tab.relativePath,
+                                        tabId: tab.id,
+                                    },
+                                );
                                 clearScheduledEditorViewStateRestore();
                                 // Do not call editor.saveViewState() here.
                                 // @monaco-editor/react disposes the model
