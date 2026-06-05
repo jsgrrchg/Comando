@@ -157,14 +157,13 @@ export function useLifecycleProbe(
     details: RenderProbeDetails = {},
 ): void {
     const detailsRef = useRef(details);
+    detailsRef.current = details;
 
     useEffect(() => {
-        const lifecycleDetails = detailsRef.current;
-
-        recordRenderProbeEvent(component, "mount", lifecycleDetails);
+        recordRenderProbeEvent(component, "mount", detailsRef.current);
 
         return () => {
-            recordRenderProbeEvent(component, "dispose", lifecycleDetails);
+            recordRenderProbeEvent(component, "dispose", detailsRef.current);
         };
     }, [component]);
 }

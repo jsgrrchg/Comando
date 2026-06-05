@@ -4571,9 +4571,7 @@ function FileTabView({
         if (
             !document ||
             document.kind === "image" ||
-            !canEdit ||
-            inlineReviewTrackedFile ||
-            !isVisible
+            !canEdit
         ) {
             return;
         }
@@ -4599,6 +4597,10 @@ function FileTabView({
             });
         }
         previousLease?.release();
+
+        if (!isVisible || inlineReviewTrackedFile) {
+            return;
+        }
 
         restoreEditorViewStateForTab(
             editor,
