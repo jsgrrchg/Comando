@@ -210,6 +210,11 @@ function estimateMessageRowHeight(
 ): number {
     const chatFontSize = context.chatFontSize;
     const fontScale = getFontScale(chatFontSize);
+
+    if (message.kind === "thinking") {
+        return 28 * fontScale;
+    }
+
     const content = message.content ?? "";
     const estimatedLines = estimateTextLines(
         content,
@@ -219,12 +224,7 @@ function estimateMessageRowHeight(
     const codeBlockCount = countCodeBlocks(content);
     const attachmentHeight = message.attachments.length * 48;
     const imageHeight = message.generatedImage ? 190 : 0;
-    const baseHeight =
-        message.kind === "user"
-            ? 54
-            : message.kind === "thinking"
-              ? 64
-              : 72;
+    const baseHeight = message.kind === "user" ? 54 : 72;
 
     return (
         baseHeight +
@@ -279,15 +279,26 @@ function estimateToolRowHeight(
             hasTerminalOutput &&
             (activity.status === "failed" ||
                 (activity.exitCode !== null && activity.exitCode !== 0));
-        return startsExpanded ? 210 : 58;
+        return startsExpanded ? 210 : 42;
     }
 
     if (hasInlineReview) {
+        const collapsedItemCount = Math.max(
+            1,
+            trackedFiles.length,
+            activity.diffs.length,
+        );
+        const collapsedHeight = Math.min(
+            220,
+            collapsedItemCount * 44 +
+                Math.max(0, collapsedItemCount - 1) *
+                    CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+        );
         const detailHeight = Math.min(
             360,
             activity.diffs.length * 82 + trackedFiles.length * 58,
         );
-        return isExpandedByMode ? 132 + detailHeight : 96;
+        return isExpandedByMode ? 132 + detailHeight : collapsedHeight;
     }
 
     if (isFileToolActivity(activity, trackedFiles)) {
@@ -297,14 +308,14 @@ function estimateToolRowHeight(
             (hasLocations ? Math.min(96, activity.locations.length * 28) : 0) +
             Math.min(240, activity.diffs.length * 72);
 
-        return hasDetail && isExpandedByMode ? 64 + detailHeight : 58;
+        return hasDetail && isExpandedByMode ? 64 + detailHeight : 42;
     }
 
     if (activity.status === "failed") {
         return 72 + (hasSummary ? 72 : 0) + (hasRawJson ? 130 : 0);
     }
 
-    return hasSummary || hasRawJson ? 90 : 42;
+    return hasSummary || hasRawJson ? 36 : 28;
 }
 
 function getFontScale(chatFontSize: number | undefined): number {

@@ -262,6 +262,66 @@ describe("chatTimelineVirtualization", () => {
         expect(narrowHeight).toBeGreaterThan(wideHeight);
     });
 
+    it("estimates collapsed thinking rows from their header, not hidden content", () => {
+        const content = "Reasoning content is hidden until expanded. ".repeat(40);
+        const thinkingRow = createMessageRow({
+            content,
+            kind: "thinking",
+        });
+        const assistantRow = createMessageRow({ content });
+
+        const thinkingHeight = estimateChatTimelineRowHeight(thinkingRow, {
+            chatFontSize: 13,
+            gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+            toolCardExpansionMode: "collapsed",
+            width: 520,
+        });
+        const assistantHeight = estimateChatTimelineRowHeight(assistantRow, {
+            chatFontSize: 13,
+            gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+            toolCardExpansionMode: "collapsed",
+            width: 520,
+        });
+
+        expect(thinkingHeight).toBeLessThan(assistantHeight);
+        expect(thinkingHeight).toBeLessThan(64);
+    });
+
+    it("estimates non-failed generic tools as collapsed even when raw JSON exists", () => {
+        const collapsedGenericTool = createToolRow({
+            activity: createActivity({
+                kind: "web_search",
+                rawInputJson: "{\"query\":\"Dota 2\"}",
+                rawOutputJson: "{\"ok\":true}",
+                title: "Web search",
+            }),
+        });
+        const failedGenericTool = createToolRow({
+            activity: createActivity({
+                kind: "web_search",
+                rawInputJson: "{\"query\":\"Dota 2\"}",
+                rawOutputJson: "{\"error\":\"network\"}",
+                status: "failed",
+                title: "Web search",
+            }),
+        });
+
+        const collapsedHeight = estimateChatTimelineRowHeight(
+            collapsedGenericTool,
+            {
+                gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+                toolCardExpansionMode: "collapsed",
+            },
+        );
+        const failedHeight = estimateChatTimelineRowHeight(failedGenericTool, {
+            gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+            toolCardExpansionMode: "collapsed",
+        });
+
+        expect(collapsedHeight).toBeLessThan(64);
+        expect(failedHeight).toBeGreaterThan(collapsedHeight);
+    });
+
     it("calculates scroll margin from the history offset inside the scroller", () => {
         const scrollContainer = {
             getBoundingClientRect: () => ({ top: 20 }) as DOMRect,

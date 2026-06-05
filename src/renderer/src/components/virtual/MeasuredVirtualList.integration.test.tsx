@@ -457,4 +457,34 @@ describe("MeasuredVirtualList measurement wiring (integration)", () => {
 
         list.root.unmount();
     });
+
+    it("measures mounted rows under a fresh key even without a resize event", () => {
+        const list = mountList({
+            items: createItems(60),
+            overscan: 10,
+            preserveScrollAnchorOnMeasure: true,
+            getItemMeasurementKey: (item) => `${item.id}:running`,
+        });
+
+        scrollTo(list, 300);
+        const aboveIndex = renderedIndexes(list.mountNode)[0];
+
+        act(() => {
+            fireRowResize(rowWrapper(list.mountNode, aboveIndex), 8);
+        });
+        expect(totalHeightPx(list)).toBe("1188px");
+
+        // This mirrors a chat tool moving from in_progress to completed: the row
+        // object/key changes, React reuses the same list-keyed DOM node, and the
+        // compact card's physical height stays unchanged. Without an explicit
+        // mounted-node re-measure, the new key falls back to the rough estimate
+        // and leaves blank space until a later scroll remounts the row.
+        list.rerender({
+            getItemMeasurementKey: (item) => `${item.id}:completed`,
+        });
+
+        expect(totalHeightPx(list)).toBe("1188px");
+
+        list.root.unmount();
+    });
 });

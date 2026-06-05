@@ -611,6 +611,32 @@ export function MeasuredVirtualList<T>({
         };
     }, [updateMeasuredSize, virtualizationEnabled]);
 
+    useLayoutEffect(() => {
+        if (!virtualizationEnabled) {
+            return;
+        }
+
+        const currentSizes = measuredSizesRef.current;
+        for (const [listKey, element] of elementByListKeyRef.current.entries()) {
+            const measurementKey = measurementKeyByListKey.get(listKey);
+            if (
+                measurementKey === undefined ||
+                currentSizes.has(measurementKey)
+            ) {
+                continue;
+            }
+
+            // A row can receive a new measurement key while React keeps the same
+            // DOM node mounted. If its physical height did not change, the
+            // ResizeObserver will not fire, so measure the mounted node once
+            // under the new key instead of falling back to a rough estimate.
+            updateMeasuredSize(
+                measurementKey,
+                element.getBoundingClientRect().height,
+            );
+        }
+    }, [measurementKeyByListKey, updateMeasuredSize, virtualizationEnabled]);
+
     useEffect(() => {
         // Drop elements for rows that no longer exist. Elements are keyed by the
         // stable list key, so validate against itemKeys (not measurement keys).
@@ -895,8 +921,9 @@ export function MeasuredVirtualList<T>({
     // attaches it ONCE per row and runs the returned cleanup on unmount — rather
     // than re-running an inline closure (and forcing a synchronous reflow) on
     // every render. The ResizeObserver tracks every size change after attach, so
-    // the single getBoundingClientRect here is just the immediate first paint;
-    // a measurement-key churn on a reused node is handled by the observer.
+    // the single getBoundingClientRect here is just the immediate first paint.
+    // Measurement-key churn on a reused node is handled by the layout effect
+    // above, including the no-resize case where the observer will not fire.
     const registerMeasuredElement = useCallback(
         (node: HTMLDivElement | null) => {
             if (!node) {
