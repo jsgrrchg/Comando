@@ -40,7 +40,9 @@ interface ChatTimelineHistoryRowsProps {
     readonly historyRows: readonly ChatTimelineRow[];
     readonly latestStreamingEditedFileToolRowId: string | null;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
+    readonly onVirtualResizeEnd?: () => void;
     readonly onVirtualResizeAutoFollow?: () => void;
+    readonly onVirtualResizeStart?: () => void;
     readonly renderRow: (params: {
         readonly isLatestStreamingTool: boolean;
         readonly row: ChatTimelineRow;
@@ -57,7 +59,9 @@ export const ChatTimelineHistoryRows = memo(
         historyRows,
         latestStreamingEditedFileToolRowId,
         onVirtualRangeChange,
+        onVirtualResizeEnd,
         onVirtualResizeAutoFollow,
+        onVirtualResizeStart,
         renderRow,
         scrollRef,
         shouldPreserveVirtualResizeAnchor,
@@ -67,10 +71,12 @@ export const ChatTimelineHistoryRows = memo(
         const pendingResizeAnchorFrameRef = useRef<number | null>(null);
         const pendingResizeAnchorRef =
             useRef<MeasuredVirtualViewportAnchor | null>(null);
+        const pendingVirtualResizeEndRef = useRef(false);
         const previousScrollContainerWidthRef = useRef<number | null>(null);
         const virtualListHandleRef = useRef<MeasuredVirtualListHandle | null>(
             null,
         );
+        const virtualResizeActiveRef = useRef(false);
         const [scrollMarginTop, setScrollMarginTop] = useState(0);
         const [scrollContainerWidth, setScrollContainerWidth] = useState(0);
         // While the pane splitter is being dragged we freeze the timeline: the
@@ -231,17 +237,37 @@ export const ChatTimelineHistoryRows = memo(
         // so the pinned width matches the pre-drag layout exactly.
         useLayoutEffect(() => {
             if (!shouldVirtualize) {
+                if (virtualResizeActiveRef.current) {
+                    virtualResizeActiveRef.current = false;
+                    pendingVirtualResizeEndRef.current = false;
+                    onVirtualResizeEnd?.();
+                }
                 return;
             }
 
             if (isResizingPanel) {
+                if (!virtualResizeActiveRef.current) {
+                    virtualResizeActiveRef.current = true;
+                    pendingVirtualResizeEndRef.current = false;
+                    onVirtualResizeStart?.();
+                }
+
                 const width =
                     historyRef.current?.getBoundingClientRect().width ?? 0;
                 setFrozenContentWidth(width > 0 ? width : null);
             } else {
+                if (virtualResizeActiveRef.current) {
+                    pendingVirtualResizeEndRef.current = true;
+                }
+
                 setFrozenContentWidth(null);
             }
-        }, [isResizingPanel, shouldVirtualize]);
+        }, [
+            isResizingPanel,
+            onVirtualResizeEnd,
+            onVirtualResizeStart,
+            shouldVirtualize,
+        ]);
 
         // Once the freeze lifts the DOM holds the real width again, so adopt it
         // and re-anchor exactly once — instead of on every drag frame.
@@ -251,7 +277,18 @@ export const ChatTimelineHistoryRows = memo(
             }
 
             syncLayoutMetrics();
-        }, [frozenContentWidth, shouldVirtualize, syncLayoutMetrics]);
+
+            if (pendingVirtualResizeEndRef.current) {
+                pendingVirtualResizeEndRef.current = false;
+                virtualResizeActiveRef.current = false;
+                onVirtualResizeEnd?.();
+            }
+        }, [
+            frozenContentWidth,
+            onVirtualResizeEnd,
+            shouldVirtualize,
+            syncLayoutMetrics,
+        ]);
 
         // The gap below a row depends only on its position in the list, so it is
         // resolved once here and shared by the row context and the rendered
@@ -393,6 +430,9 @@ export const ChatTimelineHistoryRows = memo(
                     onReady={handleVirtualListReady}
                     overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}
                     preserveScrollAnchorOnMeasure
+                    shouldPreserveScrollAnchorOnMeasure={
+                        shouldPreserveVirtualResizeAnchor
+                    }
                     scrollContainerRef={scrollRef}
                     scrollMarginTop={scrollMarginTop}
                     renderItem={renderVirtualItem}

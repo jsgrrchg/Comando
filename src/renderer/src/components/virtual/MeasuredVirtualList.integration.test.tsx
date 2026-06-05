@@ -110,6 +110,7 @@ interface MountConfig {
     readonly preserveScrollAnchorOnMeasure: boolean;
     readonly getItemMeasurementKey?: (item: Item, index: number) => string;
     readonly getItemIdentityKey?: (item: Item, index: number) => string;
+    readonly shouldPreserveScrollAnchorOnMeasure?: () => boolean;
 }
 
 interface MountedList {
@@ -150,6 +151,9 @@ function mountList(config: MountConfig): MountedList {
             items={currentItems}
             overscan={config.overscan}
             preserveScrollAnchorOnMeasure={config.preserveScrollAnchorOnMeasure}
+            shouldPreserveScrollAnchorOnMeasure={
+                config.shouldPreserveScrollAnchorOnMeasure
+            }
             scrollContainerRef={scrollContainerRef}
             scrollMarginTop={0}
             renderItem={({ index, item }) => (
@@ -333,6 +337,27 @@ describe("MeasuredVirtualList scroll anchoring (integration)", () => {
             items: createItems(60),
             overscan: 10,
             preserveScrollAnchorOnMeasure: false,
+        });
+
+        scrollTo(list, 300);
+
+        const aboveIndex = renderedIndexes(list.mountNode)[0];
+
+        act(() => {
+            fireRowResize(rowWrapper(list.mountNode, aboveIndex), 60);
+        });
+
+        expect(list.scrollContainer.scrollTop).toBe(300);
+
+        list.root.unmount();
+    });
+
+    it("leaves scrollTop untouched when the live preserve predicate is off", () => {
+        const list = mountList({
+            items: createItems(60),
+            overscan: 10,
+            preserveScrollAnchorOnMeasure: true,
+            shouldPreserveScrollAnchorOnMeasure: () => false,
         });
 
         scrollTo(list, 300);

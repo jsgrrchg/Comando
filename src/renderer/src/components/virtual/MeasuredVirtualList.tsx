@@ -59,6 +59,7 @@ export interface MeasuredVirtualListProps<T> {
     readonly onRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onReady?: (handle: MeasuredVirtualListHandle | null) => void;
     readonly preserveScrollAnchorOnMeasure?: boolean;
+    readonly shouldPreserveScrollAnchorOnMeasure?: () => boolean;
     readonly renderItem: (params: {
         readonly index: number;
         readonly isVisible: boolean;
@@ -394,6 +395,7 @@ export function MeasuredVirtualList<T>({
     onRangeChange,
     onReady,
     preserveScrollAnchorOnMeasure = false,
+    shouldPreserveScrollAnchorOnMeasure,
     renderItem,
 }: MeasuredVirtualListProps<T>) {
     const isBrowser = typeof window !== "undefined";
@@ -419,6 +421,11 @@ export function MeasuredVirtualList<T>({
     const pendingScrollAnchorAdjustmentRef = useRef(0);
     const resizeObserverRef = useRef<ResizeObserver | null>(null);
     const previousRangeRef = useRef<MeasuredVirtualRange | null>(null);
+    const shouldPreserveScrollAnchorOnMeasureRef = useRef(
+        shouldPreserveScrollAnchorOnMeasure,
+    );
+    shouldPreserveScrollAnchorOnMeasureRef.current =
+        shouldPreserveScrollAnchorOnMeasure;
     const itemKeys = useMemo(
         () => items.map((item, index) => getItemKey(item, index)),
         [getItemKey, items],
@@ -494,6 +501,13 @@ export function MeasuredVirtualList<T>({
     itemIdentityKeysRef.current = itemIdentityKeys;
     measurementKeyByListKeyRef.current = measurementKeyByListKey;
 
+    const shouldPreserveScrollAnchorOnMeasureNow = useCallback(() => {
+        return (
+            preserveScrollAnchorOnMeasure &&
+            (shouldPreserveScrollAnchorOnMeasureRef.current?.() ?? true)
+        );
+    }, [preserveScrollAnchorOnMeasure]);
+
     const updateMeasuredSize = useCallback((key: string, nextSize: number) => {
         const normalizedSize = normalizeMeasuredVirtualSize(nextSize);
         const currentSizes = measuredSizesRef.current;
@@ -529,7 +543,8 @@ export function MeasuredVirtualList<T>({
             {
                 itemIndex,
                 nextSize: normalizedSize,
-                preserveScrollAnchorOnMeasure,
+                preserveScrollAnchorOnMeasure:
+                    shouldPreserveScrollAnchorOnMeasureNow(),
                 previousSize: previousKnownSize,
                 virtualizationEnabled,
                 visibleStartIndex: range?.visibleStartIndex ?? 0,
@@ -551,7 +566,7 @@ export function MeasuredVirtualList<T>({
         nextSizes.set(key, normalizedSize);
         measuredSizesRef.current = nextSizes;
         setMeasuredSizes(nextSizes);
-    }, [preserveScrollAnchorOnMeasure, virtualizationEnabled]);
+    }, [shouldPreserveScrollAnchorOnMeasureNow, virtualizationEnabled]);
 
     useEffect(() => {
         if (!virtualizationEnabled || typeof ResizeObserver === "undefined") {
@@ -807,6 +822,11 @@ export function MeasuredVirtualList<T>({
             return;
         }
 
+        if (!shouldPreserveScrollAnchorOnMeasureNow()) {
+            pendingScrollAnchorAdjustmentRef.current = 0;
+            return;
+        }
+
         const adjustment = pendingScrollAnchorAdjustmentRef.current;
         pendingScrollAnchorAdjustmentRef.current = 0;
 
@@ -823,6 +843,7 @@ export function MeasuredVirtualList<T>({
     }, [
         measuredSizes,
         preserveScrollAnchorOnMeasure,
+        shouldPreserveScrollAnchorOnMeasureNow,
         scrollContainerRef,
         virtualizationEnabled,
     ]);

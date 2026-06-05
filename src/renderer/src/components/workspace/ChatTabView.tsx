@@ -132,6 +132,7 @@ const FALLBACK_COMMANDS: readonly AiAvailableCommand[] = [
 ];
 
 const NEAR_BOTTOM_THRESHOLD = 80;
+const RESIZE_BOTTOM_SETTLE_FRAMES = 2;
 const SCROLL_PERSIST_DELAY_MS = 80;
 const EMPTY_DRAFT_ATTACHMENTS: readonly AiImageAttachment[] = [];
 const EMPTY_COMPOSER_PARTS: readonly AIComposerPart[] =
@@ -252,6 +253,9 @@ export const ChatTabView = memo(function ChatTabView({
     const shouldAutoFollowRef = useRef(true);
     const pendingScrollFrameRef = useRef<number | null>(null);
     const restoreScrollFrameRef = useRef<number | null>(null);
+    const resizeBottomSettleFrameRef = useRef<number | null>(null);
+    const resizeBottomLockRef = useRef(false);
+    const resizeStartedNearBottomRef = useRef(false);
     const scrollPersistTimerRef = useRef<number | null>(null);
     const pendingPersistedScrollTopRef = useRef<number | null>(null);
     const pendingPersistedNearBottomRef = useRef<boolean | null>(null);
@@ -792,7 +796,7 @@ export const ChatTabView = memo(function ChatTabView({
     }, [scheduleScrollToBottom]);
 
     const shouldPreserveTimelineVirtualResizeAnchor = useCallback(() => {
-        return !shouldAutoFollowRef.current;
+        return !resizeBottomLockRef.current && !shouldAutoFollowRef.current;
     }, []);
 
     const persistCurrentViewState = useCallback(
@@ -880,6 +884,72 @@ export const ChatTabView = memo(function ChatTabView({
         [persistCurrentViewState],
     );
 
+    // When a splitter drag starts at the bottom, bottom-follow is the user's
+    // intent. Keep that intent alive while virtual rows re-measure at the
+    // released width, then settle to the final bottom over a couple of frames.
+    const settleResizeScrollToBottom = useCallback(() => {
+        if (resizeBottomSettleFrameRef.current !== null) {
+            window.cancelAnimationFrame(resizeBottomSettleFrameRef.current);
+            resizeBottomSettleFrameRef.current = null;
+        }
+
+        shouldAutoFollowRef.current = true;
+        scrollToBottom();
+
+        const runSettleFrame = (remainingFrames: number) => {
+            resizeBottomSettleFrameRef.current = window.requestAnimationFrame(
+                () => {
+                    resizeBottomSettleFrameRef.current = null;
+                    shouldAutoFollowRef.current = true;
+                    scrollToBottom();
+
+                    if (remainingFrames > 1) {
+                        runSettleFrame(remainingFrames - 1);
+                        return;
+                    }
+
+                    const scrollEl = scrollRef.current;
+                    if (scrollEl) {
+                        scheduleScrollPersist(scrollEl.scrollTop, true);
+                    }
+                    resizeBottomLockRef.current = false;
+                    resizeStartedNearBottomRef.current = false;
+                },
+            );
+        };
+
+        runSettleFrame(RESIZE_BOTTOM_SETTLE_FRAMES);
+    }, [scheduleScrollPersist, scrollToBottom]);
+
+    const handleTimelineVirtualResizeStart = useCallback(() => {
+        if (resizeBottomSettleFrameRef.current !== null) {
+            window.cancelAnimationFrame(resizeBottomSettleFrameRef.current);
+            resizeBottomSettleFrameRef.current = null;
+        }
+
+        const scrollEl = scrollRef.current;
+        const startedNearBottom =
+            shouldAutoFollowRef.current ||
+            (scrollEl ? isNearBottom(scrollEl) : false);
+
+        resizeStartedNearBottomRef.current = startedNearBottom;
+        resizeBottomLockRef.current = startedNearBottom;
+
+        if (startedNearBottom) {
+            shouldAutoFollowRef.current = true;
+        }
+    }, [isNearBottom]);
+
+    const handleTimelineVirtualResizeEnd = useCallback(() => {
+        if (resizeStartedNearBottomRef.current) {
+            settleResizeScrollToBottom();
+            return;
+        }
+
+        resizeBottomLockRef.current = false;
+        resizeStartedNearBottomRef.current = false;
+    }, [settleResizeScrollToBottom]);
+
     useEffect(() => {
         return () => {
             if (pendingScrollFrameRef.current !== null) {
@@ -890,6 +960,14 @@ export const ChatTabView = memo(function ChatTabView({
                 window.cancelAnimationFrame(restoreScrollFrameRef.current);
                 restoreScrollFrameRef.current = null;
             }
+            if (resizeBottomSettleFrameRef.current !== null) {
+                window.cancelAnimationFrame(
+                    resizeBottomSettleFrameRef.current,
+                );
+                resizeBottomSettleFrameRef.current = null;
+            }
+            resizeBottomLockRef.current = false;
+            resizeStartedNearBottomRef.current = false;
             flushScheduledScrollPersist();
         };
     }, [flushScheduledScrollPersist]);
@@ -986,6 +1064,15 @@ export const ChatTabView = memo(function ChatTabView({
     const handleScroll = useCallback(() => {
         const el = scrollRef.current;
         if (!el) return;
+
+        // Ignore programmatic scroll/layout churn while the resize bottom lock
+        // is active; otherwise a transient virtual scrollHeight can disable
+        // auto-follow even though the user started the resize at the bottom.
+        if (resizeBottomLockRef.current) {
+            shouldAutoFollowRef.current = true;
+            return;
+        }
+
         const nextIsNearBottom = isNearBottom(el);
         shouldAutoFollowRef.current = nextIsNearBottom;
         scheduleScrollPersist(el.scrollTop, nextIsNearBottom);
@@ -1535,9 +1622,11 @@ export const ChatTabView = memo(function ChatTabView({
                     onRevealFileReference={handleRevealResolvedFileReference}
                     onScroll={handleScroll}
                     onVirtualRangeChange={handleTimelineVirtualRangeChange}
+                    onVirtualResizeEnd={handleTimelineVirtualResizeEnd}
                     onVirtualResizeAutoFollow={
                         handleTimelineVirtualResizeAutoFollow
                     }
+                    onVirtualResizeStart={handleTimelineVirtualResizeStart}
                     projectId={tab.projectId}
                     resolveFileReference={resolveChatFileReference}
                     scrollRef={scrollRef}
@@ -2005,7 +2094,9 @@ type ChatTimelineProps = {
     ) => void;
     readonly onScroll: () => void;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
+    readonly onVirtualResizeEnd?: () => void;
     readonly onVirtualResizeAutoFollow?: () => void;
+    readonly onVirtualResizeStart?: () => void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
         reference: string,
@@ -2033,7 +2124,9 @@ const ChatTimeline = memo(function ChatTimeline({
     onRevealFileReference,
     onScroll,
     onVirtualRangeChange,
+    onVirtualResizeEnd,
     onVirtualResizeAutoFollow,
+    onVirtualResizeStart,
     projectId,
     resolveFileReference,
     scrollRef,
@@ -2080,7 +2173,9 @@ const ChatTimeline = memo(function ChatTimeline({
                         onOpenSession={onOpenSession}
                         onRevealFileReference={onRevealFileReference}
                         onVirtualRangeChange={onVirtualRangeChange}
+                        onVirtualResizeEnd={onVirtualResizeEnd}
                         onVirtualResizeAutoFollow={onVirtualResizeAutoFollow}
+                        onVirtualResizeStart={onVirtualResizeStart}
                         projectId={projectId}
                         resolveFileReference={resolveFileReference}
                         latestStreamingEditedFileToolRowId={
@@ -2149,7 +2244,9 @@ type ChatTimelineHistoryProps = {
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
+    readonly onVirtualResizeEnd?: () => void;
     readonly onVirtualResizeAutoFollow?: () => void;
+    readonly onVirtualResizeStart?: () => void;
     readonly projectId: string | null;
     readonly resolveFileReference: (
         reference: string,
@@ -2173,7 +2270,9 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     onOpenSession,
     onRevealFileReference,
     onVirtualRangeChange,
+    onVirtualResizeEnd,
     onVirtualResizeAutoFollow,
+    onVirtualResizeStart,
     projectId,
     resolveFileReference,
     latestStreamingEditedFileToolRowId,
@@ -2237,7 +2336,9 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
                 latestStreamingEditedFileToolRowId
             }
             onVirtualRangeChange={onVirtualRangeChange}
+            onVirtualResizeEnd={onVirtualResizeEnd}
             onVirtualResizeAutoFollow={onVirtualResizeAutoFollow}
+            onVirtualResizeStart={onVirtualResizeStart}
             renderRow={renderRow}
             scrollRef={scrollRef}
             shouldPreserveVirtualResizeAnchor={
