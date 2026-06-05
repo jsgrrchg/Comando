@@ -3563,6 +3563,7 @@ function FileTabView({
     const viewStatePersistTimerRef = useRef<number | null>(null);
     const viewStateRestoreFrameRef = useRef<number | null>(null);
     const restoredEditorViewStateTabIdRef = useRef<string | null>(null);
+    const suppressEditorChangeRef = useRef(false);
     const [editorMountVersion, setEditorMountVersion] = useState(0);
     const [diffEditorMountVersion, setDiffEditorMountVersion] = useState(0);
     const [
@@ -3804,6 +3805,17 @@ function FileTabView({
         [clearScheduledEditorViewStateRestore],
     );
 
+    const runWithoutEditorChangeNotification = useCallback(<T,>(
+        action: () => T,
+    ): T => {
+        suppressEditorChangeRef.current = true;
+        try {
+            return action();
+        } finally {
+            suppressEditorChangeRef.current = false;
+        }
+    }, []);
+
     const scheduleEditorViewStatePersist = useCallback(
         (editor: MonacoEditor.IStandaloneCodeEditor) => {
             const tabId = fileTabIdRef.current;
@@ -3938,6 +3950,39 @@ function FileTabView({
         pendingEditorViewStateTabIdRef.current = tab.id;
     }, [tab.id, tab.viewState]);
 
+    const getPendingEditorViewStateForTab = useCallback(
+        (
+            tabId: string,
+            viewState: MonacoEditor.ICodeEditorViewState | null,
+        ) =>
+            viewState ??
+            (pendingEditorViewStateTabIdRef.current === tabId
+                ? pendingEditorViewStateRef.current
+                : null),
+        [],
+    );
+
+    const restoreEditorViewStateForTab = useCallback(
+        (
+            editor: MonacoEditor.IStandaloneCodeEditor,
+            tabId: string,
+            viewState: MonacoEditor.ICodeEditorViewState | null,
+        ) => {
+            if (restoredEditorViewStateTabIdRef.current === tabId) {
+                return;
+            }
+
+            if (viewState) {
+                restoreEditorViewState(editor, viewState);
+            } else {
+                editor.layout();
+            }
+
+            restoredEditorViewStateTabIdRef.current = tabId;
+        },
+        [restoreEditorViewState],
+    );
+
     useEffect(() => {
         if (!isVisible) {
             return;
@@ -3964,23 +4009,16 @@ function FileTabView({
             return;
         }
 
-        const viewState =
-            tab.viewState ??
-            (pendingEditorViewStateTabIdRef.current === tab.id
-                ? pendingEditorViewStateRef.current
-                : null);
-
-        if (viewState) {
-            restoreEditorViewState(editor, viewState);
-        } else {
-            editor.layout();
-        }
-
-        restoredEditorViewStateTabIdRef.current = tab.id;
+        restoreEditorViewStateForTab(
+            editor,
+            tab.id,
+            getPendingEditorViewStateForTab(tab.id, tab.viewState ?? null),
+        );
     }, [
+        getPendingEditorViewStateForTab,
         inlineReviewTrackedFile,
         isVisible,
-        restoreEditorViewState,
+        restoreEditorViewStateForTab,
         tab.id,
         tab.viewState,
     ]);
@@ -4275,7 +4313,8 @@ function FileTabView({
             !document ||
             document.kind === "image" ||
             !canEdit ||
-            inlineReviewTrackedFile
+            inlineReviewTrackedFile ||
+            !isVisible
         ) {
             return;
         }
@@ -4286,22 +4325,38 @@ function FileTabView({
             return;
         }
 
-        const model = getOrCreateWorkspaceFileModel({
-            absolutePath: document.absolutePath,
-            language: monacoLanguageId,
-            monaco,
-            value: tab.draftContent,
-        });
+        const model = runWithoutEditorChangeNotification(() =>
+            getOrCreateWorkspaceFileModel({
+                absolutePath: document.absolutePath,
+                language: monacoLanguageId,
+                monaco,
+                value: tab.draftContent,
+            }),
+        );
 
         if (editor.getModel() !== model) {
-            editor.setModel(model);
+            runWithoutEditorChangeNotification(() => {
+                editor.setModel(model);
+            });
         }
+
+        restoreEditorViewStateForTab(
+            editor,
+            tab.id,
+            getPendingEditorViewStateForTab(tab.id, tab.viewState ?? null),
+        );
     }, [
         canEdit,
         document,
+        getPendingEditorViewStateForTab,
         inlineReviewTrackedFile,
+        isVisible,
         monacoLanguageId,
+        restoreEditorViewStateForTab,
+        runWithoutEditorChangeNotification,
         tab.draftContent,
+        tab.id,
+        tab.viewState,
     ]);
 
     useEffect(() => {
@@ -5247,9 +5302,13 @@ function FileTabView({
                     <EditorComponent
                         beforeMount={handleEditorBeforeMount}
                         language={monacoLanguageId}
-                        onChange={(value: string | undefined) =>
-                            onDraftChange(tab.id, value ?? "")
-                        }
+                        onChange={(value: string | undefined) => {
+                            if (suppressEditorChangeRef.current) {
+                                return;
+                            }
+
+                            onDraftChange(tab.id, value ?? "");
+                        }}
                         onMount={(
                             editor: MonacoEditor.IStandaloneCodeEditor,
                             monaco: MonacoNamespace,
@@ -5265,14 +5324,19 @@ function FileTabView({
                             );
                             editorRef.current = editor;
                             editorMonacoRef.current = monaco;
-                            const model = getOrCreateWorkspaceFileModel({
-                                absolutePath: document.absolutePath,
-                                language: monacoLanguageId,
-                                monaco,
-                                value: tab.draftContent,
-                            });
+                            const model = runWithoutEditorChangeNotification(
+                                () =>
+                                    getOrCreateWorkspaceFileModel({
+                                        absolutePath: document.absolutePath,
+                                        language: monacoLanguageId,
+                                        monaco,
+                                        value: tab.draftContent,
+                                    }),
+                            );
                             if (editor.getModel() !== model) {
-                                editor.setModel(model);
+                                runWithoutEditorChangeNotification(() => {
+                                    editor.setModel(model);
+                                });
                             }
                             void runtime?.ensureMonacoTextMateForLanguage(
                                 monacoLanguageId,
@@ -5295,11 +5359,14 @@ function FileTabView({
                                     null;
                             } else {
                                 const persistedViewState =
-                                    tab.viewState ??
-                                    pendingEditorViewStateRef.current;
+                                    getPendingEditorViewStateForTab(
+                                        tab.id,
+                                        tab.viewState ?? null,
+                                    );
                                 if (persistedViewState) {
-                                    restoreEditorViewState(
+                                    restoreEditorViewStateForTab(
                                         editor,
+                                        tab.id,
                                         persistedViewState,
                                     );
                                     pendingEditorViewStateRef.current =
