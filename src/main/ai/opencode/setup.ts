@@ -11,6 +11,7 @@ import type {
 
 import { launchTerminalLoginCommand } from "../auth/terminal-login";
 import { resolveXdgDataDir } from "../data-dir";
+import { resolveExecutableFromRuntimePath } from "../runtime-env";
 import type { SecretStoreGateway } from "../secret-store";
 import { debugBenignError } from "../../observability/logging";
 
@@ -29,10 +30,6 @@ const OPENCODE_PROVIDER_API_KEY_ENVS = [
 ] as const;
 const OPENCODE_LOGIN_METHOD_ID =
     "opencode-login" satisfies OpenCodeAuthMethodId;
-const OPENCODE_MACOS_FALLBACK_DIRS = [
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-] as const;
 
 interface ResolvedOpenCodeBinary {
     readonly args: readonly string[];
@@ -361,11 +358,6 @@ function resolveOpenCodeBinary(
         return commandFromExistingPath(pathResolved, "path");
     }
 
-    const macOsResolved = resolveFromMacOsFallbackDirs(OPENCODE_PROGRAM_NAME);
-    if (macOsResolved) {
-        return commandFromExistingPath(macOsResolved, "path");
-    }
-
     return {
         args: [],
         command: null,
@@ -465,47 +457,7 @@ function getFileModifiedAtMs(filePath: string): number | null {
 }
 
 function resolveFromPath(command: string): string | null {
-    const pathEntries = (process.env.PATH ?? "")
-        .split(path.delimiter)
-        .filter(Boolean);
-    const pathextEntries =
-        process.platform === "win32"
-            ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM")
-                  .split(";")
-                  .filter(Boolean)
-            : [""];
-
-    for (const entry of pathEntries) {
-        for (const ext of pathextEntries) {
-            const candidate = path.join(
-                entry,
-                process.platform === "win32" &&
-                    !command.toLowerCase().endsWith(ext.toLowerCase())
-                    ? `${command}${ext}`
-                    : command,
-            );
-            if (isExecutableFile(candidate)) {
-                return candidate;
-            }
-        }
-    }
-
-    return null;
-}
-
-function resolveFromMacOsFallbackDirs(command: string): string | null {
-    if (process.platform !== "darwin") {
-        return null;
-    }
-
-    for (const entry of OPENCODE_MACOS_FALLBACK_DIRS) {
-        const candidate = path.join(entry, command);
-        if (isExecutableFile(candidate)) {
-            return candidate;
-        }
-    }
-
-    return null;
+    return resolveExecutableFromRuntimePath(command);
 }
 
 function isExecutableFile(candidatePath: string): boolean {

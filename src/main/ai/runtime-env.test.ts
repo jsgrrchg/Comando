@@ -58,4 +58,27 @@ describe("buildRuntimeSpawnEnv", () => {
             "/sbin",
         ]);
     });
+
+    it("adds user install paths from the provided environment", () => {
+        Object.defineProperty(process, "platform", {
+            configurable: true,
+            value: "darwin",
+        });
+
+        const homeDir = "/Users/example";
+        const env = buildRuntimeSpawnEnv(
+            {
+                HOME: homeDir,
+            },
+            "/opt/homebrew/bin/opencode",
+        );
+
+        expect(env.PATH?.split(path.delimiter).slice(0, 5)).toEqual([
+            "/opt/homebrew/bin",
+            path.join(homeDir, "bin"),
+            path.join(homeDir, ".grok/bin"),
+            path.join(homeDir, ".opencode/bin"),
+            path.join(homeDir, ".local/bin"),
+        ]);
+    });
 });

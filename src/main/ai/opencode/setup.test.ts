@@ -93,15 +93,55 @@ describe("OpenCode setup", () => {
         }
     });
 
+    it("resolves OpenCode from its user install path when PATH is sparse", () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-user-path-"),
+        );
+
+        try {
+            const userBinDir = path.join(tempDir, ".opencode", "bin");
+            fs.mkdirSync(userBinDir, { recursive: true });
+            const binaryPath = writeExecutable(userBinDir, "opencode");
+            process.env.HOME = tempDir;
+            delete process.env.USERPROFILE;
+            process.env.PATH = "";
+
+            const resolved = resolveOpenCodeRuntime(
+                createOpenCodeSettings({ authMethod: "opencode-login" }),
+            );
+
+            expect(resolved.program).toBe(binaryPath);
+            expect(resolved.status.source).toBe("path");
+            expect(resolved.status.state).toBe("ready");
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("reports missing when OpenCode cannot be found", () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-missing-"),
+        );
+        process.env.HOME = tempDir;
+        delete process.env.USERPROFILE;
         process.env.PATH = "";
 
-        const status = getOpenCodeRuntimeStatus(createOpenCodeSettings());
+        try {
+            const status = getOpenCodeRuntimeStatus(
+                createOpenCodeSettings({
+                    binaryPath: "missing-opencode-for-test",
+                }),
+            );
 
-        expect(status.runtimeId).toBe("opencode");
-        expect(status.state).toBe("missing");
-        expect(status.onboardingRequired).toBe(true);
-        expect(status.message).toContain("OpenCode CLI was not found");
+            expect(status.runtimeId).toBe("opencode");
+            expect(status.state).toBe("missing");
+            expect(status.onboardingRequired).toBe(true);
+            expect(status.message).toContain(
+                "Configured command was not found",
+            );
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
     });
 
     it("detects external auth from auth.json", () => {

@@ -49,8 +49,8 @@ export function buildRuntimePathEntries(
 ): string[] {
     const entries = [
         ...resolveExecutableDir(executable),
-        ...(process.platform === "darwin" ? MACOS_COMMON_PATH_ENTRIES : []),
         ...resolveUserPathEntries(env),
+        ...(process.platform === "darwin" ? MACOS_COMMON_PATH_ENTRIES : []),
         ...DEFAULT_PATH_ENTRIES,
         ...(currentPath?.split(path.delimiter).filter(Boolean) ?? []),
     ];
