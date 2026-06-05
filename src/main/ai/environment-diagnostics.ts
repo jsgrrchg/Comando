@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 
 import type {
@@ -31,7 +30,10 @@ import {
     resolveCodexRuntime,
     type ResolveCodexRuntimeOptions,
 } from "./resolver/runtime-resolver";
-import { buildRuntimeSpawnEnv } from "./runtime-env";
+import {
+    buildRuntimeSpawnEnv,
+    resolveExecutableFromRuntimePath,
+} from "./runtime-env";
 
 type RuntimePathOverrideName = AiRuntimePathOverrideDiagnostic["name"];
 type CredentialEnvironmentName = AiCredentialEnvironmentDiagnostic["name"];
@@ -376,12 +378,12 @@ function resolveExecutableProbe(
     command: (typeof EXECUTABLE_PROBES)[number],
     env: NodeJS.ProcessEnv,
 ): AiResolvedExecutable {
-    const resolvedPath = resolveFromPath(command, env);
+    const resolvedPath = resolveExecutableFromRuntimePath(command, env);
 
     if (!resolvedPath) {
         return {
             command,
-            message: `Command was not found on PATH: ${command}`,
+            message: `Command was not found on the runtime search path: ${command}`,
             path: null,
             source: null,
             state: "missing",
@@ -395,46 +397,6 @@ function resolveExecutableProbe(
         source: "path",
         state: "ready",
     };
-}
-
-function resolveFromPath(
-    command: string,
-    env: NodeJS.ProcessEnv,
-): string | null {
-    const pathEntries = splitPathEntries(env.PATH);
-    const pathExtEntries =
-        process.platform === "win32"
-            ? (env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM")
-                  .split(";")
-                  .filter(Boolean)
-            : [""];
-
-    for (const entry of pathEntries) {
-        for (const extension of pathExtEntries) {
-            const candidate = path.join(
-                entry,
-                process.platform === "win32" &&
-                    !command.toLowerCase().endsWith(extension.toLowerCase())
-                    ? `${command}${extension}`
-                    : command,
-            );
-
-            if (isExecutableFile(candidate)) {
-                return candidate;
-            }
-        }
-    }
-
-    return null;
-}
-
-function isExecutableFile(candidate: string): boolean {
-    try {
-        fs.accessSync(candidate, fs.constants.X_OK);
-        return fs.statSync(candidate).isFile();
-    } catch {
-        return false;
-    }
 }
 
 function withScopedProcessEnv<T>(

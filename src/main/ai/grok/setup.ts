@@ -25,6 +25,10 @@ import {
     type SecretStoreGateway,
 } from "../secret-store";
 import { debugBenignError } from "../../observability/logging";
+import {
+    buildRuntimeSpawnEnv,
+    resolveExecutableFromRuntimePath,
+} from "../runtime-env";
 
 const GROK_PROGRAM_NAME = "grok";
 const GROK_ACP_ARGS = ["--no-auto-update", "agent", "stdio"] as const;
@@ -35,10 +39,6 @@ const GROK_LOGIN_METHOD_ID = "grok-login" satisfies GrokAuthMethodId;
 const XAI_API_KEY_METHOD_ID = "xai-api-key" satisfies GrokAuthMethodId;
 const GROK_SECRET_NAMESPACE = "ai.grok";
 const XAI_API_KEY_SECRET = "xai_api_key";
-const GROK_MACOS_FALLBACK_DIRS = [
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-] as const;
 const GROK_AUTH_PROBE_TIMEOUT_MS = 2_000;
 
 interface ResolvedGrokBinary {
@@ -348,7 +348,10 @@ export async function probeGrokCachedTokenAuth(
 
     const child = spawn(resolved.program, [...resolved.args], {
         cwd: options.cwd ?? undefined,
-        env: applyGrokAuthEnv(process.env, settings, secretStore),
+        env: buildRuntimeSpawnEnv(
+            applyGrokAuthEnv(process.env, settings, secretStore),
+            resolved.program,
+        ),
         stdio: ["pipe", "pipe", "pipe"],
     });
     const client: Client = {
@@ -649,11 +652,6 @@ function resolveGrokBinary(settings: GrokRuntimeSettings): ResolvedGrokBinary {
         return commandFromExistingPath(pathResolved, "path");
     }
 
-    const macOsResolved = resolveFromMacOsFallbackDirs(GROK_PROGRAM_NAME);
-    if (macOsResolved) {
-        return commandFromExistingPath(macOsResolved, "path");
-    }
-
     return {
         args: [],
         command: null,
@@ -753,47 +751,7 @@ function getFileModifiedAtMs(filePath: string): number | null {
 }
 
 function resolveFromPath(command: string): string | null {
-    const pathEntries = (process.env.PATH ?? "")
-        .split(path.delimiter)
-        .filter(Boolean);
-    const pathextEntries =
-        process.platform === "win32"
-            ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM")
-                  .split(";")
-                  .filter(Boolean)
-            : [""];
-
-    for (const entry of pathEntries) {
-        for (const ext of pathextEntries) {
-            const candidate = path.join(
-                entry,
-                process.platform === "win32" &&
-                    !command.toLowerCase().endsWith(ext.toLowerCase())
-                    ? `${command}${ext}`
-                    : command,
-            );
-            if (isExecutableFile(candidate)) {
-                return candidate;
-            }
-        }
-    }
-
-    return null;
-}
-
-function resolveFromMacOsFallbackDirs(command: string): string | null {
-    if (process.platform !== "darwin") {
-        return null;
-    }
-
-    for (const entry of GROK_MACOS_FALLBACK_DIRS) {
-        const candidate = path.join(entry, command);
-        if (isExecutableFile(candidate)) {
-            return candidate;
-        }
-    }
-
-    return null;
+    return resolveExecutableFromRuntimePath(command);
 }
 
 function isExecutableFile(candidatePath: string): boolean {

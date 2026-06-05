@@ -117,6 +117,29 @@ describe("Grok setup", () => {
         }
     });
 
+    it("resolves Grok from its user install path when PATH is sparse", () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-grok-user-path-"),
+        );
+
+        try {
+            const userBinDir = path.join(tempDir, ".grok", "bin");
+            fs.mkdirSync(userBinDir, { recursive: true });
+            const binaryPath = writeExecutable(userBinDir, "grok");
+            process.env.HOME = tempDir;
+            delete process.env.USERPROFILE;
+            process.env.PATH = "";
+
+            const resolved = resolveGrokRuntime(createEmptyGrokSettings());
+
+            expect(resolved.program).toBe(binaryPath);
+            expect(resolved.status.source).toBe("path");
+            expect(resolved.status.state).toBe("ready");
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("reports missing and non-executable Grok runtimes", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-grok-missing-"),
@@ -125,6 +148,8 @@ describe("Grok setup", () => {
         try {
             const nonExecutablePath = path.join(tempDir, "grok");
             fs.writeFileSync(nonExecutablePath, "#!/bin/sh\nexit 0\n", "utf8");
+            process.env.HOME = tempDir;
+            delete process.env.USERPROFILE;
             process.env.PATH = "";
 
             const missing = getGrokRuntimeStatus(createEmptyGrokSettings());

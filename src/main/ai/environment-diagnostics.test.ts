@@ -203,6 +203,59 @@ describe("AI environment diagnostics", () => {
         }
     });
 
+    it("finds Grok in its user install directory when inherited PATH is sparse", () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-ai-diagnostics-grok-path-"),
+        );
+
+        try {
+            const homeDir = path.join(tempDir, "home");
+            const grokBinDir = path.join(homeDir, ".grok", "bin");
+            fs.mkdirSync(grokBinDir, { recursive: true });
+            const grokPath = writeExecutable(grokBinDir, "grok");
+
+            const diagnostics = createAiEnvironmentDiagnostics({
+                env: {
+                    HOME: homeDir,
+                    PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+                    XAI_API_KEY: "xai-secret-value",
+                },
+                secretStore: createSecretStore(),
+                settings: createSettings({
+                    grok: {
+                        authInvalidatedAtMs: null,
+                        authMethod: "xai-api-key",
+                        binaryPath: null,
+                        hasXaiApiKey: false,
+                    },
+                }),
+            });
+
+            expect(
+                diagnostics.executables.find(
+                    (entry) => entry.command === "grok",
+                ),
+            ).toMatchObject({
+                message: null,
+                path: grokPath,
+                source: "path",
+                state: "ready",
+            });
+            expect(
+                diagnostics.runtimes.find(
+                    (runtime) => runtime.runtimeId === "grok",
+                ),
+            ).toMatchObject({
+                command: `${grokPath} --no-auto-update agent stdio`,
+                executablePath: grokPath,
+                source: "path",
+                state: "ready",
+            });
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("keeps stored secret values out of diagnostics payloads", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-ai-diagnostics-secrets-"),
