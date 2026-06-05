@@ -352,6 +352,7 @@ export const ChatTabView = memo(function ChatTabView({
         () => cloneComposerPartsForDraft(initialComposerParts),
     );
     const [composerResetNonce, setComposerResetNonce] = useState(0);
+    const [showJumpToBottom, setShowJumpToBottom] = useState(false);
     const commitComposerParts = useCallback(
         (nextParts: readonly AIComposerPart[]) => {
             const clonedParts = cloneComposerPartsForDraft(nextParts);
@@ -810,6 +811,7 @@ export const ChatTabView = memo(function ChatTabView({
 
     const handleTimelineVirtualResizeAutoFollow = useCallback(() => {
         scheduleScrollToBottom();
+        setShowJumpToBottom(false);
     }, [scheduleScrollToBottom]);
 
     const shouldPreserveTimelineVirtualResizeAnchor = useCallback(() => {
@@ -999,21 +1001,34 @@ export const ChatTabView = memo(function ChatTabView({
     ]);
 
     useLayoutEffect(() => {
+        let cancelled = false;
+        const setJumpToBottomVisibility = (visible: boolean) => {
+            queueMicrotask(() => {
+                if (!cancelled) {
+                    setShowJumpToBottom(visible);
+                }
+            });
+        };
         const scrollEl = scrollRef.current;
         const restoreScrollTop = persistedViewState?.scrollTop ?? 0;
         const shouldRestoreBottom = persistedViewState?.isNearBottom ?? true;
 
         if (!scrollEl) {
             shouldAutoFollowRef.current = shouldRestoreBottom;
-            return undefined;
+            setJumpToBottomVisibility(false);
+            return () => {
+                cancelled = true;
+            };
         }
 
         if (shouldRestoreBottom) {
             shouldAutoFollowRef.current = true;
             scheduleScrollToBottom();
+            setJumpToBottomVisibility(false);
         } else {
             shouldAutoFollowRef.current = false;
             scrollEl.scrollTop = restoreScrollTop;
+            setJumpToBottomVisibility(!isNearBottom(scrollEl));
         }
 
         if (restoreScrollFrameRef.current !== null) {
@@ -1028,13 +1043,16 @@ export const ChatTabView = memo(function ChatTabView({
 
             if (shouldRestoreBottom) {
                 scrollToBottom();
+                setJumpToBottomVisibility(false);
                 return;
             }
 
             nextScrollEl.scrollTop = restoreScrollTop;
+            setJumpToBottomVisibility(!isNearBottom(nextScrollEl));
         });
 
         return () => {
+            cancelled = true;
             if (restoreScrollFrameRef.current !== null) {
                 window.cancelAnimationFrame(restoreScrollFrameRef.current);
                 restoreScrollFrameRef.current = null;
@@ -1052,6 +1070,7 @@ export const ChatTabView = memo(function ChatTabView({
         };
     }, [
         flushScheduledScrollPersist,
+        isNearBottom,
         persistCurrentViewState,
         persistedViewState?.isNearBottom,
         persistedViewState?.scrollTop,
@@ -1101,8 +1120,27 @@ export const ChatTabView = memo(function ChatTabView({
 
         const nextIsNearBottom = isNearBottom(el);
         shouldAutoFollowRef.current = nextIsNearBottom;
+        setShowJumpToBottom(!nextIsNearBottom);
         scheduleScrollPersist(el.scrollTop, nextIsNearBottom);
     }, [isNearBottom, scheduleScrollPersist]);
+
+    const handleJumpToBottom = useCallback(() => {
+        cancelPendingScrollToBottom();
+        cancelResizeBottomSettle();
+        shouldAutoFollowRef.current = true;
+        resizeBottomLockRef.current = false;
+        resizeStartedNearBottomRef.current = false;
+        scrollToBottom();
+        setShowJumpToBottom(false);
+
+        const scrollEl = scrollRef.current;
+        scheduleScrollPersist(scrollEl?.scrollTop ?? 0, true);
+    }, [
+        cancelPendingScrollToBottom,
+        cancelResizeBottomSettle,
+        scheduleScrollPersist,
+        scrollToBottom,
+    ]);
 
     const updateDraftAttachments = useCallback(
         (attachments: readonly AiImageAttachment[]) => {
@@ -1648,6 +1686,7 @@ export const ChatTabView = memo(function ChatTabView({
                     onRevealFileReference={handleRevealResolvedFileReference}
                     onScroll={handleScroll}
                     onWheelCapture={handleTimelineWheelCapture}
+                    onJumpToBottom={handleJumpToBottom}
                     onVirtualRangeChange={handleTimelineVirtualRangeChange}
                     onVirtualResizeEnd={handleTimelineVirtualResizeEnd}
                     onVirtualResizeAutoFollow={
@@ -1657,6 +1696,7 @@ export const ChatTabView = memo(function ChatTabView({
                     projectId={tab.projectId}
                     resolveFileReference={resolveChatFileReference}
                     scrollRef={scrollRef}
+                    showJumpToBottom={showJumpToBottom}
                     shouldPreserveVirtualMeasureAnchor={
                         shouldPreserveTimelineVirtualMeasureAnchor
                     }
@@ -2119,6 +2159,7 @@ type ChatTimelineProps = {
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+    readonly onJumpToBottom: () => void;
     readonly onRevealFileReference?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -2133,6 +2174,7 @@ type ChatTimelineProps = {
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
+    readonly showJumpToBottom: boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly timelineContentRef: RefObject<HTMLDivElement | null>;
@@ -2153,6 +2195,7 @@ const ChatTimeline = memo(function ChatTimeline({
     onOpenImage,
     onOpenResolvedFileReference,
     onOpenSession,
+    onJumpToBottom,
     onRevealFileReference,
     onScroll,
     onWheelCapture,
@@ -2163,6 +2206,7 @@ const ChatTimeline = memo(function ChatTimeline({
     projectId,
     resolveFileReference,
     scrollRef,
+    showJumpToBottom,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
     timelineContentRef,
@@ -2185,76 +2229,140 @@ const ChatTimeline = memo(function ChatTimeline({
 
     return (
         <ToolExpansionStoreProvider>
-            <div
-                ref={scrollRef}
-                className="chat-scroll min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3"
-                onScroll={onScroll}
-                onWheelCapture={onWheelCapture}
-            >
+            <div className="relative min-h-0 min-w-0 flex-1">
                 <div
-                    ref={timelineContentRef}
-                    className="min-w-0 space-y-2"
-                    style={{ fontFamily: chatFontFamily }}
+                    ref={scrollRef}
+                    className="chat-scroll h-full min-h-0 min-w-0 overflow-y-auto px-3 py-3"
+                    onScroll={onScroll}
+                    onWheelCapture={onWheelCapture}
                 >
-                    <ChatTimelineHistory
-                        canRenderRawFileReference={canRenderRawFileReference}
-                        chatFontFamily={chatFontFamily}
-                        chatFontSize={chatFontSize}
-                        historyRows={historyRows}
-                        onAddFileReferenceToChat={onAddFileReferenceToChat}
-                        onOpenFile={onOpenFile}
-                        onOpenImage={onOpenImage}
-                        onOpenResolvedFileReference={onOpenResolvedFileReference}
-                        onOpenSession={onOpenSession}
-                        onRevealFileReference={onRevealFileReference}
-                        onVirtualRangeChange={onVirtualRangeChange}
-                        onVirtualResizeEnd={onVirtualResizeEnd}
-                        onVirtualResizeAutoFollow={onVirtualResizeAutoFollow}
-                        onVirtualResizeStart={onVirtualResizeStart}
-                        projectId={projectId}
-                        resolveFileReference={resolveFileReference}
-                        latestStreamingEditedFileToolRowId={
-                            latestStreamingEditedFileToolRowId
-                        }
-                        scrollRef={scrollRef}
-                        shouldPreserveVirtualMeasureAnchor={
-                            shouldPreserveVirtualMeasureAnchor
-                        }
-                        shouldPreserveVirtualResizeAnchor={
-                            shouldPreserveVirtualResizeAnchor
-                        }
-                        toolCardExpansionMode={toolCardExpansionMode}
-                        worktreeId={worktreeId}
-                    />
-                    <ChatTimelineLiveTail
-                        canRenderRawFileReference={canRenderRawFileReference}
-                        chatFontFamily={chatFontFamily}
-                        chatFontSize={chatFontSize}
-                        onAddFileReferenceToChat={onAddFileReferenceToChat}
-                        onOpenFile={onOpenFile}
-                        onOpenImage={onOpenImage}
-                        onOpenResolvedFileReference={onOpenResolvedFileReference}
-                        onOpenSession={onOpenSession}
-                        onRevealFileReference={onRevealFileReference}
-                        projectId={projectId}
-                        resolveFileReference={resolveFileReference}
-                        row={liveTailRow}
-                        latestStreamingEditedFileToolRowId={
-                            latestStreamingEditedFileToolRowId
-                        }
-                        toolCardExpansionMode={toolCardExpansionMode}
-                        worktreeId={worktreeId}
-                    />
-                    {isStreaming ? (
-                        <StreamingIndicator elapsed={elapsed} />
-                    ) : null}
+                    <div
+                        ref={timelineContentRef}
+                        className="min-w-0 space-y-2"
+                        style={{ fontFamily: chatFontFamily }}
+                    >
+                        <ChatTimelineHistory
+                            canRenderRawFileReference={
+                                canRenderRawFileReference
+                            }
+                            chatFontFamily={chatFontFamily}
+                            chatFontSize={chatFontSize}
+                            historyRows={historyRows}
+                            onAddFileReferenceToChat={
+                                onAddFileReferenceToChat
+                            }
+                            onOpenFile={onOpenFile}
+                            onOpenImage={onOpenImage}
+                            onOpenResolvedFileReference={
+                                onOpenResolvedFileReference
+                            }
+                            onOpenSession={onOpenSession}
+                            onRevealFileReference={onRevealFileReference}
+                            onVirtualRangeChange={onVirtualRangeChange}
+                            onVirtualResizeEnd={onVirtualResizeEnd}
+                            onVirtualResizeAutoFollow={
+                                onVirtualResizeAutoFollow
+                            }
+                            onVirtualResizeStart={onVirtualResizeStart}
+                            projectId={projectId}
+                            resolveFileReference={resolveFileReference}
+                            latestStreamingEditedFileToolRowId={
+                                latestStreamingEditedFileToolRowId
+                            }
+                            scrollRef={scrollRef}
+                            shouldPreserveVirtualMeasureAnchor={
+                                shouldPreserveVirtualMeasureAnchor
+                            }
+                            shouldPreserveVirtualResizeAnchor={
+                                shouldPreserveVirtualResizeAnchor
+                            }
+                            toolCardExpansionMode={toolCardExpansionMode}
+                            worktreeId={worktreeId}
+                        />
+                        <ChatTimelineLiveTail
+                            canRenderRawFileReference={
+                                canRenderRawFileReference
+                            }
+                            chatFontFamily={chatFontFamily}
+                            chatFontSize={chatFontSize}
+                            onAddFileReferenceToChat={
+                                onAddFileReferenceToChat
+                            }
+                            onOpenFile={onOpenFile}
+                            onOpenImage={onOpenImage}
+                            onOpenResolvedFileReference={
+                                onOpenResolvedFileReference
+                            }
+                            onOpenSession={onOpenSession}
+                            onRevealFileReference={onRevealFileReference}
+                            projectId={projectId}
+                            resolveFileReference={resolveFileReference}
+                            row={liveTailRow}
+                            latestStreamingEditedFileToolRowId={
+                                latestStreamingEditedFileToolRowId
+                            }
+                            toolCardExpansionMode={toolCardExpansionMode}
+                            worktreeId={worktreeId}
+                        />
+                        {isStreaming ? (
+                            <StreamingIndicator elapsed={elapsed} />
+                        ) : null}
+                    </div>
                 </div>
+                <ChatJumpToBottomButton
+                    onClick={onJumpToBottom}
+                    visible={showJumpToBottom}
+                />
             </div>
         </ToolExpansionStoreProvider>
     );
 });
 
 ChatTimeline.displayName = "ChatTimeline";
+
+function ChatJumpToBottomButton(props: {
+    readonly onClick: () => void;
+    readonly visible: boolean;
+}) {
+    if (!props.visible) {
+        return null;
+    }
+
+    return (
+        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center">
+            <button
+                aria-label="Jump to latest"
+                className="app-no-drag pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full transition-colors"
+                onClick={props.onClick}
+                style={{
+                    backgroundColor:
+                        "color-mix(in srgb, var(--color-bg-panel) 88%, transparent)",
+                    border:
+                        "1px solid color-mix(in srgb, var(--color-border) 80%, transparent)",
+                    boxShadow: "0 6px 18px rgba(0, 0, 0, 0.22)",
+                    color: "var(--color-text-secondary)",
+                }}
+                title="Jump to latest"
+                type="button"
+            >
+                <svg
+                    aria-hidden="true"
+                    fill="none"
+                    height="16"
+                    stroke="currentColor"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="1.8"
+                    viewBox="0 0 24 24"
+                    width="16"
+                >
+                    <path d="M12 5v14" />
+                    <path d="m19 12-7 7-7-7" />
+                </svg>
+            </button>
+        </div>
+    );
+}
 
 type ChatTimelineHistoryProps = {
     readonly canRenderRawFileReference?: (
