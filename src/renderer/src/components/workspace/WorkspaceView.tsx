@@ -3248,15 +3248,21 @@ function getAttachSelectionDiffEditorCandidates(
     return [...editors];
 }
 
-function bindInlineReviewAttachSelectionShortcut(
-    input: AttachSelectionShortcutInput & {
-        readonly diffEditor: MonacoEditor.IStandaloneDiffEditor;
-    },
-): (() => void) {
+function bindInlineReviewAttachSelectionShortcut(input: {
+    readonly diffEditor: MonacoEditor.IStandaloneDiffEditor;
+    readonly inputRef: {
+        readonly current: AttachSelectionShortcutInput | null;
+    };
+}): (() => void) {
     const containerDomNode = input.diffEditor.getContainerDomNode();
 
     const handleDiffEditorKeyDown = (event: KeyboardEvent) => {
         if (!isAttachSelectionShortcutEvent(event)) {
+            return;
+        }
+
+        const shortcutInput = input.inputRef.current;
+        if (!shortcutInput) {
             return;
         }
 
@@ -3268,7 +3274,7 @@ function bindInlineReviewAttachSelectionShortcut(
         if (
             !candidates.some((editor) =>
                 tryAttachEditorSelectionWithShortcutInput({
-                    ...input,
+                    ...shortcutInput,
                     editor,
                 }),
             )
@@ -3568,6 +3574,8 @@ function FileTabView({
     const editorMonacoRef = useRef<MonacoNamespace | null>(null);
     const editorAttachSelectionShortcutInputRef =
         useRef<AttachSelectionShortcutInput | null>(null);
+    const inlineReviewAttachSelectionShortcutInputRef =
+        useRef<AttachSelectionShortcutInput | null>(null);
     const editorMarkdownLanguageIdRef = useRef(
         document?.languageId ?? "plaintext",
     );
@@ -3681,6 +3689,22 @@ function FileTabView({
         };
     }, [
         documentAbsolutePath,
+        tab.id,
+    ]);
+    const inlineReviewDiffEditorKey = useMemo(() => {
+        if (!inlineReviewShellModelPaths) {
+            return `inline-review:${tab.id}`;
+        }
+
+        // @monaco-editor/react owns shell models through these path props, while
+        // applyInlineReviewModels installs the real review models. Remount when
+        // the file identity changes so the wrapper cannot replay stale shells.
+        return [
+            inlineReviewShellModelPaths.original,
+            inlineReviewShellModelPaths.modified,
+        ].join("|");
+    }, [
+        inlineReviewShellModelPaths,
         tab.id,
     ]);
     const reviewDiff = useMemo(
@@ -3963,12 +3987,41 @@ function FileTabView({
             tab.worktreeId,
         ]);
 
+    const buildInlineReviewAttachSelectionShortcutInput =
+        useCallback((): AttachSelectionShortcutInput | null => {
+            if (!isVisible || !document || !canEdit || !inlineReviewTrackedFile) {
+                return null;
+            }
+
+            return {
+                documentLanguageId: document.languageId,
+                onAttachLineFragment,
+                projectId: tab.projectId,
+                relativePath: tab.relativePath,
+                tabTitle: tab.title,
+                worktreeId: tab.worktreeId ?? null,
+            };
+        }, [
+            canEdit,
+            document,
+            inlineReviewTrackedFile,
+            isVisible,
+            onAttachLineFragment,
+            tab.projectId,
+            tab.relativePath,
+            tab.title,
+            tab.worktreeId,
+        ]);
+
     useLayoutEffect(() => {
         editorMarkdownLanguageIdRef.current = documentLanguageId;
         editorAttachSelectionShortcutInputRef.current =
             buildEditorAttachSelectionShortcutInput();
+        inlineReviewAttachSelectionShortcutInputRef.current =
+            buildInlineReviewAttachSelectionShortcutInput();
     }, [
         buildEditorAttachSelectionShortcutInput,
+        buildInlineReviewAttachSelectionShortcutInput,
         documentLanguageId,
     ]);
 
@@ -5228,6 +5281,7 @@ function FileTabView({
                     >
                         <DiffEditorComponent
                             beforeMount={handleEditorBeforeMount}
+                            key={inlineReviewDiffEditorKey}
                             language={monacoLanguageId}
                             modified=""
                             modifiedModelPath={
@@ -5298,13 +5352,9 @@ function FileTabView({
                                 };
                                 const cleanupAttachShortcut =
                                     bindInlineReviewAttachSelectionShortcut({
-                                        documentLanguageId: document.languageId,
                                         diffEditor: editor,
-                                        onAttachLineFragment,
-                                        projectId: tab.projectId,
-                                        relativePath: tab.relativePath,
-                                        tabTitle: tab.title,
-                                        worktreeId: tab.worktreeId ?? null,
+                                        inputRef:
+                                            inlineReviewAttachSelectionShortcutInputRef,
                                     });
                                 const cleanupFindWidgetEscape =
                                     bindCloseFindWidgetOnEscape(modifiedEditor);
