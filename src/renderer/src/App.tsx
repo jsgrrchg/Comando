@@ -310,6 +310,7 @@ export function App() {
     const leftWidth = useShellStore((state) => state.leftWidth);
     const nudgePanel = useShellStore((state) => state.nudgePanel);
     const resizePanel = useShellStore((state) => state.resizePanel);
+    const setResizingPanel = useShellStore((state) => state.setResizingPanel);
     const setLeftCollapsed = useShellStore((state) => state.setLeftCollapsed);
     const setSidebarView = useShellStore((state) => state.setSidebarView);
     const sidebarView = useShellStore((state) => state.sidebarView);
@@ -976,6 +977,13 @@ export function App() {
             return;
         }
 
+        // Mark the splitter drag as active for the whole gesture. The chat
+        // timeline reads this to freeze its virtualized layout while dragging,
+        // so the scroll stays put instead of jittering on every reflow. Every
+        // drag-end path (pointerup/cancel/blur/hidden) clears dragState, which
+        // runs this cleanup and lifts the freeze.
+        setResizingPanel(true);
+
         const previousCursor = document.body.style.cursor;
         const previousUserSelect = document.body.style.userSelect;
 
@@ -994,6 +1002,7 @@ export function App() {
         document.addEventListener("visibilitychange", handleVisibilityChange);
 
         return () => {
+            setResizingPanel(false);
             document.body.style.cursor = previousCursor;
             document.body.style.userSelect = previousUserSelect;
             window.removeEventListener("pointermove", handlePointerMove);
@@ -1005,7 +1014,7 @@ export function App() {
                 handleVisibilityChange,
             );
         };
-    }, [dragState]);
+    }, [dragState, setResizingPanel]);
 
     const cancelSidebarOverlayClose = useCallback(() => {
         setSidebarOverlayClosing(false);

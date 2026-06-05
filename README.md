@@ -263,6 +263,7 @@ Contributions are welcome. Before opening a PR:
 1. Files with pending agent review changes cannot be edited. This is intentional: the review flow prioritizes accuracy and reliability over allowing concurrent edits.
 2. The Pending review tab may show approximate diffs for some agent edits. Comando tracks pending changes from agent tool-call diffs and reconciles snippet-based edits when possible, but ambiguous snippets can still produce incomplete review data.
 3. Scroll restoration is not accurate when switching from inline review to the editable file view.
+4. Resizing panes can cause unwanted scroll movement in agent threads because the chat timeline is virtualized. This is an intentional trade-off to prioritize chat performance in extremely long conversations.
 
 ## License
 

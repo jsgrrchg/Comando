@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo } from "react";
 
 import type {
     AiToolCardExpansionMode,
@@ -19,6 +19,12 @@ import {
     type ResolvedProjectFileReference,
 } from "../projectFileReferences";
 import { ChangeReviewPanel } from "./ChangeReviewPanel";
+import {
+    isFileToolActivity,
+    isTerminalToolActivity,
+    isTurnStartedActivity,
+} from "./toolActivityKinds";
+import { usePersistentToolExpansion } from "./toolExpansionStore";
 
 /* ─── Tool icon SVGs ─── */
 
@@ -137,19 +143,6 @@ function Chevron({ expanded }: { readonly expanded: boolean }) {
 
 /* ─── Helpers ─── */
 
-const FILE_TOOL_KINDS = new Set([
-    "create",
-    "delete",
-    "edit",
-    "move",
-    "read",
-    "remove",
-    "rename",
-    "search",
-    "update",
-    "write",
-]);
-
 const EDITED_FILE_TOOL_KINDS = new Set([
     "create",
     "delete",
@@ -184,17 +177,6 @@ function getToolIcon(kind: string) {
     return <DefaultIcon />;
 }
 
-function isFileToolActivity(
-    activity: AiToolActivity,
-    trackedFiles: readonly AiTrackedFile[],
-): boolean {
-    if (trackedFiles.length > 0) return true;
-    if (FILE_TOOL_KINDS.has(activity.kind.toLowerCase())) return true;
-    if (activity.locations.length > 0) return true;
-    if (activity.diffs.length > 0) return true;
-    return false;
-}
-
 export function isEditedFileToolActivity(
     activity: AiToolActivity,
     trackedFiles: readonly AiTrackedFile[],
@@ -202,13 +184,6 @@ export function isEditedFileToolActivity(
     if (trackedFiles.length > 0) return true;
     if (activity.diffs.length > 0) return true;
     return EDITED_FILE_TOOL_KINDS.has(activity.kind.toLowerCase());
-}
-
-function isTurnStartedActivity(activity: AiToolActivity): boolean {
-    return (
-        activity.id.startsWith("codex-acp:status:turn:") ||
-        activity.id.startsWith("comando:status:turn:")
-    );
 }
 
 function summarizeDiff(oldText: string | null, newText: string | null): string {
@@ -486,33 +461,19 @@ function useSyncedToolExpansion({
     readonly forceExpanded: boolean;
     readonly resetKey: string;
 }) {
-    const [expansionState, setExpansionState] = useState({
-        expanded: defaultExpanded,
+    const [expanded, setExpanded] = usePersistentToolExpansion(
         resetKey,
-    });
-    const currentExpanded =
-        expansionState.resetKey === resetKey
-            ? expansionState.expanded
-            : defaultExpanded;
+        defaultExpanded,
+    );
 
     return {
-        expanded: forceExpanded ? true : currentExpanded,
+        expanded: forceExpanded ? true : expanded,
         toggleExpanded: () => {
             if (forceExpanded) {
                 return;
             }
 
-            setExpansionState((current) => {
-                const expanded =
-                    current.resetKey === resetKey
-                        ? current.expanded
-                        : defaultExpanded;
-
-                return {
-                    expanded: !expanded,
-                    resetKey,
-                };
-            });
+            setExpanded((previous) => !previous);
         },
     };
 }
@@ -862,12 +823,6 @@ function FileToolMessage({
 
 /* ─── Terminal tool message (card style for bash/shell/execute) ─── */
 
-const TERMINAL_TOOL_KINDS = new Set(["bash", "shell", "execute"]);
-
-function isTerminalToolActivity(activity: AiToolActivity): boolean {
-    return TERMINAL_TOOL_KINDS.has(activity.kind.toLowerCase());
-}
-
 function parseJsonValue(raw: string): unknown {
     return JSON.parse(raw) as unknown;
 }
@@ -917,7 +872,8 @@ function TerminalToolMessage({
         !!command && !isCommandDuplicatedByTitle(activity.title, command);
     const hasTerminalOutput = !!activity.terminalOutput;
     const hasDetail = shouldShowCommand || hasTerminalOutput;
-    const [expanded, setExpanded] = useState(
+    const [expanded, setExpanded] = usePersistentToolExpansion(
+        `${activity.id}:terminal`,
         (isFailed || hasNonZeroExit) && hasTerminalOutput,
     );
 
@@ -1069,7 +1025,10 @@ function GenericToolMessage({
     ) => ResolvedProjectFileReference | null;
 }) {
     const isFailed = activity.status === "failed";
-    const [expanded, setExpanded] = useState(isFailed);
+    const [expanded, setExpanded] = usePersistentToolExpansion(
+        `${activity.id}:generic`,
+        isFailed,
+    );
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
     const rawInputJson = activity.rawInputJson;

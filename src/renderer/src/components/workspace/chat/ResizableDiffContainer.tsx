@@ -1,10 +1,12 @@
 import {
     useCallback,
+    useId,
     useRef,
-    useState,
     type PointerEvent as ReactPointerEvent,
     type ReactNode,
 } from "react";
+
+import { usePersistentToolState } from "./toolExpansionStore";
 
 const DEFAULT_DIFF_HEIGHT = 200;
 const MIN_DIFF_HEIGHT = 80;
@@ -14,6 +16,13 @@ export interface ResizableDiffContainerProps {
     readonly children: ReactNode;
     readonly defaultHeight?: number;
     readonly minHeight?: number;
+    /**
+     * Stable key under which the dragged height is persisted in the surrounding
+     * ToolExpansionStoreProvider, so it survives the diff card unmounting when
+     * its virtualized timeline row scrolls out of view. When omitted the height
+     * is per-instance and resets on unmount.
+     */
+    readonly persistKey?: string;
 }
 
 export function ResizableDiffContainer({
@@ -21,8 +30,15 @@ export function ResizableDiffContainer({
     children,
     defaultHeight = DEFAULT_DIFF_HEIGHT,
     minHeight = MIN_DIFF_HEIGHT,
+    persistKey,
 }: ResizableDiffContainerProps) {
-    const [height, setHeight] = useState(defaultHeight);
+    // Fall back to a per-instance id when no persist key is given, so the hook
+    // is always called with a stable, collision-free key.
+    const fallbackKey = useId();
+    const [height, setHeight] = usePersistentToolState<number>(
+        persistKey ?? fallbackKey,
+        defaultHeight,
+    );
     const draggingRef = useRef(false);
     const startHeightRef = useRef(defaultHeight);
     const startYRef = useRef(0);
@@ -47,7 +63,7 @@ export function ResizableDiffContainer({
             const delta = event.clientY - startYRef.current;
             setHeight(Math.max(minHeight, startHeightRef.current + delta));
         },
-        [minHeight],
+        [minHeight, setHeight],
     );
 
     const handlePointerUp = useCallback(() => {

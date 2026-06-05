@@ -18,6 +18,7 @@ type SidebarView = "files" | "git" | "agents" | "issues" | "pull_requests";
 
 interface ShellStore extends ShellLayoutDimensions {
     readonly activeSurface: ShellSurface;
+    readonly isResizingPanel: boolean;
     readonly leftCollapsed: boolean;
     readonly sidebarView: SidebarView;
     readonly viewportWidth: number;
@@ -25,6 +26,7 @@ interface ShellStore extends ShellLayoutDimensions {
     hydrate: (snapshot: PersistedShellState | null) => void;
     resizePanel: (side: ShellPanelSide, nextWidth: number) => void;
     nudgePanel: (side: ShellPanelSide, delta: number) => void;
+    setResizingPanel: (resizing: boolean) => void;
     setLeftCollapsed: (collapsed: boolean) => void;
     setSidebarView: (view: SidebarView) => void;
     toggleLeftCollapsed: () => void;
@@ -63,6 +65,7 @@ function normalizeSidebarView(
 
 export const useShellStore = create<ShellStore>((set) => ({
     activeSurface: "workspace",
+    isResizingPanel: false,
     leftCollapsed: false,
     leftWidth: initialLayout.leftWidth,
     sidebarView: "files",
@@ -96,6 +99,7 @@ export const useShellStore = create<ShellStore>((set) => ({
         set((state) =>
             nudgeShellPanel(state, side, delta, state.viewportWidth),
         ),
+    setResizingPanel: (resizing) => set({ isResizingPanel: resizing }),
     setLeftCollapsed: (collapsed) => set({ leftCollapsed: collapsed }),
     setSidebarView: (view) => set({ sidebarView: view }),
     toggleLeftCollapsed: () =>
