@@ -1538,6 +1538,17 @@ function WorkspacePaneView({
         ? (paneTabs.find((tab) => tab.id === paneActiveTabId) ?? null)
         : null;
     const activeChatTab = activeTab?.kind === "chat" ? activeTab : null;
+    const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
+    const paneFileTabs = useMemo(
+        () =>
+            paneTabs.filter(
+                (tab): tab is RuntimeWorkspaceFileTab => tab.kind === "file",
+            ),
+        [paneTabs],
+    );
+    const recentActiveTabIds = useWorkspaceStore(
+        (state) => state.recentActiveTabIds,
+    );
     const isActivePane = activePaneId === paneNodeId;
     const activeTabWorktreeId = activeTab?.worktreeId ?? null;
 
@@ -2361,17 +2372,19 @@ function WorkspacePaneView({
                                 tab={tab}
                             />
                         ))}
+                    <WorkspaceFileEditorHost
+                        activeFileTab={activeFileTab}
+                        fileTabs={paneFileTabs}
+                        isActivePane={isActivePane}
+                        onAttachLineFragment={handleAttachLineFragment}
+                        onDraftChange={updateFileDraft}
+                        onReload={reloadFileTab}
+                        onSave={saveFileTab}
+                        recentActiveTabIds={recentActiveTabIds}
+                    />
                     {activeTab ? (
                         activeTab.kind === "file" ? (
-                            <FileTabView
-                                key={activeTab.id}
-                                isActivePane={isActivePane}
-                                onAttachLineFragment={handleAttachLineFragment}
-                                onDraftChange={updateFileDraft}
-                                onReload={reloadFileTab}
-                                onSave={saveFileTab}
-                                tab={activeTab}
-                            />
+                            null
                         ) : activeTab.kind === "git" ? (
                             <GitTabView tab={activeTab} />
                         ) : activeTab.kind === "git_worktree_diff" ? (
@@ -2430,6 +2443,76 @@ function WorkspacePaneView({
                 />
             ) : null}
         </>
+    );
+}
+
+function WorkspaceFileEditorHost({
+    activeFileTab,
+    fileTabs,
+    isActivePane,
+    onAttachLineFragment,
+    onDraftChange,
+    onReload,
+    onSave,
+    recentActiveTabIds,
+}: {
+    readonly activeFileTab: RuntimeWorkspaceFileTab | null;
+    readonly fileTabs: readonly RuntimeWorkspaceFileTab[];
+    readonly isActivePane: boolean;
+    readonly onAttachLineFragment: (input: {
+        readonly context: AiFileContextAttachment;
+        readonly worktreeId: string | null;
+    }) => Promise<void>;
+    readonly onDraftChange: (tabId: string, draft: string) => void;
+    readonly onReload: (tabId: string) => Promise<void>;
+    readonly onSave: (
+        tabId: string,
+        options?: {
+            readonly force?: boolean;
+        },
+    ) => Promise<void>;
+    readonly recentActiveTabIds: readonly string[];
+}) {
+    const hostedTab = useMemo(() => {
+        if (activeFileTab) {
+            return activeFileTab;
+        }
+
+        for (const tabId of recentActiveTabIds) {
+            const recentFileTab = fileTabs.find((tab) => tab.id === tabId);
+            if (recentFileTab) {
+                return recentFileTab;
+            }
+        }
+
+        return fileTabs[0] ?? null;
+    }, [activeFileTab, fileTabs, recentActiveTabIds]);
+    const isVisible = activeFileTab !== null;
+
+    useRenderProbe("WorkspaceFileEditorHost", {
+        hostedTabId: hostedTab?.id ?? null,
+        visible: isVisible,
+    });
+
+    if (!hostedTab) {
+        return null;
+    }
+
+    return (
+        <div
+            aria-hidden={!isVisible}
+            className={isVisible ? "h-full" : "hidden"}
+        >
+            <FileTabView
+                isActivePane={isActivePane && isVisible}
+                isVisible={isVisible}
+                onAttachLineFragment={onAttachLineFragment}
+                onDraftChange={onDraftChange}
+                onReload={onReload}
+                onSave={onSave}
+                tab={hostedTab}
+            />
+        </div>
     );
 }
 
@@ -3343,6 +3426,7 @@ function buildProjectScopedFilePath(input: {
 
 function FileTabView({
     isActivePane,
+    isVisible,
     onAttachLineFragment,
     onDraftChange,
     onReload,
@@ -3350,6 +3434,7 @@ function FileTabView({
     tab,
 }: {
     readonly isActivePane: boolean;
+    readonly isVisible: boolean;
     readonly onAttachLineFragment: (input: {
         readonly context: AiFileContextAttachment;
         readonly worktreeId: string | null;
@@ -3472,6 +3557,7 @@ function FileTabView({
     const pendingEditorViewStateTabIdRef = useRef(tab.id);
     const viewStatePersistTimerRef = useRef<number | null>(null);
     const viewStateRestoreFrameRef = useRef<number | null>(null);
+    const restoredEditorViewStateTabIdRef = useRef<string | null>(null);
     const [editorMountVersion, setEditorMountVersion] = useState(0);
     const [diffEditorMountVersion, setDiffEditorMountVersion] = useState(0);
     const [
@@ -3800,9 +3886,33 @@ function FileTabView({
         rejectTrackedFile,
     ]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
+        const previousTabId = fileTabIdRef.current;
+        if (previousTabId === tab.id) {
+            return;
+        }
+
+        if (editorRef.current) {
+            const previousViewState = editorRef.current.saveViewState();
+            pendingEditorViewStateRef.current = previousViewState;
+            pendingEditorViewStateTabIdRef.current = previousTabId;
+            updateFileViewState(previousTabId, previousViewState);
+        }
+
+        if (diffEditorRef.current) {
+            captureInlineReviewModifiedEditorState();
+        }
+
         fileTabIdRef.current = tab.id;
-    }, [tab.id]);
+        pendingEditorViewStateRef.current = tab.viewState ?? null;
+        pendingEditorViewStateTabIdRef.current = tab.id;
+        restoredEditorViewStateTabIdRef.current = null;
+    }, [
+        captureInlineReviewModifiedEditorState,
+        tab.id,
+        tab.viewState,
+        updateFileViewState,
+    ]);
 
     useEffect(() => {
         const pendingState = pendingEditorInlineReviewRestoreStateRef.current;
@@ -3822,6 +3932,53 @@ function FileTabView({
         pendingEditorViewStateRef.current = tab.viewState ?? null;
         pendingEditorViewStateTabIdRef.current = tab.id;
     }, [tab.id, tab.viewState]);
+
+    useEffect(() => {
+        if (!isVisible) {
+            return;
+        }
+
+        const frameId = window.requestAnimationFrame(() => {
+            editorRef.current?.layout();
+            diffEditorRef.current?.layout();
+        });
+
+        return () => {
+            window.cancelAnimationFrame(frameId);
+        };
+    }, [isVisible, tab.id]);
+
+    useEffect(() => {
+        const editor = editorRef.current;
+        if (
+            !isVisible ||
+            !editor ||
+            inlineReviewTrackedFile ||
+            restoredEditorViewStateTabIdRef.current === tab.id
+        ) {
+            return;
+        }
+
+        const viewState =
+            tab.viewState ??
+            (pendingEditorViewStateTabIdRef.current === tab.id
+                ? pendingEditorViewStateRef.current
+                : null);
+
+        if (viewState) {
+            restoreEditorViewState(editor, viewState);
+        } else {
+            editor.layout();
+        }
+
+        restoredEditorViewStateTabIdRef.current = tab.id;
+    }, [
+        inlineReviewTrackedFile,
+        isVisible,
+        restoreEditorViewState,
+        tab.id,
+        tab.viewState,
+    ]);
 
     useEffect(() => {
         return () => {
