@@ -1,0 +1,879 @@
+/** @vitest-environment jsdom */
+import type { ReactNode } from "react";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import {
+    afterEach,
+    beforeEach,
+    describe,
+    expect,
+    it,
+    vi,
+} from "vitest";
+
+import type {
+    AiTrackedFile,
+    ProjectFileDocument,
+} from "@shared/ipc";
+import type { RuntimeWorkspaceFileTab } from "@renderer/app/workspace/tree";
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
+
+const mockWorkspaceStoreState = vi.hoisted(() => ({
+    current: {
+        updateFileViewState: vi.fn(),
+    },
+}));
+
+const mockAiStoreState = vi.hoisted(() => ({
+    current: {
+        keepTrackedFile: vi.fn(),
+        keepTrackedFileHunks: vi.fn(),
+        rejectTrackedFile: vi.fn(),
+        rejectTrackedFileHunks: vi.fn(),
+        sessions: {},
+    },
+}));
+
+const mockGitStoreState = vi.hoisted(() => ({
+    current: {
+        snapshots: {},
+    },
+}));
+
+const mockProjectsStoreState = vi.hoisted(() => ({
+    current: {
+        projects: [
+            {
+                id: "project-1",
+                name: "Comando",
+            },
+        ],
+    },
+}));
+
+const mockEditorRuntime = vi.hoisted(() => ({
+    applyMonacoThemeFromDom: vi.fn(),
+    applyProjectTypeScriptConfigForPath: vi.fn(() => Promise.resolve()),
+    ensureMonacoTextMateForLanguage: vi.fn(() => Promise.resolve()),
+    installMonacoTokenDebugAction: vi.fn(() => ({
+        dispose: vi.fn(),
+    })),
+}));
+
+const monacoHarness = vi.hoisted(() => {
+    type FakeUri = {
+        readonly value: string;
+        readonly toString: () => string;
+    };
+
+    type Disposable = {
+        readonly dispose: () => void;
+    };
+
+    type FakeModel = {
+        readonly dispose: () => void;
+        readonly getFullModelRange: () => {
+            readonly endColumn: number;
+            readonly endLineNumber: number;
+            readonly startColumn: number;
+            readonly startLineNumber: number;
+        };
+        readonly getLineCount: () => number;
+        readonly getLineMaxColumn: (lineNumber: number) => number;
+        readonly getOffsetAt: (position: {
+            readonly column: number;
+            readonly lineNumber: number;
+        }) => number;
+        readonly getOptions: () => { readonly tabSize: number };
+        readonly getPositionAt: (offset: number) => {
+            readonly column: number;
+            readonly lineNumber: number;
+        };
+        readonly getValue: () => string;
+        readonly isDisposed: () => boolean;
+        readonly setValue: (value: string) => void;
+        disposed: boolean;
+        language: string;
+        readonly uri: string;
+        value: string;
+    };
+
+    type FakeCodeEditor = {
+        readonly createDecorationsCollection: () => {
+            readonly clear: () => void;
+            readonly set: (decorations: readonly unknown[]) => void;
+        };
+        readonly dispose: () => void;
+        readonly getContribution: () => null;
+        readonly getDomNode: () => HTMLElement;
+        readonly getModel: () => FakeModel | null;
+        readonly getPosition: () => { column: number; lineNumber: number };
+        readonly getScrollLeft: () => number;
+        readonly getScrollTop: () => number;
+        readonly getSelection: () => null;
+        readonly getSelections: () => readonly unknown[];
+        readonly hasTextFocus: () => boolean;
+        readonly hasWidgetFocus: () => boolean;
+        readonly layout: () => void;
+        readonly onDidChangeCursorSelection: () => Disposable;
+        readonly onDidChangeHiddenAreas: () => Disposable;
+        readonly onDidDispose: (listener: () => void) => Disposable;
+        readonly onDidLayoutChange: () => Disposable;
+        readonly onDidScrollChange: () => Disposable;
+        readonly onMouseLeave: () => Disposable;
+        readonly onMouseMove: () => Disposable;
+        readonly pushUndoStop: () => void;
+        readonly restoreViewState: (viewState: unknown) => void;
+        readonly saveViewState: () => {
+            readonly contributionsState: readonly unknown[];
+            readonly cursorState: readonly unknown[];
+            readonly viewState: {
+                readonly editorName: string;
+                readonly modelUri: string | null;
+            };
+        };
+        readonly setModel: (model: FakeModel | null) => void;
+        readonly setPosition: (position: unknown) => void;
+        readonly setScrollLeft: (scrollLeft: number) => void;
+        readonly setScrollTop: (scrollTop: number) => void;
+        readonly updateOptions: (options: unknown) => void;
+        disposed: boolean;
+        model: FakeModel | null;
+        readonly name: string;
+    };
+
+    type FakeDiffEditor = {
+        readonly dispose: () => void;
+        readonly getContainerDomNode: () => HTMLElement;
+        readonly getModel: () => {
+            readonly modified: FakeModel | null;
+            readonly original: FakeModel | null;
+        } | null;
+        readonly getModifiedEditor: () => FakeCodeEditor;
+        readonly getOriginalEditor: () => FakeCodeEditor;
+        readonly layout: () => void;
+        readonly onDidDispose: (listener: () => void) => Disposable;
+        readonly setModel: (
+            modelsInput: {
+                readonly modified: FakeModel;
+                readonly original: FakeModel;
+            } | null,
+        ) => void;
+        disposed: boolean;
+        modifiedModel: FakeModel | null;
+        originalModel: FakeModel | null;
+    };
+
+    const models = new Map<string, FakeModel>();
+    const createdModels: FakeModel[] = [];
+    const codeEditors: FakeCodeEditor[] = [];
+    const diffEditors: FakeDiffEditor[] = [];
+    let editorCounter = 0;
+    let diffEditorCounter = 0;
+
+    const toLines = (value: string) => value.split("\n");
+
+    const createDisposable = (): Disposable => ({
+        dispose: vi.fn(),
+    });
+
+    const createModel = (
+        value: string,
+        language: string,
+        uri: FakeUri,
+    ): FakeModel => {
+        const model: FakeModel = {
+            dispose: vi.fn(() => {
+                model.disposed = true;
+                models.delete(uri.toString());
+            }),
+            disposed: false,
+            getFullModelRange: () => ({
+                endColumn: toLines(model.value).at(-1)!.length + 1,
+                endLineNumber: model.getLineCount(),
+                startColumn: 1,
+                startLineNumber: 1,
+            }),
+            getLineCount: () => toLines(model.value).length,
+            getLineMaxColumn: (lineNumber) =>
+                (toLines(model.value)[lineNumber - 1] ?? "").length + 1,
+            getOffsetAt: ({ column, lineNumber }) => {
+                const previousLines = toLines(model.value).slice(
+                    0,
+                    Math.max(lineNumber - 1, 0),
+                );
+                return (
+                    previousLines.reduce(
+                        (total, line) => total + line.length + 1,
+                        0,
+                    ) +
+                    column -
+                    1
+                );
+            },
+            getOptions: () => ({ tabSize: 4 }),
+            getPositionAt: (offset) => {
+                const lines = toLines(model.value);
+                let remaining = offset;
+                for (let index = 0; index < lines.length; index += 1) {
+                    const lineLengthWithBreak = lines[index].length + 1;
+                    if (remaining < lineLengthWithBreak) {
+                        return {
+                            column: remaining + 1,
+                            lineNumber: index + 1,
+                        };
+                    }
+                    remaining -= lineLengthWithBreak;
+                }
+                return {
+                    column: lines.at(-1)!.length + 1,
+                    lineNumber: lines.length,
+                };
+            },
+            getValue: () => model.value,
+            isDisposed: () => model.disposed,
+            language,
+            setValue: (nextValue) => {
+                model.value = nextValue;
+            },
+            uri: uri.toString(),
+            value,
+        };
+        models.set(uri.toString(), model);
+        createdModels.push(model);
+        return model;
+    };
+
+    const monaco = {
+        Uri: {
+            parse: (value: string): FakeUri => ({
+                toString: () => value,
+                value,
+            }),
+        },
+        editor: {
+            createModel: vi.fn(createModel),
+            getModel: vi.fn((uri: FakeUri) => models.get(uri.toString()) ?? null),
+            setModelLanguage: vi.fn((model: FakeModel, language: string) => {
+                model.language = language;
+            }),
+        },
+    };
+
+    const createCodeEditor = (name = `editor-${++editorCounter}`) => {
+        const domNode = document.createElement("div");
+        const disposeListeners = new Set<() => void>();
+        const editor: FakeCodeEditor = {
+            createDecorationsCollection: vi.fn(() => ({
+                clear: vi.fn(),
+                set: vi.fn(),
+            })),
+            dispose: () => {
+                if (editor.disposed) {
+                    return;
+                }
+                editor.disposed = true;
+                for (const listener of disposeListeners) {
+                    listener();
+                }
+                disposeListeners.clear();
+            },
+            disposed: false,
+            getContribution: () => null,
+            getDomNode: () => domNode,
+            getModel: () => editor.model,
+            getPosition: () => ({ column: 1, lineNumber: 1 }),
+            getScrollLeft: () => 0,
+            getScrollTop: () => 0,
+            getSelection: () => null,
+            getSelections: () => [],
+            hasTextFocus: () => true,
+            hasWidgetFocus: () => false,
+            layout: vi.fn(),
+            model: null,
+            name,
+            onDidChangeCursorSelection: () => createDisposable(),
+            onDidChangeHiddenAreas: () => createDisposable(),
+            onDidDispose: (listener) => {
+                disposeListeners.add(listener);
+                return {
+                    dispose: () => {
+                        disposeListeners.delete(listener);
+                    },
+                };
+            },
+            onDidLayoutChange: () => createDisposable(),
+            onDidScrollChange: () => createDisposable(),
+            onMouseLeave: () => createDisposable(),
+            onMouseMove: () => createDisposable(),
+            pushUndoStop: vi.fn(),
+            restoreViewState: vi.fn(),
+            saveViewState: vi.fn(() => ({
+                contributionsState: [],
+                cursorState: [],
+                viewState: {
+                    editorName: editor.name,
+                    modelUri: editor.model?.uri ?? null,
+                },
+            })),
+            setModel: (model: FakeModel | null) => {
+                editor.model = model;
+            },
+            setPosition: vi.fn(),
+            setScrollLeft: vi.fn(),
+            setScrollTop: vi.fn(),
+            updateOptions: vi.fn(),
+        };
+        codeEditors.push(editor);
+        return editor;
+    };
+
+    const createDiffEditor = () => {
+        const originalEditor = createCodeEditor(
+            `diff-original-${++diffEditorCounter}`,
+        );
+        const modifiedEditor = createCodeEditor(
+            `diff-modified-${diffEditorCounter}`,
+        );
+        const container = document.createElement("div");
+        const disposeListeners = new Set<() => void>();
+        const diffEditor: FakeDiffEditor = {
+            dispose: () => {
+                if (diffEditor.disposed) {
+                    return;
+                }
+                diffEditor.disposed = true;
+                for (const listener of disposeListeners) {
+                    listener();
+                }
+                disposeListeners.clear();
+                originalEditor.dispose();
+                modifiedEditor.dispose();
+            },
+            disposed: false,
+            getContainerDomNode: () => container,
+            getModel: () => ({
+                modified: diffEditor.modifiedModel,
+                original: diffEditor.originalModel,
+            }),
+            getModifiedEditor: () => modifiedEditor,
+            getOriginalEditor: () => originalEditor,
+            layout: vi.fn(),
+            modifiedModel: null,
+            onDidDispose: (listener) => {
+                disposeListeners.add(listener);
+                return {
+                    dispose: () => {
+                        disposeListeners.delete(listener);
+                    },
+                };
+            },
+            originalModel: null,
+            setModel: (modelsInput) => {
+                diffEditor.modifiedModel = modelsInput?.modified ?? null;
+                diffEditor.originalModel = modelsInput?.original ?? null;
+                modifiedEditor.setModel(diffEditor.modifiedModel);
+                originalEditor.setModel(diffEditor.originalModel);
+            },
+        };
+        diffEditors.push(diffEditor);
+        return diffEditor;
+    };
+
+    return {
+        codeEditors,
+        createdModels,
+        createCodeEditor,
+        createDiffEditor,
+        diffEditors,
+        models,
+        monaco,
+        reset: () => {
+            models.clear();
+            createdModels.length = 0;
+            codeEditors.length = 0;
+            diffEditors.length = 0;
+            editorCounter = 0;
+            diffEditorCounter = 0;
+            monaco.editor.createModel.mockClear();
+            monaco.editor.getModel.mockClear();
+            monaco.editor.setModelLanguage.mockClear();
+        },
+    };
+});
+
+vi.mock("@renderer/app/hooks/use-resolved-editor-settings", () => ({
+    useResolvedEditorSettings: () => ({
+        autoSaveDelayMs: 1000,
+        fontFamily: "system",
+        fontSize: 14,
+        lineHeight: 1.5,
+        minimapEnabled: false,
+        suggestionsEnabled: true,
+    }),
+}));
+
+vi.mock("@renderer/app/settings/client", () => ({
+    loadAppEditorSettings: vi.fn(() =>
+        Promise.resolve({
+            fontFamily: "system",
+            fontSize: 14,
+        }),
+    ),
+    saveAppEditorSettings: vi.fn(() => Promise.resolve()),
+}));
+
+vi.mock("@renderer/app/editor/monaco", () => mockEditorRuntime);
+
+vi.mock("@renderer/app/store/workspace-store", () => ({
+    getBestMatchingChatTabId: vi.fn(() => null),
+    useWorkspaceStore: (selector: (state: unknown) => unknown) =>
+        selector(mockWorkspaceStoreState.current),
+}));
+
+vi.mock("@renderer/app/store/ai-store", () => ({
+    useAiStore: (selector: (state: unknown) => unknown) =>
+        selector(mockAiStoreState.current),
+}));
+
+vi.mock("@renderer/app/store/git-store", () => ({
+    useGitStore: (selector: (state: unknown) => unknown) =>
+        selector(mockGitStoreState.current),
+}));
+
+vi.mock("@renderer/app/store/github-store", () => ({
+    getGitHubRepoKey: vi.fn(() => "repo"),
+    useGitHubStore: (selector: (state: unknown) => unknown) =>
+        selector({
+            repositoriesByProjectId: {},
+        }),
+}));
+
+vi.mock("@renderer/app/store/projects-store", () => ({
+    useProjectsStore: (selector: (state: unknown) => unknown) =>
+        selector(mockProjectsStoreState.current),
+}));
+
+vi.mock("@renderer/features/terminal/WorkspaceTerminalView", () => ({
+    WorkspaceTerminalView: () => null,
+}));
+
+vi.mock("@monaco-editor/react", async () => {
+    const React = await import("react");
+
+    const MockEditor = ({
+        beforeMount,
+        language,
+        onMount,
+        path,
+        value,
+    }: {
+        readonly beforeMount?: () => void;
+        readonly language?: string;
+        readonly onMount?: (editor: unknown, monaco: unknown) => void;
+        readonly path?: string;
+        readonly value?: string;
+    }) => {
+        const editorRef = React.useRef<ReturnType<
+            typeof monacoHarness.createCodeEditor
+        > | null>(null);
+        const mountPropsRef = React.useRef({
+            beforeMount,
+            language,
+            onMount,
+            path,
+            value,
+        });
+
+        React.useEffect(() => {
+            const mountProps = mountPropsRef.current;
+            mountProps.beforeMount?.();
+            const editor = monacoHarness.createCodeEditor();
+            const modelPath =
+                mountProps.path ?? `inmemory://model-${Date.now()}`;
+            const uri = monacoHarness.monaco.Uri.parse(modelPath);
+            const model =
+                monacoHarness.monaco.editor.getModel(uri) ??
+                monacoHarness.monaco.editor.createModel(
+                    mountProps.value ?? "",
+                    mountProps.language ?? "plaintext",
+                    uri,
+                );
+            editor.setModel(model);
+            editorRef.current = editor;
+            mountProps.onMount?.(editor, monacoHarness.monaco);
+
+            return () => {
+                editor.dispose();
+                editorRef.current = null;
+            };
+        }, []);
+
+        return React.createElement("div", {
+            "data-mock-editor": path ?? "",
+        });
+    };
+
+    const MockDiffEditor = ({
+        beforeMount,
+        language,
+        modified,
+        modifiedModelPath,
+        onMount,
+        original,
+        originalModelPath,
+    }: {
+        readonly beforeMount?: () => void;
+        readonly language?: string;
+        readonly modified?: string;
+        readonly modifiedModelPath?: string;
+        readonly onMount?: (editor: unknown, monaco: unknown) => void;
+        readonly original?: string;
+        readonly originalModelPath?: string;
+    }) => {
+        const mountPropsRef = React.useRef({
+            beforeMount,
+            language,
+            modified,
+            modifiedModelPath,
+            onMount,
+            original,
+            originalModelPath,
+        });
+
+        React.useEffect(() => {
+            const mountProps = mountPropsRef.current;
+            mountProps.beforeMount?.();
+            const diffEditor = monacoHarness.createDiffEditor();
+            const originalUri = monacoHarness.monaco.Uri.parse(
+                mountProps.originalModelPath ??
+                    `inmemory://original-${Date.now()}`,
+            );
+            const modifiedUri = monacoHarness.monaco.Uri.parse(
+                mountProps.modifiedModelPath ??
+                    `inmemory://modified-${Date.now()}`,
+            );
+            const originalModel =
+                monacoHarness.monaco.editor.getModel(originalUri) ??
+                monacoHarness.monaco.editor.createModel(
+                    mountProps.original ?? "",
+                    mountProps.language ?? "plaintext",
+                    originalUri,
+                );
+            const modifiedModel =
+                monacoHarness.monaco.editor.getModel(modifiedUri) ??
+                monacoHarness.monaco.editor.createModel(
+                    mountProps.modified ?? "",
+                    mountProps.language ?? "plaintext",
+                    modifiedUri,
+                );
+            diffEditor.setModel({
+                modified: modifiedModel,
+                original: originalModel,
+            });
+            mountProps.onMount?.(diffEditor, monacoHarness.monaco);
+
+            return () => {
+                diffEditor.dispose();
+            };
+        }, []);
+
+        return React.createElement("div", {
+            "data-mock-diff-editor": modifiedModelPath ?? "",
+        });
+    };
+
+    return {
+        DiffEditor: MockDiffEditor,
+        default: MockEditor,
+    };
+});
+
+import { WorkspaceFileEditorHost } from "./WorkspaceView";
+
+function createDocument(
+    relativePath: string,
+    content: string,
+): ProjectFileDocument {
+    return {
+        absolutePath: `/workspace/comando/${relativePath}`,
+        content,
+        imageDataBase64: null,
+        isBinary: false,
+        isTooLarge: false,
+        kind: "text",
+        languageId: "typescript",
+        languageLabel: "TypeScript",
+        mimeType: "text/typescript",
+        modifiedAtMs: 1,
+        name: relativePath.split("/").at(-1) ?? relativePath,
+        projectId: "project-1",
+        relativePath,
+        sizeBytes: content.length,
+    };
+}
+
+function createFileTab(
+    id: string,
+    relativePath = "src/app.ts",
+    content = "const value = 1;\n",
+): RuntimeWorkspaceFileTab {
+    const document = createDocument(relativePath, content);
+
+    return {
+        createdAt: "2026-06-05T00:00:00.000Z",
+        document,
+        draftContent: content,
+        hasExternalChange: false,
+        id,
+        isDirty: false,
+        isLoading: false,
+        isSaving: false,
+        kind: "file",
+        loadError: null,
+        projectId: "project-1",
+        relativePath,
+        reviewContext: null,
+        saveError: null,
+        savedContent: content,
+        title: document.name,
+        viewState: null,
+        worktreeId: null,
+    };
+}
+
+function createTrackedFile(): AiTrackedFile {
+    return {
+        hunks: [
+            {
+                id: "hunk-1",
+                lines: [],
+                newCount: 1,
+                newStart: 1,
+                oldCount: 1,
+                oldStart: 1,
+            },
+        ],
+        identityKey: "tracked:src/app.ts",
+        isText: true,
+        kind: "update",
+        newText: "const value = 2;\n",
+        oldText: "const value = 1;\n",
+        path: "src/app.ts",
+        previousPath: null,
+        reversible: true,
+        reviewState: "pending",
+        sessionId: "session-1",
+        toolCallId: null,
+        updatedAt: "2026-06-05T00:01:00.000Z",
+        version: 2,
+    };
+}
+
+function renderHost({
+    activeFileTab,
+    fileTabs,
+    recentActiveTabIds = [],
+}: {
+    readonly activeFileTab: RuntimeWorkspaceFileTab | null;
+    readonly fileTabs: readonly RuntimeWorkspaceFileTab[];
+    readonly recentActiveTabIds?: readonly string[];
+}): ReactNode {
+    return (
+        <WorkspaceFileEditorHost
+            activeFileTab={activeFileTab}
+            fileTabs={fileTabs}
+            isActivePane={true}
+            onAttachLineFragment={vi.fn()}
+            onDraftChange={vi.fn()}
+            onReload={vi.fn(() => Promise.resolve())}
+            onSave={vi.fn(() => Promise.resolve())}
+            recentActiveTabIds={recentActiveTabIds}
+        />
+    );
+}
+
+class MemoryStorage implements Storage {
+    private readonly values = new Map<string, string>();
+
+    get length() {
+        return this.values.size;
+    }
+
+    clear() {
+        this.values.clear();
+    }
+
+    getItem(key: string) {
+        return this.values.get(key) ?? null;
+    }
+
+    key(index: number) {
+        return [...this.values.keys()][index] ?? null;
+    }
+
+    removeItem(key: string) {
+        this.values.delete(key);
+    }
+
+    setItem(key: string, value: string) {
+        this.values.set(key, value);
+    }
+}
+
+async function flushEffects() {
+    await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+    });
+}
+
+describe("WorkspaceFileEditorHost", () => {
+    let container: HTMLDivElement;
+    let root: Root;
+
+    beforeEach(() => {
+        container = document.createElement("div");
+        document.body.appendChild(container);
+        root = createRoot(container);
+        Object.defineProperty(window, "localStorage", {
+            configurable: true,
+            value: new MemoryStorage(),
+        });
+        vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+            window.setTimeout(() => callback(performance.now()), 0),
+        );
+        vi.stubGlobal("cancelAnimationFrame", (id: number) => {
+            window.clearTimeout(id);
+        });
+        monacoHarness.reset();
+        mockEditorRuntime.applyMonacoThemeFromDom.mockClear();
+        mockEditorRuntime.applyProjectTypeScriptConfigForPath.mockClear();
+        mockEditorRuntime.ensureMonacoTextMateForLanguage.mockClear();
+        mockEditorRuntime.installMonacoTokenDebugAction.mockClear();
+        mockWorkspaceStoreState.current.updateFileViewState.mockClear();
+        mockAiStoreState.current.sessions = {};
+    });
+
+    afterEach(() => {
+        act(() => {
+            root.unmount();
+        });
+        container.remove();
+        vi.unstubAllGlobals();
+    });
+
+    it("keeps one Monaco editor mounted while switching duplicate file tabs and saves the previous tab view state", async () => {
+        const firstTab = createFileTab("file-1");
+        const secondTab = createFileTab("file-2");
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: firstTab,
+                    fileTabs: [firstTab, secondTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(monacoHarness.codeEditors).toHaveLength(1);
+        expect(monacoHarness.createdModels).toHaveLength(1);
+        expect(monacoHarness.createdModels[0]?.uri).toBe(
+            "/workspace/comando/src/app.ts",
+        );
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: secondTab,
+                    fileTabs: [firstTab, secondTab],
+                    recentActiveTabIds: ["file-1"],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(monacoHarness.codeEditors).toHaveLength(1);
+        expect(monacoHarness.createdModels).toHaveLength(1);
+        expect(monacoHarness.codeEditors[0]?.disposed).toBe(false);
+        const persistedFirstTabViewState =
+            mockWorkspaceStoreState.current.updateFileViewState.mock.calls.find(
+                ([tabId]) => tabId === "file-1",
+            )?.[1] as
+                | {
+                      readonly viewState?: {
+                          readonly modelUri?: string | null;
+                      };
+                  }
+                | undefined;
+        expect(persistedFirstTabViewState?.viewState?.modelUri).toBe(
+            "/workspace/comando/src/app.ts",
+        );
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: null,
+                    fileTabs: [firstTab, secondTab],
+                    recentActiveTabIds: ["file-2"],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(monacoHarness.codeEditors).toHaveLength(1);
+        expect(monacoHarness.codeEditors[0]?.disposed).toBe(false);
+        expect(container.querySelector("[aria-hidden='true']")).not.toBeNull();
+    });
+
+    it("mounts inline review diff models without unmounting the normal file editor", async () => {
+        const fileTab = createFileTab("file-1");
+        mockAiStoreState.current.sessions = {
+            "session-1": {
+                snapshot: {
+                    trackedFiles: [createTrackedFile()],
+                },
+            },
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: fileTab,
+                    fileTabs: [fileTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const normalEditor = monacoHarness.codeEditors.find((editor) =>
+            editor.name.startsWith("editor-"),
+        );
+        const diffEditor = monacoHarness.diffEditors[0];
+        expect(normalEditor).toBeDefined();
+        expect(diffEditor).toBeDefined();
+        expect(diffEditor?.originalModel?.getValue()).toBe(
+            "const value = 1;\n",
+        );
+        expect(diffEditor?.modifiedModel?.getValue()).toBe(
+            "const value = 2;\n",
+        );
+
+        mockAiStoreState.current.sessions = {};
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: fileTab,
+                    fileTabs: [fileTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(normalEditor?.disposed).toBe(false);
+        expect(diffEditor?.disposed).toBe(true);
+    });
+});

@@ -2452,7 +2452,7 @@ function WorkspacePaneView({
     );
 }
 
-function WorkspaceFileEditorHost({
+export function WorkspaceFileEditorHost({
     activeFileTab,
     fileTabs,
     isActivePane,
