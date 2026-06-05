@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+    acquireWorkspaceFileModel,
     buildWorkspaceEditorModelPath,
     buildWorkspaceFileEditorModelPath,
     getOrCreateWorkspaceFileModel,
@@ -169,15 +170,60 @@ describe("getOrCreateWorkspaceFileModel", () => {
     });
 });
 
+describe("acquireWorkspaceFileModel", () => {
+    it("retains a shared file model until the final lease is released", () => {
+        const { createdModels, monaco } = createFakeMonaco();
+        const firstLease = acquireWorkspaceFileModel({
+            absolutePath: "/workspace/comando/src/app.ts",
+            language: "typescript",
+            monaco,
+            value: "const a = 1;",
+        });
+        const secondLease = acquireWorkspaceFileModel({
+            absolutePath: "/workspace/comando/src/app.ts",
+            language: "typescript",
+            monaco,
+            value: "const a = 1;",
+        });
+
+        expect(firstLease.model).toBe(secondLease.model);
+        expect(createdModels).toHaveLength(1);
+
+        firstLease.release();
+        expect(createdModels[0]?.dispose).not.toHaveBeenCalled();
+
+        secondLease.release();
+        expect(createdModels[0]?.dispose).toHaveBeenCalledTimes(1);
+    });
+
+    it("makes lease release idempotent", () => {
+        const { createdModels, monaco } = createFakeMonaco();
+        const lease = acquireWorkspaceFileModel({
+            absolutePath: "/workspace/comando/src/app.ts",
+            language: "typescript",
+            monaco,
+            value: "const a = 1;",
+        });
+
+        lease.release();
+        lease.release();
+
+        expect(createdModels[0]?.dispose).toHaveBeenCalledTimes(1);
+    });
+});
+
 function createFakeMonaco() {
     type FakeUri = {
         readonly value: string;
         readonly toString: () => string;
     };
     type FakeModel = {
+        readonly dispose: () => void;
         readonly getValue: () => string;
+        readonly isDisposed: () => boolean;
         readonly setValue: (value: string) => void;
         readonly setValueCalls: string[];
+        disposed: boolean;
         language: string;
         value: string;
     };
@@ -195,7 +241,13 @@ function createFakeMonaco() {
             createModel: vi.fn(
                 (value: string, language: string, uri: FakeUri) => {
                     const model: FakeModel = {
+                        dispose: vi.fn(() => {
+                            model.disposed = true;
+                            models.delete(uri.toString());
+                        }),
+                        disposed: false,
                         getValue: () => model.value,
+                        isDisposed: () => model.disposed,
                         language,
                         setValue: (nextValue: string) => {
                             model.setValueCalls.push(nextValue);

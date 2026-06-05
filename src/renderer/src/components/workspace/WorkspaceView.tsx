@@ -117,9 +117,11 @@ import {
 import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
 import {
+    acquireWorkspaceFileModel,
     buildWorkspaceEditorModelPath,
     buildWorkspaceFileEditorModelPath,
     getOrCreateWorkspaceFileModel,
+    type WorkspaceFileModelLease,
 } from "@renderer/components/workspace/editorModelPath";
 import { appendSelectionMentionToRegisteredComposer } from "@renderer/components/workspace/chat/composerSelectionBridge";
 import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
@@ -3572,6 +3574,8 @@ function FileTabView({
     const hoveredInlineReviewHunkIdRef = useRef<string | null>(null);
     const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
     const editorMonacoRef = useRef<MonacoNamespace | null>(null);
+    const workspaceFileModelLeaseRef =
+        useRef<WorkspaceFileModelLease | null>(null);
     const editorAttachSelectionShortcutInputRef =
         useRef<AttachSelectionShortcutInput | null>(null);
     const inlineReviewAttachSelectionShortcutInputRef =
@@ -3884,6 +3888,42 @@ function FileTabView({
             suppressEditorChangeRef.current = false;
         }
     }, []);
+
+    const acquireFileEditorModel = useCallback(
+        (input: {
+            readonly absolutePath: string;
+            readonly language: string;
+            readonly monaco: MonacoNamespace;
+            readonly value: string;
+        }): {
+            readonly model: MonacoEditor.ITextModel;
+            readonly previousLease: WorkspaceFileModelLease | null;
+        } => {
+            const modelPath = buildWorkspaceFileEditorModelPath(
+                input.absolutePath,
+            );
+            const currentLease = workspaceFileModelLeaseRef.current;
+
+            if (
+                currentLease?.modelPath === modelPath &&
+                !currentLease.model.isDisposed()
+            ) {
+                const model = getOrCreateWorkspaceFileModel(input);
+                if (model === currentLease.model) {
+                    return { model, previousLease: null };
+                }
+            }
+
+            const nextLease = acquireWorkspaceFileModel(input);
+            workspaceFileModelLeaseRef.current = nextLease;
+
+            return {
+                model: nextLease.model,
+                previousLease: currentLease,
+            };
+        },
+        [],
+    );
 
     const scheduleEditorViewStatePersist = useCallback(
         (editor: MonacoEditor.IStandaloneCodeEditor) => {
@@ -4490,8 +4530,8 @@ function FileTabView({
             return;
         }
 
-        const model = runWithoutEditorChangeNotification(() =>
-            getOrCreateWorkspaceFileModel({
+        const { model, previousLease } = runWithoutEditorChangeNotification(() =>
+            acquireFileEditorModel({
                 absolutePath: document.absolutePath,
                 language: monacoLanguageId,
                 monaco,
@@ -4504,6 +4544,7 @@ function FileTabView({
                 editor.setModel(model);
             });
         }
+        previousLease?.release();
 
         restoreEditorViewStateForTab(
             editor,
@@ -4512,6 +4553,7 @@ function FileTabView({
         );
     }, [
         canEdit,
+        acquireFileEditorModel,
         document,
         getPendingEditorViewStateForTab,
         inlineReviewTrackedFile,
@@ -5516,20 +5558,22 @@ function FileTabView({
                             );
                             editorRef.current = editor;
                             editorMonacoRef.current = monaco;
-                            const model = runWithoutEditorChangeNotification(
-                                () =>
-                                    getOrCreateWorkspaceFileModel({
-                                        absolutePath: document.absolutePath,
-                                        language: monacoLanguageId,
-                                        monaco,
-                                        value: tab.draftContent,
-                                    }),
-                            );
+                            const { model, previousLease } =
+                                runWithoutEditorChangeNotification(
+                                    () =>
+                                        acquireFileEditorModel({
+                                            absolutePath: document.absolutePath,
+                                            language: monacoLanguageId,
+                                            monaco,
+                                            value: tab.draftContent,
+                                        }),
+                                );
                             if (editor.getModel() !== model) {
                                 runWithoutEditorChangeNotification(() => {
                                     editor.setModel(model);
                                 });
                             }
+                            previousLease?.release();
                             void runtime?.ensureMonacoTextMateForLanguage(
                                 monacoLanguageId,
                             );
@@ -5608,11 +5652,12 @@ function FileTabView({
                                     },
                                 );
                                 clearScheduledEditorViewStateRestore();
-                                // Do not call editor.saveViewState() here.
-                                // @monaco-editor/react disposes the model
-                                // before disposing the editor, so saveViewState
-                                // would return null and overwrite the valid
-                                // view state captured during unmount cleanup.
+                                const workspaceFileModelLease =
+                                    workspaceFileModelLeaseRef.current;
+                                workspaceFileModelLeaseRef.current = null;
+                                // Do not call editor.saveViewState() here. The
+                                // editor can already be tearing down, so keep
+                                // the valid state captured during cleanup.
                                 flushScheduledEditorViewStatePersist();
                                 editorRef.current = null;
                                 editorMonacoRef.current = null;
@@ -5623,11 +5668,13 @@ function FileTabView({
                                 hiddenAreasListener.dispose();
                                 cleanupAttachShortcut?.();
                                 cleanupMarkdownListShortcut?.();
+                                workspaceFileModelLease?.release();
                                 setEditorMountVersion(
                                     (previous) => previous + 1,
                                 );
                             });
                         }}
+                        keepCurrentModel
                         options={{
                             automaticLayout: true,
                             fontFamily: editorFontFamily,

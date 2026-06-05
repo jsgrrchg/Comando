@@ -6,6 +6,20 @@ export type WorkspaceEditorModelVariant =
 
 type MonacoNamespace = typeof import("monaco-editor");
 
+export interface WorkspaceFileModelLease {
+    readonly model: MonacoEditor.ITextModel;
+    readonly modelPath: string;
+    readonly release: () => void;
+}
+
+const retainedWorkspaceFileModels = new Map<
+    string,
+    {
+        readonly model: MonacoEditor.ITextModel;
+        retainCount: number;
+    }
+>();
+
 function sanitizeModelSegment(value: string): string {
     return value.replace(/[^A-Za-z0-9_-]/g, "_");
 }
@@ -89,4 +103,53 @@ export function getOrCreateWorkspaceFileModel(input: {
     }
 
     return input.monaco.editor.createModel(input.value, input.language, uri);
+}
+
+export function acquireWorkspaceFileModel(input: {
+    readonly absolutePath: string;
+    readonly language: string;
+    readonly monaco: MonacoNamespace;
+    readonly value: string;
+}): WorkspaceFileModelLease {
+    const modelPath = buildWorkspaceFileEditorModelPath(input.absolutePath);
+    const model = getOrCreateWorkspaceFileModel(input);
+    const retainedModel = retainedWorkspaceFileModels.get(modelPath);
+
+    if (retainedModel?.model === model) {
+        retainedModel.retainCount += 1;
+    } else {
+        retainedWorkspaceFileModels.set(modelPath, {
+            model,
+            retainCount: 1,
+        });
+    }
+
+    let released = false;
+
+    return {
+        model,
+        modelPath,
+        release: () => {
+            if (released) {
+                return;
+            }
+            released = true;
+
+            const currentRetainedModel =
+                retainedWorkspaceFileModels.get(modelPath);
+            if (!currentRetainedModel || currentRetainedModel.model !== model) {
+                return;
+            }
+
+            currentRetainedModel.retainCount -= 1;
+            if (currentRetainedModel.retainCount > 0) {
+                return;
+            }
+
+            retainedWorkspaceFileModels.delete(modelPath);
+            if (!model.isDisposed()) {
+                model.dispose();
+            }
+        },
+    };
 }
