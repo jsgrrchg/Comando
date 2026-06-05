@@ -116,7 +116,11 @@ import {
 } from "@renderer/components/workspace/gitGutter";
 import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
-import { buildWorkspaceEditorModelPath } from "@renderer/components/workspace/editorModelPath";
+import {
+    buildWorkspaceEditorModelPath,
+    buildWorkspaceFileEditorModelPath,
+    getOrCreateWorkspaceFileModel,
+} from "@renderer/components/workspace/editorModelPath";
 import { appendSelectionMentionToRegisteredComposer } from "@renderer/components/workspace/chat/composerSelectionBridge";
 import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
 import { createDiffFromTrackedFile } from "@renderer/components/workspace/review/reviewDiff";
@@ -3522,6 +3526,7 @@ function FileTabView({
     const inlineReviewHoverHideTimerRef = useRef<number | null>(null);
     const hoveredInlineReviewHunkIdRef = useRef<string | null>(null);
     const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+    const editorMonacoRef = useRef<MonacoNamespace | null>(null);
     const inlineReviewMonacoRef = useRef<MonacoNamespace | null>(null);
     const inlineReviewCurrentModelsRef = useRef<InlineReviewModelState>({
         modified: null,
@@ -4265,6 +4270,40 @@ function FileTabView({
         runtime?.applyMonacoThemeFromDom();
     }, [runtime]);
 
+    useLayoutEffect(() => {
+        if (
+            !document ||
+            document.kind === "image" ||
+            !canEdit ||
+            inlineReviewTrackedFile
+        ) {
+            return;
+        }
+
+        const editor = editorRef.current;
+        const monaco = editorMonacoRef.current;
+        if (!editor || !monaco) {
+            return;
+        }
+
+        const model = getOrCreateWorkspaceFileModel({
+            absolutePath: document.absolutePath,
+            language: monacoLanguageId,
+            monaco,
+            value: tab.draftContent,
+        });
+
+        if (editor.getModel() !== model) {
+            editor.setModel(model);
+        }
+    }, [
+        canEdit,
+        document,
+        inlineReviewTrackedFile,
+        monacoLanguageId,
+        tab.draftContent,
+    ]);
+
     useEffect(() => {
         if (!runtime || !document || document.kind === "image") {
             return;
@@ -4273,6 +4312,19 @@ function FileTabView({
         void runtime.applyProjectTypeScriptConfigForPath(document.absolutePath);
     }, [
         document,
+        runtime,
+    ]);
+
+    useEffect(() => {
+        if (!runtime || !document || document.kind === "image" || !canEdit) {
+            return;
+        }
+
+        void runtime.ensureMonacoTextMateForLanguage(monacoLanguageId);
+    }, [
+        canEdit,
+        document,
+        monacoLanguageId,
         runtime,
     ]);
 
@@ -5198,7 +5250,10 @@ function FileTabView({
                         onChange={(value: string | undefined) =>
                             onDraftChange(tab.id, value ?? "")
                         }
-                        onMount={(editor) => {
+                        onMount={(
+                            editor: MonacoEditor.IStandaloneCodeEditor,
+                            monaco: MonacoNamespace,
+                        ) => {
                             recordProbeLifecycleEvent(
                                 "WorkspaceMonacoEditor",
                                 "mount",
@@ -5209,6 +5264,16 @@ function FileTabView({
                                 },
                             );
                             editorRef.current = editor;
+                            editorMonacoRef.current = monaco;
+                            const model = getOrCreateWorkspaceFileModel({
+                                absolutePath: document.absolutePath,
+                                language: monacoLanguageId,
+                                monaco,
+                                value: tab.draftContent,
+                            });
+                            if (editor.getModel() !== model) {
+                                editor.setModel(model);
+                            }
                             void runtime?.ensureMonacoTextMateForLanguage(
                                 monacoLanguageId,
                             );
@@ -5292,6 +5357,7 @@ function FileTabView({
                                 // view state captured during unmount cleanup.
                                 flushScheduledEditorViewStatePersist();
                                 editorRef.current = null;
+                                editorMonacoRef.current = null;
                                 gitGutterDecorationsRef.current = null;
                                 cleanupTokenDebug?.dispose();
                                 scrollListener.dispose();
@@ -5349,10 +5415,8 @@ function FileTabView({
                                 : "off",
                         }}
                         saveViewState
-                        path={buildWorkspaceEditorModelPath(
+                        path={buildWorkspaceFileEditorModelPath(
                             document.absolutePath,
-                            tab.id,
-                            "editor",
                         )}
                         theme={editorTheme}
                         value={tab.draftContent}

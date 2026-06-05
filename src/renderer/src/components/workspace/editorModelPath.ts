@@ -1,7 +1,10 @@
+import type { editor as MonacoEditor } from "monaco-editor";
+
 export type WorkspaceEditorModelVariant =
-    | "editor"
     | "review-modified"
     | "review-original";
+
+type MonacoNamespace = typeof import("monaco-editor");
 
 function sanitizeModelSegment(value: string): string {
     return value.replace(/[^A-Za-z0-9_-]/g, "_");
@@ -60,4 +63,30 @@ export function buildWorkspaceEditorModelPath(
     return extension
         ? `${stem}${modelSuffix}${extension}`
         : `${absolutePath}${modelSuffix}`;
+}
+
+export function buildWorkspaceFileEditorModelPath(absolutePath: string): string {
+    return absolutePath;
+}
+
+export function getOrCreateWorkspaceFileModel(input: {
+    readonly absolutePath: string;
+    readonly language: string;
+    readonly monaco: MonacoNamespace;
+    readonly value: string;
+}): MonacoEditor.ITextModel {
+    const uri = input.monaco.Uri.parse(
+        buildWorkspaceFileEditorModelPath(input.absolutePath),
+    );
+    const existingModel = input.monaco.editor.getModel(uri);
+
+    if (existingModel) {
+        if (existingModel.getValue() !== input.value) {
+            existingModel.setValue(input.value);
+        }
+        input.monaco.editor.setModelLanguage(existingModel, input.language);
+        return existingModel;
+    }
+
+    return input.monaco.editor.createModel(input.value, input.language, uri);
 }
