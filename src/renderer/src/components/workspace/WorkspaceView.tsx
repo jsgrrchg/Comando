@@ -3167,13 +3167,29 @@ function bindAttachSelectionShortcutWithInputRef(input: {
     };
 }): (() => void) | null {
     const editorDomNode = input.editor.getDomNode();
-    if (!editorDomNode) {
+    const ownerDocument =
+        editorDomNode?.ownerDocument ??
+        (typeof document === "undefined" ? null : document);
+    if (!editorDomNode && !ownerDocument) {
         return null;
     }
 
     const handleEditorKeyDown = (event: KeyboardEvent) => {
+        if (!isAttachSelectionShortcutEvent(event)) {
+            return;
+        }
+
+        const isEditorDomListener = event.currentTarget === editorDomNode;
+        if (
+            !isEditorDomListener &&
+            !input.editor.hasTextFocus() &&
+            !input.editor.hasWidgetFocus()
+        ) {
+            return;
+        }
+
         const shortcutInput = input.inputRef.current;
-        if (!shortcutInput || !isAttachSelectionShortcutEvent(event)) {
+        if (!shortcutInput) {
             return;
         }
 
@@ -3189,10 +3205,24 @@ function bindAttachSelectionShortcutWithInputRef(input: {
         stopHandledAttachSelectionShortcut(event);
     };
 
-    editorDomNode.addEventListener("keydown", handleEditorKeyDown, true);
+    // Monaco can keep an editor instance alive while its model or DOM subtree
+    // changes. The document-level capture listener keeps Cmd+L stable across
+    // those transitions, while the focus guard prevents inactive editors from
+    // handling global shortcuts.
+    editorDomNode?.addEventListener("keydown", handleEditorKeyDown, true);
+    ownerDocument?.addEventListener("keydown", handleEditorKeyDown, true);
 
     return () => {
-        editorDomNode.removeEventListener("keydown", handleEditorKeyDown, true);
+        editorDomNode?.removeEventListener(
+            "keydown",
+            handleEditorKeyDown,
+            true,
+        );
+        ownerDocument?.removeEventListener(
+            "keydown",
+            handleEditorKeyDown,
+            true,
+        );
     };
 }
 
@@ -3907,30 +3937,39 @@ function FileTabView({
         rejectTrackedFile,
     ]);
 
+    const buildEditorAttachSelectionShortcutInput =
+        useCallback((): AttachSelectionShortcutInput | null => {
+            if (!isVisible || !document || !canEdit || inlineReviewTrackedFile) {
+                return null;
+            }
+
+            return {
+                documentLanguageId: document.languageId,
+                onAttachLineFragment,
+                projectId: tab.projectId,
+                relativePath: tab.relativePath,
+                tabTitle: tab.title,
+                worktreeId: tab.worktreeId ?? null,
+            };
+        }, [
+            canEdit,
+            document,
+            inlineReviewTrackedFile,
+            isVisible,
+            onAttachLineFragment,
+            tab.projectId,
+            tab.relativePath,
+            tab.title,
+            tab.worktreeId,
+        ]);
+
     useLayoutEffect(() => {
         editorMarkdownLanguageIdRef.current = documentLanguageId;
         editorAttachSelectionShortcutInputRef.current =
-            isVisible && document && canEdit && !inlineReviewTrackedFile
-                ? {
-                      documentLanguageId: document.languageId,
-                      onAttachLineFragment,
-                      projectId: tab.projectId,
-                      relativePath: tab.relativePath,
-                      tabTitle: tab.title,
-                      worktreeId: tab.worktreeId ?? null,
-                  }
-                : null;
+            buildEditorAttachSelectionShortcutInput();
     }, [
-        canEdit,
-        document,
+        buildEditorAttachSelectionShortcutInput,
         documentLanguageId,
-        inlineReviewTrackedFile,
-        isVisible,
-        onAttachLineFragment,
-        tab.projectId,
-        tab.relativePath,
-        tab.title,
-        tab.worktreeId,
     ]);
 
     useLayoutEffect(() => {
@@ -5444,6 +5483,8 @@ function FileTabView({
                             void runtime?.ensureMonacoTextMateForLanguage(
                                 monacoLanguageId,
                             );
+                            editorAttachSelectionShortcutInputRef.current =
+                                buildEditorAttachSelectionShortcutInput();
                             const cleanupTokenDebug =
                                 runtime?.installMonacoTokenDebugAction(editor) ??
                                 null;
