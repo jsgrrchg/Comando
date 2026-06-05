@@ -1,6 +1,8 @@
-import { createElement } from "react";
+/** @vitest-environment jsdom */
+import { act, createElement, type ComponentProps } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
 
@@ -31,6 +33,13 @@ vi.mock("@renderer/app/hooks/use-ai-chat-settings", () => ({
         toolCardExpansionMode: "collapsed",
     }),
 }));
+
+vi.mock("@renderer/app/debug/renderProbe", () => ({
+    useRenderProbe: () => undefined,
+}));
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
 
 function createActivity(
     overrides: Partial<AiToolActivity> = {},
@@ -99,6 +108,38 @@ function createTrackedFile(
         updatedAt: "2026-04-14T00:00:00.000Z",
         ...overrides,
     };
+}
+
+const mountedRoots: Root[] = [];
+const mountedContainers: HTMLElement[] = [];
+
+afterEach(() => {
+    for (const root of mountedRoots.splice(0)) {
+        act(() => {
+            root.unmount();
+        });
+    }
+
+    for (const container of mountedContainers.splice(0)) {
+        container.remove();
+    }
+});
+
+function renderInteractiveToolActivityItem(
+    props: ComponentProps<typeof ToolActivityItem>,
+): HTMLElement {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    mountedContainers.push(container);
+
+    act(() => {
+        root.render(createElement(ToolActivityItem, props));
+    });
+
+    return container;
 }
 
 describe("ToolActivityItem", () => {
@@ -399,6 +440,100 @@ describe("ToolActivityItem", () => {
         expect(markup).toContain("src/components/example.cpp");
         expect(markup).toContain("Open src/components/example.cpp");
         expect(markup).toContain("color:inherit");
+        expect(markup).toContain("text-decoration:underline");
+    });
+
+    it("uses structured read locations when the runtime sends a generic title", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    kind: "read",
+                    locations: [
+                        {
+                            endLine: null,
+                            line: 12,
+                            path: "src/claude-reader.ts",
+                        },
+                    ],
+                    rawInputJson: JSON.stringify({
+                        file_path: "src/claude-reader.ts",
+                    }),
+                    summary: null,
+                    title: "Read ...",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Read ");
+        expect(markup).toContain("src/claude-reader.ts");
+        expect(markup).toContain("Open src/claude-reader.ts");
+        expect(markup).not.toContain("Read ...");
+    });
+
+    it("falls back to raw read input when ACP locations are missing", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    kind: "read",
+                    locations: [],
+                    rawInputJson: JSON.stringify({
+                        filePath: "src/raw-input-only.ts",
+                    }),
+                    summary: null,
+                    title: "Read",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("src/raw-input-only.ts");
+        expect(markup).toContain("Open src/raw-input-only.ts");
+    });
+
+    it("lets the read details chevron handle keyboard activation without opening the file", () => {
+        const onOpenFile = vi.fn(async () => {});
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [],
+                summary: "Read details stay keyboard accessible.",
+                title: "Read src/components/example.cpp",
+            }),
+            onOpenFile,
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+        const chevronButton = container.querySelector<HTMLButtonElement>(
+            'button[aria-label="Expand details"]',
+        );
+        expect(chevronButton).not.toBeNull();
+
+        const keyDown = new KeyboardEvent("keydown", {
+            bubbles: true,
+            cancelable: true,
+            key: "Enter",
+        });
+        act(() => {
+            const defaultWasNotPrevented =
+                chevronButton?.dispatchEvent(keyDown) ?? false;
+            if (defaultWasNotPrevented) {
+                chevronButton?.click();
+            }
+        });
+
+        expect(keyDown.defaultPrevented).toBe(false);
+        expect(onOpenFile).not.toHaveBeenCalled();
+        expect(container.textContent).toContain(
+            "Read details stay keyboard accessible.",
+        );
     });
 
     it("renders turn_started as a subtle Codex ACP-style divider", () => {

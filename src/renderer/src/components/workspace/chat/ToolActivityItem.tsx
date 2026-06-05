@@ -209,7 +209,11 @@ function parseToolTitleReference(
             title.trim(),
         );
     const target = match?.[2]?.trim() ?? "";
-    if (!target || !isLikelyProjectFileReference(target)) {
+    if (
+        !target ||
+        isPlaceholderToolTarget(target) ||
+        !isLikelyProjectFileReference(target)
+    ) {
         return null;
     }
 
@@ -217,6 +221,109 @@ function parseToolTitleReference(
         prefix: `${match?.[1] ?? ""} `,
         target,
     };
+}
+
+function isPlaceholderToolTarget(target: string): boolean {
+    return /^\.{2,}$/.test(target.trim());
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readRecordString(
+    record: Record<string, unknown>,
+    key: string,
+): string | null {
+    const value = record[key];
+    return typeof value === "string" && value.trim().length > 0
+        ? value.trim()
+        : null;
+}
+
+function getToolActionPrefix(kind: string): string {
+    const lk = kind.toLowerCase();
+    if (lk === "read" || lk === "read_file") return "Read ";
+    if (lk === "search" || lk === "grep") return "Search ";
+    if (lk === "edit" || lk === "update") return "Edit ";
+    if (lk === "write") return "Write ";
+    if (lk === "create") return "Create ";
+    if (lk === "delete" || lk === "remove") return "Delete ";
+    if (lk === "move" || lk === "rename") return "Move ";
+    return "";
+}
+
+function parseToolRawInputJson(
+    rawInputJson: string | null,
+): Record<string, unknown> | null {
+    if (!rawInputJson) {
+        return null;
+    }
+
+    try {
+        const value = parseJsonValue(rawInputJson);
+        return isRecordValue(value) ? value : null;
+    } catch {
+        return null;
+    }
+}
+
+function getStructuredToolTarget(activity: AiToolActivity): string | null {
+    const locationPath = activity.locations.find(
+        (location) => location.path.trim().length > 0,
+    )?.path;
+    if (locationPath) {
+        return locationPath.trim();
+    }
+
+    const rawInput = parseToolRawInputJson(activity.rawInputJson);
+    if (!rawInput) {
+        return null;
+    }
+
+    return (
+        readRecordString(rawInput, "file_path") ??
+        readRecordString(rawInput, "filePath") ??
+        readRecordString(rawInput, "path") ??
+        readRecordString(rawInput, "target")
+    );
+}
+
+function getToolTitleReference(
+    activity: AiToolActivity,
+): { readonly prefix: string; readonly target: string } | null {
+    const titleReference = parseToolTitleReference(activity.title);
+    if (titleReference) {
+        return titleReference;
+    }
+
+    if (!shouldDeriveStructuredToolTarget(activity.kind)) {
+        return null;
+    }
+
+    const target = getStructuredToolTarget(activity);
+    if (!target || !isLikelyProjectFileReference(target)) {
+        return null;
+    }
+
+    return {
+        prefix: getToolActionPrefix(activity.kind),
+        target,
+    };
+}
+
+function shouldDeriveStructuredToolTarget(kind: string): boolean {
+    const lk = kind.toLowerCase();
+    return (
+        lk === "read" ||
+        lk === "read_file" ||
+        lk === "search" ||
+        lk === "grep"
+    );
+}
+
+function isPrimaryOpenFileTool(activity: AiToolActivity): boolean {
+    return activity.kind.toLowerCase() === "read";
 }
 
 function canOpenToolFileReference({
@@ -521,7 +628,7 @@ function FileToolMessage({
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
     const accent = getToolAccent(activity.kind);
-    const titleReference = parseToolTitleReference(activity.title);
+    const titleReference = getToolTitleReference(activity);
     const titleIsLink =
         titleReference !== null &&
         canOpenToolFileReference({
@@ -529,6 +636,10 @@ function FileToolMessage({
             resolveFileReference,
             target: titleReference.target,
         });
+    const shouldOpenOnHeaderClick =
+        titleReference !== null &&
+        titleIsLink &&
+        isPrimaryOpenFileTool(activity);
 
     const hasDetail =
         !!activity.summary ||
@@ -557,6 +668,28 @@ function FileToolMessage({
 
         toggleSyncedExpanded();
     };
+    const openTitleReference = () => {
+        if (!titleReference || !titleIsLink) {
+            return;
+        }
+
+        openToolFileReference({
+            onOpenFile,
+            onOpenFileReference,
+            projectId,
+            resolveFileReference,
+            target: titleReference.target,
+            worktreeId,
+        });
+    };
+    const handleHeaderClick = () => {
+        if (shouldOpenOnHeaderClick) {
+            openTitleReference();
+            return;
+        }
+
+        toggleExpanded();
+    };
 
     return (
         <div
@@ -569,21 +702,28 @@ function FileToolMessage({
             }}
         >
             <div
-                aria-expanded={hasDetail ? expanded : undefined}
+                aria-expanded={
+                    hasDetail && !shouldOpenOnHeaderClick
+                        ? expanded
+                        : undefined
+                }
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
-                onClick={toggleExpanded}
+                onClick={handleHeaderClick}
                 onKeyDown={(event) => {
                     if (
-                        !hasDetail ||
+                        event.target !== event.currentTarget ||
+                        (!hasDetail && !shouldOpenOnHeaderClick) ||
                         (event.key !== "Enter" && event.key !== " ")
                     ) {
                         return;
                     }
 
                     event.preventDefault();
-                    toggleExpanded();
+                    handleHeaderClick();
                 }}
-                role={hasDetail ? "button" : undefined}
+                role={
+                    hasDetail || shouldOpenOnHeaderClick ? "button" : undefined
+                }
                 style={{
                     background: "none",
                     borderBottom: expanded
@@ -591,12 +731,15 @@ function FileToolMessage({
                         : "1px solid transparent",
                     color: accent,
                     cursor:
-                        hasDetail && !expansionState.forceExpanded
+                        shouldOpenOnHeaderClick ||
+                        (hasDetail && !expansionState.forceExpanded)
                             ? "pointer"
                             : "default",
                     fontSize: "0.83em",
                 }}
-                tabIndex={hasDetail ? 0 : undefined}
+                tabIndex={
+                    hasDetail || shouldOpenOnHeaderClick ? 0 : undefined
+                }
             >
                 <span className="shrink-0">{getToolIcon(activity.kind)}</span>
                 <span
@@ -613,14 +756,7 @@ function FileToolMessage({
                                 className="app-no-drag"
                                 onClick={(event) => {
                                     event.stopPropagation();
-                                    openToolFileReference({
-                                        onOpenFile,
-                                        onOpenFileReference,
-                                        projectId,
-                                        resolveFileReference,
-                                        target: titleReference.target,
-                                        worktreeId,
-                                    });
+                                    openTitleReference();
                                 }}
                                 style={{
                                     background: "none",
@@ -632,7 +768,12 @@ function FileToolMessage({
                                     lineHeight: "inherit",
                                     margin: 0,
                                     padding: 0,
-                                    textDecoration: "none",
+                                    textDecoration: isPrimaryOpenFileTool(
+                                        activity,
+                                    )
+                                        ? "underline"
+                                        : "none",
+                                    textUnderlineOffset: "2px",
                                     verticalAlign: "baseline",
                                 }}
                                 title={`Open ${titleReference.target}`}
@@ -640,6 +781,11 @@ function FileToolMessage({
                             >
                                 {titleReference.target}
                             </button>
+                        </>
+                    ) : titleReference ? (
+                        <>
+                            {titleReference.prefix}
+                            {titleReference.target}
                         </>
                     ) : (
                         activity.title
@@ -664,9 +810,32 @@ function FileToolMessage({
                     </span>
                 ) : null}
                 {hasDetail ? (
-                    <span className="shrink-0">
+                    <button
+                        aria-label={
+                            expanded ? "Collapse details" : "Expand details"
+                        }
+                        className="app-no-drag shrink-0"
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            toggleExpanded();
+                        }}
+                        style={{
+                            alignItems: "center",
+                            background: "none",
+                            border: "none",
+                            color: "inherit",
+                            cursor:
+                                expansionState.forceExpanded
+                                    ? "default"
+                                    : "pointer",
+                            display: "inline-flex",
+                            margin: 0,
+                            padding: 0,
+                        }}
+                        type="button"
+                    >
                         <Chevron expanded={expanded} />
-                    </span>
+                    </button>
                 ) : null}
             </div>
 
