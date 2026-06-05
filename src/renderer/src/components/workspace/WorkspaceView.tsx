@@ -3836,19 +3836,8 @@ function FileTabView({
             const tabId = fileTabIdRef.current;
             pendingEditorViewStateRef.current = editor.saveViewState();
             pendingEditorViewStateTabIdRef.current = tabId;
-            if (viewStatePersistTimerRef.current != null) {
-                return;
-            }
-
-            viewStatePersistTimerRef.current = window.setTimeout(() => {
-                viewStatePersistTimerRef.current = null;
-                persistEditorViewState(
-                    tabId,
-                    pendingEditorViewStateRef.current,
-                );
-            }, 120);
         },
-        [persistEditorViewState],
+        [],
     );
 
     const captureEditorStateForInlineReview = useCallback(
@@ -3959,6 +3948,10 @@ function FileTabView({
 
         if (diffEditorRef.current) {
             captureInlineReviewModifiedEditorState();
+            persistEditorViewState(
+                previousTabId,
+                pendingEditorViewStateRef.current,
+            );
         }
 
         fileTabIdRef.current = tab.id;
@@ -3967,6 +3960,7 @@ function FileTabView({
         restoredEditorViewStateTabIdRef.current = null;
     }, [
         captureInlineReviewModifiedEditorState,
+        persistEditorViewState,
         tab.id,
         tab.viewState,
         updateFileViewState,
@@ -3995,22 +3989,39 @@ function FileTabView({
         return () => {
             if (isInlineReviewActive) {
                 captureInlineReviewModifiedEditorState();
+                persistEditorViewState(
+                    fileTabIdRef.current,
+                    pendingEditorViewStateRef.current,
+                );
                 return;
             }
 
             if (editorRef.current) {
                 captureEditorStateForInlineReview(editorRef.current);
+                persistEditorViewState(
+                    fileTabIdRef.current,
+                    editorRef.current.saveViewState(),
+                );
             }
         };
     }, [
         captureEditorStateForInlineReview,
         captureInlineReviewModifiedEditorState,
         isInlineReviewActive,
+        persistEditorViewState,
     ]);
 
     useLayoutEffect(() => {
         restoredEditorViewStateTabIdRef.current = null;
     }, [isInlineReviewActive]);
+
+    useEffect(() => {
+        if (isVisible) {
+            return;
+        }
+
+        flushScheduledEditorViewStatePersist();
+    }, [flushScheduledEditorViewStatePersist, isVisible]);
 
     const getPendingEditorViewStateForTab = useCallback(
         (
