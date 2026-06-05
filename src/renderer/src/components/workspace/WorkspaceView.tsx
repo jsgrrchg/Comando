@@ -4797,9 +4797,17 @@ function FileTabView({
                 return;
             }
 
+            const installedModels = diffEditorRef.current.getModel();
+            const currentReviewModels = inlineReviewCurrentModelsRef.current;
             if (
-                inlineReviewCurrentModelsRef.current.revision ===
-                inlineReviewModelRevision
+                currentReviewModels.revision ===
+                    inlineReviewModelRevision &&
+                currentReviewModels.original &&
+                currentReviewModels.modified &&
+                !currentReviewModels.original.isDisposed() &&
+                !currentReviewModels.modified.isDisposed() &&
+                installedModels?.original === currentReviewModels.original &&
+                installedModels?.modified === currentReviewModels.modified
             ) {
                 return;
             }
@@ -5181,8 +5189,17 @@ function FileTabView({
     ]);
 
     useLayoutEffect(() => {
+        if (!isVisible) {
+            return;
+        }
+
         applyInlineReviewModels(inlineReviewTrackedFile);
-    }, [applyInlineReviewModels, inlineReviewTrackedFile]);
+    }, [
+        applyInlineReviewModels,
+        diffEditorMountVersion,
+        inlineReviewTrackedFile,
+        isVisible,
+    ]);
 
     useEffect(() => {
         if (inlineReviewTrackedFile) {

@@ -876,4 +876,79 @@ describe("WorkspaceFileEditorHost", () => {
         expect(normalEditor?.disposed).toBe(false);
         expect(diffEditor?.disposed).toBe(true);
     });
+
+    it("reinstalls inline review models when a hidden file tab resumes with shell models", async () => {
+        const fileTab = createFileTab("file-1");
+        mockAiStoreState.current.sessions = {
+            "session-1": {
+                snapshot: {
+                    trackedFiles: [createTrackedFile()],
+                },
+            },
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: fileTab,
+                    fileTabs: [fileTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const diffEditor = monacoHarness.diffEditors[0];
+        expect(diffEditor).toBeDefined();
+        if (!diffEditor) {
+            throw new Error("Expected inline review diff editor to mount.");
+        }
+
+        expect(diffEditor.originalModel?.getValue()).toBe("const value = 1;\n");
+        expect(diffEditor.modifiedModel?.getValue()).toBe("const value = 2;\n");
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: null,
+                    fileTabs: [fileTab],
+                    recentActiveTabIds: ["file-1"],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const shellOriginalModel = monacoHarness.monaco.editor.createModel(
+            "",
+            "typescript",
+            monacoHarness.monaco.Uri.parse(
+                "inmemory://inline-review-shell-original",
+            ),
+        );
+        const shellModifiedModel = monacoHarness.monaco.editor.createModel(
+            "",
+            "typescript",
+            monacoHarness.monaco.Uri.parse(
+                "inmemory://inline-review-shell-modified",
+            ),
+        );
+        diffEditor.setModel({
+            modified: shellModifiedModel,
+            original: shellOriginalModel,
+        });
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: fileTab,
+                    fileTabs: [fileTab],
+                    recentActiveTabIds: ["file-1"],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(diffEditor.disposed).toBe(false);
+        expect(diffEditor.originalModel?.getValue()).toBe("const value = 1;\n");
+        expect(diffEditor.modifiedModel?.getValue()).toBe("const value = 2;\n");
+    });
 });
