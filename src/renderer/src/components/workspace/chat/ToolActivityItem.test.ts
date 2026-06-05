@@ -440,7 +440,7 @@ describe("ToolActivityItem", () => {
         expect(markup).toContain("src/components/example.cpp");
         expect(markup).toContain("Open src/components/example.cpp");
         expect(markup).toContain("color:inherit");
-        expect(markup).toContain("text-decoration:underline");
+        expect(markup).toContain("text-decoration:none");
     });
 
     it("uses structured read locations when the runtime sends a generic title", () => {
@@ -472,6 +472,91 @@ describe("ToolActivityItem", () => {
         expect(markup).toContain("src/claude-reader.ts");
         expect(markup).toContain("Open src/claude-reader.ts");
         expect(markup).not.toContain("Read ...");
+    });
+
+    it("opens the structured read path when the title only contains a basename", () => {
+        const onOpenFile = vi.fn(async () => {});
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [
+                    {
+                        endLine: null,
+                        line: null,
+                        path: "src/renderer/src/components/workspace/chat/ChatTabView.tsx",
+                    },
+                ],
+                rawInputJson: JSON.stringify({
+                    file_path:
+                        "src/renderer/src/components/workspace/chat/ChatTabView.tsx",
+                }),
+                summary: null,
+                title: "Read ChatTabView.tsx",
+            }),
+            onOpenFile,
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+        const linkButton = container.querySelector<HTMLButtonElement>(
+            'button[title="Open src/renderer/src/components/workspace/chat/ChatTabView.tsx"]',
+        );
+        expect(linkButton).not.toBeNull();
+        expect(linkButton?.textContent).toBe("ChatTabView.tsx");
+
+        act(() => {
+            linkButton?.click();
+        });
+
+        expect(onOpenFile).toHaveBeenCalledWith(
+            "project-1",
+            "src/renderer/src/components/workspace/chat/ChatTabView.tsx",
+            null,
+        );
+    });
+
+    it("activates read title links visually on hover and keyboard focus", () => {
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [],
+                summary: null,
+                title: "Read src/components/example.cpp",
+            }),
+            onOpenFile: async () => {},
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+        const linkButton = container.querySelector<HTMLButtonElement>(
+            'button[title="Open src/components/example.cpp"]',
+        );
+        expect(linkButton).not.toBeNull();
+        expect(linkButton?.style.textDecoration).toBe("none");
+
+        act(() => {
+            linkButton?.dispatchEvent(
+                new MouseEvent("mouseover", { bubbles: true }),
+            );
+        });
+        expect(linkButton?.style.textDecoration).toBe("underline");
+
+        act(() => {
+            linkButton?.dispatchEvent(
+                new MouseEvent("mouseout", { bubbles: true }),
+            );
+        });
+        expect(linkButton?.style.textDecoration).toBe("none");
+
+        act(() => {
+            linkButton?.focus();
+        });
+        expect(linkButton?.style.textDecoration).toBe("underline");
+
+        act(() => {
+            linkButton?.blur();
+        });
+        expect(linkButton?.style.textDecoration).toBe("none");
     });
 
     it("falls back to raw read input when ACP locations are missing", () => {

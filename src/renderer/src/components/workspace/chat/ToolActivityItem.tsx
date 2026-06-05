@@ -203,7 +203,11 @@ function summarizeDiff(oldText: string | null, newText: string | null): string {
 
 function parseToolTitleReference(
     title: string,
-): { readonly prefix: string; readonly target: string } | null {
+): {
+    readonly displayTarget: string;
+    readonly prefix: string;
+    readonly target: string;
+} | null {
     const match =
         /^(Read|Edit|Write|Create|Delete|Move|Search)\s+(.+)$/i.exec(
             title.trim(),
@@ -218,6 +222,7 @@ function parseToolTitleReference(
     }
 
     return {
+        displayTarget: target,
         prefix: `${match?.[1] ?? ""} `,
         target,
     };
@@ -291,25 +296,26 @@ function getStructuredToolTarget(activity: AiToolActivity): string | null {
 
 function getToolTitleReference(
     activity: AiToolActivity,
-): { readonly prefix: string; readonly target: string } | null {
+): {
+    readonly displayTarget: string;
+    readonly prefix: string;
+    readonly target: string;
+} | null {
     const titleReference = parseToolTitleReference(activity.title);
-    if (titleReference) {
+    if (!shouldDeriveStructuredToolTarget(activity.kind)) {
         return titleReference;
     }
 
-    if (!shouldDeriveStructuredToolTarget(activity.kind)) {
-        return null;
+    const structuredTarget = getStructuredToolTarget(activity);
+    if (structuredTarget && isLikelyProjectFileReference(structuredTarget)) {
+        return {
+            displayTarget: titleReference?.target ?? structuredTarget,
+            prefix: titleReference?.prefix ?? getToolActionPrefix(activity.kind),
+            target: structuredTarget,
+        };
     }
 
-    const target = getStructuredToolTarget(activity);
-    if (!target || !isLikelyProjectFileReference(target)) {
-        return null;
-    }
-
-    return {
-        prefix: getToolActionPrefix(activity.kind),
-        target,
-    };
+    return titleReference;
 }
 
 function shouldDeriveStructuredToolTarget(kind: string): boolean {
@@ -754,9 +760,25 @@ function FileToolMessage({
                             {titleReference.prefix}
                             <button
                                 className="app-no-drag"
+                                onBlur={(event) => {
+                                    event.currentTarget.style.textDecoration =
+                                        "none";
+                                }}
                                 onClick={(event) => {
                                     event.stopPropagation();
                                     openTitleReference();
+                                }}
+                                onFocus={(event) => {
+                                    event.currentTarget.style.textDecoration =
+                                        "underline";
+                                }}
+                                onMouseEnter={(event) => {
+                                    event.currentTarget.style.textDecoration =
+                                        "underline";
+                                }}
+                                onMouseLeave={(event) => {
+                                    event.currentTarget.style.textDecoration =
+                                        "none";
                                 }}
                                 style={{
                                     background: "none",
@@ -768,24 +790,20 @@ function FileToolMessage({
                                     lineHeight: "inherit",
                                     margin: 0,
                                     padding: 0,
-                                    textDecoration: isPrimaryOpenFileTool(
-                                        activity,
-                                    )
-                                        ? "underline"
-                                        : "none",
+                                    textDecoration: "none",
                                     textUnderlineOffset: "2px",
                                     verticalAlign: "baseline",
                                 }}
                                 title={`Open ${titleReference.target}`}
                                 type="button"
                             >
-                                {titleReference.target}
+                                {titleReference.displayTarget}
                             </button>
                         </>
                     ) : titleReference ? (
                         <>
                             {titleReference.prefix}
-                            {titleReference.target}
+                            {titleReference.displayTarget}
                         </>
                     ) : (
                         activity.title
