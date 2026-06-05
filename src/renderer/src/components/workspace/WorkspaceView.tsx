@@ -3160,24 +3160,27 @@ function tryAttachEditorSelectionWithShortcutInput(
     });
 }
 
-function bindAttachSelectionShortcut(
-    input: AttachSelectionShortcutInput & {
-        readonly editor: MonacoEditor.IStandaloneCodeEditor;
-    },
-): (() => void) | null {
+function bindAttachSelectionShortcutWithInputRef(input: {
+    readonly editor: MonacoEditor.IStandaloneCodeEditor;
+    readonly inputRef: {
+        readonly current: AttachSelectionShortcutInput | null;
+    };
+}): (() => void) | null {
     const editorDomNode = input.editor.getDomNode();
     if (!editorDomNode) {
         return null;
     }
 
     const handleEditorKeyDown = (event: KeyboardEvent) => {
-        if (!isAttachSelectionShortcutEvent(event)) {
+        const shortcutInput = input.inputRef.current;
+        if (!shortcutInput || !isAttachSelectionShortcutEvent(event)) {
             return;
         }
 
-        // Intercept in capture so Monaco doesn't expand line selection
-        // before we can attach the current selection.
-        const attached = tryAttachEditorSelectionWithShortcutInput(input);
+        const attached = tryAttachEditorSelectionWithShortcutInput({
+            ...shortcutInput,
+            editor: input.editor,
+        });
 
         if (!attached) {
             return;
@@ -3297,93 +3300,99 @@ function bindCloseFindWidgetOnEscape(
     };
 }
 
-function bindMarkdownListEditingShortcuts(input: {
-    readonly documentLanguageId: string;
-    readonly editor: MonacoEditor.IStandaloneCodeEditor;
-}): (() => void) | null {
-    if (input.documentLanguageId !== "markdown") {
-        return null;
+function handleMarkdownListEditingShortcut(
+    editor: MonacoEditor.IStandaloneCodeEditor,
+    event: KeyboardEvent,
+): void {
+    if (
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.isComposing
+    ) {
+        return;
     }
 
+    const model = editor.getModel();
+    const selections = editor.getSelections();
+    const selection = editor.getSelection();
+    if (!model || !selection || (selections?.length ?? 0) > 1) {
+        return;
+    }
+
+    const text = model.getValue();
+    const tabSize = model.getOptions().tabSize;
+    const selectionStartOffset = model.getOffsetAt(
+        selection.getStartPosition(),
+    );
+    const selectionEndOffset = model.getOffsetAt(selection.getEndPosition());
+    const result =
+        event.key === "Enter" && !event.shiftKey && selection.isEmpty()
+            ? continueMarkdownList(text, selectionEndOffset)
+            : event.key === "Tab" && !event.shiftKey
+              ? indentMarkdownListItems(
+                    text,
+                    selectionStartOffset,
+                    selectionEndOffset,
+                    tabSize,
+                )
+              : event.key === "Tab" && event.shiftKey
+                ? outdentMarkdownListItems(
+                      text,
+                      selectionStartOffset,
+                      selectionEndOffset,
+                      tabSize,
+                  )
+                : null;
+    if (!result) {
+        return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+
+    editor.pushUndoStop();
+    editor.executeEdits("markdown-list-continuation", [
+        {
+            forceMoveMarkers: true,
+            range: model.getFullModelRange(),
+            text: result.text,
+        },
+    ]);
+
+    const nextModel = editor.getModel();
+    if (!nextModel) {
+        return;
+    }
+
+    editor.setSelection({
+        endColumn: nextModel.getPositionAt(result.selectionEnd).column,
+        endLineNumber: nextModel.getPositionAt(result.selectionEnd).lineNumber,
+        startColumn: nextModel.getPositionAt(result.selectionStart).column,
+        startLineNumber: nextModel.getPositionAt(result.selectionStart)
+            .lineNumber,
+    });
+    editor.pushUndoStop();
+}
+
+function bindMarkdownListEditingShortcutsWithLanguageRef(input: {
+    readonly documentLanguageIdRef: {
+        readonly current: string;
+    };
+    readonly editor: MonacoEditor.IStandaloneCodeEditor;
+}): (() => void) | null {
     const editorDomNode = input.editor.getDomNode();
     if (!editorDomNode) {
         return null;
     }
 
     const handleEditorKeyDown = (event: KeyboardEvent) => {
-        if (
-            event.altKey ||
-            event.ctrlKey ||
-            event.metaKey ||
-            event.isComposing
-        ) {
+        if (input.documentLanguageIdRef.current !== "markdown") {
             return;
         }
 
-        const model = input.editor.getModel();
-        const selections = input.editor.getSelections();
-        const selection = input.editor.getSelection();
-        if (!model || !selection || (selections?.length ?? 0) > 1) {
-            return;
-        }
-
-        const text = model.getValue();
-        const tabSize = model.getOptions().tabSize;
-        const selectionStartOffset = model.getOffsetAt(
-            selection.getStartPosition(),
-        );
-        const selectionEndOffset = model.getOffsetAt(
-            selection.getEndPosition(),
-        );
-        const result =
-            event.key === "Enter" && !event.shiftKey && selection.isEmpty()
-                ? continueMarkdownList(text, selectionEndOffset)
-                : event.key === "Tab" && !event.shiftKey
-                  ? indentMarkdownListItems(
-                        text,
-                        selectionStartOffset,
-                        selectionEndOffset,
-                        tabSize,
-                    )
-                  : event.key === "Tab" && event.shiftKey
-                    ? outdentMarkdownListItems(
-                          text,
-                          selectionStartOffset,
-                          selectionEndOffset,
-                          tabSize,
-                      )
-                    : null;
-        if (!result) {
-            return;
-        }
-
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-
-        input.editor.pushUndoStop();
-        input.editor.executeEdits("markdown-list-continuation", [
-            {
-                forceMoveMarkers: true,
-                range: model.getFullModelRange(),
-                text: result.text,
-            },
-        ]);
-
-        const nextModel = input.editor.getModel();
-        if (!nextModel) {
-            return;
-        }
-
-        input.editor.setSelection({
-            endColumn: nextModel.getPositionAt(result.selectionEnd).column,
-            endLineNumber: nextModel.getPositionAt(result.selectionEnd)
-                .lineNumber,
-            startColumn: nextModel.getPositionAt(result.selectionStart).column,
-            startLineNumber: nextModel.getPositionAt(result.selectionStart)
-                .lineNumber,
-        });
-        input.editor.pushUndoStop();
+        handleMarkdownListEditingShortcut(input.editor, event);
     };
 
     editorDomNode.addEventListener("keydown", handleEditorKeyDown, true);
@@ -3527,6 +3536,11 @@ function FileTabView({
     const hoveredInlineReviewHunkIdRef = useRef<string | null>(null);
     const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
     const editorMonacoRef = useRef<MonacoNamespace | null>(null);
+    const editorAttachSelectionShortcutInputRef =
+        useRef<AttachSelectionShortcutInput | null>(null);
+    const editorMarkdownLanguageIdRef = useRef(
+        document?.languageId ?? "plaintext",
+    );
     const inlineReviewMonacoRef = useRef<MonacoNamespace | null>(null);
     const inlineReviewCurrentModelsRef = useRef<InlineReviewModelState>({
         modified: null,
@@ -3901,6 +3915,32 @@ function FileTabView({
         captureInlineReviewModifiedEditorState,
         inlineReviewTrackedFile,
         rejectTrackedFile,
+    ]);
+
+    useLayoutEffect(() => {
+        editorMarkdownLanguageIdRef.current = documentLanguageId;
+        editorAttachSelectionShortcutInputRef.current =
+            isVisible && document && canEdit && !inlineReviewTrackedFile
+                ? {
+                      documentLanguageId: document.languageId,
+                      onAttachLineFragment,
+                      projectId: tab.projectId,
+                      relativePath: tab.relativePath,
+                      tabTitle: tab.title,
+                      worktreeId: tab.worktreeId ?? null,
+                  }
+                : null;
+    }, [
+        canEdit,
+        document,
+        documentLanguageId,
+        inlineReviewTrackedFile,
+        isVisible,
+        onAttachLineFragment,
+        tab.projectId,
+        tab.relativePath,
+        tab.title,
+        tab.worktreeId,
     ]);
 
     useLayoutEffect(() => {
@@ -4654,6 +4694,9 @@ function FileTabView({
         }
 
         const controller = new AbortController();
+        const cancelPendingReset = scheduleEffectStateUpdate(() => {
+            setGitGutterDiff(null);
+        });
 
         const loadGitDiff = async () => {
             try {
@@ -4681,6 +4724,7 @@ function FileTabView({
         void loadGitDiff();
 
         return () => {
+            cancelPendingReset();
             controller.abort();
         };
     }, [
@@ -4723,7 +4767,13 @@ function FileTabView({
                 : [],
         );
         gitGutterDecorationsRef.current = collection;
-    }, [editorMountVersion, gitGutterDiff]);
+    }, [
+        documentAbsolutePath,
+        editorMountVersion,
+        gitGutterDiff,
+        tab.draftContent,
+        tab.id,
+    ]);
 
     useEffect(() => {
         if (
@@ -4837,6 +4887,10 @@ function FileTabView({
             fontFamily: editorFontFamily,
             fontSize: editorSettings.fontSize,
             lineHeight: editorLineHeightPx,
+            lineDecorationsWidth: 0,
+            lineNumbersMinChars: shouldShowGitGutter
+                ? gitGutterLineNumbersMinChars
+                : 4,
             minimap: {
                 enabled: editorSettings.minimapEnabled,
             },
@@ -4855,6 +4909,7 @@ function FileTabView({
             wordBasedSuggestions: areSuggestionsEnabled
                 ? "matchingDocuments"
                 : "off",
+            wordWrap: shouldEnableDocumentWrapping(document) ? "on" : "off",
         });
         editor.layout();
     }, [
@@ -4865,6 +4920,8 @@ function FileTabView({
         editorLineHeightPx,
         editorSettings.fontSize,
         editorSettings.minimapEnabled,
+        gitGutterLineNumbersMinChars,
+        shouldShowGitGutter,
     ]);
 
     useEffect(() => {
@@ -5374,18 +5431,15 @@ function FileTabView({
                                 }
                             }
                             const cleanupAttachShortcut =
-                                bindAttachSelectionShortcut({
-                                    documentLanguageId: document.languageId,
+                                bindAttachSelectionShortcutWithInputRef({
                                     editor,
-                                    onAttachLineFragment,
-                                    projectId: tab.projectId,
-                                    relativePath: tab.relativePath,
-                                    tabTitle: tab.title,
-                                    worktreeId: tab.worktreeId ?? null,
+                                    inputRef:
+                                        editorAttachSelectionShortcutInputRef,
                                 });
                             const cleanupMarkdownListShortcut =
-                                bindMarkdownListEditingShortcuts({
-                                    documentLanguageId: document.languageId,
+                                bindMarkdownListEditingShortcutsWithLanguageRef({
+                                    documentLanguageIdRef:
+                                        editorMarkdownLanguageIdRef,
                                     editor,
                                 });
                             const scrollListener = editor.onDidScrollChange(
