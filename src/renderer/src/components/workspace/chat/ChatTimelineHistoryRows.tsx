@@ -48,6 +48,7 @@ interface ChatTimelineHistoryRowsProps {
         readonly row: ChatTimelineRow;
     }) => ReactNode;
     readonly scrollRef: RefObject<HTMLElement | null>;
+    readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
 }
@@ -64,6 +65,7 @@ export const ChatTimelineHistoryRows = memo(
         onVirtualResizeStart,
         renderRow,
         scrollRef,
+        shouldPreserveVirtualMeasureAnchor,
         shouldPreserveVirtualResizeAnchor,
         toolCardExpansionMode,
     }: ChatTimelineHistoryRowsProps) {
@@ -431,7 +433,7 @@ export const ChatTimelineHistoryRows = memo(
                     overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}
                     preserveScrollAnchorOnMeasure
                     shouldPreserveScrollAnchorOnMeasure={
-                        shouldPreserveVirtualResizeAnchor
+                        shouldPreserveVirtualMeasureAnchor
                     }
                     scrollContainerRef={scrollRef}
                     scrollMarginTop={scrollMarginTop}

@@ -8,6 +8,7 @@ import {
     useState,
     type ReactNode,
     type RefObject,
+    type WheelEvent,
 } from "react";
 
 import type {
@@ -774,16 +775,32 @@ export const ChatTabView = memo(function ChatTabView({
         if (el) el.scrollTop = el.scrollHeight;
     }, []);
 
-    const scheduleScrollToBottom = useCallback(() => {
-        if (pendingScrollFrameRef.current !== null) {
-            window.cancelAnimationFrame(pendingScrollFrameRef.current);
+    const cancelPendingScrollToBottom = useCallback(() => {
+        if (pendingScrollFrameRef.current === null) {
+            return;
         }
+
+        window.cancelAnimationFrame(pendingScrollFrameRef.current);
+        pendingScrollFrameRef.current = null;
+    }, []);
+
+    const cancelResizeBottomSettle = useCallback(() => {
+        if (resizeBottomSettleFrameRef.current === null) {
+            return;
+        }
+
+        window.cancelAnimationFrame(resizeBottomSettleFrameRef.current);
+        resizeBottomSettleFrameRef.current = null;
+    }, []);
+
+    const scheduleScrollToBottom = useCallback(() => {
+        cancelPendingScrollToBottom();
 
         pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
             pendingScrollFrameRef.current = null;
             scrollToBottom();
         });
-    }, [scrollToBottom]);
+    }, [cancelPendingScrollToBottom, scrollToBottom]);
 
     const handleTimelineVirtualRangeChange = useCallback(() => {
         if (shouldAutoFollowRef.current) {
@@ -797,6 +814,10 @@ export const ChatTabView = memo(function ChatTabView({
 
     const shouldPreserveTimelineVirtualResizeAnchor = useCallback(() => {
         return !resizeBottomLockRef.current && !shouldAutoFollowRef.current;
+    }, []);
+
+    const shouldPreserveTimelineVirtualMeasureAnchor = useCallback(() => {
+        return !resizeBottomLockRef.current;
     }, []);
 
     const persistCurrentViewState = useCallback(
@@ -888,10 +909,7 @@ export const ChatTabView = memo(function ChatTabView({
     // intent. Keep that intent alive while virtual rows re-measure at the
     // released width, then settle to the final bottom over a couple of frames.
     const settleResizeScrollToBottom = useCallback(() => {
-        if (resizeBottomSettleFrameRef.current !== null) {
-            window.cancelAnimationFrame(resizeBottomSettleFrameRef.current);
-            resizeBottomSettleFrameRef.current = null;
-        }
+        cancelResizeBottomSettle();
 
         shouldAutoFollowRef.current = true;
         scrollToBottom();
@@ -919,13 +937,10 @@ export const ChatTabView = memo(function ChatTabView({
         };
 
         runSettleFrame(RESIZE_BOTTOM_SETTLE_FRAMES);
-    }, [scheduleScrollPersist, scrollToBottom]);
+    }, [cancelResizeBottomSettle, scheduleScrollPersist, scrollToBottom]);
 
     const handleTimelineVirtualResizeStart = useCallback(() => {
-        if (resizeBottomSettleFrameRef.current !== null) {
-            window.cancelAnimationFrame(resizeBottomSettleFrameRef.current);
-            resizeBottomSettleFrameRef.current = null;
-        }
+        cancelResizeBottomSettle();
 
         const scrollEl = scrollRef.current;
         const startedNearBottom =
@@ -938,7 +953,7 @@ export const ChatTabView = memo(function ChatTabView({
         if (startedNearBottom) {
             shouldAutoFollowRef.current = true;
         }
-    }, [isNearBottom]);
+    }, [cancelResizeBottomSettle, isNearBottom]);
 
     const handleTimelineVirtualResizeEnd = useCallback(() => {
         if (resizeStartedNearBottomRef.current) {
@@ -950,27 +965,38 @@ export const ChatTabView = memo(function ChatTabView({
         resizeStartedNearBottomRef.current = false;
     }, [settleResizeScrollToBottom]);
 
+    const handleTimelineWheelCapture = useCallback(
+        (event: WheelEvent<HTMLDivElement>) => {
+            if (event.deltaY >= 0 || !shouldAutoFollowRef.current) {
+                return;
+            }
+
+            cancelPendingScrollToBottom();
+            cancelResizeBottomSettle();
+            shouldAutoFollowRef.current = false;
+            resizeBottomLockRef.current = false;
+            resizeStartedNearBottomRef.current = false;
+        },
+        [cancelPendingScrollToBottom, cancelResizeBottomSettle],
+    );
+
     useEffect(() => {
         return () => {
-            if (pendingScrollFrameRef.current !== null) {
-                window.cancelAnimationFrame(pendingScrollFrameRef.current);
-                pendingScrollFrameRef.current = null;
-            }
+            cancelPendingScrollToBottom();
             if (restoreScrollFrameRef.current !== null) {
                 window.cancelAnimationFrame(restoreScrollFrameRef.current);
                 restoreScrollFrameRef.current = null;
             }
-            if (resizeBottomSettleFrameRef.current !== null) {
-                window.cancelAnimationFrame(
-                    resizeBottomSettleFrameRef.current,
-                );
-                resizeBottomSettleFrameRef.current = null;
-            }
+            cancelResizeBottomSettle();
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
             flushScheduledScrollPersist();
         };
-    }, [flushScheduledScrollPersist]);
+    }, [
+        cancelPendingScrollToBottom,
+        cancelResizeBottomSettle,
+        flushScheduledScrollPersist,
+    ]);
 
     useLayoutEffect(() => {
         const scrollEl = scrollRef.current;
@@ -1621,6 +1647,7 @@ export const ChatTabView = memo(function ChatTabView({
                     onOpenSession={openAiSessionById}
                     onRevealFileReference={handleRevealResolvedFileReference}
                     onScroll={handleScroll}
+                    onWheelCapture={handleTimelineWheelCapture}
                     onVirtualRangeChange={handleTimelineVirtualRangeChange}
                     onVirtualResizeEnd={handleTimelineVirtualResizeEnd}
                     onVirtualResizeAutoFollow={
@@ -1630,6 +1657,9 @@ export const ChatTabView = memo(function ChatTabView({
                     projectId={tab.projectId}
                     resolveFileReference={resolveChatFileReference}
                     scrollRef={scrollRef}
+                    shouldPreserveVirtualMeasureAnchor={
+                        shouldPreserveTimelineVirtualMeasureAnchor
+                    }
                     shouldPreserveVirtualResizeAnchor={
                         shouldPreserveTimelineVirtualResizeAnchor
                     }
@@ -2093,6 +2123,7 @@ type ChatTimelineProps = {
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onScroll: () => void;
+    readonly onWheelCapture?: (event: WheelEvent<HTMLDivElement>) => void;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onVirtualResizeEnd?: () => void;
     readonly onVirtualResizeAutoFollow?: () => void;
@@ -2102,6 +2133,7 @@ type ChatTimelineProps = {
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
+    readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly timelineContentRef: RefObject<HTMLDivElement | null>;
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
@@ -2123,6 +2155,7 @@ const ChatTimeline = memo(function ChatTimeline({
     onOpenSession,
     onRevealFileReference,
     onScroll,
+    onWheelCapture,
     onVirtualRangeChange,
     onVirtualResizeEnd,
     onVirtualResizeAutoFollow,
@@ -2130,6 +2163,7 @@ const ChatTimeline = memo(function ChatTimeline({
     projectId,
     resolveFileReference,
     scrollRef,
+    shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
     timelineContentRef,
     toolCardExpansionMode,
@@ -2155,6 +2189,7 @@ const ChatTimeline = memo(function ChatTimeline({
                 ref={scrollRef}
                 className="chat-scroll min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3"
                 onScroll={onScroll}
+                onWheelCapture={onWheelCapture}
             >
                 <div
                     ref={timelineContentRef}
@@ -2182,6 +2217,9 @@ const ChatTimeline = memo(function ChatTimeline({
                             latestStreamingEditedFileToolRowId
                         }
                         scrollRef={scrollRef}
+                        shouldPreserveVirtualMeasureAnchor={
+                            shouldPreserveVirtualMeasureAnchor
+                        }
                         shouldPreserveVirtualResizeAnchor={
                             shouldPreserveVirtualResizeAnchor
                         }
@@ -2253,6 +2291,7 @@ type ChatTimelineHistoryProps = {
     ) => ResolvedProjectFileReference | null;
     readonly latestStreamingEditedFileToolRowId: string | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
+    readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
@@ -2277,6 +2316,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     resolveFileReference,
     latestStreamingEditedFileToolRowId,
     scrollRef,
+    shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
     toolCardExpansionMode,
     worktreeId,
@@ -2341,6 +2381,9 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             onVirtualResizeStart={onVirtualResizeStart}
             renderRow={renderRow}
             scrollRef={scrollRef}
+            shouldPreserveVirtualMeasureAnchor={
+                shouldPreserveVirtualMeasureAnchor
+            }
             shouldPreserveVirtualResizeAnchor={
                 shouldPreserveVirtualResizeAnchor
             }
