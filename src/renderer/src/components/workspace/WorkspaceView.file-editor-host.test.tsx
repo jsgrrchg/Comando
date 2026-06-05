@@ -135,13 +135,19 @@ const monacoHarness = vi.hoisted(() => {
             };
         };
         readonly setModel: (model: FakeModel | null) => void;
-        readonly setPosition: (position: unknown) => void;
+        readonly setPosition: (position: {
+            readonly column: number;
+            readonly lineNumber: number;
+        }) => void;
         readonly setScrollLeft: (scrollLeft: number) => void;
         readonly setScrollTop: (scrollTop: number) => void;
         readonly updateOptions: (options: unknown) => void;
         disposed: boolean;
         model: FakeModel | null;
         readonly name: string;
+        position: { column: number; lineNumber: number };
+        scrollLeft: number;
+        scrollTop: number;
     };
 
     type FakeDiffEditor = {
@@ -284,9 +290,9 @@ const monacoHarness = vi.hoisted(() => {
             getContribution: () => null,
             getDomNode: () => domNode,
             getModel: () => editor.model,
-            getPosition: () => ({ column: 1, lineNumber: 1 }),
-            getScrollLeft: () => 0,
-            getScrollTop: () => 0,
+            getPosition: () => editor.position,
+            getScrollLeft: () => editor.scrollLeft,
+            getScrollTop: () => editor.scrollTop,
             getSelection: () => null,
             getSelections: () => [],
             hasTextFocus: () => true,
@@ -318,12 +324,26 @@ const monacoHarness = vi.hoisted(() => {
                     modelUri: editor.model?.uri ?? null,
                 },
             })),
+            position: { column: 1, lineNumber: 1 },
+            scrollLeft: 0,
+            scrollTop: 0,
             setModel: (model: FakeModel | null) => {
                 editor.model = model;
             },
-            setPosition: vi.fn(),
-            setScrollLeft: vi.fn(),
-            setScrollTop: vi.fn(),
+            setPosition: vi.fn(
+                (position: {
+                    readonly column: number;
+                    readonly lineNumber: number;
+                }) => {
+                    editor.position = position;
+                },
+            ),
+            setScrollLeft: vi.fn((scrollLeft: number) => {
+                editor.scrollLeft = scrollLeft;
+            }),
+            setScrollTop: vi.fn((scrollTop: number) => {
+                editor.scrollTop = scrollTop;
+            }),
             updateOptions: vi.fn(),
         };
         codeEditors.push(editor);
@@ -672,6 +692,20 @@ function createTrackedFile(): AiTrackedFile {
     };
 }
 
+function createTrackedFileUpdate(): AiTrackedFile {
+    return {
+        ...createTrackedFile(),
+        newText: [
+            "const value = 2;",
+            "const nextValue = 3;",
+            "const finalValue = 4;",
+            "",
+        ].join("\n"),
+        updatedAt: "2026-06-05T00:02:00.000Z",
+        version: 3,
+    };
+}
+
 function renderHost({
     activeFileTab,
     fileTabs,
@@ -950,5 +984,69 @@ describe("WorkspaceFileEditorHost", () => {
         expect(diffEditor.disposed).toBe(false);
         expect(diffEditor.originalModel?.getValue()).toBe("const value = 1;\n");
         expect(diffEditor.modifiedModel?.getValue()).toBe("const value = 2;\n");
+    });
+
+    it("preserves inline review viewport when the agent updates the same file", async () => {
+        const fileTab = createFileTab("file-1");
+        mockAiStoreState.current.sessions = {
+            "session-1": {
+                snapshot: {
+                    trackedFiles: [createTrackedFile()],
+                },
+            },
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: fileTab,
+                    fileTabs: [fileTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const diffEditor = monacoHarness.diffEditors[0];
+        expect(diffEditor).toBeDefined();
+        if (!diffEditor) {
+            throw new Error("Expected inline review diff editor to mount.");
+        }
+
+        const modifiedEditor = diffEditor.getModifiedEditor();
+        modifiedEditor.setPosition({ column: 7, lineNumber: 2 });
+        modifiedEditor.setScrollLeft(11);
+        modifiedEditor.setScrollTop(240);
+        diffEditor.getOriginalEditor().setScrollLeft(5);
+        diffEditor.getOriginalEditor().setScrollTop(200);
+
+        mockAiStoreState.current.sessions = {
+            "session-1": {
+                snapshot: {
+                    trackedFiles: [createTrackedFileUpdate()],
+                },
+            },
+        };
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: fileTab,
+                    fileTabs: [fileTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(diffEditor.disposed).toBe(false);
+        expect(diffEditor.modifiedModel?.getValue()).toBe(
+            "const value = 2;\nconst nextValue = 3;\nconst finalValue = 4;\n",
+        );
+        expect(modifiedEditor.getPosition()).toEqual({
+            column: 7,
+            lineNumber: 2,
+        });
+        expect(modifiedEditor.getScrollLeft()).toBe(11);
+        expect(modifiedEditor.getScrollTop()).toBe(240);
+        expect(diffEditor.getOriginalEditor().getScrollLeft()).toBe(11);
+        expect(diffEditor.getOriginalEditor().getScrollTop()).toBe(240);
     });
 });

@@ -4815,6 +4815,12 @@ function FileTabView({
             const diffEditor = diffEditorRef.current;
             const monaco = inlineReviewMonacoRef.current;
             const previousModels = diffEditor.getModel();
+            const currentInlineReviewRestoreState =
+                currentReviewModels.revision && previousModels?.modified
+                    ? capturePortableEditorRestoreState(
+                          diffEditor.getModifiedEditor(),
+                      )
+                    : null;
             const scrollState = inlineReviewScrollStateRef.current;
             const persistedInlineReviewViewState =
                 tab.viewState ?? pendingEditorViewStateRef.current;
@@ -4862,7 +4868,12 @@ function FileTabView({
                     modified: nextModifiedModel,
                     original: nextOriginalModel,
                 };
-                if (pendingInlineReviewRestoreState) {
+                if (currentInlineReviewRestoreState) {
+                    restorePortableInlineReviewState(
+                        diffEditor,
+                        currentInlineReviewRestoreState,
+                    );
+                } else if (pendingInlineReviewRestoreState) {
                     restorePortableInlineReviewState(
                         diffEditor,
                         pendingInlineReviewRestoreState,
