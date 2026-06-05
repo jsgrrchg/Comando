@@ -3621,6 +3621,7 @@ function FileTabView({
         trackedFile?.newText !== null
             ? trackedFile
             : null;
+    const isInlineReviewActive = inlineReviewTrackedFile !== null;
     const reviewSignature = useMemo(
         () => getInlineReviewSignature(inlineReviewTrackedFile),
         [inlineReviewTrackedFile],
@@ -3989,6 +3990,27 @@ function FileTabView({
         pendingEditorViewStateRef.current = tab.viewState ?? null;
         pendingEditorViewStateTabIdRef.current = tab.id;
     }, [tab.id, tab.viewState]);
+
+    useLayoutEffect(() => {
+        return () => {
+            if (isInlineReviewActive) {
+                captureInlineReviewModifiedEditorState();
+                return;
+            }
+
+            if (editorRef.current) {
+                captureEditorStateForInlineReview(editorRef.current);
+            }
+        };
+    }, [
+        captureEditorStateForInlineReview,
+        captureInlineReviewModifiedEditorState,
+        isInlineReviewActive,
+    ]);
+
+    useLayoutEffect(() => {
+        restoredEditorViewStateTabIdRef.current = null;
+    }, [isInlineReviewActive]);
 
     const getPendingEditorViewStateForTab = useCallback(
         (
@@ -5273,6 +5295,13 @@ function FileTabView({
                                 applyInlineReviewModels(inlineReviewTrackedFile);
 
                                 editor.onDidDispose(() => {
+                                    try {
+                                        captureInlineReviewModifiedEditorState();
+                                    } catch (error) {
+                                        if (!isMonacoDisposedError(error)) {
+                                            throw error;
+                                        }
+                                    }
                                     recordProbeLifecycleEvent(
                                         "WorkspaceInlineReviewDiffEditor",
                                         "dispose",
@@ -5355,12 +5384,18 @@ function FileTabView({
                             />
                         ) : null}
                     </div>
-                ) : (
+                ) : null}
+                <div
+                    className={inlineReviewTrackedFile ? "hidden" : "h-full"}
+                >
                     <EditorComponent
                         beforeMount={handleEditorBeforeMount}
                         language={monacoLanguageId}
                         onChange={(value: string | undefined) => {
-                            if (suppressEditorChangeRef.current) {
+                            if (
+                                suppressEditorChangeRef.current ||
+                                inlineReviewTrackedFile
+                            ) {
                                 return;
                             }
 
@@ -5542,7 +5577,7 @@ function FileTabView({
                         theme={editorTheme}
                         value={tab.draftContent}
                     />
-                )}
+                </div>
             </div>
         </div>
     );
