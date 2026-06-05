@@ -3617,6 +3617,10 @@ function FileTabView({
         useRef<MonacoEditor.ICodeEditorViewState | null>(tab.viewState ?? null);
     const pendingEditorViewStateTabIdRef = useRef(tab.id);
     const viewStatePersistTimerRef = useRef<number | null>(null);
+    const scheduledEditorViewStatePersistRef = useRef<{
+        readonly tabId: string;
+        readonly viewState: MonacoEditor.ICodeEditorViewState | null;
+    } | null>(null);
     const viewStateRestoreFrameRef = useRef<number | null>(null);
     const restoredEditorViewStateTabIdRef = useRef<string | null>(null);
     const suppressEditorChangeRef = useRef(false);
@@ -3778,9 +3782,24 @@ function FileTabView({
     );
 
     const flushScheduledEditorViewStatePersist = useCallback(() => {
+        const scheduledPersist = scheduledEditorViewStatePersistRef.current;
+        scheduledEditorViewStatePersistRef.current = null;
+
         if (viewStatePersistTimerRef.current != null) {
             window.clearTimeout(viewStatePersistTimerRef.current);
             viewStatePersistTimerRef.current = null;
+        }
+
+        if (scheduledPersist) {
+            persistEditorViewState(
+                scheduledPersist.tabId,
+                scheduledPersist.viewState,
+            );
+            if (
+                scheduledPersist.tabId === pendingEditorViewStateTabIdRef.current
+            ) {
+                return;
+            }
         }
 
         persistEditorViewState(
@@ -3928,10 +3947,35 @@ function FileTabView({
     const scheduleEditorViewStatePersist = useCallback(
         (editor: MonacoEditor.IStandaloneCodeEditor) => {
             const tabId = fileTabIdRef.current;
-            pendingEditorViewStateRef.current = editor.saveViewState();
+            const viewState = editor.saveViewState();
+            pendingEditorViewStateRef.current = viewState;
             pendingEditorViewStateTabIdRef.current = tabId;
+            scheduledEditorViewStatePersistRef.current = {
+                tabId,
+                viewState,
+            };
+
+            if (viewStatePersistTimerRef.current != null) {
+                return;
+            }
+
+            viewStatePersistTimerRef.current = window.setTimeout(() => {
+                viewStatePersistTimerRef.current = null;
+                const scheduledPersist =
+                    scheduledEditorViewStatePersistRef.current;
+                scheduledEditorViewStatePersistRef.current = null;
+
+                if (!scheduledPersist) {
+                    return;
+                }
+
+                persistEditorViewState(
+                    scheduledPersist.tabId,
+                    scheduledPersist.viewState,
+                );
+            }, 120);
         },
-        [],
+        [persistEditorViewState],
     );
 
     const captureEditorStateForInlineReview = useCallback(
@@ -4076,6 +4120,16 @@ function FileTabView({
             pendingEditorViewStateRef.current = previousViewState;
             pendingEditorViewStateTabIdRef.current = previousTabId;
             updateFileViewState(previousTabId, previousViewState);
+        }
+
+        if (
+            scheduledEditorViewStatePersistRef.current?.tabId === previousTabId
+        ) {
+            scheduledEditorViewStatePersistRef.current = null;
+        }
+        if (viewStatePersistTimerRef.current != null) {
+            window.clearTimeout(viewStatePersistTimerRef.current);
+            viewStatePersistTimerRef.current = null;
         }
 
         if (diffEditorRef.current) {
