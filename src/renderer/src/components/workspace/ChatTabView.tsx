@@ -63,6 +63,7 @@ import {
     type ChatTimelineModel,
     type ChatTimelineRow,
 } from "./chat/chatTimelineModel";
+import { CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX } from "./chat/chatTimelineVirtualization";
 import {
     isActiveChatTurnStatus,
     isChatStreamingStatus,
@@ -2239,7 +2240,12 @@ const ChatTimeline = memo(function ChatTimeline({
                     <div
                         ref={timelineContentRef}
                         className="min-w-0 space-y-2"
-                        style={{ fontFamily: chatFontFamily }}
+                        style={{
+                            fontFamily: chatFontFamily,
+                            marginInline: "auto",
+                            maxWidth: CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
+                            width: "100%",
+                        }}
                     >
                         <ChatTimelineHistory
                             canRenderRawFileReference={
