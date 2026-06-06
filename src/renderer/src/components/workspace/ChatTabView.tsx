@@ -68,7 +68,10 @@ import {
     isActiveChatTurnStatus,
     isChatStreamingStatus,
 } from "./chat/chatTurnStatus";
-import { isScrollViewportNearBottom } from "./chat/chatScroll";
+import {
+    isScrollViewportNearBottom,
+    resolveChatScrollPersistenceState,
+} from "./chat/chatScroll";
 import type { AIComposerPart } from "./chat/composerParts";
 import {
     appendSelectionMentionPart,
@@ -134,6 +137,7 @@ const FALLBACK_COMMANDS: readonly AiAvailableCommand[] = [
 ];
 
 const NEAR_BOTTOM_THRESHOLD = 80;
+const BOTTOM_FOLLOW_SETTLE_FRAMES = 3;
 const RESIZE_BOTTOM_SETTLE_FRAMES = 2;
 const SCROLL_PERSIST_DELAY_MS = 80;
 const EMPTY_DRAFT_ATTACHMENTS: readonly AiImageAttachment[] = [];
@@ -255,6 +259,8 @@ export const ChatTabView = memo(function ChatTabView({
     const shouldAutoFollowRef = useRef(true);
     const pendingScrollFrameRef = useRef<number | null>(null);
     const restoreScrollFrameRef = useRef<number | null>(null);
+    const bottomFollowSettleFrameRef = useRef<number | null>(null);
+    const bottomFollowSettleActiveRef = useRef(false);
     const resizeBottomSettleFrameRef = useRef<number | null>(null);
     const resizeBottomLockRef = useRef(false);
     const resizeStartedNearBottomRef = useRef(false);
@@ -787,6 +793,53 @@ export const ChatTabView = memo(function ChatTabView({
         pendingScrollFrameRef.current = null;
     }, []);
 
+    const cancelBottomFollowSettle = useCallback(() => {
+        bottomFollowSettleActiveRef.current = false;
+
+        if (bottomFollowSettleFrameRef.current === null) {
+            return;
+        }
+
+        window.cancelAnimationFrame(bottomFollowSettleFrameRef.current);
+        bottomFollowSettleFrameRef.current = null;
+    }, []);
+
+    const scheduleBottomFollowSettle = useCallback(() => {
+        if (bottomFollowSettleFrameRef.current !== null) {
+            window.cancelAnimationFrame(bottomFollowSettleFrameRef.current);
+            bottomFollowSettleFrameRef.current = null;
+        }
+
+        bottomFollowSettleActiveRef.current = true;
+
+        const runSettleFrame = (remainingFrames: number) => {
+            bottomFollowSettleFrameRef.current = window.requestAnimationFrame(
+                () => {
+                    bottomFollowSettleFrameRef.current = null;
+
+                    if (
+                        !bottomFollowSettleActiveRef.current ||
+                        !shouldAutoFollowRef.current
+                    ) {
+                        bottomFollowSettleActiveRef.current = false;
+                        return;
+                    }
+
+                    scrollToBottom();
+
+                    if (remainingFrames > 1) {
+                        runSettleFrame(remainingFrames - 1);
+                        return;
+                    }
+
+                    bottomFollowSettleActiveRef.current = false;
+                },
+            );
+        };
+
+        runSettleFrame(BOTTOM_FOLLOW_SETTLE_FRAMES);
+    }, [scrollToBottom]);
+
     const cancelResizeBottomSettle = useCallback(() => {
         if (resizeBottomSettleFrameRef.current === null) {
             return;
@@ -798,12 +851,18 @@ export const ChatTabView = memo(function ChatTabView({
 
     const scheduleScrollToBottom = useCallback(() => {
         cancelPendingScrollToBottom();
+        bottomFollowSettleActiveRef.current = true;
 
         pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
             pendingScrollFrameRef.current = null;
             scrollToBottom();
+            scheduleBottomFollowSettle();
         });
-    }, [cancelPendingScrollToBottom, scrollToBottom]);
+    }, [
+        cancelPendingScrollToBottom,
+        scheduleBottomFollowSettle,
+        scrollToBottom,
+    ]);
 
     const handleTimelineVirtualRangeChange = useCallback(() => {
         if (shouldAutoFollowRef.current) {
@@ -861,25 +920,35 @@ export const ChatTabView = memo(function ChatTabView({
         ],
     );
 
-    const flushScheduledScrollPersist = useCallback(() => {
+    const flushScheduledScrollPersist = useCallback((): {
+        readonly isNearBottom: boolean | null;
+        readonly scrollTop: number | null;
+    } | null => {
         if (scrollPersistTimerRef.current !== null) {
             window.clearTimeout(scrollPersistTimerRef.current);
             scrollPersistTimerRef.current = null;
         }
 
-        if (
+        const pendingState =
             pendingPersistedScrollTopRef.current !== null ||
             pendingPersistedNearBottomRef.current !== null
-        ) {
+                ? {
+                      isNearBottom: pendingPersistedNearBottomRef.current,
+                      scrollTop: pendingPersistedScrollTopRef.current,
+                  }
+                : null;
+
+        if (pendingState) {
             persistCurrentViewState({
-                isNearBottom:
-                    pendingPersistedNearBottomRef.current ?? undefined,
-                scrollTop: pendingPersistedScrollTopRef.current ?? undefined,
+                isNearBottom: pendingState.isNearBottom ?? undefined,
+                scrollTop: pendingState.scrollTop ?? undefined,
             });
         }
 
         pendingPersistedNearBottomRef.current = null;
         pendingPersistedScrollTopRef.current = null;
+
+        return pendingState;
     }, [persistCurrentViewState]);
 
     const scheduleScrollPersist = useCallback(
@@ -976,17 +1045,23 @@ export const ChatTabView = memo(function ChatTabView({
             }
 
             cancelPendingScrollToBottom();
+            cancelBottomFollowSettle();
             cancelResizeBottomSettle();
             shouldAutoFollowRef.current = false;
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
         },
-        [cancelPendingScrollToBottom, cancelResizeBottomSettle],
+        [
+            cancelBottomFollowSettle,
+            cancelPendingScrollToBottom,
+            cancelResizeBottomSettle,
+        ],
     );
 
     useEffect(() => {
         return () => {
             cancelPendingScrollToBottom();
+            cancelBottomFollowSettle();
             if (restoreScrollFrameRef.current !== null) {
                 window.cancelAnimationFrame(restoreScrollFrameRef.current);
                 restoreScrollFrameRef.current = null;
@@ -998,6 +1073,7 @@ export const ChatTabView = memo(function ChatTabView({
         };
     }, [
         cancelPendingScrollToBottom,
+        cancelBottomFollowSettle,
         cancelResizeBottomSettle,
         flushScheduledScrollPersist,
     ]);
@@ -1055,22 +1131,26 @@ export const ChatTabView = memo(function ChatTabView({
 
         return () => {
             cancelled = true;
+            cancelPendingScrollToBottom();
+            cancelBottomFollowSettle();
             if (restoreScrollFrameRef.current !== null) {
                 window.cancelAnimationFrame(restoreScrollFrameRef.current);
                 restoreScrollFrameRef.current = null;
             }
-            flushScheduledScrollPersist();
-            persistCurrentViewState({
-                isNearBottom:
-                    pendingPersistedNearBottomRef.current ??
-                    shouldAutoFollowRef.current,
-                scrollTop:
-                    pendingPersistedScrollTopRef.current ??
-                    scrollEl.scrollTop ??
+            const flushedState = flushScheduledScrollPersist();
+            persistCurrentViewState(
+                resolveChatScrollPersistenceState({
+                    currentScrollTop: scrollEl.scrollTop,
+                    pendingIsNearBottom: flushedState?.isNearBottom ?? null,
+                    pendingScrollTop: flushedState?.scrollTop ?? null,
                     restoreScrollTop,
-            });
+                    shouldAutoFollow: shouldAutoFollowRef.current,
+                }),
+            );
         };
     }, [
+        cancelBottomFollowSettle,
+        cancelPendingScrollToBottom,
         flushScheduledScrollPersist,
         isNearBottom,
         persistCurrentViewState,
@@ -1120,26 +1200,39 @@ export const ChatTabView = memo(function ChatTabView({
             return;
         }
 
+        if (
+            shouldAutoFollowRef.current &&
+            (bottomFollowSettleActiveRef.current || composerExpanded)
+        ) {
+            setShowJumpToBottom(false);
+            scheduleScrollPersist(el.scrollTop, true);
+            return;
+        }
+
         const nextIsNearBottom = isNearBottom(el);
         shouldAutoFollowRef.current = nextIsNearBottom;
         setShowJumpToBottom(!nextIsNearBottom);
         scheduleScrollPersist(el.scrollTop, nextIsNearBottom);
-    }, [isNearBottom, scheduleScrollPersist]);
+    }, [composerExpanded, isNearBottom, scheduleScrollPersist]);
 
     const handleJumpToBottom = useCallback(() => {
         cancelPendingScrollToBottom();
+        cancelBottomFollowSettle();
         cancelResizeBottomSettle();
         shouldAutoFollowRef.current = true;
         resizeBottomLockRef.current = false;
         resizeStartedNearBottomRef.current = false;
         scrollToBottom();
+        scheduleBottomFollowSettle();
         setShowJumpToBottom(false);
 
         const scrollEl = scrollRef.current;
         scheduleScrollPersist(scrollEl?.scrollTop ?? 0, true);
     }, [
+        cancelBottomFollowSettle,
         cancelPendingScrollToBottom,
         cancelResizeBottomSettle,
+        scheduleBottomFollowSettle,
         scheduleScrollPersist,
         scrollToBottom,
     ]);
