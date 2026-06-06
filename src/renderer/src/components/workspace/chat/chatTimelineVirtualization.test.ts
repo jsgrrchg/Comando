@@ -7,10 +7,12 @@ import {
     type ChatTimelineRow,
 } from "./chatTimelineModel";
 import {
+    CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
     CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
     CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
     calculateChatTimelineVirtualScrollMarginTop,
     estimateChatTimelineRowHeight,
+    getChatTimelineEffectiveContentWidth,
     getChatTimelineRowIdentityKey,
     getChatTimelineRowMeasurementKey,
     getChatTimelineRowKey,
@@ -505,6 +507,20 @@ describe("chatTimelineVirtualization", () => {
         expect(getChatTimelineVirtualMeasurementWidth(640)).toBe(648);
         expect(getChatTimelineVirtualMeasurementWidth(641)).toBe(648);
         expect(getChatTimelineVirtualMeasurementWidth(672)).toBe(672);
+    });
+
+    it("caps effective timeline content width at the timeline max", () => {
+        expect(getChatTimelineEffectiveContentWidth(0)).toBe(0);
+        expect(getChatTimelineEffectiveContentWidth(Number.NaN)).toBe(0);
+        expect(getChatTimelineEffectiveContentWidth(320)).toBe(320);
+        expect(
+            getChatTimelineEffectiveContentWidth(
+                CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
+            ),
+        ).toBe(CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX);
+        expect(getChatTimelineEffectiveContentWidth(1200)).toBe(
+            CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
+        );
     });
 
     it("keys measurement by row identity, not by content", () => {
