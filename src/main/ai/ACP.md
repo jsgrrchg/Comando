@@ -17,7 +17,7 @@ All six communicate with the app over ACP / JSON-RPC on stdio.
 
 | | Claude | Codex | Gemini | Grok | Kilo | OpenCode |
 |---|---|---|---|---|---|---|
-| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.37.0`, vendored upstream snapshot) | Rust (`codex-acp` `0.15.0`, vendored on top of `openai/codex` `rust-v0.133.0` + local patches) | External Gemini CLI binary | External Grok CLI binary | External Kilo CLI binary | External OpenCode CLI binary |
+| **Source** | TypeScript (`@agentclientprotocol/claude-agent-acp` `0.42.0`, vendored upstream snapshot) | Rust (`codex-acp` `0.15.0`, vendored on top of `openai/codex` `rust-v0.133.0` + local patches) | External Gemini CLI binary | External Grok CLI binary | External Kilo CLI binary | External OpenCode CLI binary |
 | **Runtime command** | `node .../claude-agent-acp/dist/index.js` or `claude-agent-acp` | `codex-acp` | `gemini --acp` | `grok --no-auto-update agent stdio` | `kilo acp` | `opencode acp` |
 | **Release packaging** | Embedded Node runtime + embedded vendor JS project | Bundled native binary under `resources/ai/binaries/` | Not bundled today | Not bundled today | Not bundled today | Not bundled today |
 | **Auth methods exposed by Comando** | `claude-ai-login`, `claude-login`, `console-login`, `gateway` | `chatgpt`, `codex-api-key`, `openai-api-key` | `login_with_google`, `use_gemini` | `grok-login`, `xai-api-key` | `kilo-login` | `opencode-login` |
@@ -28,7 +28,7 @@ Notes:
 
 - Comando persists runtime catalogs such as available commands, config options, modes and models, then rehydrates status from the latest stored catalog on startup.
 - The vendored Claude ACP snapshot follows upstream reasoning support. Comando maps upstream `thought_level` and legacy `effort` config options into the UI's reasoning controls and keeps compatibility with older saved `effort_level` preferences.
-- The current Claude vendor is `@agentclientprotocol/claude-agent-acp` `0.37.0`, with `@anthropic-ai/claude-agent-sdk` `0.3.154` (Claude Code `2.1.154`). It honors `availableModels` from Claude settings, emits real diffs when `Write` overwrites existing files, preserves task-notification result origins so autonomous followups do not incorrectly drive the user-turn lifecycle, resolves defaults through the Claude SDK settings engine, mirrors SDK task hooks into ACP plan updates, renders local command stdout messages instead of dropping them, and treats the SDK `thinking_tokens` telemetry event as a no-op.
+- The current Claude vendor is `@agentclientprotocol/claude-agent-acp` `0.42.0`, with `@agentclientprotocol/sdk` `0.24.0` and `@anthropic-ai/claude-agent-sdk` `0.3.165`. It sends stable message IDs for streamed and replayed messages, hardens cancellation, prunes tool caches per session, surfaces permission denials and refusals explicitly, honors `availableModels` from Claude settings, emits real diffs when `Write` overwrites existing files, preserves task-notification result origins so autonomous followups do not incorrectly drive the user-turn lifecycle, resolves defaults through the Claude SDK settings engine, mirrors SDK task hooks into ACP plan updates, renders local command stdout messages instead of dropping them, and treats the SDK `thinking_tokens` telemetry event as a no-op.
 - The vendored Codex ACP snapshot is currently kept at `codex-acp` `0.15.0`, with its Rust runtime dependencies pinned to `openai/codex` `rust-v0.133.0` and `agent-client-protocol` `0.12.1`.
 - The vendored Codex ACP snapshot currently includes a local Fast Mode patch carried over into Comando. It exposes the ACP session config option `service_tier`, the `/fast` slash command, and rehydrates `service_tier` when a session is resumed.
 - The vendored Codex ACP snapshot also carries a local image-generation bridge: live Codex `ImageGenerationBegin` / `ImageGenerationEnd` events and replayed `ResponseItem::ImageGenerationCall` items are emitted as ACP tool updates with `codexAcpEventType = "image_generation"` and `codex-acp:image:` IDs so Comando can render generated images inline instead of as generic status activity. `TurnItem::ImageGeneration` is intentionally ignored for the live bridge because Codex also emits the begin/end events, and handling both would duplicate image cards.
@@ -298,7 +298,7 @@ This means Claude is staged as an embedded project, not as a freshly built stand
 
 Current local snapshot note:
 
-- `vendor/Claude-agent-acp-upstream/` is synced to upstream `@agentclientprotocol/claude-agent-acp` `0.37.0` at commit `36822c2b75b6e1cd5406a5ab40fe603fc380ee10`, with a local runtime bump to `@anthropic-ai/claude-agent-sdk` `0.3.154` (Claude Code `2.1.154`).
+- `vendor/Claude-agent-acp-upstream/` is synced to upstream `@agentclientprotocol/claude-agent-acp` `0.42.0` at commit `d877ee713383332267492a95425523eda65a9735`, with `@agentclientprotocol/sdk` `0.24.0` and `@anthropic-ai/claude-agent-sdk` `0.3.165`.
 - `vendor/Claude-agent-acp-upstream/` uses the upstream Claude ACP reasoning implementation.
 - Upstream exposes model-specific reasoning values through the `thought_level` ACP session config option when the selected Claude model reports support for them.
 - Comando still accepts older saved `effort_level` and `effort` preferences and applies them to upstream's reasoning option.
@@ -308,7 +308,10 @@ Current local snapshot note:
 - Claude settings are now resolved through the Claude SDK settings engine, matching upstream defaults and trust filtering more closely than Comando's previous local merge.
 - Claude SDK task hooks (`TaskCreated` and `TaskCompleted`) now populate ACP plan updates, so newer SDK task state should remain visible in Comando's plan UI.
 - Upstream now renders local command stdout messages after stripping Claude command metadata, which lets slash-command and skill output reach the chat stream.
-- The local Claude compatibility delta treats the SDK `thinking_tokens` telemetry event as a no-op so newer Claude Code runtimes do not trip ACP event exhaustiveness handling.
+- Upstream treats the SDK `thinking_tokens` telemetry event as a no-op so newer Claude Code runtimes do not trip ACP event exhaustiveness handling.
+- Upstream now sends ACP `messageId` values for streamed and replayed assistant/user chunks. Comando treats those IDs as opaque strings and uses them to preserve transcript grouping.
+- Upstream now forces a cancelled prompt to resolve if the SDK query wedges after interrupt, and marks SDK `permission_denied` events as failed tool updates instead of leaving tool calls unresolved.
+- Upstream now maps `MAX_THINKING_TOKENS` into the SDK's `thinking` option instead of the deprecated `maxThinkingTokens` field.
 - Upstream added a `gateway-bedrock` auth method for Bedrock-style gateways, but Comando's persisted Claude gateway settings still model the existing Anthropic-compatible `gateway` path.
 
 ### macOS packaging (`scripts/package-macos-app.mjs`)

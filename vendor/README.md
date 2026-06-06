@@ -25,10 +25,10 @@ Current scope in Comando:
     - `vendor/codex-acp/src/subagents.rs`
     - `vendor/codex-acp/src/thread.rs`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.37.0`
-  - synced against upstream commit `36822c2b75b6e1cd5406a5ab40fe603fc380ee10`
-  - local runtime update keeps `@agentclientprotocol/sdk` at `0.22.1` and updates `@anthropic-ai/claude-agent-sdk` to `0.3.154` (Claude Code `2.1.154`)
-  - includes upstream fixes for `availableModels` allowlists, real `Write` overwrite diffs, task-notification result origins, SDK settings defaults, task-hook mirroring and local command stdout rendering
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.42.0`
+  - synced against upstream commit `d877ee713383332267492a95425523eda65a9735`
+  - uses `@agentclientprotocol/sdk` `0.24.0` and `@anthropic-ai/claude-agent-sdk` `0.3.165`
+  - includes upstream fixes for stable message IDs, cancellation backstops, per-session tool cache pruning, refusal handling, permission-denied tool updates, context usage after compaction, `availableModels` allowlists, real `Write` overwrite diffs, task-notification result origins, SDK settings defaults, task-hook mirroring and local command stdout rendering
 
 ## Current Codex Delta
 
@@ -57,13 +57,8 @@ Comando's ACP client lives in TypeScript/Electron under `src/main/ai/` and curre
 ## Current Claude Delta
 
 The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp`
-`0.37.0`, with a narrow local runtime bump to `@anthropic-ai/claude-agent-sdk`
-`0.3.154` so the embedded Claude Code runtime is `2.1.154`.
-
-The only source-level compatibility delta is treating the SDK's
-`thinking_tokens` system event as a no-op. The event is streaming telemetry for
-thinking-token estimates, not assistant content, tool calls, file edits, or final
-usage. `dist/` is rebuilt from the vendored source after applying that delta.
+`0.42.0`. Comando currently carries no source-level Claude ACP delta; the
+vendored source is the upstream snapshot and `dist/` is rebuilt from it.
 
 ## Updating Vendored Runtimes
 
