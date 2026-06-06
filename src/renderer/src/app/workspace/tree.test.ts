@@ -354,22 +354,31 @@ describe("workspace tree helpers", () => {
 
     it("syncs shared file draft and save state across duplicate tabs", () => {
         const sourceTab = makeFileTab("file-1", "src/app.ts");
+        const sourceViewState = {
+            contributionsState: [],
+            cursorState: [],
+            viewState: { scrollTop: 120 },
+        } as never;
+        const duplicateViewState = {
+            contributionsState: [],
+            cursorState: [],
+            viewState: { scrollTop: 360 },
+        } as never;
         const duplicateTab: RuntimeWorkspaceFileTab = {
             ...makeFileTab("file-2", "src/app.ts"),
             reviewContext: {
                 path: "src/app.ts",
                 sessionId: "session-2",
             },
-            viewState: {
-                contributionsState: [],
-                cursorState: [],
-                viewState: {},
-            } as never,
+            viewState: duplicateViewState,
         };
         const baseState = {
             ...createDefaultWorkspaceState(),
             tabsById: {
-                "file-1": sourceTab,
+                "file-1": {
+                    ...sourceTab,
+                    viewState: sourceViewState,
+                },
                 "file-2": duplicateTab,
             },
         };
@@ -379,6 +388,7 @@ describe("workspace tree helpers", () => {
         expect(withDraft.tabsById["file-1"]).toMatchObject({
             draftContent: "next draft",
             isDirty: true,
+            viewState: sourceViewState,
         });
         expect(withDraft.tabsById["file-2"]).toMatchObject({
             draftContent: "next draft",
@@ -387,6 +397,7 @@ describe("workspace tree helpers", () => {
                 path: "src/app.ts",
                 sessionId: "session-2",
             },
+            viewState: duplicateViewState,
         });
 
         const withSaving = setFileTabSaving(withDraft, "file-2", true, null);
@@ -413,6 +424,7 @@ describe("workspace tree helpers", () => {
             isDirty: false,
             isSaving: false,
             savedContent: "saved content",
+            viewState: sourceViewState,
         });
         expect(withSavedDocument.tabsById["file-2"]).toMatchObject({
             draftContent: "saved content",
@@ -422,6 +434,55 @@ describe("workspace tree helpers", () => {
                 path: "src/app.ts",
                 sessionId: "session-2",
             },
+            viewState: duplicateViewState,
+        });
+    });
+
+    it("updates view state only for the target duplicate file tab", () => {
+        const firstViewState = {
+            contributionsState: [],
+            cursorState: [],
+            viewState: { scrollTop: 120 },
+        } as never;
+        const secondViewState = {
+            contributionsState: [],
+            cursorState: [],
+            viewState: { scrollTop: 360 },
+        } as never;
+        const nextSecondViewState = {
+            contributionsState: [],
+            cursorState: [],
+            viewState: { scrollTop: 720 },
+        } as never;
+        const baseState = {
+            ...createDefaultWorkspaceState(),
+            tabsById: {
+                "file-1": {
+                    ...makeFileTab("file-1", "src/app.ts"),
+                    viewState: firstViewState,
+                },
+                "file-2": {
+                    ...makeFileTab("file-2", "src/app.ts"),
+                    viewState: secondViewState,
+                },
+            },
+        };
+
+        const nextState = setFileTabViewState(
+            baseState,
+            "file-2",
+            nextSecondViewState,
+        );
+
+        expect(nextState.tabsById["file-1"]).toMatchObject({
+            draftContent: "",
+            relativePath: "src/app.ts",
+            viewState: firstViewState,
+        });
+        expect(nextState.tabsById["file-2"]).toMatchObject({
+            draftContent: "",
+            relativePath: "src/app.ts",
+            viewState: nextSecondViewState,
         });
     });
 

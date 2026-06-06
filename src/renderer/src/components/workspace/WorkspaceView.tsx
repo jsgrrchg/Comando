@@ -69,7 +69,11 @@ import {
     saveAppEditorSettings,
 } from "@renderer/app/settings/client";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
-import { useRenderProbe } from "@renderer/app/debug/renderProbe";
+import {
+    recordProbeLifecycleEvent,
+    useLifecycleProbe,
+    useRenderProbe,
+} from "@renderer/app/debug/renderProbe";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
 import {
@@ -112,7 +116,13 @@ import {
 } from "@renderer/components/workspace/gitGutter";
 import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
-import { buildWorkspaceEditorModelPath } from "@renderer/components/workspace/editorModelPath";
+import {
+    acquireWorkspaceFileModel,
+    buildWorkspaceEditorModelPath,
+    buildWorkspaceFileEditorModelPath,
+    getOrCreateWorkspaceFileModel,
+    type WorkspaceFileModelLease,
+} from "@renderer/components/workspace/editorModelPath";
 import { appendSelectionMentionToRegisteredComposer } from "@renderer/components/workspace/chat/composerSelectionBridge";
 import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
 import { createDiffFromTrackedFile } from "@renderer/components/workspace/review/reviewDiff";
@@ -1534,6 +1544,17 @@ function WorkspacePaneView({
         ? (paneTabs.find((tab) => tab.id === paneActiveTabId) ?? null)
         : null;
     const activeChatTab = activeTab?.kind === "chat" ? activeTab : null;
+    const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
+    const paneFileTabs = useMemo(
+        () =>
+            paneTabs.filter(
+                (tab): tab is RuntimeWorkspaceFileTab => tab.kind === "file",
+            ),
+        [paneTabs],
+    );
+    const recentActiveTabIds = useWorkspaceStore(
+        (state) => state.recentActiveTabIds,
+    );
     const isActivePane = activePaneId === paneNodeId;
     const activeTabWorktreeId = activeTab?.worktreeId ?? null;
 
@@ -2357,17 +2378,19 @@ function WorkspacePaneView({
                                 tab={tab}
                             />
                         ))}
+                    <WorkspaceFileEditorHost
+                        activeFileTab={activeFileTab}
+                        fileTabs={paneFileTabs}
+                        isActivePane={isActivePane}
+                        onAttachLineFragment={handleAttachLineFragment}
+                        onDraftChange={updateFileDraft}
+                        onReload={reloadFileTab}
+                        onSave={saveFileTab}
+                        recentActiveTabIds={recentActiveTabIds}
+                    />
                     {activeTab ? (
                         activeTab.kind === "file" ? (
-                            <FileTabView
-                                key={activeTab.id}
-                                isActivePane={isActivePane}
-                                onAttachLineFragment={handleAttachLineFragment}
-                                onDraftChange={updateFileDraft}
-                                onReload={reloadFileTab}
-                                onSave={saveFileTab}
-                                tab={activeTab}
-                            />
+                            null
                         ) : activeTab.kind === "git" ? (
                             <GitTabView tab={activeTab} />
                         ) : activeTab.kind === "git_worktree_diff" ? (
@@ -2426,6 +2449,76 @@ function WorkspacePaneView({
                 />
             ) : null}
         </>
+    );
+}
+
+export function WorkspaceFileEditorHost({
+    activeFileTab,
+    fileTabs,
+    isActivePane,
+    onAttachLineFragment,
+    onDraftChange,
+    onReload,
+    onSave,
+    recentActiveTabIds,
+}: {
+    readonly activeFileTab: RuntimeWorkspaceFileTab | null;
+    readonly fileTabs: readonly RuntimeWorkspaceFileTab[];
+    readonly isActivePane: boolean;
+    readonly onAttachLineFragment: (input: {
+        readonly context: AiFileContextAttachment;
+        readonly worktreeId: string | null;
+    }) => Promise<void>;
+    readonly onDraftChange: (tabId: string, draft: string) => void;
+    readonly onReload: (tabId: string) => Promise<void>;
+    readonly onSave: (
+        tabId: string,
+        options?: {
+            readonly force?: boolean;
+        },
+    ) => Promise<void>;
+    readonly recentActiveTabIds: readonly string[];
+}) {
+    const hostedTab = useMemo(() => {
+        if (activeFileTab) {
+            return activeFileTab;
+        }
+
+        for (const tabId of recentActiveTabIds) {
+            const recentFileTab = fileTabs.find((tab) => tab.id === tabId);
+            if (recentFileTab) {
+                return recentFileTab;
+            }
+        }
+
+        return fileTabs[0] ?? null;
+    }, [activeFileTab, fileTabs, recentActiveTabIds]);
+    const isVisible = activeFileTab !== null;
+
+    useRenderProbe("WorkspaceFileEditorHost", {
+        hostedTabId: hostedTab?.id ?? null,
+        visible: isVisible,
+    });
+
+    if (!hostedTab) {
+        return null;
+    }
+
+    return (
+        <div
+            aria-hidden={!isVisible}
+            className={isVisible ? "h-full" : "hidden"}
+        >
+            <FileTabView
+                isActivePane={isActivePane && isVisible}
+                isVisible={isVisible}
+                onAttachLineFragment={onAttachLineFragment}
+                onDraftChange={onDraftChange}
+                onReload={onReload}
+                onSave={onSave}
+                tab={hostedTab}
+            />
+        </div>
     );
 }
 
@@ -3069,13 +3162,17 @@ function tryAttachEditorSelectionWithShortcutInput(
     });
 }
 
-function bindAttachSelectionShortcut(
-    input: AttachSelectionShortcutInput & {
-        readonly editor: MonacoEditor.IStandaloneCodeEditor;
-    },
-): (() => void) | null {
+function bindAttachSelectionShortcutWithInputRef(input: {
+    readonly editor: MonacoEditor.IStandaloneCodeEditor;
+    readonly inputRef: {
+        readonly current: AttachSelectionShortcutInput | null;
+    };
+}): (() => void) | null {
     const editorDomNode = input.editor.getDomNode();
-    if (!editorDomNode) {
+    const ownerDocument =
+        editorDomNode?.ownerDocument ??
+        (typeof document === "undefined" ? null : document);
+    if (!editorDomNode && !ownerDocument) {
         return null;
     }
 
@@ -3084,9 +3181,24 @@ function bindAttachSelectionShortcut(
             return;
         }
 
-        // Intercept in capture so Monaco doesn't expand line selection
-        // before we can attach the current selection.
-        const attached = tryAttachEditorSelectionWithShortcutInput(input);
+        const isEditorDomListener = event.currentTarget === editorDomNode;
+        if (
+            !isEditorDomListener &&
+            !input.editor.hasTextFocus() &&
+            !input.editor.hasWidgetFocus()
+        ) {
+            return;
+        }
+
+        const shortcutInput = input.inputRef.current;
+        if (!shortcutInput) {
+            return;
+        }
+
+        const attached = tryAttachEditorSelectionWithShortcutInput({
+            ...shortcutInput,
+            editor: input.editor,
+        });
 
         if (!attached) {
             return;
@@ -3095,10 +3207,24 @@ function bindAttachSelectionShortcut(
         stopHandledAttachSelectionShortcut(event);
     };
 
-    editorDomNode.addEventListener("keydown", handleEditorKeyDown, true);
+    // Monaco can keep an editor instance alive while its model or DOM subtree
+    // changes. The document-level capture listener keeps Cmd+L stable across
+    // those transitions, while the focus guard prevents inactive editors from
+    // handling global shortcuts.
+    editorDomNode?.addEventListener("keydown", handleEditorKeyDown, true);
+    ownerDocument?.addEventListener("keydown", handleEditorKeyDown, true);
 
     return () => {
-        editorDomNode.removeEventListener("keydown", handleEditorKeyDown, true);
+        editorDomNode?.removeEventListener(
+            "keydown",
+            handleEditorKeyDown,
+            true,
+        );
+        ownerDocument?.removeEventListener(
+            "keydown",
+            handleEditorKeyDown,
+            true,
+        );
     };
 }
 
@@ -3124,15 +3250,21 @@ function getAttachSelectionDiffEditorCandidates(
     return [...editors];
 }
 
-function bindInlineReviewAttachSelectionShortcut(
-    input: AttachSelectionShortcutInput & {
-        readonly diffEditor: MonacoEditor.IStandaloneDiffEditor;
-    },
-): (() => void) {
+function bindInlineReviewAttachSelectionShortcut(input: {
+    readonly diffEditor: MonacoEditor.IStandaloneDiffEditor;
+    readonly inputRef: {
+        readonly current: AttachSelectionShortcutInput | null;
+    };
+}): (() => void) {
     const containerDomNode = input.diffEditor.getContainerDomNode();
 
     const handleDiffEditorKeyDown = (event: KeyboardEvent) => {
         if (!isAttachSelectionShortcutEvent(event)) {
+            return;
+        }
+
+        const shortcutInput = input.inputRef.current;
+        if (!shortcutInput) {
             return;
         }
 
@@ -3144,7 +3276,7 @@ function bindInlineReviewAttachSelectionShortcut(
         if (
             !candidates.some((editor) =>
                 tryAttachEditorSelectionWithShortcutInput({
-                    ...input,
+                    ...shortcutInput,
                     editor,
                 }),
             )
@@ -3206,93 +3338,99 @@ function bindCloseFindWidgetOnEscape(
     };
 }
 
-function bindMarkdownListEditingShortcuts(input: {
-    readonly documentLanguageId: string;
-    readonly editor: MonacoEditor.IStandaloneCodeEditor;
-}): (() => void) | null {
-    if (input.documentLanguageId !== "markdown") {
-        return null;
+function handleMarkdownListEditingShortcut(
+    editor: MonacoEditor.IStandaloneCodeEditor,
+    event: KeyboardEvent,
+): void {
+    if (
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.isComposing
+    ) {
+        return;
     }
 
+    const model = editor.getModel();
+    const selections = editor.getSelections();
+    const selection = editor.getSelection();
+    if (!model || !selection || (selections?.length ?? 0) > 1) {
+        return;
+    }
+
+    const text = model.getValue();
+    const tabSize = model.getOptions().tabSize;
+    const selectionStartOffset = model.getOffsetAt(
+        selection.getStartPosition(),
+    );
+    const selectionEndOffset = model.getOffsetAt(selection.getEndPosition());
+    const result =
+        event.key === "Enter" && !event.shiftKey && selection.isEmpty()
+            ? continueMarkdownList(text, selectionEndOffset)
+            : event.key === "Tab" && !event.shiftKey
+              ? indentMarkdownListItems(
+                    text,
+                    selectionStartOffset,
+                    selectionEndOffset,
+                    tabSize,
+                )
+              : event.key === "Tab" && event.shiftKey
+                ? outdentMarkdownListItems(
+                      text,
+                      selectionStartOffset,
+                      selectionEndOffset,
+                      tabSize,
+                  )
+                : null;
+    if (!result) {
+        return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+
+    editor.pushUndoStop();
+    editor.executeEdits("markdown-list-continuation", [
+        {
+            forceMoveMarkers: true,
+            range: model.getFullModelRange(),
+            text: result.text,
+        },
+    ]);
+
+    const nextModel = editor.getModel();
+    if (!nextModel) {
+        return;
+    }
+
+    editor.setSelection({
+        endColumn: nextModel.getPositionAt(result.selectionEnd).column,
+        endLineNumber: nextModel.getPositionAt(result.selectionEnd).lineNumber,
+        startColumn: nextModel.getPositionAt(result.selectionStart).column,
+        startLineNumber: nextModel.getPositionAt(result.selectionStart)
+            .lineNumber,
+    });
+    editor.pushUndoStop();
+}
+
+function bindMarkdownListEditingShortcutsWithLanguageRef(input: {
+    readonly documentLanguageIdRef: {
+        readonly current: string;
+    };
+    readonly editor: MonacoEditor.IStandaloneCodeEditor;
+}): (() => void) | null {
     const editorDomNode = input.editor.getDomNode();
     if (!editorDomNode) {
         return null;
     }
 
     const handleEditorKeyDown = (event: KeyboardEvent) => {
-        if (
-            event.altKey ||
-            event.ctrlKey ||
-            event.metaKey ||
-            event.isComposing
-        ) {
+        if (input.documentLanguageIdRef.current !== "markdown") {
             return;
         }
 
-        const model = input.editor.getModel();
-        const selections = input.editor.getSelections();
-        const selection = input.editor.getSelection();
-        if (!model || !selection || (selections?.length ?? 0) > 1) {
-            return;
-        }
-
-        const text = model.getValue();
-        const tabSize = model.getOptions().tabSize;
-        const selectionStartOffset = model.getOffsetAt(
-            selection.getStartPosition(),
-        );
-        const selectionEndOffset = model.getOffsetAt(
-            selection.getEndPosition(),
-        );
-        const result =
-            event.key === "Enter" && !event.shiftKey && selection.isEmpty()
-                ? continueMarkdownList(text, selectionEndOffset)
-                : event.key === "Tab" && !event.shiftKey
-                  ? indentMarkdownListItems(
-                        text,
-                        selectionStartOffset,
-                        selectionEndOffset,
-                        tabSize,
-                    )
-                  : event.key === "Tab" && event.shiftKey
-                    ? outdentMarkdownListItems(
-                          text,
-                          selectionStartOffset,
-                          selectionEndOffset,
-                          tabSize,
-                      )
-                    : null;
-        if (!result) {
-            return;
-        }
-
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation();
-
-        input.editor.pushUndoStop();
-        input.editor.executeEdits("markdown-list-continuation", [
-            {
-                forceMoveMarkers: true,
-                range: model.getFullModelRange(),
-                text: result.text,
-            },
-        ]);
-
-        const nextModel = input.editor.getModel();
-        if (!nextModel) {
-            return;
-        }
-
-        input.editor.setSelection({
-            endColumn: nextModel.getPositionAt(result.selectionEnd).column,
-            endLineNumber: nextModel.getPositionAt(result.selectionEnd)
-                .lineNumber,
-            startColumn: nextModel.getPositionAt(result.selectionStart).column,
-            startLineNumber: nextModel.getPositionAt(result.selectionStart)
-                .lineNumber,
-        });
-        input.editor.pushUndoStop();
+        handleMarkdownListEditingShortcut(input.editor, event);
     };
 
     editorDomNode.addEventListener("keydown", handleEditorKeyDown, true);
@@ -3339,6 +3477,7 @@ function buildProjectScopedFilePath(input: {
 
 function FileTabView({
     isActivePane,
+    isVisible,
     onAttachLineFragment,
     onDraftChange,
     onReload,
@@ -3346,6 +3485,7 @@ function FileTabView({
     tab,
 }: {
     readonly isActivePane: boolean;
+    readonly isVisible: boolean;
     readonly onAttachLineFragment: (input: {
         readonly context: AiFileContextAttachment;
         readonly worktreeId: string | null;
@@ -3361,6 +3501,14 @@ function FileTabView({
     readonly tab: RuntimeWorkspaceFileTab;
 }) {
     const document = tab.document;
+    useRenderProbe("FileTabView", {
+        path: tab.relativePath,
+        tabId: tab.id,
+    });
+    useLifecycleProbe("FileTabView", {
+        path: tab.relativePath,
+        tabId: tab.id,
+    });
     const projectSummary = useProjectsStore((state) =>
         state.projects.find((project) => project.id === tab.projectId) ?? null,
     );
@@ -3425,6 +3573,16 @@ function FileTabView({
     const inlineReviewHoverHideTimerRef = useRef<number | null>(null);
     const hoveredInlineReviewHunkIdRef = useRef<string | null>(null);
     const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+    const editorMonacoRef = useRef<MonacoNamespace | null>(null);
+    const workspaceFileModelLeaseRef =
+        useRef<WorkspaceFileModelLease | null>(null);
+    const editorAttachSelectionShortcutInputRef =
+        useRef<AttachSelectionShortcutInput | null>(null);
+    const inlineReviewAttachSelectionShortcutInputRef =
+        useRef<AttachSelectionShortcutInput | null>(null);
+    const editorMarkdownLanguageIdRef = useRef(
+        document?.languageId ?? "plaintext",
+    );
     const inlineReviewMonacoRef = useRef<MonacoNamespace | null>(null);
     const inlineReviewCurrentModelsRef = useRef<InlineReviewModelState>({
         modified: null,
@@ -3459,7 +3617,13 @@ function FileTabView({
         useRef<MonacoEditor.ICodeEditorViewState | null>(tab.viewState ?? null);
     const pendingEditorViewStateTabIdRef = useRef(tab.id);
     const viewStatePersistTimerRef = useRef<number | null>(null);
+    const scheduledEditorViewStatePersistRef = useRef<{
+        readonly tabId: string;
+        readonly viewState: MonacoEditor.ICodeEditorViewState | null;
+    } | null>(null);
     const viewStateRestoreFrameRef = useRef<number | null>(null);
+    const restoredEditorViewStateTabIdRef = useRef<string | null>(null);
+    const suppressEditorChangeRef = useRef(false);
     const [editorMountVersion, setEditorMountVersion] = useState(0);
     const [diffEditorMountVersion, setDiffEditorMountVersion] = useState(0);
     const [
@@ -3503,6 +3667,7 @@ function FileTabView({
         trackedFile?.newText !== null
             ? trackedFile
             : null;
+    const isInlineReviewActive = inlineReviewTrackedFile !== null;
     const reviewSignature = useMemo(
         () => getInlineReviewSignature(inlineReviewTrackedFile),
         [inlineReviewTrackedFile],
@@ -3532,6 +3697,22 @@ function FileTabView({
         };
     }, [
         documentAbsolutePath,
+        tab.id,
+    ]);
+    const inlineReviewDiffEditorKey = useMemo(() => {
+        if (!inlineReviewShellModelPaths) {
+            return `inline-review:${tab.id}`;
+        }
+
+        // @monaco-editor/react owns shell models through these path props, while
+        // applyInlineReviewModels installs the real review models. Remount when
+        // the file identity changes so the wrapper cannot replay stale shells.
+        return [
+            inlineReviewShellModelPaths.original,
+            inlineReviewShellModelPaths.modified,
+        ].join("|");
+    }, [
+        inlineReviewShellModelPaths,
         tab.id,
     ]);
     const reviewDiff = useMemo(
@@ -3601,9 +3782,24 @@ function FileTabView({
     );
 
     const flushScheduledEditorViewStatePersist = useCallback(() => {
+        const scheduledPersist = scheduledEditorViewStatePersistRef.current;
+        scheduledEditorViewStatePersistRef.current = null;
+
         if (viewStatePersistTimerRef.current != null) {
             window.clearTimeout(viewStatePersistTimerRef.current);
             viewStatePersistTimerRef.current = null;
+        }
+
+        if (scheduledPersist) {
+            persistEditorViewState(
+                scheduledPersist.tabId,
+                scheduledPersist.viewState,
+            );
+            if (
+                scheduledPersist.tabId === pendingEditorViewStateTabIdRef.current
+            ) {
+                return;
+            }
         }
 
         persistEditorViewState(
@@ -3701,20 +3897,81 @@ function FileTabView({
         [clearScheduledEditorViewStateRestore],
     );
 
+    const runWithoutEditorChangeNotification = useCallback(<T,>(
+        action: () => T,
+    ): T => {
+        suppressEditorChangeRef.current = true;
+        try {
+            return action();
+        } finally {
+            suppressEditorChangeRef.current = false;
+        }
+    }, []);
+
+    const acquireFileEditorModel = useCallback(
+        (input: {
+            readonly absolutePath: string;
+            readonly language: string;
+            readonly monaco: MonacoNamespace;
+            readonly value: string;
+        }): {
+            readonly model: MonacoEditor.ITextModel;
+            readonly previousLease: WorkspaceFileModelLease | null;
+        } => {
+            const modelPath = buildWorkspaceFileEditorModelPath(
+                input.absolutePath,
+            );
+            const currentLease = workspaceFileModelLeaseRef.current;
+
+            if (
+                currentLease?.modelPath === modelPath &&
+                !currentLease.model.isDisposed()
+            ) {
+                const model = getOrCreateWorkspaceFileModel(input);
+                if (model === currentLease.model) {
+                    return { model, previousLease: null };
+                }
+            }
+
+            const nextLease = acquireWorkspaceFileModel(input);
+            workspaceFileModelLeaseRef.current = nextLease;
+
+            return {
+                model: nextLease.model,
+                previousLease: currentLease,
+            };
+        },
+        [],
+    );
+
     const scheduleEditorViewStatePersist = useCallback(
         (editor: MonacoEditor.IStandaloneCodeEditor) => {
             const tabId = fileTabIdRef.current;
-            pendingEditorViewStateRef.current = editor.saveViewState();
+            const viewState = editor.saveViewState();
+            pendingEditorViewStateRef.current = viewState;
             pendingEditorViewStateTabIdRef.current = tabId;
+            scheduledEditorViewStatePersistRef.current = {
+                tabId,
+                viewState,
+            };
+
             if (viewStatePersistTimerRef.current != null) {
                 return;
             }
 
             viewStatePersistTimerRef.current = window.setTimeout(() => {
                 viewStatePersistTimerRef.current = null;
+                const scheduledPersist =
+                    scheduledEditorViewStatePersistRef.current;
+                scheduledEditorViewStatePersistRef.current = null;
+
+                if (!scheduledPersist) {
+                    return;
+                }
+
                 persistEditorViewState(
-                    tabId,
-                    pendingEditorViewStateRef.current,
+                    scheduledPersist.tabId,
+                    scheduledPersist.viewState,
                 );
             }, 120);
         },
@@ -3788,9 +4045,112 @@ function FileTabView({
         rejectTrackedFile,
     ]);
 
-    useEffect(() => {
+    const buildEditorAttachSelectionShortcutInput =
+        useCallback((): AttachSelectionShortcutInput | null => {
+            if (!isVisible || !document || !canEdit || inlineReviewTrackedFile) {
+                return null;
+            }
+
+            return {
+                documentLanguageId: document.languageId,
+                onAttachLineFragment,
+                projectId: tab.projectId,
+                relativePath: tab.relativePath,
+                tabTitle: tab.title,
+                worktreeId: tab.worktreeId ?? null,
+            };
+        }, [
+            canEdit,
+            document,
+            inlineReviewTrackedFile,
+            isVisible,
+            onAttachLineFragment,
+            tab.projectId,
+            tab.relativePath,
+            tab.title,
+            tab.worktreeId,
+        ]);
+
+    const buildInlineReviewAttachSelectionShortcutInput =
+        useCallback((): AttachSelectionShortcutInput | null => {
+            if (!isVisible || !document || !canEdit || !inlineReviewTrackedFile) {
+                return null;
+            }
+
+            return {
+                documentLanguageId: document.languageId,
+                onAttachLineFragment,
+                projectId: tab.projectId,
+                relativePath: tab.relativePath,
+                tabTitle: tab.title,
+                worktreeId: tab.worktreeId ?? null,
+            };
+        }, [
+            canEdit,
+            document,
+            inlineReviewTrackedFile,
+            isVisible,
+            onAttachLineFragment,
+            tab.projectId,
+            tab.relativePath,
+            tab.title,
+            tab.worktreeId,
+        ]);
+
+    useLayoutEffect(() => {
+        editorMarkdownLanguageIdRef.current = documentLanguageId;
+        editorAttachSelectionShortcutInputRef.current =
+            buildEditorAttachSelectionShortcutInput();
+        inlineReviewAttachSelectionShortcutInputRef.current =
+            buildInlineReviewAttachSelectionShortcutInput();
+    }, [
+        buildEditorAttachSelectionShortcutInput,
+        buildInlineReviewAttachSelectionShortcutInput,
+        documentLanguageId,
+    ]);
+
+    useLayoutEffect(() => {
+        const previousTabId = fileTabIdRef.current;
+        if (previousTabId === tab.id) {
+            return;
+        }
+
+        if (editorRef.current) {
+            const previousViewState = editorRef.current.saveViewState();
+            pendingEditorViewStateRef.current = previousViewState;
+            pendingEditorViewStateTabIdRef.current = previousTabId;
+            updateFileViewState(previousTabId, previousViewState);
+        }
+
+        if (
+            scheduledEditorViewStatePersistRef.current?.tabId === previousTabId
+        ) {
+            scheduledEditorViewStatePersistRef.current = null;
+        }
+        if (viewStatePersistTimerRef.current != null) {
+            window.clearTimeout(viewStatePersistTimerRef.current);
+            viewStatePersistTimerRef.current = null;
+        }
+
+        if (diffEditorRef.current) {
+            captureInlineReviewModifiedEditorState();
+            persistEditorViewState(
+                previousTabId,
+                pendingEditorViewStateRef.current,
+            );
+        }
+
         fileTabIdRef.current = tab.id;
-    }, [tab.id]);
+        pendingEditorViewStateRef.current = tab.viewState ?? null;
+        pendingEditorViewStateTabIdRef.current = tab.id;
+        restoredEditorViewStateTabIdRef.current = null;
+    }, [
+        captureInlineReviewModifiedEditorState,
+        persistEditorViewState,
+        tab.id,
+        tab.viewState,
+        updateFileViewState,
+    ]);
 
     useEffect(() => {
         const pendingState = pendingEditorInlineReviewRestoreStateRef.current;
@@ -3810,6 +4170,117 @@ function FileTabView({
         pendingEditorViewStateRef.current = tab.viewState ?? null;
         pendingEditorViewStateTabIdRef.current = tab.id;
     }, [tab.id, tab.viewState]);
+
+    useLayoutEffect(() => {
+        return () => {
+            if (isInlineReviewActive) {
+                captureInlineReviewModifiedEditorState();
+                persistEditorViewState(
+                    fileTabIdRef.current,
+                    pendingEditorViewStateRef.current,
+                );
+                return;
+            }
+
+            if (editorRef.current) {
+                captureEditorStateForInlineReview(editorRef.current);
+                persistEditorViewState(
+                    fileTabIdRef.current,
+                    editorRef.current.saveViewState(),
+                );
+            }
+        };
+    }, [
+        captureEditorStateForInlineReview,
+        captureInlineReviewModifiedEditorState,
+        isInlineReviewActive,
+        persistEditorViewState,
+    ]);
+
+    useLayoutEffect(() => {
+        restoredEditorViewStateTabIdRef.current = null;
+    }, [isInlineReviewActive]);
+
+    useEffect(() => {
+        if (isVisible) {
+            return;
+        }
+
+        flushScheduledEditorViewStatePersist();
+    }, [flushScheduledEditorViewStatePersist, isVisible]);
+
+    const getPendingEditorViewStateForTab = useCallback(
+        (
+            tabId: string,
+            viewState: MonacoEditor.ICodeEditorViewState | null,
+        ) =>
+            viewState ??
+            (pendingEditorViewStateTabIdRef.current === tabId
+                ? pendingEditorViewStateRef.current
+                : null),
+        [],
+    );
+
+    const restoreEditorViewStateForTab = useCallback(
+        (
+            editor: MonacoEditor.IStandaloneCodeEditor,
+            tabId: string,
+            viewState: MonacoEditor.ICodeEditorViewState | null,
+        ) => {
+            if (restoredEditorViewStateTabIdRef.current === tabId) {
+                return;
+            }
+
+            if (viewState) {
+                restoreEditorViewState(editor, viewState);
+            } else {
+                editor.layout();
+            }
+
+            restoredEditorViewStateTabIdRef.current = tabId;
+        },
+        [restoreEditorViewState],
+    );
+
+    useEffect(() => {
+        if (!isVisible) {
+            return;
+        }
+
+        const frameId = window.requestAnimationFrame(() => {
+            editorRef.current?.layout();
+            diffEditorRef.current?.layout();
+        });
+
+        return () => {
+            window.cancelAnimationFrame(frameId);
+        };
+    }, [isVisible, tab.id]);
+
+    useEffect(() => {
+        const editor = editorRef.current;
+        if (
+            !isVisible ||
+            !editor ||
+            inlineReviewTrackedFile ||
+            restoredEditorViewStateTabIdRef.current === tab.id
+        ) {
+            return;
+        }
+
+        restoreEditorViewStateForTab(
+            editor,
+            tab.id,
+            getPendingEditorViewStateForTab(tab.id, tab.viewState ?? null),
+        );
+    }, [
+        getPendingEditorViewStateForTab,
+        inlineReviewTrackedFile,
+        isVisible,
+        restoreEditorViewStateForTab,
+        tab.id,
+        tab.viewState,
+    ]);
 
     useEffect(() => {
         return () => {
@@ -4096,6 +4567,61 @@ function FileTabView({
         runtime?.applyMonacoThemeFromDom();
     }, [runtime]);
 
+    useLayoutEffect(() => {
+        if (
+            !document ||
+            document.kind === "image" ||
+            !canEdit
+        ) {
+            return;
+        }
+
+        const editor = editorRef.current;
+        const monaco = editorMonacoRef.current;
+        if (!editor || !monaco) {
+            return;
+        }
+
+        const { model, previousLease } = runWithoutEditorChangeNotification(() =>
+            acquireFileEditorModel({
+                absolutePath: document.absolutePath,
+                language: monacoLanguageId,
+                monaco,
+                value: tab.draftContent,
+            }),
+        );
+
+        if (editor.getModel() !== model) {
+            runWithoutEditorChangeNotification(() => {
+                editor.setModel(model);
+            });
+        }
+        previousLease?.release();
+
+        if (!isVisible || inlineReviewTrackedFile) {
+            return;
+        }
+
+        restoreEditorViewStateForTab(
+            editor,
+            tab.id,
+            getPendingEditorViewStateForTab(tab.id, tab.viewState ?? null),
+        );
+    }, [
+        canEdit,
+        acquireFileEditorModel,
+        document,
+        getPendingEditorViewStateForTab,
+        inlineReviewTrackedFile,
+        isVisible,
+        monacoLanguageId,
+        restoreEditorViewStateForTab,
+        runWithoutEditorChangeNotification,
+        tab.draftContent,
+        tab.id,
+        tab.viewState,
+    ]);
+
     useEffect(() => {
         if (!runtime || !document || document.kind === "image") {
             return;
@@ -4104,6 +4630,19 @@ function FileTabView({
         void runtime.applyProjectTypeScriptConfigForPath(document.absolutePath);
     }, [
         document,
+        runtime,
+    ]);
+
+    useEffect(() => {
+        if (!runtime || !document || document.kind === "image" || !canEdit) {
+            return;
+        }
+
+        void runtime.ensureMonacoTextMateForLanguage(monacoLanguageId);
+    }, [
+        canEdit,
+        document,
+        monacoLanguageId,
         runtime,
     ]);
 
@@ -4258,9 +4797,17 @@ function FileTabView({
                 return;
             }
 
+            const installedModels = diffEditorRef.current.getModel();
+            const currentReviewModels = inlineReviewCurrentModelsRef.current;
             if (
-                inlineReviewCurrentModelsRef.current.revision ===
-                inlineReviewModelRevision
+                currentReviewModels.revision ===
+                    inlineReviewModelRevision &&
+                currentReviewModels.original &&
+                currentReviewModels.modified &&
+                !currentReviewModels.original.isDisposed() &&
+                !currentReviewModels.modified.isDisposed() &&
+                installedModels?.original === currentReviewModels.original &&
+                installedModels?.modified === currentReviewModels.modified
             ) {
                 return;
             }
@@ -4268,6 +4815,12 @@ function FileTabView({
             const diffEditor = diffEditorRef.current;
             const monaco = inlineReviewMonacoRef.current;
             const previousModels = diffEditor.getModel();
+            const currentInlineReviewRestoreState =
+                currentReviewModels.revision && previousModels?.modified
+                    ? capturePortableEditorRestoreState(
+                          diffEditor.getModifiedEditor(),
+                      )
+                    : null;
             const scrollState = inlineReviewScrollStateRef.current;
             const persistedInlineReviewViewState =
                 tab.viewState ?? pendingEditorViewStateRef.current;
@@ -4315,7 +4868,12 @@ function FileTabView({
                     modified: nextModifiedModel,
                     original: nextOriginalModel,
                 };
-                if (pendingInlineReviewRestoreState) {
+                if (currentInlineReviewRestoreState) {
+                    restorePortableInlineReviewState(
+                        diffEditor,
+                        currentInlineReviewRestoreState,
+                    );
+                } else if (pendingInlineReviewRestoreState) {
                     restorePortableInlineReviewState(
                         diffEditor,
                         pendingInlineReviewRestoreState,
@@ -4378,6 +4936,9 @@ function FileTabView({
         }
 
         const controller = new AbortController();
+        const cancelPendingReset = scheduleEffectStateUpdate(() => {
+            setGitGutterDiff(null);
+        });
 
         const loadGitDiff = async () => {
             try {
@@ -4405,6 +4966,7 @@ function FileTabView({
         void loadGitDiff();
 
         return () => {
+            cancelPendingReset();
             controller.abort();
         };
     }, [
@@ -4447,7 +5009,13 @@ function FileTabView({
                 : [],
         );
         gitGutterDecorationsRef.current = collection;
-    }, [editorMountVersion, gitGutterDiff]);
+    }, [
+        documentAbsolutePath,
+        editorMountVersion,
+        gitGutterDiff,
+        tab.draftContent,
+        tab.id,
+    ]);
 
     useEffect(() => {
         if (
@@ -4561,6 +5129,10 @@ function FileTabView({
             fontFamily: editorFontFamily,
             fontSize: editorSettings.fontSize,
             lineHeight: editorLineHeightPx,
+            lineDecorationsWidth: 0,
+            lineNumbersMinChars: shouldShowGitGutter
+                ? gitGutterLineNumbersMinChars
+                : 4,
             minimap: {
                 enabled: editorSettings.minimapEnabled,
             },
@@ -4579,6 +5151,7 @@ function FileTabView({
             wordBasedSuggestions: areSuggestionsEnabled
                 ? "matchingDocuments"
                 : "off",
+            wordWrap: shouldEnableDocumentWrapping(document) ? "on" : "off",
         });
         editor.layout();
     }, [
@@ -4589,6 +5162,8 @@ function FileTabView({
         editorLineHeightPx,
         editorSettings.fontSize,
         editorSettings.minimapEnabled,
+        gitGutterLineNumbersMinChars,
+        shouldShowGitGutter,
     ]);
 
     useEffect(() => {
@@ -4625,8 +5200,17 @@ function FileTabView({
     ]);
 
     useLayoutEffect(() => {
+        if (!isVisible) {
+            return;
+        }
+
         applyInlineReviewModels(inlineReviewTrackedFile);
-    }, [applyInlineReviewModels, inlineReviewTrackedFile]);
+    }, [
+        applyInlineReviewModels,
+        diffEditorMountVersion,
+        inlineReviewTrackedFile,
+        isVisible,
+    ]);
 
     useEffect(() => {
         if (inlineReviewTrackedFile) {
@@ -4823,6 +5407,7 @@ function FileTabView({
                     >
                         <DiffEditorComponent
                             beforeMount={handleEditorBeforeMount}
+                            key={inlineReviewDiffEditorKey}
                             language={monacoLanguageId}
                             modified=""
                             modifiedModelPath={
@@ -4834,6 +5419,15 @@ function FileTabView({
                                 editor: MonacoEditor.IStandaloneDiffEditor,
                                 monaco: MonacoNamespace,
                             ) => {
+                                recordProbeLifecycleEvent(
+                                    "WorkspaceInlineReviewDiffEditor",
+                                    "mount",
+                                    {
+                                        language: monacoLanguageId,
+                                        path: tab.relativePath,
+                                        tabId: tab.id,
+                                    },
+                                );
                                 diffEditorRef.current = editor;
                                 void runtime?.ensureMonacoTextMateForLanguage(
                                     monacoLanguageId,
@@ -4884,13 +5478,9 @@ function FileTabView({
                                 };
                                 const cleanupAttachShortcut =
                                     bindInlineReviewAttachSelectionShortcut({
-                                        documentLanguageId: document.languageId,
                                         diffEditor: editor,
-                                        onAttachLineFragment,
-                                        projectId: tab.projectId,
-                                        relativePath: tab.relativePath,
-                                        tabTitle: tab.title,
-                                        worktreeId: tab.worktreeId ?? null,
+                                        inputRef:
+                                            inlineReviewAttachSelectionShortcutInputRef,
                                     });
                                 const cleanupFindWidgetEscape =
                                     bindCloseFindWidgetOnEscape(modifiedEditor);
@@ -4931,6 +5521,22 @@ function FileTabView({
                                 applyInlineReviewModels(inlineReviewTrackedFile);
 
                                 editor.onDidDispose(() => {
+                                    try {
+                                        captureInlineReviewModifiedEditorState();
+                                    } catch (error) {
+                                        if (!isMonacoDisposedError(error)) {
+                                            throw error;
+                                        }
+                                    }
+                                    recordProbeLifecycleEvent(
+                                        "WorkspaceInlineReviewDiffEditor",
+                                        "dispose",
+                                        {
+                                            language: monacoLanguageId,
+                                            path: tab.relativePath,
+                                            tabId: tab.id,
+                                        },
+                                    );
                                     const ownedModels =
                                         inlineReviewOwnedModelsRef.current;
                                     cleanupOriginalTokenDebug?.dispose();
@@ -5004,18 +5610,59 @@ function FileTabView({
                             />
                         ) : null}
                     </div>
-                ) : (
+                ) : null}
+                <div
+                    className={inlineReviewTrackedFile ? "hidden" : "h-full"}
+                >
                     <EditorComponent
                         beforeMount={handleEditorBeforeMount}
                         language={monacoLanguageId}
-                        onChange={(value: string | undefined) =>
-                            onDraftChange(tab.id, value ?? "")
-                        }
-                        onMount={(editor) => {
+                        onChange={(value: string | undefined) => {
+                            if (
+                                suppressEditorChangeRef.current ||
+                                inlineReviewTrackedFile
+                            ) {
+                                return;
+                            }
+
+                            onDraftChange(tab.id, value ?? "");
+                        }}
+                        onMount={(
+                            editor: MonacoEditor.IStandaloneCodeEditor,
+                            monaco: MonacoNamespace,
+                        ) => {
+                            recordProbeLifecycleEvent(
+                                "WorkspaceMonacoEditor",
+                                "mount",
+                                {
+                                    language: monacoLanguageId,
+                                    path: tab.relativePath,
+                                    tabId: tab.id,
+                                },
+                            );
                             editorRef.current = editor;
+                            editorMonacoRef.current = monaco;
+                            const { model, previousLease } =
+                                runWithoutEditorChangeNotification(
+                                    () =>
+                                        acquireFileEditorModel({
+                                            absolutePath: document.absolutePath,
+                                            language: monacoLanguageId,
+                                            monaco,
+                                            value: tab.draftContent,
+                                        }),
+                                );
+                            if (editor.getModel() !== model) {
+                                runWithoutEditorChangeNotification(() => {
+                                    editor.setModel(model);
+                                });
+                            }
+                            previousLease?.release();
                             void runtime?.ensureMonacoTextMateForLanguage(
                                 monacoLanguageId,
                             );
+                            editorAttachSelectionShortcutInputRef.current =
+                                buildEditorAttachSelectionShortcutInput();
                             const cleanupTokenDebug =
                                 runtime?.installMonacoTokenDebugAction(editor) ??
                                 null;
@@ -5034,11 +5681,14 @@ function FileTabView({
                                     null;
                             } else {
                                 const persistedViewState =
-                                    tab.viewState ??
-                                    pendingEditorViewStateRef.current;
+                                    getPendingEditorViewStateForTab(
+                                        tab.id,
+                                        tab.viewState ?? null,
+                                    );
                                 if (persistedViewState) {
-                                    restoreEditorViewState(
+                                    restoreEditorViewStateForTab(
                                         editor,
+                                        tab.id,
                                         persistedViewState,
                                     );
                                     pendingEditorViewStateRef.current =
@@ -5046,18 +5696,15 @@ function FileTabView({
                                 }
                             }
                             const cleanupAttachShortcut =
-                                bindAttachSelectionShortcut({
-                                    documentLanguageId: document.languageId,
+                                bindAttachSelectionShortcutWithInputRef({
                                     editor,
-                                    onAttachLineFragment,
-                                    projectId: tab.projectId,
-                                    relativePath: tab.relativePath,
-                                    tabTitle: tab.title,
-                                    worktreeId: tab.worktreeId ?? null,
+                                    inputRef:
+                                        editorAttachSelectionShortcutInputRef,
                                 });
                             const cleanupMarkdownListShortcut =
-                                bindMarkdownListEditingShortcuts({
-                                    documentLanguageId: document.languageId,
+                                bindMarkdownListEditingShortcutsWithLanguageRef({
+                                    documentLanguageIdRef:
+                                        editorMarkdownLanguageIdRef,
                                     editor,
                                 });
                             const scrollListener = editor.onDidScrollChange(
@@ -5079,14 +5726,25 @@ function FileTabView({
                             setEditorMountVersion((previous) => previous + 1);
 
                             editor.onDidDispose(() => {
+                                recordProbeLifecycleEvent(
+                                    "WorkspaceMonacoEditor",
+                                    "dispose",
+                                    {
+                                        language: monacoLanguageId,
+                                        path: tab.relativePath,
+                                        tabId: tab.id,
+                                    },
+                                );
                                 clearScheduledEditorViewStateRestore();
-                                // Do not call editor.saveViewState() here.
-                                // @monaco-editor/react disposes the model
-                                // before disposing the editor, so saveViewState
-                                // would return null and overwrite the valid
-                                // view state captured during unmount cleanup.
+                                const workspaceFileModelLease =
+                                    workspaceFileModelLeaseRef.current;
+                                workspaceFileModelLeaseRef.current = null;
+                                // Do not call editor.saveViewState() here. The
+                                // editor can already be tearing down, so keep
+                                // the valid state captured during cleanup.
                                 flushScheduledEditorViewStatePersist();
                                 editorRef.current = null;
+                                editorMonacoRef.current = null;
                                 gitGutterDecorationsRef.current = null;
                                 cleanupTokenDebug?.dispose();
                                 scrollListener.dispose();
@@ -5094,11 +5752,13 @@ function FileTabView({
                                 hiddenAreasListener.dispose();
                                 cleanupAttachShortcut?.();
                                 cleanupMarkdownListShortcut?.();
+                                workspaceFileModelLease?.release();
                                 setEditorMountVersion(
                                     (previous) => previous + 1,
                                 );
                             });
                         }}
+                        keepCurrentModel
                         options={{
                             automaticLayout: true,
                             fontFamily: editorFontFamily,
@@ -5144,15 +5804,13 @@ function FileTabView({
                                 : "off",
                         }}
                         saveViewState
-                        path={buildWorkspaceEditorModelPath(
+                        path={buildWorkspaceFileEditorModelPath(
                             document.absolutePath,
-                            tab.id,
-                            "editor",
                         )}
                         theme={editorTheme}
                         value={tab.draftContent}
                     />
-                )}
+                </div>
             </div>
         </div>
     );

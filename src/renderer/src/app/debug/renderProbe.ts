@@ -4,11 +4,13 @@ const RENDER_PROBE_STORAGE_KEY = "comando:render-probe";
 
 type RenderProbeValue = boolean | number | string | null | undefined;
 type RenderProbeDetails = Record<string, RenderProbeValue>;
+type RenderProbePhase = "commit" | "dispose" | "mount";
 
 interface RenderProbeEvent {
     readonly component: string;
     readonly count: number;
     readonly details: RenderProbeDetails;
+    readonly phase: RenderProbePhase;
     readonly sinceLastMs: number | null;
     readonly timestamp: number;
 }
@@ -78,6 +80,7 @@ function getRenderProbeStore(): RenderProbeStore {
 
 function formatRenderProbeLabel(
     component: string,
+    phase: RenderProbePhase,
     details: RenderProbeDetails,
 ): string {
     const identity = Object.entries(details)
@@ -85,7 +88,43 @@ function formatRenderProbeLabel(
         .map(([key, value]) => `${key}=${String(value)}`)
         .join(" ");
 
-    return identity ? `${component} ${identity}` : component;
+    const phaseLabel = phase === "commit" ? component : `${component}:${phase}`;
+
+    return identity ? `${phaseLabel} ${identity}` : phaseLabel;
+}
+
+function recordRenderProbeEvent(
+    component: string,
+    phase: RenderProbePhase,
+    details: RenderProbeDetails = {},
+    sinceLastMs: number | null = null,
+): void {
+    if (!isRenderProbeEnabled(component)) {
+        return;
+    }
+
+    const store = getRenderProbeStore();
+    const countKey = phase === "commit" ? component : `${component}:${phase}`;
+    const count = (store.counts[countKey] ?? 0) + 1;
+
+    store.counts[countKey] = count;
+    store.events.push({
+        component,
+        count,
+        details,
+        phase,
+        sinceLastMs,
+        timestamp: Date.now(),
+    });
+
+    if (store.events.length > 400) {
+        store.events.splice(0, store.events.length - 400);
+    }
+
+    console.debug("[render-probe]", formatRenderProbeLabel(component, phase, details), {
+        count,
+        sinceLastMs,
+    });
 }
 
 export function useRenderProbe(
@@ -101,38 +140,38 @@ export function useRenderProbe(
         }
 
         const now = performance.now();
-        const store = getRenderProbeStore();
-        const count = (store.counts[component] ?? 0) + 1;
         const sinceLastMs =
             lastCommitAtRef.current === null
                 ? null
                 : now - lastCommitAtRef.current;
+        const roundedSinceLastMs =
+            sinceLastMs === null ? null : Number(sinceLastMs.toFixed(2));
 
         lastCommitAtRef.current = now;
-        store.counts[component] = count;
-        store.events.push({
-            component,
-            count,
-            details,
-            sinceLastMs:
-                sinceLastMs === null ? null : Number(sinceLastMs.toFixed(2)),
-            timestamp: Date.now(),
-        });
-
-        if (store.events.length > 400) {
-            store.events.splice(0, store.events.length - 400);
-        }
-
-        console.debug(
-            "[render-probe]",
-            formatRenderProbeLabel(component, details),
-            {
-                count,
-                sinceLastMs:
-                    sinceLastMs === null
-                        ? null
-                        : Number(sinceLastMs.toFixed(2)),
-            },
-        );
+        recordRenderProbeEvent(component, "commit", details, roundedSinceLastMs);
     });
+}
+
+export function useLifecycleProbe(
+    component: string,
+    details: RenderProbeDetails = {},
+): void {
+    const detailsRef = useRef(details);
+    detailsRef.current = details;
+
+    useEffect(() => {
+        recordRenderProbeEvent(component, "mount", detailsRef.current);
+
+        return () => {
+            recordRenderProbeEvent(component, "dispose", detailsRef.current);
+        };
+    }, [component]);
+}
+
+export function recordProbeLifecycleEvent(
+    component: string,
+    phase: Exclude<RenderProbePhase, "commit">,
+    details: RenderProbeDetails = {},
+): void {
+    recordRenderProbeEvent(component, phase, details);
 }
