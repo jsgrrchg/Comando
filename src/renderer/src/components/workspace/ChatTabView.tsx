@@ -1716,48 +1716,57 @@ export const ChatTabView = memo(function ChatTabView({
                             backgroundColor: "transparent",
                         }}
                     >
-                        {pendingPermission
-                            ? renderPermissionRequest(
-                                  pendingPermission,
-                                  respondPermission,
-                                  tab.sessionId,
-                              )
-                            : null}
-                        {pendingUserInput ? (
-                            <UserInputRequestCard
-                                onRespond={respondUserInput}
-                                request={pendingUserInput}
-                            />
-                        ) : null}
-                        {queuedPrompts.length > 0 || editingQueuedPrompt ? (
-                            <QueuedMessagesPanel
-                                editingItem={editingQueuedPrompt}
-                                items={queuedPrompts}
-                                onCancelEdit={handleCancelQueuedPromptEdit}
-                                onClearAll={handleClearQueuedPrompts}
-                                onDelete={handleRemoveQueuedPrompt}
-                                onEdit={handleEditQueuedPrompt}
-                                onSendNow={handleSendQueuedPromptNow}
-                            />
-                        ) : null}
-                        {currentError ? renderError(currentError) : null}
-                        {composerError ? renderError(composerError) : null}
+                        <div
+                            className="flex w-full flex-col gap-2"
+                            style={{
+                                marginInline: "auto",
+                                maxWidth: CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
+                            }}
+                        >
+                            {pendingPermission
+                                ? renderPermissionRequest(
+                                      pendingPermission,
+                                      respondPermission,
+                                      tab.sessionId,
+                                  )
+                                : null}
+                            {pendingUserInput ? (
+                                <UserInputRequestCard
+                                    onRespond={respondUserInput}
+                                    request={pendingUserInput}
+                                />
+                            ) : null}
+                            {queuedPrompts.length > 0 ||
+                            editingQueuedPrompt ? (
+                                <QueuedMessagesPanel
+                                    editingItem={editingQueuedPrompt}
+                                    items={queuedPrompts}
+                                    onCancelEdit={handleCancelQueuedPromptEdit}
+                                    onClearAll={handleClearQueuedPrompts}
+                                    onDelete={handleRemoveQueuedPrompt}
+                                    onEdit={handleEditQueuedPrompt}
+                                    onSendNow={handleSendQueuedPromptNow}
+                                />
+                            ) : null}
+                            {currentError ? renderError(currentError) : null}
+                            {composerError ? renderError(composerError) : null}
 
-                        {pendingReviewCount > 0 ? (
-                            <EditedFilesBufferPanel
-                                diffZoom={diffZoom}
-                                items={pendingReviewItems}
-                                onKeepAll={handleKeepAllPendingReview}
-                                onKeepHunk={handleKeepPendingReviewHunk}
-                                onKeepItem={handleKeepPendingReviewItem}
-                                onOpenItem={handleOpenPendingReviewItem}
-                                onOpenReview={handleOpenReviewTab}
-                                onRejectAll={handleRejectAllPendingReview}
-                                onRejectHunk={handleRejectPendingReviewHunk}
-                                onRejectItem={handleRejectPendingReviewItem}
-                                summary={pendingReviewSummary}
-                            />
-                        ) : null}
+                            {pendingReviewCount > 0 ? (
+                                <EditedFilesBufferPanel
+                                    diffZoom={diffZoom}
+                                    items={pendingReviewItems}
+                                    onKeepAll={handleKeepAllPendingReview}
+                                    onKeepHunk={handleKeepPendingReviewHunk}
+                                    onKeepItem={handleKeepPendingReviewItem}
+                                    onOpenItem={handleOpenPendingReviewItem}
+                                    onOpenReview={handleOpenReviewTab}
+                                    onRejectAll={handleRejectAllPendingReview}
+                                    onRejectHunk={handleRejectPendingReviewHunk}
+                                    onRejectItem={handleRejectPendingReviewItem}
+                                    summary={pendingReviewSummary}
+                                />
+                            ) : null}
+                        </div>
                     </div>
                 ) : null}
 
@@ -1771,87 +1780,101 @@ export const ChatTabView = memo(function ChatTabView({
                             "color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
                     }}
                 >
-                    <AIChatComposer
-                        autoFocusKey={tab.id}
-                        composerFontFamily={composerFontFamily}
-                        composerFontSize={aiChatSettings.composerFontSize}
-                        requireCmdEnterToSend={
-                            aiChatSettings.requireCmdEnterToSend
-                        }
-                        bottomAccent={
-                            aiChatSettings.contextUsageBarEnabled ? (
-                                <AIChatContextUsageBar
-                                    usage={snapshot.tokenUsage}
-                                />
-                            ) : null
-                        }
-                        agentControls={
-                            hasAgentControls ? (
-                                <AIChatAgentControls
-                                    configOptions={snapshot.configOptions}
-                                    modeId={snapshot.modeId ?? ""}
-                                    modelId={snapshot.modelId ?? ""}
-                                    modes={snapshot.modes}
-                                    models={snapshot.models}
-                                    onConfigOptionChange={(optionId, value) => {
-                                        void setSessionConfigOption({
-                                            optionId,
-                                            sessionId: tab.sessionId,
-                                            value,
-                                        });
-                                    }}
-                                    onModeChange={(modeId) => {
-                                        void setSessionMode({
-                                            modeId,
-                                            sessionId: tab.sessionId,
-                                        });
-                                    }}
-                                    onModelChange={(modelId) => {
-                                        void setSessionModel({
-                                            modelId,
-                                            sessionId: tab.sessionId,
-                                        });
-                                    }}
-                                    runtimeId={tab.runtimeId}
-                                />
-                            ) : undefined
-                        }
-                        availableCommands={availableCommands}
-                        disabled={closedSubagentMessage !== null}
-                        disabledReason={closedSubagentMessage}
-                        draftAttachments={draftAttachments}
-                        draftFileContexts={draftFileContexts}
-                        fileInputRef={fileInputRef}
-                        onChange={handleComposerPartsChange}
-                        onPasteImage={handlePasteImage}
-                        onRemoveAttachment={removeDraftAttachment}
-                        onRemoveFileContext={(contextId) =>
-                            removeDraftFileContext(tab.sessionId, contextId)
-                        }
-                        onSearchProjectEntries={handleSearchProjectEntries}
-                        onStop={handleStopSession}
-                        onSubmit={() => {
-                            void handleSubmit();
+                    <div
+                        className="w-full"
+                        style={{
+                            marginInline: "auto",
+                            maxWidth: CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
                         }}
-                        resetNonce={composerResetNonce}
-                        parts={composerParts}
-                        renderFileContextPill={(fc) => (
-                            <FileContextPill
-                                context={fc}
-                                onRemove={() =>
-                                    removeDraftFileContext(tab.sessionId, fc.id)
-                                }
-                            />
-                        )}
-                        renderImageChip={(att) => (
-                            <ImageAttachmentChip
-                                attachment={att}
-                                onRemove={removeDraftAttachment}
-                            />
-                        )}
-                        runtimeName={runtimeDisplayName}
-                        status={snapshot.status}
-                    />
+                    >
+                        <AIChatComposer
+                            autoFocusKey={tab.id}
+                            composerFontFamily={composerFontFamily}
+                            composerFontSize={aiChatSettings.composerFontSize}
+                            requireCmdEnterToSend={
+                                aiChatSettings.requireCmdEnterToSend
+                            }
+                            bottomAccent={
+                                aiChatSettings.contextUsageBarEnabled ? (
+                                    <AIChatContextUsageBar
+                                        usage={snapshot.tokenUsage}
+                                    />
+                                ) : null
+                            }
+                            agentControls={
+                                hasAgentControls ? (
+                                    <AIChatAgentControls
+                                        configOptions={snapshot.configOptions}
+                                        modeId={snapshot.modeId ?? ""}
+                                        modelId={snapshot.modelId ?? ""}
+                                        modes={snapshot.modes}
+                                        models={snapshot.models}
+                                        onConfigOptionChange={(
+                                            optionId,
+                                            value,
+                                        ) => {
+                                            void setSessionConfigOption({
+                                                optionId,
+                                                sessionId: tab.sessionId,
+                                                value,
+                                            });
+                                        }}
+                                        onModeChange={(modeId) => {
+                                            void setSessionMode({
+                                                modeId,
+                                                sessionId: tab.sessionId,
+                                            });
+                                        }}
+                                        onModelChange={(modelId) => {
+                                            void setSessionModel({
+                                                modelId,
+                                                sessionId: tab.sessionId,
+                                            });
+                                        }}
+                                        runtimeId={tab.runtimeId}
+                                    />
+                                ) : undefined
+                            }
+                            availableCommands={availableCommands}
+                            disabled={closedSubagentMessage !== null}
+                            disabledReason={closedSubagentMessage}
+                            draftAttachments={draftAttachments}
+                            draftFileContexts={draftFileContexts}
+                            fileInputRef={fileInputRef}
+                            onChange={handleComposerPartsChange}
+                            onPasteImage={handlePasteImage}
+                            onRemoveAttachment={removeDraftAttachment}
+                            onRemoveFileContext={(contextId) =>
+                                removeDraftFileContext(tab.sessionId, contextId)
+                            }
+                            onSearchProjectEntries={handleSearchProjectEntries}
+                            onStop={handleStopSession}
+                            onSubmit={() => {
+                                void handleSubmit();
+                            }}
+                            resetNonce={composerResetNonce}
+                            parts={composerParts}
+                            renderFileContextPill={(fc) => (
+                                <FileContextPill
+                                    context={fc}
+                                    onRemove={() =>
+                                        removeDraftFileContext(
+                                            tab.sessionId,
+                                            fc.id,
+                                        )
+                                    }
+                                />
+                            )}
+                            renderImageChip={(att) => (
+                                <ImageAttachmentChip
+                                    attachment={att}
+                                    onRemove={removeDraftAttachment}
+                                />
+                            )}
+                            runtimeName={runtimeDisplayName}
+                            status={snapshot.status}
+                        />
+                    </div>
                 </div>
             </div>
         </div>
