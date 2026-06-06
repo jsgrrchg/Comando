@@ -72,7 +72,14 @@ type ComposerPillLayoutStyle = Pick<
 
 export function getComposerShellSizingStyle(
     customHeight: number | null,
+    options: { readonly expanded?: boolean } = {},
 ): Pick<CSSProperties, "height" | "maxHeight" | "minHeight"> {
+    if (options.expanded === true) {
+        return {
+            minHeight: MIN_COMPOSER_HEIGHT,
+        };
+    }
+
     return {
         minHeight: MIN_COMPOSER_HEIGHT,
         maxHeight: MAX_COMPOSER_HEIGHT,
@@ -661,6 +668,7 @@ interface AIChatComposerProps {
     readonly availableCommands: readonly AiAvailableCommand[];
     readonly agentControls?: ReactNode;
     readonly bottomAccent?: ReactNode;
+    readonly expanded?: boolean;
     readonly draftFileContexts: readonly AiFileContextAttachment[];
     readonly draftAttachments: readonly AiImageAttachment[];
     readonly onChange: (parts: AIComposerPart[]) => void;
@@ -670,6 +678,7 @@ interface AIChatComposerProps {
     readonly onPasteImage?: (file: File) => void;
     readonly onSubmit: () => void;
     readonly onStop: () => void;
+    readonly onToggleExpanded?: () => void;
     readonly onRemoveFileContext: (contextId: string) => void;
     readonly onRemoveAttachment: (attachmentId: string) => void;
     readonly fileInputRef: RefObject<HTMLInputElement | null>;
@@ -746,6 +755,7 @@ export function AIChatComposer({
     availableCommands,
     agentControls,
     bottomAccent,
+    expanded = false,
     draftFileContexts,
     draftAttachments,
     onChange,
@@ -753,6 +763,7 @@ export function AIChatComposer({
     onPasteImage,
     onSubmit,
     onStop,
+    onToggleExpanded,
     fileInputRef,
     renderFileContextPill,
     renderImageChip,
@@ -808,6 +819,7 @@ export function AIChatComposer({
     useRenderProbe("AIChatComposer", {
         attachments: draftAttachments.length,
         canSubmit,
+        expanded,
         contexts: draftFileContexts.length,
         isSessionBusy,
         mentionOpen: mentionState.open,
@@ -1424,13 +1436,19 @@ export function AIChatComposer({
     const isEmpty = parts.every(
         (p) => p.type === "text" && p.text.trim().length === 0,
     );
-    const shellSizingStyle = getComposerShellSizingStyle(customHeight);
+    const shellSizingStyle = getComposerShellSizingStyle(customHeight, {
+        expanded,
+    });
 
     return (
         <div
             ref={shellRef}
             data-ai-composer-drop-zone="true"
-            className="relative flex select-none flex-col"
+            className={
+                expanded
+                    ? "relative flex min-h-0 flex-1 select-none flex-col"
+                    : "relative flex select-none flex-col"
+            }
             onDrop={handleDrop}
             onDragOver={(e) => e.preventDefault()}
             onDragEnter={(e) => {
@@ -1456,30 +1474,99 @@ export function AIChatComposer({
             }}
         >
             {/* Resize handle */}
-            <div
-                className="absolute left-0 right-0 touch-none"
-                onPointerDown={handleResizePointerDown}
-                onPointerMove={handleResizePointerMove}
-                onPointerUp={handleResizePointerUp}
-                style={{
-                    cursor: "row-resize",
-                    height: 9,
-                    top: -4,
-                    zIndex: 5,
-                }}
-            >
+            {!expanded ? (
                 <div
-                    className="mx-auto rounded-full"
+                    className="absolute left-0 right-0 touch-none"
+                    onPointerDown={handleResizePointerDown}
+                    onPointerMove={handleResizePointerMove}
+                    onPointerUp={handleResizePointerUp}
                     style={{
-                        backgroundColor: "var(--color-border)",
-                        height: 3,
-                        marginTop: 3,
-                        opacity: 0,
-                        transition: "opacity 0.15s ease",
-                        width: 32,
+                        cursor: "row-resize",
+                        height: 9,
+                        top: -4,
+                        zIndex: 5,
                     }}
-                />
-            </div>
+                >
+                    <div
+                        className="mx-auto rounded-full"
+                        style={{
+                            backgroundColor: "var(--color-border)",
+                            height: 3,
+                            marginTop: 3,
+                            opacity: 0,
+                            transition: "opacity 0.15s ease",
+                            width: 32,
+                        }}
+                    />
+                </div>
+            ) : null}
+
+            {onToggleExpanded ? (
+                <button
+                    aria-label={
+                        expanded ? "Collapse composer" : "Expand composer"
+                    }
+                    aria-pressed={expanded}
+                    className="app-no-drag absolute right-2 top-2 flex items-center justify-center rounded active:scale-90"
+                    onClick={onToggleExpanded}
+                    onMouseDown={(e) => e.preventDefault()}
+                    style={{
+                        backgroundColor: "transparent",
+                        border: "none",
+                        color: "var(--color-text-secondary)",
+                        cursor: "pointer",
+                        height: 24,
+                        opacity: 0.55,
+                        transition:
+                            "background-color 100ms ease, color 100ms ease, opacity 100ms ease, transform 75ms ease",
+                        width: 24,
+                        zIndex: 6,
+                    }}
+                    title={expanded ? "Collapse composer" : "Expand composer"}
+                    type="button"
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.backgroundColor =
+                            "color-mix(in srgb, var(--color-bg-elevated) 70%, transparent)";
+                        e.currentTarget.style.color =
+                            "var(--color-text-primary)";
+                        e.currentTarget.style.opacity = "1";
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = "transparent";
+                        e.currentTarget.style.color =
+                            "var(--color-text-secondary)";
+                        e.currentTarget.style.opacity = "0.55";
+                    }}
+                >
+                    {expanded ? (
+                        <svg
+                            fill="none"
+                            height="14"
+                            stroke="currentColor"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth="1.8"
+                            viewBox="0 0 14 14"
+                            width="14"
+                        >
+                            <path d="M5 1v4H1M9 13V9h4M5 5 1 1M9 9l4 4" />
+                        </svg>
+                    ) : (
+                        <svg
+                            fill="none"
+                            height="14"
+                            stroke="currentColor"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth="1.8"
+                            viewBox="0 0 14 14"
+                            width="14"
+                        >
+                            <path d="M9 1h4v4M5 13H1V9M13 1 8 6M1 13l5-5" />
+                        </svg>
+                    )}
+                </button>
+            ) : null}
 
             {/* Pickers */}
             <AIChatMentionPicker
@@ -1517,7 +1604,7 @@ export function AIChatComposer({
 
             {/* Attachments bar */}
             {hasAttachments ? (
-                <div className="flex max-h-24 flex-wrap items-center gap-1.5 overflow-y-auto px-3 pb-1.5 pt-2">
+                <div className="flex max-h-24 flex-wrap items-center gap-1.5 overflow-y-auto pb-1.5 pl-3 pr-11 pt-2">
                     {draftFileContexts.map((fc) => (
                         <Fragment key={fc.id}>
                             {renderFileContextPill(fc)}
@@ -1549,7 +1636,7 @@ export function AIChatComposer({
                             fontSize: composerFontSize,
                             lineHeight: 1.5,
                             opacity: 0.6,
-                            right: 14,
+                            right: 42,
                             overflow: "hidden",
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
@@ -1569,7 +1656,7 @@ export function AIChatComposer({
                             lineHeight: 1.5,
                             opacity: 0.75,
                             overflow: "hidden",
-                            right: 14,
+                            right: 42,
                             textOverflow: "ellipsis",
                             whiteSpace: "nowrap",
                         }}
@@ -1598,7 +1685,7 @@ export function AIChatComposer({
                         lineHeight: 1.5,
                         minHeight: MIN_COMPOSER_HEIGHT,
                         overflowY: "auto",
-                        padding: "10px 14px",
+                        padding: "10px 42px 10px 14px",
                         userSelect: "text",
                         whiteSpace: "pre-wrap",
                     }}

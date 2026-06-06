@@ -289,4 +289,10 @@ describe("AIChatComposer", () => {
             minHeight: 76,
         });
     });
+
+    it("ignores manual resize height while the composer is expanded", () => {
+        expect(getComposerShellSizingStyle(320, { expanded: true })).toEqual({
+            minHeight: 76,
+        });
+    });
 });

@@ -231,6 +231,10 @@ export function QueuedMessagesPanel({
                 <div
                     className="flex flex-col"
                     data-testid="queued-messages-list"
+                    style={{
+                        maxHeight: 180,
+                        overflowY: "auto",
+                    }}
                 >
                     {items.map((item, index) => {
                         const sending = item.status === "sending";

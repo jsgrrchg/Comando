@@ -54,6 +54,8 @@ describe("QueuedMessagesPanel", () => {
         expect(markup).toContain("steer");
         expect(markup).toContain("Retry failing message");
         expect(markup).toContain("font-size:1.25em");
+        expect(markup).toContain("max-height:180px");
+        expect(markup).toContain("overflow-y:auto");
     });
 
     it("starts collapsed without rendering the list", () => {

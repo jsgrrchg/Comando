@@ -352,6 +352,7 @@ export const ChatTabView = memo(function ChatTabView({
     const [composerParts, setComposerParts] = useState<AIComposerPart[]>(
         () => cloneComposerPartsForDraft(initialComposerParts),
     );
+    const [composerExpanded, setComposerExpanded] = useState(false);
     const [composerResetNonce, setComposerResetNonce] = useState(0);
     const [showJumpToBottom, setShowJumpToBottom] = useState(false);
     const commitComposerParts = useCallback(
@@ -1347,6 +1348,7 @@ export const ChatTabView = memo(function ChatTabView({
 
     const handleSendQueuedPromptNow = useCallback(
         (promptId: string) => {
+            setComposerExpanded(false);
             void sendQueuedPromptNow(tab.sessionId, promptId);
         },
         [sendQueuedPromptNow, tab.sessionId],
@@ -1567,7 +1569,7 @@ export const ChatTabView = memo(function ChatTabView({
             onMouseDownCapture={handleChatFocus}
             style={{ backgroundColor: "var(--color-bg-secondary)" }}
         >
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
                 <div
                     className="flex h-6 shrink-0 items-center gap-2 px-3 text-[10.5px] leading-none text-text-secondary"
                     style={{
@@ -1669,20 +1671,17 @@ export const ChatTabView = memo(function ChatTabView({
                     chatFontFamily={chatFontFamily}
                     chatFontSize={aiChatSettings.chatFontSize}
                     elapsed={elapsed}
+                    covered={composerExpanded}
                     historyRows={timelineModel.historyRows}
                     isStreaming={isStreaming}
                     liveTailRow={timelineModel.liveTailRow}
-                    toolCardExpansionMode={
-                        aiChatSettings.toolCardExpansionMode
-                    }
+                    toolCardExpansionMode={aiChatSettings.toolCardExpansionMode}
                     onAddFileReferenceToChat={
                         handleAddResolvedFileReferenceToChat
                     }
                     onOpenFile={onOpenFile}
                     onOpenImage={onOpenImage}
-                    onOpenResolvedFileReference={
-                        handleOpenResolvedFileReference
-                    }
+                    onOpenResolvedFileReference={handleOpenResolvedFileReference}
                     onOpenSession={openAiSessionById}
                     onRevealFileReference={handleRevealResolvedFileReference}
                     onScroll={handleScroll}
@@ -1772,7 +1771,11 @@ export const ChatTabView = memo(function ChatTabView({
 
                 {/* Composer area */}
                 <div
-                    className="flex shrink-0 flex-col border-t"
+                    className={
+                        composerExpanded
+                            ? "flex min-h-0 flex-1 flex-col border-t"
+                            : "flex shrink-0 flex-col border-t"
+                    }
                     style={{
                         backgroundColor:
                             "color-mix(in srgb, var(--color-accent) 4%, var(--color-bg-panel))",
@@ -1781,7 +1784,11 @@ export const ChatTabView = memo(function ChatTabView({
                     }}
                 >
                     <div
-                        className="w-full"
+                        className={
+                            composerExpanded
+                                ? "flex min-h-0 w-full flex-1 flex-col"
+                                : "w-full"
+                        }
                         style={{
                             marginInline: "auto",
                             maxWidth: CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
@@ -1840,6 +1847,7 @@ export const ChatTabView = memo(function ChatTabView({
                             disabledReason={closedSubagentMessage}
                             draftAttachments={draftAttachments}
                             draftFileContexts={draftFileContexts}
+                            expanded={composerExpanded}
                             fileInputRef={fileInputRef}
                             onChange={handleComposerPartsChange}
                             onPasteImage={handlePasteImage}
@@ -1850,8 +1858,12 @@ export const ChatTabView = memo(function ChatTabView({
                             onSearchProjectEntries={handleSearchProjectEntries}
                             onStop={handleStopSession}
                             onSubmit={() => {
+                                setComposerExpanded(false);
                                 void handleSubmit();
                             }}
+                            onToggleExpanded={() =>
+                                setComposerExpanded((value) => !value)
+                            }
                             resetNonce={composerResetNonce}
                             parts={composerParts}
                             renderFileContextPill={(fc) => (
@@ -2166,6 +2178,7 @@ type ChatTimelineProps = {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly elapsed: string;
+    readonly covered?: boolean;
     readonly historyRows: readonly ChatTimelineRow[];
     readonly isStreaming: boolean;
     readonly liveTailRow: ChatTimelineRow | null;
@@ -2211,6 +2224,7 @@ const ChatTimeline = memo(function ChatTimeline({
     chatFontFamily,
     chatFontSize,
     elapsed,
+    covered,
     historyRows,
     isStreaming,
     liveTailRow,
@@ -2251,9 +2265,17 @@ const ChatTimeline = memo(function ChatTimeline({
         rows: historyRows.length + (liveTailRow ? 1 : 0),
     });
 
+    const timelineContainerClassName = covered
+        ? "pointer-events-none invisible absolute inset-0 min-h-0 min-w-0"
+        : "relative min-h-0 min-w-0 flex-1";
+
     return (
         <ToolExpansionStoreProvider>
-            <div className="relative min-h-0 min-w-0 flex-1">
+            <div
+                aria-hidden={covered}
+                className={timelineContainerClassName}
+                inert={covered ? true : undefined}
+            >
                 <div
                     ref={scrollRef}
                     className="chat-scroll h-full min-h-0 min-w-0 overflow-y-auto px-3 py-3"
