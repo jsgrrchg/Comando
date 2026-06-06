@@ -13,6 +13,7 @@ export const CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN = 10;
 export const CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT = 720;
 export const CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX = 8;
 export const CHAT_TIMELINE_VIRTUAL_WIDTH_BUCKET_PX = 24;
+export const CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX = 740;
 
 interface ShouldVirtualizeChatTimelineOptions {
     readonly enabled?: boolean;
@@ -144,6 +145,14 @@ export function getChatTimelineVirtualMeasurementWidth(width: number): number {
         Math.round(width / CHAT_TIMELINE_VIRTUAL_WIDTH_BUCKET_PX) *
         CHAT_TIMELINE_VIRTUAL_WIDTH_BUCKET_PX
     );
+}
+
+export function getChatTimelineEffectiveContentWidth(width: number): number {
+    if (!Number.isFinite(width) || width <= 0) {
+        return 0;
+    }
+
+    return Math.min(width, CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX);
 }
 
 export function calculateChatTimelineVirtualScrollMarginTop({

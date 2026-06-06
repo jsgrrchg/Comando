@@ -1,11 +1,19 @@
+/** @vitest-environment jsdom */
+import { act } from "react";
 import type { ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AiSessionSnapshot } from "@shared/ipc";
+import { useShellStore } from "@renderer/app/store/shell-store";
 
 import type { ChatTimelineRow } from "./chatTimelineModel";
-import { CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD } from "./chatTimelineVirtualization";
+import {
+    CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
+    CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
+    getChatTimelineVirtualMeasurementWidth,
+} from "./chatTimelineVirtualization";
 
 interface MeasuredVirtualListMockSnapshot {
     readonly firstEstimate: number | null;
@@ -26,6 +34,9 @@ type MeasuredVirtualListMock = (
 const measuredVirtualListMock = vi.hoisted(() =>
     vi.fn<MeasuredVirtualListMock>(),
 );
+
+let rectWidthsByElement = new WeakMap<Element, number>();
+let rectWidthFallback = 0;
 
 vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
     const { createElement } =
@@ -153,9 +164,118 @@ function renderHistoryRows(historyRows: readonly ChatTimelineRow[]) {
     );
 }
 
+interface MountedHistoryRows {
+    readonly root: Root;
+    readonly mountNode: HTMLElement;
+    readonly scrollContainer: HTMLElement;
+    readonly setContentWidth: (width: number) => void;
+}
+
+function mountHistoryRows(
+    historyRows: readonly ChatTimelineRow[],
+): MountedHistoryRows {
+    const scrollContainer = document.createElement("div");
+    Object.defineProperty(scrollContainer, "clientWidth", {
+        configurable: true,
+        get: () => 1200,
+    });
+    document.body.appendChild(scrollContainer);
+
+    const mountNode = document.createElement("div");
+    document.body.appendChild(mountNode);
+
+    const root = createRoot(mountNode);
+    const scrollRef = { current: scrollContainer };
+
+    act(() => {
+        root.render(
+            <ChatTimelineHistoryRows
+                historyRows={historyRows}
+                latestStreamingEditedFileToolRowId={null}
+                renderRow={({ row }) => (
+                    <div data-row-id={row.id} key={row.id}>
+                        {row.id}
+                    </div>
+                )}
+                scrollRef={scrollRef}
+                toolCardExpansionMode="collapsed"
+            />,
+        );
+    });
+
+    const virtualList = mountNode.querySelector(
+        "[data-testid='mock-measured-virtual-list']",
+    );
+    const historyElement = virtualList?.parentElement;
+    if (!historyElement) {
+        throw new Error("expected virtualized history element");
+    }
+
+    return {
+        root,
+        mountNode,
+        scrollContainer,
+        setContentWidth: (width: number) => {
+            rectWidthsByElement.set(historyElement, width);
+        },
+    };
+}
+
+function latestFirstMeasurementKey(): string {
+    const call =
+        measuredVirtualListMock.mock.calls[
+            measuredVirtualListMock.mock.calls.length - 1
+        ]?.[0];
+
+    if (!call?.firstMeasurementKey) {
+        throw new Error("expected a measured virtual list call");
+    }
+
+    return call.firstMeasurementKey;
+}
+
 describe("ChatTimelineHistoryRows", () => {
     beforeEach(() => {
+        (
+            globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
+        ).IS_REACT_ACT_ENVIRONMENT = true;
+        rectWidthsByElement = new WeakMap<Element, number>();
+        rectWidthFallback = 0;
         measuredVirtualListMock.mockClear();
+        useShellStore.setState({ isResizingPanel: false });
+        vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+            function getBoundingClientRect(this: Element): DOMRect {
+                const width =
+                    rectWidthsByElement.get(this) ?? rectWidthFallback;
+
+                return {
+                    bottom: 0,
+                    height: 0,
+                    left: 0,
+                    right: width,
+                    toJSON: () => ({}),
+                    top: 0,
+                    width,
+                    x: 0,
+                    y: 0,
+                };
+            },
+        );
+        vi.stubGlobal(
+            "requestAnimationFrame",
+            (callback: FrameRequestCallback) => {
+                callback(0);
+                return 1;
+            },
+        );
+        vi.stubGlobal("cancelAnimationFrame", () => {});
+    });
+
+    afterEach(() => {
+        useShellStore.setState({ isResizingPanel: false });
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+        document.body.innerHTML = "";
     });
 
     it("keeps the non-virtualized path below the threshold", () => {
@@ -194,5 +314,115 @@ describe("ChatTimelineHistoryRows", () => {
             `message:message-${CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1}`,
         );
         expect(markup.match(/padding-bottom:8px/g)).toHaveLength(1);
+    });
+
+    it("freezes content width during panel resize and re-syncs on release", () => {
+        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD);
+        rectWidthFallback = CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX;
+        const mounted = mountHistoryRows(rows);
+
+        mounted.setContentWidth(CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX);
+        act(() => {
+            window.dispatchEvent(new Event("resize"));
+        });
+
+        expect(latestFirstMeasurementKey()).toMatch(
+            new RegExp(
+                `:${getChatTimelineVirtualMeasurementWidth(
+                    CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
+                )}:\\d+$`,
+            ),
+        );
+
+        act(() => {
+            useShellStore.getState().setResizingPanel(true);
+        });
+
+        const historyElement = mounted.mountNode.querySelector(
+            "[data-testid='mock-measured-virtual-list']",
+        )?.parentElement as HTMLElement | null;
+        expect(historyElement?.style.width).toBe(
+            `${CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX}px`,
+        );
+
+        mounted.setContentWidth(620);
+        act(() => {
+            window.dispatchEvent(new Event("resize"));
+        });
+
+        expect(historyElement?.style.width).toBe(
+            `${CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX}px`,
+        );
+        expect(latestFirstMeasurementKey()).toMatch(
+            new RegExp(
+                `:${getChatTimelineVirtualMeasurementWidth(
+                    CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
+                )}:\\d+$`,
+            ),
+        );
+
+        act(() => {
+            useShellStore.getState().setResizingPanel(false);
+        });
+
+        expect(historyElement?.style.width).toBe("");
+        expect(latestFirstMeasurementKey()).toMatch(
+            new RegExp(
+                `:${getChatTimelineVirtualMeasurementWidth(620)}:\\d+$`,
+            ),
+        );
+
+        mounted.root.unmount();
+        mounted.scrollContainer.remove();
+    });
+
+    it("keeps resize release capped when the panel grows beyond the timeline max", () => {
+        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD);
+        rectWidthFallback = 620;
+        const mounted = mountHistoryRows(rows);
+
+        mounted.setContentWidth(620);
+        expect(latestFirstMeasurementKey()).toMatch(
+            new RegExp(
+                `:${getChatTimelineVirtualMeasurementWidth(620)}:\\d+$`,
+            ),
+        );
+
+        act(() => {
+            useShellStore.getState().setResizingPanel(true);
+        });
+
+        const historyElement = mounted.mountNode.querySelector(
+            "[data-testid='mock-measured-virtual-list']",
+        )?.parentElement as HTMLElement | null;
+        expect(historyElement?.style.width).toBe("620px");
+
+        mounted.setContentWidth(CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX);
+        act(() => {
+            window.dispatchEvent(new Event("resize"));
+        });
+
+        expect(historyElement?.style.width).toBe("620px");
+        expect(latestFirstMeasurementKey()).toMatch(
+            new RegExp(
+                `:${getChatTimelineVirtualMeasurementWidth(620)}:\\d+$`,
+            ),
+        );
+
+        act(() => {
+            useShellStore.getState().setResizingPanel(false);
+        });
+
+        expect(historyElement?.style.width).toBe("");
+        expect(latestFirstMeasurementKey()).toMatch(
+            new RegExp(
+                `:${getChatTimelineVirtualMeasurementWidth(
+                    CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
+                )}:\\d+$`,
+            ),
+        );
+
+        mounted.root.unmount();
+        mounted.scrollContainer.remove();
     });
 });
