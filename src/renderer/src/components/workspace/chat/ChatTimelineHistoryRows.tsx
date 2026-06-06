@@ -25,6 +25,7 @@ import {
     CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN,
     calculateChatTimelineVirtualScrollMarginTop,
     estimateChatTimelineRowHeight,
+    getChatTimelineEffectiveContentWidth,
     getChatTimelineRowIdentityKey,
     getChatTimelineRowMeasurementKey,
     getChatTimelineRowKey,
@@ -74,13 +75,14 @@ export const ChatTimelineHistoryRows = memo(
         const pendingResizeAnchorRef =
             useRef<MeasuredVirtualViewportAnchor | null>(null);
         const pendingVirtualResizeEndRef = useRef(false);
-        const previousScrollContainerWidthRef = useRef<number | null>(null);
+        const previousContentMeasurementWidthRef = useRef<number | null>(null);
         const virtualListHandleRef = useRef<MeasuredVirtualListHandle | null>(
             null,
         );
         const virtualResizeActiveRef = useRef(false);
         const [scrollMarginTop, setScrollMarginTop] = useState(0);
-        const [scrollContainerWidth, setScrollContainerWidth] = useState(0);
+        const [contentMeasurementWidth, setContentMeasurementWidth] =
+            useState(0);
         // While the pane splitter is being dragged we freeze the timeline: the
         // content keeps its pre-drag width (so rows don't reflow) and all metric
         // updates are skipped, then we re-sync once on release. frozenContentWidth
@@ -137,15 +139,23 @@ export const ChatTimelineHistoryRows = memo(
 
             const historyElement = historyRef.current;
             const scrollContainer = scrollRef.current;
-            const nextScrollContainerWidth = scrollContainer?.clientWidth ?? 0;
-            const previousScrollContainerWidth =
-                previousScrollContainerWidthRef.current;
-            previousScrollContainerWidthRef.current = nextScrollContainerWidth;
+            const nextContentWidth =
+                historyElement?.getBoundingClientRect().width ??
+                getChatTimelineEffectiveContentWidth(
+                    scrollContainer?.clientWidth ?? 0,
+                );
+            const nextContentMeasurementWidth =
+                getChatTimelineVirtualMeasurementWidth(nextContentWidth);
+            const previousContentMeasurementWidth =
+                previousContentMeasurementWidthRef.current;
+            previousContentMeasurementWidthRef.current =
+                nextContentMeasurementWidth;
 
             if (
                 shouldVirtualize &&
-                previousScrollContainerWidth !== null &&
-                previousScrollContainerWidth !== nextScrollContainerWidth
+                previousContentMeasurementWidth !== null &&
+                previousContentMeasurementWidth !==
+                    nextContentMeasurementWidth
             ) {
                 if (shouldPreserveVirtualResizeAnchor?.() ?? true) {
                     pendingResizeAnchorRef.current =
@@ -164,11 +174,7 @@ export const ChatTimelineHistoryRows = memo(
                     scrollContainer,
                 }),
             );
-            setScrollContainerWidth(
-                getChatTimelineVirtualMeasurementWidth(
-                    nextScrollContainerWidth,
-                ),
-            );
+            setContentMeasurementWidth(nextContentMeasurementWidth);
         }, [
             onVirtualResizeAutoFollow,
             scheduleResizeAnchorRestore,
@@ -221,7 +227,7 @@ export const ChatTimelineHistoryRows = memo(
 
         useLayoutEffect(() => {
             restorePendingResizeAnchor();
-        }, [restorePendingResizeAnchor, scrollContainerWidth]);
+        }, [contentMeasurementWidth, restorePendingResizeAnchor]);
 
         useEffect(() => {
             return () => {
@@ -322,14 +328,14 @@ export const ChatTimelineHistoryRows = memo(
                 isLatestStreamingTool:
                     row.id === latestStreamingEditedFileToolRowId,
                 toolCardExpansionMode,
-                width: scrollContainerWidth,
+                width: contentMeasurementWidth,
             }),
             [
                 chatFontFamily,
+                contentMeasurementWidth,
                 chatFontSize,
                 latestStreamingEditedFileToolRowId,
                 resolveRowGapPx,
-                scrollContainerWidth,
                 toolCardExpansionMode,
             ],
         );
