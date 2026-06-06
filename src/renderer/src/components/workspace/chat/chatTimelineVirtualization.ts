@@ -13,7 +13,7 @@ export const CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN = 10;
 export const CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT = 720;
 export const CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX = 8;
 export const CHAT_TIMELINE_VIRTUAL_WIDTH_BUCKET_PX = 24;
-export const CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX = 840;
+export const CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX = 740;
 
 interface ShouldVirtualizeChatTimelineOptions {
     readonly enabled?: boolean;

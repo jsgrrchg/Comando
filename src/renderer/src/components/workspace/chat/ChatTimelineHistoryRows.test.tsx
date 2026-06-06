@@ -353,7 +353,13 @@ describe("ChatTimelineHistoryRows", () => {
         expect(historyElement?.style.width).toBe(
             `${CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX}px`,
         );
-        expect(latestFirstMeasurementKey()).toMatch(/:840:\d+$/);
+        expect(latestFirstMeasurementKey()).toMatch(
+            new RegExp(
+                `:${getChatTimelineVirtualMeasurementWidth(
+                    CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
+                )}:\\d+$`,
+            ),
+        );
 
         act(() => {
             useShellStore.getState().setResizingPanel(false);
