@@ -462,7 +462,7 @@ describe("AiService tracked file review merging", () => {
                 },
                 "Reasoning",
             ),
-        ).toBe(false);
+        ).toBe(true);
     });
 
     it("suppresses the tool_call_update completion that codex-acp emits without meta", () => {
@@ -486,6 +486,16 @@ describe("AiService tracked file review merging", () => {
                     toolCallId: "codex-acp:status:item:user-msg-7",
                 },
                 "Preparing input",
+            ),
+        ).toBe(true);
+
+        expect(
+            __testing.shouldSuppressToolActivityUpdate(
+                {
+                    _meta: null,
+                    toolCallId: "codex-acp:status:item:reasoning-msg-9",
+                },
+                "Reasoning",
             ),
         ).toBe(true);
     });
@@ -514,6 +524,16 @@ describe("AiService tracked file review merging", () => {
                     toolCallId: "normal-agent-tool-id",
                 },
                 "Drafting response",
+            ),
+        ).toBe(false);
+
+        expect(
+            __testing.shouldSuppressToolActivityUpdate(
+                {
+                    _meta: null,
+                    toolCallId: "normal-reasoning-tool-id",
+                },
+                "Reasoning",
             ),
         ).toBe(false);
     });

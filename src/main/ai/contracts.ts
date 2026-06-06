@@ -81,6 +81,7 @@ export const CODEX_ACP_USER_INPUT_RESPONSE_PREFIX =
 export const SUPPRESSED_STATUS_TITLES = new Set([
     "Preparing input",
     "Drafting response",
+    "Reasoning",
 ]);
 
 export const AI_SESSION_STREAMING_FLUSH_MS = 120;
