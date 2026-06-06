@@ -3662,36 +3662,36 @@ export function App() {
                 ) : null}
             </div>
 
-            {sidebarView === "git" && activeProjectId ? (
-                <SidebarGitPanel
-                    filter={gitChangesFilter}
-                    projectId={activeProjectId}
-                    worktreeId={activeWorktreeId}
-                />
-            ) : sidebarView === "issues" ? (
-                <SidebarGitHubPanel
-                    filter={issuesFilter}
-                    kind="issues"
-                    onOpenSettings={openSettingsWindow}
-                    projectId={activeProjectId}
-                    worktreeId={activeWorktreeId}
-                />
-            ) : sidebarView === "pull_requests" ? (
-                <SidebarGitHubPanel
-                    filter={pullRequestsFilter}
-                    kind="pull_requests"
-                    onOpenSettings={openSettingsWindow}
-                    projectId={activeProjectId}
-                    worktreeId={activeWorktreeId}
-                />
-            ) : sidebarView === "agents" ? (
-                <SidebarAgentsPanel
-                    filter={agentsFilter}
-                    projectId={activeProjectId}
-                    worktreeId={activeWorktreeId}
-                />
-            ) : (
-                <>
+            <div className="flex min-h-0 flex-1 flex-col">
+                {sidebarView === "git" && activeProjectId ? (
+                    <SidebarGitPanel
+                        filter={gitChangesFilter}
+                        projectId={activeProjectId}
+                        worktreeId={activeWorktreeId}
+                    />
+                ) : sidebarView === "issues" ? (
+                    <SidebarGitHubPanel
+                        filter={issuesFilter}
+                        kind="issues"
+                        onOpenSettings={openSettingsWindow}
+                        projectId={activeProjectId}
+                        worktreeId={activeWorktreeId}
+                    />
+                ) : sidebarView === "pull_requests" ? (
+                    <SidebarGitHubPanel
+                        filter={pullRequestsFilter}
+                        kind="pull_requests"
+                        onOpenSettings={openSettingsWindow}
+                        projectId={activeProjectId}
+                        worktreeId={activeWorktreeId}
+                    />
+                ) : sidebarView === "agents" ? (
+                    <SidebarAgentsPanel
+                        filter={agentsFilter}
+                        projectId={activeProjectId}
+                        worktreeId={activeWorktreeId}
+                    />
+                ) : (
                     <div
                         ref={setFileTreeScrollElement}
                         className="shell-scrollbar flex-1 overflow-y-auto px-2 py-2"
@@ -3931,31 +3931,31 @@ export function App() {
                             </div>
                         )}
                     </div>
+                )}
+            </div>
 
-                    <div className="border-t border-border/50 px-2 py-2">
-                        <ProjectSwitcher
-                            activeProject={activeProject}
-                            onCloneRepository={(repositoryUrl) =>
-                                cloneRepository(repositoryUrl)
-                            }
-                            onOpenProjects={() => {
-                                void addProjects();
-                            }}
-                            onOpenSettings={openSettingsWindow}
-                            onSelectProject={(projectId) => {
-                                if (projectId === activeProjectId) {
-                                    return;
-                                }
+            <div className="border-t border-border/50 px-2 py-2">
+                <ProjectSwitcher
+                    activeProject={activeProject}
+                    onCloneRepository={(repositoryUrl) =>
+                        cloneRepository(repositoryUrl)
+                    }
+                    onOpenProjects={() => {
+                        void addProjects();
+                    }}
+                    onOpenSettings={openSettingsWindow}
+                    onSelectProject={(projectId) => {
+                        if (projectId === activeProjectId) {
+                            return;
+                        }
 
-                                void getComandoApi()?.openProjectWindow({
-                                    projectId,
-                                });
-                            }}
-                            projects={projects}
-                        />
-                    </div>
-                </>
-            )}
+                        void getComandoApi()?.openProjectWindow({
+                            projectId,
+                        });
+                    }}
+                    projects={projects}
+                />
+            </div>
         </>
     );
 
