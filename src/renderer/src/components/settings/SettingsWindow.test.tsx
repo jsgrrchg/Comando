@@ -20,8 +20,10 @@ function createTerminalState(
         claudeCodeModel: "",
         claudeCodeOptimized: false,
         claudeCodeSkipPermissions: false,
+        isWindows: false,
         terminalFontFamily: "",
         terminalFontSize: 13,
+        windowsShell: "default",
         ...overrides,
     };
 }
@@ -147,6 +149,8 @@ describe("SettingsWindow terminal settings", () => {
         expect(markup).toContain("Fullscreen rendering (experimental)");
         expect(markup).toContain("CLAUDE_CODE_NO_FLICKER=1");
         expect(markup).toContain("disables scrollback");
+        expect(markup).not.toContain("Windows shell");
+        expect(markup).not.toContain("PowerShell 7 (pwsh) requires");
         expect(markup).toContain("Claude Code CLI");
         expect(markup).toContain("Install the claude command to use the launcher.");
         expect(markup).toContain("Skip permissions");
@@ -156,6 +160,32 @@ describe("SettingsWindow terminal settings", () => {
         expect(markup).toContain("Continue last session");
         expect(markup).not.toContain("Max turns");
         expect(markup).not.toContain("--max-turns");
+    });
+
+    it("renders the Windows shell dropdown and pwsh notice only on Windows", () => {
+        const windowsMarkup = renderTerminal(
+            createTerminalState({
+                isWindows: true,
+                windowsShell: "pwsh",
+            }),
+        );
+
+        expect(windowsMarkup).toContain("Windows shell");
+        expect(windowsMarkup).toContain("Choose which shell new integrated terminals open on Windows.");
+        expect(windowsMarkup).toContain("PowerShell 7 (pwsh)");
+        expect(windowsMarkup).toContain(
+            "PowerShell 7 (pwsh) requires PowerShell 7 to be installed on this machine.",
+        );
+
+        const nonWindowsMarkup = renderTerminal(
+            createTerminalState({
+                isWindows: false,
+                windowsShell: "pwsh",
+            }),
+        );
+
+        expect(nonWindowsMarkup).not.toContain("Windows shell");
+        expect(nonWindowsMarkup).not.toContain("PowerShell 7 (pwsh)");
     });
 
     it("renders the selected Claude Code model label", () => {
@@ -195,6 +225,7 @@ describe("SettingsWindow terminal settings", () => {
             onClaudeCodeSkipPermissionsChange: vi.fn(),
             onTerminalFontFamilyChange: vi.fn(),
             onTerminalFontSizeChange: vi.fn(),
+            onWindowsShellChange: vi.fn(),
         };
         const tree = createTerminalContentTree(
             createTerminalState({
@@ -246,6 +277,28 @@ describe("SettingsWindow terminal settings", () => {
         modelSelect.props.onChange("claude-opus-4-7");
         expect(handlers.onClaudeCodeModelChange).toHaveBeenCalledWith(
             "claude-opus-4-7",
+        );
+    });
+
+    it("wires the Windows shell dropdown", () => {
+        const handlers = {
+            onWindowsShellChange: vi.fn(),
+        };
+        const tree = createTerminalContentTree(
+            createTerminalState({
+                ...handlers,
+                isWindows: true,
+            }),
+        );
+
+        const windowsShellSelect = findElementsByType<SelectFieldProps>(
+            tree,
+            SelectField,
+        )[0];
+        windowsShellSelect.props.onChange("powershell");
+
+        expect(handlers.onWindowsShellChange).toHaveBeenCalledWith(
+            "powershell",
         );
     });
 

@@ -86,6 +86,7 @@ describe("SettingsService", () => {
                 "terminal.claude_code_skip_permissions": "??",
                 "terminal.font_family": "  FiraCode\nNerd Font  ",
                 "terminal.font_size": "99",
+                "terminal.windows_shell": "pwsh; rm -rf /",
             },
             project: {
                 "project-a": {
@@ -483,6 +484,7 @@ describe("SettingsService", () => {
                 claudeCodeSkipPermissions: true,
                 terminalFontFamily: '"FiraCode Nerd Font", Menlo',
                 terminalFontSize: 16,
+                windowsShell: "powershell",
             },
         });
 
@@ -494,6 +496,7 @@ describe("SettingsService", () => {
             claudeCodeSkipPermissions: true,
             terminalFontFamily: '"FiraCode Nerd Font", Menlo',
             terminalFontSize: 16,
+            windowsShell: "powershell",
         });
         expect(service.loadSnapshot().terminal).toEqual({
             claudeCodeContinueSession: true,
@@ -503,6 +506,7 @@ describe("SettingsService", () => {
             claudeCodeSkipPermissions: true,
             terminalFontFamily: '"FiraCode Nerd Font", Menlo',
             terminalFontSize: 16,
+            windowsShell: "powershell",
         });
     });
 
@@ -520,6 +524,7 @@ describe("SettingsService", () => {
             claudeCodeSkipPermissions: true,
             terminalFontFamily: "  JetBrains Mono\nMenlo  ",
             terminalFontSize: 4,
+            windowsShell: "pwsh.exe" as unknown as "default",
         });
 
         expect(service.loadAppTerminalSettings()).toEqual({
@@ -530,6 +535,7 @@ describe("SettingsService", () => {
             claudeCodeSkipPermissions: true,
             terminalFontFamily: "JetBrains Mono Menlo",
             terminalFontSize: 8,
+            windowsShell: "default",
         });
     });
 
@@ -547,6 +553,7 @@ describe("SettingsService", () => {
             claudeCodeSkipPermissions: false,
             terminalFontFamily: "Menlo",
             terminalFontSize: 18,
+            windowsShell: "pwsh",
         });
         service.saveSnapshot({
             editor: {
@@ -568,6 +575,7 @@ describe("SettingsService", () => {
             claudeCodeSkipPermissions: false,
             terminalFontFamily: "Menlo",
             terminalFontSize: 18,
+            windowsShell: "pwsh",
         });
     });
 });

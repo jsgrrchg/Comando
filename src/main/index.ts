@@ -186,6 +186,7 @@ if (!hasSingleInstanceLock) {
                 onData: broadcastTerminalData,
                 onExit: broadcastTerminalExit,
                 projectService,
+                settingsService,
             });
             workspaceService = dbWorkerClient.workspace;
 

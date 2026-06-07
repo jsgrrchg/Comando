@@ -105,6 +105,7 @@ const APP_EDITOR_MINIMAP_ENABLED_KEY = "editor.minimap_enabled";
 const APP_EDITOR_SUGGESTIONS_ENABLED_KEY = "editor.suggestions_enabled";
 const APP_TERMINAL_FONT_FAMILY_KEY = "terminal.font_family";
 const APP_TERMINAL_FONT_SIZE_KEY = "terminal.font_size";
+const APP_TERMINAL_WINDOWS_SHELL_KEY = "terminal.windows_shell";
 const APP_TERMINAL_CLAUDE_CODE_OPTIMIZED_KEY =
     "terminal.claude_code_optimized";
 const APP_TERMINAL_CLAUDE_CODE_SKIP_PERMISSIONS_KEY =
@@ -557,6 +558,9 @@ export class SettingsService {
             terminalFontSize: this.#loadNumberSetting(
                 APP_TERMINAL_FONT_SIZE_KEY,
             ),
+            windowsShell: this.#loadStringSetting(
+                APP_TERMINAL_WINDOWS_SHELL_KEY,
+            ),
         });
     }
 
@@ -569,6 +573,10 @@ export class SettingsService {
         this.#saveSetting(
             APP_TERMINAL_FONT_SIZE_KEY,
             String(normalized.terminalFontSize),
+        );
+        this.#saveSetting(
+            APP_TERMINAL_WINDOWS_SHELL_KEY,
+            normalized.windowsShell,
         );
         this.#saveBooleanSetting(
             APP_TERMINAL_CLAUDE_CODE_OPTIMIZED_KEY,

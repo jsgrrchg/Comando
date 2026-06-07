@@ -85,6 +85,7 @@ export function SettingsApp() {
     const [terminal, setTerminal] = useState<AppTerminalSettings>(
         DEFAULT_APP_TERMINAL_SETTINGS,
     );
+    const [isWindows, setIsWindows] = useState(false);
     const [runtimeStatuses, setRuntimeStatuses] = useState<
         Record<AiRuntimeId, AiRuntimeStatus | null>
     >({
@@ -151,6 +152,23 @@ export function SettingsApp() {
     const latestSettingsRevisionRef = useRef(0);
 
     useResolvedAppearance();
+
+    useEffect(() => {
+        if (!window.comando) {
+            return;
+        }
+
+        let cancelled = false;
+        void window.comando.getBootstrapSnapshot().then((snapshot) => {
+            if (!cancelled) {
+                setIsWindows(snapshot.platform === "win32");
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     const loadRuntimeStatuses = useCallback(async () => {
         if (!window.comando) {
@@ -832,6 +850,7 @@ export function SettingsApp() {
                 claudeCodeModel: terminal.claudeCodeModel,
                 claudeCodeOptimized: terminal.claudeCodeOptimized,
                 claudeCodeSkipPermissions: terminal.claudeCodeSkipPermissions,
+                isWindows,
                 onClaudeCodeContinueSessionChange: (value) =>
                     updateTerminal({ claudeCodeContinueSession: value }),
                 onClaudeCodeMaxTurnsChange: (value) =>
@@ -846,8 +865,11 @@ export function SettingsApp() {
                     updateTerminal({ terminalFontFamily: value }),
                 onTerminalFontSizeChange: (value) =>
                     updateTerminal({ terminalFontSize: value }),
+                onWindowsShellChange: (value) =>
+                    updateTerminal({ windowsShell: value }),
                 terminalFontFamily: terminal.terminalFontFamily,
                 terminalFontSize: terminal.terminalFontSize,
+                windowsShell: terminal.windowsShell,
             }}
             aiProviders={{
                 busyProviderId: savingRuntimeId,

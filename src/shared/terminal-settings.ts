@@ -39,9 +39,44 @@ export const CLAUDE_CODE_MODEL_OPTIONS: readonly ClaudeCodeModelOption[] = [
     },
 ];
 
+export const WINDOWS_TERMINAL_SHELLS = [
+    "default",
+    "cmd",
+    "powershell",
+    "pwsh",
+] as const;
+
+export type WindowsTerminalShell = (typeof WINDOWS_TERMINAL_SHELLS)[number];
+
+export interface WindowsTerminalShellOption {
+    readonly value: WindowsTerminalShell;
+    readonly label: string;
+}
+
+export const WINDOWS_TERMINAL_SHELL_OPTIONS: readonly WindowsTerminalShellOption[] =
+    [
+        {
+            label: "Default (Windows decides)",
+            value: "default",
+        },
+        {
+            label: "Command Prompt (cmd.exe)",
+            value: "cmd",
+        },
+        {
+            label: "Windows PowerShell",
+            value: "powershell",
+        },
+        {
+            label: "PowerShell 7 (pwsh)",
+            value: "pwsh",
+        },
+    ];
+
 export interface AppTerminalSettings {
     readonly terminalFontFamily: string;
     readonly terminalFontSize: number;
+    readonly windowsShell: WindowsTerminalShell;
     readonly claudeCodeOptimized: boolean;
     readonly claudeCodeSkipPermissions: boolean;
     readonly claudeCodeModel: string;
@@ -57,6 +92,7 @@ export const DEFAULT_APP_TERMINAL_SETTINGS: AppTerminalSettings = {
     claudeCodeSkipPermissions: false,
     terminalFontFamily: "",
     terminalFontSize: TERMINAL_FONT_SIZE_DEFAULT,
+    windowsShell: "default",
 };
 
 export type AppTerminalSettingsInput = {
@@ -67,6 +103,12 @@ function isAllowedClaudeCodeModel(
     value: string,
 ): value is ClaudeCodeModel {
     return ALLOWED_CLAUDE_CODE_MODELS.includes(value as ClaudeCodeModel);
+}
+
+function isWindowsTerminalShell(
+    value: string,
+): value is WindowsTerminalShell {
+    return WINDOWS_TERMINAL_SHELLS.includes(value as WindowsTerminalShell);
 }
 
 function normalizeNumber(value: unknown): number | null {
@@ -123,6 +165,19 @@ export function normalizeClaudeCodeModel(value: unknown): string {
     return trimmed === "" || isAllowedClaudeCodeModel(trimmed) ? trimmed : "";
 }
 
+export function normalizeWindowsTerminalShell(
+    value: unknown,
+): WindowsTerminalShell {
+    if (typeof value !== "string") {
+        return DEFAULT_APP_TERMINAL_SETTINGS.windowsShell;
+    }
+
+    const trimmed = value.trim();
+    return isWindowsTerminalShell(trimmed)
+        ? trimmed
+        : DEFAULT_APP_TERMINAL_SETTINGS.windowsShell;
+}
+
 export function normalizeClaudeCodeMaxTurns(
     value: unknown,
     max = CLAUDE_CODE_MAX_TURNS_STORAGE_MAX,
@@ -156,5 +211,6 @@ export function normalizeAppTerminalSettings(
             value?.terminalFontFamily,
         ),
         terminalFontSize: normalizeTerminalFontSize(value?.terminalFontSize),
+        windowsShell: normalizeWindowsTerminalShell(value?.windowsShell),
     };
 }

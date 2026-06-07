@@ -26,6 +26,7 @@ describe("resolveSettingsSnapshotSaveEffects", () => {
                     claudeCodeSkipPermissions: false,
                     terminalFontFamily: "Menlo",
                     terminalFontSize: 14,
+                    windowsShell: "default",
                 },
             }),
         ).toEqual({

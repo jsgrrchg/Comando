@@ -107,6 +107,7 @@ describe("settings client terminal settings", () => {
                 claudeCodeSkipPermissions: true,
                 terminalFontFamily: "  FiraCode\nNerd Font  ",
                 terminalFontSize: 99,
+                windowsShell: "pwsh",
             },
         });
 
@@ -118,6 +119,7 @@ describe("settings client terminal settings", () => {
             claudeCodeSkipPermissions: true,
             terminalFontFamily: "FiraCode Nerd Font",
             terminalFontSize: 24,
+            windowsShell: "pwsh",
         });
     });
 
@@ -139,6 +141,7 @@ describe("settings client terminal settings", () => {
             claudeCodeSkipPermissions: true,
             terminalFontFamily: "  Menlo\nmonospace  ",
             terminalFontSize: 4,
+            windowsShell: "powershell.exe" as unknown as "default",
         });
 
         expect(saveSettingsSnapshot).toHaveBeenCalledWith({
@@ -155,6 +158,7 @@ describe("settings client terminal settings", () => {
                 claudeCodeSkipPermissions: true,
                 terminalFontFamily: "Menlo monospace",
                 terminalFontSize: 8,
+                windowsShell: "default",
             },
         });
     });

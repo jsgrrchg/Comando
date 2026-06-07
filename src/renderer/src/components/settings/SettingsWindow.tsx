@@ -34,8 +34,10 @@ import {
     CLAUDE_CODE_MODEL_OPTIONS,
     TERMINAL_FONT_SIZE_MAX,
     TERMINAL_FONT_SIZE_MIN,
+    WINDOWS_TERMINAL_SHELL_OPTIONS,
     normalizeTerminalFontFamily,
     normalizeTerminalFontSize,
+    normalizeWindowsTerminalShell,
 } from "@shared/terminal-settings";
 
 import {
@@ -388,6 +390,15 @@ function getDynamicCategorySearchValues(
             return [
                 context.terminal.terminalFontFamily,
                 context.terminal.terminalFontSize,
+                context.terminal.isWindows
+                    ? context.terminal.windowsShell
+                    : null,
+                ...(context.terminal.isWindows
+                    ? WINDOWS_TERMINAL_SHELL_OPTIONS.flatMap((option) => [
+                          option.label,
+                          option.value,
+                      ])
+                    : []),
                 context.terminal.claudeCodeModel,
                 context.terminal.claudeCodeAvailable === false
                     ? "Install the claude command to use the launcher."
@@ -2053,6 +2064,12 @@ export function TerminalContent({
         label: option.label,
         value: option.value,
     }));
+    const windowsShellOptions = WINDOWS_TERMINAL_SHELL_OPTIONS.map(
+        (option) => ({
+            label: option.label,
+            value: option.value,
+        }),
+    );
     const showFont = sectionHasMatches(searchQuery, "Font", [
         [
             "Font family",
@@ -2063,10 +2080,30 @@ export function TerminalContent({
         ],
         ["Font size", "Text size in integrated terminals, in pixels."],
     ]);
+    const windowsShellRowSearchValues = [
+        "Windows shell",
+        "Choose which shell new integrated terminals open on Windows.",
+        "Default",
+        "Command Prompt",
+        "cmd.exe",
+        "Windows PowerShell",
+        "PowerShell 7",
+        "pwsh",
+        "PowerShell 7 (pwsh) requires PowerShell 7 to be installed on this machine.",
+        state.windowsShell,
+    ] as const;
+    const showWindowsShellRow =
+        state.isWindows === true &&
+        matchesSearch(
+            searchQuery,
+            "Shell Environment",
+            ...windowsShellRowSearchValues,
+        );
     const showShellEnvironment = sectionHasMatches(
         searchQuery,
         "Shell Environment",
         [
+            ...(state.isWindows === true ? [windowsShellRowSearchValues] : []),
             [
                 "Fullscreen rendering (experimental)",
                 "Sets CLAUDE_CODE_NO_FLICKER=1. Reduces flicker in Claude Code but disables scrollback. Applies to new terminals only.",
@@ -2164,6 +2201,29 @@ export function TerminalContent({
             {showShellEnvironment ? (
                 <SectionLabel>Shell Environment</SectionLabel>
             ) : null}
+            {state.isWindows === true ? (
+                <>
+                    <SearchableRow
+                        searchQuery={searchQuery}
+                        section="Shell Environment"
+                        label="Windows shell"
+                        description="Choose which shell new integrated terminals open on Windows. Applies to new terminals only."
+                        keywords={windowsShellRowSearchValues}
+                        control={
+                            <SelectField
+                                value={state.windowsShell}
+                                options={windowsShellOptions}
+                                onChange={(value) =>
+                                    state.onWindowsShellChange?.(
+                                        normalizeWindowsTerminalShell(value),
+                                    )
+                                }
+                            />
+                        }
+                    />
+                    {showWindowsShellRow ? <PwshRequirementBanner /> : null}
+                </>
+            ) : null}
             <SearchableRow
                 searchQuery={searchQuery}
                 section="Shell Environment"
@@ -2256,6 +2316,29 @@ export function TerminalContent({
                     />
                 }
             />
+        </div>
+    );
+}
+
+function PwshRequirementBanner() {
+    return (
+        <div
+            style={{
+                backgroundColor:
+                    "color-mix(in srgb, var(--color-accent) 8%, transparent)",
+                border:
+                    "1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border))",
+                borderRadius: 8,
+                color: "var(--color-text-secondary)",
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                lineHeight: 1.45,
+                marginTop: 8,
+                padding: "8px 10px",
+            }}
+        >
+            PowerShell 7 (pwsh) requires PowerShell 7 to be installed on this
+            machine.
         </div>
     );
 }

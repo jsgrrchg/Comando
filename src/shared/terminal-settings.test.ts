@@ -13,6 +13,7 @@ import {
     normalizeClaudeCodeModel,
     normalizeTerminalFontFamily,
     normalizeTerminalFontSize,
+    normalizeWindowsTerminalShell,
 } from "./terminal-settings";
 
 describe("normalizeTerminalFontFamily", () => {
@@ -96,6 +97,23 @@ describe("normalizeClaudeCodeMaxTurns", () => {
     });
 });
 
+describe("normalizeWindowsTerminalShell", () => {
+    it("allows known Windows shell options", () => {
+        expect(normalizeWindowsTerminalShell("default")).toBe("default");
+        expect(normalizeWindowsTerminalShell("cmd")).toBe("cmd");
+        expect(normalizeWindowsTerminalShell("powershell")).toBe("powershell");
+        expect(normalizeWindowsTerminalShell("pwsh")).toBe("pwsh");
+    });
+
+    it("returns the default for unknown or unsafe values", () => {
+        expect(normalizeWindowsTerminalShell("cmd.exe /c calc")).toBe(
+            "default",
+        );
+        expect(normalizeWindowsTerminalShell("bash")).toBe("default");
+        expect(normalizeWindowsTerminalShell(null)).toBe("default");
+    });
+});
+
 describe("normalizeAppTerminalSettings", () => {
     it("returns defaults when settings are missing", () => {
         expect(normalizeAppTerminalSettings(null)).toEqual(
@@ -116,6 +134,7 @@ describe("normalizeAppTerminalSettings", () => {
                 claudeCodeSkipPermissions: true,
                 terminalFontFamily: " FiraCode Nerd Font ",
                 terminalFontSize: 20,
+                windowsShell: "pwsh",
             }),
         ).toEqual({
             claudeCodeContinueSession: true,
@@ -125,6 +144,7 @@ describe("normalizeAppTerminalSettings", () => {
             claudeCodeSkipPermissions: true,
             terminalFontFamily: "FiraCode Nerd Font",
             terminalFontSize: 20,
+            windowsShell: "pwsh",
         });
     });
 
@@ -138,6 +158,7 @@ describe("normalizeAppTerminalSettings", () => {
                 claudeCodeSkipPermissions: false,
                 terminalFontFamily: 12 as unknown as string,
                 terminalFontSize: "large" as unknown as number,
+                windowsShell: "powershell; rm -rf /",
             }),
         ).toEqual(DEFAULT_APP_TERMINAL_SETTINGS);
     });

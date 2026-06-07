@@ -3,6 +3,7 @@ import type {
     AiToolCardExpansionMode,
     ProjectAppDataSummary,
     AppPrivacyAccessState,
+    AppTerminalSettings,
     AppUpdateState,
     GitHubAuthStatus,
 } from "@shared/ipc";
@@ -67,6 +68,8 @@ export interface SettingsEditorControlState {
 export interface SettingsTerminalState {
     readonly terminalFontFamily: string;
     readonly terminalFontSize: number;
+    readonly windowsShell: AppTerminalSettings["windowsShell"];
+    readonly isWindows?: boolean;
     readonly claudeCodeOptimized: boolean;
     readonly claudeCodeSkipPermissions: boolean;
     readonly claudeCodeModel: string;
@@ -75,6 +78,9 @@ export interface SettingsTerminalState {
     readonly claudeCodeAvailable?: boolean | null;
     readonly onTerminalFontFamilyChange?: (value: string) => void;
     readonly onTerminalFontSizeChange?: (value: number) => void;
+    readonly onWindowsShellChange?: (
+        value: AppTerminalSettings["windowsShell"],
+    ) => void;
     readonly onClaudeCodeOptimizedChange?: (value: boolean) => void;
     readonly onClaudeCodeSkipPermissionsChange?: (value: boolean) => void;
     readonly onClaudeCodeModelChange?: (value: string) => void;

@@ -73,6 +73,7 @@ function createTerminalSettings(
         claudeCodeSkipPermissions: false,
         terminalFontFamily: "",
         terminalFontSize: 13,
+        windowsShell: "default",
         ...overrides,
     };
 }
@@ -221,6 +222,7 @@ describe("settings-store", () => {
                         claudeCodeSkipPermissions: true,
                         terminalFontFamily: "  FiraCode\nNerd Font  ",
                         terminalFontSize: 99,
+                        windowsShell: "pwsh",
                     },
                 }),
                 getSystemTheme: vi
@@ -241,6 +243,7 @@ describe("settings-store", () => {
             claudeCodeSkipPermissions: true,
             terminalFontFamily: "FiraCode Nerd Font",
             terminalFontSize: 24,
+            windowsShell: "pwsh",
         });
     });
 });

@@ -11,6 +11,7 @@ import type {
 } from "@shared/ipc";
 
 import type { ProjectService } from "@main/projects/service";
+import type { SettingsGateway } from "@main/settings/service";
 
 interface ManagedTerminalSession {
     readonly ownerWindowId: string;
@@ -23,12 +24,14 @@ interface TerminalServiceOptions {
     readonly onData: (ownerWindowId: string, event: TerminalDataEvent) => void;
     readonly onExit: (ownerWindowId: string, event: TerminalExitEvent) => void;
     readonly projectService: ProjectService;
+    readonly settingsService: SettingsGateway;
 }
 
 export class TerminalService {
     readonly #onData: (ownerWindowId: string, event: TerminalDataEvent) => void;
     readonly #onExit: (ownerWindowId: string, event: TerminalExitEvent) => void;
     readonly #projectService: ProjectService;
+    readonly #settingsService: SettingsGateway;
     readonly #sessions = new Map<string, ManagedTerminalSession>();
     readonly #sessionIdsByOwnerTerminalId = new Map<string, string>();
 
@@ -36,6 +39,7 @@ export class TerminalService {
         this.#onData = options.onData;
         this.#onExit = options.onExit;
         this.#projectService = options.projectService;
+        this.#settingsService = options.settingsService;
     }
 
     createSession(
@@ -73,7 +77,9 @@ export class TerminalService {
                   input.worktreeId ?? null,
               )
             : process.cwd();
-        const shell = getDefaultShell();
+        const shell = getDefaultShell(
+            this.#settingsService.loadAppTerminalSettings().windowsShell,
+        );
         const shellArgs = getDefaultShellArgs(shell);
         const cols = normalizeTerminalCols(input.cols);
         const rows = normalizeTerminalRows(input.rows);
@@ -230,9 +236,19 @@ function normalizeTerminalRows(rows: number | null | undefined): number {
     return Number.isFinite(normalized) ? Math.max(4, normalized) : 34;
 }
 
-function getDefaultShell(): string {
+function getDefaultShell(windowsShell: string): string {
     if (process.platform === "win32") {
-        return process.env.COMSPEC ?? "powershell.exe";
+        switch (windowsShell) {
+            case "cmd":
+                return "cmd.exe";
+            case "powershell":
+                return "powershell.exe";
+            case "pwsh":
+                return "pwsh.exe";
+            case "default":
+            default:
+                return process.env.COMSPEC ?? "powershell.exe";
+        }
     }
 
     return (
@@ -242,7 +258,11 @@ function getDefaultShell(): string {
 
 function getDefaultShellArgs(shell: string): string[] {
     if (process.platform === "win32") {
-        return shell.toLowerCase().includes("powershell") ? ["-NoLogo"] : [];
+        const normalizedShell = shell.toLowerCase();
+        return normalizedShell.includes("powershell") ||
+            path.basename(normalizedShell) === "pwsh.exe"
+            ? ["-NoLogo"]
+            : [];
     }
 
     const shellBaseName = path.basename(shell).toLowerCase();
