@@ -369,8 +369,9 @@ async function shutdownApplication(): Promise<void> {
 }
 
 function restoreMainWindows(): void {
-    const snapshots =
-        persistenceService?.listRestorableMainWindowSnapshots() ?? [];
+    const snapshots = filterRestorableMainWindowSnapshots(
+        persistenceService?.listRestorableMainWindowSnapshots() ?? [],
+    );
     if (snapshots.length === 0) {
         void openNewMainWindow(null);
         return;
@@ -379,6 +380,24 @@ function restoreMainWindows(): void {
     for (const snapshot of snapshots) {
         createTrackedMainWindow(snapshot);
     }
+}
+
+function filterRestorableMainWindowSnapshots(
+    snapshots: readonly PersistenceSnapshot[],
+): readonly PersistenceSnapshot[] {
+    if (
+        !snapshots.some((snapshot) => getSnapshotProjectId(snapshot) !== null)
+    ) {
+        return snapshots;
+    }
+
+    return snapshots.filter(
+        (snapshot) => getSnapshotProjectId(snapshot) !== null,
+    );
+}
+
+function getSnapshotProjectId(snapshot: PersistenceSnapshot): string | null {
+    return snapshot.windowContext?.projectId ?? null;
 }
 
 async function openNewMainWindow(projectId: string | null): Promise<void> {
@@ -604,7 +623,13 @@ function attachMainWindowLifecycle(
     window.on("unmaximize", schedulePersist);
     window.on("enter-full-screen", schedulePersist);
     window.on("leave-full-screen", schedulePersist);
-    window.on("close", persistWindowState);
+    window.on("close", () => {
+        persistWindowState();
+
+        if (isClosingLastAppWindow()) {
+            isQuitting = true;
+        }
+    });
     window.on("closed", () => {
         if (timeout) {
             clearTimeout(timeout);
@@ -635,6 +660,18 @@ function attachMainWindowLifecycle(
     });
 
     persistWindowState();
+}
+
+function isClosingLastAppWindow(): boolean {
+    if (process.platform === "darwin" || isQuitting) {
+        return false;
+    }
+
+    const liveWindowCount = BrowserWindow.getAllWindows().filter(
+        (candidate) => !candidate.isDestroyed(),
+    ).length;
+
+    return liveWindowCount <= 1;
 }
 
 function updateMainWindowTitle(
