@@ -68,7 +68,10 @@ import { useGitHubStore } from "./app/store/github-store";
 import { useProjectsStore } from "./app/store/projects-store";
 import { useSettingsStore } from "./app/store/settings-store";
 import { useShellStore } from "./app/store/shell-store";
-import { useWorkspaceStore } from "./app/store/workspace-store";
+import {
+    getBestMatchingChatTabId,
+    useWorkspaceStore,
+} from "./app/store/workspace-store";
 import { findPaneById, type RuntimeWorkspaceTab } from "./app/workspace/tree";
 import {
     compactGitTreeEntriesByAncestor,
@@ -96,7 +99,13 @@ import {
     SidebarGitHubPanel,
     SidebarGitPanel,
     SidebarGitScopePicker,
+    type SidebarGitHubAddToChatRequest,
 } from "./components/sidebar";
+import {
+    appendComposerParts,
+    createEmptyComposerParts,
+    type AIComposerPart,
+} from "./components/workspace/chat/composerParts";
 import {
     SIDEBAR_AGENT_DRAG_EVENT,
     type SidebarAgentDragDetail,
@@ -328,6 +337,9 @@ export function App() {
     const addDraftFileContext = useAiStore(
         (state) => state.addDraftFileContext,
     );
+    const setDraftComposerParts = useAiStore(
+        (state) => state.setDraftComposerParts,
+    );
     const hydrateAiSettings = useAiStore((state) => state.hydrateSettings);
     const stickyFoldersEnabled = useSettingsStore(
         (state) => state.appearance.stickyFoldersEnabled,
@@ -368,6 +380,10 @@ export function App() {
     const [agentsFilter, setAgentsFilter] = useState("");
     const [issuesFilter, setIssuesFilter] = useState("");
     const [pullRequestsFilter, setPullRequestsFilter] = useState("");
+    const [
+        gitHubSidebarSelectionResetSignal,
+        setGitHubSidebarSelectionResetSignal,
+    ] = useState(0);
     const [fileTreeSelectedPaths, setFileTreeSelectedPaths] = useState<
         readonly string[]
     >([]);
@@ -1411,6 +1427,7 @@ export function App() {
     const focusWorkspaceSurface = useCallback(() => {
         focusSurface("workspace");
         clearFileTreeSelection({ suppressActivePathFallback: true });
+        setGitHubSidebarSelectionResetSignal((signal) => signal + 1);
         setFileTreeContextMenu(null);
     }, [clearFileTreeSelection, focusSurface]);
 
@@ -2189,6 +2206,81 @@ export function App() {
             createChatTab,
             lastFocusedRuntimeId,
         ],
+    );
+
+    const handleAddGitHubItemsToChat = useCallback(
+        async (request: SidebarGitHubAddToChatRequest) => {
+            if (request.parts.length === 0) {
+                return;
+            }
+
+            const appendPartsToSession = (
+                sessionId: string,
+                parts: readonly AIComposerPart[],
+            ) => {
+                const existingParts =
+                    useAiStore.getState().sessions[sessionId]
+                        ?.draftComposerParts ?? createEmptyComposerParts();
+                setDraftComposerParts(
+                    sessionId,
+                    appendComposerParts(existingParts, parts),
+                );
+            };
+
+            const workspaceState = useWorkspaceStore.getState();
+            const worktreeId = request.worktreeId ?? null;
+            const targetChatTabId = request.forceNewChat
+                ? null
+                : getBestMatchingChatTabId(workspaceState, {
+                      currentPaneId: workspaceState.activePaneId,
+                      lastFocusedChatTabId:
+                          workspaceState.lastFocusedChatTabId,
+                      projectId: request.projectId,
+                      recentFocusedChatTabIds:
+                          workspaceState.recentFocusedChatTabIds,
+                      worktreeId,
+                  });
+            const targetChatTab = targetChatTabId
+                ? workspaceState.tabsById[targetChatTabId]
+                : null;
+
+            if (targetChatTab?.kind === "chat") {
+                appendPartsToSession(targetChatTab.sessionId, request.parts);
+                return;
+            }
+
+            const existingTabIds = new Set(Object.keys(workspaceState.tabsById));
+
+            try {
+                await createChatTab(
+                    request.projectId,
+                    worktreeId,
+                    lastFocusedRuntimeId,
+                );
+            } catch (error) {
+                window.alert(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not create a chat tab for this GitHub item.",
+                );
+                return;
+            }
+
+            const createdChatTab = Object.values(
+                useWorkspaceStore.getState().tabsById,
+            ).find(
+                (tab) =>
+                    tab.kind === "chat" &&
+                    tab.projectId === request.projectId &&
+                    (tab.worktreeId ?? null) === worktreeId &&
+                    !existingTabIds.has(tab.id),
+            );
+
+            if (createdChatTab?.kind === "chat") {
+                appendPartsToSession(createdChatTab.sessionId, request.parts);
+            }
+        },
+        [createChatTab, lastFocusedRuntimeId, setDraftComposerParts],
     );
 
     const sidebarFileNodes = useMemo(
@@ -3673,16 +3765,24 @@ export function App() {
                     <SidebarGitHubPanel
                         filter={issuesFilter}
                         kind="issues"
+                        onAddToChat={(request) =>
+                            void handleAddGitHubItemsToChat(request)
+                        }
                         onOpenSettings={openSettingsWindow}
                         projectId={activeProjectId}
+                        selectionResetSignal={gitHubSidebarSelectionResetSignal}
                         worktreeId={activeWorktreeId}
                     />
                 ) : sidebarView === "pull_requests" ? (
                     <SidebarGitHubPanel
                         filter={pullRequestsFilter}
                         kind="pull_requests"
+                        onAddToChat={(request) =>
+                            void handleAddGitHubItemsToChat(request)
+                        }
                         onOpenSettings={openSettingsWindow}
                         projectId={activeProjectId}
+                        selectionResetSignal={gitHubSidebarSelectionResetSignal}
                         worktreeId={activeWorktreeId}
                     />
                 ) : sidebarView === "agents" ? (

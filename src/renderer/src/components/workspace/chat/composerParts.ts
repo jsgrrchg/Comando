@@ -3,6 +3,8 @@ import {
     createEmptyComposerDraftParts,
     type AiComposerDraftPart,
 } from "@renderer/app/ai/sessionReviewContracts";
+import type { WorkspaceTabComposerDragItem } from "@renderer/app/drag-and-drop";
+import { resolveEditorLanguage } from "@shared/editor-language";
 
 /* ─── Part types ─── */
 
@@ -235,6 +237,87 @@ export function appendSelectionMentionPart(
     );
 }
 
+export function appendWorkspaceTabComposerItem(
+    parts: readonly AIComposerPart[],
+    item: WorkspaceTabComposerDragItem | null,
+): AIComposerPart[] {
+    if (!item) {
+        return [...parts];
+    }
+
+    if (item.kind === "git_commit_mention") {
+        return appendGitCommitMentionPart(parts, {
+            commitSha: item.commitSha,
+            label: item.label,
+        });
+    }
+
+    if (item.kind === "github_issue_mention") {
+        return appendGitHubIssueMentionPart(parts, {
+            type: "github_issue_mention",
+            host: item.host,
+            label: item.label,
+            number: item.number,
+            owner: item.owner,
+            repo: item.repo,
+            title: item.title,
+            url: item.url,
+        });
+    }
+
+    if (item.kind === "github_pull_request_mention") {
+        return appendGitHubPullRequestMentionPart(parts, {
+            type: "github_pull_request_mention",
+            host: item.host,
+            label: item.label,
+            number: item.number,
+            owner: item.owner,
+            repo: item.repo,
+            title: item.title,
+            url: item.url,
+        });
+    }
+
+    return appendFileMentionPart(parts, {
+        label: item.label,
+        path: item.relativePath,
+        relativePath: item.relativePath,
+        languageId: resolveEditorLanguage({ filePath: item.relativePath }).id,
+    });
+}
+
+export function appendWorkspaceTabComposerItems(
+    parts: readonly AIComposerPart[],
+    items: readonly WorkspaceTabComposerDragItem[],
+): AIComposerPart[] {
+    return items.reduce<AIComposerPart[]>(
+        (nextParts, item) => appendWorkspaceTabComposerItem(nextParts, item),
+        [...parts],
+    );
+}
+
+export function appendComposerParts(
+    parts: readonly AIComposerPart[],
+    partsToAppend: readonly AIComposerPart[],
+): AIComposerPart[] {
+    const baseParts = normalizeComposerParts(parts);
+    const incomingParts = trimLeadingEmptyTextParts(partsToAppend);
+
+    if (incomingParts.length === 0) {
+        return baseParts;
+    }
+
+    const separator = shouldInsertPartSeparator(baseParts, incomingParts)
+        ? [{ type: "text" as const, text: " " }]
+        : [];
+
+    return normalizeComposerParts([
+        ...baseParts,
+        ...separator,
+        ...incomingParts,
+    ]);
+}
+
 export function collectExternalComposerRoots(
     parts: readonly AIComposerPart[],
 ): string[] {
@@ -266,6 +349,52 @@ function isAbsolutePath(candidatePath: string): boolean {
         candidatePath.startsWith("/") ||
         candidatePath.startsWith("\\\\") ||
         /^[A-Za-z]:[\\/]/.test(candidatePath)
+    );
+}
+
+function trimLeadingEmptyTextParts(
+    parts: readonly AIComposerPart[],
+): readonly AIComposerPart[] {
+    let firstContentIndex = 0;
+    while (firstContentIndex < parts.length) {
+        const part = parts[firstContentIndex];
+        if (part?.type !== "text" || part.text.length > 0) {
+            break;
+        }
+
+        firstContentIndex += 1;
+    }
+
+    return parts.slice(firstContentIndex);
+}
+
+function shouldInsertPartSeparator(
+    baseParts: readonly AIComposerPart[],
+    incomingParts: readonly AIComposerPart[],
+): boolean {
+    if (baseParts.length === 0 || incomingParts.length === 0) {
+        return false;
+    }
+
+    return (
+        !partsEndWithWhitespace(baseParts) &&
+        !partsStartWithWhitespace(incomingParts)
+    );
+}
+
+function partsEndWithWhitespace(parts: readonly AIComposerPart[]): boolean {
+    const last = parts[parts.length - 1];
+    return (
+        last?.type === "text" &&
+        (last.text.length === 0 || /\s$/.test(last.text))
+    );
+}
+
+function partsStartWithWhitespace(parts: readonly AIComposerPart[]): boolean {
+    const first = parts[0];
+    return (
+        first?.type === "text" &&
+        (first.text.length === 0 || /^\s/.test(first.text))
     );
 }
 

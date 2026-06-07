@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AIComposerPart } from "./composerParts";
 import {
+    appendComposerParts,
     appendFileAttachmentPart,
     appendGitCommitMentionPart,
     appendGitHubIssueMentionPart,
@@ -163,6 +164,42 @@ describe("composerParts", () => {
         expect(serializeComposerPartsForPrompt(parts)).toBe(
             "Review GitHub PR comando/app#456: Add GitHub API integration (https://github.com/comando/app/pull/456) ",
         );
+    });
+
+    it("separates appended composer pills from existing draft text", () => {
+        const partsToAppend = appendGitHubIssueMentionPart(
+            [{ type: "text", text: "" }],
+            {
+                host: "github.com",
+                label: "#123",
+                number: 123,
+                owner: "comando",
+                repo: "app",
+                title: "Crash on launch",
+                type: "github_issue_mention",
+                url: "https://github.com/comando/app/issues/123",
+            },
+        );
+
+        expect(
+            appendComposerParts(
+                [{ type: "text", text: "Investigate" }],
+                partsToAppend,
+            ),
+        ).toEqual([
+            { type: "text", text: "Investigate " },
+            {
+                host: "github.com",
+                label: "#123",
+                number: 123,
+                owner: "comando",
+                repo: "app",
+                title: "Crash on launch",
+                type: "github_issue_mention",
+                url: "https://github.com/comando/app/issues/123",
+            },
+            { type: "text", text: " " },
+        ]);
     });
 
     it("collects additional roots for external file and folder pills", () => {

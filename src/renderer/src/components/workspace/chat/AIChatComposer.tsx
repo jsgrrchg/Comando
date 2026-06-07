@@ -23,6 +23,7 @@ import {
     COMPOSER_PROJECT_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_MIME,
     getExternalComposerDropItems,
+    getWorkspaceTabComposerDragItems,
     WORKSPACE_TAB_COMPOSER_DRAG_EVENT,
     parseComposerProjectEntryListDragData,
     parseComposerProjectEntryDragData,
@@ -37,9 +38,7 @@ import {
     appendFileAttachmentPart,
     appendFileMentionPart,
     appendFolderMentionPart,
-    appendGitCommitMentionPart,
-    appendGitHubIssueMentionPart,
-    appendGitHubPullRequestMentionPart,
+    appendWorkspaceTabComposerItems,
     composerPartsToPlainText,
     normalizeComposerParts,
 } from "./composerParts";
@@ -462,55 +461,6 @@ export function appendComposerProjectEntries(
     }, [...parts]);
 }
 
-export function appendWorkspaceTabComposerItem(
-    parts: readonly AIComposerPart[],
-    item: WorkspaceTabComposerDragDetail["item"],
-): AIComposerPart[] {
-    if (!item) {
-        return [...parts];
-    }
-
-    if (item.kind === "git_commit_mention") {
-        return appendGitCommitMentionPart(parts, {
-            commitSha: item.commitSha,
-            label: item.label,
-        });
-    }
-
-    if (item.kind === "github_issue_mention") {
-        return appendGitHubIssueMentionPart(parts, {
-            type: "github_issue_mention",
-            host: item.host,
-            label: item.label,
-            number: item.number,
-            owner: item.owner,
-            repo: item.repo,
-            title: item.title,
-            url: item.url,
-        });
-    }
-
-    if (item.kind === "github_pull_request_mention") {
-        return appendGitHubPullRequestMentionPart(parts, {
-            type: "github_pull_request_mention",
-            host: item.host,
-            label: item.label,
-            number: item.number,
-            owner: item.owner,
-            repo: item.repo,
-            title: item.title,
-            url: item.url,
-        });
-    }
-
-    return appendFileMentionPart(parts, {
-        label: item.label,
-        path: item.relativePath,
-        relativePath: item.relativePath,
-        languageId: getLanguageIdFromPath(item.relativePath),
-    });
-}
-
 /* ─── Parts → DOM sync ─── */
 
 function syncComposerDom(
@@ -906,13 +856,14 @@ export function AIChatComposer({
 
     const applyWorkspaceTabComposerDrop = useCallback(
         (detail: WorkspaceTabComposerDragDetail) => {
-            if (disabled || !detail.item) {
+            const dragItems = getWorkspaceTabComposerDragItems(detail);
+            if (disabled || dragItems.length === 0) {
                 return;
             }
 
-            const nextParts: AIComposerPart[] = appendWorkspaceTabComposerItem(
+            const nextParts: AIComposerPart[] = appendWorkspaceTabComposerItems(
                 partsRef.current,
-                detail.item,
+                dragItems,
             );
 
             onChangeRef.current(nextParts);
@@ -1352,7 +1303,8 @@ export function AIChatComposer({
                 return;
             }
 
-            if (detail.phase === "cancel" || !detail.item) {
+            const dragItems = getWorkspaceTabComposerDragItems(detail);
+            if (detail.phase === "cancel" || dragItems.length === 0) {
                 setIsWorkspaceTabDragOver(false);
                 return;
             }

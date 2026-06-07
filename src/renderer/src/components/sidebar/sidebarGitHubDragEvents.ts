@@ -5,8 +5,14 @@ export const SIDEBAR_GITHUB_DRAG_EVENT = "comando:sidebar-github-drag";
 export type SidebarGitHubDragPhase = "cancel" | "end" | "move" | "start";
 export type SidebarGitHubDragItemKind = "issue" | "pull_request";
 
+export interface SidebarGitHubDragItem {
+    readonly number: number;
+    readonly title: string;
+}
+
 export interface SidebarGitHubDragDetail {
     readonly itemKind: SidebarGitHubDragItemKind;
+    readonly items: readonly SidebarGitHubDragItem[];
     readonly number: number;
     readonly phase: SidebarGitHubDragPhase;
     readonly projectId: string | null;

@@ -26,6 +26,16 @@ import {
     isPullRequestForCurrentBranch,
     sortPullRequestsNewestFirst,
 } from "@renderer/app/github/current-branch-pr";
+import {
+    appendWorkspaceTabComposerItem,
+    createEmptyComposerParts,
+    type AIComposerPart,
+} from "@renderer/components/workspace/chat/composerParts";
+import {
+    createGitHubIssueComposerDragItem,
+    createGitHubPullRequestComposerDragItem,
+    type WorkspaceTabComposerDragItem,
+} from "@renderer/app/drag-and-drop";
 import { getGitContextKey } from "@renderer/app/git/context-key";
 import { resolveGitHubRepositoryRef } from "@renderer/app/git/remote-link";
 import { useGitStore } from "@renderer/app/store/git-store";
@@ -53,12 +63,17 @@ import {
 
 import {
     emitSidebarGitHubDrag,
+    type SidebarGitHubDragItem,
     type SidebarGitHubDragItemKind,
 } from "./sidebarGitHubDragEvents";
 import {
     shouldCancelSidebarDragOnMove,
     shouldEmitSidebarDragCancel,
 } from "./sidebarDragGuards";
+import {
+    selectGitTreeRange,
+    toggleGitTreePathSelection,
+} from "../git/treeSelection";
 
 type SidebarGitHubPanelKind = "issues" | "pull_requests";
 type SidebarIssueFilter = GitHubIssueState | "all" | "assigned";
@@ -72,8 +87,8 @@ type SidebarGitHubDragPreview = {
     readonly y: number;
 };
 
-type SidebarIssueContextMenuPayload = {
-    readonly issueNumber: number;
+type SidebarGitHubContextMenuPayload = {
+    readonly itemNumbers: readonly number[];
 };
 
 type SidebarIssueLabelPickerState = {
@@ -82,19 +97,61 @@ type SidebarIssueLabelPickerState = {
     readonly y: number;
 };
 
+export type SidebarGitHubAddToChatRequest =
+    | {
+          readonly forceNewChat: boolean;
+          readonly items: readonly GitHubIssueSummary[];
+          readonly kind: "issues";
+          readonly parts: readonly AIComposerPart[];
+          readonly projectId: string | null;
+          readonly worktreeId: string | null;
+      }
+    | {
+          readonly forceNewChat: boolean;
+          readonly items: readonly GitHubPullRequestSummary[];
+          readonly kind: "pull_requests";
+          readonly parts: readonly AIComposerPart[];
+          readonly projectId: string | null;
+          readonly worktreeId: string | null;
+      };
+
+interface SidebarGitHubSelectionState {
+    readonly anchorNumber: number | null;
+    readonly selectedNumbers: readonly number[];
+}
+
+interface ResolveSidebarGitHubItemClickSelectionInput {
+    readonly anchorNumber: number | null;
+    readonly isRangeSelection: boolean;
+    readonly isToggleSelection: boolean;
+    readonly itemNumber: number;
+    readonly selectedNumbers: readonly number[];
+    readonly visibleNumbers: readonly number[];
+}
+
+interface ReconcileSidebarGitHubSelectionInput {
+    readonly anchorNumber: number | null;
+    readonly selectedNumbers: readonly number[];
+    readonly visibleNumbers: readonly number[];
+}
+
 const SIDEBAR_GITHUB_DRAG_THRESHOLD_PX = 6;
 
 export function SidebarGitHubPanel({
     filter,
     kind,
+    onAddToChat,
     onOpenSettings,
     projectId,
+    selectionResetSignal = 0,
     worktreeId,
 }: {
     readonly filter?: string;
     readonly kind: SidebarGitHubPanelKind;
+    readonly onAddToChat?: (request: SidebarGitHubAddToChatRequest) => void;
     readonly onOpenSettings: () => void;
     readonly projectId: string | null;
+    readonly selectionResetSignal?: number;
     readonly worktreeId: string | null;
 }) {
     const snapshot = useGitStore((state) =>
@@ -215,10 +272,17 @@ export function SidebarGitHubPanel({
     const openGitHubPullRequestTab = useWorkspaceStore(
         (state) => state.openGitHubPullRequestTab,
     );
-    const [issueContextMenu, setIssueContextMenu] =
-        useState<ContextMenuState<SidebarIssueContextMenuPayload> | null>(null);
+    const [githubContextMenu, setGitHubContextMenu] =
+        useState<ContextMenuState<SidebarGitHubContextMenuPayload> | null>(null);
     const [labelPicker, setLabelPicker] =
         useState<SidebarIssueLabelPickerState | null>(null);
+    const [selectionAnchorNumber, setSelectionAnchorNumber] = useState<
+        number | null
+    >(null);
+    const [selectedItemNumbers, setSelectedItemNumbers] = useState<
+        readonly number[]
+    >([]);
+    const selectionScopeRef = useRef<string | null>(null);
     const normalizedSearch = (filter ?? "").trim().toLowerCase();
     const disabledReason = getDisabledReason({
         authError,
@@ -427,16 +491,85 @@ export function SidebarGitHubPanel({
         [currentBranch, pullRequests, repoRef],
     );
     const canWriteIssues = hasGitHubWritePermission(authStatus, "issues");
-    const contextIssue =
-        issueContextMenu && kind === "issues"
-            ? (visibleIssues.find(
-                  (issue) =>
-                      issue.number === issueContextMenu.payload.issueNumber,
-              ) ?? null)
-            : null;
-    const contextMenuPosition = issueContextMenu
-        ? { x: issueContextMenu.x, y: issueContextMenu.y }
+    const visibleItemNumbers = useMemo(
+        () =>
+            kind === "issues"
+                ? visibleIssues.map((issue) => issue.number)
+                : visiblePullRequests.map((pullRequest) => pullRequest.number),
+        [kind, visibleIssues, visiblePullRequests],
+    );
+    const visibleItemNumbersKey = visibleItemNumbers.join("\u0000");
+    const selectionScopeKey = `${repoKey ?? "none"}:${kind}`;
+
+    useEffect(() => {
+        if (selectionScopeRef.current === selectionScopeKey) {
+            return;
+        }
+
+        selectionScopeRef.current = selectionScopeKey;
+        setSelectionAnchorNumber(null);
+        setSelectedItemNumbers([]);
+    }, [selectionScopeKey]);
+
+    useEffect(() => {
+        setSelectionAnchorNumber(null);
+        setSelectedItemNumbers([]);
+        setGitHubContextMenu(null);
+    }, [selectionResetSignal]);
+
+    useEffect(() => {
+        const reconciled = reconcileSidebarGitHubSelection({
+            anchorNumber: selectionAnchorNumber,
+            selectedNumbers: selectedItemNumbers,
+            visibleNumbers: visibleItemNumbers,
+        });
+
+        if (
+            reconciled.anchorNumber !== selectionAnchorNumber ||
+            !areNumberArraysEqual(
+                reconciled.selectedNumbers,
+                selectedItemNumbers,
+            )
+        ) {
+            setSelectionAnchorNumber(reconciled.anchorNumber);
+            setSelectedItemNumbers(reconciled.selectedNumbers);
+        }
+    }, [
+        selectedItemNumbers,
+        selectionAnchorNumber,
+        visibleItemNumbers,
+        visibleItemNumbersKey,
+    ]);
+
+    const selectedItemNumberSet = useMemo(
+        () => new Set(selectedItemNumbers),
+        [selectedItemNumbers],
+    );
+    const contextMenuPosition = githubContextMenu
+        ? { x: githubContextMenu.x, y: githubContextMenu.y }
         : null;
+    const contextIssues = useMemo(
+        () =>
+            githubContextMenu && kind === "issues"
+                ? getSidebarGitHubItemsByNumber(
+                      visibleIssues,
+                      githubContextMenu.payload.itemNumbers,
+                  )
+                : [],
+        [githubContextMenu, kind, visibleIssues],
+    );
+    const contextPullRequests = useMemo(
+        () =>
+            githubContextMenu && kind === "pull_requests"
+                ? getSidebarGitHubItemsByNumber(
+                      visiblePullRequests,
+                      githubContextMenu.payload.itemNumbers,
+                  )
+                : [],
+        [githubContextMenu, kind, visiblePullRequests],
+    );
+    const contextItemCount =
+        kind === "issues" ? contextIssues.length : contextPullRequests.length;
     const activeLabelPickerIssue = labelPicker
         ? (visibleIssues.find(
               (issue) => issue.number === labelPicker.issueNumber,
@@ -480,44 +613,159 @@ export function SidebarGitHubPanel({
         },
         [refreshLabels, repoRef],
     );
-    const issueContextMenuEntries: ContextMenuEntry[] =
-        contextIssue && contextMenuPosition
-            ? [
-                  {
-                      label: "Open Issue",
-                      action: () => openIssueTab(contextIssue.number),
-                  },
-                  {
-                      label: "Open in GitHub",
-                      action: () => openGitHubWebUrl(contextIssue.url),
-                  },
-                  { type: "separator" },
-                  {
-                      label: "Edit Labels...",
-                      action: () =>
-                          openIssueLabelPicker(
-                              contextIssue,
-                              contextMenuPosition,
-                          ),
-                      disabled: !canWriteIssues,
-                  },
-              ]
+    const addGitHubItemsToChat = useCallback(
+        (options: { readonly forceNewChat: boolean }) => {
+            if (!repoRef || !onAddToChat || contextItemCount === 0) {
+                return;
+            }
+
+            if (kind === "issues") {
+                onAddToChat({
+                    forceNewChat: options.forceNewChat,
+                    items: contextIssues,
+                    kind: "issues",
+                    parts: buildSidebarGitHubComposerParts(
+                        repoRef,
+                        contextIssues,
+                        "issues",
+                    ),
+                    projectId,
+                    worktreeId,
+                });
+                return;
+            }
+
+            onAddToChat({
+                forceNewChat: options.forceNewChat,
+                items: contextPullRequests,
+                kind: "pull_requests",
+                parts: buildSidebarGitHubComposerParts(
+                    repoRef,
+                    contextPullRequests,
+                    "pull_requests",
+                ),
+                projectId,
+                worktreeId,
+            });
+        },
+        [
+            contextIssues,
+            contextItemCount,
+            contextPullRequests,
+            kind,
+            onAddToChat,
+            projectId,
+            repoRef,
+            worktreeId,
+        ],
+    );
+    const contextMenuEntries: ContextMenuEntry[] =
+        repoRef && githubContextMenu && contextMenuPosition && contextItemCount > 0
+            ? buildSidebarGitHubContextMenuEntries({
+                  canWriteIssues,
+                  count: contextItemCount,
+                  kind,
+                  onAddToChat: () =>
+                      addGitHubItemsToChat({ forceNewChat: false }),
+                  onAddToNewChat: () =>
+                      addGitHubItemsToChat({ forceNewChat: true }),
+                  onEditLabels:
+                      kind === "issues" && contextIssues.length === 1
+                          ? () =>
+                                openIssueLabelPicker(
+                                    contextIssues[0],
+                                    contextMenuPosition,
+                                )
+                          : null,
+                  onOpen:
+                      kind === "issues"
+                          ? () => openIssueTab(contextIssues[0].number)
+                          : () =>
+                                void openGitHubPullRequestTab({
+                                    projectId,
+                                    pullRequestNumber:
+                                        contextPullRequests[0].number,
+                                    ref: repoRef,
+                                    worktreeId,
+                                }),
+                  onOpenInGitHub: () =>
+                      openGitHubWebUrl(
+                          kind === "issues"
+                              ? contextIssues[0].url
+                              : contextPullRequests[0].url,
+                      ),
+              })
             : [];
-    const handleIssueContextMenu = useCallback(
+    const handleItemClickSelection = useCallback(
         (
             event: ReactMouseEvent<HTMLElement>,
-            issue: GitHubIssueSummary,
+            itemNumber: number,
+            onOpen: () => void,
         ) => {
+            const nextSelection = resolveSidebarGitHubItemClickSelection({
+                anchorNumber: selectionAnchorNumber,
+                isRangeSelection: event.shiftKey,
+                isToggleSelection: event.metaKey || event.ctrlKey,
+                itemNumber,
+                selectedNumbers: selectedItemNumbers,
+                visibleNumbers: visibleItemNumbers,
+            });
+            setSelectionAnchorNumber(nextSelection.anchorNumber);
+            setSelectedItemNumbers(nextSelection.selectedNumbers);
+
+            if (
+                shouldOpenSidebarGitHubItemClick({
+                    ctrlKey: event.ctrlKey,
+                    metaKey: event.metaKey,
+                    shiftKey: event.shiftKey,
+                })
+            ) {
+                onOpen();
+            }
+        },
+        [selectedItemNumbers, selectionAnchorNumber, visibleItemNumbers],
+    );
+    const handleItemContextMenu = useCallback(
+        (event: ReactMouseEvent<HTMLElement>, itemNumber: number) => {
             event.preventDefault();
             event.stopPropagation();
             setLabelPicker(null);
-            setIssueContextMenu({
-                payload: { issueNumber: issue.number },
+            const itemNumbers = getSidebarGitHubContextNumbers({
+                itemNumber,
+                selectedNumbers: selectedItemNumbers,
+                visibleNumbers: visibleItemNumbers,
+            });
+            setSelectionAnchorNumber(itemNumber);
+            setSelectedItemNumbers(itemNumbers);
+            setGitHubContextMenu({
+                payload: { itemNumbers },
                 x: event.clientX,
                 y: event.clientY,
             });
         },
-        [],
+        [selectedItemNumbers, visibleItemNumbers],
+    );
+    const getIssueDragItems = useCallback(
+        (issue: GitHubIssueSummary): readonly SidebarGitHubDragItem[] =>
+            getSidebarGitHubDragItems({
+                item: issue,
+                selectedNumbers: selectedItemNumbers,
+                visibleItems: visibleIssues,
+                visibleNumbers: visibleItemNumbers,
+            }),
+        [selectedItemNumbers, visibleIssues, visibleItemNumbers],
+    );
+    const getPullRequestDragItems = useCallback(
+        (
+            pullRequest: GitHubPullRequestSummary,
+        ): readonly SidebarGitHubDragItem[] =>
+            getSidebarGitHubDragItems({
+                item: pullRequest,
+                selectedNumbers: selectedItemNumbers,
+                visibleItems: visiblePullRequests,
+                visibleNumbers: visibleItemNumbers,
+            }),
+        [selectedItemNumbers, visiblePullRequests, visibleItemNumbers],
     );
     const handleSaveIssueLabels = useCallback(
         async (labelNames: readonly string[]) => {
@@ -754,13 +1002,27 @@ export function SidebarGitHubPanel({
                         {visibleIssues.map((issue) => (
                             <li key={issue.id}>
                                 <SidebarGitHubIssueRow
+                                    dragItems={getIssueDragItems(issue)}
                                     issue={issue}
                                     onContextMenu={(event) =>
-                                        handleIssueContextMenu(event, issue)
+                                        handleItemContextMenu(
+                                            event,
+                                            issue.number,
+                                        )
                                     }
                                     onOpen={() => openIssueTab(issue.number)}
+                                    onRowClick={(event) =>
+                                        handleItemClickSelection(
+                                            event,
+                                            issue.number,
+                                            () => openIssueTab(issue.number),
+                                        )
+                                    }
                                     projectId={projectId}
                                     repoRef={activeRepoRef}
+                                    selected={selectedItemNumberSet.has(
+                                        issue.number,
+                                    )}
                                     worktreeId={worktreeId}
                                 />
                             </li>
@@ -773,6 +1035,15 @@ export function SidebarGitHubPanel({
                             <li key={pullRequest.id}>
                                 <SidebarGitHubPullRequestRow
                                     currentBranch={currentBranch}
+                                    dragItems={getPullRequestDragItems(
+                                        pullRequest,
+                                    )}
+                                    onContextMenu={(event) =>
+                                        handleItemContextMenu(
+                                            event,
+                                            pullRequest.number,
+                                        )
+                                    }
                                     onOpen={() =>
                                         void openGitHubPullRequestTab({
                                             projectId,
@@ -782,9 +1053,26 @@ export function SidebarGitHubPanel({
                                             worktreeId,
                                         })
                                     }
+                                    onRowClick={(event) =>
+                                        handleItemClickSelection(
+                                            event,
+                                            pullRequest.number,
+                                            () =>
+                                                void openGitHubPullRequestTab({
+                                                    projectId,
+                                                    pullRequestNumber:
+                                                        pullRequest.number,
+                                                    ref: activeRepoRef,
+                                                    worktreeId,
+                                                }),
+                                        )
+                                    }
                                     pullRequest={pullRequest}
                                     projectId={projectId}
                                     repoRef={activeRepoRef}
+                                    selected={selectedItemNumberSet.has(
+                                        pullRequest.number,
+                                    )}
                                     worktreeId={worktreeId}
                                 />
                             </li>
@@ -792,12 +1080,12 @@ export function SidebarGitHubPanel({
                     </ul>
                 ) : null}
             </div>
-            {issueContextMenu && issueContextMenuEntries.length > 0 ? (
+            {githubContextMenu && contextMenuEntries.length > 0 ? (
                 <ContextMenu
-                    entries={issueContextMenuEntries}
-                    menu={issueContextMenu}
-                    minWidth={170}
-                    onClose={() => setIssueContextMenu(null)}
+                    entries={contextMenuEntries}
+                    menu={githubContextMenu}
+                    minWidth={230}
+                    onClose={() => setGitHubContextMenu(null)}
                 />
             ) : null}
             {activeLabelPickerIssue && labelPicker ? (
@@ -817,18 +1105,24 @@ export function SidebarGitHubPanel({
 }
 
 function SidebarGitHubIssueRow({
+    dragItems,
     issue,
     onContextMenu,
     onOpen,
+    onRowClick,
     projectId,
     repoRef,
+    selected,
     worktreeId,
 }: {
+    readonly dragItems: readonly SidebarGitHubDragItem[];
     readonly issue: GitHubIssueSummary;
     readonly onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly onOpen: () => void;
+    readonly onRowClick: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly projectId: string | null;
     readonly repoRef: GitHubRepositoryRef;
+    readonly selected: boolean;
     readonly worktreeId: string | null;
 }) {
     const hasAssignees = issue.assignees.length > 0;
@@ -841,13 +1135,16 @@ function SidebarGitHubIssueRow({
 
     return (
         <SidebarGitHubDraggableRow
+            dragItems={dragItems}
             itemKind="issue"
             meta={`#${issue.number} - ${issue.commentCount} comments`}
             number={issue.number}
             onContextMenu={onContextMenu}
             onOpen={onOpen}
+            onRowClick={onRowClick}
             projectId={projectId}
             repoRef={repoRef}
+            selected={selected}
             title={issue.title}
             worktreeId={worktreeId}
         >
@@ -902,17 +1199,25 @@ function SidebarGitHubIssueRow({
 
 function SidebarGitHubPullRequestRow({
     currentBranch,
+    dragItems,
+    onContextMenu,
     onOpen,
+    onRowClick,
     projectId,
     pullRequest,
     repoRef,
+    selected,
     worktreeId,
 }: {
     readonly currentBranch: string | null;
+    readonly dragItems: readonly SidebarGitHubDragItem[];
+    readonly onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly onOpen: () => void;
+    readonly onRowClick: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly projectId: string | null;
     readonly pullRequest: GitHubPullRequestSummary;
     readonly repoRef: GitHubRepositoryRef;
+    readonly selected: boolean;
     readonly worktreeId: string | null;
 }) {
     const isCurrentBranchPullRequest = isPullRequestForCurrentBranch(
@@ -922,12 +1227,16 @@ function SidebarGitHubPullRequestRow({
     );
     return (
         <SidebarGitHubDraggableRow
+            dragItems={dragItems}
             itemKind="pull_request"
             meta={`PR #${pullRequest.number} - ${pullRequest.head.ref}`}
             number={pullRequest.number}
+            onContextMenu={onContextMenu}
             onOpen={onOpen}
+            onRowClick={onRowClick}
             projectId={projectId}
             repoRef={repoRef}
+            selected={selected}
             title={pullRequest.title}
             worktreeId={worktreeId}
         >
@@ -1173,24 +1482,30 @@ function SidebarGitHubLabelPicker({
 
 function SidebarGitHubDraggableRow({
     children,
+    dragItems,
     itemKind,
     meta,
     number,
     onContextMenu,
     onOpen,
+    onRowClick,
     projectId,
     repoRef,
+    selected,
     title,
     worktreeId,
 }: {
     readonly children: ReactNode;
+    readonly dragItems: readonly SidebarGitHubDragItem[];
     readonly itemKind: SidebarGitHubDragItemKind;
     readonly meta: string;
     readonly number: number;
     readonly onContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly onOpen: () => void;
+    readonly onRowClick?: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly projectId: string | null;
     readonly repoRef: GitHubRepositoryRef;
+    readonly selected: boolean;
     readonly title: string;
     readonly worktreeId: string | null;
 }) {
@@ -1205,6 +1520,12 @@ function SidebarGitHubDraggableRow({
         useState<SidebarGitHubDragPreview | null>(null);
     const [isPointerTracking, setIsPointerTracking] = useState(false);
     const kindLabel = itemKind === "issue" ? "Issue" : "Pull Request";
+    const previewKindLabel =
+        dragItems.length > 1 ? getSidebarGitHubPluralLabel(itemKind) : kindLabel;
+    const previewTitle =
+        dragItems.length > 1 ? `${dragItems.length} ${previewKindLabel}` : title;
+    const previewMeta =
+        dragItems.length > 1 ? `${dragItems.length} selected` : meta;
 
     const emitDrag = useCallback(
         (
@@ -1213,6 +1534,7 @@ function SidebarGitHubDraggableRow({
         ) => {
             emitSidebarGitHubDrag({
                 itemKind,
+                items: dragItems,
                 number,
                 phase,
                 projectId,
@@ -1223,20 +1545,20 @@ function SidebarGitHubDraggableRow({
                 y: event?.clientY ?? 0,
             });
         },
-        [itemKind, number, projectId, repoRef, title, worktreeId],
+        [dragItems, itemKind, number, projectId, repoRef, title, worktreeId],
     );
 
     const updateDragPreview = useCallback(
         (event: Pick<ReactPointerEvent<HTMLElement>, "clientX" | "clientY">) => {
             setDragPreview({
-                kindLabel,
-                meta,
-                title,
+                kindLabel: previewKindLabel,
+                meta: previewMeta,
+                title: previewTitle,
                 x: event.clientX,
                 y: event.clientY,
             });
         },
-        [kindLabel, meta, title],
+        [previewKindLabel, previewMeta, previewTitle],
     );
 
     const clearDragState = useCallback(
@@ -1310,10 +1632,12 @@ function SidebarGitHubDraggableRow({
         <>
             <div
                 className="sidebar-agents-row app-no-drag w-full"
-                data-active="false"
-                onClick={() => {
+                aria-selected={selected ? true : undefined}
+                data-active={selected ? "true" : "false"}
+                data-selected={selected ? "true" : "false"}
+                onClick={(event) => {
                     if (suppressClickRef.current) return;
-                    onOpen();
+                    onRowClick?.(event);
                 }}
                 onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
@@ -1529,6 +1853,263 @@ function SidebarGitHubStatus({
                 {action}
             </div>
         </div>
+    );
+}
+
+export function resolveSidebarGitHubItemClickSelection({
+    anchorNumber,
+    isRangeSelection,
+    isToggleSelection,
+    itemNumber,
+    selectedNumbers,
+    visibleNumbers,
+}: ResolveSidebarGitHubItemClickSelectionInput): SidebarGitHubSelectionState {
+    if (isRangeSelection) {
+        const effectiveAnchorNumber = anchorNumber ?? itemNumber;
+        return {
+            anchorNumber: effectiveAnchorNumber,
+            selectedNumbers: selectGitTreeRange(
+                stringifyNumbers(visibleNumbers),
+                String(effectiveAnchorNumber),
+                String(itemNumber),
+            ).map(Number),
+        };
+    }
+
+    if (isToggleSelection) {
+        return {
+            anchorNumber: itemNumber,
+            selectedNumbers: toggleGitTreePathSelection(
+                stringifyNumbers(selectedNumbers),
+                String(itemNumber),
+            ).map(Number),
+        };
+    }
+
+    return {
+        anchorNumber: itemNumber,
+        selectedNumbers: [],
+    };
+}
+
+export function reconcileSidebarGitHubSelection({
+    anchorNumber,
+    selectedNumbers,
+    visibleNumbers,
+}: ReconcileSidebarGitHubSelectionInput): SidebarGitHubSelectionState {
+    const visibleNumberSet = new Set(visibleNumbers);
+    return {
+        anchorNumber:
+            anchorNumber !== null && visibleNumberSet.has(anchorNumber)
+                ? anchorNumber
+                : null,
+        selectedNumbers: visibleNumbers.filter((number) =>
+            selectedNumbers.includes(number),
+        ),
+    };
+}
+
+export function getSidebarGitHubContextNumbers({
+    itemNumber,
+    selectedNumbers,
+    visibleNumbers,
+}: {
+    readonly itemNumber: number;
+    readonly selectedNumbers: readonly number[];
+    readonly visibleNumbers: readonly number[];
+}): number[] {
+    if (!selectedNumbers.includes(itemNumber)) {
+        return [itemNumber];
+    }
+
+    const selectedNumberSet = new Set(selectedNumbers);
+    const orderedNumbers = visibleNumbers.filter((number) =>
+        selectedNumberSet.has(number),
+    );
+    return orderedNumbers.length > 0 ? orderedNumbers : [itemNumber];
+}
+
+export function shouldOpenSidebarGitHubItemClick({
+    ctrlKey,
+    metaKey,
+    shiftKey,
+}: {
+    readonly ctrlKey: boolean;
+    readonly metaKey: boolean;
+    readonly shiftKey: boolean;
+}): boolean {
+    return !shiftKey && !metaKey && !ctrlKey;
+}
+
+export function getSidebarGitHubDragItems<
+    Item extends { readonly number: number; readonly title: string },
+>({
+    item,
+    selectedNumbers,
+    visibleItems,
+    visibleNumbers,
+}: {
+    readonly item: Item;
+    readonly selectedNumbers: readonly number[];
+    readonly visibleItems: readonly Item[];
+    readonly visibleNumbers: readonly number[];
+}): readonly SidebarGitHubDragItem[] {
+    const numbers = getSidebarGitHubContextNumbers({
+        itemNumber: item.number,
+        selectedNumbers,
+        visibleNumbers,
+    });
+    const items = getSidebarGitHubItemsByNumber(visibleItems, numbers);
+
+    return items.length > 0
+        ? items.map(toSidebarGitHubDragItem)
+        : [toSidebarGitHubDragItem(item)];
+}
+
+export function getSidebarGitHubAddToChatLabel({
+    count,
+    forceNewChat,
+    kind,
+}: {
+    readonly count: number;
+    readonly forceNewChat: boolean;
+    readonly kind: SidebarGitHubPanelKind;
+}): string {
+    const target = forceNewChat ? "New Chat" : "Chat";
+    if (count <= 1) {
+        const itemLabel = kind === "issues" ? "Issue" : "Pull Request";
+        return `Add ${itemLabel} to ${target}`;
+    }
+
+    const itemLabel = kind === "issues" ? "Issues" : "Pull Requests";
+    return `Add ${count} ${itemLabel} to ${target}`;
+}
+
+function buildSidebarGitHubContextMenuEntries({
+    canWriteIssues,
+    count,
+    kind,
+    onAddToChat,
+    onAddToNewChat,
+    onEditLabels,
+    onOpen,
+    onOpenInGitHub,
+}: {
+    readonly canWriteIssues: boolean;
+    readonly count: number;
+    readonly kind: SidebarGitHubPanelKind;
+    readonly onAddToChat: () => void;
+    readonly onAddToNewChat: () => void;
+    readonly onEditLabels: (() => void) | null;
+    readonly onOpen: () => void;
+    readonly onOpenInGitHub: () => void;
+}): ContextMenuEntry[] {
+    const entries: ContextMenuEntry[] = [
+        {
+            label: getSidebarGitHubAddToChatLabel({
+                count,
+                forceNewChat: false,
+                kind,
+            }),
+            action: onAddToChat,
+        },
+        {
+            label: getSidebarGitHubAddToChatLabel({
+                count,
+                forceNewChat: true,
+                kind,
+            }),
+            action: onAddToNewChat,
+        },
+        { type: "separator" },
+        {
+            label: kind === "issues" ? "Open Issue" : "Open Pull Request",
+            action: onOpen,
+            disabled: count !== 1,
+        },
+        {
+            label: "Open in GitHub",
+            action: onOpenInGitHub,
+            disabled: count !== 1,
+        },
+    ];
+
+    if (kind === "issues" && count === 1 && onEditLabels) {
+        entries.push(
+            { type: "separator" },
+            {
+                label: "Edit Labels...",
+                action: onEditLabels,
+                disabled: !canWriteIssues,
+            },
+        );
+    }
+
+    return entries;
+}
+
+export function buildSidebarGitHubComposerParts(
+    repoRef: GitHubRepositoryRef,
+    items:
+        | readonly GitHubIssueSummary[]
+        | readonly GitHubPullRequestSummary[],
+    kind: SidebarGitHubPanelKind,
+): AIComposerPart[] {
+    const dragItems: WorkspaceTabComposerDragItem[] =
+        kind === "issues"
+            ? (items as readonly GitHubIssueSummary[]).map((issue) =>
+                  createGitHubIssueComposerDragItem(repoRef, issue),
+              )
+            : (items as readonly GitHubPullRequestSummary[]).map(
+                  (pullRequest) =>
+                      createGitHubPullRequestComposerDragItem(
+                          repoRef,
+                          pullRequest,
+                      ),
+              );
+
+    return dragItems.reduce<AIComposerPart[]>(
+        (parts, item) => appendWorkspaceTabComposerItem(parts, item),
+        createEmptyComposerParts(),
+    );
+}
+
+function getSidebarGitHubItemsByNumber<
+    Item extends { readonly number: number },
+>(items: readonly Item[], numbers: readonly number[]): Item[] {
+    const itemByNumber = new Map(items.map((item) => [item.number, item]));
+    return numbers
+        .map((number) => itemByNumber.get(number) ?? null)
+        .filter((item): item is Item => item !== null);
+}
+
+function toSidebarGitHubDragItem(item: {
+    readonly number: number;
+    readonly title: string;
+}): SidebarGitHubDragItem {
+    return {
+        number: item.number,
+        title: item.title,
+    };
+}
+
+function getSidebarGitHubPluralLabel(
+    itemKind: SidebarGitHubDragItemKind,
+): string {
+    return itemKind === "issue" ? "Issues" : "Pull Requests";
+}
+
+function stringifyNumbers(numbers: readonly number[]): string[] {
+    return numbers.map(String);
+}
+
+function areNumberArraysEqual(
+    left: readonly number[],
+    right: readonly number[],
+): boolean {
+    return (
+        left.length === right.length &&
+        left.every((value, index) => value === right[index])
     );
 }
 

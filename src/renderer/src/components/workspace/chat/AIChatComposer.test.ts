@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
     appendComposerProjectEntries,
-    appendWorkspaceTabComposerItem,
     getComposerPillLayoutStyle,
     getComposerShellSizingStyle,
     getComposerSubmitKeyboardAction,
@@ -10,6 +9,10 @@ import {
     shouldResetComposerForNonceChange,
 } from "./AIChatComposer";
 import { getChatPillMetrics } from "./chatPillMetrics";
+import {
+    appendWorkspaceTabComposerItem,
+    appendWorkspaceTabComposerItems,
+} from "./composerParts";
 
 describe("AIChatComposer", () => {
     it("does not reset on the initial mount nonce", () => {
@@ -246,6 +249,57 @@ describe("AIChatComposer", () => {
                 title: "Add GitHub API integration",
                 type: "github_pull_request_mention",
                 url: "https://github.com/comando/app/pull/456",
+            },
+            { text: " ", type: "text" },
+        ]);
+    });
+
+    it("appends every item from a multi-item GitHub drop", () => {
+        expect(
+            appendWorkspaceTabComposerItems([{ text: "", type: "text" }], [
+                {
+                    host: "github.com",
+                    kind: "github_issue_mention",
+                    label: "#123",
+                    number: 123,
+                    owner: "comando",
+                    repo: "app",
+                    title: "Crash on launch",
+                    url: "https://github.com/comando/app/issues/123",
+                },
+                {
+                    host: "github.com",
+                    kind: "github_issue_mention",
+                    label: "#124",
+                    number: 124,
+                    owner: "comando",
+                    repo: "app",
+                    title: "Broken drag preview",
+                    url: "https://github.com/comando/app/issues/124",
+                },
+            ]),
+        ).toEqual([
+            { text: "", type: "text" },
+            {
+                host: "github.com",
+                label: "#123",
+                number: 123,
+                owner: "comando",
+                repo: "app",
+                title: "Crash on launch",
+                type: "github_issue_mention",
+                url: "https://github.com/comando/app/issues/123",
+            },
+            { text: " ", type: "text" },
+            {
+                host: "github.com",
+                label: "#124",
+                number: 124,
+                owner: "comando",
+                repo: "app",
+                title: "Broken drag preview",
+                type: "github_issue_mention",
+                url: "https://github.com/comando/app/issues/124",
             },
             { text: " ", type: "text" },
         ]);

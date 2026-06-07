@@ -1,3 +1,9 @@
+import type {
+    GitHubIssueSummary,
+    GitHubPullRequestSummary,
+    GitHubRepositoryRef,
+} from "@shared/ipc";
+
 export const COMPOSER_PROJECT_ENTRY_MIME =
     "application/x-comando-composer-project-entry";
 export const COMPOSER_PROJECT_ENTRY_LIST_MIME =
@@ -91,6 +97,57 @@ export interface WorkspaceTabComposerDragDetail {
     readonly x: number;
     readonly y: number;
     readonly item: WorkspaceTabComposerDragItem | null;
+    readonly items?: readonly WorkspaceTabComposerDragItem[];
+}
+
+export function getWorkspaceTabComposerDragItems(
+    detail: Pick<WorkspaceTabComposerDragDetail, "item" | "items">,
+): readonly WorkspaceTabComposerDragItem[] {
+    if (detail.items && detail.items.length > 0) {
+        return detail.items;
+    }
+
+    return detail.item ? [detail.item] : [];
+}
+
+export function buildGitHubRepositoryUrl(
+    ref: Pick<GitHubRepositoryRef, "host" | "owner" | "repo">,
+    path = "",
+): string {
+    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+    return `https://${ref.host}/${ref.owner}/${ref.repo}${path ? normalizedPath : ""}`;
+}
+
+export function createGitHubIssueComposerDragItem(
+    ref: GitHubRepositoryRef,
+    issue: Pick<GitHubIssueSummary, "number" | "title" | "url">,
+): WorkspaceTabComposerDragItem {
+    return {
+        host: ref.host,
+        kind: "github_issue_mention",
+        label: `#${issue.number}`,
+        number: issue.number,
+        owner: ref.owner,
+        repo: ref.repo,
+        title: issue.title,
+        url: issue.url,
+    };
+}
+
+export function createGitHubPullRequestComposerDragItem(
+    ref: GitHubRepositoryRef,
+    pullRequest: Pick<GitHubPullRequestSummary, "number" | "title" | "url">,
+): WorkspaceTabComposerDragItem {
+    return {
+        host: ref.host,
+        kind: "github_pull_request_mention",
+        label: `PR #${pullRequest.number}`,
+        number: pullRequest.number,
+        owner: ref.owner,
+        repo: ref.repo,
+        title: pullRequest.title,
+        url: pullRequest.url,
+    };
 }
 
 export function serializeComposerProjectEntryDragData(

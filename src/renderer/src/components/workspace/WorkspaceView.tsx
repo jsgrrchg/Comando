@@ -30,6 +30,9 @@ import {
     shouldWrapEditorLanguage,
 } from "@shared/editor-language";
 import {
+    buildGitHubRepositoryUrl,
+    createGitHubIssueComposerDragItem,
+    createGitHubPullRequestComposerDragItem,
     emitWorkspaceTabComposerDrag,
     isPointOverComposerDropZone,
     type ComposerProjectEntryDragData,
@@ -848,8 +851,10 @@ export function WorkspaceView({
 
     const handleSidebarGitHubDrag = useEffectEvent((event: Event) => {
         const detail = (event as CustomEvent<SidebarGitHubDragDetail>).detail;
+        const dragItems = getSidebarGitHubComposerDragItems(detail);
         emitWorkspaceTabComposerDrag({
-            item: getSidebarGitHubComposerDragItem(detail),
+            item: dragItems[0] ?? null,
+            items: dragItems,
             phase: detail.phase,
             x: detail.x,
             y: detail.y,
@@ -877,26 +882,12 @@ export function WorkspaceView({
         }
 
         if (detail.phase === "end") {
-            const openTarget = workspacePaneDropTargetToOpenTarget(target);
             clearExternalDropTarget();
-
-            if (detail.itemKind === "issue") {
-                void openGitHubIssueTabAtTarget({
-                    issueNumber: detail.number,
-                    projectId: detail.projectId,
-                    ref: detail.ref,
-                    target: openTarget,
-                    worktreeId: detail.worktreeId,
-                });
-                return;
-            }
-
-            void openGitHubPullRequestTabAtTarget({
-                projectId: detail.projectId,
-                pullRequestNumber: detail.number,
-                ref: detail.ref,
-                target: openTarget,
-                worktreeId: detail.worktreeId,
+            void openSidebarGitHubDragItemsAtTarget({
+                detail,
+                openGitHubIssueTabAtTarget,
+                openGitHubPullRequestTabAtTarget,
+                target,
             });
             return;
         }
@@ -1133,6 +1124,61 @@ async function openProjectFileEntriesAtTarget(input: {
 
         openTarget = getNextProjectFileOpenTarget(openTarget, paneId);
     }
+}
+
+async function openSidebarGitHubDragItemsAtTarget(input: {
+    readonly detail: SidebarGitHubDragDetail;
+    readonly openGitHubIssueTabAtTarget: ReturnType<
+        typeof useWorkspaceStore.getState
+    >["openGitHubIssueTabAtTarget"];
+    readonly openGitHubPullRequestTabAtTarget: ReturnType<
+        typeof useWorkspaceStore.getState
+    >["openGitHubPullRequestTabAtTarget"];
+    readonly target: WorkspacePaneDropTarget;
+}): Promise<void> {
+    let openTarget = workspacePaneDropTargetToOpenTarget(input.target);
+    const dragItems =
+        input.detail.items.length > 0
+            ? input.detail.items
+            : [{ number: input.detail.number, title: input.detail.title }];
+
+    for (const item of dragItems) {
+        const tabId =
+            input.detail.itemKind === "issue"
+                ? await input.openGitHubIssueTabAtTarget({
+                      issueNumber: item.number,
+                      projectId: input.detail.projectId,
+                      ref: input.detail.ref,
+                      target: openTarget,
+                      worktreeId: input.detail.worktreeId,
+                  })
+                : await input.openGitHubPullRequestTabAtTarget({
+                      projectId: input.detail.projectId,
+                      pullRequestNumber: item.number,
+                      ref: input.detail.ref,
+                      target: openTarget,
+                      worktreeId: input.detail.worktreeId,
+                  });
+        const paneId = tabId
+            ? findPaneIdForWorkspaceTab(useWorkspaceStore.getState(), tabId)
+            : null;
+        if (!paneId) {
+            continue;
+        }
+
+        openTarget = getNextProjectFileOpenTarget(openTarget, paneId);
+    }
+}
+
+function findPaneIdForWorkspaceTab(
+    state: ReturnType<typeof useWorkspaceStore.getState>,
+    tabId: string,
+): string | null {
+    return (
+        collectPaneNodes(state.rootNode).find((pane) =>
+            pane.tabIds.includes(tabId),
+        )?.id ?? null
+    );
 }
 
 function WorkspaceSplitView({
@@ -2700,40 +2746,31 @@ function getWorkspaceTabComposerDragItem(
     return null;
 }
 
-function buildGitHubRepositoryUrl(
-    ref: { readonly host: string; readonly owner: string; readonly repo: string },
-    path = "",
-): string {
-    const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-    return `https://${ref.host}/${ref.owner}/${ref.repo}${path ? normalizedPath : ""}`;
-}
-
-function getSidebarGitHubComposerDragItem(
+function getSidebarGitHubComposerDragItems(
     detail: SidebarGitHubDragDetail,
-): WorkspaceTabComposerDragItem {
+): readonly WorkspaceTabComposerDragItem[] {
+    const sidebarItems =
+        detail.items.length > 0
+            ? detail.items
+            : [{ number: detail.number, title: detail.title }];
+
     if (detail.itemKind === "issue") {
-        return {
-            host: detail.ref.host,
-            kind: "github_issue_mention",
-            label: `#${detail.number}`,
-            number: detail.number,
-            owner: detail.ref.owner,
-            repo: detail.ref.repo,
-            title: detail.title,
-            url: buildGitHubRepositoryUrl(detail.ref, `/issues/${detail.number}`),
-        };
+        return sidebarItems.map((item) =>
+            createGitHubIssueComposerDragItem(detail.ref, {
+                number: item.number,
+                title: item.title,
+                url: buildGitHubRepositoryUrl(detail.ref, `/issues/${item.number}`),
+            }),
+        );
     }
 
-    return {
-        host: detail.ref.host,
-        kind: "github_pull_request_mention",
-        label: `PR #${detail.number}`,
-        number: detail.number,
-        owner: detail.ref.owner,
-        repo: detail.ref.repo,
-        title: detail.title,
-        url: buildGitHubRepositoryUrl(detail.ref, `/pull/${detail.number}`),
-    };
+    return sidebarItems.map((item) =>
+        createGitHubPullRequestComposerDragItem(detail.ref, {
+            number: item.number,
+            title: item.title,
+            url: buildGitHubRepositoryUrl(detail.ref, `/pull/${item.number}`),
+        }),
+    );
 }
 
 function getCachedGitHubIssueTitle(
