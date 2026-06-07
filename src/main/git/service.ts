@@ -31,6 +31,7 @@ import {
 } from "./worktrees";
 import { getGitFileDiff } from "./diff";
 import { getGitCommitDetail, listGitHistory } from "./history";
+import { buildRuntimePathEntries } from "../ai/runtime-env";
 
 export interface GitServiceOptions {
     readonly cacheSnapshots?: boolean;
@@ -461,7 +462,7 @@ export class GitService implements GitGateway {
             );
         }
 
-        const git = simpleGit(normalizedPath);
+        const git = createGit(normalizedPath);
         await git.raw(["init"]);
         await git.raw(["symbolic-ref", "HEAD", "refs/heads/main"]);
         this.invalidate(normalizedPath);
@@ -473,7 +474,7 @@ export class GitService implements GitGateway {
         relativePaths: readonly string[],
     ): Promise<GitRepositorySnapshot> {
         const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
-        await simpleGit(rootPath).add(normalizeGitPaths(relativePaths));
+        await createGit(rootPath).add(normalizeGitPaths(relativePaths));
         this.invalidate(inputPath);
         return this.getRepositorySnapshot(inputPath);
     }
@@ -483,7 +484,7 @@ export class GitService implements GitGateway {
         relativePaths: readonly string[],
     ): Promise<GitRepositorySnapshot> {
         const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
-        await simpleGit(rootPath).raw([
+        await createGit(rootPath).raw([
             "restore",
             "--staged",
             "--",
@@ -502,7 +503,7 @@ export class GitService implements GitGateway {
             async () => {
                 const rootPath =
                     await this.#requireReadyRepositoryRoot(inputPath);
-                const git = simpleGit(rootPath);
+                const git = createGit(rootPath);
                 const normalizedPaths = normalizeGitPaths(relativePaths);
 
                 for (const relativePath of normalizedPaths) {
@@ -548,7 +549,7 @@ export class GitService implements GitGateway {
         readonly snapshot: GitRepositorySnapshot;
     }> {
         const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
-        const git = simpleGit(rootPath);
+        const git = createGit(rootPath);
         const trimmedMessage = message.trim();
         const statusSnapshot = buildGitStatusSnapshot(
             await createBackgroundSafeGit(rootPath).status(),
@@ -606,7 +607,7 @@ export class GitService implements GitGateway {
         },
     ): Promise<GitRepositorySnapshot> {
         const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
-        const git = simpleGit(rootPath);
+        const git = createGit(rootPath);
         const args = ["checkout"];
 
         if (options.force) {
@@ -635,7 +636,7 @@ export class GitService implements GitGateway {
         },
     ): Promise<GitRepositorySnapshot> {
         const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
-        const git = simpleGit(rootPath);
+        const git = createGit(rootPath);
         const args = ["worktree", "add"];
 
         if (options.force) {
@@ -663,7 +664,7 @@ export class GitService implements GitGateway {
         },
     ): Promise<GitRepositorySnapshot> {
         const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
-        const git = simpleGit(rootPath);
+        const git = createGit(rootPath);
         const args = ["branch", options.force ? "-D" : "-d", options.branchName];
 
         await git.raw(args);
@@ -679,7 +680,7 @@ export class GitService implements GitGateway {
         },
     ): Promise<GitRepositorySnapshot> {
         const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
-        const git = simpleGit(rootPath);
+        const git = createGit(rootPath);
 
         await git.raw([
             "push",
@@ -701,7 +702,7 @@ export class GitService implements GitGateway {
         },
     ): Promise<GitRepositorySnapshot> {
         const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
-        const git = simpleGit(rootPath);
+        const git = createGit(rootPath);
         const args = ["worktree", "remove"];
 
         if (options.force) {
@@ -723,7 +724,7 @@ export class GitService implements GitGateway {
         } = {},
     ): Promise<GitRepositorySnapshot> {
         const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
-        const git = simpleGit(rootPath);
+        const git = createGit(rootPath);
         const args = ["fetch"];
 
         if (options.prune) {
@@ -750,7 +751,7 @@ export class GitService implements GitGateway {
         } = {},
     ): Promise<GitRepositorySnapshot> {
         const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
-        const git = simpleGit(rootPath);
+        const git = createGit(rootPath);
         const args = ["pull"];
 
         if (options.rebase) {
@@ -781,7 +782,7 @@ export class GitService implements GitGateway {
         } = {},
     ): Promise<GitRepositorySnapshot> {
         const rootPath = await this.#requireReadyRepositoryRoot(inputPath);
-        const git = simpleGit(rootPath);
+        const git = createGit(rootPath);
         const args = ["push"];
 
         if (options.forceWithLease) {
@@ -846,7 +847,7 @@ async function hydrateGitSyncStatus(
         return null;
     }
 
-    const git = simpleGit(rootPath);
+    const git = createGit(rootPath);
     try {
         const commit = (await git.raw(["rev-parse", "HEAD"])).trim();
         return {
@@ -921,5 +922,21 @@ function collectNumstatRecords(
 }
 
 function createBackgroundSafeGit(rootPath: string) {
-    return simpleGit(rootPath).env({ GIT_OPTIONAL_LOCKS: "0" });
+    return createGit(rootPath).env({ GIT_OPTIONAL_LOCKS: "0" });
+}
+
+function createGit(rootPath: string) {
+    const pathEntries = buildRuntimePathEntries(
+        process.env.PATH,
+        "git",
+        process.env,
+    );
+
+    if (pathEntries.length === 0) {
+        return simpleGit(rootPath);
+    }
+
+    return simpleGit(rootPath).env({
+        PATH: pathEntries.join(path.delimiter),
+    });
 }

@@ -495,6 +495,52 @@ describe("GitService", () => {
         ).toContain("hotfix/cache");
     });
 
+    it("runs checkout hooks with common user PATH entries available", async () => {
+        const rootPath = createGitRepositoryFixture();
+        const homePath = createGitRepositoryFixture();
+        const helperBinPath = path.join(homePath, "bin");
+        const helperPath = path.join(
+            helperBinPath,
+            "comando-post-checkout-helper",
+        );
+        const previousHome = process.env.HOME;
+        const previousPath = process.env.PATH;
+
+        git(rootPath, ["init", "-b", "main"]);
+        git(rootPath, ["config", "user.name", "Comando"]);
+        git(rootPath, ["config", "user.email", "comando@example.com"]);
+        fs.writeFileSync(path.join(rootPath, "README.md"), "hello\n");
+        git(rootPath, ["add", "README.md"]);
+        git(rootPath, ["commit", "-m", "initial commit"]);
+        git(rootPath, ["branch", "feature/hooks"]);
+
+        fs.mkdirSync(helperBinPath);
+        fs.writeFileSync(helperPath, "#!/bin/sh\nexit 0\n");
+        fs.chmodSync(helperPath, 0o755);
+
+        const hookPath = path.join(rootPath, ".git", "hooks", "post-checkout");
+        fs.writeFileSync(hookPath, "#!/bin/sh\ncomando-post-checkout-helper\n");
+        fs.chmodSync(hookPath, 0o755);
+
+        try {
+            process.env.HOME = homePath;
+            process.env.PATH = previousPath
+                ?.split(path.delimiter)
+                .filter((entry) => entry !== helperBinPath)
+                .join(path.delimiter);
+
+            const service = new GitService({ cacheSnapshots: false });
+            const snapshot = await service.checkoutBranch(rootPath, {
+                branchName: "feature/hooks",
+            });
+
+            expect(snapshot.status.sync?.branchName).toBe("feature/hooks");
+        } finally {
+            process.env.HOME = previousHome;
+            process.env.PATH = previousPath;
+        }
+    });
+
     it("classifies paths outside a repo as non-repository", async () => {
         const rootPath = createGitRepositoryFixture();
         const service = new GitService({ cacheSnapshots: false });
