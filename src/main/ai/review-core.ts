@@ -21,6 +21,7 @@ import {
     computeDiffHunks,
     getTrackedFileCurrentText,
     getTrackedFileDiffBase,
+    normalizeReviewText,
     syncTrackedFile,
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
@@ -1565,6 +1566,25 @@ export function normalizeTrackedDiffPath(
     candidatePath: string,
 ): string {
     const scopeRoot = liveSession.projectRoot ?? liveSession.cwd;
+    if (isPosixAbsolutePath(scopeRoot) && isPosixAbsolutePath(candidatePath)) {
+        const absolutePath = path.posix.resolve(candidatePath);
+        const normalizedScopeRoot = path.posix.resolve(scopeRoot);
+        if (
+            absolutePath === normalizedScopeRoot ||
+            absolutePath.startsWith(`${normalizedScopeRoot}/`)
+        ) {
+            const relativePath = path.posix.relative(
+                normalizedScopeRoot,
+                absolutePath,
+            );
+            return relativePath.length > 0
+                ? relativePath
+                : path.posix.basename(absolutePath);
+        }
+
+        return absolutePath;
+    }
+
     const absolutePath = path.isAbsolute(candidatePath)
         ? path.resolve(candidatePath)
         : path.resolve(scopeRoot, candidatePath);
@@ -1582,6 +1602,10 @@ export function normalizeTrackedDiffPath(
     return path.isAbsolute(candidatePath)
         ? absolutePath
         : toPosixPath(candidatePath);
+}
+
+function isPosixAbsolutePath(candidatePath: string): boolean {
+    return candidatePath.startsWith("/") && !candidatePath.startsWith("//");
 }
 
 export async function readTextIfExists(
@@ -1687,17 +1711,26 @@ async function isTrackedFileNetClean(
         ]);
 
         return (
-            (currentText === null || currentText === diffBase) &&
-            previousText === diffBase
+            (currentText === null ||
+                normalizeReviewText(currentText) ===
+                    normalizeReviewText(diffBase)) &&
+            previousText !== null &&
+            normalizeReviewText(previousText) === normalizeReviewText(diffBase)
         );
     }
 
     const currentText = await readTrackedFileText(trackedFile.path);
     if (trackedFile.kind === "create") {
-        return currentText === null || currentText === diffBase;
+        return (
+            currentText === null ||
+            normalizeReviewText(currentText) === normalizeReviewText(diffBase)
+        );
     }
 
-    return currentText === diffBase;
+    return (
+        currentText !== null &&
+        normalizeReviewText(currentText) === normalizeReviewText(diffBase)
+    );
 }
 
 function resolveTrackedDiffAbsolutePath(

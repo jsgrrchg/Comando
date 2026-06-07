@@ -1,11 +1,23 @@
 import type { AiDiffHunk, AiTrackedFile } from "./ipc";
 
+export function normalizeReviewText(text: string): string {
+    return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function detectDominantLineEnding(text: string): "\n" | "\r\n" {
+    const crlfCount = (text.match(/\r\n/g) ?? []).length;
+    const lfCount = (text.match(/(?<!\r)\n/g) ?? []).length;
+
+    return crlfCount > lfCount ? "\r\n" : "\n";
+}
+
 function splitTextLines(text: string): string[] {
-    if (text.length === 0) {
+    const normalizedText = normalizeReviewText(text);
+    if (normalizedText.length === 0) {
         return [];
     }
 
-    return text.split("\n");
+    return normalizedText.split("\n");
 }
 
 function buildVisualLineRange(
@@ -286,7 +298,10 @@ function mergePendingTrackedFile(
     const isNetNeutralMove =
         previousPath !== null && previousPath === syncedNextTrackedFile.path;
 
-    if (diffBase === currentText && (!previousPath || isNetNeutralMove)) {
+    if (
+        normalizeReviewText(diffBase) === normalizeReviewText(currentText) &&
+        (!previousPath || isNetNeutralMove)
+    ) {
         return null;
     }
 
@@ -420,7 +435,10 @@ export function resolveTrackedFileHunks(
             ? baseNewText
             : applyHunksToBase(baseOldText, remainingHunks);
 
-    if (nextDiffBase === nextCurrentText && !syncedTrackedFile.previousPath) {
+    if (
+        normalizeReviewText(nextDiffBase) === normalizeReviewText(nextCurrentText) &&
+        !syncedTrackedFile.previousPath
+    ) {
         return null;
     }
 
@@ -454,6 +472,7 @@ function applyHunksToBase(
     hunks: readonly AiDiffHunk[],
 ): string {
     const baseLines = splitTextLines(baseText);
+    const lineEnding = detectDominantLineEnding(baseText);
     const output: string[] = [];
     let cursor = 0;
 
@@ -485,7 +504,7 @@ function applyHunksToBase(
     }
 
     output.push(...baseLines.slice(cursor));
-    return output.join("\n");
+    return output.join(lineEnding);
 }
 
 export function computeDiffHunks(

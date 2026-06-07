@@ -40,6 +40,16 @@ function createTrackedFile(
 }
 
 describe("syncTrackedFile", () => {
+    it("treats CRLF-only line ending changes as net-clean", () => {
+        expect(
+            computeDiffHunks(
+                "alpha\nbeta\ngamma\n",
+                "alpha\r\nbeta\r\ngamma\r\n",
+                "notes/example.md",
+            ),
+        ).toEqual([]);
+    });
+
     it("recomputes stale hunks from persisted text snapshots", () => {
         const oldText = "alpha\nbeta\ngamma";
         const newText = "alpha\nBETA\ngamma";
@@ -108,6 +118,36 @@ describe("resolveTrackedFileHunks", () => {
         expect(resolved?.hunksAreAnchored).toBeUndefined();
         expect(resolved?.hunks).toEqual(
             computeDiffHunks(oldText, "one\ntwo\nTHREE\nfour", path),
+        );
+    });
+
+    it("preserves CRLF line endings when resolving one pending hunk", () => {
+        const path = "src/foo.ts";
+        const oldText = "one\r\ntwo\r\nthree\r\nfour\r\n";
+        const newText = "ONE\r\ntwo\r\nTHREE\r\nfour\r\n";
+        const trackedFile = createTrackedFile({
+            currentText: newText,
+            diffBase: oldText,
+            hunks: computeDiffHunks(oldText, newText, path),
+            identityKey: path,
+            newText,
+            oldText,
+            path,
+        });
+        const firstHunk = trackedFile.hunks[0];
+
+        if (!firstHunk) {
+            throw new Error("Expected a hunk.");
+        }
+
+        const resolved = resolveTrackedFileHunks(
+            trackedFile,
+            [firstHunk.id],
+            "reject",
+        );
+
+        expect(resolved?.currentText).toBe(
+            "one\r\ntwo\r\nTHREE\r\nfour\r\n",
         );
     });
 });

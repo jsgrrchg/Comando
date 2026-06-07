@@ -10,7 +10,10 @@ import {
     forgetOpenFileBuffer,
     recordOpenFileBuffer,
 } from "./openFileBuffers";
-import { mapImageGenerationToolUpdate } from "./review-core";
+import {
+    mapImageGenerationToolUpdate,
+    reconcilePendingTrackedFiles,
+} from "./review-core";
 import { __testing } from "./service";
 
 function createTrackedFile(
@@ -1000,6 +1003,35 @@ describe("resolveDiffToFullTexts", () => {
 
         expect(resolved.oldText).toBeNull();
         expect(resolved.newText).toBe("hello\n");
+    });
+});
+
+describe("tracked file reconciliation", () => {
+    it("drops pending tracked files when only disk line endings differ", async () => {
+        const baseText = "alpha\nbeta\ngamma\n";
+        const trackedFile = createTrackedFile({
+            currentText: "alpha\nBETA\ngamma\n",
+            diffBase: baseText,
+            hunks: __testing.computeDiffHunks(
+                baseText,
+                "alpha\nBETA\ngamma\n",
+                "notes/example.md",
+            ),
+            newText: "alpha\nBETA\ngamma\n",
+            oldText: baseText,
+            path: "notes/example.md",
+        });
+
+        const result = await reconcilePendingTrackedFiles({
+            readTrackedFileText: () =>
+                Promise.resolve("alpha\r\nbeta\r\ngamma\r\n"),
+            trackedFiles: [trackedFile],
+        });
+
+        expect(result).toMatchObject({
+            changed: true,
+            trackedFiles: [],
+        });
     });
 });
 
