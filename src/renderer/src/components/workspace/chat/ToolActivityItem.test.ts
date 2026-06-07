@@ -621,6 +621,155 @@ describe("ToolActivityItem", () => {
         );
     });
 
+    it("shows read output content in expanded details", () => {
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [
+                    {
+                        endLine: null,
+                        line: null,
+                        path: "package.json",
+                    },
+                ],
+                rawOutputJson: JSON.stringify(
+                    '{\n  "scripts": {\n    "typecheck": "tsc --noEmit"\n  }\n}',
+                ),
+                summary: "1 line of output",
+                title: "Read package.json",
+            }),
+            onOpenFile: async () => {},
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+
+        expect(container.textContent).not.toContain("typecheck");
+
+        const chevronButton = container.querySelector<HTMLButtonElement>(
+            'button[aria-label="Expand details"]',
+        );
+        expect(chevronButton).not.toBeNull();
+
+        act(() => {
+            chevronButton?.click();
+        });
+
+        expect(container.textContent).toContain('"typecheck"');
+        expect(container.textContent).toContain("package.json");
+        expect(container.textContent).not.toContain("1 line of output");
+
+        const codeBlock = container.querySelector("pre");
+        expect(codeBlock?.style.whiteSpace).toBe("pre");
+        expect(codeBlock?.style.overflowX).toBe("auto");
+    });
+
+    it("normalizes double-encoded read output before rendering details", () => {
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [
+                    {
+                        endLine: 11,
+                        line: 10,
+                        path: "src/example.ts",
+                    },
+                ],
+                rawOutputJson: JSON.stringify(
+                    JSON.stringify("function run() {\n    return true;\n}"),
+                ),
+                summary: "1 line of output",
+                title: "Read example.ts",
+            }),
+            onOpenFile: async () => {},
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+
+        const chevronButton = container.querySelector<HTMLButtonElement>(
+            'button[aria-label="Expand details"]',
+        );
+        act(() => {
+            chevronButton?.click();
+        });
+
+        expect(container.textContent).toContain("function run() {");
+        expect(container.textContent).toContain("    return true;");
+        expect(container.textContent).toContain("src/example.ts:10-11");
+        expect(container.textContent).not.toContain("\\n");
+        expect(container.textContent).not.toContain("1 line of output");
+    });
+
+    it("decodes escaped read output into visible code lines", () => {
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [
+                    {
+                        endLine: null,
+                        line: null,
+                        path: "src/example.tsx",
+                    },
+                ],
+                rawOutputJson: JSON.stringify(
+                    'const label = \\"Open\\";\\nfunction render() {\\n\\treturn label;\\n}',
+                ),
+                summary: "1 line of output",
+                title: "Read example.tsx",
+            }),
+            onOpenFile: async () => {},
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+
+        const chevronButton = container.querySelector<HTMLButtonElement>(
+            'button[aria-label="Expand details"]',
+        );
+        act(() => {
+            chevronButton?.click();
+        });
+
+        expect(container.textContent).toContain('const label = "Open";');
+        expect(container.textContent).toContain("function render() {");
+        expect(container.textContent).not.toContain("\\n");
+        expect(container.textContent).not.toContain('\\"Open\\"');
+        expect(container.textContent).not.toContain("1 line of output");
+    });
+
+    it("preserves legitimate quoted read output", () => {
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [
+                    {
+                        endLine: null,
+                        line: null,
+                        path: "value.json",
+                    },
+                ],
+                rawOutputJson: JSON.stringify('"hello"'),
+                summary: "Read value.json",
+                title: "Read value.json",
+            }),
+            onOpenFile: async () => {},
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+
+        const chevronButton = container.querySelector<HTMLButtonElement>(
+            'button[aria-label="Expand details"]',
+        );
+        act(() => {
+            chevronButton?.click();
+        });
+
+        const codeBlock = container.querySelector("pre");
+        expect(codeBlock?.textContent).toBe('"hello"');
+    });
+
     it("renders turn_started as a subtle Codex ACP-style divider", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {

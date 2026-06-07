@@ -332,6 +332,11 @@ function isPrimaryOpenFileTool(activity: AiToolActivity): boolean {
     return activity.kind.toLowerCase() === "read";
 }
 
+function isReadToolActivityKind(kind: string): boolean {
+    const lk = kind.toLowerCase();
+    return lk === "read" || lk === "read_file";
+}
+
 function canOpenToolFileReference({
     projectId,
     resolveFileReference,
@@ -418,24 +423,118 @@ function formatToolLocationReference(
     return `${location.path}:${location.line}`;
 }
 
+function getToolLanguageInfoFromPath(pathValue: string | null): string | null {
+    if (!pathValue) {
+        return null;
+    }
+
+    const pathWithoutRange = pathValue.replace(/:\d+(?:-\d+)?$/, "");
+    const basename = pathWithoutRange.split(/[\\/]/).pop() ?? "";
+    const dotIndex = basename.lastIndexOf(".");
+    if (dotIndex <= 0 || dotIndex === basename.length - 1) {
+        return null;
+    }
+
+    return basename.slice(dotIndex + 1).toLowerCase();
+}
+
+function shouldDecodeEscapedReadText(value: string): boolean {
+    const escapedLineBreaks = value.match(/\\r\\n|\\n|\\r/g)?.length ?? 0;
+    if (escapedLineBreaks === 0) {
+        return false;
+    }
+
+    const actualLineBreaks = value.match(/\r\n|\n|\r/g)?.length ?? 0;
+    return actualLineBreaks === 0 || escapedLineBreaks > actualLineBreaks * 2;
+}
+
+function looksLikeEncodedJsonString(value: string): boolean {
+    const trimmed = value.trim();
+    return (
+        trimmed.startsWith('"') &&
+        trimmed.endsWith('"') &&
+        /\\(?:r|n|t|"|\\)/.test(trimmed)
+    );
+}
+
+function decodeEscapedReadText(value: string): string {
+    return value
+        .replace(/\\r\\n/g, "\n")
+        .replace(/\\n/g, "\n")
+        .replace(/\\r/g, "\n")
+        .replace(/\\t/g, "\t")
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, "\\");
+}
+
+function normalizeReadToolStringOutput(value: string): string | null {
+    let normalized = value;
+    for (let parseAttempt = 0; parseAttempt < 2; parseAttempt += 1) {
+        if (!looksLikeEncodedJsonString(normalized)) {
+            break;
+        }
+
+        try {
+            const parsed = parseJsonValue(normalized.trim());
+            if (typeof parsed !== "string" || parsed === normalized) {
+                break;
+            }
+            normalized = parsed;
+        } catch {
+            break;
+        }
+    }
+
+    if (shouldDecodeEscapedReadText(normalized)) {
+        normalized = decodeEscapedReadText(normalized);
+    }
+
+    return normalized.length > 0 ? normalized : null;
+}
+
+function getReadToolOutput(activity: AiToolActivity): string | null {
+    if (!isReadToolActivityKind(activity.kind) || !activity.rawOutputJson) {
+        return null;
+    }
+
+    try {
+        const parsed = parseJsonValue(activity.rawOutputJson);
+        if (typeof parsed === "string") {
+            return normalizeReadToolStringOutput(parsed);
+        }
+
+        if (parsed !== null && parsed !== undefined) {
+            return JSON.stringify(parsed, null, 2);
+        }
+    } catch {
+        return activity.rawOutputJson.trim().length > 0
+            ? activity.rawOutputJson
+            : null;
+    }
+
+    return null;
+}
+
 function ToolDetailCodeBlock({
     accentBorder,
     backgroundColor,
     color,
     content,
     languageInfo,
+    preserveLayout = false,
 }: {
     readonly accentBorder?: string;
     readonly backgroundColor: string;
     readonly color: string;
     readonly content: string;
     readonly languageInfo?: string | null;
+    readonly preserveLayout?: boolean;
 }) {
     const languageSupport = useMarkdownCodeLanguageSupport(languageInfo);
 
     return (
         <pre
-            className="max-h-48 select-text overflow-y-auto rounded px-2 py-1.5"
+            className="max-h-48 select-text rounded px-2 py-1.5"
             style={{
                 backgroundColor,
                 border: accentBorder ?? "1px solid var(--color-border)",
@@ -444,9 +543,11 @@ function ToolDetailCodeBlock({
                 fontSize: "0.92em",
                 lineHeight: 1.4,
                 margin: 0,
-                overflowWrap: "anywhere",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
+                overflowX: preserveLayout ? "auto" : "hidden",
+                overflowY: "auto",
+                overflowWrap: preserveLayout ? "normal" : "anywhere",
+                whiteSpace: preserveLayout ? "pre" : "pre-wrap",
+                wordBreak: preserveLayout ? "normal" : "break-word",
             }}
         >
             <code
@@ -646,9 +747,16 @@ function FileToolMessage({
         titleReference !== null &&
         titleIsLink &&
         isPrimaryOpenFileTool(activity);
+    const readOutput = getReadToolOutput(activity);
+    const readOutputLanguageInfo = getToolLanguageInfoFromPath(
+        titleReference?.target ??
+            activity.locations.find((location) => location.path)?.path ??
+            null,
+    );
 
     const hasDetail =
-        !!activity.summary ||
+        (!!activity.summary && !readOutput) ||
+        !!readOutput ||
         activity.locations.length > 0 ||
         activity.diffs.length > 0 ||
         pendingTrackedFiles.length > 0;
@@ -859,7 +967,19 @@ function FileToolMessage({
 
             {expanded ? (
                 <div className="px-3 py-1.5" style={{ fontSize: "0.78em" }}>
-                    {activity.summary ? (
+                    {readOutput ? (
+                        <div className="mb-1">
+                            <ToolDetailCodeBlock
+                                accentBorder={`1px solid color-mix(in srgb, ${accent} 10%, var(--color-border))`}
+                                backgroundColor={`color-mix(in srgb, ${accent} 4%, var(--color-bg-tertiary))`}
+                                color="var(--color-text-secondary)"
+                                content={readOutput}
+                                languageInfo={readOutputLanguageInfo}
+                                preserveLayout
+                            />
+                        </div>
+                    ) : null}
+                    {activity.summary && !readOutput ? (
                         <div className="mb-1">
                             <ToolDetailSummary
                                 accentBorder={`1px solid color-mix(in srgb, ${accent} 10%, var(--color-border))`}
