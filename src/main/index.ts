@@ -300,6 +300,7 @@ if (!hasSingleInstanceLock) {
 
 app.on("window-all-closed", () => {
     if (process.platform !== "darwin") {
+        isQuitting = true;
         app.quit();
     }
 });
