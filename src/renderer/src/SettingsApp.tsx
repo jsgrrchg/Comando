@@ -162,11 +162,28 @@ export function SettingsApp() {
         void window.comando.getBootstrapSnapshot().then((snapshot) => {
             if (!cancelled) {
                 setIsWindows(snapshot.platform === "win32");
+                document.documentElement.setAttribute(
+                    "data-platform",
+                    snapshot.platform,
+                );
+                if (snapshot.platform === "win32") {
+                    document.documentElement.setAttribute(
+                        "data-windows-acrylic",
+                        snapshot.windowEffects.windowsAcrylic
+                            ? "true"
+                            : "false",
+                    );
+                } else {
+                    document.documentElement.removeAttribute(
+                        "data-windows-acrylic",
+                    );
+                }
             }
         });
 
         return () => {
             cancelled = true;
+            document.documentElement.removeAttribute("data-windows-acrylic");
         };
     }, []);
 

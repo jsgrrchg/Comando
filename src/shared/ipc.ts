@@ -275,6 +275,9 @@ export interface AppBootstrapSnapshot {
         readonly electron: string;
         readonly node: string;
     };
+    readonly windowEffects: {
+        readonly windowsAcrylic: boolean;
+    };
 }
 
 export interface PersistedShellState {
