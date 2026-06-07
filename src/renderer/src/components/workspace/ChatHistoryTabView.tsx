@@ -40,6 +40,7 @@ import {
     IdeBarSearchIcon as SearchIcon,
     IdeIconButton,
 } from "./ide-bar";
+import { ChatContentColumn } from "./chat/ChatContentColumn";
 import { ChatMessageRow } from "./chat/ChatMessageRow";
 import { PlanMessage } from "./chat/PlanMessage";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
@@ -1600,9 +1601,11 @@ export function ChatHistoryTabLayout({
                                             "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
                                     }}
                                 >
-                                    <PlanMessage
-                                        plan={selectedSnapshot.plan}
-                                    />
+                                    <ChatContentColumn>
+                                        <PlanMessage
+                                            plan={selectedSnapshot.plan}
+                                        />
+                                    </ChatContentColumn>
                                 </div>
                             ) : null}
 

@@ -54,6 +54,7 @@ import { AIChatAgentControls } from "./AIChatAgentControls";
 import { LanguageIcon } from "./LanguageIcon";
 import { AIChatComposer } from "./chat/AIChatComposer";
 import { AIChatContextUsageBar } from "./chat/AIChatContextUsageBar";
+import { ChatContentColumn } from "./chat/ChatContentColumn";
 import { ChatTimelineHistoryRows } from "./chat/ChatTimelineHistoryRows";
 import { ToolExpansionStoreProvider } from "./chat/toolExpansionStore";
 import { ChatMessageRow } from "./chat/ChatMessageRow";
@@ -63,7 +64,6 @@ import {
     type ChatTimelineModel,
     type ChatTimelineRow,
 } from "./chat/chatTimelineModel";
-import { CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX } from "./chat/chatTimelineVirtualization";
 import {
     isActiveChatTurnStatus,
     isChatStreamingStatus,
@@ -1747,15 +1747,17 @@ export const ChatTabView = memo(function ChatTabView({
                                 "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
                         }}
                     >
-                        <PlanMessage
-                            onDismiss={() => {
-                                dismissSessionPlan(
-                                    snapshot.sessionId,
-                                    visiblePlan.updatedAt,
-                                );
-                            }}
-                            plan={visiblePlan}
-                        />
+                        <ChatContentColumn>
+                            <PlanMessage
+                                onDismiss={() => {
+                                    dismissSessionPlan(
+                                        snapshot.sessionId,
+                                        visiblePlan.updatedAt,
+                                    );
+                                }}
+                                plan={visiblePlan}
+                            />
+                        </ChatContentColumn>
                     </div>
                 ) : null}
 
@@ -1808,13 +1810,7 @@ export const ChatTabView = memo(function ChatTabView({
                             backgroundColor: "transparent",
                         }}
                     >
-                        <div
-                            className="flex w-full flex-col gap-2"
-                            style={{
-                                marginInline: "auto",
-                                maxWidth: CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
-                            }}
-                        >
+                        <ChatContentColumn className="flex flex-col gap-2">
                             {pendingPermission
                                 ? renderPermissionRequest(
                                       pendingPermission,
@@ -1858,7 +1854,7 @@ export const ChatTabView = memo(function ChatTabView({
                                     summary={pendingReviewSummary}
                                 />
                             ) : null}
-                        </div>
+                        </ChatContentColumn>
                     </div>
                 ) : null}
 
@@ -1876,16 +1872,12 @@ export const ChatTabView = memo(function ChatTabView({
                             "color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
                     }}
                 >
-                    <div
+                    <ChatContentColumn
                         className={
                             composerExpanded
-                                ? "flex min-h-0 w-full flex-1 flex-col"
-                                : "w-full"
+                                ? "flex min-h-0 flex-1 flex-col"
+                                : undefined
                         }
-                        style={{
-                            marginInline: "auto",
-                            maxWidth: CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
-                        }}
                     >
                         <AIChatComposer
                             autoFocusKey={tab.id}
@@ -1979,7 +1971,7 @@ export const ChatTabView = memo(function ChatTabView({
                             runtimeName={runtimeDisplayName}
                             status={snapshot.status}
                         />
-                    </div>
+                    </ChatContentColumn>
                 </div>
             </div>
         </div>
@@ -2375,14 +2367,11 @@ const ChatTimeline = memo(function ChatTimeline({
                     onScroll={onScroll}
                     onWheelCapture={onWheelCapture}
                 >
-                    <div
+                    <ChatContentColumn
                         ref={timelineContentRef}
                         className="min-w-0 space-y-2"
                         style={{
                             fontFamily: chatFontFamily,
-                            marginInline: "auto",
-                            maxWidth: CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
-                            width: "100%",
                         }}
                     >
                         <ChatTimelineHistory
@@ -2451,7 +2440,7 @@ const ChatTimeline = memo(function ChatTimeline({
                         {isStreaming ? (
                             <StreamingIndicator elapsed={elapsed} />
                         ) : null}
-                    </div>
+                    </ChatContentColumn>
                 </div>
                 <ChatJumpToBottomButton
                     onClick={onJumpToBottom}
