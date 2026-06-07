@@ -2,6 +2,17 @@ diff --git a/src/better_sqlite3.cpp b/src/better_sqlite3.cpp
 index 13f054a641f63dda3ebbf71ea5613cf12b054fad..947c83820f38335513e18be2168e52d4831575e3 100644
 --- a/src/better_sqlite3.cpp
 +++ b/src/better_sqlite3.cpp
+@@ -8,6 +8,10 @@
+ #include <algorithm>
+ #include <mutex>
+ #include <sqlite3.h>
++#if defined(_MSC_VER) && !defined(__clang__) && !defined(__builtin_frame_address)
++#include <intrin.h>
++#define __builtin_frame_address(level) _AddressOfReturnAddress()
++#endif
+ #include <node.h>
+ #include <node_object_wrap.h>
+ #include <node_buffer.h>
 @@ -57,7 +57,7 @@ NODE_MODULE_INIT(/* exports, context */) {
  
  	// Initialize addon instance.

@@ -13,7 +13,7 @@ overrides:
 
 patchedDependencies:
   better-sqlite3@12.10.0:
-    hash: 48cfd5ca8935cb3f7b43c3f939b7b590477c1d21f9cd75ec38b0667e9b4d94eb
+    hash: 187d44bdb3b05ba80c9f47c031baabd705fe992c5a82f723cd7ba3ad4cfecc99
     path: patches/better-sqlite3@12.10.0.patch
 
 importers:
@@ -97,7 +97,7 @@ importers:
         version: 6.0.0
       better-sqlite3:
         specifier: ^12.10.0
-        version: 12.10.0(patch_hash=48cfd5ca8935cb3f7b43c3f939b7b590477c1d21f9cd75ec38b0667e9b4d94eb)
+        version: 12.10.0(patch_hash=187d44bdb3b05ba80c9f47c031baabd705fe992c5a82f723cd7ba3ad4cfecc99)
       electron-updater:
         specifier: ^6.8.3
         version: 6.8.3
@@ -4275,7 +4275,7 @@ snapshots:
 
   baseline-browser-mapping@2.10.18: {}
 
-  better-sqlite3@12.10.0(patch_hash=48cfd5ca8935cb3f7b43c3f939b7b590477c1d21f9cd75ec38b0667e9b4d94eb):
+  better-sqlite3@12.10.0(patch_hash=187d44bdb3b05ba80c9f47c031baabd705fe992c5a82f723cd7ba3ad4cfecc99):
     dependencies:
       bindings: 1.5.0
       prebuild-install: 7.1.3
