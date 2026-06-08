@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment jsdom
+
+import { act, createElement } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
     GitBranchSummary,
@@ -19,8 +23,28 @@ import {
     getProjectSnapshot,
     reconcileSidebarGitHubSelection,
     resolveSidebarGitHubItemClickSelection,
+    SidebarGitHubDraggableRow,
     shouldOpenSidebarGitHubItemClick,
 } from "./SidebarGitHubPanel";
+import {
+    SIDEBAR_GITHUB_DRAG_EVENT,
+    type SidebarGitHubDragDetail,
+} from "./sidebarGitHubDragEvents";
+
+const mountedRoots: Root[] = [];
+const mountedContainers: HTMLElement[] = [];
+
+afterEach(() => {
+    for (const root of mountedRoots.splice(0)) {
+        act(() => {
+            root.unmount();
+        });
+    }
+    for (const container of mountedContainers.splice(0)) {
+        container.remove();
+    }
+    vi.restoreAllMocks();
+});
 
 function createBranch(
     overrides: Partial<GitBranchSummary> = {},
@@ -412,6 +436,117 @@ describe("SidebarGitHubPanel selection helpers", () => {
                 shiftKey: false,
             }),
         ).toBe(false);
+    });
+});
+
+describe("SidebarGitHubDraggableRow", () => {
+    it("keeps an active drag alive across rerenders with new drag item arrays", () => {
+        const releasePointerCapture = vi.fn();
+        const setPointerCapture = vi.fn();
+        const events: SidebarGitHubDragDetail[] = [];
+        const handleDrag = (event: Event) => {
+            events.push(
+                (event as CustomEvent<SidebarGitHubDragDetail>).detail,
+            );
+        };
+        window.addEventListener(SIDEBAR_GITHUB_DRAG_EVENT, handleDrag);
+
+        const container = document.createElement("div");
+        document.body.append(container);
+        mountedContainers.push(container);
+        const root = createRoot(container);
+        mountedRoots.push(root);
+
+        const renderRow = (title: string) => {
+            act(() => {
+                root.render(
+                    createElement(
+                        SidebarGitHubDraggableRow,
+                        {
+                            children: createElement("span", null, title),
+                            dragItems: [{ number: 7, title }],
+                            itemKind: "issue",
+                            meta: "#7 - 1 comment",
+                            number: 7,
+                            onOpen: () => undefined,
+                            projectId: "project-1",
+                            repoRef,
+                            selected: false,
+                            title,
+                            worktreeId: "project-1:primary",
+                        },
+                    ),
+                );
+            });
+        };
+
+        try {
+            renderRow("First title");
+            const row = container.querySelector<HTMLElement>("[role='button']");
+            expect(row).not.toBeNull();
+            if (!row) {
+                throw new Error("Expected draggable row to render.");
+            }
+
+            row.setPointerCapture = setPointerCapture;
+            row.releasePointerCapture = releasePointerCapture;
+
+            act(() => {
+                row.dispatchEvent(
+                    new PointerEvent("pointerdown", {
+                        bubbles: true,
+                        button: 0,
+                        buttons: 1,
+                        clientX: 10,
+                        clientY: 10,
+                        pointerId: 4,
+                    }),
+                );
+                row.dispatchEvent(
+                    new PointerEvent("pointermove", {
+                        bubbles: true,
+                        buttons: 1,
+                        clientX: 26,
+                        clientY: 10,
+                        pointerId: 4,
+                    }),
+                );
+            });
+
+            renderRow("Second title");
+
+            act(() => {
+                window.dispatchEvent(
+                    new PointerEvent("pointerup", {
+                        bubbles: true,
+                        button: 0,
+                        buttons: 0,
+                        clientX: 32,
+                        clientY: 10,
+                        pointerId: 4,
+                    }),
+                );
+            });
+
+            expect(events.map((event) => event.phase)).toEqual([
+                "start",
+                "end",
+            ]);
+            expect(events[0]).toMatchObject({
+                items: [{ number: 7, title: "First title" }],
+                number: 7,
+                title: "First title",
+            });
+            expect(events[1]).toMatchObject({
+                items: [{ number: 7, title: "First title" }],
+                number: 7,
+                title: "First title",
+            });
+            expect(setPointerCapture).toHaveBeenCalledWith(4);
+            expect(releasePointerCapture).toHaveBeenCalledWith(4);
+        } finally {
+            window.removeEventListener(SIDEBAR_GITHUB_DRAG_EVENT, handleDrag);
+        }
     });
 });
 

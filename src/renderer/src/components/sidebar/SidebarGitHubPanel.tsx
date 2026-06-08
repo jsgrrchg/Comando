@@ -1509,7 +1509,7 @@ function SidebarGitHubLabelPicker({
     );
 }
 
-function SidebarGitHubDraggableRow({
+export function SidebarGitHubDraggableRow({
     children,
     dragItems,
     itemKind,
