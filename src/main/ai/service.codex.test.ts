@@ -1,4 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { PassThrough } from "node:stream";
+
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
     AiRuntimeStatus,
@@ -7,6 +13,44 @@ import type {
 } from "@shared/ipc";
 
 import { AiService } from "./service";
+
+const initializeMock = vi.hoisted(() =>
+    vi.fn(() =>
+        Promise.resolve({
+            authMethods: [{ id: "codex-api-key" }, { id: "chatgpt" }],
+        }),
+    ),
+);
+const authenticateMock = vi.hoisted(() => vi.fn(() => Promise.resolve({})));
+const logoutMock = vi.hoisted(() => vi.fn(() => Promise.resolve({})));
+const spawnMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@agentclientprotocol/sdk", () => ({
+    ClientSideConnection: class MockClientSideConnection {
+        initialize = initializeMock;
+        authenticate = authenticateMock;
+        unstable_logout = logoutMock;
+    },
+    PROTOCOL_VERSION: "test-protocol-version",
+    ndJsonStream: vi.fn(() => ({})),
+}));
+
+vi.mock("node:child_process", () => ({
+    spawn: spawnMock,
+}));
+
+beforeEach(() => {
+    initializeMock.mockReset();
+    initializeMock.mockResolvedValue({
+        authMethods: [{ id: "codex-api-key" }, { id: "chatgpt" }],
+    });
+    authenticateMock.mockReset();
+    authenticateMock.mockResolvedValue({});
+    logoutMock.mockReset();
+    logoutMock.mockResolvedValue({});
+    spawnMock.mockReset();
+    spawnMock.mockImplementation(createMockChildProcess);
+});
 
 describe("AiService Codex branch", () => {
     it("stores Codex settings, persists only one API key, and emits runtime status", async () => {
@@ -533,6 +577,88 @@ describe("AiService Codex branch", () => {
         expect(saveCodexRuntimeSettings).not.toHaveBeenCalled();
     });
 
+    it("rejects Codex runtime auth when the child process fails to spawn", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-codex-auth-spawn-"),
+        );
+        const executablePath = path.join(tempDir, "codex-acp");
+        fs.writeFileSync(executablePath, "#!/bin/sh\nexit 0\n", "utf8");
+        fs.chmodSync(executablePath, 0o755);
+        const child = createMockChildProcess();
+        spawnMock.mockReturnValueOnce(child);
+        initializeMock.mockImplementationOnce(
+            () => new Promise(() => undefined),
+        );
+        const service = new AiService({
+            onRuntimeStatus: vi.fn(),
+            onSessionSnapshot: vi.fn(),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+            projectService: {
+                getProjectRootPath: vi.fn(() => tempDir),
+            } as never,
+            secretStore: {
+                loadSecret: vi.fn(() => null),
+                saveSecret: vi.fn(),
+            },
+            settingsService: {
+                loadClaudeRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    authMethod: null,
+                    binaryPath: null,
+                    gatewayBaseUrl: null,
+                    hasGatewayAuthToken: false,
+                    hasGatewayCustomHeaders: false,
+                })),
+                loadCodexRuntimeSettings: vi.fn(() => ({
+                    authMethod: null,
+                    binaryPath: executablePath,
+                    hasCodexApiKey: false,
+                    hasOpenAiApiKey: false,
+                })),
+                loadGeminiRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    authMethod: null,
+                    binaryPath: null,
+                    googleCloudLocation: null,
+                    googleCloudProject: null,
+                    hasGeminiApiKey: false,
+                    hasGoogleApiKey: false,
+                })),
+                loadKiloRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    binaryPath: null,
+                })),
+                saveClaudeRuntimeSettings: vi.fn(),
+                saveCodexRuntimeSettings: vi.fn(),
+                saveGeminiRuntimeSettings: vi.fn(),
+                saveKiloRuntimeSettings: vi.fn(),
+            } as never,
+        });
+
+        const result = service.launchRuntimeAuth({
+            methodId: "codex-api-key",
+            projectId: null,
+            runtimeId: "codex",
+        });
+        queueMicrotask(() => {
+            child.emit("error", new Error("spawn ENOENT"));
+        });
+
+        try {
+            await expect(result).rejects.toThrow("spawn ENOENT");
+            expect(child.kill).toHaveBeenCalled();
+            expect(child.stdin.destroyed).toBe(true);
+            expect(child.stdout.destroyed).toBe(true);
+            expect(child.stderr.destroyed).toBe(true);
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("clears the opposing key when changing Codex preferred method", async () => {
         let savedSettings: CodexRuntimeSettings | null = null;
         const secretValues = new Map<string, string>([
@@ -1023,3 +1149,28 @@ describe("AiService Codex branch", () => {
         expect(saveSessionSnapshot).toHaveBeenCalled();
     });
 });
+
+function createMockChildProcess() {
+    const emitter = new EventEmitter();
+    const child = {
+        emit: (event: string, ...args: unknown[]) => emitter.emit(event, ...args),
+        kill: vi.fn(() => true),
+        off: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            emitter.off(event, listener);
+            return child;
+        }),
+        on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            emitter.on(event, listener);
+            return child;
+        }),
+        once: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+            emitter.once(event, listener);
+            return child;
+        }),
+        stderr: new PassThrough(),
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+    };
+
+    return child;
+}

@@ -22,8 +22,11 @@ describe("terminal login helpers", () => {
         expect(quoteWindowsArg("C:\\Program Files\\Comando")).toBe(
             '"C:\\Program Files\\Comando"',
         );
-        expect(quoteWindowsArg('say "hello"')).toBe('"say \\"hello\\""');
-        expect(quoteWindowsArg("A&B")).toBe('"A&B"');
+        expect(quoteWindowsArg('say "hello"')).toBe('"say ^"hello^""');
+        expect(quoteWindowsArg("A&B")).toBe('"A^&B"');
+        expect(quoteWindowsArg("%TEMP%\\Comando^!")).toBe(
+            '"%%TEMP%%\\Comando^^^!"',
+        );
     });
 
     it("builds POSIX login scripts with a unique provider prefix", () => {
@@ -46,10 +49,14 @@ describe("terminal login helpers", () => {
         }
     });
 
-    it("builds Windows login scripts without exposing unquoted paths", () => {
+    it("builds Windows login scripts without exposing unsafe paths", () => {
         const scriptPath = buildWindowsLoginScript({
-            commandParts: ["C:\\Program Files\\Claude\\claude.exe", "login"],
-            cwd: "C:\\Users\\Me\\Project & Stuff",
+            commandParts: [
+                "C:\\Program Files\\Claude\\claude.exe",
+                "login",
+                'say "hello" & wait',
+            ],
+            cwd: "C:\\Users\\Me\\%TEMP% Project & Stuff!",
             scriptPrefix: "comando-test-login",
         });
 
@@ -57,7 +64,7 @@ describe("terminal login helpers", () => {
             expect(scriptPath).toContain("comando-test-login-");
             expect(scriptPath).toMatch(/\.cmd$/);
             expect(fs.readFileSync(scriptPath, "utf8")).toContain(
-                'cd /d "C:\\Users\\Me\\Project & Stuff"\r\n"C:\\Program Files\\Claude\\claude.exe" "login"',
+                'cd /d "C:\\Users\\Me\\%%TEMP%% Project ^& Stuff^!"\r\n"C:\\Program Files\\Claude\\claude.exe" "login" "say ^"hello^" ^& wait"',
             );
         } finally {
             fs.rmSync(scriptPath, {
