@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { GrokRuntimeSettings } from "@shared/ipc";
 import type { SecretStoreGateway } from "../secret-store";
@@ -15,8 +16,32 @@ import {
     isGrokAuthenticationError,
     loadGrokSecretBundle,
     markGrokAuthInvalidated,
+    probeGrokCachedTokenAuth,
     resolveGrokRuntime,
 } from "./setup";
+
+const spawnMock = vi.hoisted(() => vi.fn());
+const initializeMock = vi.hoisted(() =>
+    vi.fn(() =>
+        Promise.resolve({
+            authMethods: [{ id: "cached_token" }],
+        }),
+    ),
+);
+const authenticateMock = vi.hoisted(() => vi.fn(() => Promise.resolve({})));
+
+vi.mock("node:child_process", () => ({
+    spawn: spawnMock,
+}));
+
+vi.mock("@agentclientprotocol/sdk", () => ({
+    ClientSideConnection: class MockClientSideConnection {
+        initialize = initializeMock;
+        authenticate = authenticateMock;
+    },
+    PROTOCOL_VERSION: "test-protocol-version",
+    ndJsonStream: vi.fn(() => ({})),
+}));
 
 const originalGrokEnv = process.env.COMANDO_GROK_ACP_BIN;
 const originalHome = process.env.HOME;
@@ -27,6 +52,14 @@ const originalXaiApiKey = process.env.XAI_API_KEY;
 beforeEach(() => {
     delete process.env.COMANDO_GROK_ACP_BIN;
     delete process.env.XAI_API_KEY;
+    initializeMock.mockClear();
+    initializeMock.mockResolvedValue({
+        authMethods: [{ id: "cached_token" }],
+    });
+    authenticateMock.mockClear();
+    authenticateMock.mockResolvedValue({});
+    spawnMock.mockClear();
+    spawnMock.mockImplementation(createMockChildProcess);
 });
 
 afterEach(() => {
@@ -113,6 +146,53 @@ describe("Grok setup", () => {
             expect(fromPath.program).toBe(binaryPath);
             expect(fromPath.status.source).toBe("path");
         } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("probes Windows .cmd Grok runtimes through cmd.exe", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-grok-cmd-probe-"),
+        );
+        const originalPlatform = process.platform;
+
+        try {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: "win32",
+            });
+            const binaryPath = writeExecutable(tempDir, "grok.cmd");
+            process.env.PATH = "";
+
+            await expect(
+                probeGrokCachedTokenAuth(
+                    createEmptyGrokSettings({ binaryPath }),
+                    null,
+                    {
+                        cwd: tempDir,
+                        timeoutMs: 100,
+                    },
+                ),
+            ).resolves.toBe(true);
+
+            expect(spawnMock).toHaveBeenCalledWith(
+                "cmd.exe",
+                [
+                    "/d",
+                    "/s",
+                    "/c",
+                    `""${binaryPath}" "--no-auto-update" "agent" "stdio""`,
+                ],
+                expect.objectContaining({
+                    cwd: tempDir,
+                    stdio: ["pipe", "pipe", "pipe"],
+                }),
+            );
+        } finally {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: originalPlatform,
+            });
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
     });
@@ -395,6 +475,15 @@ function createSecretStore(
         saveSecret: (namespace, secretId, value) => {
             secrets.set(`${namespace}:${secretId}`, value);
         },
+    };
+}
+
+function createMockChildProcess() {
+    return {
+        kill: vi.fn(() => true),
+        stderr: new PassThrough(),
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
     };
 }
 

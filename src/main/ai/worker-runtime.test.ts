@@ -325,6 +325,129 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).toBe(true);
     });
 
+    it("launches Windows batch ACP runtimes through cmd.exe", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const originalPlatform = process.platform;
+        const cases: Array<{
+            readonly args: readonly string[];
+            readonly executable: string;
+            readonly runtimeId: AiRuntimeStatus["runtimeId"];
+        }> = [
+            {
+                args: [],
+                executable:
+                    "C:\\Program Files\\Comando Test\\codex-acp.cmd",
+                runtimeId: "codex",
+            },
+            {
+                args: ["--acp"],
+                executable: "C:\\Program Files\\Comando Test\\gemini.cmd",
+                runtimeId: "gemini",
+            },
+            {
+                args: ["acp"],
+                executable: "C:\\Program Files\\Comando Test\\kilo.cmd",
+                runtimeId: "kilo",
+            },
+            {
+                args: ["acp"],
+                executable: "C:\\Program Files\\Comando Test\\opencode.cmd",
+                runtimeId: "opencode",
+            },
+            {
+                args: ["--no-auto-update", "agent", "stdio"],
+                executable: "C:\\Program Files\\Comando Test\\grok.cmd",
+                runtimeId: "grok",
+            },
+        ];
+
+        try {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: "win32",
+            });
+
+            for (const input of cases) {
+                spawnMock.mockClear();
+                spawnedChildren = [];
+                const runtime = createRuntime();
+                const command = [input.executable, ...input.args].join(" ");
+                const readyStatus: AiRuntimeStatus = {
+                    authMethod:
+                        input.runtimeId === "codex" ? "chatgpt" : null,
+                    authMethods: [],
+                    authReady: true,
+                    checkedAt: "2026-04-15T00:00:00.000Z",
+                    command,
+                    hasCustomBinaryPath: true,
+                    hasGatewayConfig: false,
+                    hasGatewayUrl: false,
+                    message: null,
+                    onboardingRequired: false,
+                    runtimeId: input.runtimeId,
+                    source: "settings",
+                    state: "ready",
+                };
+                const launch = createLaunch({
+                    cwd: tempDir,
+                    projectRoot: tempDir,
+                    resolvedRuntime: {
+                        args: input.args,
+                        command,
+                        env: process.env,
+                        executable: input.executable,
+                        status: readyStatus,
+                    },
+                    title: `${input.runtimeId} batch launch`,
+                });
+
+                await runtime.dispatchMethod("ai.prepareSession", {
+                    input: {
+                        ...launch.input,
+                        runtimeId: input.runtimeId,
+                    },
+                    launch: {
+                        ...launch,
+                        input: {
+                            ...launch.input,
+                            runtimeId: input.runtimeId,
+                        },
+                        persistedSnapshot: {
+                            ...launch.persistedSnapshot,
+                            runtimeId: input.runtimeId,
+                        },
+                    },
+                });
+
+                expect(spawnMock).toHaveBeenCalledWith(
+                    "cmd.exe",
+                    [
+                        "/d",
+                        "/s",
+                        "/c",
+                        [
+                            `""${input.executable}"`,
+                            ...input.args.map((arg) => `"${arg}"`),
+                        ].join(" ") + '"',
+                    ],
+                    expect.objectContaining({
+                        cwd: tempDir,
+                        env: process.env,
+                        stdio: ["pipe", "pipe", "pipe"],
+                    }),
+                );
+            }
+        } finally {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: originalPlatform,
+            });
+            await fs.rm(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("authenticates Grok with the xAI API key ACP method before opening a session", async () => {
         initializeMock.mockResolvedValueOnce({
             authMethods: [{ id: "xai.api_key" }, { id: "cached_token" }],

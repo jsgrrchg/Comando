@@ -29,6 +29,7 @@ import {
     buildRuntimeSpawnEnv,
     resolveExecutableFromRuntimePath,
 } from "../runtime-env";
+import { prepareCommandForSpawn } from "../../shell/command-launch";
 
 const GROK_PROGRAM_NAME = "grok";
 const GROK_ACP_ARGS = ["--no-auto-update", "agent", "stdio"] as const;
@@ -346,14 +347,19 @@ export async function probeGrokCachedTokenAuth(
         return false;
     }
 
-    const child = spawn(resolved.program, [...resolved.args], {
+    const runtimeSpawn = prepareCommandForSpawn(resolved.program, resolved.args, {
         cwd: options.cwd ?? undefined,
         env: buildRuntimeSpawnEnv(
             applyGrokAuthEnv(process.env, settings, secretStore),
             resolved.program,
         ),
-        stdio: ["pipe", "pipe", "pipe"],
+        stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
     });
+    const child = spawn(
+        runtimeSpawn.command,
+        runtimeSpawn.args,
+        runtimeSpawn.options,
+    );
     const client: Client = {
         readTextFile: () => {
             throw new Error("Grok auth probe does not support file reads.");

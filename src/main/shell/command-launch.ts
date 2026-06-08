@@ -21,12 +21,12 @@ export interface PreparedCommandLaunch<
     readonly wrappedByWindowsShell: boolean;
 }
 
-export function prepareCommandForSpawn(
+export function prepareCommandForSpawn<TOptions extends SpawnOptions>(
     command: string,
     args: readonly string[],
-    options: SpawnOptions,
+    options: TOptions,
     launchOptions?: PrepareCommandLaunchOptions,
-): PreparedCommandLaunch<SpawnOptions>;
+): PreparedCommandLaunch<TOptions>;
 export function prepareCommandForSpawn(
     command: string,
     args?: readonly string[],
@@ -42,12 +42,12 @@ export function prepareCommandForSpawn(
     return prepareCommandLaunch(command, args, options, launchOptions);
 }
 
-export function prepareCommandForExecFile(
+export function prepareCommandForExecFile<TOptions extends ExecFileOptions>(
     command: string,
     args: readonly string[],
-    options: ExecFileOptions,
+    options: TOptions,
     launchOptions?: PrepareCommandLaunchOptions,
-): PreparedCommandLaunch<ExecFileOptions>;
+): PreparedCommandLaunch<TOptions>;
 export function prepareCommandForExecFile(
     command: string,
     args?: readonly string[],

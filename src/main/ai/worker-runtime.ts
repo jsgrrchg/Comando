@@ -55,6 +55,7 @@ import {
 } from "@shared/path-identity";
 
 import { debugBenignError } from "@main/observability/logging";
+import { prepareCommandForSpawn } from "@main/shell/command-launch";
 
 import {
     AI_SESSION_STREAMING_FLUSH_MS,
@@ -1181,14 +1182,23 @@ export class AiWorkerRuntime {
             });
         }
 
-        const child = spawn(
+        const runtimeSpawn = prepareCommandForSpawn(
             launch.resolvedRuntime.executable,
-            [...launch.resolvedRuntime.args],
+            launch.resolvedRuntime.args,
             {
                 cwd: launch.cwd,
                 env: launch.resolvedRuntime.env,
-                stdio: ["pipe", "pipe", "pipe"],
+                stdio: ["pipe", "pipe", "pipe"] as [
+                    "pipe",
+                    "pipe",
+                    "pipe",
+                ],
             },
+        );
+        const child = spawn(
+            runtimeSpawn.command,
+            runtimeSpawn.args,
+            runtimeSpawn.options,
         );
         const liveConnection = {} as LiveAcpConnection;
         const liveSession = {} as LiveAcpSession;
