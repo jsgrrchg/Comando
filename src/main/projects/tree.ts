@@ -10,6 +10,7 @@ import type {
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
 import { INLINE_EDITOR_MAX_BYTES } from "@shared/editor-performance";
+import { isSameOrInsidePath, normalizePathKey } from "@shared/path-identity";
 
 import { debugBenignError } from "../observability/logging";
 import { shouldIgnoreEntry } from "./ignore";
@@ -468,13 +469,18 @@ export function resolveProjectPath(
 
     const candidatePath = path.resolve(resolvedRoot, relativePath);
     if (
-        candidatePath !== resolvedRoot &&
-        !candidatePath.startsWith(`${resolvedRoot}${path.sep}`)
+        !isSameOrInsidePath(candidatePath, resolvedRoot, {
+            platform: getNativePathIdentityPlatform(),
+        })
     ) {
         throw new Error("The requested path is outside of the project root.");
     }
 
     return candidatePath;
+}
+
+function getNativePathIdentityPlatform(): "posix" | "win32" {
+    return process.platform === "win32" ? "win32" : "posix";
 }
 
 function directoryHasVisibleChildren(directoryPath: string): boolean {
@@ -724,22 +730,24 @@ function compactCopySourceEntriesByAbsoluteAncestor(
 }
 
 function isSameOrChildPath(candidatePath: string, parentPath: string): boolean {
-    const candidate = normalizeComparableAbsolutePath(candidatePath);
-    const parent = normalizeComparableAbsolutePath(parentPath);
-    return candidate === parent || isChildPath(candidate, parent);
+    return isSameOrInsidePath(candidatePath, parentPath, {
+        platform: getNativePathIdentityPlatform(),
+    });
 }
 
 function isChildPath(candidatePath: string, parentPath: string): boolean {
-    const candidate = normalizeComparableAbsolutePath(candidatePath);
-    const parent = normalizeComparableAbsolutePath(parentPath);
-    return candidate.startsWith(`${parent}/`);
+    const platform = getNativePathIdentityPlatform();
+    return (
+        normalizeComparableAbsolutePath(candidatePath) !==
+            normalizeComparableAbsolutePath(parentPath) &&
+        isSameOrInsidePath(candidatePath, parentPath, { platform })
+    );
 }
 
 function normalizeComparableAbsolutePath(candidatePath: string): string {
-    const normalizedPath = path.resolve(candidatePath).replaceAll("\\", "/");
-    return process.platform === "win32"
-        ? normalizedPath.toLowerCase()
-        : normalizedPath;
+    return normalizePathKey(path.resolve(candidatePath), {
+        platform: getNativePathIdentityPlatform(),
+    });
 }
 
 function resolveCopyDestinationName(

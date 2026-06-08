@@ -90,6 +90,30 @@ describe("isSameOrInsidePath", () => {
         ).toBe(false);
     });
 
+    it("rejects Windows paths that escape the project root through parent segments", () => {
+        expect(
+            isSameOrInsidePath(
+                "c:\\repo\\..\\outside\\secret.txt",
+                "C:\\Repo",
+                { platform: "win32" },
+            ),
+        ).toBe(false);
+    });
+
+    it("produces the same Windows cache key for root paths with different casing", () => {
+        expect(
+            normalizePathKey("C:\\Repo\\Feature", { platform: "win32" }),
+        ).toBe(normalizePathKey("c:\\repo\\feature", { platform: "win32" }));
+    });
+
+    it("matches worktree paths returned by Git with different casing", () => {
+        expect(
+            isSameOrInsidePath("C:\\Repo\\Worktree", "c:\\repo\\worktree", {
+                platform: "win32",
+            }),
+        ).toBe(true);
+    });
+
     it("keeps POSIX containment case-sensitive", () => {
         expect(
             isSameOrInsidePath(

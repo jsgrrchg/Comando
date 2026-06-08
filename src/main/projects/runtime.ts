@@ -18,6 +18,7 @@ import {
     scoreProjectSearchCandidate,
     type ProjectSearchCandidate,
 } from "@shared/project-search";
+import { normalizePathKey } from "@shared/path-identity";
 
 import { debugBenignError } from "../observability/logging";
 import { shouldIgnoreEntry } from "./ignore";
@@ -414,7 +415,7 @@ export class ProjectRuntime {
         input: ProjectRuntimeScopeInput,
         relativePaths: readonly string[],
     ): void {
-        this.#gitSnapshots.delete(normalizeRootPath(input.rootPath));
+        this.#gitSnapshots.delete(normalizeRootPathKey(input.rootPath));
         this.#invalidateProjectSearchIndex(input.rootPath);
         this.#scheduleInvalidation(
             input.projectId,
@@ -442,15 +443,16 @@ export class ProjectRuntime {
     }
 
     async #getGitSnapshot(rootPath: string): Promise<GitSnapshot> {
-        const normalizedRootPath = normalizeRootPath(rootPath);
-        const cachedSnapshot = this.#gitSnapshots.get(normalizedRootPath);
+        const resolvedRootPath = resolveRootPath(rootPath);
+        const rootPathKey = normalizeRootPathKey(resolvedRootPath);
+        const cachedSnapshot = this.#gitSnapshots.get(rootPathKey);
         if (cachedSnapshot) {
             return cachedSnapshot;
         }
 
         try {
             const status =
-                await createBackgroundSafeGit(normalizedRootPath).status();
+                await createBackgroundSafeGit(resolvedRootPath).status();
             const exactBadges = new Map<string, GitStatusBadge>();
 
             for (const filePath of status.modified) {
@@ -478,7 +480,7 @@ export class ProjectRuntime {
                 exactBadges,
             } satisfies GitSnapshot;
 
-            this.#gitSnapshots.set(normalizedRootPath, snapshot);
+            this.#gitSnapshots.set(rootPathKey, snapshot);
             return snapshot;
         } catch (error) {
             debugBenignError("projects.runtime.computeGitSnapshot", error);
@@ -487,7 +489,7 @@ export class ProjectRuntime {
                 exactBadges: new Map<string, GitStatusBadge>(),
             } satisfies GitSnapshot;
 
-            this.#gitSnapshots.set(normalizedRootPath, emptySnapshot);
+            this.#gitSnapshots.set(rootPathKey, emptySnapshot);
             return emptySnapshot;
         }
     }
@@ -514,7 +516,7 @@ export class ProjectRuntime {
                         normalizeProjectWatchRelativePath(relativePath);
 
                     this.#gitSnapshots.delete(
-                        normalizeRootPath(context.rootPath),
+                        normalizeRootPathKey(context.rootPath),
                     );
                     this.#invalidateProjectSearchIndex(context.rootPath);
                     this.#scheduleInvalidation(
@@ -576,8 +578,9 @@ export class ProjectRuntime {
         readonly cacheState: "hit" | "miss";
         readonly entries: readonly IndexedProjectEntry[];
     } {
-        const normalizedRootPath = normalizeRootPath(rootPath);
-        const cachedIndex = this.#searchIndexes.get(normalizedRootPath);
+        const resolvedRootPath = resolveRootPath(rootPath);
+        const rootPathKey = normalizeRootPathKey(resolvedRootPath);
+        const cachedIndex = this.#searchIndexes.get(rootPathKey);
         if (cachedIndex) {
             return {
                 cacheState: "hit",
@@ -585,8 +588,8 @@ export class ProjectRuntime {
             };
         }
 
-        const entries = buildProjectSearchIndex(normalizedRootPath);
-        this.#searchIndexes.set(normalizedRootPath, entries);
+        const entries = buildProjectSearchIndex(resolvedRootPath);
+        this.#searchIndexes.set(rootPathKey, entries);
         return {
             cacheState: "miss",
             entries,
@@ -594,7 +597,7 @@ export class ProjectRuntime {
     }
 
     #invalidateProjectSearchIndex(rootPath: string): void {
-        this.#searchIndexes.delete(normalizeRootPath(rootPath));
+        this.#searchIndexes.delete(normalizeRootPathKey(rootPath));
     }
 
     #closeRegisteredRoot(rootKey: string): void {
@@ -606,9 +609,9 @@ export class ProjectRuntime {
         }
 
         if (context) {
-            const normalizedRootPath = normalizeRootPath(context.rootPath);
-            this.#gitSnapshots.delete(normalizedRootPath);
-            this.#searchIndexes.delete(normalizedRootPath);
+            const rootPathKey = normalizeRootPathKey(context.rootPath);
+            this.#gitSnapshots.delete(rootPathKey);
+            this.#searchIndexes.delete(rootPathKey);
         }
 
         this.#registeredRoots.delete(rootKey);
@@ -659,7 +662,8 @@ function buildRegisteredRoots(
 function buildProjectSearchIndex(
     rootPath: string,
 ): readonly IndexedProjectEntry[] {
-    const queue = [normalizeRootPath(rootPath)];
+    const resolvedRootPath = resolveRootPath(rootPath);
+    const queue = [resolvedRootPath];
     const pendingEntries: {
         readonly extension: string | null;
         readonly kind: ProjectTreeNode["kind"];
@@ -689,7 +693,7 @@ function buildProjectSearchIndex(
             (entry) => !shouldIgnoreEntry(entry.name, entry.isDirectory()),
         );
         const currentRelativePath = normalizeRelativePath(
-            path.relative(rootPath, currentDirectory),
+            path.relative(resolvedRootPath, currentDirectory),
         );
 
         if (currentRelativePath !== ".") {
@@ -702,7 +706,7 @@ function buildProjectSearchIndex(
         for (const entry of visibleEntries) {
             const absolutePath = path.join(currentDirectory, entry.name);
             const relativePath = normalizeRelativePath(
-                path.relative(rootPath, absolutePath),
+                path.relative(resolvedRootPath, absolutePath),
             );
             const kind = entry.isDirectory() ? "directory" : "file";
 
@@ -829,15 +833,25 @@ function createProjectTreeNodeFromIndexEntry(
 }
 
 function buildRegisteredRootKey(projectId: string, rootPath: string): string {
-    return `${projectId}:${normalizeRootPath(rootPath)}`;
+    return `${projectId}:${normalizeRootPathKey(rootPath)}`;
 }
 
 function normalizeGitPath(filePath: string): string {
     return filePath.split(path.sep).join("/");
 }
 
-function normalizeRootPath(rootPath: string): string {
+function resolveRootPath(rootPath: string): string {
     return path.resolve(rootPath);
+}
+
+function normalizeRootPathKey(rootPath: string): string {
+    return normalizePathKey(resolveRootPath(rootPath), {
+        platform: getNativePathIdentityPlatform(),
+    });
+}
+
+function getNativePathIdentityPlatform(): "posix" | "win32" {
+    return process.platform === "win32" ? "win32" : "posix";
 }
 
 function normalizeWorktreeId(worktreeId: string | null): string | null {

@@ -152,6 +152,7 @@ import {
     type WriteTerminalInput,
     type WorkspaceSnapshot,
 } from "@shared/ipc";
+import { normalizePathKey as normalizeSharedPathKey } from "@shared/path-identity";
 
 import {
     BrowserWindow,
@@ -880,8 +881,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
 
             const createdWorktree = sharedSnapshot.worktrees.find(
                 (worktree) =>
-                    path.resolve(worktree.rootPath) ===
-                    path.resolve(input.path),
+                    normalizePathKey(worktree.rootPath) ===
+                    normalizePathKey(input.path),
             );
             if (!createdWorktree) {
                 throw new Error(
@@ -2700,10 +2701,13 @@ function stripRemotePrefix(referenceName: string): string {
 }
 
 function normalizePathKey(filePath: string): string {
-    const normalizedPath = path.resolve(filePath).split(path.sep).join("/");
-    return process.platform === "win32"
-        ? normalizedPath.toLowerCase()
-        : normalizedPath;
+    return normalizeSharedPathKey(path.resolve(filePath), {
+        platform: getNativePathIdentityPlatform(),
+    });
+}
+
+function getNativePathIdentityPlatform(): "posix" | "win32" {
+    return process.platform === "win32" ? "win32" : "posix";
 }
 
 function normalizeGitPath(filePath: string): string {

@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { simpleGit } from "simple-git";
 import type { GitRemoteSummary } from "@shared/ipc";
+import { normalizePathKey } from "@shared/path-identity";
 
 import type {
     GitBranchSummary,
@@ -173,14 +174,15 @@ export class GitService implements GitGateway {
         inputPath: string,
     ): Promise<GitRepositoryResolution> {
         const normalizedPath = path.resolve(inputPath);
-        const cachedResolution = this.#resolutionCache.get(normalizedPath);
+        const cacheKey = normalizeGitCachePathKey(normalizedPath);
+        const cachedResolution = this.#resolutionCache.get(cacheKey);
         if (cachedResolution) {
             return cachedResolution;
         }
 
         const resolution = await resolveGitRepository(normalizedPath);
         if (this.#cacheSnapshots) {
-            this.#resolutionCache.set(normalizedPath, resolution);
+            this.#resolutionCache.set(cacheKey, resolution);
         }
 
         return resolution;
@@ -190,14 +192,15 @@ export class GitService implements GitGateway {
         inputPath: string,
     ): Promise<GitRepositorySnapshot> {
         const normalizedPath = path.resolve(inputPath);
-        const cacheState = this.#snapshotCache.has(normalizedPath)
+        const cacheKey = normalizeGitCachePathKey(normalizedPath);
+        const cacheState = this.#snapshotCache.has(cacheKey)
             ? "hit"
             : "miss";
 
         return mainProcessPerformance.measureAsync(
             "git.getRepositorySnapshot",
             async () => {
-                const cachedSnapshot = this.#snapshotCache.get(normalizedPath);
+                const cachedSnapshot = this.#snapshotCache.get(cacheKey);
                 if (cachedSnapshot) {
                     return cachedSnapshot;
                 }
@@ -226,7 +229,7 @@ export class GitService implements GitGateway {
                     } satisfies GitRepositorySnapshot;
 
                     if (this.#cacheSnapshots) {
-                        this.#snapshotCache.set(normalizedPath, snapshot);
+                        this.#snapshotCache.set(cacheKey, snapshot);
                     }
 
                     return snapshot;
@@ -254,7 +257,7 @@ export class GitService implements GitGateway {
                 } satisfies GitRepositorySnapshot;
 
                 if (this.#cacheSnapshots) {
-                    this.#snapshotCache.set(normalizedPath, snapshot);
+                    this.#snapshotCache.set(cacheKey, snapshot);
                 }
 
                 return snapshot;
@@ -816,8 +819,9 @@ export class GitService implements GitGateway {
         }
 
         const normalizedPath = path.resolve(inputPath);
-        this.#snapshotCache.delete(normalizedPath);
-        this.#resolutionCache.delete(normalizedPath);
+        const cacheKey = normalizeGitCachePathKey(normalizedPath);
+        this.#snapshotCache.delete(cacheKey);
+        this.#resolutionCache.delete(cacheKey);
     }
 
     clear(): void {
@@ -875,6 +879,16 @@ async function readGitConfig(
 
 function normalizeGitPaths(paths: readonly string[]): string[] {
     return paths.map((filePath) => filePath.split(path.sep).join("/"));
+}
+
+function normalizeGitCachePathKey(inputPath: string): string {
+    return normalizePathKey(path.resolve(inputPath), {
+        platform: getNativePathIdentityPlatform(),
+    });
+}
+
+function getNativePathIdentityPlatform(): "posix" | "win32" {
+    return process.platform === "win32" ? "win32" : "posix";
 }
 
 function extractRemoteName(trackingBranchName: string | null): string | null {

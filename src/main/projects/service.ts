@@ -22,6 +22,7 @@ import type {
     SearchProjectEntriesInput,
 } from "@shared/ipc";
 import { normalizeProjectSearchQuery } from "@shared/project-search";
+import { normalizePathKey } from "@shared/path-identity";
 
 import { mainProcessPerformance } from "../observability/performance";
 import { debugBenignError } from "../observability/logging";
@@ -141,7 +142,7 @@ export class ProjectService {
         );
         rootPaths.push(this.#getProjectById(projectId).rootPath);
         for (const rootPath of rootPaths) {
-            this.#indexedRoots.delete(normalizeRootPath(rootPath));
+            this.#indexedRoots.delete(normalizeRootPathKey(rootPath));
         }
 
         const project = await this.#store.relocateProject(
@@ -149,7 +150,7 @@ export class ProjectService {
             projectPath,
         );
         await this.#worker.removeProject(projectId);
-        this.#indexedRoots.delete(normalizeRootPath(project.rootPath));
+        this.#indexedRoots.delete(normalizeRootPathKey(project.rootPath));
         this.#markWorkerRegistryDirty();
         await this.#ensureWorkerRegistry();
         this.#onProjectTouched?.(project.rootPath);
@@ -172,7 +173,7 @@ export class ProjectService {
         );
         rootPaths.push(this.#getProjectById(projectId).rootPath);
         for (const rootPath of rootPaths) {
-            this.#indexedRoots.delete(normalizeRootPath(rootPath));
+            this.#indexedRoots.delete(normalizeRootPathKey(rootPath));
         }
 
         this.#markWorkerRegistryDirty();
@@ -230,14 +231,14 @@ export class ProjectService {
             input.projectId,
             input.worktreeId ?? null,
         );
-        const normalizedRootPath = normalizeRootPath(project.rootPath);
+        const rootPathKey = normalizeRootPathKey(project.rootPath);
         const listEntries = async () =>
             await this.#worker.listProjectEntries({
                 projectId: input.projectId,
                 rootPath: project.rootPath,
                 worktreeId: project.worktreeId,
             });
-        const response = this.#indexedRoots.has(normalizedRootPath)
+        const response = this.#indexedRoots.has(rootPathKey)
             ? await this.#trackFilesystemAccess(project.rootPath, listEntries)
             : await mainProcessPerformance.measureAsync(
                   "projects.buildSearchIndex",
@@ -248,13 +249,13 @@ export class ProjectService {
                       ),
                   {
                       projectId: input.projectId,
-                      rootPath: normalizedRootPath,
+                      rootPath: resolveRootPath(project.rootPath),
                       transport: "worker",
                       worktreeId: input.worktreeId ?? "primary",
                   },
               );
 
-        this.#indexedRoots.add(normalizedRootPath);
+        this.#indexedRoots.add(rootPathKey);
         return [...response.nodes];
     }
 
@@ -293,7 +294,7 @@ export class ProjectService {
             input.projectId,
             input.worktreeId ?? null,
         );
-        const normalizedRootPath = normalizeRootPath(project.rootPath);
+        const rootPathKey = normalizeRootPathKey(project.rootPath);
         const search = async () =>
             await this.#worker.searchProjectEntries({
                 limit: input.limit,
@@ -302,7 +303,7 @@ export class ProjectService {
                 rootPath: project.rootPath,
                 worktreeId: project.worktreeId,
             });
-        const response = this.#indexedRoots.has(normalizedRootPath)
+        const response = this.#indexedRoots.has(rootPathKey)
             ? await this.#trackFilesystemAccess(project.rootPath, search)
             : await mainProcessPerformance.measureAsync(
                   "projects.buildSearchIndex",
@@ -313,13 +314,13 @@ export class ProjectService {
                       ),
                   {
                       projectId: input.projectId,
-                      rootPath: normalizedRootPath,
+                      rootPath: resolveRootPath(project.rootPath),
                       transport: "worker",
                       worktreeId: input.worktreeId ?? "primary",
                   },
               );
 
-        this.#indexedRoots.add(normalizedRootPath);
+        this.#indexedRoots.add(rootPathKey);
         return [...response.nodes];
     }
 
@@ -531,12 +532,12 @@ export class ProjectService {
 
         for (const existingWorktree of existingWorktrees) {
             this.#indexedRoots.delete(
-                normalizeRootPath(existingWorktree.rootPath),
+                normalizeRootPathKey(existingWorktree.rootPath),
             );
         }
         for (const syncedWorktree of syncedWorktrees) {
             this.#indexedRoots.delete(
-                normalizeRootPath(syncedWorktree.rootPath),
+                normalizeRootPathKey(syncedWorktree.rootPath),
             );
         }
 
@@ -575,7 +576,7 @@ export class ProjectService {
                 payload.projectId,
                 payload.worktreeId ?? null,
             );
-            this.#indexedRoots.delete(normalizeRootPath(project.rootPath));
+            this.#indexedRoots.delete(normalizeRootPathKey(project.rootPath));
         } catch (error) {
             // Watchers can flush after a project or worktree has already been
             // removed. Dropping the stale event prevents downstream refreshes
@@ -731,8 +732,18 @@ export class ProjectService {
     }
 }
 
-function normalizeRootPath(rootPath: string): string {
+function resolveRootPath(rootPath: string): string {
     return path.resolve(rootPath);
+}
+
+function normalizeRootPathKey(rootPath: string): string {
+    return normalizePathKey(resolveRootPath(rootPath), {
+        platform: getNativePathIdentityPlatform(),
+    });
+}
+
+function getNativePathIdentityPlatform(): "posix" | "win32" {
+    return process.platform === "win32" ? "win32" : "posix";
 }
 
 export { shouldIgnoreProjectWatchPath };

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { simpleGit } from "simple-git";
+import { normalizePathKey } from "@shared/path-identity";
 
 import { debugBenignError } from "@main/observability/logging";
 
@@ -134,25 +135,27 @@ export async function listGitWorktrees(
     const git = simpleGit(rootPath);
     const output = await git.raw(["worktree", "list", "--porcelain"]);
     const entries = parseWorktreePorcelain(output);
+    const canonicalRootKey = normalizeWorktreePathKey(canonicalRootPath);
 
     return entries
-        .map((entry) => ({
-            branchName: entry.branchRef
-                ? normalizeBranchName(entry.branchRef)
-                : null,
-            branchRef: entry.branchRef,
-            canonicalPath: path.resolve(entry.path),
-            detached: entry.detached,
-            headCommit: entry.headCommit,
-            isCurrent:
-                path.resolve(entry.path) === path.resolve(canonicalRootPath),
-            isMain:
-                path.resolve(entry.path) === path.resolve(canonicalRootPath),
-            locked: entry.locked,
-            lockReason: entry.lockReason,
-            path: entry.path,
-            prunable: entry.prunable,
-        }))
+        .map((entry) => {
+            const entryRootKey = normalizeWorktreePathKey(entry.path);
+            return {
+                branchName: entry.branchRef
+                    ? normalizeBranchName(entry.branchRef)
+                    : null,
+                branchRef: entry.branchRef,
+                canonicalPath: path.resolve(entry.path),
+                detached: entry.detached,
+                headCommit: entry.headCommit,
+                isCurrent: entryRootKey === canonicalRootKey,
+                isMain: entryRootKey === canonicalRootKey,
+                locked: entry.locked,
+                lockReason: entry.lockReason,
+                path: entry.path,
+                prunable: entry.prunable,
+            };
+        })
         .sort((left, right) => {
             if (left.isCurrent !== right.isCurrent) {
                 return left.isCurrent ? -1 : 1;
@@ -160,6 +163,16 @@ export async function listGitWorktrees(
 
             return left.canonicalPath.localeCompare(right.canonicalPath);
         });
+}
+
+function normalizeWorktreePathKey(rootPath: string): string {
+    return normalizePathKey(path.resolve(rootPath), {
+        platform: getNativePathIdentityPlatform(),
+    });
+}
+
+function getNativePathIdentityPlatform(): "posix" | "win32" {
+    return process.platform === "win32" ? "win32" : "posix";
 }
 
 export async function buildBranchWorktreeMap(
