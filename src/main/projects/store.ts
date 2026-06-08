@@ -836,22 +836,27 @@ export class SqliteProjectStore implements ProjectStore {
             throw new Error("The requested project does not exist anymore.");
         }
 
+        const projectRootPath = path.resolve(project.canonicalRootPath);
+        const projectRootKey = normalizeWorktreePathKey(projectRootPath);
         const desiredWorktrees = new Map(
-            worktrees.map((worktree) => [
-                path.resolve(worktree.rootPath),
-                {
-                    branchName: worktree.branchName,
-                    headSha: worktree.headSha,
-                    rootPath: path.resolve(worktree.rootPath),
-                },
-            ]),
+            worktrees.map((worktree) => {
+                const rootPath = path.resolve(worktree.rootPath);
+                return [
+                    normalizeWorktreePathKey(rootPath),
+                    {
+                        branchName: worktree.branchName,
+                        headSha: worktree.headSha,
+                        rootPath,
+                    },
+                ];
+            }),
         );
 
-        if (!desiredWorktrees.has(project.canonicalRootPath)) {
-            desiredWorktrees.set(project.canonicalRootPath, {
+        if (!desiredWorktrees.has(projectRootKey)) {
+            desiredWorktrees.set(projectRootKey, {
                 branchName: null,
                 headSha: null,
-                rootPath: project.canonicalRootPath,
+                rootPath: projectRootPath,
             });
         }
 
@@ -871,8 +876,16 @@ export class SqliteProjectStore implements ProjectStore {
                 `,
             )
             .all(projectId);
-        const existingByPath = new Map(
-            existingRows.map((row) => [path.resolve(row.root_path), row]),
+        const existingByPath = createPreferredExistingWorktreeMap({
+            desiredWorktrees,
+            existingRows,
+            primaryWorktreeId: `${projectId}:primary`,
+            projectRootKey,
+        });
+        const retainedExistingIds = new Set(
+            [...existingByPath]
+                .filter(([rootKey]) => desiredWorktrees.has(rootKey))
+                .map(([, row]) => row.id),
         );
         const upsertWorktree = this.#connection.prepare<
             [
@@ -914,12 +927,17 @@ export class SqliteProjectStore implements ProjectStore {
 
         const transaction = this.#connection.transaction(() => {
             for (const existingRow of existingRows) {
-                const normalizedRootPath = path.resolve(existingRow.root_path);
-                if (desiredWorktrees.has(normalizedRootPath)) {
+                const normalizedRootKey = normalizeWorktreePathKey(
+                    existingRow.root_path,
+                );
+                if (retainedExistingIds.has(existingRow.id)) {
                     continue;
                 }
 
-                if (existingRow.is_primary === 1) {
+                if (
+                    existingRow.is_primary === 1 &&
+                    !desiredWorktrees.has(normalizedRootKey)
+                ) {
                     continue;
                 }
 
@@ -928,10 +946,11 @@ export class SqliteProjectStore implements ProjectStore {
 
             for (const desiredWorktree of desiredWorktrees.values()) {
                 const existingRow = existingByPath.get(
-                    desiredWorktree.rootPath,
+                    normalizeWorktreePathKey(desiredWorktree.rootPath),
                 );
                 const isPrimary =
-                    desiredWorktree.rootPath === project.canonicalRootPath;
+                    normalizeWorktreePathKey(desiredWorktree.rootPath) ===
+                    projectRootKey;
                 upsertWorktree.run(
                     existingRow?.id ??
                         (isPrimary ? `${projectId}:primary` : randomUUID()),
@@ -1285,6 +1304,87 @@ function isDirectoryPath(projectPath: string): boolean {
         debugBenignError("projects.store.isDirectoryPath", error);
         return false;
     }
+}
+
+function normalizeWorktreePathKey(rootPath: string): string {
+    const resolvedPath = path.resolve(rootPath);
+    return process.platform === "win32"
+        ? resolvedPath.toLowerCase()
+        : resolvedPath;
+}
+
+function createPreferredExistingWorktreeMap({
+    desiredWorktrees,
+    existingRows,
+    primaryWorktreeId,
+    projectRootKey,
+}: {
+    readonly desiredWorktrees: ReadonlyMap<
+        string,
+        {
+            readonly rootPath: string;
+        }
+    >;
+    readonly existingRows: readonly PersistedProjectWorktreeRow[];
+    readonly primaryWorktreeId: string;
+    readonly projectRootKey: string;
+}): Map<string, PersistedProjectWorktreeRow> {
+    const existingByPath = new Map<string, PersistedProjectWorktreeRow>();
+
+    for (const row of existingRows) {
+        const rootKey = normalizeWorktreePathKey(row.root_path);
+        const current = existingByPath.get(rootKey);
+        if (
+            !current ||
+            getExistingWorktreePreferenceScore({
+                desiredRootPath: desiredWorktrees.get(rootKey)?.rootPath ?? null,
+                primaryWorktreeId,
+                projectRootKey,
+                rootKey,
+                row,
+            }) >
+                getExistingWorktreePreferenceScore({
+                    desiredRootPath:
+                        desiredWorktrees.get(rootKey)?.rootPath ?? null,
+                    primaryWorktreeId,
+                    projectRootKey,
+                    rootKey,
+                    row: current,
+                })
+        ) {
+            existingByPath.set(rootKey, row);
+        }
+    }
+
+    return existingByPath;
+}
+
+function getExistingWorktreePreferenceScore({
+    desiredRootPath,
+    primaryWorktreeId,
+    projectRootKey,
+    rootKey,
+    row,
+}: {
+    readonly desiredRootPath: string | null;
+    readonly primaryWorktreeId: string;
+    readonly projectRootKey: string;
+    readonly rootKey: string;
+    readonly row: PersistedProjectWorktreeRow;
+}): number {
+    let score = 0;
+
+    if (rootKey === projectRootKey && row.id === primaryWorktreeId) {
+        score += 100;
+    }
+    if (rootKey === projectRootKey && row.is_primary === 1) {
+        score += 50;
+    }
+    if (desiredRootPath && path.resolve(row.root_path) === desiredRootPath) {
+        score += 10;
+    }
+
+    return score;
 }
 
 function createPlaceholders(count: number): string {

@@ -2700,7 +2700,10 @@ function stripRemotePrefix(referenceName: string): string {
 }
 
 function normalizePathKey(filePath: string): string {
-    return path.resolve(filePath).split(path.sep).join("/");
+    const normalizedPath = path.resolve(filePath).split(path.sep).join("/");
+    return process.platform === "win32"
+        ? normalizedPath.toLowerCase()
+        : normalizedPath;
 }
 
 function normalizeGitPath(filePath: string): string {
