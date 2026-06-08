@@ -1,12 +1,23 @@
 import type { SpawnOptions } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
     isWindowsBatchCommand,
     prepareCommandForExecFile,
     prepareCommandForSpawn,
 } from "./command-launch";
+
+const tempDirs: string[] = [];
+
+afterEach(() => {
+    for (const tempDir of tempDirs.splice(0)) {
+        fs.rmSync(tempDir, { force: true, recursive: true });
+    }
+});
 
 describe("command launch helpers", () => {
     it("wraps Windows .cmd files through cmd.exe", () => {
@@ -104,6 +115,56 @@ describe("command launch helpers", () => {
         });
     });
 
+    it("wraps bare Windows commands resolved through PATHEXT", () => {
+        const binDir = createTempDir();
+        const executablePath = writeExecutable(binDir, "pnpm.CMD");
+
+        const prepared = prepareCommandForSpawn(
+            "pnpm",
+            ["test"],
+            undefined,
+            {
+                env: {
+                    PATHEXT: ".EXE;.CMD",
+                },
+                pathEntries: [binDir],
+                platform: "win32",
+            },
+        );
+
+        expect(prepared).toEqual({
+            args: ["/d", "/s", "/c", `""${executablePath}" "test""`],
+            command: "cmd.exe",
+            options: undefined,
+            wrappedByWindowsShell: true,
+        });
+    });
+
+    it("keeps bare Windows commands unchanged when PATHEXT resolves a non-batch executable", () => {
+        const binDir = createTempDir();
+        writeExecutable(binDir, "node.EXE");
+
+        const prepared = prepareCommandForSpawn(
+            "node",
+            ["script.js"],
+            undefined,
+            {
+                env: {
+                    PATHEXT: ".EXE;.CMD",
+                },
+                pathEntries: [binDir],
+                platform: "win32",
+            },
+        );
+
+        expect(prepared).toEqual({
+            args: ["script.js"],
+            command: "node",
+            options: undefined,
+            wrappedByWindowsShell: false,
+        });
+    });
+
     it("does not wrap batch-looking commands on POSIX platforms", () => {
         const prepared = prepareCommandForSpawn(
             "C:\\Program Files\\nodejs\\pnpm.cmd",
@@ -127,3 +188,18 @@ describe("command launch helpers", () => {
         expect(isWindowsBatchCommand("pnpm")).toBe(false);
     });
 });
+
+function createTempDir(): string {
+    const tempDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "comando-command-launch-"),
+    );
+    tempDirs.push(tempDir);
+    return tempDir;
+}
+
+function writeExecutable(directory: string, name: string): string {
+    const executablePath = path.join(directory, name);
+    fs.writeFileSync(executablePath, "", { mode: 0o755 });
+    fs.chmodSync(executablePath, 0o755);
+    return executablePath;
+}

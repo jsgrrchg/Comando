@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type {
     ExecFileOptions,
@@ -7,6 +8,8 @@ import type {
 type CommandLaunchOptions = SpawnOptions | ExecFileOptions;
 
 export interface PrepareCommandLaunchOptions {
+    readonly env?: NodeJS.ProcessEnv;
+    readonly pathEntries?: readonly string[];
     readonly platform?: NodeJS.Platform;
 }
 
@@ -77,7 +80,8 @@ function prepareCommandLaunch<
     launchOptions: PrepareCommandLaunchOptions,
 ): PreparedCommandLaunch<TOptions> {
     const platform = launchOptions.platform ?? process.platform;
-    if (platform !== "win32" || !isWindowsBatchCommand(command)) {
+    const resolvedCommand = resolveWindowsBatchCommand(command, launchOptions);
+    if (platform !== "win32" || !resolvedCommand) {
         return {
             args: [...args],
             command,
@@ -87,11 +91,90 @@ function prepareCommandLaunch<
     }
 
     return {
-        args: ["/d", "/s", "/c", buildWindowsBatchCommandLine(command, args)],
+        args: [
+            "/d",
+            "/s",
+            "/c",
+            buildWindowsBatchCommandLine(resolvedCommand, args),
+        ],
         command: "cmd.exe",
         options,
         wrappedByWindowsShell: true,
     };
+}
+
+function resolveWindowsBatchCommand(
+    command: string,
+    launchOptions: PrepareCommandLaunchOptions,
+): string | null {
+    const platform = launchOptions.platform ?? process.platform;
+    if (platform !== "win32") {
+        return null;
+    }
+
+    if (isWindowsBatchCommand(command)) {
+        return command;
+    }
+
+    const resolvedCommand = resolveWindowsPathExtCommand(command, launchOptions);
+    return resolvedCommand && isWindowsBatchCommand(resolvedCommand)
+        ? resolvedCommand
+        : null;
+}
+
+function resolveWindowsPathExtCommand(
+    command: string,
+    launchOptions: PrepareCommandLaunchOptions,
+): string | null {
+    const env = launchOptions.env ?? process.env;
+    const pathEntries =
+        launchOptions.pathEntries ?? splitWindowsPathEntries(env.PATH);
+    const extensions = getWindowsPathExtensions(env.PATHEXT);
+    const searchEntries = hasPathDirectory(command) ? [""] : pathEntries;
+
+    for (const entry of searchEntries) {
+        for (const extension of extensions) {
+            if (path.win32.extname(command)) {
+                continue;
+            }
+            const candidate = entry
+                ? path.join(entry, `${command}${extension}`)
+                : `${command}${extension}`;
+            if (isFile(candidate)) {
+                return candidate;
+            }
+        }
+    }
+
+    return null;
+}
+
+function hasPathDirectory(command: string): boolean {
+    return (
+        path.isAbsolute(command) ||
+        path.win32.isAbsolute(command) ||
+        command.includes("/") ||
+        command.includes("\\")
+    );
+}
+
+function splitWindowsPathEntries(value: string | undefined): string[] {
+    return value?.split(";").filter(Boolean) ?? [];
+}
+
+function getWindowsPathExtensions(value: string | undefined): string[] {
+    return (value ?? ".EXE;.CMD;.BAT;.COM")
+        .split(";")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+}
+
+function isFile(candidatePath: string): boolean {
+    try {
+        return fs.statSync(candidatePath).isFile();
+    } catch {
+        return false;
+    }
 }
 
 function buildWindowsBatchCommandLine(

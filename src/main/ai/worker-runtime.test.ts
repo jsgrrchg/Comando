@@ -5054,6 +5054,97 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
+    it("launches approved ACP terminal commands resolved by Windows PATHEXT", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const binDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-bin-"),
+        );
+        const executablePath = path.join(binDir, "pnpm.CMD");
+        const originalPlatform = process.platform;
+        const emittedEvents: AiWorkerEventMessage[] = [];
+
+        try {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: "win32",
+            });
+            await fs.writeFile(executablePath, "", "utf8");
+            const runtime = new AiWorkerRuntime({
+                emitEvent: (event) => {
+                    emittedEvents.push(event);
+                },
+            });
+            const launch = createLaunch({
+                cwd: tempDir,
+                projectRoot: tempDir,
+                title: "Terminal Windows PATHEXT test",
+            });
+
+            await runtime.dispatchMethod("ai.prepareSession", {
+                input: launch.input,
+                launch,
+            });
+
+            const client = latestClientFactory?.();
+            expect(client).toBeDefined();
+            const createPromise = client!.createTerminal({
+                args: ["test"],
+                command: "pnpm",
+                cwd: tempDir,
+                env: [
+                    {
+                        name: "PATH",
+                        value: binDir,
+                    },
+                    {
+                        name: "PATHEXT",
+                        value: ".CMD;.EXE",
+                    },
+                ],
+                outputByteLimit: 1024,
+                sessionId: "runtime-session-1",
+            });
+
+            await Promise.resolve();
+            const pendingPermission = getLatestPendingPermission(emittedEvents);
+            expect(pendingPermission).not.toBeNull();
+            expect(pendingPermission!.description).toContain(
+                "Command: pnpm test",
+            );
+            const allowOption = pendingPermission!.options.find(
+                (option) => option.kind === "allow_once",
+            );
+            expect(allowOption).toBeDefined();
+            await runtime.dispatchMethod("ai.respondPermission", {
+                input: {
+                    optionId: allowOption!.optionId,
+                    requestId: pendingPermission!.requestId,
+                    sessionId: "session-1",
+                },
+            });
+
+            await createPromise;
+
+            expect(spawnMock).toHaveBeenLastCalledWith(
+                "cmd.exe",
+                ["/d", "/s", "/c", `""${executablePath}" "test""`],
+                expect.objectContaining({
+                    cwd: tempDir,
+                    stdio: ["ignore", "pipe", "pipe"],
+                }),
+            );
+        } finally {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: originalPlatform,
+            });
+            await fs.rm(tempDir, { force: true, recursive: true });
+            await fs.rm(binDir, { force: true, recursive: true });
+        }
+    });
+
     it("normalizes negative ACP terminal exit codes to null", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),

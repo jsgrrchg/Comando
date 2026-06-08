@@ -2959,11 +2959,28 @@ export class AiWorkerRuntime {
             throw new Error("The terminal command was not approved.");
         }
 
-        const child = spawn(command, args, {
-            cwd,
-            env: buildTerminalEnv(params.env ?? []),
-            stdio: ["ignore", "pipe", "pipe"],
-        });
+        const terminalEnv = buildTerminalEnv(params.env ?? []);
+        const terminalSpawn = prepareCommandForSpawn(
+            command,
+            args,
+            {
+                cwd,
+                env: terminalEnv,
+                stdio: ["ignore", "pipe", "pipe"] as [
+                    "ignore",
+                    "pipe",
+                    "pipe",
+                ],
+            },
+            {
+                env: terminalEnv,
+            },
+        );
+        const child = spawn(
+            terminalSpawn.command,
+            terminalSpawn.args,
+            terminalSpawn.options,
+        );
         const terminal: LiveAcpTerminal = {
             child,
             commandLine,
