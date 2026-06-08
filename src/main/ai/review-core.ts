@@ -45,7 +45,12 @@ import {
     SUPPRESSED_STATUS_TITLES,
     type LiveAcpSession,
 } from "./contracts";
-import { toPosixPath } from "./session-core";
+import {
+    basenameForPathIdentity,
+    resolveSessionScopedPath,
+    type ResolveSessionPathOptions,
+    toPosixPath,
+} from "./session-core";
 import { debugBenignError } from "@main/observability/logging";
 
 const TERMINAL_OUTPUT_MAX_LENGTH = 10_000;
@@ -1564,48 +1569,29 @@ function buildToolSummary(
 export function normalizeTrackedDiffPath(
     liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
     candidatePath: string,
+    options: ResolveSessionPathOptions = {},
 ): string {
     const scopeRoot = liveSession.projectRoot ?? liveSession.cwd;
-    if (isPosixAbsolutePath(scopeRoot) && isPosixAbsolutePath(candidatePath)) {
-        const absolutePath = path.posix.resolve(candidatePath);
-        const normalizedScopeRoot = path.posix.resolve(scopeRoot);
-        if (
-            absolutePath === normalizedScopeRoot ||
-            absolutePath.startsWith(`${normalizedScopeRoot}/`)
-        ) {
-            const relativePath = path.posix.relative(
-                normalizedScopeRoot,
-                absolutePath,
-            );
-            return relativePath.length > 0
-                ? relativePath
-                : path.posix.basename(absolutePath);
-        }
+    const resolvedPath = resolveSessionScopedPath(
+        scopeRoot,
+        candidatePath,
+        options,
+    );
 
-        return absolutePath;
+    if (resolvedPath.insideRoot) {
+        return resolvedPath.relativePath && resolvedPath.relativePath.length > 0
+            ? resolvedPath.relativePath
+            : toPosixPath(
+                  basenameForPathIdentity(
+                      resolvedPath.absolutePath,
+                      { platform: resolvedPath.platform },
+                  ),
+              );
     }
 
-    const absolutePath = path.isAbsolute(candidatePath)
-        ? path.resolve(candidatePath)
-        : path.resolve(scopeRoot, candidatePath);
-
-    if (
-        absolutePath === scopeRoot ||
-        absolutePath.startsWith(`${scopeRoot}${path.sep}`)
-    ) {
-        const relativePath = path.relative(scopeRoot, absolutePath);
-        return relativePath.length > 0
-            ? toPosixPath(relativePath)
-            : toPosixPath(path.basename(absolutePath));
-    }
-
-    return path.isAbsolute(candidatePath)
-        ? absolutePath
+    return resolvedPath.isAbsoluteInput
+        ? resolvedPath.absolutePath
         : toPosixPath(candidatePath);
-}
-
-function isPosixAbsolutePath(candidatePath: string): boolean {
-    return candidatePath.startsWith("/") && !candidatePath.startsWith("//");
 }
 
 export async function readTextIfExists(

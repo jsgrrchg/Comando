@@ -102,6 +102,7 @@ import {
     hasSelectConfigValue,
     isBusyAiSessionStatus,
     isPathInsideRoot,
+    resolveSessionScopedPath,
     resolveSessionTitleOnPrompt,
     sameAdditionalRoots,
     serializeComposerPartsForDisplay,
@@ -111,7 +112,6 @@ import {
     setTitleOnSnapshot,
     shouldFlushLiveSessionImmediately,
     summarizeUserInputAnswers,
-    toPosixPath,
 } from "./session-core";
 import {
     isImageGenerationToolUpdate,
@@ -4335,33 +4335,29 @@ export class AiWorkerRuntime {
         readonly relativePath: string | null;
     } {
         const scopeRoot = liveSession.projectRoot ?? liveSession.cwd;
-        const absolutePath = path.isAbsolute(candidatePath)
-            ? path.resolve(candidatePath)
-            : path.resolve(scopeRoot, candidatePath);
-        const insidePrimaryScope =
-            absolutePath === scopeRoot ||
-            absolutePath.startsWith(`${scopeRoot}${path.sep}`);
+        const resolvedPath = resolveSessionScopedPath(scopeRoot, candidatePath);
         const insideAdditionalRoot =
             options.allowAdditionalRoots === true &&
             liveSession.additionalRoots.some((rootPath) =>
-                isPathInsideRoot(absolutePath, rootPath),
+                isPathInsideRoot(resolvedPath.absolutePath, rootPath),
             );
 
-        if (!insidePrimaryScope && !insideAdditionalRoot) {
+        if (!resolvedPath.insideRoot && !insideAdditionalRoot) {
             throw new Error(
                 `${getRuntimeDisplayName(liveSession.runtimeId)} attempted to access a path outside the project.`,
             );
         }
 
         const relativePath =
-            insidePrimaryScope &&
-            absolutePath.startsWith(`${scopeRoot}${path.sep}`)
-                ? toPosixPath(path.relative(scopeRoot, absolutePath))
+            resolvedPath.insideRoot &&
+            resolvedPath.relativePath !== null &&
+            resolvedPath.relativePath.length > 0
+                ? resolvedPath.relativePath
                 : null;
 
         return {
-            absolutePath,
-            displayPath: relativePath ?? absolutePath,
+            absolutePath: resolvedPath.absolutePath,
+            displayPath: relativePath ?? resolvedPath.absolutePath,
             relativePath,
         };
     }
