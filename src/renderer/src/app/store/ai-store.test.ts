@@ -695,6 +695,42 @@ describe("ai-store queue", () => {
         });
     });
 
+    it("optimistically removes tracked files through relative Windows casing aliases", async () => {
+        const rejectAiTrackedFile = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    rejectAiTrackedFile,
+                },
+            },
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                trackedFiles: [
+                    createTrackedFile({
+                        path: "src/App.ts",
+                    }),
+                ],
+            }),
+        );
+
+        await useAiStore.getState().rejectTrackedFile({
+            path: "src/app.ts",
+            sessionId: TAB.sessionId,
+        });
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.trackedFiles,
+        ).toEqual([]);
+        expect(rejectAiTrackedFile).toHaveBeenCalledWith({
+            path: "src/app.ts",
+            sessionId: TAB.sessionId,
+        });
+    });
+
     it("optimistically updates tracked file hunks through Windows casing aliases", async () => {
         const keepAiTrackedFileHunks = vi.fn().mockResolvedValue(undefined);
         Object.defineProperty(globalThis, "window", {

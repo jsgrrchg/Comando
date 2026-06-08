@@ -102,6 +102,7 @@ import {
     hasSelectConfigValue,
     isBusyAiSessionStatus,
     isPathInsideRoot,
+    isSamePath,
     resolveSessionScopedPath,
     resolveSessionTitleOnPrompt,
     sameAdditionalRoots,
@@ -708,7 +709,11 @@ export class AiWorkerRuntime {
             session.snapshot = {
                 ...session.snapshot,
                 trackedFiles: session.snapshot.trackedFiles.filter(
-                    (trackedFile) => trackedFile.path !== params.input.path,
+                    (trackedFile) =>
+                        !matchesTrackedReviewPath(
+                            trackedFile,
+                            params.input.path,
+                        ),
                 ),
                 updatedAt: new Date().toISOString(),
             };
@@ -720,7 +725,8 @@ export class AiWorkerRuntime {
     ): Promise<AiWorkerReviewMutationResult> {
         return await this.#withReviewSession(params.context, async (session) => {
             const trackedFile = session.snapshot.trackedFiles.find(
-                (candidate) => candidate.path === params.input.path,
+                (candidate) =>
+                    matchesTrackedReviewPath(candidate, params.input.path),
             );
             if (!trackedFile) {
                 throw new Error("The file to review was not found.");
@@ -730,7 +736,11 @@ export class AiWorkerRuntime {
             session.snapshot = {
                 ...session.snapshot,
                 trackedFiles: session.snapshot.trackedFiles.filter(
-                    (candidate) => candidate.path !== params.input.path,
+                    (candidate) =>
+                        !matchesTrackedReviewPath(
+                            candidate,
+                            params.input.path,
+                        ),
                 ),
                 updatedAt: new Date().toISOString(),
             };
@@ -742,7 +752,8 @@ export class AiWorkerRuntime {
     ): Promise<AiWorkerReviewMutationResult> {
         return await this.#withReviewSession(params.context, (session) => {
             const trackedFile = session.snapshot.trackedFiles.find(
-                (candidate) => candidate.path === params.input.path,
+                (candidate) =>
+                    matchesTrackedReviewPath(candidate, params.input.path),
             );
             if (!trackedFile) {
                 throw new Error("The file to review was not found.");
@@ -770,7 +781,8 @@ export class AiWorkerRuntime {
     ): Promise<AiWorkerReviewMutationResult> {
         return await this.#withReviewSession(params.context, async (session) => {
             const trackedFile = session.snapshot.trackedFiles.find(
-                (candidate) => candidate.path === params.input.path,
+                (candidate) =>
+                    matchesTrackedReviewPath(candidate, params.input.path),
             );
             if (!trackedFile) {
                 throw new Error("The file to review was not found.");
@@ -5441,6 +5453,18 @@ function normalizeTerminalExitCode(exitCode: number | null): number | null {
     }
 
     return Math.floor(exitCode);
+}
+
+function matchesTrackedReviewPath(
+    trackedFile: AiTrackedFile,
+    candidatePath: string,
+): boolean {
+    return (
+        isSamePath(trackedFile.path, candidatePath) ||
+        (trackedFile.previousPath
+            ? isSamePath(trackedFile.previousPath, candidatePath)
+            : false)
+    );
 }
 
 function appendTerminalOutput(

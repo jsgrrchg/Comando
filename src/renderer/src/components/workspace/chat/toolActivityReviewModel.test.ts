@@ -259,6 +259,30 @@ describe("toolActivityReviewModel", () => {
         expect(item?.file?.identityKey).toBe("tracked-1");
     });
 
+    it("matches relative forward-slash diffs with Windows casing aliases", () => {
+        const activity = createActivity({
+            diffs: [
+                {
+                    hunks: [],
+                    isText: true,
+                    kind: "update",
+                    newText: "next",
+                    oldText: "prev",
+                    path: "src/app.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+        });
+        const trackedFile = createTrackedFile({
+            path: "src/App.ts",
+        });
+
+        const [item] = deriveChangeReviewItems(activity, [trackedFile]);
+
+        expect(item?.file?.identityKey).toBe("tracked-1");
+    });
+
     it("prefers the matched tracked file diff for chat review rendering", () => {
         const activity = createActivity({
             diffs: [

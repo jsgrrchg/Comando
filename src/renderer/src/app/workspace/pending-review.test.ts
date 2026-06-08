@@ -117,6 +117,25 @@ describe("pending review helpers", () => {
         });
     });
 
+    it("matches relative forward-slash paths with Windows casing aliases", () => {
+        const trackedFiles = [
+            createTrackedFile({
+                path: "src/App.ts",
+                sessionId: "session-relative-casing",
+            }),
+        ];
+
+        expect(
+            findBestPendingTrackedFile({
+                paths: ["src/app.ts"],
+                trackedFiles,
+            }),
+        )?.toMatchObject({
+            path: "src/App.ts",
+            sessionId: "session-relative-casing",
+        });
+    });
+
     it("prefers inline-review capable updates over newer non-inline matches", () => {
         const trackedFiles = [
             createTrackedFile({

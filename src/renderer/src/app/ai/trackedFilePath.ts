@@ -29,9 +29,18 @@ export function areTrackedFilePathsEquivalent(
 
     const platform =
         options.platform ?? inferTrackedFilePathPlatform(leftPath, rightPath);
-    return (
+    if (
         normalizePathKey(leftPath, { platform }) ===
         normalizePathKey(rightPath, { platform })
+    ) {
+        return true;
+    }
+
+    return (
+        !options.platform &&
+        platform !== "win32" &&
+        normalizePathKey(leftPath, { platform: "win32" }) ===
+            normalizePathKey(rightPath, { platform: "win32" })
     );
 }
 
