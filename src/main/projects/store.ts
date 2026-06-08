@@ -6,6 +6,7 @@ import path from "node:path";
 import type Database from "better-sqlite3";
 
 import type { ProjectAppDataSummary, ProjectSummary } from "@shared/ipc";
+import { normalizePathKey } from "@shared/path-identity";
 
 import type { Awaitable } from "../db/awaitable";
 import { debugBenignError } from "../observability/logging";
@@ -1307,10 +1308,13 @@ function isDirectoryPath(projectPath: string): boolean {
 }
 
 function normalizeWorktreePathKey(rootPath: string): string {
-    const resolvedPath = path.resolve(rootPath);
-    return process.platform === "win32"
-        ? resolvedPath.toLowerCase()
-        : resolvedPath;
+    return normalizePathKey(path.resolve(rootPath), {
+        platform: getNativePathIdentityPlatform(),
+    });
+}
+
+function getNativePathIdentityPlatform(): "posix" | "win32" {
+    return process.platform === "win32" ? "win32" : "posix";
 }
 
 function createPreferredExistingWorktreeMap({
@@ -1380,7 +1384,11 @@ function getExistingWorktreePreferenceScore({
     if (rootKey === projectRootKey && row.is_primary === 1) {
         score += 50;
     }
-    if (desiredRootPath && path.resolve(row.root_path) === desiredRootPath) {
+    if (
+        desiredRootPath &&
+        normalizeWorktreePathKey(row.root_path) ===
+            normalizeWorktreePathKey(desiredRootPath)
+    ) {
         score += 10;
     }
 

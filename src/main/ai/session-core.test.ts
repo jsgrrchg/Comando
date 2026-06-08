@@ -3,7 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 import type { AiSessionSnapshot } from "@shared/ipc";
 
-import { applySessionCatalogToSnapshot } from "./session-core";
+import {
+    applySessionCatalogToSnapshot,
+    isPathInsideRoot,
+    isSamePath,
+    normalizeAdditionalRoots,
+    resolveSessionScopedPath,
+} from "./session-core";
 
 describe("session-core model reconciliation", () => {
     it("merges runtime models into stale model config options", () => {
@@ -63,6 +69,56 @@ describe("session-core model reconciliation", () => {
                     (option) => option.value === "gpt-5.5",
                 ),
         ).toBe(true);
+    });
+});
+
+describe("session-core path scope identity", () => {
+    it("treats Windows drive-letter casing as the same project scope", () => {
+        expect(
+            isPathInsideRoot("c:\\repo\\src\\file.ts", "C:\\Repo", {
+                platform: "win32",
+            }),
+        ).toBe(true);
+        expect(
+            isSamePath("c:\\repo", "C:\\Repo", { platform: "win32" }),
+        ).toBe(true);
+    });
+
+    it("normalizes equivalent Windows absolute paths to display relatives", () => {
+        expect(
+            resolveSessionScopedPath("C:\\Repo", "c:\\repo\\src\\File.ts", {
+                platform: "win32",
+            }),
+        ).toMatchObject({
+            absolutePath: "c:\\repo\\src\\File.ts",
+            insideRoot: true,
+            isAbsoluteInput: true,
+            relativePath: "src/File.ts",
+        });
+    });
+
+    it("keeps Windows sibling paths outside the project scope", () => {
+        expect(
+            resolveSessionScopedPath(
+                "C:\\Repo",
+                "c:\\repo-other\\src\\File.ts",
+                { platform: "win32" },
+            ),
+        ).toMatchObject({
+            insideRoot: false,
+            isAbsoluteInput: true,
+            relativePath: null,
+        });
+    });
+
+    it("deduplicates additional roots with Windows casing differences", () => {
+        expect(
+            normalizeAdditionalRoots([
+                "C:\\Repo\\Shared",
+                "c:\\repo\\shared",
+                "C:\\Repo\\Other",
+            ], { platform: "win32" }),
+        ).toEqual(["C:\\Repo\\Other", "C:\\Repo\\Shared"]);
     });
 });
 

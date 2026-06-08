@@ -223,6 +223,42 @@ describe("ChangeReviewPanel", () => {
         expect(markup).toContain("Open");
     });
 
+    it("keeps the open action available for UNC tracked paths", () => {
+        const uncPath = "\\\\Server\\Share\\Comando\\src\\app.ts";
+        const markup = renderToStaticMarkup(
+            createElement(ChangeReviewPanel, {
+                activity: createActivity({
+                    diffs: [
+                        {
+                            ...createActivity().diffs[0],
+                            path: uncPath,
+                        },
+                    ],
+                }),
+                defaultExpanded: true,
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                resolveFileReference: (reference) =>
+                    reference === uncPath
+                        ? {
+                              endLine: null,
+                              isAbsolute: true,
+                              path: reference,
+                              relativePath: "src/app.ts",
+                              startLine: null,
+                          }
+                        : null,
+                trackedFiles: [
+                    createTrackedFile({
+                        path: uncPath,
+                    }),
+                ],
+            }),
+        );
+
+        expect(markup).toContain("Open");
+    });
+
     it("keeps wrapping enabled for markdown review cards", () => {
         const markup = renderToStaticMarkup(
             createElement(ChangeReviewPanel, {

@@ -1,12 +1,29 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-import type { AiTrackedFile } from "@shared/ipc";
+import type { AiTrackedFile, AppBootstrapSnapshot } from "@shared/ipc";
+import { useAppStore } from "@renderer/app/store/app-store";
 
 import {
     collectPendingTrackedFilesFromSessions,
     findBestPendingTrackedFile,
     resolveFileTabReviewContext,
 } from "./pending-review";
+
+afterEach(() => {
+    useAppStore.setState({
+        bootstrap: null,
+        error: null,
+        status: "idle",
+    });
+});
+
+function setRendererPlatform(platform: string): void {
+    useAppStore.setState({
+        bootstrap: { platform } as AppBootstrapSnapshot,
+        error: null,
+        status: "ready",
+    });
+}
 
 function createTrackedFile(
     overrides: Partial<AiTrackedFile> &
@@ -76,6 +93,65 @@ describe("pending review helpers", () => {
         ).toEqual({
             path: "src/editor.ts",
             sessionId: "session-b",
+        });
+    });
+
+    it("matches pending tracked files across Windows separator aliases", () => {
+        const trackedFiles = [
+            createTrackedFile({
+                path: "src\\editor.ts",
+                sessionId: "session-windows-separators",
+            }),
+        ];
+
+        expect(
+            resolveFileTabReviewContext({
+                relativePath: "src/editor.ts",
+                trackedFiles,
+            }),
+        ).toEqual({
+            path: "src\\editor.ts",
+            sessionId: "session-windows-separators",
+        });
+    });
+
+    it("matches Windows absolute tracked files with equivalent casing", () => {
+        const trackedFiles = [
+            createTrackedFile({
+                path: "C:\\Repo\\src\\Editor.ts",
+                sessionId: "session-windows-casing",
+            }),
+        ];
+
+        expect(
+            findBestPendingTrackedFile({
+                paths: ["c:\\repo\\src\\editor.ts"],
+                trackedFiles,
+            }),
+        )?.toMatchObject({
+            path: "C:\\Repo\\src\\Editor.ts",
+            sessionId: "session-windows-casing",
+        });
+    });
+
+    it("matches relative forward-slash paths with Windows casing aliases", () => {
+        setRendererPlatform("win32");
+
+        const trackedFiles = [
+            createTrackedFile({
+                path: "src/App.ts",
+                sessionId: "session-relative-casing",
+            }),
+        ];
+
+        expect(
+            findBestPendingTrackedFile({
+                paths: ["src/app.ts"],
+                trackedFiles,
+            }),
+        )?.toMatchObject({
+            path: "src/App.ts",
+            sessionId: "session-relative-casing",
         });
     });
 

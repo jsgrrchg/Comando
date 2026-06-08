@@ -124,7 +124,11 @@ function getBadgeLabel(item: ChangeReviewItem): string {
 }
 
 function looksAbsolutePath(path: string): boolean {
-    return path.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(path);
+    return (
+        path.startsWith("/") ||
+        /^[a-zA-Z]:[\\/]/.test(path) ||
+        path.startsWith("\\\\")
+    );
 }
 
 function canOpenItem(

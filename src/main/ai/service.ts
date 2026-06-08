@@ -80,7 +80,9 @@ import {
     getRecentStderrText,
     getRuntimeDisplayName,
     isPathInsideRoot,
+    isSamePath,
     normalizeAdditionalRoots,
+    resolveSessionScopedPath,
     setConfigOptionOnSnapshot,
     setModeOnSnapshot,
     setModelOnSnapshot,
@@ -1443,21 +1445,19 @@ export class AiService {
         },
         candidatePath: string,
     ): string {
-        const absolutePath = path.isAbsolute(candidatePath)
-            ? path.resolve(candidatePath)
-            : path.resolve(scope.scopeRoot, candidatePath);
-        const insidePrimaryScope =
-            absolutePath === scope.scopeRoot ||
-            absolutePath.startsWith(`${scope.scopeRoot}${path.sep}`);
+        const resolvedPath = resolveSessionScopedPath(
+            scope.scopeRoot,
+            candidatePath,
+        );
         const insideAdditionalRoot = scope.additionalRoots.some((rootPath) =>
-            isPathInsideRoot(absolutePath, rootPath),
+            isPathInsideRoot(resolvedPath.absolutePath, rootPath),
         );
 
-        if (!insidePrimaryScope && !insideAdditionalRoot) {
+        if (!resolvedPath.insideRoot && !insideAdditionalRoot) {
             throw new Error("Tracked file path is outside the session scope.");
         }
 
-        return absolutePath;
+        return resolvedPath.absolutePath;
     }
 
     #getLiveSessionRuntimeId(sessionId: string): AiRuntimeId {
@@ -1739,12 +1739,11 @@ export class AiService {
             return normalizeAdditionalRoots(mergedRoots);
         }
 
-        const normalizedProjectRoot = path.resolve(projectRoot);
         return normalizeAdditionalRoots(
             mergedRoots.filter(
                 (rootPath) =>
                     rootPath.trim().length > 0 &&
-                    path.resolve(rootPath) !== normalizedProjectRoot,
+                    !isSamePath(rootPath, projectRoot),
             ),
         );
     }

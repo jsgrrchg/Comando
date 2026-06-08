@@ -71,6 +71,23 @@ describe("projectFileReferences", () => {
         });
     });
 
+    it("resolves UNC absolute paths without collapsing the server root", () => {
+        expect(
+            resolveProjectFileReference(
+                "\\\\Server\\Share\\Comando\\src\\app.ts",
+                {
+                    projectRoots: ["\\\\server\\share\\comando"],
+                },
+            ),
+        ).toEqual({
+            endLine: null,
+            isAbsolute: true,
+            path: "//Server/Share/Comando/src/app.ts",
+            relativePath: "src/app.ts",
+            startLine: null,
+        });
+    });
+
     it("keeps relative paths ready to open in tabs", () => {
         expect(
             resolveProjectFileReference("./src/app.ts", { projectRoots: [] }),

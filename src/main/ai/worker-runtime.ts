@@ -49,6 +49,10 @@ import {
 import { SessionBusyError } from "@shared/ai-errors";
 import { isDefaultChatTitle } from "@shared/chatTitle";
 import { buildAiSessionDomainEvents } from "@shared/ai-session-events";
+import {
+    normalizePathKey,
+    type PathIdentityPlatform,
+} from "@shared/path-identity";
 
 import { debugBenignError } from "@main/observability/logging";
 
@@ -102,6 +106,7 @@ import {
     hasSelectConfigValue,
     isBusyAiSessionStatus,
     isPathInsideRoot,
+    resolveSessionScopedPath,
     resolveSessionTitleOnPrompt,
     sameAdditionalRoots,
     serializeComposerPartsForDisplay,
@@ -111,7 +116,6 @@ import {
     setTitleOnSnapshot,
     shouldFlushLiveSessionImmediately,
     summarizeUserInputAnswers,
-    toPosixPath,
 } from "./session-core";
 import {
     isImageGenerationToolUpdate,
@@ -708,7 +712,11 @@ export class AiWorkerRuntime {
             session.snapshot = {
                 ...session.snapshot,
                 trackedFiles: session.snapshot.trackedFiles.filter(
-                    (trackedFile) => trackedFile.path !== params.input.path,
+                    (trackedFile) =>
+                        !matchesTrackedReviewPath(
+                            trackedFile,
+                            params.input.path,
+                        ),
                 ),
                 updatedAt: new Date().toISOString(),
             };
@@ -720,7 +728,8 @@ export class AiWorkerRuntime {
     ): Promise<AiWorkerReviewMutationResult> {
         return await this.#withReviewSession(params.context, async (session) => {
             const trackedFile = session.snapshot.trackedFiles.find(
-                (candidate) => candidate.path === params.input.path,
+                (candidate) =>
+                    matchesTrackedReviewPath(candidate, params.input.path),
             );
             if (!trackedFile) {
                 throw new Error("The file to review was not found.");
@@ -730,7 +739,11 @@ export class AiWorkerRuntime {
             session.snapshot = {
                 ...session.snapshot,
                 trackedFiles: session.snapshot.trackedFiles.filter(
-                    (candidate) => candidate.path !== params.input.path,
+                    (candidate) =>
+                        !matchesTrackedReviewPath(
+                            candidate,
+                            params.input.path,
+                        ),
                 ),
                 updatedAt: new Date().toISOString(),
             };
@@ -742,7 +755,8 @@ export class AiWorkerRuntime {
     ): Promise<AiWorkerReviewMutationResult> {
         return await this.#withReviewSession(params.context, (session) => {
             const trackedFile = session.snapshot.trackedFiles.find(
-                (candidate) => candidate.path === params.input.path,
+                (candidate) =>
+                    matchesTrackedReviewPath(candidate, params.input.path),
             );
             if (!trackedFile) {
                 throw new Error("The file to review was not found.");
@@ -770,7 +784,8 @@ export class AiWorkerRuntime {
     ): Promise<AiWorkerReviewMutationResult> {
         return await this.#withReviewSession(params.context, async (session) => {
             const trackedFile = session.snapshot.trackedFiles.find(
-                (candidate) => candidate.path === params.input.path,
+                (candidate) =>
+                    matchesTrackedReviewPath(candidate, params.input.path),
             );
             if (!trackedFile) {
                 throw new Error("The file to review was not found.");
@@ -4335,33 +4350,29 @@ export class AiWorkerRuntime {
         readonly relativePath: string | null;
     } {
         const scopeRoot = liveSession.projectRoot ?? liveSession.cwd;
-        const absolutePath = path.isAbsolute(candidatePath)
-            ? path.resolve(candidatePath)
-            : path.resolve(scopeRoot, candidatePath);
-        const insidePrimaryScope =
-            absolutePath === scopeRoot ||
-            absolutePath.startsWith(`${scopeRoot}${path.sep}`);
+        const resolvedPath = resolveSessionScopedPath(scopeRoot, candidatePath);
         const insideAdditionalRoot =
             options.allowAdditionalRoots === true &&
             liveSession.additionalRoots.some((rootPath) =>
-                isPathInsideRoot(absolutePath, rootPath),
+                isPathInsideRoot(resolvedPath.absolutePath, rootPath),
             );
 
-        if (!insidePrimaryScope && !insideAdditionalRoot) {
+        if (!resolvedPath.insideRoot && !insideAdditionalRoot) {
             throw new Error(
                 `${getRuntimeDisplayName(liveSession.runtimeId)} attempted to access a path outside the project.`,
             );
         }
 
         const relativePath =
-            insidePrimaryScope &&
-            absolutePath.startsWith(`${scopeRoot}${path.sep}`)
-                ? toPosixPath(path.relative(scopeRoot, absolutePath))
+            resolvedPath.insideRoot &&
+            resolvedPath.relativePath !== null &&
+            resolvedPath.relativePath.length > 0
+                ? resolvedPath.relativePath
                 : null;
 
         return {
-            absolutePath,
-            displayPath: relativePath ?? absolutePath,
+            absolutePath: resolvedPath.absolutePath,
+            displayPath: relativePath ?? resolvedPath.absolutePath,
             relativePath,
         };
     }
@@ -5445,6 +5456,53 @@ function normalizeTerminalExitCode(exitCode: number | null): number | null {
     }
 
     return Math.floor(exitCode);
+}
+
+function matchesTrackedReviewPath(
+    trackedFile: AiTrackedFile,
+    candidatePath: string,
+): boolean {
+    return (
+        areTrackedReviewPathsEquivalent(trackedFile.path, candidatePath) ||
+        (trackedFile.previousPath
+            ? areTrackedReviewPathsEquivalent(
+                  trackedFile.previousPath,
+                  candidatePath,
+              )
+            : false)
+    );
+}
+
+function areTrackedReviewPathsEquivalent(
+    leftPath: string,
+    rightPath: string,
+): boolean {
+    const platform = resolveTrackedReviewPathPlatform(leftPath, rightPath);
+    return (
+        normalizePathKey(leftPath, { platform }) ===
+        normalizePathKey(rightPath, { platform })
+    );
+}
+
+function resolveTrackedReviewPathPlatform(
+    leftPath: string,
+    rightPath: string,
+): PathIdentityPlatform {
+    return isWindowsShapedPath(leftPath) || isWindowsShapedPath(rightPath)
+        ? "win32"
+        : getNativePathIdentityPlatform();
+}
+
+function isWindowsShapedPath(candidatePath: string): boolean {
+    return (
+        /^(?:[a-zA-Z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/.test(
+            candidatePath,
+        ) || candidatePath.includes("\\")
+    );
+}
+
+function getNativePathIdentityPlatform(): PathIdentityPlatform {
+    return process.platform === "win32" ? "win32" : "posix";
 }
 
 function appendTerminalOutput(

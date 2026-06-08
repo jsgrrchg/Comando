@@ -12,6 +12,7 @@ import {
     listProjectTreeChildren,
     readProjectFile,
     renameProjectEntry,
+    resolveProjectPath,
     writeProjectFile,
 } from "./tree";
 
@@ -63,6 +64,22 @@ describe("project tree helpers", () => {
         });
 
         expect(nodes).toEqual([]);
+    });
+
+    it("resolves file operation paths inside the project root", () => {
+        const rootPath = createProjectFixture();
+
+        expect(resolveProjectPath(rootPath, "src/../README.md")).toBe(
+            path.join(rootPath, "README.md"),
+        );
+    });
+
+    it("rejects file operation paths outside the project root", () => {
+        const rootPath = createProjectFixture();
+
+        expect(() => resolveProjectPath(rootPath, "../outside.txt")).toThrow(
+            /outside of the project root/i,
+        );
     });
 
     it("reads text files and preserves the relative path metadata", async () => {

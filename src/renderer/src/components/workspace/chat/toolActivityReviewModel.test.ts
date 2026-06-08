@@ -1,13 +1,34 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
+import type {
+    AiToolActivity,
+    AiTrackedFile,
+    AppBootstrapSnapshot,
+} from "@shared/ipc";
 
+import { useAppStore } from "@renderer/app/store/app-store";
 import {
     deriveChangeReviewItems,
     deriveChangeReviewSummary,
     deriveToolActivityReviewEntries,
     deriveTrackedFilesForToolActivity,
 } from "./toolActivityReviewModel";
+
+afterEach(() => {
+    useAppStore.setState({
+        bootstrap: null,
+        error: null,
+        status: "idle",
+    });
+});
+
+function setRendererPlatform(platform: string): void {
+    useAppStore.setState({
+        bootstrap: { platform } as AppBootstrapSnapshot,
+        error: null,
+        status: "ready",
+    });
+}
 
 function createActivity(
     overrides: Partial<AiToolActivity> = {},
@@ -89,6 +110,29 @@ describe("toolActivityReviewModel", () => {
             id: "tool-without-link",
         });
         const trackedFile = createTrackedFile({
+            toolCallId: null,
+        });
+
+        expect(
+            deriveTrackedFilesForToolActivity(activity, [trackedFile]).map(
+                (candidate) => candidate.identityKey,
+            ),
+        ).toEqual(["tracked-1"]);
+    });
+
+    it("uses normalized path fallback for Windows separator aliases", () => {
+        const activity = createActivity({
+            id: "tool-without-link",
+            locations: [
+                {
+                    endLine: null,
+                    line: null,
+                    path: "src/app.ts",
+                },
+            ],
+        });
+        const trackedFile = createTrackedFile({
+            path: "src\\app.ts",
             toolCallId: null,
         });
 
@@ -210,6 +254,56 @@ describe("toolActivityReviewModel", () => {
         expect(items[0]?.file?.identityKey).toBe("tracked-1");
         expect(items[1]?.file?.identityKey).toBe("tracked-2");
         expect(items[1]?.diff.path).toBe("src/secondary.ts");
+    });
+
+    it("matches diffs to tracked files with Windows casing aliases", () => {
+        const activity = createActivity({
+            diffs: [
+                {
+                    hunks: [],
+                    isText: true,
+                    kind: "update",
+                    newText: "next",
+                    oldText: "prev",
+                    path: "c:\\repo\\src\\app.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+        });
+        const trackedFile = createTrackedFile({
+            path: "C:\\Repo\\src\\App.ts",
+        });
+
+        const [item] = deriveChangeReviewItems(activity, [trackedFile]);
+
+        expect(item?.file?.identityKey).toBe("tracked-1");
+    });
+
+    it("matches relative forward-slash diffs with Windows casing aliases", () => {
+        setRendererPlatform("win32");
+
+        const activity = createActivity({
+            diffs: [
+                {
+                    hunks: [],
+                    isText: true,
+                    kind: "update",
+                    newText: "next",
+                    oldText: "prev",
+                    path: "src/app.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+        });
+        const trackedFile = createTrackedFile({
+            path: "src/App.ts",
+        });
+
+        const [item] = deriveChangeReviewItems(activity, [trackedFile]);
+
+        expect(item?.file?.identityKey).toBe("tracked-1");
     });
 
     it("prefers the matched tracked file diff for chat review rendering", () => {

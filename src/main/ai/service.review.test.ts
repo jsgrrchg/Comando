@@ -392,6 +392,19 @@ describe("AiService tracked file review merging", () => {
         });
     });
 
+    it("normalizes Windows absolute diff paths with different root casing", () => {
+        expect(
+            __testing.normalizeTrackedDiffPath(
+                {
+                    cwd: "C:\\Repo",
+                    projectRoot: "C:\\Repo",
+                },
+                "c:\\repo\\src\\app.ts",
+                { platform: "win32" },
+            ),
+        ).toBe("src/app.ts");
+    });
+
     it("recomputes text hunks instead of trusting external diff metadata", () => {
         const oldText = "alpha\nbeta\ngamma";
         const newText = "alpha\nBETA\ngamma";

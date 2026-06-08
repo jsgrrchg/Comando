@@ -65,6 +65,7 @@ import {
     writeAiSessionTranscriptToSnapshot,
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
+import { matchesTrackedFilePath } from "@renderer/app/ai/trackedFilePath";
 import { collectExternalComposerRoots } from "@renderer/components/workspace/chat/composerParts";
 import type {
     RuntimeWorkspaceChatTab,
@@ -3488,7 +3489,7 @@ function removeTrackedFileFromSnapshot(
     return {
         ...snapshot,
         trackedFiles: snapshot.trackedFiles.filter(
-            (trackedFile) => trackedFile.path !== path,
+            (trackedFile) => !matchesTrackedFilePath(trackedFile, path),
         ),
         updatedAt: new Date().toISOString(),
     };
@@ -3500,7 +3501,7 @@ function resolveTrackedFileHunksInSnapshot(
     decision: "keep" | "reject",
 ): AiSessionSnapshot {
     const nextTrackedFiles = snapshot.trackedFiles.flatMap((trackedFile) => {
-        if (trackedFile.path !== input.path) {
+        if (!matchesTrackedFilePath(trackedFile, input.path)) {
             return [trackedFile];
         }
 

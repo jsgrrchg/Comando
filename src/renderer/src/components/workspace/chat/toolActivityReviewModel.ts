@@ -1,5 +1,9 @@
 import type { AiFileDiff, AiToolActivity, AiTrackedFile } from "@shared/ipc";
 
+import {
+    areTrackedFilePathsEquivalent,
+    matchesTrackedFilePath,
+} from "@renderer/app/ai/trackedFilePath";
 import type {
     ReviewFileStats,
     ReviewFileTone,
@@ -88,8 +92,7 @@ export function deriveTrackedFilesForToolActivity(
         const pathMatches = trackedFiles.filter(
             (trackedFile) =>
                 trackedFile.toolCallId === null &&
-                (trackedFile.path === candidatePath ||
-                    trackedFile.previousPath === candidatePath),
+                matchesTrackedFilePath(trackedFile, candidatePath),
         );
 
         if (pathMatches.length === 1) {
@@ -290,23 +293,43 @@ function scoreTrackedFileMatch(
     trackedFile: AiTrackedFile,
 ): number {
     if (
-        trackedFile.path === diff.path &&
-        (trackedFile.previousPath ?? null) === (diff.previousPath ?? null)
+        areTrackedFilePathsEquivalent(trackedFile.path, diff.path) &&
+        areOptionalTrackedFilePathsEquivalent(
+            trackedFile.previousPath,
+            diff.previousPath,
+        )
     ) {
         return 4;
     }
 
-    if (trackedFile.path === diff.path) {
+    if (areTrackedFilePathsEquivalent(trackedFile.path, diff.path)) {
         return 3;
     }
 
-    if (diff.previousPath && trackedFile.previousPath === diff.previousPath) {
+    if (
+        diff.previousPath &&
+        areTrackedFilePathsEquivalent(trackedFile.previousPath, diff.previousPath)
+    ) {
         return 2;
     }
 
-    if (diff.previousPath && trackedFile.path === diff.previousPath) {
+    if (
+        diff.previousPath &&
+        areTrackedFilePathsEquivalent(trackedFile.path, diff.previousPath)
+    ) {
         return 1;
     }
 
     return -1;
+}
+
+function areOptionalTrackedFilePathsEquivalent(
+    leftPath: string | null | undefined,
+    rightPath: string | null | undefined,
+): boolean {
+    if (!leftPath && !rightPath) {
+        return true;
+    }
+
+    return areTrackedFilePathsEquivalent(leftPath, rightPath);
 }

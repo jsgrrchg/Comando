@@ -8,12 +8,15 @@ import type {
     AiSessionSnapshot,
     AiSessionUpdate,
     AiToolActivity,
+    AiTrackedFile,
+    AppBootstrapSnapshot,
     WorkspaceChatTab,
 } from "@shared/ipc";
 
 import { AI_SESSION_BUSY_MESSAGE } from "@shared/ai-errors";
 
 import { getSessionReviewPreferencesStorageKey } from "@renderer/app/ai/sessionReviewPreferences";
+import { useAppStore } from "./app-store";
 import { useAiStore } from "./ai-store";
 
 // Electron's ipcRenderer.invoke wraps handler errors with a prefix before
@@ -63,6 +66,39 @@ function createSnapshot(
         trackedFiles: [],
         updatedAt: "2026-04-14T00:00:00.000Z",
         worktreeId: TAB.worktreeId ?? null,
+        ...overrides,
+    };
+}
+
+function createTrackedFile(
+    overrides: Partial<AiTrackedFile> = {},
+): AiTrackedFile {
+    return {
+        hunks: [
+            {
+                id: "hunk-1",
+                lines: [
+                    { id: "line-1", text: "before", type: "remove" },
+                    { id: "line-2", text: "after", type: "add" },
+                ],
+                newCount: 1,
+                newStart: 1,
+                oldCount: 1,
+                oldStart: 1,
+            },
+        ],
+        identityKey: "tracked-1",
+        isText: true,
+        kind: "update",
+        newText: "after\n",
+        oldText: "before\n",
+        path: "src/app.ts",
+        previousPath: null,
+        reviewState: "pending",
+        reversible: true,
+        sessionId: TAB.sessionId,
+        toolCallId: "tool-1",
+        updatedAt: "2026-04-14T00:00:00.000Z",
         ...overrides,
     };
 }
@@ -167,6 +203,14 @@ function createDeferred<T>() {
     return { promise, resolve };
 }
 
+function setRendererPlatform(platform: string): void {
+    useAppStore.setState({
+        bootstrap: { platform } as AppBootstrapSnapshot,
+        error: null,
+        status: "ready",
+    });
+}
+
 describe("ai-store queue", () => {
     beforeEach(() => {
         const storage = new Map<string, string>();
@@ -191,6 +235,11 @@ describe("ai-store queue", () => {
             runtimeStatusById: {},
             sessions: {},
         }));
+        useAppStore.setState({
+            bootstrap: null,
+            error: null,
+            status: "idle",
+        });
         vi.restoreAllMocks();
     });
 
@@ -623,6 +672,119 @@ describe("ai-store queue", () => {
                 updatedAt: "2026-04-14T00:00:03.000Z",
             }),
         );
+    });
+
+    it("optimistically removes tracked files through normalized path aliases", async () => {
+        const keepAiTrackedFile = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    keepAiTrackedFile,
+                },
+            },
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                trackedFiles: [
+                    createTrackedFile({
+                        path: "src\\app.ts",
+                    }),
+                ],
+            }),
+        );
+
+        await useAiStore.getState().keepTrackedFile({
+            path: "src/app.ts",
+            sessionId: TAB.sessionId,
+        });
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.trackedFiles,
+        ).toEqual([]);
+        expect(keepAiTrackedFile).toHaveBeenCalledWith({
+            path: "src/app.ts",
+            sessionId: TAB.sessionId,
+        });
+    });
+
+    it("optimistically removes tracked files through relative Windows casing aliases", async () => {
+        setRendererPlatform("win32");
+
+        const rejectAiTrackedFile = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    rejectAiTrackedFile,
+                },
+            },
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                trackedFiles: [
+                    createTrackedFile({
+                        path: "src/App.ts",
+                    }),
+                ],
+            }),
+        );
+
+        await useAiStore.getState().rejectTrackedFile({
+            path: "src/app.ts",
+            sessionId: TAB.sessionId,
+        });
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.trackedFiles,
+        ).toEqual([]);
+        expect(rejectAiTrackedFile).toHaveBeenCalledWith({
+            path: "src/app.ts",
+            sessionId: TAB.sessionId,
+        });
+    });
+
+    it("optimistically updates tracked file hunks through Windows casing aliases", async () => {
+        const keepAiTrackedFileHunks = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    keepAiTrackedFileHunks,
+                },
+            },
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                trackedFiles: [
+                    createTrackedFile({
+                        path: "C:\\Repo\\src\\App.ts",
+                    }),
+                ],
+            }),
+        );
+        const hunkId = "C:\\Repo\\src\\App.ts:1:1:0";
+
+        await useAiStore.getState().keepTrackedFileHunks({
+            hunkIds: [hunkId],
+            path: "c:\\repo\\src\\app.ts",
+            sessionId: TAB.sessionId,
+        });
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.trackedFiles,
+        ).toEqual([]);
+        expect(keepAiTrackedFileHunks).toHaveBeenCalledWith({
+            hunkIds: [hunkId],
+            path: "c:\\repo\\src\\app.ts",
+            sessionId: TAB.sessionId,
+        });
     });
 
     it("creates a minimal session for orphan patches with runtime metadata", () => {

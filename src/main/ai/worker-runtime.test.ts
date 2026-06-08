@@ -5155,6 +5155,136 @@ describe("AiWorkerRuntime prepareSession", () => {
         });
     });
 
+    it("keeps tracked files through relative Windows casing aliases", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const originalPlatform = process.platform;
+        try {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: "win32",
+            });
+            const runtime = createRuntime();
+            const trackedFile: AiTrackedFile = {
+                hunks: [],
+                identityKey: "src/App.ts",
+                isText: true,
+                kind: "update",
+                newText: "after\n",
+                oldText: "before\n",
+                path: "src/App.ts",
+                previousPath: null,
+                reviewState: "pending",
+                reversible: true,
+                sessionId: "session-1",
+                toolCallId: "tool-1",
+                updatedAt: "2026-04-15T22:23:13.719838Z",
+                version: 1,
+            };
+            const snapshot = createLaunch({
+                cwd: tempDir,
+                projectRoot: tempDir,
+                title: "Review casing test",
+            }).persistedSnapshot;
+
+            const result = await runtime.dispatchMethod("ai.keepTrackedFile", {
+                context: {
+                    additionalRoots: [],
+                    cwd: tempDir,
+                    ownerWindowId: "",
+                    projectRoot: tempDir,
+                    snapshot: {
+                        ...snapshot,
+                        trackedFiles: [trackedFile],
+                    },
+                },
+                input: {
+                    path: "src/app.ts",
+                    sessionId: "session-1",
+                },
+            });
+
+            expect(result).toMatchObject({
+                ownerWindowId: "",
+                snapshot: {
+                    trackedFiles: [],
+                },
+            });
+        } finally {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: originalPlatform,
+            });
+            await fs.rm(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("keeps tracked files through backslash aliases on non-Windows hosts", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const originalPlatform = process.platform;
+        try {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: "linux",
+            });
+            const runtime = createRuntime();
+            const trackedFile: AiTrackedFile = {
+                hunks: [],
+                identityKey: "src/App.ts",
+                isText: true,
+                kind: "update",
+                newText: "after\n",
+                oldText: "before\n",
+                path: "src\\App.ts",
+                previousPath: null,
+                reviewState: "pending",
+                reversible: true,
+                sessionId: "session-1",
+                toolCallId: "tool-1",
+                updatedAt: "2026-04-15T22:23:13.719838Z",
+                version: 1,
+            };
+            const snapshot = createLaunch({
+                cwd: tempDir,
+                projectRoot: tempDir,
+                title: "Review separator alias test",
+            }).persistedSnapshot;
+
+            const result = await runtime.dispatchMethod("ai.keepTrackedFile", {
+                context: {
+                    additionalRoots: [],
+                    cwd: tempDir,
+                    ownerWindowId: "",
+                    projectRoot: tempDir,
+                    snapshot: {
+                        ...snapshot,
+                        trackedFiles: [trackedFile],
+                    },
+                },
+                input: {
+                    path: "src/App.ts",
+                    sessionId: "session-1",
+                },
+            });
+
+            expect(result).toMatchObject({
+                ownerWindowId: "",
+                snapshot: {
+                    trackedFiles: [],
+                },
+            });
+        } finally {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: originalPlatform,
+            });
+            await fs.rm(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("rejects tracked files inside additional roots", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
@@ -5881,6 +6011,78 @@ describe("AiWorkerRuntime prepareSession", () => {
         ).rejects.toThrow("Cannot safely apply this review change");
 
         await expect(fs.readFile(filePath, "utf8")).resolves.toBe(diskText);
+    });
+
+    it("keeps tracked file hunks through relative Windows casing aliases", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const originalPlatform = process.platform;
+        try {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: "win32",
+            });
+            const oldText = "before\n";
+            const newText = "after\n";
+            const hunks = computeDiffHunks(oldText, newText, "src/App.ts");
+            const runtime = createRuntime();
+            const trackedFile: AiTrackedFile = {
+                hunks,
+                identityKey: "src/App.ts",
+                isText: true,
+                kind: "update",
+                newText,
+                oldText,
+                path: "src/App.ts",
+                previousPath: null,
+                reviewState: "pending",
+                reversible: true,
+                sessionId: "session-1",
+                toolCallId: "tool-1",
+                updatedAt: "2026-04-15T22:23:13.719838Z",
+                version: 1,
+            };
+            const snapshot = createLaunch({
+                cwd: tempDir,
+                projectRoot: tempDir,
+                title: "Hunk casing test",
+            }).persistedSnapshot;
+
+            const result = await runtime.dispatchMethod(
+                "ai.keepTrackedFileHunks",
+                {
+                    context: {
+                        additionalRoots: [],
+                        cwd: tempDir,
+                        ownerWindowId: "",
+                        projectRoot: tempDir,
+                        snapshot: {
+                            ...snapshot,
+                            trackedFiles: [trackedFile],
+                        },
+                    },
+                    input: {
+                        hunkIds: [hunks[0]?.id ?? ""],
+                        path: "src/app.ts",
+                        sessionId: "session-1",
+                    },
+                },
+            );
+
+            expect(result).toMatchObject({
+                ownerWindowId: "",
+                snapshot: {
+                    trackedFiles: [],
+                },
+            });
+        } finally {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: originalPlatform,
+            });
+            await fs.rm(tempDir, { force: true, recursive: true });
+        }
     });
 
     it("applies partial hunk rejections inside additional roots", async () => {

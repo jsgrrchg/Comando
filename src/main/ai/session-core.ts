@@ -1,6 +1,12 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+import {
+    isSameOrInsidePath as isSameOrInsidePathIdentity,
+    normalizePathKey,
+    toDisplayRelativePath,
+    type PathIdentityPlatform,
+} from "@shared/path-identity";
 import type {
     ContentBlock,
     SessionConfigOption,
@@ -932,6 +938,7 @@ export function isBusyAiSessionStatus(
 
 export function normalizeAdditionalRoots(
     roots: readonly string[] | undefined,
+    options: ResolveSessionPathOptions = {},
 ): string[] {
     if (!roots || roots.length === 0) {
         return [];
@@ -939,18 +946,20 @@ export function normalizeAdditionalRoots(
 
     const seen = new Set<string>();
     const normalizedRoots: string[] = [];
+    const platform = options.platform ?? getNativePathIdentityPlatform();
 
     for (const rootPath of roots) {
         if (!rootPath.trim()) {
             continue;
         }
 
-        const normalized = path.resolve(rootPath);
-        if (seen.has(normalized)) {
+        const normalized = resolvePathForPlatform(rootPath, platform);
+        const normalizedKey = normalizePathKey(normalized, { platform });
+        if (seen.has(normalizedKey)) {
             continue;
         }
 
-        seen.add(normalized);
+        seen.add(normalizedKey);
         normalizedRoots.push(normalized);
     }
 
@@ -972,16 +981,124 @@ export function sameAdditionalRoots(
 export function isPathInsideRoot(
     candidatePath: string,
     rootPath: string,
+    options: ResolveSessionPathOptions = {},
 ): boolean {
-    const resolvedCandidate = path.resolve(candidatePath);
-    const resolvedRoot = path.resolve(rootPath);
+    const platform = getPathIdentityPlatform(rootPath, candidatePath, options);
+    const resolvedCandidate = resolvePathForPlatform(candidatePath, platform);
+    const resolvedRoot = resolvePathForPlatform(rootPath, platform);
 
+    return isSameOrInsidePathIdentity(resolvedCandidate, resolvedRoot, {
+        platform,
+    });
+}
+
+export function isSamePath(
+    leftPath: string,
+    rightPath: string,
+    options: ResolveSessionPathOptions = {},
+): boolean {
+    const platform = getPathIdentityPlatform(leftPath, rightPath, options);
     return (
-        resolvedCandidate === resolvedRoot ||
-        resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`)
+        normalizePathKey(resolvePathForPlatform(leftPath, platform), {
+            platform,
+        }) ===
+        normalizePathKey(resolvePathForPlatform(rightPath, platform), {
+            platform,
+        })
+    );
+}
+
+export interface ResolveSessionPathOptions {
+    readonly platform?: PathIdentityPlatform;
+}
+
+export interface ResolvedSessionScopedPath {
+    readonly absolutePath: string;
+    readonly insideRoot: boolean;
+    readonly isAbsoluteInput: boolean;
+    readonly platform: PathIdentityPlatform;
+    readonly relativePath: string | null;
+}
+
+export function resolveSessionScopedPath(
+    scopeRoot: string,
+    candidatePath: string,
+    options: ResolveSessionPathOptions = {},
+): ResolvedSessionScopedPath {
+    const platform = getPathIdentityPlatform(scopeRoot, candidatePath, options);
+    const absolutePath = resolvePathForPlatform(
+        candidatePath,
+        platform,
+        scopeRoot,
+    );
+    const resolvedScopeRoot = resolvePathForPlatform(scopeRoot, platform);
+    const insideRoot = isSameOrInsidePathIdentity(
+        absolutePath,
+        resolvedScopeRoot,
+        { platform },
+    );
+
+    return {
+        absolutePath,
+        insideRoot,
+        isAbsoluteInput: getPathApi(platform).isAbsolute(candidatePath),
+        platform,
+        relativePath: insideRoot
+            ? toDisplayRelativePath(absolutePath, resolvedScopeRoot, {
+                  platform,
+              })
+            : null,
+    };
+}
+
+export function basenameForPathIdentity(
+    candidatePath: string,
+    options: ResolveSessionPathOptions = {},
+): string {
+    return getPathApi(options.platform ?? getNativePathIdentityPlatform()).basename(
+        candidatePath,
     );
 }
 
 export function toPosixPath(candidatePath: string): string {
     return candidatePath.split(path.sep).join("/");
+}
+
+function resolvePathForPlatform(
+    candidatePath: string,
+    platform: PathIdentityPlatform,
+    basePath?: string,
+): string {
+    const pathApi = getPathApi(platform);
+    return basePath && !pathApi.isAbsolute(candidatePath)
+        ? pathApi.resolve(basePath, candidatePath)
+        : pathApi.resolve(candidatePath);
+}
+
+function getPathApi(platform: PathIdentityPlatform): typeof path.posix {
+    return platform === "win32" ? path.win32 : path.posix;
+}
+
+function getPathIdentityPlatform(
+    leftPath: string,
+    rightPath: string,
+    options: ResolveSessionPathOptions,
+): PathIdentityPlatform {
+    if (options.platform) {
+        return options.platform;
+    }
+
+    if (isPosixAbsolutePath(leftPath) && isPosixAbsolutePath(rightPath)) {
+        return "posix";
+    }
+
+    return getNativePathIdentityPlatform();
+}
+
+function getNativePathIdentityPlatform(): PathIdentityPlatform {
+    return process.platform === "win32" ? "win32" : "posix";
+}
+
+function isPosixAbsolutePath(candidatePath: string): boolean {
+    return candidatePath.startsWith("/") && !candidatePath.startsWith("//");
 }
