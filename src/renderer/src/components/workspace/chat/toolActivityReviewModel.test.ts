@@ -99,6 +99,29 @@ describe("toolActivityReviewModel", () => {
         ).toEqual(["tracked-1"]);
     });
 
+    it("uses normalized path fallback for Windows separator aliases", () => {
+        const activity = createActivity({
+            id: "tool-without-link",
+            locations: [
+                {
+                    endLine: null,
+                    line: null,
+                    path: "src/app.ts",
+                },
+            ],
+        });
+        const trackedFile = createTrackedFile({
+            path: "src\\app.ts",
+            toolCallId: null,
+        });
+
+        expect(
+            deriveTrackedFilesForToolActivity(activity, [trackedFile]).map(
+                (candidate) => candidate.identityKey,
+            ),
+        ).toEqual(["tracked-1"]);
+    });
+
     it("does not use path fallback for tracked files owned by another tool call", () => {
         const activity = createActivity({
             diffs: [
@@ -210,6 +233,30 @@ describe("toolActivityReviewModel", () => {
         expect(items[0]?.file?.identityKey).toBe("tracked-1");
         expect(items[1]?.file?.identityKey).toBe("tracked-2");
         expect(items[1]?.diff.path).toBe("src/secondary.ts");
+    });
+
+    it("matches diffs to tracked files with Windows casing aliases", () => {
+        const activity = createActivity({
+            diffs: [
+                {
+                    hunks: [],
+                    isText: true,
+                    kind: "update",
+                    newText: "next",
+                    oldText: "prev",
+                    path: "c:\\repo\\src\\app.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+        });
+        const trackedFile = createTrackedFile({
+            path: "C:\\Repo\\src\\App.ts",
+        });
+
+        const [item] = deriveChangeReviewItems(activity, [trackedFile]);
+
+        expect(item?.file?.identityKey).toBe("tracked-1");
     });
 
     it("prefers the matched tracked file diff for chat review rendering", () => {

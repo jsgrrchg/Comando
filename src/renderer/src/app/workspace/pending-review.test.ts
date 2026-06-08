@@ -79,6 +79,44 @@ describe("pending review helpers", () => {
         });
     });
 
+    it("matches pending tracked files across Windows separator aliases", () => {
+        const trackedFiles = [
+            createTrackedFile({
+                path: "src\\editor.ts",
+                sessionId: "session-windows-separators",
+            }),
+        ];
+
+        expect(
+            resolveFileTabReviewContext({
+                relativePath: "src/editor.ts",
+                trackedFiles,
+            }),
+        ).toEqual({
+            path: "src\\editor.ts",
+            sessionId: "session-windows-separators",
+        });
+    });
+
+    it("matches Windows absolute tracked files with equivalent casing", () => {
+        const trackedFiles = [
+            createTrackedFile({
+                path: "C:\\Repo\\src\\Editor.ts",
+                sessionId: "session-windows-casing",
+            }),
+        ];
+
+        expect(
+            findBestPendingTrackedFile({
+                paths: ["c:\\repo\\src\\editor.ts"],
+                trackedFiles,
+            }),
+        )?.toMatchObject({
+            path: "C:\\Repo\\src\\Editor.ts",
+            sessionId: "session-windows-casing",
+        });
+    });
+
     it("prefers inline-review capable updates over newer non-inline matches", () => {
         const trackedFiles = [
             createTrackedFile({

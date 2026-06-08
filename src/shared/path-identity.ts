@@ -251,7 +251,8 @@ function inferPathPlatform(
     ...paths: readonly string[]
 ): PathIdentityPlatform {
     return paths.some((pathText) =>
-        /^(?:[a-zA-Z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/.test(pathText),
+        /^(?:[a-zA-Z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/.test(pathText) ||
+        pathText.includes("\\"),
     )
         ? "win32"
         : "posix";

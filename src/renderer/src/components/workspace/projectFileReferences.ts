@@ -308,10 +308,12 @@ function safeDecodeURIComponent(value: string): string {
 }
 
 function normalizeAbsolutePath(path: string): string | null {
-    const normalized = path
-        .replace(/\\/g, "/")
-        .replace(/\/{2,}/g, "/")
-        .replace(/\/+$/, "");
+    const separated = path.replace(/\\/g, "/");
+    const normalized = (
+        separated.startsWith("//")
+            ? `//${separated.slice(2).replace(/\/{2,}/g, "/")}`
+            : separated.replace(/\/{2,}/g, "/")
+    ).replace(/\/+$/, "");
 
     if (!normalized) {
         return null;
@@ -383,7 +385,7 @@ function stripRootPrefix(path: string, root: string): string | null {
 }
 
 function toComparableAbsolutePath(path: string): string {
-    if (WINDOWS_DRIVE_RE.test(path)) {
+    if (WINDOWS_DRIVE_RE.test(path) || path.startsWith("//")) {
         return path.toLowerCase();
     }
 

@@ -1,5 +1,9 @@
 import type { AiTrackedFile } from "@shared/ipc";
 
+import {
+    areTrackedFilePathsEquivalent,
+    matchesTrackedFilePath as matchesTrackedFilePathAlias,
+} from "@renderer/app/ai/trackedFilePath";
 import type { RuntimeWorkspaceFileReviewContext } from "./tree";
 
 type SessionWithTrackedFiles = {
@@ -39,7 +43,7 @@ export function matchesTrackedFilePath(
     trackedFile: AiTrackedFile,
     path: string,
 ): boolean {
-    return trackedFile.path === path || trackedFile.previousPath === path;
+    return matchesTrackedFilePathAlias(trackedFile, path);
 }
 
 export function isInlineReviewSupported(
@@ -153,11 +157,19 @@ function getTrackedFilePriority(
         score += 4;
     }
 
-    if (candidatePaths.some((path) => trackedFile.path === path)) {
+    if (
+        candidatePaths.some((path) =>
+            areTrackedFilePathsEquivalent(trackedFile.path, path),
+        )
+    ) {
         score += 2;
     }
 
-    if (candidatePaths.some((path) => trackedFile.previousPath === path)) {
+    if (
+        candidatePaths.some((path) =>
+            areTrackedFilePathsEquivalent(trackedFile.previousPath, path),
+        )
+    ) {
         score += 1;
     }
 

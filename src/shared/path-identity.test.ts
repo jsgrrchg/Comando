@@ -30,6 +30,12 @@ describe("normalizePathKey", () => {
         ).toBe("c:/workspace/comando/src/file.ts");
     });
 
+    it("infers Windows semantics from relative backslash paths", () => {
+        expect(normalizePathKey("src\\Feature\\File.ts")).toBe(
+            "src/feature/file.ts",
+        );
+    });
+
     it("keeps UNC roots intact while normalizing casing", () => {
         expect(
             normalizePathKey("\\\\Server\\Share\\Comando\\SRC\\File.ts", {
