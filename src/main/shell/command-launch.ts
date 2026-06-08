@@ -128,8 +128,11 @@ function resolveWindowsPathExtCommand(
 ): string | null {
     const env = launchOptions.env ?? process.env;
     const pathEntries =
-        launchOptions.pathEntries ?? splitWindowsPathEntries(env.PATH);
-    const extensions = getWindowsPathExtensions(env.PATHEXT);
+        launchOptions.pathEntries ??
+        splitWindowsPathEntries(getWindowsEnvironmentValue(env, "PATH"));
+    const extensions = getWindowsPathExtensions(
+        getWindowsEnvironmentValue(env, "PATHEXT"),
+    );
     const searchEntries = hasPathDirectory(command) ? [""] : pathEntries;
 
     for (const entry of searchEntries) {
@@ -167,6 +170,18 @@ function getWindowsPathExtensions(value: string | undefined): string[] {
         .split(";")
         .map((entry) => entry.trim())
         .filter(Boolean);
+}
+
+function getWindowsEnvironmentValue(
+    env: NodeJS.ProcessEnv,
+    name: string,
+): string | undefined {
+    return (
+        env[name] ??
+        Object.entries(env).find(
+            ([key]) => key.toLowerCase() === name.toLowerCase(),
+        )?.[1]
+    );
 }
 
 function isFile(candidatePath: string): boolean {

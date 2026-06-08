@@ -140,6 +140,31 @@ describe("command launch helpers", () => {
         });
     });
 
+    it("resolves Windows PATH and PATHEXT case-insensitively", () => {
+        const binDir = createTempDir();
+        const executablePath = writeExecutable(binDir, "pnpm.CMD");
+
+        const prepared = prepareCommandForSpawn(
+            "pnpm",
+            ["test"],
+            undefined,
+            {
+                env: {
+                    Path: binDir,
+                    PathExt: ".EXE;.CMD",
+                },
+                platform: "win32",
+            },
+        );
+
+        expect(prepared).toEqual({
+            args: ["/d", "/s", "/c", `""${executablePath}" "test""`],
+            command: "cmd.exe",
+            options: undefined,
+            wrappedByWindowsShell: true,
+        });
+    });
+
     it("keeps bare Windows commands unchanged when PATHEXT resolves a non-batch executable", () => {
         const binDir = createTempDir();
         writeExecutable(binDir, "node.EXE");
