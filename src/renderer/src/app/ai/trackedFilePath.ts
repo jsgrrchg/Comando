@@ -4,6 +4,8 @@ import {
     type PathIdentityPlatform,
 } from "@shared/path-identity";
 
+import { useAppStore } from "@renderer/app/store/app-store";
+
 export interface TrackedFilePathMatchOptions {
     readonly platform?: PathIdentityPlatform;
 }
@@ -27,20 +29,14 @@ export function areTrackedFilePathsEquivalent(
         return false;
     }
 
-    const platform =
-        options.platform ?? inferTrackedFilePathPlatform(leftPath, rightPath);
-    if (
+    const platform = resolveTrackedFilePathPlatform(
+        leftPath,
+        rightPath,
+        options,
+    );
+    return (
         normalizePathKey(leftPath, { platform }) ===
         normalizePathKey(rightPath, { platform })
-    ) {
-        return true;
-    }
-
-    return (
-        !options.platform &&
-        platform !== "win32" &&
-        normalizePathKey(leftPath, { platform: "win32" }) ===
-            normalizePathKey(rightPath, { platform: "win32" })
     );
 }
 
@@ -60,6 +56,28 @@ function inferTrackedFilePathPlatform(
             /^(?:[a-zA-Z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/.test(path) ||
             path.includes("\\"),
     )
+        ? "win32"
+        : "posix";
+}
+
+function resolveTrackedFilePathPlatform(
+    leftPath: string,
+    rightPath: string,
+    options: TrackedFilePathMatchOptions,
+): PathIdentityPlatform {
+    if (options.platform) {
+        return options.platform;
+    }
+
+    const inferredPathPlatform = inferTrackedFilePathPlatform(
+        leftPath,
+        rightPath,
+    );
+    if (inferredPathPlatform === "win32") {
+        return "win32";
+    }
+
+    return useAppStore.getState().bootstrap?.platform === "win32"
         ? "win32"
         : "posix";
 }

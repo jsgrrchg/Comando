@@ -1,13 +1,34 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
+import type {
+    AiToolActivity,
+    AiTrackedFile,
+    AppBootstrapSnapshot,
+} from "@shared/ipc";
 
+import { useAppStore } from "@renderer/app/store/app-store";
 import {
     deriveChangeReviewItems,
     deriveChangeReviewSummary,
     deriveToolActivityReviewEntries,
     deriveTrackedFilesForToolActivity,
 } from "./toolActivityReviewModel";
+
+afterEach(() => {
+    useAppStore.setState({
+        bootstrap: null,
+        error: null,
+        status: "idle",
+    });
+});
+
+function setRendererPlatform(platform: string): void {
+    useAppStore.setState({
+        bootstrap: { platform } as AppBootstrapSnapshot,
+        error: null,
+        status: "ready",
+    });
+}
 
 function createActivity(
     overrides: Partial<AiToolActivity> = {},
@@ -260,6 +281,8 @@ describe("toolActivityReviewModel", () => {
     });
 
     it("matches relative forward-slash diffs with Windows casing aliases", () => {
+        setRendererPlatform("win32");
+
         const activity = createActivity({
             diffs: [
                 {

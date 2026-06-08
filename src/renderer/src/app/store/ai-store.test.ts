@@ -9,12 +9,14 @@ import type {
     AiSessionUpdate,
     AiToolActivity,
     AiTrackedFile,
+    AppBootstrapSnapshot,
     WorkspaceChatTab,
 } from "@shared/ipc";
 
 import { AI_SESSION_BUSY_MESSAGE } from "@shared/ai-errors";
 
 import { getSessionReviewPreferencesStorageKey } from "@renderer/app/ai/sessionReviewPreferences";
+import { useAppStore } from "./app-store";
 import { useAiStore } from "./ai-store";
 
 // Electron's ipcRenderer.invoke wraps handler errors with a prefix before
@@ -201,6 +203,14 @@ function createDeferred<T>() {
     return { promise, resolve };
 }
 
+function setRendererPlatform(platform: string): void {
+    useAppStore.setState({
+        bootstrap: { platform } as AppBootstrapSnapshot,
+        error: null,
+        status: "ready",
+    });
+}
+
 describe("ai-store queue", () => {
     beforeEach(() => {
         const storage = new Map<string, string>();
@@ -225,6 +235,11 @@ describe("ai-store queue", () => {
             runtimeStatusById: {},
             sessions: {},
         }));
+        useAppStore.setState({
+            bootstrap: null,
+            error: null,
+            status: "idle",
+        });
         vi.restoreAllMocks();
     });
 
@@ -696,6 +711,8 @@ describe("ai-store queue", () => {
     });
 
     it("optimistically removes tracked files through relative Windows casing aliases", async () => {
+        setRendererPlatform("win32");
+
         const rejectAiTrackedFile = vi.fn().mockResolvedValue(undefined);
         Object.defineProperty(globalThis, "window", {
             configurable: true,

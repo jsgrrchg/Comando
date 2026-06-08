@@ -1,12 +1,29 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-import type { AiTrackedFile } from "@shared/ipc";
+import type { AiTrackedFile, AppBootstrapSnapshot } from "@shared/ipc";
+import { useAppStore } from "@renderer/app/store/app-store";
 
 import {
     collectPendingTrackedFilesFromSessions,
     findBestPendingTrackedFile,
     resolveFileTabReviewContext,
 } from "./pending-review";
+
+afterEach(() => {
+    useAppStore.setState({
+        bootstrap: null,
+        error: null,
+        status: "idle",
+    });
+});
+
+function setRendererPlatform(platform: string): void {
+    useAppStore.setState({
+        bootstrap: { platform } as AppBootstrapSnapshot,
+        error: null,
+        status: "ready",
+    });
+}
 
 function createTrackedFile(
     overrides: Partial<AiTrackedFile> &
@@ -118,6 +135,8 @@ describe("pending review helpers", () => {
     });
 
     it("matches relative forward-slash paths with Windows casing aliases", () => {
+        setRendererPlatform("win32");
+
         const trackedFiles = [
             createTrackedFile({
                 path: "src/App.ts",
