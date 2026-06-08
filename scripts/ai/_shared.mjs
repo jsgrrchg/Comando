@@ -180,7 +180,7 @@ export function prepareCommandForSpawnSync(
             buildWindowsBatchCommandLine(command, args),
         ],
         command: launchOptions.comSpec ?? process.env.ComSpec ?? "cmd.exe",
-        options,
+        options: withWindowsVerbatimArguments(options),
     };
 }
 
@@ -203,4 +203,11 @@ function quoteWindowsCmdArgument(value) {
         .replace(/([&|<>()^%!])/g, "^$1");
 
     return `"${escapedValue}"`;
+}
+
+function withWindowsVerbatimArguments(options) {
+    return {
+        ...options,
+        windowsVerbatimArguments: true,
+    };
 }

@@ -36,9 +36,13 @@ describe("script command launch helpers", () => {
                     `""${command}" "run" "build ^& package" "^%TEMP^%""`,
                 ],
                 command: "C:\\Windows\\System32\\cmd.exe",
-                options,
+                options: {
+                    ...options,
+                    windowsVerbatimArguments: true,
+                },
             });
-            expect(prepared.options).toBe(options);
+            expect(prepared.options).not.toBe(options);
+            expect(options.windowsVerbatimArguments).toBeUndefined();
         },
     );
 

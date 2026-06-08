@@ -6,6 +6,16 @@ import type {
 } from "node:child_process";
 
 type CommandLaunchOptions = SpawnOptions | ExecFileOptions;
+type WindowsShellOptions<
+    TOptions extends CommandLaunchOptions | undefined,
+> = (TOptions extends undefined
+    ? CommandLaunchOptions
+    : Omit<TOptions, "windowsVerbatimArguments">) & {
+    readonly windowsVerbatimArguments: true;
+};
+type PreparedLaunchOptions<
+    TOptions extends CommandLaunchOptions | undefined,
+> = TOptions | WindowsShellOptions<TOptions>;
 
 export interface PrepareCommandLaunchOptions {
     readonly env?: NodeJS.ProcessEnv;
@@ -20,7 +30,7 @@ export interface PreparedCommandLaunch<
 > {
     readonly command: string;
     readonly args: string[];
-    readonly options: TOptions;
+    readonly options: PreparedLaunchOptions<TOptions>;
     readonly wrappedByWindowsShell: boolean;
 }
 
@@ -98,9 +108,18 @@ function prepareCommandLaunch<
             buildWindowsBatchCommandLine(resolvedCommand, args),
         ],
         command: "cmd.exe",
-        options,
+        options: withWindowsVerbatimArguments(options),
         wrappedByWindowsShell: true,
     };
+}
+
+function withWindowsVerbatimArguments<
+    TOptions extends CommandLaunchOptions | undefined,
+>(options: TOptions): WindowsShellOptions<TOptions> {
+    return {
+        ...(options ?? {}),
+        windowsVerbatimArguments: true,
+    } as WindowsShellOptions<TOptions>;
 }
 
 function resolveWindowsBatchCommand(

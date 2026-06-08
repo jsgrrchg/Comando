@@ -36,7 +36,7 @@ describe("command launch helpers", () => {
                 '""C:\\Program Files\\nodejs\\pnpm.cmd" "run" "test suite""',
             ],
             command: "cmd.exe",
-            options: undefined,
+            options: { windowsVerbatimArguments: true },
             wrappedByWindowsShell: true,
         });
     });
@@ -56,7 +56,10 @@ describe("command launch helpers", () => {
             "/c",
             '""C:\\Tools\\setup.BAT" "--flag""',
         ]);
-        expect(prepared.options).toEqual({ cwd: "C:\\Workspaces\\Project" });
+        expect(prepared.options).toEqual({
+            cwd: "C:\\Workspaces\\Project",
+            windowsVerbatimArguments: true,
+        });
         expect(prepared.wrappedByWindowsShell).toBe(true);
     });
 
@@ -90,13 +93,15 @@ describe("command launch helpers", () => {
             { platform: "win32" },
         );
 
-        expect(prepared.options).toBe(options);
+        expect(prepared.options).not.toBe(options);
         expect(prepared.options.cwd).toBe(
             "C:\\Workspaces\\Project With Spaces",
         );
         expect(prepared.options.env).toBe(options.env);
         expect(prepared.options.signal).toBe(controller.signal);
         expect(prepared.options.stdio).toBe(stdio);
+        expect(prepared.options.windowsVerbatimArguments).toBe(true);
+        expect(options.windowsVerbatimArguments).toBeUndefined();
     });
 
     it("does not wrap non-batch commands on Windows", () => {
@@ -135,7 +140,7 @@ describe("command launch helpers", () => {
         expect(prepared).toEqual({
             args: ["/d", "/s", "/c", `""${executablePath}" "test""`],
             command: "cmd.exe",
-            options: undefined,
+            options: { windowsVerbatimArguments: true },
             wrappedByWindowsShell: true,
         });
     });
@@ -160,7 +165,7 @@ describe("command launch helpers", () => {
         expect(prepared).toEqual({
             args: ["/d", "/s", "/c", `""${executablePath}" "test""`],
             command: "cmd.exe",
-            options: undefined,
+            options: { windowsVerbatimArguments: true },
             wrappedByWindowsShell: true,
         });
     });
