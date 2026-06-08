@@ -155,3 +155,52 @@ export function resolveFromPath(command) {
 
     return null;
 }
+
+export function prepareCommandForSpawnSync(
+    command,
+    args = [],
+    options = {},
+    launchOptions = {},
+) {
+    const platform = launchOptions.platform ?? process.platform;
+
+    if (platform !== "win32" || !isWindowsBatchCommand(command)) {
+        return {
+            args: [...args],
+            command,
+            options,
+        };
+    }
+
+    return {
+        args: [
+            "/d",
+            "/s",
+            "/c",
+            buildWindowsBatchCommandLine(command, args),
+        ],
+        command: launchOptions.comSpec ?? process.env.ComSpec ?? "cmd.exe",
+        options,
+    };
+}
+
+export function isWindowsBatchCommand(command) {
+    const extension = path.win32.extname(command).toLowerCase();
+    return extension === ".cmd" || extension === ".bat";
+}
+
+function buildWindowsBatchCommandLine(command, args) {
+    const innerCommandLine = [command, ...args]
+        .map(quoteWindowsCmdArgument)
+        .join(" ");
+
+    return `"${innerCommandLine}"`;
+}
+
+function quoteWindowsCmdArgument(value) {
+    const escapedValue = String(value)
+        .replace(/"/g, '\\"')
+        .replace(/([&|<>()^%!])/g, "^$1");
+
+    return `"${escapedValue}"`;
+}
