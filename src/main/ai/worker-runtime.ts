@@ -49,6 +49,10 @@ import {
 import { SessionBusyError } from "@shared/ai-errors";
 import { isDefaultChatTitle } from "@shared/chatTitle";
 import { buildAiSessionDomainEvents } from "@shared/ai-session-events";
+import {
+    normalizePathKey,
+    type PathIdentityPlatform,
+} from "@shared/path-identity";
 
 import { debugBenignError } from "@main/observability/logging";
 
@@ -102,7 +106,6 @@ import {
     hasSelectConfigValue,
     isBusyAiSessionStatus,
     isPathInsideRoot,
-    isSamePath,
     resolveSessionScopedPath,
     resolveSessionTitleOnPrompt,
     sameAdditionalRoots,
@@ -5460,11 +5463,46 @@ function matchesTrackedReviewPath(
     candidatePath: string,
 ): boolean {
     return (
-        isSamePath(trackedFile.path, candidatePath) ||
+        areTrackedReviewPathsEquivalent(trackedFile.path, candidatePath) ||
         (trackedFile.previousPath
-            ? isSamePath(trackedFile.previousPath, candidatePath)
+            ? areTrackedReviewPathsEquivalent(
+                  trackedFile.previousPath,
+                  candidatePath,
+              )
             : false)
     );
+}
+
+function areTrackedReviewPathsEquivalent(
+    leftPath: string,
+    rightPath: string,
+): boolean {
+    const platform = resolveTrackedReviewPathPlatform(leftPath, rightPath);
+    return (
+        normalizePathKey(leftPath, { platform }) ===
+        normalizePathKey(rightPath, { platform })
+    );
+}
+
+function resolveTrackedReviewPathPlatform(
+    leftPath: string,
+    rightPath: string,
+): PathIdentityPlatform {
+    return isWindowsShapedPath(leftPath) || isWindowsShapedPath(rightPath)
+        ? "win32"
+        : getNativePathIdentityPlatform();
+}
+
+function isWindowsShapedPath(candidatePath: string): boolean {
+    return (
+        /^(?:[a-zA-Z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/.test(
+            candidatePath,
+        ) || candidatePath.includes("\\")
+    );
+}
+
+function getNativePathIdentityPlatform(): PathIdentityPlatform {
+    return process.platform === "win32" ? "win32" : "posix";
 }
 
 function appendTerminalOutput(
