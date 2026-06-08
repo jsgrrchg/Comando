@@ -6,7 +6,6 @@ import {
     useRef,
     useState,
     type MouseEvent as ReactMouseEvent,
-    type PointerEvent as ReactPointerEvent,
     type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -85,6 +84,24 @@ type SidebarGitHubDragPreview = {
     readonly title: string;
     readonly x: number;
     readonly y: number;
+};
+
+type SidebarGitHubDragSnapshot = {
+    readonly itemKind: SidebarGitHubDragItemKind;
+    readonly items: readonly SidebarGitHubDragItem[];
+    readonly number: number;
+    readonly previewKindLabel: string;
+    readonly previewMeta: string;
+    readonly previewTitle: string;
+    readonly projectId: string | null;
+    readonly ref: GitHubRepositoryRef;
+    readonly title: string;
+    readonly worktreeId: string | null;
+};
+
+type SidebarGitHubPointerPoint = {
+    readonly clientX: number;
+    readonly clientY: number;
 };
 
 type SidebarGitHubContextMenuPayload = {
@@ -745,6 +762,10 @@ export function SidebarGitHubPanel({
         },
         [selectedItemNumbers, visibleItemNumbers],
     );
+    const handleItemPointerDown = useCallback(() => {
+        setGitHubContextMenu(null);
+        setLabelPicker(null);
+    }, []);
     const getIssueDragItems = useCallback(
         (issue: GitHubIssueSummary): readonly SidebarGitHubDragItem[] =>
             getSidebarGitHubDragItems({
@@ -1011,6 +1032,7 @@ export function SidebarGitHubPanel({
                                         )
                                     }
                                     onOpen={() => openIssueTab(issue.number)}
+                                    onPointerDown={handleItemPointerDown}
                                     onRowClick={(event) =>
                                         handleItemClickSelection(
                                             event,
@@ -1053,6 +1075,7 @@ export function SidebarGitHubPanel({
                                             worktreeId,
                                         })
                                     }
+                                    onPointerDown={handleItemPointerDown}
                                     onRowClick={(event) =>
                                         handleItemClickSelection(
                                             event,
@@ -1109,6 +1132,7 @@ function SidebarGitHubIssueRow({
     issue,
     onContextMenu,
     onOpen,
+    onPointerDown,
     onRowClick,
     projectId,
     repoRef,
@@ -1119,6 +1143,7 @@ function SidebarGitHubIssueRow({
     readonly issue: GitHubIssueSummary;
     readonly onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly onOpen: () => void;
+    readonly onPointerDown: () => void;
     readonly onRowClick: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly projectId: string | null;
     readonly repoRef: GitHubRepositoryRef;
@@ -1141,6 +1166,7 @@ function SidebarGitHubIssueRow({
             number={issue.number}
             onContextMenu={onContextMenu}
             onOpen={onOpen}
+            onPointerDown={onPointerDown}
             onRowClick={onRowClick}
             projectId={projectId}
             repoRef={repoRef}
@@ -1202,6 +1228,7 @@ function SidebarGitHubPullRequestRow({
     dragItems,
     onContextMenu,
     onOpen,
+    onPointerDown,
     onRowClick,
     projectId,
     pullRequest,
@@ -1213,6 +1240,7 @@ function SidebarGitHubPullRequestRow({
     readonly dragItems: readonly SidebarGitHubDragItem[];
     readonly onContextMenu: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly onOpen: () => void;
+    readonly onPointerDown: () => void;
     readonly onRowClick: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly projectId: string | null;
     readonly pullRequest: GitHubPullRequestSummary;
@@ -1233,6 +1261,7 @@ function SidebarGitHubPullRequestRow({
             number={pullRequest.number}
             onContextMenu={onContextMenu}
             onOpen={onOpen}
+            onPointerDown={onPointerDown}
             onRowClick={onRowClick}
             projectId={projectId}
             repoRef={repoRef}
@@ -1480,7 +1509,7 @@ function SidebarGitHubLabelPicker({
     );
 }
 
-function SidebarGitHubDraggableRow({
+export function SidebarGitHubDraggableRow({
     children,
     dragItems,
     itemKind,
@@ -1488,6 +1517,7 @@ function SidebarGitHubDraggableRow({
     number,
     onContextMenu,
     onOpen,
+    onPointerDown,
     onRowClick,
     projectId,
     repoRef,
@@ -1502,6 +1532,7 @@ function SidebarGitHubDraggableRow({
     readonly number: number;
     readonly onContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly onOpen: () => void;
+    readonly onPointerDown?: () => void;
     readonly onRowClick?: (event: ReactMouseEvent<HTMLElement>) => void;
     readonly projectId: string | null;
     readonly repoRef: GitHubRepositoryRef;
@@ -1510,7 +1541,9 @@ function SidebarGitHubDraggableRow({
     readonly worktreeId: string | null;
 }) {
     const dragStateRef = useRef<{
+        readonly captureElement: HTMLElement | null;
         readonly pointerId: number;
+        readonly snapshot: SidebarGitHubDragSnapshot;
         readonly startX: number;
         readonly startY: number;
         active: boolean;
@@ -1529,36 +1562,40 @@ function SidebarGitHubDraggableRow({
 
     const emitDrag = useCallback(
         (
+            snapshot: SidebarGitHubDragSnapshot,
             phase: "cancel" | "end" | "move" | "start",
-            event?: Pick<ReactPointerEvent<HTMLElement>, "clientX" | "clientY">,
+            event?: SidebarGitHubPointerPoint,
         ) => {
             emitSidebarGitHubDrag({
-                itemKind,
-                items: dragItems,
-                number,
+                itemKind: snapshot.itemKind,
+                items: snapshot.items,
+                number: snapshot.number,
                 phase,
-                projectId,
-                ref: repoRef,
-                title,
-                worktreeId,
+                projectId: snapshot.projectId,
+                ref: snapshot.ref,
+                title: snapshot.title,
+                worktreeId: snapshot.worktreeId,
                 x: event?.clientX ?? 0,
                 y: event?.clientY ?? 0,
             });
         },
-        [dragItems, itemKind, number, projectId, repoRef, title, worktreeId],
+        [],
     );
 
     const updateDragPreview = useCallback(
-        (event: Pick<ReactPointerEvent<HTMLElement>, "clientX" | "clientY">) => {
+        (
+            snapshot: SidebarGitHubDragSnapshot,
+            event: SidebarGitHubPointerPoint,
+        ) => {
             setDragPreview({
-                kindLabel: previewKindLabel,
-                meta: previewMeta,
-                title: previewTitle,
+                kindLabel: snapshot.previewKindLabel,
+                meta: snapshot.previewMeta,
+                title: snapshot.previewTitle,
                 x: event.clientX,
                 y: event.clientY,
             });
         },
-        [previewKindLabel, previewMeta, previewTitle],
+        [],
     );
 
     const clearDragState = useCallback(
@@ -1569,10 +1606,7 @@ function SidebarGitHubDraggableRow({
             releaseTarget,
         }: {
             readonly emitCancel: boolean;
-            readonly event?: Pick<
-                ReactPointerEvent<HTMLElement>,
-                "clientX" | "clientY"
-            >;
+            readonly event?: SidebarGitHubPointerPoint;
             readonly pointerId?: number;
             readonly releaseTarget?: EventTarget | null;
         }) => {
@@ -1585,15 +1619,16 @@ function SidebarGitHubDraggableRow({
             setIsPointerTracking(false);
             setDragPreview(null);
 
-            if (
-                releaseTarget instanceof HTMLElement &&
-                pointerId !== undefined
-            ) {
-                releaseTarget.releasePointerCapture?.(pointerId);
+            const captureElement =
+                releaseTarget instanceof HTMLElement
+                    ? releaseTarget
+                    : dragState.captureElement;
+            if (captureElement && pointerId !== undefined) {
+                captureElement.releasePointerCapture?.(pointerId);
             }
 
             if (emitCancel && shouldEmitSidebarDragCancel(dragState.active)) {
-                emitDrag("cancel", event);
+                emitDrag(dragState.snapshot, "cancel", event);
             }
         },
         [emitDrag],
@@ -1607,6 +1642,39 @@ function SidebarGitHubDraggableRow({
         const handleWindowBlur = () => {
             clearDragState({ emitCancel: true });
         };
+        const handlePointerCancel = (event: PointerEvent) => {
+            const dragState = dragStateRef.current;
+            if (!dragState || dragState.pointerId !== event.pointerId) {
+                return;
+            }
+
+            clearDragState({
+                emitCancel: true,
+                event,
+                pointerId: event.pointerId,
+            });
+        };
+        const handlePointerUp = (event: PointerEvent) => {
+            const dragState = dragStateRef.current;
+            if (!dragState || dragState.pointerId !== event.pointerId) {
+                return;
+            }
+
+            dragStateRef.current = null;
+            setIsPointerTracking(false);
+            dragState.captureElement?.releasePointerCapture?.(event.pointerId);
+            if (!dragState.active) {
+                setDragPreview(null);
+                return;
+            }
+
+            setDragPreview(null);
+            suppressClickRef.current = true;
+            window.requestAnimationFrame(() => {
+                suppressClickRef.current = false;
+            });
+            emitDrag(dragState.snapshot, "end", event);
+        };
         const handleVisibilityChange = () => {
             if (document.visibilityState !== "hidden") {
                 return;
@@ -1616,17 +1684,21 @@ function SidebarGitHubDraggableRow({
         };
 
         window.addEventListener("blur", handleWindowBlur);
+        window.addEventListener("pointercancel", handlePointerCancel);
+        window.addEventListener("pointerup", handlePointerUp);
         document.addEventListener("visibilitychange", handleVisibilityChange);
 
         return () => {
             window.removeEventListener("blur", handleWindowBlur);
+            window.removeEventListener("pointercancel", handlePointerCancel);
+            window.removeEventListener("pointerup", handlePointerUp);
             document.removeEventListener(
                 "visibilitychange",
                 handleVisibilityChange,
             );
             clearDragState({ emitCancel: true });
         };
-    }, [clearDragState, isPointerTracking]);
+    }, [clearDragState, emitDrag, isPointerTracking]);
 
     return (
         <>
@@ -1687,9 +1759,23 @@ function SidebarGitHubDraggableRow({
                         return;
                     }
 
+                    onPointerDown?.();
                     dragStateRef.current = {
                         active: false,
+                        captureElement: event.currentTarget,
                         pointerId: event.pointerId,
+                        snapshot: {
+                            itemKind,
+                            items: dragItems,
+                            number,
+                            previewKindLabel,
+                            previewMeta,
+                            previewTitle,
+                            projectId,
+                            ref: repoRef,
+                            title,
+                            worktreeId,
+                        },
                         startX: event.clientX,
                         startY: event.clientY,
                     };
@@ -1722,11 +1808,11 @@ function SidebarGitHubDraggableRow({
                         }
 
                         dragState.active = true;
-                        updateDragPreview(event);
-                        emitDrag("start", event);
+                        updateDragPreview(dragState.snapshot, event);
+                        emitDrag(dragState.snapshot, "start", event);
                     } else {
-                        updateDragPreview(event);
-                        emitDrag("move", event);
+                        updateDragPreview(dragState.snapshot, event);
+                        emitDrag(dragState.snapshot, "move", event);
                     }
 
                     event.preventDefault();
@@ -1752,7 +1838,7 @@ function SidebarGitHubDraggableRow({
                     window.requestAnimationFrame(() => {
                         suppressClickRef.current = false;
                     });
-                    emitDrag("end", event);
+                    emitDrag(dragState.snapshot, "end", event);
                 }}
                 role="button"
                 tabIndex={0}
