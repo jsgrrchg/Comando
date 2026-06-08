@@ -577,8 +577,11 @@ export class ProjectService {
             );
             this.#indexedRoots.delete(normalizeRootPath(project.rootPath));
         } catch (error) {
-            // Invalidation for a project removed while the worker was flushing.
+            // Watchers can flush after a project or worktree has already been
+            // removed. Dropping the stale event prevents downstream refreshes
+            // from resolving ids that no longer exist.
             debugBenignError("projects.handleTreeInvalidation", error);
+            return;
         }
 
         this.#onProjectTreeInvalidated(payload);

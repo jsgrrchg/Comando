@@ -279,6 +279,312 @@ describe("ProjectService", () => {
         expect(result.project.rootPath).toBe(hiddenRoot);
     });
 
+    it("drops stale tree invalidations for worktrees removed during git sync", async () => {
+        const connection = createTestConnection();
+        const onProjectTreeInvalidated = vi.fn();
+        const projectService = createProjectService(
+            connection,
+            onProjectTreeInvalidated,
+        );
+        const projectRoot = createTempProject(tempDirs, "worktree-primary");
+        const worktreeRoot = createTempProject(tempDirs, "worktree-stale");
+
+        const [project] = (
+            await projectService.addProjectPaths([projectRoot])
+        ).projects;
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+
+        await projectService.syncProjectWorktrees(project.id, [
+            {
+                branchName: "main",
+                headSha: "primary-head",
+                rootPath: projectRoot,
+            },
+            {
+                branchName: "stale-branch",
+                headSha: "stale-head",
+                rootPath: worktreeRoot,
+            },
+        ]);
+
+        const staleWorktree = projectService
+            .listProjectWorktrees(project.id)
+            .find((worktree) => worktree.rootPath === worktreeRoot);
+        expect(staleWorktree).toBeDefined();
+        if (!staleWorktree) {
+            throw new Error("Expected the secondary worktree to be synced.");
+        }
+
+        await projectService.syncProjectWorktrees(project.id, [
+            {
+                branchName: "main",
+                headSha: "next-primary-head",
+                rootPath: projectRoot,
+            },
+        ]);
+        expect(
+            projectService
+                .listProjectWorktrees(project.id)
+                .some((worktree) => worktree.id === staleWorktree.id),
+        ).toBe(false);
+
+        expect(() => {
+            projectService.handleProjectTreeInvalidation({
+                occurredAt: "2026-06-08T00:00:00.000Z",
+                projectId: project.id,
+                relativePaths: null,
+                worktreeId: staleWorktree.id,
+            });
+        }).not.toThrow();
+        expect(onProjectTreeInvalidated).not.toHaveBeenCalled();
+    });
+
+    it("keeps forwarding valid primary invalidations after a sibling worktree is removed", async () => {
+        const connection = createTestConnection();
+        const onProjectTreeInvalidated = vi.fn();
+        const projectService = createProjectService(
+            connection,
+            onProjectTreeInvalidated,
+        );
+        const projectRoot = createTempProject(tempDirs, "valid-primary");
+        const worktreeRoot = createTempProject(tempDirs, "removed-sibling");
+
+        const [project] = (
+            await projectService.addProjectPaths([projectRoot])
+        ).projects;
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+
+        await projectService.syncProjectWorktrees(project.id, [
+            {
+                branchName: "main",
+                headSha: "primary-head",
+                rootPath: projectRoot,
+            },
+            {
+                branchName: "removed",
+                headSha: "removed-head",
+                rootPath: worktreeRoot,
+            },
+        ]);
+        await projectService.syncProjectWorktrees(project.id, [
+            {
+                branchName: "main",
+                headSha: "next-primary-head",
+                rootPath: projectRoot,
+            },
+        ]);
+
+        const payload = {
+            occurredAt: "2026-06-08T00:00:00.000Z",
+            projectId: project.id,
+            relativePaths: ["src/index.ts"],
+            worktreeId: `${project.id}:primary`,
+        };
+        projectService.handleProjectTreeInvalidation(payload);
+
+        expect(onProjectTreeInvalidated).toHaveBeenCalledTimes(1);
+        expect(onProjectTreeInvalidated).toHaveBeenCalledWith(payload);
+    });
+
+    it("preserves worktree ids on Windows when git returns paths with different casing", async () => {
+        const connection = createTestConnection();
+        const projectService = createProjectService(connection);
+        const projectRoot = createTempProject(tempDirs, "windows-primary-case");
+        const worktreeRoot = createTempProject(
+            tempDirs,
+            "windows-worktree-case",
+        );
+
+        const [project] = (
+            await projectService.addProjectPaths([projectRoot])
+        ).projects;
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+
+        const originalPlatform = process.platform;
+        Object.defineProperty(process, "platform", {
+            configurable: true,
+            value: "win32",
+        });
+        try {
+            await projectService.syncProjectWorktrees(project.id, [
+                {
+                    branchName: "main",
+                    headSha: "primary-head",
+                    rootPath: projectRoot,
+                },
+                {
+                    branchName: "feature/windows-case",
+                    headSha: "feature-head",
+                    rootPath: worktreeRoot,
+                },
+            ]);
+
+            const before = projectService.listProjectWorktrees(project.id);
+            const beforePrimary = before.find((worktree) => worktree.isPrimary);
+            const beforeFeature = before.find(
+                (worktree) => worktree.branchName === "feature/windows-case",
+            );
+            expect(beforePrimary?.id).toBe(`${project.id}:primary`);
+            expect(beforeFeature).toBeDefined();
+            if (!beforePrimary || !beforeFeature) {
+                throw new Error("Expected both worktrees to be synced.");
+            }
+
+            await projectService.syncProjectWorktrees(project.id, [
+                {
+                    branchName: "main",
+                    headSha: "next-primary-head",
+                    rootPath: projectRoot.toUpperCase(),
+                },
+                {
+                    branchName: "feature/windows-case",
+                    headSha: "next-feature-head",
+                    rootPath: worktreeRoot.toUpperCase(),
+                },
+            ]);
+
+            const after = projectService.listProjectWorktrees(project.id);
+            expect(after).toHaveLength(2);
+            expect(after.find((worktree) => worktree.isPrimary)?.id).toBe(
+                beforePrimary.id,
+            );
+            expect(
+                after.find(
+                    (worktree) =>
+                        worktree.branchName === "feature/windows-case",
+                )?.id,
+            ).toBe(beforeFeature.id);
+        } finally {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: originalPlatform,
+            });
+        }
+    });
+
+    it("removes legacy Windows worktree duplicates before syncing casing changes", async () => {
+        const connection = createTestConnection();
+        const projectService = createProjectService(connection);
+        const projectRoot = createTempProject(tempDirs, "legacy-case-primary");
+
+        const [project] = (
+            await projectService.addProjectPaths([projectRoot])
+        ).projects;
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+
+        const originalPlatform = process.platform;
+        Object.defineProperty(process, "platform", {
+            configurable: true,
+            value: "win32",
+        });
+        try {
+            const duplicateRootPath = projectRoot.toUpperCase();
+            const now = new Date().toISOString();
+            connection
+                .prepare<
+                    [
+                        string,
+                        string,
+                        string,
+                        string,
+                        string,
+                        number,
+                        string,
+                        string,
+                    ],
+                    void
+                >(
+                    `
+                    INSERT INTO project_worktrees (
+                        id,
+                        project_id,
+                        root_path,
+                        branch_name,
+                        head_sha,
+                        is_primary,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    `,
+                )
+                .run(
+                    `${project.id}:legacy-case-duplicate`,
+                    project.id,
+                    duplicateRootPath,
+                    "legacy-case",
+                    "legacy-head",
+                    0,
+                    now,
+                    now,
+                );
+
+            expect(projectService.listProjectWorktrees(project.id)).toHaveLength(
+                2,
+            );
+
+            await projectService.syncProjectWorktrees(project.id, [
+                {
+                    branchName: "main",
+                    headSha: "next-primary-head",
+                    rootPath: duplicateRootPath,
+                },
+            ]);
+
+            const after = projectService.listProjectWorktrees(project.id);
+            expect(after).toHaveLength(1);
+            expect(after[0]).toMatchObject({
+                branchName: "main",
+                headSha: "next-primary-head",
+                id: `${project.id}:primary`,
+                isPrimary: true,
+                rootPath: path.resolve(duplicateRootPath),
+            });
+        } finally {
+            Object.defineProperty(process, "platform", {
+                configurable: true,
+                value: originalPlatform,
+            });
+        }
+    });
+
+    it("drops stale tree invalidations for projects removed while watchers flush", async () => {
+        const connection = createTestConnection();
+        const onProjectTreeInvalidated = vi.fn();
+        const projectService = createProjectService(
+            connection,
+            onProjectTreeInvalidated,
+        );
+        const projectRoot = createTempProject(tempDirs, "removed-project");
+
+        const [project] = (
+            await projectService.addProjectPaths([projectRoot])
+        ).projects;
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+
+        await projectService.removeProject(project.id);
+
+        expect(() => {
+            projectService.handleProjectTreeInvalidation({
+                occurredAt: "2026-06-08T00:00:00.000Z",
+                projectId: project.id,
+                relativePaths: null,
+                worktreeId: null,
+            });
+        }).not.toThrow();
+        expect(onProjectTreeInvalidated).not.toHaveBeenCalled();
+    });
+
     it("reuses the cached search index until project contents change", async () => {
         const connection = createTestConnection();
         const projectService = createProjectService(connection);

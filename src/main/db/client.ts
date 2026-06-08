@@ -105,6 +105,10 @@ const DB_WORKER_METHOD_TIMEOUTS_MS: Readonly<Record<string, number>> = {
     // Project imports can synchronously touch the filesystem and invoke git
     // path discovery, so they need more headroom than pure SQLite calls.
     "projects.addProjectPaths": 30_000,
+    // Git refreshes sync worktree rows after potentially expensive branch or
+    // worktree operations. Avoid treating a busy SQLite worker as a fatal git
+    // snapshot failure too aggressively.
+    "projects.syncProjectWorktrees": 30_000,
 };
 
 class DbRpcClient {
