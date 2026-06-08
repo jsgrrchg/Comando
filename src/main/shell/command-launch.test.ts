@@ -64,6 +64,7 @@ describe("command launch helpers", () => {
     });
 
     it("escapes cmd metacharacters before launching a batch command", () => {
+        // Keep this mirrored with scripts/ai/_shared.test.mjs so runtime and packaging quoting stay aligned.
         const prepared = prepareCommandForSpawn(
             "C:\\Tools\\run.cmd",
             ["A&B", "(group)", "100%", "has^caret", "say \"hi\""],

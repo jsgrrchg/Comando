@@ -61,6 +61,21 @@ describe("script command launch helpers", () => {
         });
     });
 
+    it("escapes cmd metacharacters before launching a batch command", () => {
+        // Keep this mirrored with src/main/shell/command-launch.test.ts so runtime and packaging quoting stay aligned.
+        const prepared = prepareCommandForSpawnSync(
+            "C:\\Tools\\run.cmd",
+            ["A&B", "(group)", "100%", "has^caret", "say \"hi\""],
+            undefined,
+            { platform: "win32" },
+        );
+
+        expect(prepared.args[3]).toBe(
+            '""C:\\Tools\\run.cmd" "A^&B" "^(group^)" "100^%" "has^^caret" "say \\"hi\\"""',
+        );
+        expect(prepared.options.windowsVerbatimArguments).toBe(true);
+    });
+
     it("does not wrap batch commands outside Windows", () => {
         const prepared = prepareCommandForSpawnSync(
             "C:\\Program Files\\nodejs\\pnpm.cmd",
