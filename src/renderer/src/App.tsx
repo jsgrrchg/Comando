@@ -3323,9 +3323,11 @@ export function App() {
         if (!platform) return;
         document.documentElement.setAttribute("data-platform", platform);
         if (platform === "win32") {
+            const windowsAcrylic =
+                bootstrap.windowEffects?.windowsAcrylic ?? false;
             document.documentElement.setAttribute(
                 "data-windows-acrylic",
-                bootstrap.windowEffects.windowsAcrylic ? "true" : "false",
+                windowsAcrylic ? "true" : "false",
             );
         } else {
             document.documentElement.removeAttribute("data-windows-acrylic");
@@ -4074,7 +4076,7 @@ export function App() {
             data-platform={bootstrap?.platform ?? undefined}
             data-windows-acrylic={
                 bootstrap?.platform === "win32"
-                    ? String(bootstrap.windowEffects.windowsAcrylic)
+                    ? String(bootstrap.windowEffects?.windowsAcrylic ?? false)
                     : undefined
             }
         >

@@ -167,11 +167,11 @@ export function SettingsApp() {
                     snapshot.platform,
                 );
                 if (snapshot.platform === "win32") {
+                    const windowsAcrylic =
+                        snapshot.windowEffects?.windowsAcrylic ?? false;
                     document.documentElement.setAttribute(
                         "data-windows-acrylic",
-                        snapshot.windowEffects.windowsAcrylic
-                            ? "true"
-                            : "false",
+                        windowsAcrylic ? "true" : "false",
                     );
                 } else {
                     document.documentElement.removeAttribute(

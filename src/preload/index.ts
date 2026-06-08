@@ -1,7 +1,5 @@
 /// <reference lib="dom" />
 
-import os from "node:os";
-
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 import {
@@ -169,26 +167,8 @@ import {
     type WriteTerminalInput,
     type WorkspaceSnapshot,
 } from "@shared/ipc";
-import { supportsWindowsAcrylicMaterial } from "@shared/windows-material";
-
-function applyWindowEffectsAttributes(): void {
-    if (process.platform !== "win32") {
-        document.documentElement?.removeAttribute("data-windows-acrylic");
-        return;
-    }
-
-    document.documentElement?.setAttribute(
-        "data-windows-acrylic",
-        supportsWindowsAcrylicMaterial(process.platform, os.release())
-            ? "true"
-            : "false",
-    );
-}
-
-applyWindowEffectsAttributes();
 
 window.addEventListener("DOMContentLoaded", () => {
-    applyWindowEffectsAttributes();
     document.documentElement?.setAttribute("data-comando-preload", "ready");
 });
 
