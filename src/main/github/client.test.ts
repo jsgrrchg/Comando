@@ -48,6 +48,28 @@ describe("GitHubApiClient", () => {
         });
     });
 
+    it("aborts pending REST response bodies after the request timeout", async () => {
+        let requestSignal: AbortSignal | undefined;
+        const fetchMock = vi.fn<GitHubFetch>((_, init) =>
+            Promise.resolve(
+                pendingAbortableBodyResponse(init, (signal) => {
+                    requestSignal = signal;
+                }),
+            ),
+        );
+        const client = new GitHubApiClient({
+            fetch: fetchMock,
+            requestTimeoutMs: 10,
+            token: "ghp_test",
+        });
+
+        await expect(client.listIssues({ repository })).rejects.toMatchObject({
+            code: "timeout",
+            message: "GitHub request timed out.",
+        });
+        expect(requestSignal?.aborted).toBe(true);
+    });
+
     it("aborts pending GraphQL requests after the request timeout", async () => {
         let requestSignal: AbortSignal | undefined;
         const fetchMock = vi
@@ -59,6 +81,39 @@ describe("GitHubApiClient", () => {
                 pendingAbortableResponse(init, (signal) => {
                     requestSignal = signal;
                 }),
+            );
+        const client = new GitHubApiClient({
+            fetch: fetchMock,
+            requestTimeoutMs: 10,
+            token: "ghp_test",
+        });
+
+        await expect(
+            client.setPullRequestDraftState({
+                draft: true,
+                number: 7,
+                repository,
+            }),
+        ).rejects.toMatchObject({
+            code: "timeout",
+            message: "GitHub request timed out.",
+        });
+        expect(requestSignal?.aborted).toBe(true);
+    });
+
+    it("aborts pending GraphQL response bodies after the request timeout", async () => {
+        let requestSignal: AbortSignal | undefined;
+        const fetchMock = vi
+            .fn<GitHubFetch>()
+            .mockResolvedValueOnce(jsonResponse(rawPullRequest()))
+            .mockResolvedValueOnce(jsonResponse([]))
+            .mockResolvedValueOnce(jsonResponse([]))
+            .mockImplementation((_, init) =>
+                Promise.resolve(
+                    pendingAbortableBodyResponse(init, (signal) => {
+                        requestSignal = signal;
+                    }),
+                ),
             );
         const client = new GitHubApiClient({
             fetch: fetchMock,
@@ -90,6 +145,27 @@ function pendingAbortableResponse(
         signal?.addEventListener("abort", () => {
             reject(new DOMException("The operation was aborted.", "AbortError"));
         });
+    });
+}
+
+function pendingAbortableBodyResponse(
+    init: RequestInit | undefined,
+    onSignal: (signal: AbortSignal | undefined) => void,
+): Response {
+    const signal = init?.signal ?? undefined;
+    onSignal(signal);
+    const body = new ReadableStream({
+        start(controller) {
+            signal?.addEventListener("abort", () => {
+                controller.error(
+                    new DOMException("The operation was aborted.", "AbortError"),
+                );
+            });
+        },
+    });
+    return new Response(body, {
+        headers: { "content-type": "application/json" },
+        status: 200,
     });
 }
 

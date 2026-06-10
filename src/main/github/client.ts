@@ -1213,14 +1213,20 @@ export class GitHubApiClient {
         const host = normalizeGitHubHost(hostInput);
         const url = buildGitHubGraphQlUrl(host);
         try {
-            const response = await this.#fetchWithTimeout(url, {
-                body: JSON.stringify({ query, variables }),
-                headers: this.#buildHeaders({ contentType: true }),
-                method: "POST",
-            });
-            const data = (await response.json().catch(() => null)) as
-                | RawGraphQlResponse
-                | null;
+            const { data, response } = await this.#withRequestTimeout(
+                async (signal) => {
+                    const response = await this.#fetch(url, {
+                        body: JSON.stringify({ query, variables }),
+                        headers: this.#buildHeaders({ contentType: true }),
+                        method: "POST",
+                        signal,
+                    });
+                    return {
+                        data: await readJsonResponse<RawGraphQlResponse>(response),
+                        response,
+                    };
+                },
+            );
             if (!response.ok) {
                 throw buildGitHubApiError(response, data);
             }
@@ -1259,17 +1265,25 @@ export class GitHubApiClient {
         }
 
         try {
-            const response = await this.#fetchWithTimeout(url, {
-                body:
-                    options.body === undefined
-                        ? undefined
-                        : JSON.stringify(options.body),
-                headers: this.#buildHeaders({
-                    contentType: options.body !== undefined,
-                }),
-                method: options.method ?? "GET",
-            });
-            const data = (await response.json().catch(() => null)) as T;
+            const { data, response } = await this.#withRequestTimeout(
+                async (signal) => {
+                    const response = await this.#fetch(url, {
+                        body:
+                            options.body === undefined
+                                ? undefined
+                                : JSON.stringify(options.body),
+                        headers: this.#buildHeaders({
+                            contentType: options.body !== undefined,
+                        }),
+                        method: options.method ?? "GET",
+                        signal,
+                    });
+                    return {
+                        data: (await readJsonResponse<T>(response)) as T,
+                        response,
+                    };
+                },
+            );
             if (!response.ok) {
                 throw buildGitHubApiError(response, data);
             }
@@ -1298,17 +1312,25 @@ export class GitHubApiClient {
         }
 
         try {
-            const response = await this.#fetchWithTimeout(url, {
-                body:
-                    options.body === undefined
-                        ? undefined
-                        : JSON.stringify(options.body),
-                headers: this.#buildHeaders({
-                    contentType: options.body !== undefined,
-                }),
-                method: options.method ?? "GET",
-            });
-            const text = await response.text().catch(() => "");
+            const { response, text } = await this.#withRequestTimeout(
+                async (signal) => {
+                    const response = await this.#fetch(url, {
+                        body:
+                            options.body === undefined
+                                ? undefined
+                                : JSON.stringify(options.body),
+                        headers: this.#buildHeaders({
+                            contentType: options.body !== undefined,
+                        }),
+                        method: options.method ?? "GET",
+                        signal,
+                    });
+                    return {
+                        response,
+                        text: await readTextResponse(response),
+                    };
+                },
+            );
             if (!response.ok) {
                 throw buildGitHubApiError(response, text);
             }
@@ -1322,10 +1344,9 @@ export class GitHubApiClient {
         }
     }
 
-    async #fetchWithTimeout(
-        input: string | URL,
-        init: RequestInit,
-    ): Promise<Response> {
+    async #withRequestTimeout<T>(
+        run: (signal: AbortSignal) => Promise<T>,
+    ): Promise<T> {
         const controller = new AbortController();
         const timeout = setTimeout(() => {
             controller.abort();
@@ -1333,10 +1354,7 @@ export class GitHubApiClient {
         timeout.unref?.();
 
         try {
-            return await this.#fetch(input, {
-                ...init,
-                signal: controller.signal,
-            });
+            return await run(controller.signal);
         } finally {
             clearTimeout(timeout);
         }
@@ -1395,6 +1413,28 @@ function normalizeGitHubFetchError(error: unknown): GitHubApiError {
         "network_error",
         null,
     );
+}
+
+async function readJsonResponse<T>(response: Response): Promise<T | null> {
+    try {
+        return (await response.json()) as T;
+    } catch (error) {
+        if (isAbortError(error)) {
+            throw error;
+        }
+        return null;
+    }
+}
+
+async function readTextResponse(response: Response): Promise<string> {
+    try {
+        return await response.text();
+    } catch (error) {
+        if (isAbortError(error)) {
+            throw error;
+        }
+        return "";
+    }
 }
 
 function isAbortError(error: unknown): boolean {
