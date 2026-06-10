@@ -104,6 +104,7 @@ function prepareCommandLaunch<
         args: [
             "/d",
             "/s",
+            "/v:off",
             "/c",
             buildWindowsBatchCommandLine(resolvedCommand, args),
         ],
@@ -223,9 +224,26 @@ function buildWindowsBatchCommandLine(
 }
 
 function quoteWindowsCmdArgument(value: string): string {
-    const escapedValue = value
-        .replace(/"/g, '\\"')
-        .replace(/([&|<>()^%!])/g, "^$1");
+    let escapedValue = "";
+    let backslashCount = 0;
+
+    for (const character of value) {
+        if (character === "\\") {
+            backslashCount += 1;
+            continue;
+        }
+
+        if (character === '"') {
+            escapedValue += `${"\\".repeat(backslashCount * 2 + 1)}"`;
+            backslashCount = 0;
+            continue;
+        }
+
+        escapedValue += `${"\\".repeat(backslashCount)}${character}`;
+        backslashCount = 0;
+    }
+
+    escapedValue += "\\".repeat(backslashCount * 2);
 
     return `"${escapedValue}"`;
 }

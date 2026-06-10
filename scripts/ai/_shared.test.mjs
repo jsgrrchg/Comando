@@ -32,8 +32,9 @@ describe("script command launch helpers", () => {
                 args: [
                     "/d",
                     "/s",
+                    "/v:off",
                     "/c",
-                    `""${command}" "run" "build ^& package" "^%TEMP^%""`,
+                    `""${command}" "run" "build & package" "%TEMP%""`,
                 ],
                 command: "C:\\Windows\\System32\\cmd.exe",
                 options: {
@@ -61,7 +62,7 @@ describe("script command launch helpers", () => {
         });
     });
 
-    it("escapes cmd metacharacters before launching a batch command", () => {
+    it("quotes cmd metacharacters before launching a batch command", () => {
         // Keep this mirrored with src/main/shell/command-launch.test.ts so runtime and packaging quoting stay aligned.
         const prepared = prepareCommandForSpawnSync(
             "C:\\Tools\\run.cmd",
@@ -70,8 +71,8 @@ describe("script command launch helpers", () => {
             { platform: "win32" },
         );
 
-        expect(prepared.args[3]).toBe(
-            '""C:\\Tools\\run.cmd" "A^&B" "^(group^)" "100^%" "has^^caret" "say \\"hi\\"""',
+        expect(prepared.args[4]).toBe(
+            '""C:\\Tools\\run.cmd" "A&B" "(group)" "100%" "has^caret" "say \\"hi\\"""',
         );
         expect(prepared.options.windowsVerbatimArguments).toBe(true);
     });

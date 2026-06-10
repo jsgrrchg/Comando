@@ -426,6 +426,7 @@ describe("AiWorkerRuntime prepareSession", () => {
                     [
                         "/d",
                         "/s",
+                        "/v:off",
                         "/c",
                         [
                             `""${input.executable}"`,
@@ -5129,7 +5130,13 @@ describe("AiWorkerRuntime prepareSession", () => {
 
             expect(spawnMock).toHaveBeenLastCalledWith(
                 "cmd.exe",
-                ["/d", "/s", "/c", `""${executablePath}" "test""`],
+                [
+                    "/d",
+                    "/s",
+                    "/v:off",
+                    "/c",
+                    `""${executablePath}" "test""`,
+                ],
                 expect.objectContaining({
                     cwd: tempDir,
                     stdio: ["ignore", "pipe", "pipe"],

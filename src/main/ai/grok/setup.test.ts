@@ -132,7 +132,10 @@ describe("Grok setup", () => {
         );
 
         try {
-            const binaryPath = writeExecutable(tempDir, "grok");
+            const binaryPath = writeExecutable(
+                tempDir,
+                platformExecutableName("grok"),
+            );
             process.env.PATH = tempDir;
 
             const fromSettings = resolveGrokRuntime({
@@ -180,6 +183,7 @@ describe("Grok setup", () => {
                 [
                     "/d",
                     "/s",
+                    "/v:off",
                     "/c",
                     `""${binaryPath}" "--no-auto-update" "agent" "stdio""`,
                 ],
@@ -205,7 +209,10 @@ describe("Grok setup", () => {
         try {
             const userBinDir = path.join(tempDir, ".grok", "bin");
             fs.mkdirSync(userBinDir, { recursive: true });
-            const binaryPath = writeExecutable(userBinDir, "grok");
+            const binaryPath = writeExecutable(
+                userBinDir,
+                platformExecutableName("grok"),
+            );
             process.env.HOME = tempDir;
             delete process.env.USERPROFILE;
             process.env.PATH = "";
@@ -227,7 +234,15 @@ describe("Grok setup", () => {
 
         try {
             const nonExecutablePath = path.join(tempDir, "grok");
-            fs.writeFileSync(nonExecutablePath, "#!/bin/sh\nexit 0\n", "utf8");
+            if (process.platform === "win32") {
+                fs.mkdirSync(nonExecutablePath);
+            } else {
+                fs.writeFileSync(
+                    nonExecutablePath,
+                    "#!/bin/sh\nexit 0\n",
+                    "utf8",
+                );
+            }
             process.env.HOME = tempDir;
             delete process.env.USERPROFILE;
             process.env.PATH = "";
@@ -492,6 +507,10 @@ function writeExecutable(directory: string, name: string): string {
     fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
     fs.chmodSync(binaryPath, 0o755);
     return binaryPath;
+}
+
+function platformExecutableName(command: string): string {
+    return process.platform === "win32" ? `${command}.CMD` : command;
 }
 
 function writeGrokAuthStore(homeDir: string): void {
