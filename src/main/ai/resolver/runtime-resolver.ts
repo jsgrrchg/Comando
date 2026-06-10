@@ -33,7 +33,9 @@ export function resolveCodexRuntime(
     const envPath = process.env.COMANDO_CODEX_ACP_BIN?.trim() ?? "";
     const appRoot = options.appRoot ?? getAppRoot();
     const packagedResourcesPath =
-        options.packagedResourcesPath ?? getPackagedResourcesPath();
+        options.packagedResourcesPath === undefined
+            ? getPackagedResourcesPath()
+            : options.packagedResourcesPath;
 
     if (envPath) {
         return resolveCandidate(envPath, "env");

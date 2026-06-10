@@ -32,6 +32,7 @@ import {
 } from "./worktrees";
 import { getGitFileDiff } from "./diff";
 import { getGitCommitDetail, listGitHistory } from "./history";
+import { createSafeGitEnvironment } from "./environment";
 import { buildRuntimePathEntries } from "../ai/runtime-env";
 
 export interface GitServiceOptions {
@@ -936,7 +937,7 @@ function collectNumstatRecords(
 }
 
 function createBackgroundSafeGit(rootPath: string) {
-    return createGit(rootPath).env({ GIT_OPTIONAL_LOCKS: "0" });
+    return createGit(rootPath).env("GIT_OPTIONAL_LOCKS", "0");
 }
 
 function createGit(rootPath: string) {
@@ -950,7 +951,9 @@ function createGit(rootPath: string) {
         return simpleGit(rootPath);
     }
 
-    return simpleGit(rootPath).env({
-        PATH: pathEntries.join(path.delimiter),
-    });
+    return simpleGit(rootPath).env(
+        createSafeGitEnvironment({
+            PATH: pathEntries.join(path.delimiter),
+        }),
+    );
 }

@@ -21,6 +21,7 @@ import {
 import { normalizePathKey } from "@shared/path-identity";
 
 import { debugBenignError } from "../observability/logging";
+import { createSafeGitEnvironment } from "../git/environment";
 import { shouldIgnoreEntry } from "./ignore";
 import {
     copyExternalProjectEntries,
@@ -947,7 +948,11 @@ function mergeProjectInvalidationRelativePaths(
 }
 
 function createBackgroundSafeGit(rootPath: string) {
-    return simpleGit(rootPath).env({ GIT_OPTIONAL_LOCKS: "0" });
+    return simpleGit(rootPath).env(
+        createSafeGitEnvironment({
+            GIT_OPTIONAL_LOCKS: "0",
+        }),
+    );
 }
 
 function getDirectoryBadge(

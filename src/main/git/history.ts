@@ -9,6 +9,7 @@ import type {
     GitHistoryListResult,
     GitListHistoryOptions,
 } from "./types";
+import { createSafeGitEnvironment } from "./environment";
 
 const FIELD_SEPARATOR = "\u001f";
 const RECORD_SEPARATOR = "\u001e";
@@ -380,5 +381,9 @@ function parseCommitDiffFile(
 }
 
 function createBackgroundSafeGit(rootPath: string) {
-    return simpleGit(rootPath).env({ GIT_OPTIONAL_LOCKS: "0" });
+    return simpleGit(rootPath).env(
+        createSafeGitEnvironment({
+            GIT_OPTIONAL_LOCKS: "0",
+        }),
+    );
 }

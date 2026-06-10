@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { resolveCodexGeneratedImagePreviewPath } from "./file-preview-protocol";
 
+const canCreateFileSymlink = canCreateSymlink();
+
 describe("resolveCodexGeneratedImagePreviewPath", () => {
     let tempDir: string;
     let generatedImagesRoot: string;
@@ -44,18 +46,21 @@ describe("resolveCodexGeneratedImagePreviewPath", () => {
         });
     });
 
-    it("blocks symlinks that escape the authorized root", async () => {
-        const outsidePath = path.join(tempDir, "outside.png");
-        const symlinkPath = path.join(generatedImagesRoot, "linked.png");
-        fs.writeFileSync(outsidePath, "png");
-        fs.symlinkSync(outsidePath, symlinkPath);
+    it.skipIf(!canCreateFileSymlink)(
+        "blocks symlinks that escape the authorized root",
+        async () => {
+            const outsidePath = path.join(tempDir, "outside.png");
+            const symlinkPath = path.join(generatedImagesRoot, "linked.png");
+            fs.writeFileSync(outsidePath, "png");
+            fs.symlinkSync(outsidePath, symlinkPath, "file");
 
-        await expect(resolvePath(symlinkPath)).resolves.toMatchObject({
-            filePath: null,
-            mimeType: null,
-            status: 404,
-        });
-    });
+            await expect(resolvePath(symlinkPath)).resolves.toMatchObject({
+                filePath: null,
+                mimeType: null,
+                status: 404,
+            });
+        },
+    );
 
     it("returns 415 for non-image files inside an authorized root", async () => {
         const textPath = path.join(generatedImagesRoot, "notes.txt");
@@ -84,4 +89,22 @@ function encodeBase64Url(value: string): string {
         .replace(/\+/g, "-")
         .replace(/\//g, "_")
         .replace(/=+$/g, "");
+}
+
+function canCreateSymlink(): boolean {
+    const tempDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "comando-preview-symlink-check-"),
+    );
+    const targetPath = path.join(tempDir, "target.png");
+    const symlinkPath = path.join(tempDir, "linked.png");
+
+    try {
+        fs.writeFileSync(targetPath, "png");
+        fs.symlinkSync(targetPath, symlinkPath, "file");
+        return true;
+    } catch {
+        return false;
+    } finally {
+        fs.rmSync(tempDir, { force: true, recursive: true });
+    }
 }

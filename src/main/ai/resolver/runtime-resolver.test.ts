@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { writeTestExecutable } from "@main/testing/executable-fixture";
+
 import { resolveCodexRuntime } from "./runtime-resolver";
 
 const originalPath = process.env.PATH;
@@ -31,9 +33,7 @@ describe("resolveCodexRuntime", () => {
 
         try {
             delete process.env.COMANDO_CODEX_ACP_BIN;
-            const executablePath = path.join(tempDir, "codex-acp");
-            fs.writeFileSync(executablePath, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.chmodSync(executablePath, 0o755);
+            const executablePath = writeTestExecutable(tempDir, "codex-acp");
             process.env.PATH = tempDir;
 
             const resolved = resolveCodexRuntime(
@@ -76,7 +76,7 @@ describe("resolveCodexRuntime", () => {
                 "resources",
                 "ai",
                 "binaries",
-                "codex-acp",
+                getCodexBundledExecutableName(),
             );
             const vendorPath = path.join(
                 tempRoot,
@@ -84,18 +84,20 @@ describe("resolveCodexRuntime", () => {
                 "codex-acp",
                 "target",
                 "release",
-                "codex-acp",
+                getCodexBundledExecutableName(),
             );
-            const pathExecutable = path.join(tempPathDir, "codex-acp");
+            writeTestExecutable(tempPathDir, "codex-acp");
 
             fs.mkdirSync(path.dirname(bundledPath), { recursive: true });
             fs.mkdirSync(path.dirname(vendorPath), { recursive: true });
-            fs.writeFileSync(bundledPath, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.writeFileSync(vendorPath, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.writeFileSync(pathExecutable, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.chmodSync(bundledPath, 0o755);
-            fs.chmodSync(vendorPath, 0o755);
-            fs.chmodSync(pathExecutable, 0o755);
+            writeTestExecutable(
+                path.dirname(bundledPath),
+                path.basename(bundledPath),
+            );
+            writeTestExecutable(
+                path.dirname(vendorPath),
+                path.basename(vendorPath),
+            );
             process.env.PATH = tempPathDir;
 
             const resolved = resolveCodexRuntime(
@@ -132,11 +134,13 @@ describe("resolveCodexRuntime", () => {
                 "codex-acp",
                 "target",
                 "release",
-                "codex-acp",
+                getCodexBundledExecutableName(),
             );
             fs.mkdirSync(path.dirname(vendorPath), { recursive: true });
-            fs.writeFileSync(vendorPath, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.chmodSync(vendorPath, 0o755);
+            writeTestExecutable(
+                path.dirname(vendorPath),
+                path.basename(vendorPath),
+            );
             process.env.PATH = "";
 
             const resolved = resolveCodexRuntime(
@@ -160,9 +164,9 @@ describe("resolveCodexRuntime", () => {
         }
     });
 
-    it("uses the packaged architecture-specific bundled binary on macOS", () => {
+    it("uses the generic packaged bundled binary when repo bundle is absent", () => {
         const tempRoot = fs.mkdtempSync(
-            path.join(os.tmpdir(), "comando-codex-packaged-"),
+            path.join(os.tmpdir(), "comando-codex-packaged-generic-"),
         );
         const packagedResourcesPath = path.join(tempRoot, "packaged");
 
@@ -170,16 +174,10 @@ describe("resolveCodexRuntime", () => {
             delete process.env.COMANDO_CODEX_ACP_BIN;
             process.env.PATH = "";
 
-            const packagedBinary = path.join(
-                packagedResourcesPath,
-                "ai",
-                "binaries",
-                `darwin-${process.arch}`,
-                "codex-acp",
+            const packagedBinary = writeTestExecutable(
+                path.join(packagedResourcesPath, "ai", "binaries"),
+                getCodexBundledExecutableName(),
             );
-            fs.mkdirSync(path.dirname(packagedBinary), { recursive: true });
-            fs.writeFileSync(packagedBinary, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.chmodSync(packagedBinary, 0o755);
 
             const resolved = resolveCodexRuntime(
                 {
@@ -202,6 +200,57 @@ describe("resolveCodexRuntime", () => {
         }
     });
 
+    it.runIf(process.platform === "darwin")(
+        "uses the packaged architecture-specific bundled binary on macOS",
+        () => {
+            const tempRoot = fs.mkdtempSync(
+                path.join(os.tmpdir(), "comando-codex-packaged-"),
+            );
+            const packagedResourcesPath = path.join(tempRoot, "packaged");
+
+            try {
+                delete process.env.COMANDO_CODEX_ACP_BIN;
+                process.env.PATH = "";
+
+                const packagedBinary = path.join(
+                    packagedResourcesPath,
+                    "ai",
+                    "binaries",
+                    `darwin-${process.arch}`,
+                    getCodexBundledExecutableName(),
+                );
+                fs.mkdirSync(path.dirname(packagedBinary), {
+                    recursive: true,
+                });
+                fs.writeFileSync(
+                    packagedBinary,
+                    "#!/bin/sh\nexit 0\n",
+                    "utf8",
+                );
+                fs.chmodSync(packagedBinary, 0o755);
+
+                const resolved = resolveCodexRuntime(
+                    {
+                        authMethod: null,
+                        binaryPath: null,
+                        hasCodexApiKey: false,
+                        hasOpenAiApiKey: false,
+                    },
+                    {
+                        allowPathFallback: false,
+                        appRoot: tempRoot,
+                        packagedResourcesPath,
+                    },
+                );
+
+                expect(resolved.executable).toBe(packagedBinary);
+                expect(resolved.status.source).toBe("bundled");
+            } finally {
+                fs.rmSync(tempRoot, { force: true, recursive: true });
+            }
+        },
+    );
+
     it("marks codex as incompatible when only modern CLI exists", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-codex-cli-"),
@@ -209,9 +258,10 @@ describe("resolveCodexRuntime", () => {
 
         try {
             delete process.env.COMANDO_CODEX_ACP_BIN;
-            const executablePath = path.join(tempDir, "codex");
-            fs.writeFileSync(executablePath, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.chmodSync(executablePath, 0o755);
+            const executablePath = writeTestExecutable(
+                tempDir,
+                process.platform === "win32" ? "codex.EXE" : "codex",
+            );
             process.env.PATH = tempDir;
 
             const resolved = resolveCodexRuntime(
@@ -240,5 +290,10 @@ describe("resolveCodexRuntime", () => {
                 recursive: true,
             });
         }
-    });
+        },
+    );
 });
+
+function getCodexBundledExecutableName(): string {
+    return process.platform === "win32" ? "codex-acp.exe" : "codex-acp";
+}

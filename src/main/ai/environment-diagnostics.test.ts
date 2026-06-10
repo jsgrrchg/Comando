@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 
 import type { AiSettingsSnapshot } from "@shared/ipc";
 
+import { writeTestExecutable } from "@main/testing/executable-fixture";
+
 import type { SecretStoreGateway } from "./secret-store";
 import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
 
@@ -22,12 +24,15 @@ describe("AI environment diagnostics", () => {
             fs.mkdirSync(homeDir, { recursive: true });
             fs.mkdirSync(binDir, { recursive: true });
 
-            const claudePath = writeExecutable(binDir, "claude-agent-acp");
-            const codexPath = writeExecutable(binDir, "codex-acp");
-            const geminiPath = writeExecutable(binDir, "gemini");
-            const grokPath = writeExecutable(binDir, "grok");
-            const kiloPath = writeExecutable(binDir, "kilo");
-            const opencodePath = writeExecutable(binDir, "opencode");
+            const claudePath = writeTestExecutable(
+                binDir,
+                "claude-agent-acp",
+            );
+            const codexPath = writeTestExecutable(binDir, "codex-acp");
+            const geminiPath = writeTestExecutable(binDir, "gemini");
+            const grokPath = writeTestExecutable(binDir, "grok");
+            const kiloPath = writeTestExecutable(binDir, "kilo");
+            const opencodePath = writeTestExecutable(binDir, "opencode");
             const diagnostics = createAiEnvironmentDiagnostics({
                 env: {
                     CODEX_API_KEY: "codex-secret-value",
@@ -73,33 +78,33 @@ describe("AI environment diagnostics", () => {
             expect(diagnostics.checkedAt).toBe("2026-05-19T12:00:00.000Z");
             expect(diagnostics.path.inherited).toBe(binDir);
             expect(diagnostics.path.inheritedEntries).toEqual([binDir]);
-            expect(
-                diagnostics.executables.find(
-                    (entry) => entry.command === "codex-acp",
-                ),
-            ).toMatchObject({
-                path: codexPath,
+            const codexExecutable = diagnostics.executables.find(
+                (entry) => entry.command === "codex-acp",
+            );
+            expect(codexExecutable).toMatchObject({
                 source: "path",
                 state: "ready",
             });
-            expect(
-                diagnostics.runtimePathOverrides.find(
-                    (entry) => entry.name === "COMANDO_GEMINI_ACP_BIN",
-                ),
-            ).toMatchObject({
-                pathOrCommand: geminiPath,
+            expectPathToBe(codexExecutable?.path, codexPath);
+
+            const geminiOverride = diagnostics.runtimePathOverrides.find(
+                (entry) => entry.name === "COMANDO_GEMINI_ACP_BIN",
+            );
+            expect(geminiOverride).toMatchObject({
                 present: true,
                 runtimeId: "gemini",
             });
-            expect(
-                diagnostics.runtimePathOverrides.find(
-                    (entry) => entry.name === "COMANDO_GROK_ACP_BIN",
-                ),
-            ).toMatchObject({
-                pathOrCommand: grokPath,
+            expectPathToBe(geminiOverride?.pathOrCommand, geminiPath);
+
+            const grokOverride = diagnostics.runtimePathOverrides.find(
+                (entry) => entry.name === "COMANDO_GROK_ACP_BIN",
+            );
+            expect(grokOverride).toMatchObject({
                 present: true,
                 runtimeId: "grok",
             });
+            expectPathToBe(grokOverride?.pathOrCommand, grokPath);
+
             expect(
                 diagnostics.credentialEnvironment.find(
                     (entry) => entry.name === "CODEX_API_KEY",
@@ -108,50 +113,49 @@ describe("AI environment diagnostics", () => {
                 present: true,
                 runtimeId: "codex",
             });
-            expect(
-                diagnostics.runtimes.find(
-                    (runtime) => runtime.runtimeId === "codex",
-                ),
-            ).toMatchObject({
+            const codexRuntime = diagnostics.runtimes.find(
+                (runtime) => runtime.runtimeId === "codex",
+            );
+            expect(codexRuntime).toMatchObject({
                 authCredentialSource: "environment",
                 authMethod: "codex-api-key",
                 authReady: true,
-                command: codexPath,
-                executablePath: codexPath,
                 source: "env",
                 state: "ready",
             });
-            expect(
-                diagnostics.runtimes.find(
-                    (runtime) => runtime.runtimeId === "gemini",
-                ),
-            ).toMatchObject({
+            expectPathCommandToBe(codexRuntime?.command, codexPath);
+            expectPathToBe(codexRuntime?.executablePath, codexPath);
+
+            const geminiRuntime = diagnostics.runtimes.find(
+                (runtime) => runtime.runtimeId === "gemini",
+            );
+            expect(geminiRuntime).toMatchObject({
                 authCredentialSource: "environment",
                 authMethod: "use_gemini",
                 authReady: true,
-                command: `${geminiPath} --acp`,
-                executablePath: geminiPath,
                 source: "env",
                 state: "ready",
             });
+            expectPathCommandToBe(geminiRuntime?.command, `${geminiPath} --acp`);
+            expectPathToBe(geminiRuntime?.executablePath, geminiPath);
             expect(
-                diagnostics.runtimes.find(
-                    (runtime) => runtime.runtimeId === "gemini",
-                )?.preferredPathEntries[0],
+                geminiRuntime?.preferredPathEntries[0],
             ).toBe(binDir);
-            expect(
-                diagnostics.runtimes.find(
-                    (runtime) => runtime.runtimeId === "grok",
-                ),
-            ).toMatchObject({
+            const grokRuntime = diagnostics.runtimes.find(
+                (runtime) => runtime.runtimeId === "grok",
+            );
+            expect(grokRuntime).toMatchObject({
                 authCredentialSource: "environment",
                 authMethod: "xai-api-key",
                 authReady: true,
-                command: `${grokPath} --no-auto-update agent stdio`,
-                executablePath: grokPath,
                 source: "env",
                 state: "ready",
             });
+            expectPathCommandToBe(
+                grokRuntime?.command,
+                `${grokPath} --no-auto-update agent stdio`,
+            );
+            expectPathToBe(grokRuntime?.executablePath, grokPath);
             expect(
                 diagnostics.credentialEnvironment.find(
                     (entry) =>
@@ -162,19 +166,18 @@ describe("AI environment diagnostics", () => {
                 present: true,
                 runtimeId: "grok",
             });
-            expect(
-                diagnostics.runtimes.find(
-                    (runtime) => runtime.runtimeId === "opencode",
-                ),
-            ).toMatchObject({
+            const openCodeRuntime = diagnostics.runtimes.find(
+                (runtime) => runtime.runtimeId === "opencode",
+            );
+            expect(openCodeRuntime).toMatchObject({
                 authCredentialSource: "environment",
                 authMethod: "opencode-login",
                 authReady: true,
-                command: `${opencodePath} acp`,
-                executablePath: opencodePath,
                 source: "env",
                 state: "ready",
             });
+            expectPathCommandToBe(openCodeRuntime?.command, `${opencodePath} acp`);
+            expectPathToBe(openCodeRuntime?.executablePath, opencodePath);
             expect(
                 diagnostics.credentialEnvironment.find(
                     (entry) =>
@@ -212,7 +215,7 @@ describe("AI environment diagnostics", () => {
             const homeDir = path.join(tempDir, "home");
             const grokBinDir = path.join(homeDir, ".grok", "bin");
             fs.mkdirSync(grokBinDir, { recursive: true });
-            const grokPath = writeExecutable(grokBinDir, "grok");
+            const grokPath = writeTestExecutable(grokBinDir, "grok");
 
             const diagnostics = createAiEnvironmentDiagnostics({
                 env: {
@@ -237,20 +240,26 @@ describe("AI environment diagnostics", () => {
                 ),
             ).toMatchObject({
                 message: null,
-                path: grokPath,
                 source: "path",
                 state: "ready",
             });
-            expect(
-                diagnostics.runtimes.find(
-                    (runtime) => runtime.runtimeId === "grok",
-                ),
-            ).toMatchObject({
-                command: `${grokPath} --no-auto-update agent stdio`,
-                executablePath: grokPath,
+            const grokExecutable = diagnostics.executables.find(
+                (entry) => entry.command === "grok",
+            );
+            expectPathToBe(grokExecutable?.path, grokPath);
+
+            const grokRuntime = diagnostics.runtimes.find(
+                (runtime) => runtime.runtimeId === "grok",
+            );
+            expect(grokRuntime).toMatchObject({
                 source: "path",
                 state: "ready",
             });
+            expectPathCommandToBe(
+                grokRuntime?.command,
+                `${grokPath} --no-auto-update agent stdio`,
+            );
+            expectPathToBe(grokRuntime?.executablePath, grokPath);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -392,16 +401,26 @@ function createSecretStore(
     };
 }
 
-function writeExecutable(directory: string, name: string): string {
-    const executableName = process.platform === "win32" ? `${name}.cmd` : name;
-    const executablePath = path.join(directory, executableName);
-    const content =
-        process.platform === "win32"
-            ? "@echo off\r\nexit /b 0\r\n"
-            : "#!/bin/sh\nexit 0\n";
+function expectPathToBe(
+    actual: string | null | undefined,
+    expected: string,
+): void {
+    expect(normalizePathForComparison(actual)).toBe(
+        normalizePathForComparison(expected),
+    );
+}
 
-    fs.writeFileSync(executablePath, content, "utf8");
-    fs.chmodSync(executablePath, 0o755);
+function expectPathCommandToBe(
+    actual: string | null | undefined,
+    expected: string,
+): void {
+    expect(normalizePathForComparison(actual)).toBe(
+        normalizePathForComparison(expected),
+    );
+}
 
-    return executablePath;
+function normalizePathForComparison(value: string | null | undefined): string {
+    const normalized = path.normalize(value ?? "");
+
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
