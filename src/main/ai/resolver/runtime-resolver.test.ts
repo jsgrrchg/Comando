@@ -164,6 +164,42 @@ describe("resolveCodexRuntime", () => {
         }
     });
 
+    it("uses the generic packaged bundled binary when repo bundle is absent", () => {
+        const tempRoot = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-codex-packaged-generic-"),
+        );
+        const packagedResourcesPath = path.join(tempRoot, "packaged");
+
+        try {
+            delete process.env.COMANDO_CODEX_ACP_BIN;
+            process.env.PATH = "";
+
+            const packagedBinary = writeTestExecutable(
+                path.join(packagedResourcesPath, "ai", "binaries"),
+                getCodexBundledExecutableName(),
+            );
+
+            const resolved = resolveCodexRuntime(
+                {
+                    authMethod: null,
+                    binaryPath: null,
+                    hasCodexApiKey: false,
+                    hasOpenAiApiKey: false,
+                },
+                {
+                    allowPathFallback: false,
+                    appRoot: tempRoot,
+                    packagedResourcesPath,
+                },
+            );
+
+            expect(resolved.executable).toBe(packagedBinary);
+            expect(resolved.status.source).toBe("bundled");
+        } finally {
+            fs.rmSync(tempRoot, { force: true, recursive: true });
+        }
+    });
+
     it.runIf(process.platform === "darwin")(
         "uses the packaged architecture-specific bundled binary on macOS",
         () => {

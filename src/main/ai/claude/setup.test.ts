@@ -177,6 +177,55 @@ describe("Claude setup", () => {
         }
     });
 
+    it("resolves Claude with generic packaged embedded Node and vendor entry", () => {
+        const tempRoot = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-claude-packaged-generic-"),
+        );
+        const packagedResourcesPath = path.join(tempRoot, "packaged");
+
+        try {
+            const packagedNode = writeTestExecutable(
+                path.join(
+                    packagedResourcesPath,
+                    "ai",
+                    "embedded",
+                    "node",
+                    "bin",
+                ),
+                getNodeExecutableName(),
+            );
+            const packagedEntry = path.join(
+                packagedResourcesPath,
+                "ai",
+                "embedded",
+                "claude-agent-acp",
+                "dist",
+                "index.js",
+            );
+
+            fs.mkdirSync(path.dirname(packagedEntry), { recursive: true });
+            fs.writeFileSync(packagedEntry, "console.log('ok')\n", "utf8");
+
+            const resolved = resolveClaudeRuntime(
+                createEmptyClaudeSettings(),
+                createFakeSecretStore(),
+                {
+                    allowPathFallback: false,
+                    appRoot: tempRoot,
+                    debugMode: false,
+                    packagedResourcesPath,
+                },
+            );
+
+            expect(resolved.program).toBe(packagedNode);
+            expect(resolved.args).toEqual([packagedEntry]);
+            expect(resolved.status.source).toBe("bundled");
+            expect(resolved.status.state).toBe("ready");
+        } finally {
+            fs.rmSync(tempRoot, { force: true, recursive: true });
+        }
+    });
+
     it("detects Claude auth from ~/.claude.json while respecting saved config", () => {
         const tempRoot = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-claude-auth-"),
