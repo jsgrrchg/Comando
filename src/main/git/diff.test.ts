@@ -26,7 +26,11 @@ describe("getGitFileDiff", () => {
                     _args: readonly string[],
                     options: { readonly timeout?: number },
                     callback: (
-                        error: NodeJS.ErrnoException,
+                        error: Error & {
+                            code?: number | string | null;
+                            killed?: boolean;
+                            signal?: NodeJS.Signals | null;
+                        },
                         stdout: string,
                         stderr: string,
                     ) => void,
@@ -34,8 +38,14 @@ describe("getGitFileDiff", () => {
                     setTimeout(() => {
                         const error = new Error(
                             "Command failed: git diff --no-index",
-                        ) as NodeJS.ErrnoException;
-                        error.code = "ETIMEDOUT";
+                        ) as Error & {
+                            code: string | null;
+                            killed: boolean;
+                            signal: NodeJS.Signals;
+                        };
+                        error.code = null;
+                        error.killed = true;
+                        error.signal = "SIGTERM";
                         callback(error, "", "");
                     }, options.timeout);
                 },

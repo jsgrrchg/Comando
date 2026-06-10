@@ -261,9 +261,13 @@ async function runGitDiff(
 }
 
 function isGitDiffTimeoutError(error: unknown): boolean {
+    if (!isGitProcessError(error)) {
+        return false;
+    }
+
     return (
-        isGitExecError(error) &&
-        (error.code === "ETIMEDOUT" || error.signal === "SIGTERM")
+        error.code === "ETIMEDOUT" ||
+        (error.signal === "SIGTERM" && error.killed === true)
     );
 }
 
@@ -341,15 +345,21 @@ function isGitExecError(
     error: unknown,
 ): error is Error & {
     readonly code: number | string;
-    readonly signal?: unknown;
     readonly stdout?: unknown;
 } {
     return (
-        error instanceof Error &&
-        "code" in error &&
-        (typeof (error as { readonly code?: unknown }).code === "number" ||
-            typeof (error as { readonly code?: unknown }).code === "string")
+        isGitProcessError(error) &&
+        (typeof error.code === "number" || typeof error.code === "string")
     );
+}
+
+function isGitProcessError(error: unknown): error is Error & {
+    readonly code?: number | string | null;
+    readonly killed?: unknown;
+    readonly signal?: unknown;
+    readonly stdout?: unknown;
+} {
+    return error instanceof Error;
 }
 
 interface MutableGitFileDiffHunk {
