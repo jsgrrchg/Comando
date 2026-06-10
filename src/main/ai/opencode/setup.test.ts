@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { OpenCodeRuntimeSettings } from "@shared/ipc";
 
+import { writeTestExecutable } from "@main/testing/executable-fixture";
+
 import {
     applyOpenCodeAuthEnv,
     getOpenCodeRuntimeStatus,
@@ -47,7 +49,10 @@ describe("OpenCode setup", () => {
         );
 
         try {
-            const binaryPath = writeExecutable(tempDir, "custom-opencode");
+            const binaryPath = writeTestExecutable(
+                tempDir,
+                "custom-opencode",
+            );
             process.env.COMANDO_OPENCODE_ACP_BIN = binaryPath;
             process.env.PATH = "";
 
@@ -71,7 +76,7 @@ describe("OpenCode setup", () => {
         );
 
         try {
-            const binaryPath = writeExecutable(tempDir, "opencode");
+            const binaryPath = writeTestExecutable(tempDir, "opencode");
             process.env.PATH = tempDir;
 
             const fromSettings = resolveOpenCodeRuntime(
@@ -101,7 +106,7 @@ describe("OpenCode setup", () => {
         try {
             const userBinDir = path.join(tempDir, ".opencode", "bin");
             fs.mkdirSync(userBinDir, { recursive: true });
-            const binaryPath = writeExecutable(userBinDir, "opencode");
+            const binaryPath = writeTestExecutable(userBinDir, "opencode");
             process.env.HOME = tempDir;
             delete process.env.USERPROFILE;
             process.env.PATH = "";
@@ -189,7 +194,7 @@ describe("OpenCode setup", () => {
         );
 
         try {
-            const binaryPath = writeExecutable(tempDir, "opencode");
+            const binaryPath = writeTestExecutable(tempDir, "opencode");
             process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
             const status = getOpenCodeRuntimeStatus(
                 createOpenCodeSettings({
@@ -212,7 +217,7 @@ describe("OpenCode setup", () => {
         );
 
         try {
-            const binaryPath = writeExecutable(tempDir, "opencode");
+            const binaryPath = writeTestExecutable(tempDir, "opencode");
             process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
             const status = getOpenCodeRuntimeStatus(
                 createOpenCodeSettings({
@@ -306,13 +311,6 @@ function createOpenCodeSettings(
         binaryPath: null,
         ...overrides,
     };
-}
-
-function writeExecutable(dir: string, name: string): string {
-    const binaryPath = path.join(dir, name);
-    fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
-    fs.chmodSync(binaryPath, 0o755);
-    return binaryPath;
 }
 
 function writeOpenCodeAuthFile(dataDir: string): string {

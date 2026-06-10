@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 
 import type { AiSettingsSnapshot } from "@shared/ipc";
 
+import { writeTestExecutable } from "@main/testing/executable-fixture";
+
 import type { SecretStoreGateway } from "./secret-store";
 import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
 
@@ -22,12 +24,15 @@ describe("AI environment diagnostics", () => {
             fs.mkdirSync(homeDir, { recursive: true });
             fs.mkdirSync(binDir, { recursive: true });
 
-            const claudePath = writeExecutable(binDir, "claude-agent-acp");
-            const codexPath = writeExecutable(binDir, "codex-acp");
-            const geminiPath = writeExecutable(binDir, "gemini");
-            const grokPath = writeExecutable(binDir, "grok");
-            const kiloPath = writeExecutable(binDir, "kilo");
-            const opencodePath = writeExecutable(binDir, "opencode");
+            const claudePath = writeTestExecutable(
+                binDir,
+                "claude-agent-acp",
+            );
+            const codexPath = writeTestExecutable(binDir, "codex-acp");
+            const geminiPath = writeTestExecutable(binDir, "gemini");
+            const grokPath = writeTestExecutable(binDir, "grok");
+            const kiloPath = writeTestExecutable(binDir, "kilo");
+            const opencodePath = writeTestExecutable(binDir, "opencode");
             const diagnostics = createAiEnvironmentDiagnostics({
                 env: {
                     CODEX_API_KEY: "codex-secret-value",
@@ -212,7 +217,7 @@ describe("AI environment diagnostics", () => {
             const homeDir = path.join(tempDir, "home");
             const grokBinDir = path.join(homeDir, ".grok", "bin");
             fs.mkdirSync(grokBinDir, { recursive: true });
-            const grokPath = writeExecutable(grokBinDir, "grok");
+            const grokPath = writeTestExecutable(grokBinDir, "grok");
 
             const diagnostics = createAiEnvironmentDiagnostics({
                 env: {
@@ -392,16 +397,3 @@ function createSecretStore(
     };
 }
 
-function writeExecutable(directory: string, name: string): string {
-    const executableName = process.platform === "win32" ? `${name}.cmd` : name;
-    const executablePath = path.join(directory, executableName);
-    const content =
-        process.platform === "win32"
-            ? "@echo off\r\nexit /b 0\r\n"
-            : "#!/bin/sh\nexit 0\n";
-
-    fs.writeFileSync(executablePath, content, "utf8");
-    fs.chmodSync(executablePath, 0o755);
-
-    return executablePath;
-}

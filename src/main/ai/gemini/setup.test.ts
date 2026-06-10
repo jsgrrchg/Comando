@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { SecretStoreService } from "../secret-store";
+import { writeTestExecutable } from "@main/testing/executable-fixture";
 import {
     applyGeminiAuthEnv,
     detectGeminiAuthMethod,
@@ -73,9 +74,7 @@ describe("Gemini setup", () => {
         );
 
         try {
-            const binaryPath = path.join(tempDir, "custom-gemini");
-            fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.chmodSync(binaryPath, 0o755);
+            const binaryPath = writeTestExecutable(tempDir, "custom-gemini");
             process.env.COMANDO_GEMINI_ACP_BIN = binaryPath;
             process.env.PATH = "";
 
@@ -100,9 +99,7 @@ describe("Gemini setup", () => {
         );
 
         try {
-            const binaryPath = path.join(tempDir, "gemini");
-            fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.chmodSync(binaryPath, 0o755);
+            const binaryPath = writeTestExecutable(tempDir, "gemini");
             process.env.PATH = tempDir;
 
             const fromSettings = resolveGeminiRuntime(
@@ -167,13 +164,12 @@ describe("Gemini setup", () => {
         );
 
         try {
-            const binaryPath = path.join(tempDir, "gemini");
+            const binaryPath = writeTestExecutable(tempDir, "gemini");
             const tempHome = path.join(tempDir, "home");
             const settingsDir = path.join(tempHome, ".gemini");
             const settingsPath = path.join(settingsDir, "settings.json");
 
             fs.mkdirSync(settingsDir, { recursive: true });
-            fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
             fs.writeFileSync(
                 settingsPath,
                 JSON.stringify({
@@ -185,8 +181,6 @@ describe("Gemini setup", () => {
                 }),
                 "utf8",
             );
-            fs.chmodSync(binaryPath, 0o755);
-
             process.env.HOME = tempHome;
             delete process.env.USERPROFILE;
             process.env.COMANDO_GEMINI_ACP_BIN = binaryPath;

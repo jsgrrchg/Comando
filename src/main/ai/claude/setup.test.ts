@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { writeTestExecutable } from "@main/testing/executable-fixture";
+
 import {
     applyClaudeAuthEnv,
     buildClaudeSecretPatches,
@@ -119,14 +121,16 @@ describe("Claude setup", () => {
         );
 
         try {
-            const embeddedNode = path.join(
-                tempRoot,
-                "resources",
-                "ai",
-                "embedded",
-                "node",
-                "bin",
-                "node",
+            const embeddedNode = writeTestExecutable(
+                path.join(
+                    tempRoot,
+                    "resources",
+                    "ai",
+                    "embedded",
+                    "node",
+                    "bin",
+                ),
+                getNodeExecutableName(),
             );
             const embeddedEntry = path.join(
                 tempRoot,
@@ -138,20 +142,16 @@ describe("Claude setup", () => {
                 "index.js",
             );
 
-            fs.mkdirSync(path.dirname(embeddedNode), { recursive: true });
             fs.mkdirSync(path.dirname(embeddedEntry), { recursive: true });
             fs.mkdirSync(path.join(tempRoot, "resources", "ai"), {
                 recursive: true,
             });
-            fs.writeFileSync(embeddedNode, "#!/bin/sh\nexit 0\n", "utf8");
             fs.writeFileSync(embeddedEntry, "console.log('ok')\n", "utf8");
             fs.writeFileSync(
                 path.join(tempRoot, "package.json"),
                 '{"name":"comando-test"}\n',
                 "utf8",
             );
-            fs.chmodSync(embeddedNode, 0o755);
-
             const resolved = resolveClaudeRuntime(
                 createEmptyClaudeSettings(),
                 createFakeSecretStore(),
@@ -186,14 +186,16 @@ describe("Claude setup", () => {
         );
 
         try {
-            const embeddedNode = path.join(
-                tempRoot,
-                "resources",
-                "ai",
-                "embedded",
-                "node",
-                "bin",
-                "node",
+            writeTestExecutable(
+                path.join(
+                    tempRoot,
+                    "resources",
+                    "ai",
+                    "embedded",
+                    "node",
+                    "bin",
+                ),
+                getNodeExecutableName(),
             );
             const embeddedEntry = path.join(
                 tempRoot,
@@ -206,12 +208,9 @@ describe("Claude setup", () => {
             );
             const authFile = path.join(tempHome, ".claude.json");
 
-            fs.mkdirSync(path.dirname(embeddedNode), { recursive: true });
             fs.mkdirSync(path.dirname(embeddedEntry), { recursive: true });
-            fs.writeFileSync(embeddedNode, "#!/bin/sh\nexit 0\n", "utf8");
             fs.writeFileSync(embeddedEntry, "console.log('ok')\n", "utf8");
             fs.writeFileSync(authFile, '{"session":true}', "utf8");
-            fs.chmodSync(embeddedNode, 0o755);
 
             process.env.HOME = tempHome;
             delete process.env.USERPROFILE;
@@ -250,14 +249,16 @@ describe("Claude setup", () => {
         );
 
         try {
-            const embeddedNode = path.join(
-                tempRoot,
-                "resources",
-                "ai",
-                "embedded",
-                "node",
-                "bin",
-                "node",
+            writeTestExecutable(
+                path.join(
+                    tempRoot,
+                    "resources",
+                    "ai",
+                    "embedded",
+                    "node",
+                    "bin",
+                ),
+                getNodeExecutableName(),
             );
             const embeddedEntry = path.join(
                 tempRoot,
@@ -270,12 +271,9 @@ describe("Claude setup", () => {
             );
             const authFile = path.join(tempHome, ".claude.json");
 
-            fs.mkdirSync(path.dirname(embeddedNode), { recursive: true });
             fs.mkdirSync(path.dirname(embeddedEntry), { recursive: true });
-            fs.writeFileSync(embeddedNode, "#!/bin/sh\nexit 0\n", "utf8");
             fs.writeFileSync(embeddedEntry, "console.log('ok')\n", "utf8");
             fs.writeFileSync(authFile, '{"session":true}', "utf8");
-            fs.chmodSync(embeddedNode, 0o755);
 
             process.env.HOME = tempHome;
             delete process.env.USERPROFILE;
@@ -382,7 +380,9 @@ describe("Claude setup", () => {
         expect(status.authCredentialSource).toBe("environment");
     });
 
-    it("prefers packaged macOS architecture-specific Node when available", () => {
+    it.runIf(process.platform === "darwin")(
+        "prefers packaged macOS architecture-specific Node when available",
+        () => {
         const tempRoot = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-claude-packaged-"),
         );
@@ -430,7 +430,8 @@ describe("Claude setup", () => {
         } finally {
             fs.rmSync(tempRoot, { force: true, recursive: true });
         }
-    });
+        },
+    );
 
     it("injects Claude gateway and secrets without overwriting external values", () => {
         const secretStore = createFakeSecretStore({
@@ -690,4 +691,8 @@ function createFakeSecretStore(
             secrets.set(key, normalized);
         },
     };
+}
+
+function getNodeExecutableName(): string {
+    return process.platform === "win32" ? "node.exe" : "node";
 }

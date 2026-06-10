@@ -6,6 +6,8 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { writeTestExecutable } from "@main/testing/executable-fixture";
+
 import {
     applyKiloAuthEnv,
     buildKiloSecretPatches,
@@ -87,9 +89,7 @@ describe("Kilo setup", () => {
         );
 
         try {
-            const binaryPath = path.join(tempDir, "custom-kilo");
-            fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.chmodSync(binaryPath, 0o755);
+            const binaryPath = writeTestExecutable(tempDir, "custom-kilo");
             process.env.COMANDO_KILO_ACP_BIN = binaryPath;
             process.env.PATH = "";
 
@@ -111,9 +111,7 @@ describe("Kilo setup", () => {
         );
 
         try {
-            const binaryPath = path.join(tempDir, "kilo");
-            fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.chmodSync(binaryPath, 0o755);
+            const binaryPath = writeTestExecutable(tempDir, "kilo");
             process.env.PATH = tempDir;
 
             const fromSettings = resolveKiloRuntime({
@@ -215,14 +213,12 @@ describe("Kilo setup", () => {
         );
 
         try {
-            const binaryPath = path.join(tempDir, "kilo");
+            const binaryPath = writeTestExecutable(tempDir, "kilo");
             const dataDir = path.join(tempDir, "xdg");
             const secretStore = createSecretStore({
                 "ai.kilo:kilo_api_key": "stored-kilo-key",
             });
 
-            fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.chmodSync(binaryPath, 0o755);
             writeActiveKiloLegacyAuthStore(dataDir);
 
             process.env.COMANDO_KILO_ACP_BIN = binaryPath;
@@ -301,13 +297,11 @@ describe("Kilo setup", () => {
         );
 
         try {
-            const binaryPath = path.join(tempDir, "kilo");
+            const binaryPath = writeTestExecutable(tempDir, "kilo");
             const authDir = path.join(tempDir, ".local", "share", "kilo");
             const authPath = path.join(authDir, "auth.json");
 
             fs.mkdirSync(authDir, { recursive: true });
-            fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.chmodSync(binaryPath, 0o755);
             fs.writeFileSync(
                 authPath,
                 JSON.stringify({
@@ -322,6 +316,7 @@ describe("Kilo setup", () => {
             );
 
             process.env.HOME = tempDir;
+            delete process.env.LOCALAPPDATA;
             delete process.env.USERPROFILE;
             delete process.env.XDG_DATA_HOME;
             process.env.COMANDO_KILO_ACP_BIN = binaryPath;
@@ -351,7 +346,7 @@ describe("Kilo setup", () => {
                         import fs from "node:fs";
                         import os from "node:os";
                         import path from "node:path";
-                        import { execFileSync } from "node:child_process";
+                        import { DatabaseSync } from "node:sqlite";
                         import { readKiloSqliteAuthStoreStatus } from ${JSON.stringify(pathToFileURL(path.resolve("src/main/ai/kilo/setup.ts")).href)};
 
                         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-kilo-auth-db-child-"));
@@ -361,46 +356,46 @@ describe("Kilo setup", () => {
                         const now = Date.now();
 
                         fs.mkdirSync(kiloDir, { recursive: true });
-                        execFileSync("sqlite3", [databasePath], {
-                            input: \`
-                                CREATE TABLE account (
-                                    id TEXT PRIMARY KEY,
-                                    email TEXT NOT NULL,
-                                    url TEXT NOT NULL,
-                                    access_token TEXT NOT NULL,
-                                    refresh_token TEXT NOT NULL,
-                                    token_expiry INTEGER,
-                                    time_created INTEGER NOT NULL,
-                                    time_updated INTEGER NOT NULL
-                                );
-                                CREATE TABLE account_state (
-                                    id INTEGER PRIMARY KEY NOT NULL,
-                                    active_account_id TEXT,
-                                    active_org_id TEXT
-                                );
-                                INSERT INTO account (
-                                    id,
-                                    email,
-                                    url,
-                                    access_token,
-                                    refresh_token,
-                                    token_expiry,
-                                    time_created,
-                                    time_updated
-                                ) VALUES (
-                                    'acc-1',
-                                    'user@example.com',
-                                    'https://kilo.example',
-                                    'access-token',
-                                    'refresh-token',
-                                    \${now + 60_000},
-                                    \${now},
-                                    \${now}
-                                );
-                                INSERT INTO account_state (id, active_account_id, active_org_id)
-                                VALUES (1, 'acc-1', NULL);
-                            \`,
-                        });
+                        const database = new DatabaseSync(databasePath);
+                        database.exec(\`
+                            CREATE TABLE account (
+                                id TEXT PRIMARY KEY,
+                                email TEXT NOT NULL,
+                                url TEXT NOT NULL,
+                                access_token TEXT NOT NULL,
+                                refresh_token TEXT NOT NULL,
+                                token_expiry INTEGER,
+                                time_created INTEGER NOT NULL,
+                                time_updated INTEGER NOT NULL
+                            );
+                            CREATE TABLE account_state (
+                                id INTEGER PRIMARY KEY NOT NULL,
+                                active_account_id TEXT,
+                                active_org_id TEXT
+                            );
+                            INSERT INTO account (
+                                id,
+                                email,
+                                url,
+                                access_token,
+                                refresh_token,
+                                token_expiry,
+                                time_created,
+                                time_updated
+                            ) VALUES (
+                                'acc-1',
+                                'user@example.com',
+                                'https://kilo.example',
+                                'access-token',
+                                'refresh-token',
+                                \${now + 60_000},
+                                \${now},
+                                \${now}
+                            );
+                            INSERT INTO account_state (id, active_account_id, active_org_id)
+                            VALUES (1, 'acc-1', NULL);
+                        \`);
+                        database.close();
 
                         const status = readKiloSqliteAuthStoreStatus(databasePath);
                         process.stdout.write(JSON.stringify(status));
@@ -426,9 +421,7 @@ describe("Kilo setup", () => {
         );
 
         try {
-            const binaryPath = path.join(tempDir, "kilo");
-            fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.chmodSync(binaryPath, 0o755);
+            const binaryPath = writeTestExecutable(tempDir, "kilo");
             process.env.COMANDO_KILO_ACP_BIN = binaryPath;
             process.env.PATH = "";
             process.env.XDG_DATA_HOME = path.join(tempDir, "empty-xdg");

@@ -4,6 +4,8 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { writeTestExecutable } from "@main/testing/executable-fixture";
+
 import { checkCommandAvailability } from "./command-availability";
 
 const tempDirs: string[] = [];
@@ -17,7 +19,7 @@ afterEach(() => {
 describe("checkCommandAvailability", () => {
     it("finds an allowed executable in PATH entries without running it", () => {
         const binDir = createTempDir();
-        const executablePath = writeExecutable(
+        const executablePath = writeTestExecutable(
             binDir,
             "claude",
             [
@@ -40,7 +42,7 @@ describe("checkCommandAvailability", () => {
 
     it("rejects unsafe or non-allowed command names", () => {
         const binDir = createTempDir();
-        writeExecutable(binDir, "claude");
+        writeTestExecutable(binDir, "claude");
 
         for (const name of [
             "claude code",
@@ -63,7 +65,7 @@ describe("checkCommandAvailability", () => {
 
     it("respects PATHEXT when resolving on Windows", () => {
         const binDir = createTempDir();
-        const executablePath = writeExecutable(binDir, "claude.CMD");
+        const executablePath = writeTestExecutable(binDir, "claude.CMD");
 
         expect(
             checkCommandAvailability(
@@ -89,13 +91,3 @@ function createTempDir(): string {
     return tempDir;
 }
 
-function writeExecutable(
-    directory: string,
-    name: string,
-    content = "",
-): string {
-    const executablePath = path.join(directory, name);
-    fs.writeFileSync(executablePath, content, { mode: 0o755 });
-    fs.chmodSync(executablePath, 0o755);
-    return executablePath;
-}
