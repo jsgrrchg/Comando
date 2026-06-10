@@ -18,6 +18,7 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const GIT_DIFF_MAX_BUFFER_BYTES = 20 * 1024 * 1024;
+const GIT_UNTRACKED_DIFF_TIMEOUT_MS = 30_000;
 
 export async function getGitFileDiff(
     rootPath: string,
@@ -234,10 +235,19 @@ async function runGitDiff(
         const result = await execFileAsync("git", [...args], {
             cwd: rootPath,
             encoding: "utf8",
+            killSignal: "SIGTERM",
             maxBuffer: GIT_DIFF_MAX_BUFFER_BYTES,
+            timeout: GIT_UNTRACKED_DIFF_TIMEOUT_MS,
         });
         return result.stdout;
     } catch (error) {
+        if (isGitDiffTimeoutError(error)) {
+            throw new Error(
+                "Git diff timed out while reading the untracked file. The file may be too large or locked.",
+                { cause: error },
+            );
+        }
+
         if (
             isGitExecError(error) &&
             error.code === 1 &&
@@ -248,6 +258,17 @@ async function runGitDiff(
 
         throw error;
     }
+}
+
+function isGitDiffTimeoutError(error: unknown): boolean {
+    if (!isGitProcessError(error)) {
+        return false;
+    }
+
+    return (
+        error.code === "ETIMEDOUT" ||
+        (error.signal === "SIGTERM" && error.killed === true)
+    );
 }
 
 async function detectGitChangeKind(
@@ -322,12 +343,23 @@ function normalizeSafeGitPath(filePath: string): string {
 
 function isGitExecError(
     error: unknown,
-): error is Error & { readonly code: number; readonly stdout?: unknown } {
+): error is Error & {
+    readonly code: number | string;
+    readonly stdout?: unknown;
+} {
     return (
-        error instanceof Error &&
-        "code" in error &&
-        typeof (error as { readonly code?: unknown }).code === "number"
+        isGitProcessError(error) &&
+        (typeof error.code === "number" || typeof error.code === "string")
     );
+}
+
+function isGitProcessError(error: unknown): error is Error & {
+    readonly code?: number | string | null;
+    readonly killed?: unknown;
+    readonly signal?: unknown;
+    readonly stdout?: unknown;
+} {
+    return error instanceof Error;
 }
 
 interface MutableGitFileDiffHunk {

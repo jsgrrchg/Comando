@@ -53,6 +53,26 @@ describe("resolveGitHubRepositoryRef", () => {
         });
     });
 
+    it("falls back to a secondary GitHub remote when the default is not GitHub", () => {
+        const ref = resolveGitHubRepositoryRef([
+            createRemote({
+                fetchUrl: "https://gitlab.com/acme/other.git",
+                isDefault: true,
+                name: "upstream",
+            }),
+            createRemote({
+                fetchUrl: "https://github.com/comando/app.git",
+                name: "origin",
+            }),
+        ]);
+
+        expect(ref).toEqual({
+            host: "github.com",
+            owner: "comando",
+            repo: "app",
+        });
+    });
+
     it("returns null for non-GitHub remotes", () => {
         expect(
             resolveGitHubRepositoryRef([

@@ -76,6 +76,7 @@ import type {
 // Skip per-commit stats enrichment for PRs above this size to avoid
 // flooding the GitHub API with N detail requests for very large PRs.
 const PR_COMMIT_STATS_LIMIT = 50;
+const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 
 export type GitHubFetch = (
     input: string | URL,
@@ -84,6 +85,7 @@ export type GitHubFetch = (
 
 interface GitHubApiClientOptions {
     readonly fetch?: GitHubFetch;
+    readonly requestTimeoutMs?: number;
     readonly token: string;
 }
 
@@ -389,10 +391,13 @@ export class GitHubApiError extends Error {
 
 export class GitHubApiClient {
     readonly #fetch: GitHubFetch;
+    readonly #requestTimeoutMs: number;
     readonly #token: string;
 
     constructor(options: GitHubApiClientOptions) {
         this.#fetch = options.fetch ?? fetch;
+        this.#requestTimeoutMs =
+            options.requestTimeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS;
         this.#token = options.token;
     }
 
@@ -1207,25 +1212,35 @@ export class GitHubApiClient {
     ): Promise<void> {
         const host = normalizeGitHubHost(hostInput);
         const url = buildGitHubGraphQlUrl(host);
-        const response = await this.#fetch(url, {
-            body: JSON.stringify({ query, variables }),
-            headers: this.#buildHeaders({ contentType: true }),
-            method: "POST",
-        });
-        const data = (await response.json().catch(() => null)) as
-            | RawGraphQlResponse
-            | null;
-        if (!response.ok) {
-            throw buildGitHubApiError(response, data);
-        }
-        if (data?.errors?.length) {
-            throw new GitHubApiError(
-                data.errors
-                    .map((error) => error.message ?? "GraphQL error")
-                    .join("; "),
-                "forbidden",
-                response.status,
+        try {
+            const { data, response } = await this.#withRequestTimeout(
+                async (signal) => {
+                    const response = await this.#fetch(url, {
+                        body: JSON.stringify({ query, variables }),
+                        headers: this.#buildHeaders({ contentType: true }),
+                        method: "POST",
+                        signal,
+                    });
+                    return {
+                        data: await readJsonResponse<RawGraphQlResponse>(response),
+                        response,
+                    };
+                },
             );
+            if (!response.ok) {
+                throw buildGitHubApiError(response, data);
+            }
+            if (data?.errors?.length) {
+                throw new GitHubApiError(
+                    data.errors
+                        .map((error) => error.message ?? "GraphQL error")
+                        .join("; "),
+                    "forbidden",
+                    response.status,
+                );
+            }
+        } catch (error) {
+            throw normalizeGitHubFetchError(error);
         }
     }
 
@@ -1250,17 +1265,25 @@ export class GitHubApiClient {
         }
 
         try {
-            const response = await this.#fetch(url, {
-                body:
-                    options.body === undefined
-                        ? undefined
-                        : JSON.stringify(options.body),
-                headers: this.#buildHeaders({
-                    contentType: options.body !== undefined,
-                }),
-                method: options.method ?? "GET",
-            });
-            const data = (await response.json().catch(() => null)) as T;
+            const { data, response } = await this.#withRequestTimeout(
+                async (signal) => {
+                    const response = await this.#fetch(url, {
+                        body:
+                            options.body === undefined
+                                ? undefined
+                                : JSON.stringify(options.body),
+                        headers: this.#buildHeaders({
+                            contentType: options.body !== undefined,
+                        }),
+                        method: options.method ?? "GET",
+                        signal,
+                    });
+                    return {
+                        data: (await readJsonResponse<T>(response)) as T,
+                        response,
+                    };
+                },
+            );
             if (!response.ok) {
                 throw buildGitHubApiError(response, data);
             }
@@ -1270,11 +1293,7 @@ export class GitHubApiClient {
             if (error instanceof GitHubApiError) {
                 throw error;
             }
-            throw new GitHubApiError(
-                "GitHub could not be reached.",
-                "network_error",
-                null,
-            );
+            throw normalizeGitHubFetchError(error);
         }
     }
 
@@ -1293,17 +1312,25 @@ export class GitHubApiClient {
         }
 
         try {
-            const response = await this.#fetch(url, {
-                body:
-                    options.body === undefined
-                        ? undefined
-                        : JSON.stringify(options.body),
-                headers: this.#buildHeaders({
-                    contentType: options.body !== undefined,
-                }),
-                method: options.method ?? "GET",
-            });
-            const text = await response.text().catch(() => "");
+            const { response, text } = await this.#withRequestTimeout(
+                async (signal) => {
+                    const response = await this.#fetch(url, {
+                        body:
+                            options.body === undefined
+                                ? undefined
+                                : JSON.stringify(options.body),
+                        headers: this.#buildHeaders({
+                            contentType: options.body !== undefined,
+                        }),
+                        method: options.method ?? "GET",
+                        signal,
+                    });
+                    return {
+                        response,
+                        text: await readTextResponse(response),
+                    };
+                },
+            );
             if (!response.ok) {
                 throw buildGitHubApiError(response, text);
             }
@@ -1313,11 +1340,23 @@ export class GitHubApiClient {
             if (error instanceof GitHubApiError) {
                 throw error;
             }
-            throw new GitHubApiError(
-                "GitHub could not be reached.",
-                "network_error",
-                null,
-            );
+            throw normalizeGitHubFetchError(error);
+        }
+    }
+
+    async #withRequestTimeout<T>(
+        run: (signal: AbortSignal) => Promise<T>,
+    ): Promise<T> {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => {
+            controller.abort();
+        }, this.#requestTimeoutMs);
+        timeout.unref?.();
+
+        try {
+            return await run(controller.signal);
+        } finally {
+            clearTimeout(timeout);
         }
     }
 
@@ -1358,6 +1397,53 @@ function buildGitHubApiError(response: Response, body: unknown): GitHubApiError 
     }
 
     return new GitHubApiError(message, "unknown", response.status);
+}
+
+function normalizeGitHubFetchError(error: unknown): GitHubApiError {
+    if (error instanceof GitHubApiError) {
+        return error;
+    }
+
+    if (isAbortError(error)) {
+        return new GitHubApiError("GitHub request timed out.", "timeout", null);
+    }
+
+    return new GitHubApiError(
+        "GitHub could not be reached.",
+        "network_error",
+        null,
+    );
+}
+
+async function readJsonResponse<T>(response: Response): Promise<T | null> {
+    try {
+        return (await response.json()) as T;
+    } catch (error) {
+        if (isAbortError(error)) {
+            throw error;
+        }
+        return null;
+    }
+}
+
+async function readTextResponse(response: Response): Promise<string> {
+    try {
+        return await response.text();
+    } catch (error) {
+        if (isAbortError(error)) {
+            throw error;
+        }
+        return "";
+    }
+}
+
+function isAbortError(error: unknown): boolean {
+    return (
+        typeof error === "object" &&
+        error !== null &&
+        "name" in error &&
+        error.name === "AbortError"
+    );
 }
 
 function readGitHubErrorMessage(body: unknown): string {

@@ -1058,6 +1058,7 @@ export type GitHubErrorCode =
     | "network_error"
     | "not_found"
     | "rate_limited"
+    | "timeout"
     | "unknown";
 
 export type GitHubIssueState = "closed" | "open";

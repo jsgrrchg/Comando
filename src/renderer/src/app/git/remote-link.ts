@@ -57,12 +57,27 @@ export function buildGitRemoteCommitLink(
 export function resolveGitHubRepositoryRef(
     remotes: readonly GitRemoteSummary[],
 ): GitHubRepositoryRef | null {
-    const remote =
-        remotes.find((candidate) => candidate.isDefault) ?? remotes[0] ?? null;
-    if (!remote) {
-        return null;
+    const defaultRemote = remotes.find((candidate) => candidate.isDefault);
+    const candidates = defaultRemote
+        ? [
+              defaultRemote,
+              ...remotes.filter((candidate) => candidate !== defaultRemote),
+          ]
+        : remotes;
+
+    for (const remote of candidates) {
+        const ref = parseGitHubRepositoryRef(remote);
+        if (ref) {
+            return ref;
+        }
     }
 
+    return null;
+}
+
+function parseGitHubRepositoryRef(
+    remote: GitRemoteSummary,
+): GitHubRepositoryRef | null {
     const rawUrl = remote.fetchUrl ?? remote.pushUrl;
     if (!rawUrl) {
         return null;
