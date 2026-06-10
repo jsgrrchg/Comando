@@ -75,7 +75,7 @@ describe("command launch helpers", () => {
         );
 
         expect(prepared.args[4]).toBe(
-            '""C:\\Tools\\run.cmd" "A&B" "(group)" "100%" "has^caret" "say \\"hi\\"""',
+            '""C:\\Tools\\run.cmd" "A&B" "(group)" "100"^%"" "has^caret" "say \\"hi\\"""',
         );
     });
 
@@ -105,9 +105,8 @@ describe("command launch helpers", () => {
             const expectedReceivedArgs = [
                 "space value",
                 "A&B",
-                // Percent environment references are expanded by cmd.exe before the batch file receives argv.
-                expandedTempPath,
-                expandedComSpec,
+                "%TEMP%",
+                "%COMSPEC%",
                 "bang!value",
                 "caret^value",
                 'say "hi"',

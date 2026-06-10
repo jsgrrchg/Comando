@@ -214,6 +214,12 @@ function quoteWindowsCmdArgument(value) {
             continue;
         }
 
+        if (character === "%") {
+            escapedValue += `${"\\".repeat(backslashCount)}"^%"`;
+            backslashCount = 0;
+            continue;
+        }
+
         escapedValue += `${"\\".repeat(backslashCount)}${character}`;
         backslashCount = 0;
     }

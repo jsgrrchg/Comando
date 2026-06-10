@@ -34,7 +34,7 @@ describe("script command launch helpers", () => {
                     "/s",
                     "/v:off",
                     "/c",
-                    `""${command}" "run" "build & package" "%TEMP%""`,
+                    `""${command}" "run" "build & package" ""^%"TEMP"^%"""`,
                 ],
                 command: "C:\\Windows\\System32\\cmd.exe",
                 options: {
@@ -72,7 +72,7 @@ describe("script command launch helpers", () => {
         );
 
         expect(prepared.args[4]).toBe(
-            '""C:\\Tools\\run.cmd" "A&B" "(group)" "100%" "has^caret" "say \\"hi\\"""',
+            '""C:\\Tools\\run.cmd" "A&B" "(group)" "100"^%"" "has^caret" "say \\"hi\\"""',
         );
         expect(prepared.options.windowsVerbatimArguments).toBe(true);
     });
