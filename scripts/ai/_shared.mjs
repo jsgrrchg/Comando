@@ -155,3 +155,83 @@ export function resolveFromPath(command) {
 
     return null;
 }
+
+export function prepareCommandForSpawnSync(
+    command,
+    args = [],
+    options = {},
+    launchOptions = {},
+) {
+    const platform = launchOptions.platform ?? process.platform;
+
+    if (platform !== "win32" || !isWindowsBatchCommand(command)) {
+        return {
+            args: [...args],
+            command,
+            options,
+        };
+    }
+
+    return {
+        args: [
+            "/d",
+            "/s",
+            "/v:off",
+            "/c",
+            buildWindowsBatchCommandLine(command, args),
+        ],
+        command: launchOptions.comSpec ?? process.env.ComSpec ?? "cmd.exe",
+        options: withWindowsVerbatimArguments(options),
+    };
+}
+
+export function isWindowsBatchCommand(command) {
+    const extension = path.win32.extname(command).toLowerCase();
+    return extension === ".cmd" || extension === ".bat";
+}
+
+function buildWindowsBatchCommandLine(command, args) {
+    const innerCommandLine = [command, ...args]
+        .map(quoteWindowsCmdArgument)
+        .join(" ");
+
+    return `"${innerCommandLine}"`;
+}
+
+function quoteWindowsCmdArgument(value) {
+    let escapedValue = "";
+    let backslashCount = 0;
+
+    for (const character of String(value)) {
+        if (character === "\\") {
+            backslashCount += 1;
+            continue;
+        }
+
+        if (character === '"') {
+            escapedValue += `${"\\".repeat(backslashCount * 2 + 1)}"`;
+            backslashCount = 0;
+            continue;
+        }
+
+        if (character === "%") {
+            escapedValue += `${"\\".repeat(backslashCount)}"^%"`;
+            backslashCount = 0;
+            continue;
+        }
+
+        escapedValue += `${"\\".repeat(backslashCount)}${character}`;
+        backslashCount = 0;
+    }
+
+    escapedValue += "\\".repeat(backslashCount * 2);
+
+    return `"${escapedValue}"`;
+}
+
+function withWindowsVerbatimArguments(options) {
+    return {
+        ...options,
+        windowsVerbatimArguments: true,
+    };
+}

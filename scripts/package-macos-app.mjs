@@ -11,6 +11,7 @@ import {
     ensureDir,
     isExecutableFile,
     isFile,
+    prepareCommandForSpawnSync,
     relativeToRepo,
     repoRoot,
     resolveFromPath,
@@ -1290,7 +1291,7 @@ function run(command, args, options = {}) {
     ]
         .filter(Boolean)
         .join(path.delimiter);
-    const result = spawnSync(command, args, {
+    const prepared = prepareCommandForSpawnSync(command, args, {
         cwd: repoRoot,
         env: {
             ...process.env,
@@ -1300,6 +1301,11 @@ function run(command, args, options = {}) {
         stdio: "inherit",
         ...spawnOptions,
     });
+    const result = spawnSync(
+        prepared.command,
+        prepared.args,
+        prepared.options,
+    );
 
     if (result.error) {
         throw result.error;

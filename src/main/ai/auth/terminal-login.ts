@@ -99,7 +99,16 @@ export function quoteShellArg(value: string): string {
 }
 
 export function quoteWindowsArg(value: string): string {
-    return `"${value.replace(/"/g, '\\"')}"`;
+    return `"${escapeWindowsBatchArgument(value)}"`;
+}
+
+function escapeWindowsBatchArgument(value: string): string {
+    return value
+        .replace(/%/g, "%%")
+        .replace(/\^/g, "^^")
+        .replace(/!/g, "^!")
+        .replace(/"/g, '^"')
+        .replace(/([&|<>()])/g, "^$1");
 }
 
 function spawnDetached(

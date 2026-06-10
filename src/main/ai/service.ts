@@ -56,6 +56,7 @@ import type {
     SecretStoreGateway,
 } from "@main/ai/secret-store";
 import { debugBenignError } from "@main/observability/logging";
+import { prepareCommandForSpawn } from "@main/shell/command-launch";
 
 import {
     createEmptyAiSessionSnapshot,
@@ -2178,14 +2179,23 @@ export class AiService {
             );
         }
 
-        const child = spawn(
+        const runtimeSpawn = prepareCommandForSpawn(
             resolvedRuntime.executable,
-            [...resolvedRuntime.args],
+            resolvedRuntime.args,
             {
                 cwd,
                 env: resolvedRuntime.env,
-                stdio: ["pipe", "pipe", "pipe"],
+                stdio: ["pipe", "pipe", "pipe"] as [
+                    "pipe",
+                    "pipe",
+                    "pipe",
+                ],
             },
+        );
+        const child = spawn(
+            runtimeSpawn.command,
+            runtimeSpawn.args,
+            runtimeSpawn.options,
         );
         const stderrChunks: string[] = [];
         const stderrHandler = (chunk: Buffer | string) => {
@@ -2197,6 +2207,17 @@ export class AiService {
             }
         };
         child.stderr.on("data", stderrHandler);
+        let removeSpawnErrorHandler = () => {};
+        const spawnErrorPromise = new Promise<never>((_, reject) => {
+            const spawnErrorHandler = (error: Error) => {
+                debugBenignError("ai.service.runtimeAuth.process", error);
+                reject(error);
+            };
+            child.once("error", spawnErrorHandler);
+            removeSpawnErrorHandler = () => {
+                child.off("error", spawnErrorHandler);
+            };
+        });
 
         const client: Client = {
             readTextFile: () => {
@@ -2219,7 +2240,7 @@ export class AiService {
         const connection = new ClientSideConnection(() => client, stream);
 
         try {
-            await action(connection);
+            await Promise.race([action(connection), spawnErrorPromise]);
         } catch (error) {
             const stderrText = getRecentStderrText(stderrChunks);
 
@@ -2235,6 +2256,7 @@ export class AiService {
                 },
             );
         } finally {
+            removeSpawnErrorHandler();
             child.stderr.off("data", stderrHandler);
             child.kill();
             child.stdin.destroy();

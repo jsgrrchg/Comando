@@ -11,6 +11,7 @@ import {
     ensureDir,
     isExecutableFile,
     isFile,
+    prepareCommandForSpawnSync,
     relativeToRepo,
     repoRoot,
     resolveFromPath,
@@ -459,9 +460,12 @@ function run(command, args, options = {}) {
         stdio: "inherit",
         ...options,
     };
-    const result = isCmdShim(command)
-        ? spawnSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", command, ...args], spawnOptions)
-        : spawnSync(command, args, spawnOptions);
+    const prepared = prepareCommandForSpawnSync(command, args, spawnOptions);
+    const result = spawnSync(
+        prepared.command,
+        prepared.args,
+        prepared.options,
+    );
 
     if (result.error) {
         throw result.error;
@@ -500,8 +504,4 @@ function resolvePythonBinary() {
     }
 
     return null;
-}
-
-function isCmdShim(command) {
-    return /\.cmd$|\.bat$/i.test(command);
 }
