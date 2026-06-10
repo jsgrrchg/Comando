@@ -577,11 +577,26 @@ describe("GitService", () => {
     it("runs preflight checks before committing", async () => {
         const rootPath = createGitRepositoryFixture();
         const isolatedHome = createGitRepositoryFixture();
-        const previousHome = process.env.HOME;
-        const previousXdgConfigHome = process.env.XDG_CONFIG_HOME;
+        const previousEnv = snapshotEnv([
+            "GIT_AUTHOR_EMAIL",
+            "GIT_AUTHOR_NAME",
+            "GIT_COMMITTER_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_CONFIG_NOSYSTEM",
+            "HOME",
+            "USERPROFILE",
+            "XDG_CONFIG_HOME",
+        ]);
 
         process.env.HOME = isolatedHome;
+        process.env.USERPROFILE = isolatedHome;
         process.env.XDG_CONFIG_HOME = path.join(isolatedHome, ".config");
+        process.env.GIT_CONFIG_NOSYSTEM = "1";
+        delete process.env.GIT_AUTHOR_EMAIL;
+        delete process.env.GIT_AUTHOR_NAME;
+        delete process.env.GIT_COMMITTER_EMAIL;
+        delete process.env.GIT_COMMITTER_NAME;
+        fs.writeFileSync(path.join(isolatedHome, ".gitconfig"), "", "utf8");
 
         try {
             git(rootPath, ["init", "-b", "main"]);
@@ -610,8 +625,7 @@ describe("GitService", () => {
                 service.commit(rootPath, "without staging"),
             ).rejects.toThrow("Stage at least one change before committing.");
         } finally {
-            process.env.HOME = previousHome;
-            process.env.XDG_CONFIG_HOME = previousXdgConfigHome;
+            restoreEnv(previousEnv);
         }
     });
 });
@@ -641,5 +655,21 @@ function git(cwd: string, args: readonly string[]): void {
                 .filter(Boolean)
                 .join("\n"),
         );
+    }
+}
+
+function snapshotEnv(
+    names: readonly string[],
+): ReadonlyMap<string, string | undefined> {
+    return new Map(names.map((name) => [name, process.env[name]]));
+}
+
+function restoreEnv(snapshot: ReadonlyMap<string, string | undefined>): void {
+    for (const [name, value] of snapshot) {
+        if (typeof value === "string") {
+            process.env[name] = value;
+        } else {
+            delete process.env[name];
+        }
     }
 }

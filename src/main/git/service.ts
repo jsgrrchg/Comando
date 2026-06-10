@@ -936,7 +936,7 @@ function collectNumstatRecords(
 }
 
 function createBackgroundSafeGit(rootPath: string) {
-    return createGit(rootPath).env({ GIT_OPTIONAL_LOCKS: "0" });
+    return createGit(rootPath).env("GIT_OPTIONAL_LOCKS", "0");
 }
 
 function createGit(rootPath: string) {
@@ -951,6 +951,7 @@ function createGit(rootPath: string) {
     }
 
     return simpleGit(rootPath).env({
+        ...process.env,
         PATH: pathEntries.join(path.delimiter),
     });
 }
