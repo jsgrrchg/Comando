@@ -947,7 +947,10 @@ function mergeProjectInvalidationRelativePaths(
 }
 
 function createBackgroundSafeGit(rootPath: string) {
-    return simpleGit(rootPath).env({ GIT_OPTIONAL_LOCKS: "0" });
+    return simpleGit(rootPath).env({
+        ...process.env,
+        GIT_OPTIONAL_LOCKS: "0",
+    });
 }
 
 function getDirectoryBadge(
