@@ -873,7 +873,9 @@ function resolveClaudeBinary(
     const configuredPath = settings.binaryPath?.trim() ?? "";
     const appRoot = options.appRoot ?? getAppRoot(options.currentFilePath);
     const packagedResourcesPath =
-        options.packagedResourcesPath ?? getPackagedResourcesPath();
+        options.packagedResourcesPath === undefined
+            ? getPackagedResourcesPath()
+            : options.packagedResourcesPath;
     const debugMode =
         options.debugMode ?? process.env.NODE_ENV !== "production";
     const bundledPath = getBundledClaudeCandidate(
