@@ -177,22 +177,15 @@ describe("Claude setup", () => {
         }
     });
 
-    it("resolves Claude with generic packaged embedded Node and vendor entry", () => {
+    it("resolves Claude with packaged embedded Node and vendor entry", () => {
         const tempRoot = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-claude-packaged-generic-"),
         );
         const packagedResourcesPath = path.join(tempRoot, "packaged");
 
         try {
-            const packagedNode = writeTestExecutable(
-                path.join(
-                    packagedResourcesPath,
-                    "ai",
-                    "embedded",
-                    "node",
-                    "bin",
-                ),
-                getNodeExecutableName(),
+            const packagedNode = writePackagedClaudeNodeFixture(
+                packagedResourcesPath,
             );
             const packagedEntry = path.join(
                 packagedResourcesPath,
@@ -744,4 +737,26 @@ function createFakeSecretStore(
 
 function getNodeExecutableName(): string {
     return process.platform === "win32" ? "node.exe" : "node";
+}
+
+function writePackagedClaudeNodeFixture(packagedResourcesPath: string): string {
+    const nodeDirectory =
+        process.platform === "darwin"
+            ? path.join(
+                  packagedResourcesPath,
+                  "ai",
+                  "embedded",
+                  "node",
+                  `darwin-${process.arch}`,
+                  "bin",
+              )
+            : path.join(
+                  packagedResourcesPath,
+                  "ai",
+                  "embedded",
+                  "node",
+                  "bin",
+              );
+
+    return writeTestExecutable(nodeDirectory, getNodeExecutableName());
 }

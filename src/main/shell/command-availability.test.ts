@@ -90,4 +90,3 @@ function createTempDir(): string {
     tempDirs.push(tempDir);
     return tempDir;
 }
-

@@ -32,6 +32,7 @@ import {
 } from "./worktrees";
 import { getGitFileDiff } from "./diff";
 import { getGitCommitDetail, listGitHistory } from "./history";
+import { createSafeGitEnvironment } from "./environment";
 import { buildRuntimePathEntries } from "../ai/runtime-env";
 
 export interface GitServiceOptions {
@@ -950,8 +951,9 @@ function createGit(rootPath: string) {
         return simpleGit(rootPath);
     }
 
-    return simpleGit(rootPath).env({
-        ...process.env,
-        PATH: pathEntries.join(path.delimiter),
-    });
+    return simpleGit(rootPath).env(
+        createSafeGitEnvironment({
+            PATH: pathEntries.join(path.delimiter),
+        }),
+    );
 }

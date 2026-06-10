@@ -424,4 +424,3 @@ function normalizePathForComparison(value: string | null | undefined): string {
 
     return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
-
