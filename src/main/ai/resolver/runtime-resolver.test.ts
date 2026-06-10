@@ -167,46 +167,53 @@ describe("resolveCodexRuntime", () => {
     it.runIf(process.platform === "darwin")(
         "uses the packaged architecture-specific bundled binary on macOS",
         () => {
-        const tempRoot = fs.mkdtempSync(
-            path.join(os.tmpdir(), "comando-codex-packaged-"),
-        );
-        const packagedResourcesPath = path.join(tempRoot, "packaged");
-
-        try {
-            delete process.env.COMANDO_CODEX_ACP_BIN;
-            process.env.PATH = "";
-
-            const packagedBinary = path.join(
-                packagedResourcesPath,
-                "ai",
-                "binaries",
-                `darwin-${process.arch}`,
-                getCodexBundledExecutableName(),
+            const tempRoot = fs.mkdtempSync(
+                path.join(os.tmpdir(), "comando-codex-packaged-"),
             );
-            fs.mkdirSync(path.dirname(packagedBinary), { recursive: true });
-            fs.writeFileSync(packagedBinary, "#!/bin/sh\nexit 0\n", "utf8");
-            fs.chmodSync(packagedBinary, 0o755);
+            const packagedResourcesPath = path.join(tempRoot, "packaged");
 
-            const resolved = resolveCodexRuntime(
-                {
-                    authMethod: null,
-                    binaryPath: null,
-                    hasCodexApiKey: false,
-                    hasOpenAiApiKey: false,
-                },
-                {
-                    allowPathFallback: false,
-                    appRoot: tempRoot,
+            try {
+                delete process.env.COMANDO_CODEX_ACP_BIN;
+                process.env.PATH = "";
+
+                const packagedBinary = path.join(
                     packagedResourcesPath,
-                },
-            );
+                    "ai",
+                    "binaries",
+                    `darwin-${process.arch}`,
+                    getCodexBundledExecutableName(),
+                );
+                fs.mkdirSync(path.dirname(packagedBinary), {
+                    recursive: true,
+                });
+                fs.writeFileSync(
+                    packagedBinary,
+                    "#!/bin/sh\nexit 0\n",
+                    "utf8",
+                );
+                fs.chmodSync(packagedBinary, 0o755);
 
-            expect(resolved.executable).toBe(packagedBinary);
-            expect(resolved.status.source).toBe("bundled");
-        } finally {
-            fs.rmSync(tempRoot, { force: true, recursive: true });
-        }
-    });
+                const resolved = resolveCodexRuntime(
+                    {
+                        authMethod: null,
+                        binaryPath: null,
+                        hasCodexApiKey: false,
+                        hasOpenAiApiKey: false,
+                    },
+                    {
+                        allowPathFallback: false,
+                        appRoot: tempRoot,
+                        packagedResourcesPath,
+                    },
+                );
+
+                expect(resolved.executable).toBe(packagedBinary);
+                expect(resolved.status.source).toBe("bundled");
+            } finally {
+                fs.rmSync(tempRoot, { force: true, recursive: true });
+            }
+        },
+    );
 
     it("marks codex as incompatible when only modern CLI exists", () => {
         const tempDir = fs.mkdtempSync(
