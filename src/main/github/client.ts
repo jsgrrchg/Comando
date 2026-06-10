@@ -76,6 +76,7 @@ import type {
 // Skip per-commit stats enrichment for PRs above this size to avoid
 // flooding the GitHub API with N detail requests for very large PRs.
 const PR_COMMIT_STATS_LIMIT = 50;
+const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
 
 export type GitHubFetch = (
     input: string | URL,
@@ -84,6 +85,7 @@ export type GitHubFetch = (
 
 interface GitHubApiClientOptions {
     readonly fetch?: GitHubFetch;
+    readonly requestTimeoutMs?: number;
     readonly token: string;
 }
 
@@ -389,10 +391,13 @@ export class GitHubApiError extends Error {
 
 export class GitHubApiClient {
     readonly #fetch: GitHubFetch;
+    readonly #requestTimeoutMs: number;
     readonly #token: string;
 
     constructor(options: GitHubApiClientOptions) {
         this.#fetch = options.fetch ?? fetch;
+        this.#requestTimeoutMs =
+            options.requestTimeoutMs ?? GITHUB_REQUEST_TIMEOUT_MS;
         this.#token = options.token;
     }
 
@@ -1207,25 +1212,29 @@ export class GitHubApiClient {
     ): Promise<void> {
         const host = normalizeGitHubHost(hostInput);
         const url = buildGitHubGraphQlUrl(host);
-        const response = await this.#fetch(url, {
-            body: JSON.stringify({ query, variables }),
-            headers: this.#buildHeaders({ contentType: true }),
-            method: "POST",
-        });
-        const data = (await response.json().catch(() => null)) as
-            | RawGraphQlResponse
-            | null;
-        if (!response.ok) {
-            throw buildGitHubApiError(response, data);
-        }
-        if (data?.errors?.length) {
-            throw new GitHubApiError(
-                data.errors
-                    .map((error) => error.message ?? "GraphQL error")
-                    .join("; "),
-                "forbidden",
-                response.status,
-            );
+        try {
+            const response = await this.#fetchWithTimeout(url, {
+                body: JSON.stringify({ query, variables }),
+                headers: this.#buildHeaders({ contentType: true }),
+                method: "POST",
+            });
+            const data = (await response.json().catch(() => null)) as
+                | RawGraphQlResponse
+                | null;
+            if (!response.ok) {
+                throw buildGitHubApiError(response, data);
+            }
+            if (data?.errors?.length) {
+                throw new GitHubApiError(
+                    data.errors
+                        .map((error) => error.message ?? "GraphQL error")
+                        .join("; "),
+                    "forbidden",
+                    response.status,
+                );
+            }
+        } catch (error) {
+            throw normalizeGitHubFetchError(error);
         }
     }
 
@@ -1250,7 +1259,7 @@ export class GitHubApiClient {
         }
 
         try {
-            const response = await this.#fetch(url, {
+            const response = await this.#fetchWithTimeout(url, {
                 body:
                     options.body === undefined
                         ? undefined
@@ -1270,11 +1279,7 @@ export class GitHubApiClient {
             if (error instanceof GitHubApiError) {
                 throw error;
             }
-            throw new GitHubApiError(
-                "GitHub could not be reached.",
-                "network_error",
-                null,
-            );
+            throw normalizeGitHubFetchError(error);
         }
     }
 
@@ -1293,7 +1298,7 @@ export class GitHubApiClient {
         }
 
         try {
-            const response = await this.#fetch(url, {
+            const response = await this.#fetchWithTimeout(url, {
                 body:
                     options.body === undefined
                         ? undefined
@@ -1313,11 +1318,27 @@ export class GitHubApiClient {
             if (error instanceof GitHubApiError) {
                 throw error;
             }
-            throw new GitHubApiError(
-                "GitHub could not be reached.",
-                "network_error",
-                null,
-            );
+            throw normalizeGitHubFetchError(error);
+        }
+    }
+
+    async #fetchWithTimeout(
+        input: string | URL,
+        init: RequestInit,
+    ): Promise<Response> {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => {
+            controller.abort();
+        }, this.#requestTimeoutMs);
+        timeout.unref?.();
+
+        try {
+            return await this.#fetch(input, {
+                ...init,
+                signal: controller.signal,
+            });
+        } finally {
+            clearTimeout(timeout);
         }
     }
 
@@ -1358,6 +1379,31 @@ function buildGitHubApiError(response: Response, body: unknown): GitHubApiError 
     }
 
     return new GitHubApiError(message, "unknown", response.status);
+}
+
+function normalizeGitHubFetchError(error: unknown): GitHubApiError {
+    if (error instanceof GitHubApiError) {
+        return error;
+    }
+
+    if (isAbortError(error)) {
+        return new GitHubApiError("GitHub request timed out.", "timeout", null);
+    }
+
+    return new GitHubApiError(
+        "GitHub could not be reached.",
+        "network_error",
+        null,
+    );
+}
+
+function isAbortError(error: unknown): boolean {
+    return (
+        typeof error === "object" &&
+        error !== null &&
+        "name" in error &&
+        error.name === "AbortError"
+    );
 }
 
 function readGitHubErrorMessage(body: unknown): string {
