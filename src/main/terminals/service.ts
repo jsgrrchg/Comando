@@ -1,4 +1,3 @@
-import path from "node:path";
 import { randomUUID } from "node:crypto";
 
 import pty from "node-pty";
@@ -12,6 +11,8 @@ import type {
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
+
+import { resolveTerminalShell } from "./shell";
 
 interface ManagedTerminalSession {
     readonly ownerWindowId: string;
@@ -77,13 +78,13 @@ export class TerminalService {
                   input.worktreeId ?? null,
               )
             : process.cwd();
-        const shell = getDefaultShell(
-            this.#settingsService.loadAppTerminalSettings().windowsShell,
-        );
-        const shellArgs = getDefaultShellArgs(shell);
+        const shell = resolveTerminalShell({
+            windowsShell:
+                this.#settingsService.loadAppTerminalSettings().windowsShell,
+        });
         const cols = normalizeTerminalCols(input.cols);
         const rows = normalizeTerminalRows(input.rows);
-        const ptyProcess = pty.spawn(shell, shellArgs, {
+        const ptyProcess = pty.spawn(shell.command, [...shell.args], {
             cols,
             cwd,
             env: {
@@ -254,45 +255,4 @@ function normalizeTerminalCols(cols: number | null | undefined): number {
 function normalizeTerminalRows(rows: number | null | undefined): number {
     const normalized = Math.floor(rows ?? 34);
     return Number.isFinite(normalized) ? Math.max(4, normalized) : 34;
-}
-
-function getDefaultShell(windowsShell: string): string {
-    if (process.platform === "win32") {
-        switch (windowsShell) {
-            case "cmd":
-                return "cmd.exe";
-            case "powershell":
-                return "powershell.exe";
-            case "pwsh":
-                return "pwsh.exe";
-            case "default":
-            default:
-                return process.env.COMSPEC ?? "powershell.exe";
-        }
-    }
-
-    return (
-        process.env.SHELL ?? (process.platform === "darwin" ? "zsh" : "bash")
-    );
-}
-
-function getDefaultShellArgs(shell: string): string[] {
-    if (process.platform === "win32") {
-        const normalizedShell = shell.toLowerCase();
-        return normalizedShell.includes("powershell") ||
-            path.basename(normalizedShell) === "pwsh.exe"
-            ? ["-NoLogo"]
-            : [];
-    }
-
-    const shellBaseName = path.basename(shell).toLowerCase();
-    if (shellBaseName === "zsh" || shellBaseName === "bash") {
-        return ["-l"];
-    }
-
-    if (shellBaseName === "fish") {
-        return [];
-    }
-
-    return ["-l"];
 }
