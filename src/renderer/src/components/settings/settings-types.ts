@@ -76,6 +76,7 @@ export interface SettingsTerminalState {
     readonly claudeCodeContinueSession: boolean;
     readonly claudeCodeMaxTurns: number;
     readonly claudeCodeAvailable?: boolean | null;
+    readonly pwshAvailable?: boolean | null;
     readonly onTerminalFontFamilyChange?: (value: string) => void;
     readonly onTerminalFontSizeChange?: (value: number) => void;
     readonly onWindowsShellChange?: (

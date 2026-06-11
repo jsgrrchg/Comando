@@ -86,6 +86,7 @@ export function SettingsApp() {
         DEFAULT_APP_TERMINAL_SETTINGS,
     );
     const [isWindows, setIsWindows] = useState(false);
+    const [pwshAvailable, setPwshAvailable] = useState<boolean | null>(null);
     const [runtimeStatuses, setRuntimeStatuses] = useState<
         Record<AiRuntimeId, AiRuntimeStatus | null>
     >({
@@ -162,6 +163,22 @@ export function SettingsApp() {
         void window.comando.getBootstrapSnapshot().then((snapshot) => {
             if (!cancelled) {
                 setIsWindows(snapshot.platform === "win32");
+                if (snapshot.platform === "win32") {
+                    void window.comando
+                        .checkCommandAvailability({ name: "pwsh" })
+                        .then((result) => {
+                            if (!cancelled) {
+                                setPwshAvailable(result.found);
+                            }
+                        })
+                        .catch(() => {
+                            if (!cancelled) {
+                                setPwshAvailable(false);
+                            }
+                        });
+                } else {
+                    setPwshAvailable(null);
+                }
                 document.documentElement.setAttribute(
                     "data-platform",
                     snapshot.platform,
@@ -884,6 +901,7 @@ export function SettingsApp() {
                     updateTerminal({ terminalFontSize: value }),
                 onWindowsShellChange: (value) =>
                     updateTerminal({ windowsShell: value }),
+                pwshAvailable,
                 terminalFontFamily: terminal.terminalFontFamily,
                 terminalFontSize: terminal.terminalFontSize,
                 windowsShell: terminal.windowsShell,

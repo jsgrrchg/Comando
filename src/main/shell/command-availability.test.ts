@@ -81,6 +81,25 @@ describe("checkCommandAvailability", () => {
             path: executablePath,
         });
     });
+
+    it("allows PowerShell 7 availability checks", () => {
+        const binDir = createTempDir();
+        const executablePath = writeTestExecutable(binDir, "pwsh.EXE");
+
+        expect(
+            checkCommandAvailability(
+                { name: "pwsh" },
+                {
+                    env: { PATHEXT: ".EXE" },
+                    pathEntries: [binDir],
+                    platform: "win32",
+                },
+            ),
+        ).toEqual({
+            found: true,
+            path: executablePath,
+        });
+    });
 });
 
 function createTempDir(): string {

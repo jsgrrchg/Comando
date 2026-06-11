@@ -15,6 +15,7 @@ describe("resolveTerminalShell", () => {
         ).toEqual({
             args: [],
             command: "C:\\Windows\\System32\\cmd.exe",
+            fallbackReason: null,
         });
     });
 
@@ -28,6 +29,7 @@ describe("resolveTerminalShell", () => {
         ).toEqual({
             args: ["-NoLogo"],
             command: "powershell.exe",
+            fallbackReason: null,
         });
     });
 
@@ -44,9 +46,25 @@ describe("resolveTerminalShell", () => {
                     platform: "win32",
                     windowsShell,
                 }),
-            ).toEqual({ args, command });
+            ).toEqual({ args, command, fallbackReason: null });
         },
     );
+
+    it("falls back to Windows PowerShell when PowerShell 7 is unavailable", () => {
+        expect(
+            resolveTerminalShell({
+                env: {},
+                isCommandAvailable: (command) => command !== "pwsh",
+                platform: "win32",
+                windowsShell: "pwsh",
+            }),
+        ).toEqual({
+            args: ["-NoLogo"],
+            command: "powershell.exe",
+            fallbackReason:
+                "PowerShell 7 (pwsh) was not found. Falling back to Windows PowerShell.",
+        });
+    });
 
     it("resolves Windows shell args from absolute paths on any host OS", () => {
         expect(
@@ -78,6 +96,7 @@ describe("resolveTerminalShell", () => {
         ).toEqual({
             args: [],
             command: "/opt/homebrew/bin/fish",
+            fallbackReason: null,
         });
         expect(
             resolveTerminalShell({
@@ -88,6 +107,7 @@ describe("resolveTerminalShell", () => {
         ).toEqual({
             args: ["-l"],
             command: "zsh",
+            fallbackReason: null,
         });
         expect(
             resolveTerminalShell({
@@ -98,6 +118,7 @@ describe("resolveTerminalShell", () => {
         ).toEqual({
             args: ["-l"],
             command: "bash",
+            fallbackReason: null,
         });
     });
 });

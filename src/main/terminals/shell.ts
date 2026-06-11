@@ -2,6 +2,7 @@ import path from "node:path";
 
 export interface ResolveTerminalShellInput {
     readonly env?: NodeJS.ProcessEnv;
+    readonly isCommandAvailable?: (command: string) => boolean;
     readonly platform?: NodeJS.Platform;
     readonly windowsShell: string;
 }
@@ -9,38 +10,55 @@ export interface ResolveTerminalShellInput {
 export interface ResolvedTerminalShell {
     readonly args: readonly string[];
     readonly command: string;
+    readonly fallbackReason: string | null;
 }
 
 export function resolveTerminalShell({
     env = process.env,
+    isCommandAvailable,
     platform = process.platform,
     windowsShell,
 }: ResolveTerminalShellInput): ResolvedTerminalShell {
-    const command =
+    const resolved =
         platform === "win32"
-            ? resolveWindowsShell(windowsShell, env)
-            : resolvePosixShell(platform, env);
+            ? resolveWindowsShell(windowsShell, env, isCommandAvailable)
+            : {
+                  command: resolvePosixShell(platform, env),
+                  fallbackReason: null,
+              };
 
     return {
-        args: resolveTerminalShellArgs(command, platform),
-        command,
+        args: resolveTerminalShellArgs(resolved.command, platform),
+        command: resolved.command,
+        fallbackReason: resolved.fallbackReason,
     };
 }
 
 function resolveWindowsShell(
     windowsShell: string,
     env: NodeJS.ProcessEnv,
-): string {
+    isCommandAvailable: ((command: string) => boolean) | undefined,
+): Pick<ResolvedTerminalShell, "command" | "fallbackReason"> {
     switch (windowsShell) {
         case "cmd":
-            return "cmd.exe";
+            return { command: "cmd.exe", fallbackReason: null };
         case "powershell":
-            return "powershell.exe";
+            return { command: "powershell.exe", fallbackReason: null };
         case "pwsh":
-            return "pwsh.exe";
+            if (isCommandAvailable?.("pwsh") === false) {
+                return {
+                    command: "powershell.exe",
+                    fallbackReason:
+                        "PowerShell 7 (pwsh) was not found. Falling back to Windows PowerShell.",
+                };
+            }
+            return { command: "pwsh.exe", fallbackReason: null };
         case "default":
         default:
-            return env.COMSPEC ?? env.ComSpec ?? "powershell.exe";
+            return {
+                command: env.COMSPEC ?? env.ComSpec ?? "powershell.exe",
+                fallbackReason: null,
+            };
     }
 }
 

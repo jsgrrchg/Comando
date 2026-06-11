@@ -11,6 +11,7 @@ import type {
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
+import { checkCommandAvailability } from "@main/shell/command-availability";
 
 import { resolveTerminalShell } from "./shell";
 
@@ -79,6 +80,8 @@ export class TerminalService {
               )
             : process.cwd();
         const shell = resolveTerminalShell({
+            isCommandAvailable: (command) =>
+                checkCommandAvailability({ name: command }).found,
             windowsShell:
                 this.#settingsService.loadAppTerminalSettings().windowsShell,
         });

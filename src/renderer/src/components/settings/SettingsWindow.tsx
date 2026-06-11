@@ -2090,6 +2090,8 @@ export function TerminalContent({
         "PowerShell 7",
         "pwsh",
         "PowerShell 7 (pwsh) requires PowerShell 7 to be installed on this machine.",
+        "PowerShell 7 (pwsh) was not found. New terminals will fall back to Windows PowerShell.",
+        "Using PowerShell 7 for new terminals.",
         state.windowsShell,
     ] as const;
     const showWindowsShellRow =
@@ -2221,7 +2223,11 @@ export function TerminalContent({
                             />
                         }
                     />
-                    {showWindowsShellRow ? <PwshRequirementBanner /> : null}
+                    {showWindowsShellRow && state.windowsShell === "pwsh" ? (
+                        <PwshRequirementBanner
+                            available={state.pwshAvailable ?? null}
+                        />
+                    ) : null}
                 </>
             ) : null}
             <SearchableRow
@@ -2320,14 +2326,29 @@ export function TerminalContent({
     );
 }
 
-function PwshRequirementBanner() {
+function PwshRequirementBanner({
+    available,
+}: {
+    readonly available: boolean | null;
+}) {
+    const message =
+        available === false
+            ? "PowerShell 7 (pwsh) was not found. New terminals will fall back to Windows PowerShell."
+            : available === true
+              ? "Using PowerShell 7 for new terminals."
+              : "PowerShell 7 (pwsh) requires PowerShell 7 to be installed on this machine. If it is missing, new terminals will fall back to Windows PowerShell.";
+
     return (
         <div
             style={{
                 backgroundColor:
-                    "color-mix(in srgb, var(--color-accent) 8%, transparent)",
+                    available === false
+                        ? "color-mix(in srgb, var(--diff-warn) 12%, transparent)"
+                        : "color-mix(in srgb, var(--color-accent) 8%, transparent)",
                 border:
-                    "1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border))",
+                    available === false
+                        ? "1px solid color-mix(in srgb, var(--diff-warn) 32%, var(--color-border))"
+                        : "1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border))",
                 borderRadius: 8,
                 color: "var(--color-text-secondary)",
                 fontFamily: "var(--font-mono)",
@@ -2337,8 +2358,7 @@ function PwshRequirementBanner() {
                 padding: "8px 10px",
             }}
         >
-            PowerShell 7 (pwsh) requires PowerShell 7 to be installed on this
-            machine.
+            {message}
         </div>
     );
 }

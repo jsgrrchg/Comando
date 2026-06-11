@@ -9,7 +9,7 @@ import type {
 import { buildRuntimePathEntries } from "@main/ai/runtime-env";
 import { debugBenignError } from "@main/observability/logging";
 
-const ALLOWED_COMMANDS = new Set(["claude"]);
+const ALLOWED_COMMANDS = new Set(["claude", "pwsh"]);
 const SAFE_COMMAND_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
 const DEFAULT_WINDOWS_PATHEXT = ".EXE;.CMD;.BAT;.COM";
 

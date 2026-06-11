@@ -166,6 +166,7 @@ describe("SettingsWindow terminal settings", () => {
         const windowsMarkup = renderTerminal(
             createTerminalState({
                 isWindows: true,
+                pwshAvailable: null,
                 windowsShell: "pwsh",
             }),
         );
@@ -175,6 +176,9 @@ describe("SettingsWindow terminal settings", () => {
         expect(windowsMarkup).toContain("PowerShell 7 (pwsh)");
         expect(windowsMarkup).toContain(
             "PowerShell 7 (pwsh) requires PowerShell 7 to be installed on this machine.",
+        );
+        expect(windowsMarkup).toContain(
+            "new terminals will fall back to Windows PowerShell",
         );
 
         const nonWindowsMarkup = renderTerminal(
@@ -186,6 +190,20 @@ describe("SettingsWindow terminal settings", () => {
 
         expect(nonWindowsMarkup).not.toContain("Windows shell");
         expect(nonWindowsMarkup).not.toContain("PowerShell 7 (pwsh)");
+    });
+
+    it("renders a fallback diagnostic when PowerShell 7 is selected but missing", () => {
+        const markup = renderTerminal(
+            createTerminalState({
+                isWindows: true,
+                pwshAvailable: false,
+                windowsShell: "pwsh",
+            }),
+        );
+
+        expect(markup).toContain(
+            "PowerShell 7 (pwsh) was not found. New terminals will fall back to Windows PowerShell.",
+        );
     });
 
     it("renders the selected Claude Code model label", () => {
