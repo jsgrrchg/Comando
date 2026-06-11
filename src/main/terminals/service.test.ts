@@ -74,7 +74,7 @@ describe("TerminalService", () => {
             "window-1",
         );
 
-        service.resizeSession(session.sessionId, 82, 18);
+        service.resizeSession("window-1", session.sessionId, 82, 18);
         const reusedSession = service.createSession(
             {
                 cols: 120,
@@ -94,8 +94,126 @@ describe("TerminalService", () => {
             sessionId: session.sessionId,
         });
 
-        service.resizeSession(session.sessionId, 82, 18);
+        service.resizeSession("window-1", session.sessionId, 82, 18);
         expect(ptyMocks.resize).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores terminal mutations from a different owner window", () => {
+        const service = new TerminalService({
+            onData: vi.fn(),
+            onExit: vi.fn(),
+            projectService: createProjectService(),
+            settingsService: createSettingsService(),
+        });
+
+        const session = service.createSession(
+            {
+                cols: 120,
+                projectId: "project-1",
+                rows: 24,
+                terminalId: "terminal-1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        service.writeInput("window-2", session.sessionId, "pwd\r");
+        service.resizeSession("window-2", session.sessionId, 82, 18);
+        service.closeSessionOrOwnedTerminal("window-2", session.sessionId);
+
+        expect(ptyMocks.write).not.toHaveBeenCalled();
+        expect(ptyMocks.resize).not.toHaveBeenCalled();
+        expect(ptyMocks.kill).not.toHaveBeenCalled();
+
+        const reusedSession = service.createSession(
+            {
+                cols: 120,
+                projectId: "project-1",
+                rows: 24,
+                terminalId: "terminal-1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        expect(reusedSession).toMatchObject({
+            cols: 120,
+            rows: 24,
+            sessionId: session.sessionId,
+        });
+    });
+
+    it("closes a terminal session id only from its owner window", () => {
+        const service = new TerminalService({
+            onData: vi.fn(),
+            onExit: vi.fn(),
+            projectService: createProjectService(),
+            settingsService: createSettingsService(),
+        });
+
+        const session = service.createSession(
+            {
+                cols: 120,
+                projectId: "project-1",
+                rows: 24,
+                terminalId: "terminal-1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        service.closeSessionOrOwnedTerminal("window-2", session.sessionId);
+        expect(ptyMocks.kill).not.toHaveBeenCalled();
+
+        service.closeSessionOrOwnedTerminal("window-1", session.sessionId);
+        expect(ptyMocks.kill).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not reinterpret a foreign session id as an owned terminal id", () => {
+        const service = new TerminalService({
+            onData: vi.fn(),
+            onExit: vi.fn(),
+            projectService: createProjectService(),
+            settingsService: createSettingsService(),
+        });
+
+        service.createSession(
+            {
+                cols: 120,
+                preferredSessionId: "shared-id",
+                projectId: "project-1",
+                rows: 24,
+                terminalId: "terminal-1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        const ownedSession = service.createSession(
+            {
+                cols: 120,
+                projectId: "project-1",
+                rows: 24,
+                terminalId: "shared-id",
+                worktreeId: null,
+            },
+            "window-2",
+        );
+
+        service.closeSessionOrOwnedTerminal("window-2", "shared-id");
+        expect(ptyMocks.kill).not.toHaveBeenCalled();
+
+        const reusedSession = service.createSession(
+            {
+                cols: 120,
+                projectId: "project-1",
+                rows: 24,
+                terminalId: "shared-id",
+                worktreeId: null,
+            },
+            "window-2",
+        );
+
+        expect(reusedSession.sessionId).toBe(ownedSession.sessionId);
     });
 
     it("uses the configured Windows PowerShell shell for new sessions", () => {

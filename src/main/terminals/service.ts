@@ -143,12 +143,17 @@ export class TerminalService {
         return session;
     }
 
-    writeInput(sessionId: string, data: string): void {
-        this.#sessions.get(sessionId)?.ptyProcess.write(data);
+    writeInput(ownerWindowId: string, sessionId: string, data: string): void {
+        this.#getOwnedSession(ownerWindowId, sessionId)?.ptyProcess.write(data);
     }
 
-    resizeSession(sessionId: string, cols: number, rows: number): void {
-        const session = this.#sessions.get(sessionId);
+    resizeSession(
+        ownerWindowId: string,
+        sessionId: string,
+        cols: number,
+        rows: number,
+    ): void {
+        const session = this.#getOwnedSession(ownerWindowId, sessionId);
         if (!session) {
             return;
         }
@@ -192,8 +197,11 @@ export class TerminalService {
     }
 
     closeSessionOrOwnedTerminal(ownerWindowId: string, id: string): void {
-        if (this.#sessions.has(id)) {
-            this.closeSession(id);
+        const session = this.#sessions.get(id);
+        if (session) {
+            if (session.ownerWindowId === ownerWindowId) {
+                this.closeSession(id);
+            }
             return;
         }
 
@@ -203,6 +211,18 @@ export class TerminalService {
         if (sessionId) {
             this.closeSession(sessionId);
         }
+    }
+
+    #getOwnedSession(
+        ownerWindowId: string,
+        sessionId: string,
+    ): ManagedTerminalSession | null {
+        const session = this.#sessions.get(sessionId);
+        if (!session || session.ownerWindowId !== ownerWindowId) {
+            return null;
+        }
+
+        return session;
     }
 
     close(): void {

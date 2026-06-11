@@ -1657,14 +1657,21 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.writeTerminalInput,
-        (_event, input: WriteTerminalInput) => {
-            options.terminalService.writeInput(input.sessionId, input.data);
+        (event, input: WriteTerminalInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            options.terminalService.writeInput(
+                context.windowId,
+                input.sessionId,
+                input.data,
+            );
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.resizeTerminalSession,
-        (_event, input: ResizeTerminalSessionInput) => {
+        (event, input: ResizeTerminalSessionInput) => {
+            const context = requireWindowContext(event.sender, "main");
             options.terminalService.resizeSession(
+                context.windowId,
                 input.sessionId,
                 input.cols,
                 input.rows,
