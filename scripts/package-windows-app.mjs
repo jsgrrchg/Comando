@@ -7,6 +7,7 @@ import {
     verifyPackagedWindowsUpdaterChannel,
     verifyWindowsReleaseArtifacts,
 } from "./windows-release-metadata.mjs";
+import { resolveWindowsPackagingPreflight } from "./windows-packaging-preflight.mjs";
 import {
     claudeVendorDir,
     codexBundledBinary,
@@ -19,7 +20,6 @@ import {
     prepareCommandForSpawnSync,
     relativeToRepo,
     repoRoot,
-    resolveFromPath,
     resetDir,
 } from "./ai/_shared.mjs";
 
@@ -45,20 +45,7 @@ const windowsIconPath = path.join(repoRoot, "resources", "icons", "windows.ico")
 const packageJson = readJson(path.join(repoRoot, "package.json"));
 const productName = packageJson.build?.productName ?? packageJson.name ?? "Comando";
 const appVersion = packageJson.version;
-const electronBuilderCli = path.join(
-    repoRoot,
-    "node_modules",
-    "electron-builder",
-    "cli.js",
-);
-const electronBuilderInstallAppDepsCli = path.join(
-    repoRoot,
-    "node_modules",
-    "electron-builder",
-    "install-app-deps.js",
-);
 const nodeBinDir = path.dirname(process.execPath);
-const pnpmCommand = resolveRequiredCommand("pnpm.cmd");
 
 if (process.platform !== "win32") {
     throw new Error("The Windows packaging workflow can only run on Windows.");
@@ -69,14 +56,22 @@ main();
 function main() {
     const electronBuilderArgs = resolveElectronBuilderArgs(process.argv.slice(2));
     const targetArch = resolveTargetArch(electronBuilderArgs);
-    const toolchainEnv = resolveWindowsBuildEnv();
+    const preflight = resolveWindowsPackagingPreflight({
+        nodeBinDir,
+        relativePath: relativeToRepo,
+        repoRoot,
+        targetArch,
+    });
+    const toolchainEnv = preflight.toolchainEnv;
+
+    console.log(`[package:win] Preflight passed for ${targetArch}.`);
 
     console.log("[package:win] Building Electron production bundles.");
     prepareWorkspace();
-    run(pnpmCommand, ["run", "build"]);
+    run(preflight.pnpmCommand, ["run", "build"]);
 
     console.log(`[package:win] Rebuilding native modules for ${targetArch}.`);
-    rebuildNativeModules(targetArch, toolchainEnv);
+    rebuildNativeModules(targetArch, toolchainEnv, preflight);
 
     console.log(`[package:win] Staging Windows AI payload for ${targetArch}.`);
     stageWindowsAiPayload(targetArch);
@@ -85,17 +80,22 @@ function main() {
     console.log(
         `[package:win] Packaging Windows app with ${electronBuilderArgs.join(" ")}.`,
     );
-    packageWindowsApp(electronBuilderArgs, targetArch, toolchainEnv);
+    packageWindowsApp(electronBuilderArgs, targetArch, toolchainEnv, preflight);
 }
 
-function packageWindowsApp(electronBuilderArgs, targetArch, toolchainEnv) {
+function packageWindowsApp(
+    electronBuilderArgs,
+    targetArch,
+    toolchainEnv,
+    preflight,
+) {
     const unpackedAppDir = resolveUnpackedAppDir(targetArch);
     const dirArgs = withoutPublishArgs([
         ...electronBuilderArgs.filter((arg) => arg !== "--dir"),
         "--dir",
     ]);
 
-    run(process.execPath, [electronBuilderCli, ...dirArgs], {
+    run(process.execPath, [preflight.electronBuilderCli, ...dirArgs], {
         env: toolchainEnv,
     });
 
@@ -121,7 +121,7 @@ function packageWindowsApp(electronBuilderArgs, targetArch, toolchainEnv) {
         relativePath: relativeToRepo,
         targetArch,
     });
-    patchWindowsExecutableIcon(unpackedAppDir);
+    patchWindowsExecutableIcon(unpackedAppDir, preflight);
 
     if (electronBuilderArgs.includes("--dir")) {
         return;
@@ -130,7 +130,7 @@ function packageWindowsApp(electronBuilderArgs, targetArch, toolchainEnv) {
     run(
         process.execPath,
         [
-            electronBuilderCli,
+            preflight.electronBuilderCli,
             ...electronBuilderArgs,
             "--config.win.target.target=nsis",
             `--config.win.target.arch=${targetArch}`,
@@ -212,9 +212,8 @@ function withoutPublishArgs(args) {
     return result;
 }
 
-function patchWindowsExecutableIcon(unpackedAppDir) {
+function patchWindowsExecutableIcon(unpackedAppDir, preflight) {
     const executablePath = path.join(unpackedAppDir, "Comando.exe");
-    const rceditPath = resolveBundledRcedit();
 
     if (!isExecutableFile(executablePath)) {
         throw new Error(
@@ -231,7 +230,7 @@ function patchWindowsExecutableIcon(unpackedAppDir) {
     console.log(
         `[package:win] Applying ${relativeToRepo(windowsIconPath)} to ${relativeToRepo(executablePath)}.`,
     );
-    run(rceditPath, [executablePath, "--set-icon", windowsIconPath]);
+    run(preflight.rceditPath, [executablePath, "--set-icon", windowsIconPath]);
 }
 
 function verifyPackagedNodePtyPayload(unpackedAppDir, targetArch) {
@@ -263,54 +262,9 @@ function verifyPackagedNodePtyPayload(unpackedAppDir, targetArch) {
     }
 }
 
-function resolveBundledRcedit() {
-    const candidates = findFiles(path.join(repoRoot, "node_modules"), "rcedit.exe");
-
-    for (const candidate of candidates) {
-        if (
-            isExecutableFile(candidate) &&
-            candidate.split(path.sep).includes("electron-winstaller")
-        ) {
-            return candidate;
-        }
-    }
-
-    for (const candidate of candidates) {
-        if (isExecutableFile(candidate)) {
-            return candidate;
-        }
-    }
-
-    throw new Error("Required rcedit.exe was not found in node_modules.");
-}
-
-function findFiles(root, fileName) {
-    if (!fs.existsSync(root)) {
-        return [];
-    }
-
-    const matches = [];
-    const entries = fs.readdirSync(root, { withFileTypes: true });
-
-    for (const entry of entries) {
-        const entryPath = path.join(root, entry.name);
-
-        if (entry.isFile() && entry.name === fileName) {
-            matches.push(entryPath);
-            continue;
-        }
-
-        if (entry.isDirectory()) {
-            matches.push(...findFiles(entryPath, fileName));
-        }
-    }
-
-    return matches;
-}
-
-function rebuildNativeModules(targetArch, extraEnv) {
+function rebuildNativeModules(targetArch, extraEnv, preflight) {
     run(process.execPath, [
-        electronBuilderInstallAppDepsCli,
+        preflight.electronBuilderInstallAppDepsCli,
         "--platform",
         "win32",
         "--arch",
@@ -318,26 +272,6 @@ function rebuildNativeModules(targetArch, extraEnv) {
     ], {
         env: extraEnv,
     });
-}
-
-function resolveWindowsBuildEnv() {
-    const pythonBinary = resolvePythonBinary();
-    const extraEnv = {
-        GYP_MSVS_VERSION: "2022",
-    };
-
-    if (pythonBinary) {
-        extraEnv.PYTHON = pythonBinary;
-        extraEnv.npm_config_python = pythonBinary;
-        extraEnv.PATH = [
-            path.dirname(pythonBinary),
-            process.env.PATH ?? "",
-        ]
-            .filter(Boolean)
-            .join(path.delimiter);
-    }
-
-    return extraEnv;
 }
 
 function stageWindowsAiPayload(targetArch) {
@@ -478,15 +412,6 @@ function pruneClaudeCliArtifacts(nodeModulesRoot) {
     }
 }
 
-function resolveRequiredCommand(command) {
-    const resolved = resolveFromPath(command);
-    if (resolved) {
-        return resolved;
-    }
-
-    throw new Error(`Required command was not found: ${command}`);
-}
-
 function run(command, args, options = {}) {
     const spawnOptions = {
         cwd: repoRoot,
@@ -514,36 +439,6 @@ function run(command, args, options = {}) {
     if (result.status !== 0) {
         process.exit(result.status ?? 1);
     }
-}
-
-function resolvePythonBinary() {
-    const explicit = process.env.PYTHON?.trim();
-    if (explicit && isExecutableFile(explicit)) {
-        return explicit;
-    }
-
-    const pythonFromPath =
-        resolveFromPath("python.exe") ??
-        resolveFromPath("python") ??
-        resolveFromPath("py.exe") ??
-        resolveFromPath("py");
-    if (pythonFromPath && isExecutableFile(pythonFromPath)) {
-        return pythonFromPath;
-    }
-
-    const localPython = path.join(
-        process.env.LOCALAPPDATA ?? "",
-        "Programs",
-        "Python",
-        "Python312",
-        "python.exe",
-    );
-
-    if (isExecutableFile(localPython)) {
-        return localPython;
-    }
-
-    return null;
 }
 
 function readJson(filePath) {

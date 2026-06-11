@@ -143,6 +143,9 @@ jobs:
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
 
+            - name: Build Windows x64 ACP payload
+              run: pnpm run build:windows-acp:x64
+
             - name: Publish Windows x64 artifacts
               run: pnpm run release:win:x64
 
@@ -177,6 +180,9 @@ jobs:
 
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
+
+            - name: Build Windows arm64 ACP payload
+              run: pnpm run build:windows-acp:arm64
 
             - name: Publish Windows arm64 artifacts
               run: pnpm run release:win:arm64
