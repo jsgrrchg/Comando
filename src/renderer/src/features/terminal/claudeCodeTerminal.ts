@@ -130,7 +130,7 @@ export function buildShellCommand(args: readonly string[]): string {
         }
     }
 
-    return `${args.join(" ")}\n`;
+    return `${args.join(" ")}\r`;
 }
 
 export function getSafeClaudeCodeModel(model: string): string | null {

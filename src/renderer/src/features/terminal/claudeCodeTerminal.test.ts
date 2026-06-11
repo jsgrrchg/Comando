@@ -133,7 +133,7 @@ describe("Claude Code terminal launcher", () => {
             transcriptSessionId: "transcript-session-1",
         });
         expect(writeTerminalInputMock).toHaveBeenCalledWith({
-            data: "claude --session-id transcript-session-1\n",
+            data: "claude --session-id transcript-session-1\r",
             sessionId: "pty-terminal-id-1",
         });
         expect(getClaudeCodeTerminalSidebarItemsForTests()).toMatchObject([
@@ -177,7 +177,7 @@ describe("Claude Code terminal launcher", () => {
             transcriptSessionId: null,
         });
         expect(writeTerminalInputMock).toHaveBeenCalledWith({
-            data: "claude --continue\n",
+            data: "claude --continue\r",
             sessionId: "pty-terminal-id-1",
         });
         expect(getClaudeCodeTerminalSidebarItemsForTests()).toMatchObject([
@@ -214,7 +214,7 @@ describe("Claude Code terminal launcher", () => {
 
         expect(writeTerminalInputMock).toHaveBeenCalledWith({
             data:
-                "claude --dangerously-skip-permissions --session-id transcript-session-1 --model claude-sonnet-4-6\n",
+                "claude --dangerously-skip-permissions --session-id transcript-session-1 --model claude-sonnet-4-6\r",
             sessionId: "pty-terminal-id-1",
         });
     });
@@ -250,7 +250,7 @@ describe("Claude Code terminal launcher", () => {
             /Unsafe shell token/,
         );
         expect(buildShellCommand(["claude", "--max-turns", "1"])).toBe(
-            "claude --max-turns 1\n",
+            "claude --max-turns 1\r",
         );
         expect(warnSpy).toHaveBeenCalledTimes(4);
     });
