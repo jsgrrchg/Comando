@@ -3,6 +3,14 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import {
+    buildRceditExecutableMetadataArgs,
+    buildReadWindowsExecutableMetadataPowerShellArgs,
+    createWindowsExecutableMetadataSpec,
+    parseWindowsExecutableMetadataJson,
+    shouldRequireWindowsExecutableSignature,
+    verifyWindowsExecutableMetadataSnapshot,
+} from "./windows-executable-metadata.mjs";
+import {
     ensurePackagedWindowsUpdaterConfig,
     verifyPackagedWindowsUpdaterChannel,
     verifyWindowsReleaseArtifacts,
@@ -45,6 +53,10 @@ const windowsIconPath = path.join(repoRoot, "resources", "icons", "windows.ico")
 const packageJson = readJson(path.join(repoRoot, "package.json"));
 const productName = packageJson.build?.productName ?? packageJson.name ?? "Comando";
 const appVersion = packageJson.version;
+const executableMetadata = createWindowsExecutableMetadataSpec({
+    productName,
+    version: appVersion,
+});
 const nodeBinDir = path.dirname(process.execPath);
 
 if (process.platform !== "win32") {
@@ -121,7 +133,7 @@ function packageWindowsApp(
         relativePath: relativeToRepo,
         targetArch,
     });
-    patchWindowsExecutableIcon(unpackedAppDir, preflight);
+    setAndVerifyWindowsExecutableMetadata(unpackedAppDir, preflight);
 
     if (electronBuilderArgs.includes("--dir")) {
         return;
@@ -212,7 +224,7 @@ function withoutPublishArgs(args) {
     return result;
 }
 
-function patchWindowsExecutableIcon(unpackedAppDir, preflight) {
+function setAndVerifyWindowsExecutableMetadata(unpackedAppDir, preflight) {
     const executablePath = path.join(unpackedAppDir, "Comando.exe");
 
     if (!isExecutableFile(executablePath)) {
@@ -228,9 +240,36 @@ function patchWindowsExecutableIcon(unpackedAppDir, preflight) {
     }
 
     console.log(
-        `[package:win] Applying ${relativeToRepo(windowsIconPath)} to ${relativeToRepo(executablePath)}.`,
+        `[package:win] Applying executable metadata to ${relativeToRepo(executablePath)}.`,
     );
-    run(preflight.rceditPath, [executablePath, "--set-icon", windowsIconPath]);
+    run(
+        preflight.rceditPath,
+        buildRceditExecutableMetadataArgs({
+            executablePath,
+            iconPath: windowsIconPath,
+            metadata: executableMetadata,
+        }),
+    );
+
+    const metadata = parseWindowsExecutableMetadataJson(
+        runCaptured(
+            preflight.powerShellCommand,
+            buildReadWindowsExecutableMetadataPowerShellArgs(executablePath),
+        ),
+    );
+    const requireSignature = shouldRequireWindowsExecutableSignature(process.env);
+    verifyWindowsExecutableMetadataSnapshot({
+        executablePath,
+        expected: executableMetadata,
+        metadata,
+        relativePath: relativeToRepo,
+        requireSignature,
+    });
+    console.log(
+        requireSignature
+            ? `[package:win] Verified executable metadata, icon, and signature for ${relativeToRepo(executablePath)}.`
+            : `[package:win] Verified executable metadata and icon for ${relativeToRepo(executablePath)}.`,
+    );
 }
 
 function verifyPackagedNodePtyPayload(unpackedAppDir, targetArch) {
@@ -439,6 +478,41 @@ function run(command, args, options = {}) {
     if (result.status !== 0) {
         process.exit(result.status ?? 1);
     }
+}
+
+function runCaptured(command, args, options = {}) {
+    const spawnOptions = {
+        cwd: repoRoot,
+        env: {
+            ...process.env,
+            PATH: [nodeBinDir, process.env.PATH ?? ""]
+                .filter(Boolean)
+                .join(path.delimiter),
+            ...options.env,
+        },
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        ...options,
+    };
+    const prepared = prepareCommandForSpawnSync(command, args, spawnOptions);
+    const result = spawnSync(
+        prepared.command,
+        prepared.args,
+        prepared.options,
+    );
+
+    if (result.error) {
+        throw result.error;
+    }
+
+    if (result.status !== 0) {
+        const stderr = result.stderr ? `\n${result.stderr}` : "";
+        throw new Error(
+            `Command failed with exit code ${result.status ?? 1}: ${command}${stderr}`,
+        );
+    }
+
+    return result.stdout;
 }
 
 function readJson(filePath) {

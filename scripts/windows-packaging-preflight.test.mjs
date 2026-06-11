@@ -80,11 +80,13 @@ describe("Windows packaging preflight", () => {
         const repoRoot = createTempDir();
         const nodeBinDir = path.join(repoRoot, "node-bin");
         const pythonDir = path.join(repoRoot, "python");
+        const powerShellDir = path.join(repoRoot, "powershell");
         const vsDir = path.join(repoRoot, "vs");
         const programFilesX86 = path.join(repoRoot, "Program Files (x86)");
 
         writeExecutable(nodeBinDir, "pnpm.cmd");
         writeExecutable(pythonDir, "python.exe");
+        writeExecutable(powerShellDir, "pwsh.exe");
         writeExecutable(vsDir, "vswhere.exe");
         writeFile(path.join(repoRoot, "node_modules", "electron-builder", "cli.js"));
         writeFile(
@@ -101,7 +103,7 @@ describe("Windows packaging preflight", () => {
 
         const preflight = resolveWindowsPackagingPreflight({
             env: {
-                PATH: [pythonDir, vsDir].join(";"),
+                PATH: [pythonDir, powerShellDir, vsDir].join(";"),
                 PATHEXT: ".EXE;.CMD",
                 "ProgramFiles(x86)": programFilesX86,
             },
@@ -112,6 +114,9 @@ describe("Windows packaging preflight", () => {
         });
 
         expect(preflight.pnpmCommand).toBe(path.join(nodeBinDir, "pnpm.cmd"));
+        expect(preflight.powerShellCommand).toBe(
+            path.join(powerShellDir, "pwsh.exe"),
+        );
         expect(preflight.rceditPath).toBe(
             path.join(repoRoot, "node_modules", "rcedit", "bin", "rcedit.exe"),
         );
@@ -130,10 +135,12 @@ describe("Windows packaging preflight", () => {
         const repoRoot = createTempDir();
         const nodeBinDir = path.join(repoRoot, "node-bin");
         const pythonDir = path.join(repoRoot, "python");
+        const powerShellDir = path.join(repoRoot, "powershell");
         const vsDir = path.join(repoRoot, "vs");
 
         writeExecutable(nodeBinDir, "pnpm.cmd");
         writeExecutable(pythonDir, "python.exe");
+        writeExecutable(powerShellDir, "powershell.exe");
         writeExecutable(vsDir, "vswhere.exe");
         writeFile(path.join(repoRoot, "node_modules", "electron-builder", "cli.js"));
         writeFile(
@@ -150,7 +157,7 @@ describe("Windows packaging preflight", () => {
         expect(() =>
             resolveWindowsPackagingPreflight({
                 env: {
-                    PATH: [pythonDir, vsDir].join(";"),
+                    PATH: [pythonDir, powerShellDir, vsDir].join(";"),
                     PATHEXT: ".EXE;.CMD",
                 },
                 nodeBinDir,
@@ -165,9 +172,11 @@ describe("Windows packaging preflight", () => {
         const repoRoot = createTempDir();
         const nodeBinDir = path.join(repoRoot, "node-bin");
         const pythonDir = path.join(repoRoot, "python");
+        const powerShellDir = path.join(repoRoot, "powershell");
 
         writeExecutable(nodeBinDir, "pnpm.cmd");
         writeExecutable(pythonDir, "python.exe");
+        writeExecutable(powerShellDir, "pwsh.exe");
         writeFile(path.join(repoRoot, "node_modules", "electron-builder", "cli.js"));
         writeFile(
             path.join(
@@ -184,7 +193,7 @@ describe("Windows packaging preflight", () => {
         expect(() =>
             resolveWindowsPackagingPreflight({
                 env: {
-                    PATH: pythonDir,
+                    PATH: [pythonDir, powerShellDir].join(";"),
                     PATHEXT: ".EXE;.CMD",
                 },
                 nodeBinDir,

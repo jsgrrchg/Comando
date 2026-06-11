@@ -34,6 +34,16 @@ export function resolveWindowsPackagingPreflight({
 
     const paths = resolveWindowsPackagingPaths(repoRoot);
     const pnpmCommand = requireCommand("pnpm.cmd", resolveCommand);
+    const powerShellCommand =
+        resolveCommand("pwsh.exe") ??
+        resolveCommand("pwsh") ??
+        resolveCommand("powershell.exe") ??
+        resolveCommand("powershell");
+    if (!powerShellCommand) {
+        throw new Error(
+            "Required PowerShell was not found. Install PowerShell or make powershell.exe available on PATH before packaging Windows.",
+        );
+    }
 
     assertFile(paths.electronBuilderCli, {
         label: "electron-builder CLI",
@@ -85,6 +95,7 @@ export function resolveWindowsPackagingPreflight({
         aiPayload,
         electronBuilderCli: paths.electronBuilderCli,
         electronBuilderInstallAppDepsCli: paths.electronBuilderInstallAppDepsCli,
+        powerShellCommand,
         pnpmCommand,
         rceditPath,
         toolchainEnv: createWindowsBuildEnv({
