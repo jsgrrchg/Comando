@@ -185,6 +185,12 @@
         "win": {
             "icon": "resources/icons/windows.ico",
             "signAndEditExecutable": false,
+            "publish": [
+                {
+                    "provider": "github",
+                    "channel": "latest-${arch}"
+                }
+            ],
             "target": [
                 {
                     "target": "nsis",

@@ -3,6 +3,11 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import {
+    ensurePackagedWindowsUpdaterConfig,
+    verifyPackagedWindowsUpdaterChannel,
+    verifyWindowsReleaseArtifacts,
+} from "./windows-release-metadata.mjs";
+import {
     claudeVendorDir,
     codexBundledBinary,
     copyExecutable,
@@ -37,6 +42,9 @@ const packagedNodeBinary = path.join(
 const appAiRoot = path.join(repoRoot, "resources", "ai");
 const bundledClaudeRoot = path.join(appAiRoot, "embedded", "claude-agent-acp");
 const windowsIconPath = path.join(repoRoot, "resources", "icons", "windows.ico");
+const packageJson = readJson(path.join(repoRoot, "package.json"));
+const productName = packageJson.build?.productName ?? packageJson.name ?? "Comando";
+const appVersion = packageJson.version;
 const electronBuilderCli = path.join(
     repoRoot,
     "node_modules",
@@ -92,6 +100,27 @@ function packageWindowsApp(electronBuilderArgs, targetArch, toolchainEnv) {
     });
 
     verifyPackagedNodePtyPayload(unpackedAppDir, targetArch);
+    const appUpdateConfigPath = path.join(
+        unpackedAppDir,
+        "resources",
+        "app-update.yml",
+    );
+    if (
+        ensurePackagedWindowsUpdaterConfig({
+            appUpdateConfigPath,
+            packageJson,
+            targetArch,
+        })
+    ) {
+        console.log(
+            `[package:win] Wrote ${relativeToRepo(appUpdateConfigPath)} for ${targetArch}.`,
+        );
+    }
+    verifyPackagedWindowsUpdaterChannel({
+        appUpdateConfigPath,
+        relativePath: relativeToRepo,
+        targetArch,
+    });
     patchWindowsExecutableIcon(unpackedAppDir);
 
     if (electronBuilderArgs.includes("--dir")) {
@@ -111,6 +140,17 @@ function packageWindowsApp(electronBuilderArgs, targetArch, toolchainEnv) {
         {
             env: toolchainEnv,
         },
+    );
+
+    const artifacts = verifyWindowsReleaseArtifacts({
+        distDir: path.join(repoRoot, "dist"),
+        productName,
+        relativePath: relativeToRepo,
+        targetArch,
+        version: appVersion,
+    });
+    console.log(
+        `[package:win] Verified ${relativeToRepo(artifacts.metadataPath)} for ${targetArch}.`,
     );
 }
 
@@ -504,4 +544,8 @@ function resolvePythonBinary() {
     }
 
     return null;
+}
+
+function readJson(filePath) {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
