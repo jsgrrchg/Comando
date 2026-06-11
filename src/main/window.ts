@@ -18,7 +18,7 @@ export const DESKTOP_TITLE_BAR_HEIGHT = 40;
 
 type WindowKind = "main" | "settings";
 
-const acrylicWindows = new WeakSet<BrowserWindow>();
+const nativeTitleBarOverlayWindows = new WeakSet<BrowserWindow>();
 
 function supportsNativeTitleBarOverlay(): boolean {
     return process.platform === "win32" || process.platform === "linux";
@@ -156,8 +156,8 @@ function createBaseWindow(options: {
         },
     });
 
-    if (isAcrylic) {
-        acrylicWindows.add(window);
+    if (hasNativeTitleBarOverlay) {
+        nativeTitleBarOverlayWindows.add(window);
     }
 
     window.webContents.setWindowOpenHandler(({ url }) => {
@@ -254,7 +254,7 @@ export function refreshWindowsTitleBarOverlays(): void {
     const overlay = resolveDesktopTitleBarOverlay();
 
     forEachLiveWindow((window) => {
-        if (!acrylicWindows.has(window)) return;
+        if (!nativeTitleBarOverlayWindows.has(window)) return;
         try {
             if (window.isDestroyed()) return;
             window.setTitleBarOverlay(overlay);
