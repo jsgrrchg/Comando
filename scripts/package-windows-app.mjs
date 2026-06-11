@@ -10,6 +10,7 @@ import {
     shouldRequireWindowsExecutableSignature,
     verifyWindowsExecutableMetadataSnapshot,
 } from "./windows-executable-metadata.mjs";
+import { verifyPackagedWindowsNativeModules } from "./windows-native-modules.mjs";
 import {
     ensurePackagedWindowsUpdaterConfig,
     verifyPackagedWindowsUpdaterChannel,
@@ -111,7 +112,14 @@ function packageWindowsApp(
         env: toolchainEnv,
     });
 
-    verifyPackagedNodePtyPayload(unpackedAppDir, targetArch);
+    const nativeModules = verifyPackagedWindowsNativeModules({
+        relativePath: relativeToRepo,
+        targetArch,
+        unpackedAppDir,
+    });
+    console.log(
+        `[package:win] Verified packaged native modules: node-pty (${nativeModules.nodePty.length}), better-sqlite3 (${nativeModules.betterSqlite3.length}).`,
+    );
     const appUpdateConfigPath = path.join(
         unpackedAppDir,
         "resources",
@@ -270,35 +278,6 @@ function setAndVerifyWindowsExecutableMetadata(unpackedAppDir, preflight) {
             ? `[package:win] Verified executable metadata, icon, and signature for ${relativeToRepo(executablePath)}.`
             : `[package:win] Verified executable metadata and icon for ${relativeToRepo(executablePath)}.`,
     );
-}
-
-function verifyPackagedNodePtyPayload(unpackedAppDir, targetArch) {
-    const nodePtyArch = targetArch === "arm64" ? "arm64" : "x64";
-    const nodePtyRoot = path.join(
-        unpackedAppDir,
-        "resources",
-        "app.asar.unpacked",
-        "node_modules",
-        "node-pty",
-        "prebuilds",
-        `win32-${nodePtyArch}`,
-    );
-    const requiredFiles = [
-        path.join(nodePtyRoot, "conpty.node"),
-        path.join(nodePtyRoot, "pty.node"),
-        path.join(nodePtyRoot, "conpty", "conpty.dll"),
-        path.join(nodePtyRoot, "conpty", "OpenConsole.exe"),
-        path.join(nodePtyRoot, "winpty-agent.exe"),
-        path.join(nodePtyRoot, "winpty.dll"),
-    ];
-
-    for (const requiredFile of requiredFiles) {
-        if (!isFile(requiredFile) && !isExecutableFile(requiredFile)) {
-            throw new Error(
-                `The packaged node-pty payload is incomplete: ${relativeToRepo(requiredFile)} is missing.`,
-            );
-        }
-    }
 }
 
 function rebuildNativeModules(targetArch, extraEnv, preflight) {
