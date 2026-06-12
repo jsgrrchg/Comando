@@ -50,6 +50,24 @@ const promptMock = vi.fn(() =>
 );
 const closeRuntimeSessionMock = vi.fn(() => Promise.resolve({}));
 const cancelRuntimeSessionMock = vi.fn(() => Promise.resolve({}));
+const setSessionConfigOptionMock = vi.fn(
+    (params: {
+        readonly configId: string;
+        readonly sessionId: string;
+        readonly type?: "boolean";
+        readonly value: boolean | string;
+    }) =>
+        Promise.resolve({
+            configOptions:
+                params.configId === "model" && typeof params.value === "string"
+                    ? createCodexCatalogResponse({
+                          modelId: params.value,
+                      }).configOptions
+                    : [],
+        }),
+);
+const unstableSetSessionModelMock = vi.fn(() => Promise.resolve({}));
+let exposeLegacySetSessionModelMock = true;
 type MockAcpClient = {
     createTerminal: (params: {
         readonly args?: readonly string[];
@@ -188,6 +206,9 @@ vi.mock("@agentclientprotocol/sdk", () => ({
         ) {
             void stream;
             latestClientFactory = clientFactory;
+            if (exposeLegacySetSessionModelMock) {
+                this.unstable_setSessionModel = unstableSetSessionModelMock;
+            }
         }
 
         initialize = initializeMock;
@@ -197,6 +218,8 @@ vi.mock("@agentclientprotocol/sdk", () => ({
         newSession = newSessionMock;
         prompt = promptMock;
         closeSession = closeRuntimeSessionMock;
+        setSessionConfigOption = setSessionConfigOptionMock;
+        unstable_setSessionModel?: typeof unstableSetSessionModelMock;
     },
     PROTOCOL_VERSION: "test-protocol-version",
     ndJsonStream: vi.fn(() => ({})),
@@ -220,6 +243,9 @@ describe("AiWorkerRuntime prepareSession", () => {
         newSessionMock.mockClear();
         closeRuntimeSessionMock.mockClear();
         cancelRuntimeSessionMock.mockClear();
+        setSessionConfigOptionMock.mockClear();
+        unstableSetSessionModelMock.mockClear();
+        exposeLegacySetSessionModelMock = true;
         spawnMock.mockClear();
         spawnedChildren = [];
         latestClientFactory = null;
@@ -779,6 +805,143 @@ describe("AiWorkerRuntime prepareSession", () => {
                     event.payload.update.patch.changes.availableCommands,
             ),
         ).toBe(true);
+    });
+
+    it("sets the model through config options when the runtime advertises a model option", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Model config",
+        });
+        loadSessionMock.mockResolvedValueOnce(
+            createCodexCatalogResponse({
+                modelId: "gpt-5",
+            }),
+        );
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        await runtime.dispatchMethod("ai.setSessionModel", {
+            modelId: "gpt-5-mini",
+            sessionId: "session-1",
+        });
+
+        expect(setSessionConfigOptionMock).toHaveBeenCalledWith({
+            configId: "model",
+            sessionId: "runtime-session-1",
+            value: "gpt-5-mini",
+        });
+        expect(unstableSetSessionModelMock).not.toHaveBeenCalled();
+        expect(
+            hasPatchChangesMatching(
+                emittedEvents,
+                "session-1",
+                (changes) =>
+                    changes.modelId === "gpt-5-mini" &&
+                    readSelectConfigValue(changes.configOptions, "model") ===
+                        "gpt-5-mini",
+            ),
+        ).toBe(true);
+    });
+
+    it("falls back to the legacy model setter when no model config option exists", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Legacy model",
+        });
+        loadSessionMock.mockResolvedValueOnce({
+            configOptions: [],
+            modes: null,
+            models: {
+                availableModels: [
+                    {
+                        description: null,
+                        modelId: "legacy-base",
+                        name: "Legacy base",
+                    },
+                    {
+                        description: null,
+                        modelId: "legacy-pro",
+                        name: "Legacy pro",
+                    },
+                ],
+                currentModelId: "legacy-base",
+            },
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        await runtime.dispatchMethod("ai.setSessionModel", {
+            modelId: "legacy-pro",
+            sessionId: "session-1",
+        });
+
+        expect(setSessionConfigOptionMock).not.toHaveBeenCalled();
+        expect(unstableSetSessionModelMock).toHaveBeenCalledWith({
+            modelId: "legacy-pro",
+            sessionId: "runtime-session-1",
+        });
+        expect(
+            hasPatchChangesMatching(
+                emittedEvents,
+                "session-1",
+                (changes) => changes.modelId === "legacy-pro",
+            ),
+        ).toBe(true);
+    });
+
+    it("reports a clear error when model changes are unsupported", async () => {
+        exposeLegacySetSessionModelMock = false;
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const runtime = createRuntime();
+        const launch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "No model changes",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+
+        await expect(
+            runtime.dispatchMethod("ai.setSessionModel", {
+                modelId: "gpt-5",
+                sessionId: "session-1",
+            }),
+        ).rejects.toThrow("This runtime does not support model changes.");
+        expect(setSessionConfigOptionMock).not.toHaveBeenCalled();
+        expect(unstableSetSessionModelMock).not.toHaveBeenCalled();
     });
 
     it("emits patch updates after the initial snapshot when the session changes", async () => {

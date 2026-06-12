@@ -168,6 +168,13 @@ type ToolSessionNotificationUpdate = Extract<
     { readonly sessionUpdate: "tool_call" | "tool_call_update" }
 >;
 
+type LegacySetSessionModelConnection = {
+    readonly unstable_setSessionModel?: (params: {
+        readonly modelId: string;
+        readonly sessionId: string;
+    }) => Promise<unknown>;
+};
+
 const DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT = 128 * 1024;
 const TERMINAL_PERMISSION_ALLOW_OPTION_ID = "comando.terminal.allow_once";
 const TERMINAL_PERMISSION_REJECT_OPTION_ID = "comando.terminal.reject_once";
@@ -1078,7 +1085,26 @@ export class AiWorkerRuntime {
             throw new Error("The AI session was not found.");
         }
 
-        await liveSession.connection.unstable_setSessionModel({
+        const modelConfig = getModelConfigOption(
+            liveSession.snapshot.configOptions,
+        );
+        if (modelConfig?.type === "select") {
+            await this.#setSessionConfigOption({
+                optionId: modelConfig.id,
+                sessionId: input.sessionId,
+                value: input.modelId,
+            });
+            return;
+        }
+
+        const legacySetSessionModel = getLegacySetSessionModel(
+            liveSession.connection,
+        );
+        if (!legacySetSessionModel) {
+            throw new Error("This runtime does not support model changes.");
+        }
+
+        await legacySetSessionModel({
             modelId: input.modelId,
             sessionId: this.#requireRuntimeSessionId(liveSession),
         });
@@ -4853,6 +4879,16 @@ function setReasoningEffortOnSnapshot(
     }
 
     return nextSnapshot;
+}
+
+function getLegacySetSessionModel(
+    connection: LiveAcpSession["connection"],
+): LegacySetSessionModelConnection["unstable_setSessionModel"] | null {
+    const legacySetSessionModel = (connection as LegacySetSessionModelConnection)
+        .unstable_setSessionModel;
+    return typeof legacySetSessionModel === "function"
+        ? legacySetSessionModel.bind(connection)
+        : null;
 }
 
 function isSamePromptEchoContentBlock(
