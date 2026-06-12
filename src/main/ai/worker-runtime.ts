@@ -75,6 +75,7 @@ import {
     CODEX_ACP_MODEL_KEY,
     CODEX_ACP_PARENT_SESSION_ID_KEY,
     CODEX_ACP_PARENT_THREAD_ID_KEY,
+    CODEX_ACP_PLAN_TITLE_KEY,
     CODEX_ACP_REASONING_EFFORT_KEY,
     CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE,
     CODEX_ACP_STATUS_EVENT_TYPE_KEY,
@@ -2170,6 +2171,10 @@ export class AiWorkerRuntime {
                             priority: entry.priority,
                             status: entry.status,
                         })),
+                        title: readRecordString(
+                            update._meta,
+                            CODEX_ACP_PLAN_TITLE_KEY,
+                        ),
                         updatedAt: now,
                     },
                 };

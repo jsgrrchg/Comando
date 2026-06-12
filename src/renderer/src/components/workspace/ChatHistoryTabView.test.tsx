@@ -58,6 +58,7 @@ function createSnapshot(
                     status: "completed",
                 },
             ],
+            title: null,
             updatedAt: "2026-04-17T10:05:00.000Z",
         },
         projectId: "project-1",

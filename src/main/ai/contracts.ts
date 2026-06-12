@@ -69,6 +69,7 @@ export const CODEX_ACP_AGENT_STATUSES_KEY = "codexAcpAgentStatuses";
 export const CODEX_ACP_MODEL_KEY = "codexAcpModel";
 export const CODEX_ACP_REASONING_EFFORT_KEY = "codexAcpReasoningEffort";
 export const CODEX_ACP_CWD_KEY = "codexAcpCwd";
+export const CODEX_ACP_PLAN_TITLE_KEY = "codexAcpPlanTitle";
 export const CODEX_ACP_STATUS_EVENT_ID_PREFIX = "codex-acp:status:";
 export const CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX = "codex-acp:image:";
 export const COMANDO_STATUS_EVENT_ID_PREFIX = "comando:status:";

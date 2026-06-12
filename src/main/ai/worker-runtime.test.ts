@@ -19,6 +19,7 @@ import { computeDiffHunks } from "@shared/ai-tracked-file";
 
 import {
     AI_SESSION_STREAMING_FLUSH_MS,
+    CODEX_ACP_PLAN_TITLE_KEY,
     CODEX_ACP_STATUS_EVENT_TYPE_KEY,
     CODEX_ACP_TURN_EVENT_TYPE_KEY,
     CODEX_ACP_TURN_ID_KEY,
@@ -933,6 +934,57 @@ describe("AiWorkerRuntime prepareSession", () => {
                     event.payload.update.patch.changes.availableCommands,
             ),
         ).toBe(true);
+    });
+
+    it("stores ACP plan titles from metadata", async () => {
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: process.cwd(),
+            projectRoot: process.cwd(),
+            title: "ACP plan title",
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        const client = latestClientFactory?.();
+        expect(client).toBeDefined();
+        await client!.sessionUpdate({
+            sessionId: "runtime-session-1",
+            update: {
+                _meta: {
+                    [CODEX_ACP_PLAN_TITLE_KEY]: "Restore ACP event bridge",
+                },
+                entries: [
+                    {
+                        content: "Check current bridge",
+                        priority: "medium",
+                        status: "in_progress",
+                    },
+                ],
+                sessionUpdate: "plan",
+            },
+        });
+
+        await vi.waitFor(() => {
+            expect(
+                hasPatchChangesMatching(
+                    emittedEvents,
+                    "session-1",
+                    (changes) =>
+                        changes.plan?.title ===
+                        "Restore ACP event bridge",
+                ),
+            ).toBe(true);
+        });
     });
 
     it("sets the model through config options when the runtime advertises a model option", async () => {

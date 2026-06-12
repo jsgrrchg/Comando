@@ -2143,6 +2143,10 @@ function normalizePlan(value: unknown): AiPlan | null {
                 },
             ];
         }),
+        title:
+            typeof value.title === "string" && value.title.trim().length > 0
+                ? value.title.trim()
+                : null,
         updatedAt:
             typeof value.updatedAt === "string"
                 ? value.updatedAt
