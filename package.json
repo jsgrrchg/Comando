@@ -19,7 +19,7 @@
     },
     "main": "out/main/index.js",
     "scripts": {
-        "predev": "pnpm run stage:ai",
+        "predev": "pnpm run check:native && pnpm run stage:ai",
         "dev": "node scripts/dev.mjs",
         "prebuild": "pnpm run stage:ai",
         "build": "electron-vite build",
@@ -46,6 +46,7 @@
         "release:linux": "node scripts/package-linux-app.mjs --publish always",
         "lint": "eslint .",
         "postinstall": "pnpm run rebuild:native",
+        "check:native": "node scripts/check-native-modules.mjs",
         "rebuild:native": "electron-rebuild -f -w better-sqlite3,node-pty",
         "stage:ai": "node scripts/ai/stage-ai-runtimes.mjs",
         "stage:codex-runtime": "node scripts/ai/stage-codex-runtime.mjs",
