@@ -30,8 +30,8 @@ use codex_protocol::{
     protocol::{InitialHistory, SessionConfiguredEvent, SessionSource},
 };
 use codex_thread_store::{
-    ListThreadsParams, SortDirection as StoreSortDirection, ThreadSortKey as StoreThreadSortKey,
-    ThreadStore,
+    ListThreadsParams, SortDirection as StoreSortDirection, StoredThread,
+    ThreadSortKey as StoreThreadSortKey, ThreadStore,
 };
 use std::{
     collections::HashMap,
@@ -941,27 +941,12 @@ impl CodexAgent {
         self.check_auth().await?;
 
         let ListSessionsRequest { cwd, cursor, .. } = request;
-        let allowed_sources = [
-            SessionSource::Cli,
-            SessionSource::VSCode,
-            SessionSource::Unknown,
-        ];
+        let allowed_sources = list_session_allowed_sources();
         let cwd_filter = cwd.clone();
 
         let page = self
             .thread_store
-            .list_threads(ListThreadsParams {
-                page_size: SESSION_LIST_PAGE_SIZE,
-                cursor,
-                sort_key: StoreThreadSortKey::UpdatedAt,
-                sort_direction: StoreSortDirection::Desc,
-                allowed_sources: allowed_sources.to_vec(),
-                model_providers: None,
-                cwd_filters: cwd.map(|cwd| vec![cwd]),
-                archived: false,
-                search_term: None,
-                use_state_db_only: false,
-            })
+            .list_threads(list_sessions_params(cwd, cursor, &allowed_sources))
             .await
             .map_err(|err| {
                 Error::internal_error().data(format!("failed to list sessions: {err}"))
@@ -971,19 +956,14 @@ impl CodexAgent {
             .items
             .into_iter()
             .filter(|item| {
-                allowed_sources.contains(&item.source)
-                    && cwd_filter
-                        .as_ref()
-                        .is_none_or(|filter_cwd| item.cwd.as_path() == filter_cwd.as_path())
+                stored_thread_matches_list_request(
+                    &item.source,
+                    item.cwd.as_path(),
+                    &allowed_sources,
+                    cwd_filter.as_deref(),
+                )
             })
-            .map(|item| {
-                let title = stored_session_title(item.name.as_deref(), &item.preview);
-                let updated_at = item.updated_at.to_rfc3339();
-
-                SessionInfo::new(SessionId::new(item.thread_id.to_string()), item.cwd)
-                    .title(title)
-                    .updated_at(updated_at)
-            })
+            .map(stored_thread_session_info)
             .collect::<Vec<_>>();
 
         Ok(ListSessionsResponse::new(sessions).next_cursor(page.next_cursor))
@@ -1179,6 +1159,51 @@ fn stored_session_title(name: Option<&str>, preview: &str) -> Option<String> {
         .find_map(format_session_title)
 }
 
+fn list_session_allowed_sources() -> Vec<SessionSource> {
+    vec![
+        SessionSource::Cli,
+        SessionSource::VSCode,
+        SessionSource::Unknown,
+    ]
+}
+
+fn list_sessions_params(
+    cwd: Option<PathBuf>,
+    cursor: Option<String>,
+    allowed_sources: &[SessionSource],
+) -> ListThreadsParams {
+    ListThreadsParams {
+        page_size: SESSION_LIST_PAGE_SIZE,
+        cursor,
+        sort_key: StoreThreadSortKey::UpdatedAt,
+        sort_direction: StoreSortDirection::Desc,
+        allowed_sources: allowed_sources.to_vec(),
+        model_providers: None,
+        cwd_filters: cwd.map(|cwd| vec![cwd]),
+        archived: false,
+        search_term: None,
+        use_state_db_only: false,
+    }
+}
+
+fn stored_thread_matches_list_request(
+    source: &SessionSource,
+    cwd: &Path,
+    allowed_sources: &[SessionSource],
+    cwd_filter: Option<&Path>,
+) -> bool {
+    allowed_sources.contains(source) && cwd_filter.is_none_or(|filter_cwd| cwd == filter_cwd)
+}
+
+fn stored_thread_session_info(item: StoredThread) -> SessionInfo {
+    let title = stored_session_title(item.name.as_deref(), &item.preview);
+    let updated_at = item.updated_at.to_rfc3339();
+
+    SessionInfo::new(SessionId::new(item.thread_id.to_string()), item.cwd)
+        .title(title)
+        .updated_at(updated_at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1201,5 +1226,51 @@ mod tests {
             stored_session_title(Some("  "), "preview"),
             Some("preview".to_string())
         );
+    }
+
+    #[test]
+    fn list_sessions_params_preserve_cursor_and_filters_active_threads() {
+        let allowed_sources = list_session_allowed_sources();
+        let cwd = PathBuf::from("/workspace/project");
+        let params = list_sessions_params(
+            Some(cwd.clone()),
+            Some("cursor-1".to_string()),
+            &allowed_sources,
+        );
+
+        assert_eq!(params.page_size, SESSION_LIST_PAGE_SIZE);
+        assert_eq!(params.cursor, Some("cursor-1".to_string()));
+        assert_eq!(params.sort_key, StoreThreadSortKey::UpdatedAt);
+        assert_eq!(params.sort_direction, StoreSortDirection::Desc);
+        assert_eq!(params.allowed_sources, allowed_sources);
+        assert_eq!(params.cwd_filters, Some(vec![cwd]));
+        assert!(!params.archived);
+        assert_eq!(params.model_providers, None);
+        assert_eq!(params.search_term, None);
+        assert!(!params.use_state_db_only);
+    }
+
+    #[test]
+    fn stored_thread_filter_respects_source_and_exact_cwd() {
+        let allowed_sources = list_session_allowed_sources();
+
+        assert!(stored_thread_matches_list_request(
+            &SessionSource::Cli,
+            Path::new("/workspace/project"),
+            &allowed_sources,
+            Some(Path::new("/workspace/project")),
+        ));
+        assert!(!stored_thread_matches_list_request(
+            &SessionSource::Cli,
+            Path::new("/workspace/project"),
+            &allowed_sources,
+            Some(Path::new("/workspace/other")),
+        ));
+        assert!(!stored_thread_matches_list_request(
+            &SessionSource::Exec,
+            Path::new("/workspace/project"),
+            &allowed_sources,
+            Some(Path::new("/workspace/project")),
+        ));
     }
 }
