@@ -43,6 +43,13 @@ const loadSessionMock = vi.fn<() => Promise<MockSessionCatalogResponse>>(() =>
         models: [],
     }),
 );
+const resumeSessionMock = vi.fn<() => Promise<MockSessionCatalogResponse>>(() =>
+    Promise.resolve({
+        configOptions: [],
+        modes: [],
+        models: [],
+    }),
+);
 const promptMock = vi.fn(() =>
     Promise.resolve({
         stopReason: "completed",
@@ -215,6 +222,7 @@ vi.mock("@agentclientprotocol/sdk", () => ({
         authenticate = authenticateMock;
         cancel = cancelRuntimeSessionMock;
         loadSession = loadSessionMock;
+        resumeSession = resumeSessionMock;
         newSession = newSessionMock;
         prompt = promptMock;
         closeSession = closeRuntimeSessionMock;
@@ -235,6 +243,12 @@ describe("AiWorkerRuntime prepareSession", () => {
         authenticateMock.mockResolvedValue({});
         loadSessionMock.mockClear();
         loadSessionMock.mockResolvedValue({
+            configOptions: [],
+            modes: [],
+            models: [],
+        });
+        resumeSessionMock.mockClear();
+        resumeSessionMock.mockResolvedValue({
             configOptions: [],
             modes: [],
             models: [],
@@ -349,6 +363,120 @@ describe("AiWorkerRuntime prepareSession", () => {
                     event.payload.event.kind === "session-info",
             ),
         ).toBe(true);
+    });
+
+    it("resumes persisted runtime sessions without replaying history when advertised", async () => {
+        initializeMock.mockResolvedValueOnce({
+            agentCapabilities: {
+                sessionCapabilities: {
+                    resume: {},
+                },
+            },
+        });
+        resumeSessionMock.mockResolvedValueOnce(
+            createCodexCatalogResponse({
+                modelId: "gpt-5-mini",
+            }),
+        );
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const persistedSnapshot: AiSessionSnapshot = {
+            availableCommands: [],
+            configOptions: [],
+            lastError: null,
+            messages: [
+                {
+                    attachments: [],
+                    content: "Persisted user message",
+                    createdAt: "2026-04-15T22:23:13.719838Z",
+                    id: "persisted-user-message",
+                    kind: "user",
+                    status: "completed",
+                },
+                {
+                    attachments: [],
+                    content: "Persisted assistant message",
+                    createdAt: "2026-04-15T22:23:14.719838Z",
+                    id: "persisted-assistant-message",
+                    kind: "assistant",
+                    status: "completed",
+                },
+            ],
+            modeId: null,
+            modes: [],
+            modelId: null,
+            models: [],
+            pendingPermission: null,
+            pendingUserInput: null,
+            plan: null,
+            projectId: null,
+            runtimeId: "codex",
+            runtimeSessionId: "runtime-session-1",
+            sessionId: "session-1",
+            status: "idle",
+            title: "Resumed session",
+            tokenUsage: null,
+            toolActivity: [],
+            trackedFiles: [],
+            updatedAt: "2026-04-15T22:23:13.719838Z",
+            worktreeId: null,
+        };
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+        const launch = createLaunch({
+            cwd: tempDir,
+            persistedSnapshot,
+            projectRoot: tempDir,
+            title: "Resumed session",
+        });
+
+        const snapshot = (await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        })) as AiSessionSnapshot;
+
+        expect(resumeSessionMock).toHaveBeenCalledWith({
+            additionalDirectories: undefined,
+            cwd: tempDir,
+            mcpServers: [],
+            sessionId: "runtime-session-1",
+        });
+        expect(loadSessionMock).not.toHaveBeenCalled();
+        expect(snapshot.runtimeSessionId).toBe("runtime-session-1");
+        expect(snapshot.messages.map((message) => message.content)).toEqual([
+            "Persisted user message",
+            "Persisted assistant message",
+        ]);
+        expect(snapshot.modelId).toBe("gpt-5-mini");
+
+        await runtime.dispatchMethod("ai.sendPrompt", {
+            input: {
+                attachments: [],
+                composerParts: [
+                    {
+                        text: "Continue",
+                        type: "text",
+                    },
+                ],
+                projectId: null,
+                prompt: "Continue",
+                sessionId: "session-1",
+                title: "Resumed session",
+                worktreeId: null,
+            },
+            launch,
+        });
+
+        expect(promptMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                sessionId: "runtime-session-1",
+            }),
+        );
     });
 
     it("launches Windows batch ACP runtimes through cmd.exe", async () => {

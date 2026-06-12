@@ -1444,7 +1444,10 @@ export class AiWorkerRuntime {
                 initializeResponse,
             );
 
-            const openedSession = await this.#openRuntimeSession(liveSession);
+            const openedSession = await this.#openRuntimeSession(
+                liveSession,
+                initializeResponse,
+            );
             liveSession.snapshot = {
                 ...applySessionCatalogToSnapshot(
                     liveSession.snapshot,
@@ -1548,6 +1551,9 @@ export class AiWorkerRuntime {
 
     async #openRuntimeSession(
         liveSession: LiveAcpSession,
+        initializeResponse: Awaited<
+            ReturnType<LiveAcpConnection["connection"]["initialize"]>
+        >,
     ): Promise<{
         readonly configOptions: Awaited<
             ReturnType<LiveAcpSession["connection"]["newSession"]>
@@ -1568,6 +1574,33 @@ export class AiWorkerRuntime {
         if (liveSession.snapshot.runtimeSessionId) {
             try {
                 liveSession.isRestoring = true;
+                if (supportsResumeSession(initializeResponse)) {
+                    this.#emitSessionDiagnostic(
+                        "Resuming persisted AI runtime session.",
+                        liveSession,
+                        {
+                            restoreSource: "resumeSession",
+                        },
+                    );
+                    const response = await liveSession.connection.resumeSession({
+                        additionalDirectories,
+                        cwd: liveSession.cwd,
+                        mcpServers: [],
+                        sessionId: liveSession.snapshot.runtimeSessionId,
+                    });
+                    this.#registerRuntimeSessionMapping(
+                        liveSession.runtimeConnection,
+                        liveSession.snapshot.sessionId,
+                        liveSession.snapshot.runtimeSessionId,
+                    );
+                    return {
+                        configOptions: response.configOptions ?? null,
+                        models: response.models ?? null,
+                        modes: response.modes ?? null,
+                        runtimeSessionId: liveSession.snapshot.runtimeSessionId,
+                    };
+                }
+
                 this.#emitSessionDiagnostic(
                     "Loading persisted AI runtime session.",
                     liveSession,
@@ -1594,14 +1627,14 @@ export class AiWorkerRuntime {
                 };
             } catch (error) {
                 this.#emitSessionDiagnostic(
-                    "Persisted AI runtime session load failed; opening a new session.",
+                    "Persisted AI runtime session restore failed; opening a new session.",
                     liveSession,
                     {
                         lastError:
                             error instanceof Error ? error.message : String(error),
                     },
                 );
-                debugBenignError("ai.worker.loadSession.resume", error);
+                debugBenignError("ai.worker.restoreSession.resume", error);
             } finally {
                 liveSession.isRestoring = false;
             }
@@ -4889,6 +4922,14 @@ function getLegacySetSessionModel(
     return typeof legacySetSessionModel === "function"
         ? legacySetSessionModel.bind(connection)
         : null;
+}
+
+function supportsResumeSession(
+    initializeResponse: Awaited<
+        ReturnType<LiveAcpConnection["connection"]["initialize"]>
+    >,
+): boolean {
+    return initializeResponse.agentCapabilities?.sessionCapabilities?.resume != null;
 }
 
 function isSamePromptEchoContentBlock(
