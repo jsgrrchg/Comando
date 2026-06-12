@@ -82,6 +82,7 @@ use codex_shell_command::parse_command::parse_command;
 use codex_utils_approval_presets::{ApprovalPreset, builtin_approval_presets};
 use heck::ToTitleCase;
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
@@ -120,6 +121,9 @@ const INIT_COMMAND_PROMPT: &str = include_str!("./prompt_for_init_command.md");
 const CODEX_READ_ONLY_PROFILE_ID: &str = ":read-only";
 const CODEX_WORKSPACE_PROFILE_ID: &str = ":workspace";
 const CODEX_DANGER_NO_SANDBOX_PROFILE_ID: &str = ":danger-no-sandbox";
+const CODEX_ACP_DIFF_PREVIOUS_PATH_KEY: &str = "codexAcpPreviousPath";
+const CODEX_ACP_DIFF_HUNKS_KEY: &str = "codexAcpHunks";
+const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
 
 fn debug_ai_worker_enabled() -> bool {
     matches!(std::env::var("COMANDO_DEBUG_AI_WORKER").as_deref(), Ok("1"))
@@ -141,6 +145,21 @@ fn active_profile_id_for_session_mode(mode_id: &str) -> Option<&'static str> {
         "full-access" => Some(CODEX_DANGER_NO_SANDBOX_PROFILE_ID),
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CodexAcpDiffHunk {
+    old_start: usize,
+    old_count: usize,
+    new_start: usize,
+    new_count: usize,
+    lines: Vec<CodexAcpDiffHunkLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CodexAcpDiffHunkLine {
+    r#type: String,
+    text: String,
 }
 
 fn approval_matches_current_config(preset: &ApprovalPreset, config: &Config) -> bool {
@@ -855,6 +874,9 @@ struct ActiveCommand {
     terminal_output: bool,
     output: String,
     file_extension: Option<String>,
+    /// Snapshots of file contents taken before the command executes.
+    /// Key = absolute path, Value = file content (None if file didn't exist).
+    file_snapshots: HashMap<PathBuf, Option<String>>,
 }
 
 struct PromptState {
@@ -1903,6 +1925,7 @@ impl PromptState {
                 tool_call_id: tool_call_id.clone(),
                 output: String::new(),
                 file_extension,
+                file_snapshots: HashMap::new(),
             },
         );
 
@@ -1993,7 +2016,7 @@ impl PromptState {
             source: _,
             interaction_input: _,
             call_id,
-            command: _,
+            command,
             started_at_ms: _,
             cwd,
             parsed_cmd,
@@ -2009,11 +2032,19 @@ impl PromptState {
             kind,
         } = parse_command_tool_call(parsed_cmd, &cwd);
 
+        // Snapshot candidate files before the command modifies them.
+        let candidate_paths = extract_candidate_paths_from_command(&command, &cwd);
+        let mut file_snapshots = HashMap::new();
+        for path in candidate_paths {
+            file_snapshots.insert(path.clone(), read_text_snapshot(&path));
+        }
+
         let active_command = ActiveCommand {
             tool_call_id: tool_call_id.clone(),
             output: String::new(),
             file_extension,
             terminal_output,
+            file_snapshots,
         };
         let (content, meta) = if client.supports_terminal_output(&active_command) {
             let content = vec![ToolCallContent::Terminal(Terminal::new(call_id.clone()))];
@@ -2065,6 +2096,7 @@ impl PromptState {
                     "terminal_output".to_owned(),
                     serde_json::json!({
                         "terminal_id": call_id,
+                        "mode": "delta",
                         "data": data_str
                     }),
                 )]));
@@ -2109,6 +2141,11 @@ impl PromptState {
             };
 
             let supports_terminal = client.supports_terminal_output(&active_command);
+            let exec_diffs = if active_command.file_snapshots.is_empty() {
+                vec![]
+            } else {
+                collect_exec_file_diffs(&active_command.file_snapshots)
+            };
 
             let mut fields = ToolCallUpdateFields::new()
                 .status(status)
@@ -2119,19 +2156,26 @@ impl PromptState {
             // buffer here, exactly once, as a single content block. Skip the emission
             // entirely when the command produced no output, so we don't surface an
             // empty fenced code block to the client.
-            if !supports_terminal && !active_command.output.is_empty() {
-                let content = match active_command.file_extension.as_deref() {
-                    Some("md") => active_command.output.clone(),
-                    Some(ext) => format!(
-                        "```{ext}\n{}\n```\n",
-                        active_command.output.trim_end_matches('\n')
-                    ),
-                    None => format!(
-                        "```sh\n{}\n```\n",
-                        active_command.output.trim_end_matches('\n')
-                    ),
-                };
-                fields = fields.content(vec![content.into()]);
+            if !exec_diffs.is_empty() || (!supports_terminal && !active_command.output.is_empty()) {
+                let mut content: Vec<ToolCallContent> = Vec::new();
+                if supports_terminal {
+                    content.push(ToolCallContent::Terminal(Terminal::new(call_id.clone())));
+                } else if !active_command.output.is_empty() {
+                    let text = match active_command.file_extension.as_deref() {
+                        Some("md") => active_command.output.clone(),
+                        Some(ext) => format!(
+                            "```{ext}\n{}\n```\n",
+                            active_command.output.trim_end_matches('\n')
+                        ),
+                        None => format!(
+                            "```sh\n{}\n```\n",
+                            active_command.output.trim_end_matches('\n')
+                        ),
+                    };
+                    content.push(text.into());
+                }
+                content.extend(exec_diffs);
+                fields = fields.content(content);
             }
 
             client.send_tool_call_update(
@@ -2554,6 +2598,71 @@ struct ParseCommandToolCall {
     terminal_output: bool,
     locations: Vec<ToolCallLocation>,
     kind: ToolKind,
+}
+
+/// Extract candidate file paths from raw command args for pre-execution snapshots.
+/// Looks at each argument after the command name and resolves paths that point to
+/// existing files on disk. For `bash -c "..."` style commands, also scans the
+/// inner command string for path-like tokens.
+fn extract_candidate_paths_from_command(command: &[String], cwd: &Path) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if command.is_empty() {
+        return paths;
+    }
+
+    let mut seen = HashSet::new();
+    let add_candidate = |token: &str, cwd: &Path, seen: &mut HashSet<PathBuf>| -> Option<PathBuf> {
+        let token = token.trim();
+        if token.is_empty() || token.starts_with('-') {
+            return None;
+        }
+
+        // Skip tokens that look like sed expressions, regex patterns, etc.
+        if token.starts_with("s/") || token.starts_with("s|") || token.contains("///") {
+            return None;
+        }
+
+        let path = Path::new(token);
+        let abs = if path.is_relative() {
+            cwd.join(path)
+        } else {
+            path.to_path_buf()
+        };
+        // Only track files that exist (before state) or whose parent exists
+        // (candidate create).
+        let dominated = abs.is_file() || abs.parent().is_some_and(|p| p.is_dir());
+        if dominated && seen.insert(abs.clone()) {
+            Some(abs)
+        } else {
+            None
+        }
+    };
+
+    let is_shell_wrapper = matches!(
+        command
+            .first()
+            .and_then(|c| Path::new(c).file_name())
+            .and_then(|n| n.to_str()),
+        Some("bash" | "sh" | "zsh")
+    );
+
+    if is_shell_wrapper && command.len() >= 3 && command[1] == "-c" {
+        let inner = command[2..].join(" ");
+        for token in inner.split_whitespace() {
+            let token = token.trim_start_matches('>').trim_start_matches('<');
+            if let Some(abs) = add_candidate(token, cwd, &mut seen) {
+                paths.push(abs);
+            }
+        }
+    } else {
+        for arg in command.iter().skip(1) {
+            if let Some(abs) = add_candidate(arg, cwd, &mut seen) {
+                paths.push(abs);
+            }
+        }
+    }
+
+    paths
 }
 
 fn parse_command_tool_call(parsed_cmd: Vec<ParsedCommand>, cwd: &Path) -> ParseCommandToolCall {
@@ -3525,20 +3634,28 @@ impl<A: Auth> ThreadActor<A> {
                     let full_path = self.config.cwd.as_path().join(path);
                     file_names.push(path.display().to_string());
                     locations.push(ToolCallLocation::new(full_path.clone()));
-                    // New file: no old_text, new_text is the contents
-                    content.push(ToolCallContent::Diff(Diff::new(
-                        full_path,
-                        contents.clone(),
+                    content.push(ToolCallContent::Diff(with_codex_acp_diff_meta(
+                        Diff::new(full_path.clone(), contents.clone()),
+                        None,
+                        build_single_hunk(None, Some(contents.as_str())),
                     )));
                 }
                 codex_apply_patch::Hunk::DeleteFile { path } => {
                     let full_path = self.config.cwd.as_path().join(path);
                     file_names.push(path.display().to_string());
                     locations.push(ToolCallLocation::new(full_path.clone()));
-                    // Delete file: old_text would be original content, new_text is empty
-                    content.push(ToolCallContent::Diff(
-                        Diff::new(full_path, "").old_text("[file deleted]"),
-                    ));
+                    let old_text = read_text_snapshot(full_path.as_path())
+                        .unwrap_or_else(|| FILE_DELETED_PLACEHOLDER.to_string());
+                    let hunks = if old_text == FILE_DELETED_PLACEHOLDER {
+                        None
+                    } else {
+                        build_single_hunk(Some(old_text.as_str()), None)
+                    };
+                    content.push(ToolCallContent::Diff(with_codex_acp_diff_meta(
+                        Diff::new(full_path, "").old_text(old_text),
+                        None,
+                        hunks,
+                    )));
                 }
                 codex_apply_patch::Hunk::UpdateFile {
                     path,
@@ -3550,8 +3667,19 @@ impl<A: Auth> ThreadActor<A> {
                         .as_ref()
                         .map(|p| self.config.cwd.as_path().join(p))
                         .unwrap_or_else(|| full_path.clone());
+                    let previous_path = move_path.as_ref().map(|_| full_path.as_path());
                     file_names.push(path.display().to_string());
                     locations.push(ToolCallLocation::new(dest_path.clone()));
+                    let snapshot = read_text_snapshot(full_path.as_path());
+                    let projected_chunks: Vec<ProjectedUpdateFileChunk> = chunks
+                        .iter()
+                        .map(|chunk| ProjectedUpdateFileChunk {
+                            change_context: chunk.change_context.clone(),
+                            old_lines: chunk.old_lines.clone(),
+                            new_lines: chunk.new_lines.clone(),
+                            is_end_of_file: chunk.is_end_of_file,
+                        })
+                        .collect();
 
                     // Build old and new text from chunks
                     let old_lines: Vec<String> = chunks
@@ -3562,10 +3690,25 @@ impl<A: Auth> ThreadActor<A> {
                         .iter()
                         .flat_map(|c| c.new_lines.iter().cloned())
                         .collect();
+                    let old_text = if chunks.is_empty() && previous_path.is_some() {
+                        read_text_snapshot(full_path.as_path()).unwrap_or_default()
+                    } else {
+                        old_lines.join("\n")
+                    };
+                    let new_text = if chunks.is_empty() && previous_path.is_some() {
+                        old_text.clone()
+                    } else {
+                        new_lines.join("\n")
+                    };
+                    let hunks = snapshot.as_deref().and_then(|snapshot| {
+                        compute_update_file_hunks(snapshot, &projected_chunks)
+                    });
 
-                    content.push(ToolCallContent::Diff(
-                        Diff::new(dest_path, new_lines.join("\n")).old_text(old_lines.join("\n")),
-                    ));
+                    content.push(ToolCallContent::Diff(with_codex_acp_diff_meta(
+                        Diff::new(dest_path, new_text).old_text(old_text),
+                        previous_path,
+                        hunks,
+                    )));
                 }
             }
         }
@@ -3849,6 +3992,406 @@ fn format_uri_as_link(name: Option<String>, uri: String) -> String {
     }
 }
 
+fn read_text_snapshot(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
+/// Compare file snapshots taken before an exec command with the current state
+/// on disk and produce `ToolCallContent::Diff` items for any files that changed.
+fn collect_exec_file_diffs(
+    file_snapshots: &HashMap<PathBuf, Option<String>>,
+) -> Vec<ToolCallContent> {
+    let mut diffs = Vec::new();
+
+    for (path, old_snapshot) in file_snapshots {
+        let new_snapshot = read_text_snapshot(path);
+
+        match (old_snapshot, &new_snapshot) {
+            (None, None) => {}
+            (None, Some(new_text)) => {
+                if !new_text.is_empty() {
+                    diffs.push(ToolCallContent::Diff(with_codex_acp_diff_meta(
+                        Diff::new(path.clone(), new_text.clone()),
+                        None,
+                        build_single_hunk(None, Some(new_text.as_str())),
+                    )));
+                }
+            }
+            (Some(old_text), None) => {
+                diffs.push(ToolCallContent::Diff(with_codex_acp_diff_meta(
+                    Diff::new(path.clone(), String::new()).old_text(old_text.clone()),
+                    None,
+                    build_single_hunk(Some(old_text.as_str()), None),
+                )));
+            }
+            (Some(old_text), Some(new_text)) => {
+                if old_text != new_text {
+                    diffs.push(ToolCallContent::Diff(with_codex_acp_diff_meta(
+                        Diff::new(path.clone(), new_text.clone()).old_text(old_text.clone()),
+                        None,
+                        build_single_hunk(Some(old_text.as_str()), Some(new_text.as_str())),
+                    )));
+                }
+            }
+        }
+    }
+
+    diffs
+}
+
+fn split_snapshot_lines(text: &str) -> Vec<String> {
+    let mut lines: Vec<String> = text.split('\n').map(String::from).collect();
+    if lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines
+}
+
+fn seek_sequence(lines: &[String], pattern: &[String], start: usize, eof: bool) -> Option<usize> {
+    if pattern.is_empty() {
+        return Some(start);
+    }
+
+    if pattern.len() > lines.len() {
+        return None;
+    }
+
+    let search_start = if eof && lines.len() >= pattern.len() {
+        lines.len() - pattern.len()
+    } else {
+        start
+    };
+
+    for i in search_start..=lines.len().saturating_sub(pattern.len()) {
+        if lines[i..i + pattern.len()] == *pattern {
+            return Some(i);
+        }
+    }
+
+    for i in search_start..=lines.len().saturating_sub(pattern.len()) {
+        let mut ok = true;
+        for (p_idx, pat) in pattern.iter().enumerate() {
+            if lines[i + p_idx].trim_end() != pat.trim_end() {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            return Some(i);
+        }
+    }
+
+    for i in search_start..=lines.len().saturating_sub(pattern.len()) {
+        let mut ok = true;
+        for (p_idx, pat) in pattern.iter().enumerate() {
+            if lines[i + p_idx].trim() != pat.trim() {
+                ok = false;
+                break;
+            }
+        }
+        if ok {
+            return Some(i);
+        }
+    }
+
+    None
+}
+
+fn diff_hunk_lines(old_lines: &[String], new_lines: &[String]) -> Vec<CodexAcpDiffHunkLine> {
+    let m = old_lines.len();
+    let n = new_lines.len();
+    let dp: Vec<Vec<usize>> = (0..=m).map(|_| vec![0; n + 1]).collect();
+    let mut dp = dp;
+
+    for i in 1..=m {
+        for j in 1..=n {
+            dp[i][j] = if old_lines[i - 1] == new_lines[j - 1] {
+                dp[i - 1][j - 1] + 1
+            } else {
+                dp[i - 1][j].max(dp[i][j - 1])
+            };
+        }
+    }
+
+    let mut stack = Vec::new();
+    let (mut i, mut j) = (m, n);
+    while i > 0 || j > 0 {
+        if i > 0 && j > 0 && old_lines[i - 1] == new_lines[j - 1] {
+            stack.push(CodexAcpDiffHunkLine {
+                r#type: "context".to_string(),
+                text: old_lines[i - 1].clone(),
+            });
+            i -= 1;
+            j -= 1;
+        } else if j > 0 && (i == 0 || dp[i][j - 1] >= dp[i - 1][j]) {
+            stack.push(CodexAcpDiffHunkLine {
+                r#type: "add".to_string(),
+                text: new_lines[j - 1].clone(),
+            });
+            j -= 1;
+        } else {
+            stack.push(CodexAcpDiffHunkLine {
+                r#type: "remove".to_string(),
+                text: old_lines[i - 1].clone(),
+            });
+            i -= 1;
+        }
+    }
+
+    stack.reverse();
+    stack
+}
+
+fn trim_trailing_empty_line(lines: &[String]) -> Vec<String> {
+    let mut trimmed = lines.to_vec();
+    if trimmed.last().is_some_and(String::is_empty) {
+        trimmed.pop();
+    }
+    trimmed
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedUpdateFileChunk {
+    start_idx: usize,
+    old_lines: Vec<String>,
+    new_lines: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ProjectedUpdateFileChunk {
+    change_context: Option<String>,
+    old_lines: Vec<String>,
+    new_lines: Vec<String>,
+    is_end_of_file: bool,
+}
+
+fn resolve_update_file_chunks(
+    original_text: &str,
+    chunks: &[ProjectedUpdateFileChunk],
+) -> Option<Vec<ResolvedUpdateFileChunk>> {
+    let original_lines = split_snapshot_lines(original_text);
+    let mut line_index = 0usize;
+    let mut resolved = Vec::with_capacity(chunks.len());
+
+    for chunk in chunks {
+        if let Some(ctx_line) = &chunk.change_context {
+            let ctx_pattern = [ctx_line.clone()];
+            let idx = seek_sequence(&original_lines, &ctx_pattern, line_index, false)?;
+            line_index = idx + 1;
+        }
+
+        if chunk.old_lines.is_empty() {
+            let insertion_idx = original_lines.len();
+            resolved.push(ResolvedUpdateFileChunk {
+                start_idx: insertion_idx,
+                old_lines: Vec::new(),
+                new_lines: trim_trailing_empty_line(&chunk.new_lines),
+            });
+            continue;
+        }
+
+        let mut pattern = chunk.old_lines.clone();
+        let mut new_lines = chunk.new_lines.clone();
+        let mut found = seek_sequence(&original_lines, &pattern, line_index, chunk.is_end_of_file);
+
+        if found.is_none() && pattern.last().is_some_and(String::is_empty) {
+            pattern.pop();
+            if new_lines.last().is_some_and(String::is_empty) {
+                new_lines.pop();
+            }
+            found = seek_sequence(&original_lines, &pattern, line_index, chunk.is_end_of_file);
+        }
+
+        let start_idx = found?;
+        line_index = start_idx + pattern.len();
+        resolved.push(ResolvedUpdateFileChunk {
+            start_idx,
+            old_lines: pattern,
+            new_lines,
+        });
+    }
+
+    Some(resolved)
+}
+
+fn compute_update_file_hunks(
+    original_text: &str,
+    chunks: &[ProjectedUpdateFileChunk],
+) -> Option<Vec<CodexAcpDiffHunk>> {
+    let resolved = resolve_update_file_chunks(original_text, chunks)?;
+    let mut hunks = Vec::with_capacity(resolved.len());
+    let mut cumulative_delta = 0isize;
+
+    for chunk in resolved {
+        let old_count = chunk.old_lines.len();
+        let new_count = chunk.new_lines.len();
+        hunks.push(CodexAcpDiffHunk {
+            old_start: chunk.start_idx + 1,
+            old_count,
+            new_start: (chunk.start_idx as isize + cumulative_delta + 1).max(1) as usize,
+            new_count,
+            lines: diff_hunk_lines(&chunk.old_lines, &chunk.new_lines),
+        });
+        cumulative_delta += new_count as isize - old_count as isize;
+    }
+
+    Some(hunks)
+}
+
+fn build_single_hunk(
+    old_text: Option<&str>,
+    new_text: Option<&str>,
+) -> Option<Vec<CodexAcpDiffHunk>> {
+    let old_lines = old_text.map(split_snapshot_lines).unwrap_or_default();
+    let new_lines = new_text.map(split_snapshot_lines).unwrap_or_default();
+
+    if old_lines.is_empty() && new_lines.is_empty() {
+        return None;
+    }
+
+    Some(vec![CodexAcpDiffHunk {
+        old_start: 1,
+        old_count: old_lines.len(),
+        new_start: 1,
+        new_count: new_lines.len(),
+        lines: diff_hunk_lines(&old_lines, &new_lines),
+    }])
+}
+
+fn parse_unified_diff_range(segment: &str) -> Option<(usize, usize)> {
+    let (start, count) = match segment.split_once(',') {
+        Some((start, count)) => (start, count),
+        None => (segment, "1"),
+    };
+    Some((start.parse().ok()?, count.parse().ok()?))
+}
+
+fn parse_unified_diff_hunks(unified_diff: &str) -> Vec<CodexAcpDiffHunk> {
+    let mut hunks = Vec::new();
+    let mut current: Option<CodexAcpDiffHunk> = None;
+
+    for line in unified_diff.lines() {
+        if let Some(header) = line.strip_prefix("@@ -") {
+            if let Some(hunk) = current.take() {
+                hunks.push(hunk);
+            }
+
+            let Some((old_part, rest)) = header.split_once(" +") else {
+                continue;
+            };
+            let Some((new_part, _)) = rest.split_once(" @@") else {
+                continue;
+            };
+            let Some((old_start, old_count)) = parse_unified_diff_range(old_part) else {
+                continue;
+            };
+            let Some((new_start, new_count)) = parse_unified_diff_range(new_part) else {
+                continue;
+            };
+
+            current = Some(CodexAcpDiffHunk {
+                old_start,
+                old_count,
+                new_start,
+                new_count,
+                lines: Vec::new(),
+            });
+            continue;
+        }
+
+        let Some(hunk) = current.as_mut() else {
+            continue;
+        };
+
+        if line == r"\ No newline at end of file" {
+            continue;
+        }
+
+        let Some((marker, text)) = line
+            .strip_prefix(' ')
+            .map(|text| ("context", text))
+            .or_else(|| line.strip_prefix('+').map(|text| ("add", text)))
+            .or_else(|| line.strip_prefix('-').map(|text| ("remove", text)))
+        else {
+            continue;
+        };
+
+        hunk.lines.push(CodexAcpDiffHunkLine {
+            r#type: marker.to_string(),
+            text: text.to_string(),
+        });
+    }
+
+    if let Some(hunk) = current {
+        hunks.push(hunk);
+    }
+
+    hunks
+}
+
+fn extract_full_texts_from_unified_diff(
+    current_text: &str,
+    unified_diff: &str,
+) -> Option<(String, String)> {
+    let patch = diffy::Patch::from_str(unified_diff).ok()?;
+
+    if let Ok(old_text) = diffy::apply(current_text, &patch.reverse()) {
+        return Some((old_text, current_text.to_string()));
+    }
+
+    if let Ok(new_text) = diffy::apply(current_text, &patch) {
+        return Some((current_text.to_string(), new_text));
+    }
+
+    None
+}
+
+fn fallback_texts_from_unified_diff(unified_diff: &str) -> Option<(String, String)> {
+    let patch = diffy::Patch::from_str(unified_diff).ok()?;
+    let mut old_text = String::new();
+    let mut new_text = String::new();
+
+    for hunk in patch.hunks() {
+        for line in hunk.lines() {
+            match line {
+                diffy::Line::Context(text) => {
+                    old_text.push_str(text);
+                    new_text.push_str(text);
+                }
+                diffy::Line::Delete(text) => old_text.push_str(text),
+                diffy::Line::Insert(text) => new_text.push_str(text),
+            }
+        }
+    }
+
+    Some((old_text, new_text))
+}
+
+fn with_codex_acp_diff_meta(
+    mut diff: Diff,
+    previous_path: Option<&Path>,
+    hunks: Option<Vec<CodexAcpDiffHunk>>,
+) -> Diff {
+    let mut meta = diff.meta.take().unwrap_or_default();
+
+    if let Some(path) = previous_path {
+        meta.insert(
+            CODEX_ACP_DIFF_PREVIOUS_PATH_KEY.to_string(),
+            json!(path.display().to_string()),
+        );
+    }
+
+    if let Some(hunks) = hunks.filter(|hunks| !hunks.is_empty()) {
+        meta.insert(CODEX_ACP_DIFF_HUNKS_KEY.to_string(), json!(hunks));
+    }
+
+    if !meta.is_empty() {
+        diff = diff.meta(meta);
+    }
+
+    diff
+}
+
 fn extract_tool_call_content_from_changes(
     changes: HashMap<PathBuf, FileChange>,
 ) -> (
@@ -3896,57 +4439,47 @@ fn extract_tool_call_content_from_change(
     change: FileChange,
 ) -> Vec<ToolCallContent> {
     match change {
-        FileChange::Add { content } => vec![ToolCallContent::Diff(Diff::new(path, content))],
+        FileChange::Add { content } => vec![ToolCallContent::Diff(with_codex_acp_diff_meta(
+            Diff::new(path, content.clone()),
+            None,
+            build_single_hunk(None, Some(content.as_str())),
+        ))],
         FileChange::Delete { content } => {
-            vec![ToolCallContent::Diff(
-                Diff::new(path, String::new()).old_text(content),
-            )]
+            vec![ToolCallContent::Diff(with_codex_acp_diff_meta(
+                Diff::new(path, String::new()).old_text(content.clone()),
+                None,
+                build_single_hunk(Some(content.as_str()), None),
+            ))]
         }
         FileChange::Update {
             unified_diff,
             move_path,
-        } => extract_tool_call_content_from_unified_diff(move_path.unwrap_or(path), unified_diff),
+        } => extract_tool_call_content_from_unified_diff(path, move_path, unified_diff),
     }
 }
 
 fn extract_tool_call_content_from_unified_diff(
     path: PathBuf,
+    move_path: Option<PathBuf>,
     unified_diff: String,
 ) -> Vec<ToolCallContent> {
-    let Ok(patch) = diffy::Patch::from_str(&unified_diff) else {
-        return vec![ToolCallContent::Content(Content::new(ContentBlock::Text(
-            TextContent::new(unified_diff),
-        )))];
-    };
+    let resolved_path = move_path.clone().unwrap_or_else(|| path.clone());
+    let previous_path = move_path.as_ref().map(|_| path.as_path());
+    let hunks = Some(parse_unified_diff_hunks(&unified_diff)).filter(|value| !value.is_empty());
+    let snapshot = read_text_snapshot(&resolved_path).or_else(|| read_text_snapshot(&path));
+    let texts = snapshot
+        .as_deref()
+        .and_then(|current| extract_full_texts_from_unified_diff(current, &unified_diff))
+        .or_else(|| fallback_texts_from_unified_diff(&unified_diff));
 
-    let diffs = patch
-        .hunks()
-        .iter()
-        .map(|hunk| {
-            let mut old_text = String::new();
-            let mut new_text = String::new();
-
-            for line in hunk.lines() {
-                match line {
-                    diffy::Line::Context(text) => {
-                        old_text.push_str(text);
-                        new_text.push_str(text);
-                    }
-                    diffy::Line::Delete(text) => old_text.push_str(text),
-                    diffy::Line::Insert(text) => new_text.push_str(text),
-                }
-            }
-
-            ToolCallContent::Diff(Diff::new(path.clone(), new_text).old_text(old_text))
-        })
-        .collect_vec();
-
-    if diffs.is_empty() {
-        vec![ToolCallContent::Content(Content::new(ContentBlock::Text(
-            TextContent::new(unified_diff),
-        )))]
+    if let Some((old_text, new_text)) = texts {
+        vec![ToolCallContent::Diff(with_codex_acp_diff_meta(
+            Diff::new(resolved_path, new_text).old_text(old_text),
+            previous_path,
+            hunks,
+        ))]
     } else {
-        diffs
+        vec![ToolCallContent::Content(Content::new(unified_diff))]
     }
 }
 
