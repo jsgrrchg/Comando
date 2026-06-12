@@ -409,85 +409,8 @@ impl CodexAgent {
         // Propagate any client-provided MCP servers that codex-rs supports.
         let mut new_mcp_servers = config.mcp_servers.get().clone();
         for mcp_server in mcp_servers {
-            match mcp_server {
-                // Not supported in codex
-                McpServer::Sse(..) => {}
-                McpServer::Http(McpServerHttp {
-                    name, url, headers, ..
-                }) => {
-                    // Codex does not allow whitespace in MCP server names; replace with underscores.
-                    let name = name.replace(|c: char| c.is_whitespace(), "_");
-                    new_mcp_servers.insert(
-                        name,
-                        McpServerConfig {
-                            transport: McpServerTransportConfig::StreamableHttp {
-                                url,
-                                bearer_token_env_var: None,
-                                http_headers: if headers.is_empty() {
-                                    None
-                                } else {
-                                    Some(headers.into_iter().map(|h| (h.name, h.value)).collect())
-                                },
-                                env_http_headers: None,
-                            },
-                            required: false,
-                            enabled: true,
-                            startup_timeout_sec: None,
-                            tool_timeout_sec: None,
-                            disabled_tools: None,
-                            enabled_tools: None,
-                            disabled_reason: None,
-                            scopes: None,
-                            oauth: None,
-                            oauth_resource: None,
-                            tools: Default::default(),
-                            environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
-                            supports_parallel_tool_calls: false,
-                            default_tools_approval_mode: None,
-                        },
-                    );
-                }
-                McpServer::Stdio(McpServerStdio {
-                    name,
-                    command,
-                    args,
-                    env,
-                    ..
-                }) => {
-                    // Codex does not allow whitespace in MCP server names; replace with underscores.
-                    let name = name.replace(|c: char| c.is_whitespace(), "_");
-                    new_mcp_servers.insert(
-                        name,
-                        McpServerConfig {
-                            transport: McpServerTransportConfig::Stdio {
-                                command: command.display().to_string(),
-                                args,
-                                env: if env.is_empty() {
-                                    None
-                                } else {
-                                    Some(env.into_iter().map(|env| (env.name, env.value)).collect())
-                                },
-                                env_vars: vec![],
-                                cwd: Some(cwd.to_path_buf()),
-                            },
-                            required: false,
-                            enabled: true,
-                            startup_timeout_sec: None,
-                            tool_timeout_sec: None,
-                            disabled_tools: None,
-                            enabled_tools: None,
-                            disabled_reason: None,
-                            scopes: None,
-                            oauth: None,
-                            oauth_resource: None,
-                            tools: Default::default(),
-                            environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
-                            supports_parallel_tool_calls: false,
-                            default_tools_approval_mode: None,
-                        },
-                    );
-                }
-                _ => {}
+            if let Some((name, server_config)) = mcp_server_config_from_acp(mcp_server, &cwd) {
+                new_mcp_servers.insert(name, server_config);
             }
         }
 
@@ -1121,6 +1044,77 @@ impl TryFrom<AuthMethodId> for CodexAuthMethod {
     }
 }
 
+fn normalize_mcp_server_name(name: String) -> String {
+    // Codex does not allow whitespace in MCP server names; replace with underscores.
+    name.replace(|c: char| c.is_whitespace(), "_")
+}
+
+fn default_client_mcp_server_config(transport: McpServerTransportConfig) -> McpServerConfig {
+    McpServerConfig {
+        transport,
+        required: false,
+        enabled: true,
+        startup_timeout_sec: None,
+        tool_timeout_sec: None,
+        disabled_tools: None,
+        enabled_tools: None,
+        disabled_reason: None,
+        scopes: None,
+        oauth: None,
+        oauth_resource: None,
+        tools: Default::default(),
+        environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+        supports_parallel_tool_calls: false,
+        default_tools_approval_mode: None,
+    }
+}
+
+fn mcp_server_config_from_acp(
+    mcp_server: McpServer,
+    cwd: &Path,
+) -> Option<(String, McpServerConfig)> {
+    match mcp_server {
+        // Not supported in codex.
+        McpServer::Sse(..) => None,
+        McpServer::Http(McpServerHttp {
+            name, url, headers, ..
+        }) => Some((
+            normalize_mcp_server_name(name),
+            default_client_mcp_server_config(McpServerTransportConfig::StreamableHttp {
+                url,
+                bearer_token_env_var: None,
+                http_headers: if headers.is_empty() {
+                    None
+                } else {
+                    Some(headers.into_iter().map(|h| (h.name, h.value)).collect())
+                },
+                env_http_headers: None,
+            }),
+        )),
+        McpServer::Stdio(McpServerStdio {
+            name,
+            command,
+            args,
+            env,
+            ..
+        }) => Some((
+            normalize_mcp_server_name(name),
+            default_client_mcp_server_config(McpServerTransportConfig::Stdio {
+                command: command.display().to_string(),
+                args,
+                env: if env.is_empty() {
+                    None
+                } else {
+                    Some(env.into_iter().map(|env| (env.name, env.value)).collect())
+                },
+                env_vars: vec![],
+                cwd: Some(cwd.to_path_buf()),
+            }),
+        )),
+        _ => None,
+    }
+}
+
 fn truncate_graphemes(text: &str, max_graphemes: usize) -> String {
     let mut graphemes = text.grapheme_indices(true);
 
@@ -1207,6 +1201,7 @@ fn stored_thread_session_info(item: StoredThread) -> SessionInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acp::schema::{EnvVariable, HttpHeader};
 
     #[test]
     fn stored_session_title_prefers_thread_name() {
@@ -1272,5 +1267,99 @@ mod tests {
             &allowed_sources,
             Some(Path::new("/workspace/project")),
         ));
+    }
+
+    #[test]
+    fn client_http_mcp_server_preserves_headers_and_local_environment() {
+        let (name, config) = mcp_server_config_from_acp(
+            McpServer::Http(
+                McpServerHttp::new("Remote Tools", "https://example.com/mcp").headers(vec![
+                    HttpHeader::new("Authorization", "Bearer token"),
+                    HttpHeader::new("X-Workspace", "comando"),
+                ]),
+            ),
+            Path::new("/workspace/project"),
+        )
+        .expect("http MCP server should be supported");
+
+        assert_eq!(name, "Remote_Tools");
+        assert_eq!(config.environment_id, DEFAULT_MCP_SERVER_ENVIRONMENT_ID);
+        assert!(config.enabled);
+        assert!(!config.required);
+        match config.transport {
+            McpServerTransportConfig::StreamableHttp {
+                url,
+                bearer_token_env_var,
+                http_headers,
+                env_http_headers,
+            } => {
+                assert_eq!(url, "https://example.com/mcp");
+                assert_eq!(bearer_token_env_var, None);
+                assert_eq!(env_http_headers, None);
+                let headers = http_headers.expect("headers should be preserved");
+                assert_eq!(
+                    headers.get("Authorization").map(String::as_str),
+                    Some("Bearer token"),
+                );
+                assert_eq!(
+                    headers.get("X-Workspace").map(String::as_str),
+                    Some("comando")
+                );
+            }
+            _ => panic!("expected streamable HTTP MCP transport"),
+        }
+    }
+
+    #[test]
+    fn client_stdio_mcp_server_preserves_env_cwd_and_local_environment() {
+        let cwd = Path::new("/workspace/project");
+        let (name, config) = mcp_server_config_from_acp(
+            McpServer::Stdio(
+                McpServerStdio::new("Local Tools", "/usr/bin/env")
+                    .args(vec!["node".to_string(), "server.js".to_string()])
+                    .env(vec![EnvVariable::new("API_KEY", "secret")]),
+            ),
+            cwd,
+        )
+        .expect("stdio MCP server should be supported");
+
+        assert_eq!(name, "Local_Tools");
+        assert_eq!(config.environment_id, DEFAULT_MCP_SERVER_ENVIRONMENT_ID);
+        assert!(config.enabled);
+        assert!(!config.required);
+        match config.transport {
+            McpServerTransportConfig::Stdio {
+                command,
+                args,
+                env,
+                env_vars,
+                cwd: server_cwd,
+            } => {
+                assert_eq!(command, "/usr/bin/env");
+                assert_eq!(args, vec!["node".to_string(), "server.js".to_string()]);
+                assert_eq!(
+                    env.expect("env should be preserved")
+                        .get("API_KEY")
+                        .map(String::as_str),
+                    Some("secret"),
+                );
+                assert!(env_vars.is_empty());
+                assert_eq!(server_cwd.as_deref(), Some(cwd));
+            }
+            _ => panic!("expected stdio MCP transport"),
+        }
+    }
+
+    #[test]
+    fn client_sse_mcp_server_is_ignored() {
+        let server = serde_json::from_value::<McpServer>(serde_json::json!({
+            "type": "sse",
+            "name": "Legacy SSE",
+            "url": "https://example.com/sse",
+            "headers": []
+        }))
+        .expect("sse MCP server should deserialize");
+
+        assert!(mcp_server_config_from_acp(server, Path::new("/workspace/project")).is_none());
     }
 }
