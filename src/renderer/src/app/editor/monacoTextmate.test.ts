@@ -14,12 +14,14 @@ import {
 } from "./monacoTextmateLanguages";
 
 const loadGrammarWithConfigurationMock = vi.hoisted(() =>
-    vi.fn(async () => ({
-        tokenizeLine2: vi.fn(() => ({
-            ruleStack: { depth: 1 },
-            tokens: new Uint32Array([0, 123]),
-        })),
-    })),
+    vi.fn(() =>
+        Promise.resolve({
+            tokenizeLine2: vi.fn(() => ({
+                ruleStack: { depth: 1 },
+                tokens: new Uint32Array([0, 123]),
+            })),
+        }),
+    ),
 );
 const registrySetThemeMock = vi.hoisted(() => vi.fn());
 
@@ -226,12 +228,14 @@ describe("monacoTextmate", () => {
 
         vi.stubGlobal(
             "fetch",
-            vi.fn(async () => ({
-                arrayBuffer: async () => new ArrayBuffer(8),
-                ok: true,
-                status: 200,
-                statusText: "OK",
-            })),
+            vi.fn(() =>
+                Promise.resolve({
+                    arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
+                    ok: true,
+                    status: 200,
+                    statusText: "OK",
+                }),
+            ),
         );
 
         await expect(
@@ -244,13 +248,6 @@ describe("monacoTextmate", () => {
             expect.objectContaining({}),
         );
         expect(setTokensProvider).toHaveBeenCalledTimes(1);
-        expect(setTokensProvider).toHaveBeenCalledWith(
-            "rust",
-            expect.objectContaining({
-                getInitialState: expect.any(Function),
-                tokenizeEncoded: expect.any(Function),
-            }),
-        );
         expect(setModelLanguage).toHaveBeenCalledTimes(1);
         expect(setModelLanguage).toHaveBeenCalledWith(rustModel, "rust");
 
@@ -258,6 +255,9 @@ describe("monacoTextmate", () => {
         if (!provider) {
             throw new Error("Rust TextMate provider was not installed.");
         }
+        expect(setTokensProvider).toHaveBeenCalledWith("rust", provider);
+        expect(typeof provider.getInitialState).toBe("function");
+        expect(typeof provider.tokenizeEncoded).toBe("function");
 
         const tokens = provider.tokenizeEncoded(
             "pub fn main() {}",
@@ -295,13 +295,16 @@ describe("monacoTextmate", () => {
         expect(loadGrammarWithConfigurationMock).toHaveBeenCalledTimes(1);
         expect(firstProviderDispose).toHaveBeenCalledTimes(1);
         expect(setTokensProviderAfterCacheHit).toHaveBeenCalledTimes(1);
+        const cachedProvider = installedProviders[1];
+        if (!cachedProvider) {
+            throw new Error("Cached Rust TextMate provider was not installed.");
+        }
         expect(setTokensProviderAfterCacheHit).toHaveBeenCalledWith(
             "rust",
-            expect.objectContaining({
-                getInitialState: expect.any(Function),
-                tokenizeEncoded: expect.any(Function),
-            }),
+            cachedProvider,
         );
+        expect(typeof cachedProvider.getInitialState).toBe("function");
+        expect(typeof cachedProvider.tokenizeEncoded).toBe("function");
         expect(setModelLanguageAfterCacheHit).toHaveBeenCalledTimes(1);
         expect(setModelLanguageAfterCacheHit).toHaveBeenCalledWith(
             laterRustModel,
