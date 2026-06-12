@@ -893,6 +893,7 @@ struct PromptState {
     response_tx: Option<oneshot::Sender<Result<StopReason, Error>>>,
     seen_message_deltas: bool,
     seen_reasoning_deltas: bool,
+    project_user_messages: bool,
 }
 
 impl PromptState {
@@ -916,6 +917,30 @@ impl PromptState {
             response_tx: Some(response_tx),
             seen_message_deltas: false,
             seen_reasoning_deltas: false,
+            project_user_messages: false,
+        }
+    }
+
+    fn projection(
+        submission_id: String,
+        thread: Arc<dyn CodexThreadImpl>,
+        resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
+    ) -> Self {
+        Self {
+            submission_id,
+            active_commands: HashMap::new(),
+            active_web_search: None,
+            active_image_generations: HashSet::new(),
+            active_guardian_assessments: HashSet::new(),
+            thread,
+            resolution_tx,
+            pending_permission_interactions: HashMap::new(),
+            next_permission_interaction_id: 0,
+            event_count: 0,
+            response_tx: None,
+            seen_message_deltas: false,
+            seen_reasoning_deltas: false,
+            project_user_messages: true,
         }
     }
 
@@ -930,6 +955,12 @@ impl PromptState {
         // Keep detached permission request tasks running so ACP can route the
         // client's required `Cancelled` response after session cancellation.
         self.pending_permission_interactions.clear();
+    }
+
+    fn fail(&mut self, err: Error) {
+        if let Some(response_tx) = self.response_tx.take() {
+            drop(response_tx.send(Err(err)));
+        }
     }
 
     fn spawn_permission_request(
@@ -1191,6 +1222,9 @@ impl PromptState {
                 ..
             }) => {
                 info!("User message: {message:?}");
+                if self.project_user_messages {
+                    client.send_user_message(message);
+                }
             }
             EventMsg::AgentMessageContentDelta(AgentMessageContentDeltaEvent {
                 thread_id,
@@ -2885,6 +2919,8 @@ struct ThreadActor<A> {
     resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
     /// A sender for each interested `Op` submission that needs events routed.
     submissions: HashMap<String, SubmissionState>,
+    /// Drain-only projections for Codex turns created outside ACP prompt calls.
+    event_projections: HashMap<String, PromptState>,
     /// A receiver for incoming thread messages.
     message_rx: mpsc::UnboundedReceiver<ThreadMessage>,
     /// A receiver for spawned interaction results.
@@ -2913,6 +2949,7 @@ impl<A: Auth> ThreadActor<A> {
             models_manager,
             resolution_tx,
             submissions: HashMap::new(),
+            event_projections: HashMap::new(),
             message_rx,
             resolution_rx,
             last_sent_config_options: None,
@@ -3009,14 +3046,30 @@ impl<A: Auth> ThreadActor<A> {
                 request_key,
                 response,
             } => {
-                let Some(submission) = self.submissions.get_mut(&submission_id) else {
+                if let Some(submission) = self.submissions.get_mut(&submission_id) {
+                    if let Err(err) = submission
+                        .handle_permission_request_resolved(
+                            &self.client,
+                            interaction_id,
+                            request_key,
+                            response,
+                        )
+                        .await
+                    {
+                        submission.detach_pending_interactions();
+                        submission.fail(err);
+                    }
+                    return;
+                }
+
+                let Some(projection) = self.event_projections.get_mut(&submission_id) else {
                     warn!(
                         "Ignoring permission response for unknown submission ID: {submission_id}"
                     );
                     return;
                 };
 
-                if let Err(err) = submission
+                if let Err(err) = projection
                     .handle_permission_request_resolved(
                         &self.client,
                         interaction_id,
@@ -3025,8 +3078,8 @@ impl<A: Auth> ThreadActor<A> {
                     )
                     .await
                 {
-                    submission.detach_pending_interactions();
-                    submission.fail(err);
+                    projection.detach_pending_interactions();
+                    projection.fail(err);
                 }
             }
         }
@@ -3558,6 +3611,9 @@ impl<A: Auth> ThreadActor<A> {
         for submission in self.submissions.values_mut() {
             submission.detach_pending_interactions();
         }
+        for projection in self.event_projections.values_mut() {
+            projection.detach_pending_interactions();
+        }
     }
 
     /// Replay conversation history to the client via session/update notifications.
@@ -3934,9 +3990,30 @@ impl<A: Auth> ThreadActor<A> {
         if let Some(submission) = self.submissions.get_mut(&id) {
             submission.handle_event(&self.client, msg).await;
         } else {
-            warn!("Received event for unknown submission ID: {id} {msg:?}");
+            let is_terminal = is_projection_terminal_event(&msg);
+            let thread = self.thread.clone();
+            let resolution_tx = self.resolution_tx.clone();
+            let projection = self
+                .event_projections
+                .entry(id.clone())
+                .or_insert_with(|| PromptState::projection(id.clone(), thread, resolution_tx));
+            projection.handle_event(&self.client, msg).await;
+            if is_terminal {
+                self.event_projections.remove(&id);
+            }
         }
     }
+}
+
+fn is_projection_terminal_event(event: &EventMsg) -> bool {
+    matches!(
+        event,
+        EventMsg::TurnComplete(..)
+            | EventMsg::TurnAborted(..)
+            | EventMsg::ShutdownComplete
+            | EventMsg::Error(..)
+            | EventMsg::StreamError(..)
+    )
 }
 
 fn build_prompt_items(prompt: Vec<ContentBlock>) -> Vec<UserInput> {
@@ -4776,6 +4853,77 @@ mod tests {
                 ..
             }) if text == "Hi"
         ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn projects_external_turn_events_to_the_client() -> anyhow::Result<()> {
+        let (_session_id, client, thread, message_tx, _handle) = setup().await?;
+        let submission_id = "external-submission".to_string();
+        let turn_id = "external-turn".to_string();
+        let send = |msg| {
+            thread
+                .op_tx
+                .send(Event {
+                    id: submission_id.clone(),
+                    msg,
+                })
+                .unwrap();
+        };
+
+        send(EventMsg::UserMessage(UserMessageEvent {
+            client_id: None,
+            message: "child prompt".to_string(),
+            images: None,
+            image_details: Vec::new(),
+            local_images: Vec::new(),
+            local_image_details: Vec::new(),
+            text_elements: Vec::new(),
+        }));
+        send(EventMsg::AgentMessage(AgentMessageEvent {
+            message: "child answer".to_string(),
+            phase: None,
+            memory_citation: None,
+        }));
+        send(EventMsg::TurnComplete(TurnCompleteEvent {
+            last_agent_message: Some("child answer".to_string()),
+            turn_id,
+            completed_at: None,
+            duration_ms: None,
+            time_to_first_token_ms: None,
+        }));
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if client.notifications.lock().unwrap().len() >= 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+        drop(message_tx);
+
+        let notifications = client.notifications.lock().unwrap();
+        assert!(notifications.iter().any(|notification| {
+            matches!(
+                &notification.update,
+                SessionUpdate::UserMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(TextContent { text, .. }),
+                    ..
+                }) if text == "child prompt"
+            )
+        }));
+        assert!(notifications.iter().any(|notification| {
+            matches!(
+                &notification.update,
+                SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(TextContent { text, .. }),
+                    ..
+                }) if text == "child answer"
+            )
+        }));
 
         Ok(())
     }
