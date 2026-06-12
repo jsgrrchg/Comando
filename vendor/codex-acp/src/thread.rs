@@ -31,6 +31,7 @@ use codex_core::{
     review_format::format_review_findings_block,
     review_prompts::user_facing_hint,
 };
+use codex_features::Feature;
 use codex_login::auth::AuthManager;
 use codex_models_manager::manager::{ModelsManager, RefreshStrategy};
 use codex_protocol::{
@@ -38,6 +39,7 @@ use codex_protocol::{
         ElicitationRequest, ElicitationRequestEvent, GuardianAssessmentAction,
         GuardianCommandSource,
     },
+    config_types::ServiceTier,
     config_types::TrustLevel,
     dynamic_tools::{DynamicToolCallOutputContentItem, DynamicToolCallRequest},
     error::CodexErr,
@@ -85,6 +87,8 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+use crate::subagents::{self, SubagentProjection};
+
 /// Abstraction over the ACP connection for sending notifications and requests
 /// back to the client. This replaces the old `Client` trait usage.
 trait ClientSender: Send + Sync + 'static {
@@ -116,6 +120,10 @@ const INIT_COMMAND_PROMPT: &str = include_str!("./prompt_for_init_command.md");
 const CODEX_READ_ONLY_PROFILE_ID: &str = ":read-only";
 const CODEX_WORKSPACE_PROFILE_ID: &str = ":workspace";
 const CODEX_DANGER_NO_SANDBOX_PROFILE_ID: &str = ":danger-no-sandbox";
+
+fn debug_ai_worker_enabled() -> bool {
+    matches!(std::env::var("COMANDO_DEBUG_AI_WORKER").as_deref(), Ok("1"))
+}
 
 fn session_mode_id_for_active_profile(profile_id: &str) -> Option<&'static str> {
     match profile_id {
@@ -429,6 +437,10 @@ impl Thread {
 
     pub async fn replay_history(&self, history: Vec<RolloutItem>) -> Result<(), Error> {
         let (response_tx, response_rx) = oneshot::channel();
+        let history_items = history.len();
+        if debug_ai_worker_enabled() {
+            info!(history_items, "diagnostic: queueing ACP history replay");
+        }
 
         let message = ThreadMessage::ReplayHistory {
             history,
@@ -1085,6 +1097,17 @@ impl PromptState {
     #[expect(clippy::too_many_lines)]
     async fn handle_event(&mut self, client: &SessionClient, event: EventMsg) {
         self.event_count += 1;
+
+        if let Some(projection) = subagents::projection_for_collab_event(&event) {
+            match projection {
+                SubagentProjection::ToolCall(tool_call) => {
+                    client.send_notification(SessionUpdate::ToolCall(tool_call));
+                }
+                SubagentProjection::ToolCallUpdate(update) => {
+                    client.send_notification(SessionUpdate::ToolCallUpdate(update));
+                }
+            }
+        }
 
         // Complete any previous web search before starting a new one
         match &event {
@@ -2947,6 +2970,25 @@ impl<A: Auth> ThreadActor<A> {
         ))
     }
 
+    fn current_service_tier(&self) -> Option<ServiceTier> {
+        self.config
+            .service_tier
+            .as_deref()
+            .and_then(ServiceTier::from_request_value)
+    }
+
+    fn fast_mode_available(&self) -> bool {
+        self.config.features.enabled(Feature::FastMode)
+    }
+
+    fn service_tier_value_id(service_tier: Option<ServiceTier>) -> &'static str {
+        match service_tier {
+            Some(ServiceTier::Fast) => "fast",
+            Some(ServiceTier::Flex) => "flex",
+            None => "off",
+        }
+    }
+
     async fn config_options(&self) -> Result<Vec<SessionConfigOption>, Error> {
         let mut options = Vec::new();
 
@@ -2999,6 +3041,39 @@ impl<A: Auth> ThreadActor<A> {
                 .category(SessionConfigOptionCategory::Model)
                 .description("Choose which model Codex should use"),
         );
+
+        let current_service_tier = self.current_service_tier();
+        if self.fast_mode_available() || current_service_tier.is_some() {
+            let mut service_tier_options = vec![
+                SessionConfigSelectOption::new("off", "Off")
+                    .description("Use standard inference and standard plan usage"),
+            ];
+
+            if self.fast_mode_available() || matches!(current_service_tier, Some(ServiceTier::Fast))
+            {
+                service_tier_options.push(
+                    SessionConfigSelectOption::new("fast", "Fast")
+                        .description("Use the fastest inference at 2X plan usage"),
+                );
+            }
+
+            if matches!(current_service_tier, Some(ServiceTier::Flex)) {
+                service_tier_options.push(
+                    SessionConfigSelectOption::new("flex", "Flex")
+                        .description("Use the currently configured Flex service tier"),
+                );
+            }
+
+            options.push(
+                SessionConfigOption::select(
+                    "service_tier",
+                    "Fast Mode",
+                    Self::service_tier_value_id(current_service_tier),
+                    service_tier_options,
+                )
+                .description("Choose whether to use Fast Mode for this session"),
+            );
+        }
 
         // Reasoning effort selector (only if the current preset exists and has >1 supported effort)
         if let Some(preset) = current_preset
@@ -3072,6 +3147,7 @@ impl<A: Auth> ThreadActor<A> {
         match config_id.0.as_ref() {
             "mode" => self.handle_set_mode(SessionModeId::new(value.0)).await,
             "model" => self.handle_set_config_model(value).await,
+            "service_tier" => self.handle_set_config_service_tier(value).await,
             "reasoning_effort" => self.handle_set_config_reasoning_effort(value).await,
             _ => Err(Error::invalid_params().data("Unsupported config option")),
         }
@@ -3160,6 +3236,32 @@ impl<A: Auth> ThreadActor<A> {
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
 
         self.config.model_reasoning_effort = Some(effort);
+
+        Ok(())
+    }
+
+    async fn handle_set_config_service_tier(
+        &mut self,
+        value: SessionConfigValueId,
+    ) -> Result<(), Error> {
+        let service_tier = match value.0.as_ref() {
+            "off" => None,
+            "fast" => Some(ServiceTier::Fast.request_value().to_string()),
+            "flex" => Some(ServiceTier::Flex.request_value().to_string()),
+            _ => return Err(Error::invalid_params().data("Unsupported service tier")),
+        };
+
+        self.thread
+            .submit(Op::ThreadSettings {
+                thread_settings: ThreadSettingsOverrides {
+                    service_tier: Some(service_tier.clone()),
+                    ..Default::default()
+                },
+            })
+            .await
+            .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
+
+        self.config.service_tier = service_tier;
 
         Ok(())
     }
