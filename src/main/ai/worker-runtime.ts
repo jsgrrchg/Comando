@@ -1575,7 +1575,12 @@ export class AiWorkerRuntime {
         if (liveSession.snapshot.runtimeSessionId) {
             try {
                 liveSession.isRestoring = true;
-                if (supportsResumeSession(initializeResponse)) {
+                if (
+                    shouldResumePersistedSessionWithoutReplay(
+                        liveSession,
+                        initializeResponse,
+                    )
+                ) {
                     this.#emitSessionDiagnostic(
                         "Resuming persisted AI runtime session.",
                         liveSession,
@@ -4929,12 +4934,16 @@ function getLegacySetSessionModel(
         : null;
 }
 
-function supportsResumeSession(
+function shouldResumePersistedSessionWithoutReplay(
+    liveSession: Pick<LiveAcpSession, "runtimeId">,
     initializeResponse: Awaited<
         ReturnType<LiveAcpConnection["connection"]["initialize"]>
     >,
 ): boolean {
-    return initializeResponse.agentCapabilities?.sessionCapabilities?.resume != null;
+    return (
+        liveSession.runtimeId === "codex" &&
+        initializeResponse.agentCapabilities?.sessionCapabilities?.resume != null
+    );
 }
 
 function isSamePromptEchoContentBlock(

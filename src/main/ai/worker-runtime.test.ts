@@ -480,6 +480,47 @@ describe("AiWorkerRuntime prepareSession", () => {
         );
     });
 
+    it("loads non-Codex persisted sessions with replay even when resume is advertised", async () => {
+        initializeMock.mockResolvedValueOnce({
+            agentCapabilities: {
+                sessionCapabilities: {
+                    resume: {},
+                },
+            },
+        });
+        loadSessionMock.mockResolvedValueOnce({
+            configOptions: [],
+            modes: [],
+            models: [],
+        });
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const launch = createRuntimeLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            runtimeId: "claude",
+            title: "Claude replay session",
+        });
+        const runtime = new AiWorkerRuntime({
+            emitEvent: () => {},
+        });
+
+        const snapshot = (await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        })) as AiSessionSnapshot;
+
+        expect(loadSessionMock).toHaveBeenCalledWith({
+            additionalDirectories: undefined,
+            cwd: tempDir,
+            mcpServers: [],
+            sessionId: "runtime-session-1",
+        });
+        expect(resumeSessionMock).not.toHaveBeenCalled();
+        expect(snapshot.runtimeSessionId).toBe("runtime-session-1");
+    });
+
     it("launches Windows batch ACP runtimes through cmd.exe", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),
@@ -7211,6 +7252,45 @@ function createLaunch(
             status: readyStatus,
         },
         ...rest,
+    };
+}
+
+function createRuntimeLaunch(input: {
+    readonly cwd: string;
+    readonly projectRoot: string | null;
+    readonly runtimeId: AiRuntimeStatus["runtimeId"];
+    readonly title: string;
+}): AiWorkerSessionLaunchInput {
+    const launch = createLaunch({
+        cwd: input.cwd,
+        projectRoot: input.projectRoot,
+        title: input.title,
+    });
+    const status = {
+        ...launch.resolvedRuntime.status,
+        authMethod: input.runtimeId === "codex" ? "chatgpt" : null,
+        command: `mock-${input.runtimeId}-acp`,
+        runtimeId: input.runtimeId,
+    } satisfies AiRuntimeStatus;
+
+    return {
+        ...launch,
+        input: {
+            ...launch.input,
+            runtimeId: input.runtimeId,
+            title: input.title,
+        },
+        persistedSnapshot: {
+            ...launch.persistedSnapshot,
+            runtimeId: input.runtimeId,
+            title: input.title,
+        },
+        resolvedRuntime: {
+            ...launch.resolvedRuntime,
+            command: status.command,
+            executable: status.command,
+            status,
+        },
     };
 }
 
