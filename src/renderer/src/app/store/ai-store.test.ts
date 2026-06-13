@@ -265,6 +265,128 @@ describe("ai-store queue", () => {
         ).toEqual(availableCommands);
     });
 
+    it("tracks runtime lifecycle from cold through warming to ready", async () => {
+        const prepareSession = createDeferred<AiSessionSnapshot | null>();
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    prepareAiSession: vi
+                        .fn()
+                        .mockImplementation(() => prepareSession.promise),
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
+        ).toBe("cold");
+
+        const ensurePromise = useAiStore.getState().ensureSession(TAB);
+
+        await vi.waitFor(() => {
+            expect(
+                useAiStore.getState().sessions[TAB.sessionId]
+                    ?.runtimeLifecycle,
+            ).toBe("warming");
+        });
+
+        prepareSession.resolve(createSnapshot());
+        await ensurePromise;
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
+        ).toBe("ready");
+    });
+
+    it("keeps a prompt pending while the runtime is warming and dispatches when ready", async () => {
+        const prepareSession = createDeferred<AiSessionSnapshot | null>();
+        const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    prepareAiSession: vi
+                        .fn()
+                        .mockImplementation(() => prepareSession.promise),
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        const ensurePromise = useAiStore.getState().ensureSession(TAB);
+
+        await vi.waitFor(() => {
+            expect(
+                useAiStore.getState().sessions[TAB.sessionId]
+                    ?.runtimeLifecycle,
+            ).toBe("warming");
+        });
+
+        await useAiStore.getState().sendPrompt(TAB, "hello");
+
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
+        ).toBe("dispatching");
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.queue[0]?.status,
+        ).toBe("pending_dispatch");
+
+        prepareSession.resolve(createSnapshot());
+        await ensurePromise;
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        });
+        expect(sendAiPrompt.mock.calls[0]?.[0]).toMatchObject({
+            prompt: "hello",
+        });
+    });
+
+    it("maps runtime lifecycle for streaming, idle, and failed snapshots", async () => {
+        const sendAiPrompt = vi
+            .fn()
+            .mockRejectedValueOnce(new Error("Spawn failed"));
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
+        ).toBe("streaming");
+
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
+        ).toBe("ready");
+
+        await useAiStore.getState().sendPrompt(TAB, "hello");
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
+        ).toBe("failed");
+    });
+
     it("preserves runtime commands when session hydration returns an empty snapshot catalog", async () => {
         const availableCommands = [
             {

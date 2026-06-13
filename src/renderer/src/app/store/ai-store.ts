@@ -47,6 +47,7 @@ import {
     cloneDraftFileContexts,
     createEmptyComposerDraftParts,
     normalizeAiDiffZoom,
+    type AiRuntimeLifecycle,
     type AiComposerDraftPart,
     type QueuedPrompt,
 } from "@renderer/app/ai/sessionReviewContracts";
@@ -137,6 +138,7 @@ interface AiSessionClientState {
     // a queued item), at which point that prompt dispatches and the rest of
     // the queue resumes draining when its turn completes.
     readonly queuePaused: boolean;
+    readonly runtimeLifecycle: AiRuntimeLifecycle;
     readonly snapshot: AiSessionSnapshot | null;
     readonly transcript: AiSessionTranscriptModel;
 }
@@ -465,14 +467,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return {
                 sessions: {
                     ...state.sessions,
-                    [sessionId]: {
+                    [sessionId]: withRuntimeLifecycle({
                         ...session,
                         activeQueuedPrompt: null,
                         editingQueuedPromptState: null,
                         editingQueuedPrompt: null,
                         queue: [],
                         queuePaused: false,
-                    },
+                    }),
                 },
             };
         });
@@ -524,7 +526,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return {
                 sessions: {
                     ...state.sessions,
-                    [event.sessionId]: {
+                    [event.sessionId]: withRuntimeLifecycle({
                         ...session,
                         ...reconcileDispatchStateForIncomingSnapshot(
                             session,
@@ -540,7 +542,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         meta: nextMeta,
                         snapshot: nextSnapshot,
                         transcript: nextTranscript,
-                    },
+                    }),
                 },
             };
         });
@@ -629,7 +631,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                                 : state.runtimeCatalogById,
                         sessions: {
                             ...state.sessions,
-                            [update.patch.sessionId]: {
+                            [update.patch.sessionId]: withRuntimeLifecycle({
                                 ...session,
                                 ...reconcileDispatchStateForIncomingSnapshot(
                                     session,
@@ -645,7 +647,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                                 meta: nextMeta,
                                 snapshot: nextSnapshot,
                                 transcript: nextTranscript,
-                            },
+                            }),
                         },
                     };
                 }
@@ -704,7 +706,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         : state.runtimeCatalogById,
                 sessions: {
                     ...state.sessions,
-                    [update.patch.sessionId]: {
+                    [update.patch.sessionId]: withRuntimeLifecycle({
                         ...session,
                         ...reconcileDispatchStateForIncomingSnapshot(
                             session,
@@ -720,7 +722,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         meta: nextMeta,
                         snapshot: nextSnapshot,
                         transcript: nextTranscript,
-                    },
+                    }),
                 },
             };
         });
@@ -773,7 +775,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     : state.runtimeCatalogById,
                 sessions: {
                     ...state.sessions,
-                    [snapshot.sessionId]: {
+                    [snapshot.sessionId]: withRuntimeLifecycle({
                         ...session,
                         ...reconcileDispatchStateForIncomingSnapshot(
                             session,
@@ -789,7 +791,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         meta: nextMeta,
                         snapshot: resolvedSnapshot,
                         transcript: resolvedTranscript,
-                    },
+                    }),
                 },
             };
         });
@@ -845,11 +847,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
         set((state) => ({
             sessions: {
                 ...state.sessions,
-                [tab.sessionId]: {
+                [tab.sessionId]: withRuntimeLifecycle({
                     ...(state.sessions[tab.sessionId] ?? createSessionState()),
                     isHydrating: true,
                     meta: buildSessionMeta(tab),
-                },
+                }),
             },
         }));
 
@@ -890,7 +892,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             },
                             sessions: {
                                 ...state.sessions,
-                                [tab.sessionId]: {
+                                [tab.sessionId]: withRuntimeLifecycle({
                                     ...existingSession,
                                     snapshot:
                                         nextCatalog &&
@@ -900,7 +902,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                                                   nextCatalog,
                                               )
                                             : existingSnapshot,
-                                },
+                                }),
                             },
                         };
                     });
@@ -971,7 +973,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     },
                     sessions: {
                         ...state.sessions,
-                        [tab.sessionId]: {
+                        [tab.sessionId]: withRuntimeLifecycle({
                             ...(state.sessions[tab.sessionId] ??
                                 createSessionState()),
                             hydrated: true,
@@ -992,10 +994,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             meta: buildSessionMeta(tab),
                             snapshot: nextSnapshot,
                             transcript: nextTranscript,
-                        },
+                        }),
                     },
                 };
             });
+            void drainQueueIfNeeded(tab.sessionId, get, set);
         } catch (error) {
             set((state) => ({
                 runtimeCatalogById: {
@@ -1009,7 +1012,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 },
                 sessions: {
                     ...state.sessions,
-                    [tab.sessionId]: {
+                    [tab.sessionId]: withRuntimeLifecycle({
                         ...(state.sessions[tab.sessionId] ??
                             createSessionState()),
                         // Keep `hydrated: false` so a subsequent ensureSession
@@ -1028,7 +1031,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             state.runtimeCatalogById[tab.runtimeId] ?? null,
                         ),
                         transcript: createEmptyAiSessionTranscriptModel(),
-                    },
+                    }),
                 },
             }));
         }
@@ -1092,7 +1095,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
         set((state) => ({
             sessions: {
                 ...state.sessions,
-                [tab.sessionId]: {
+                [tab.sessionId]: withRuntimeLifecycle({
                     ...(state.sessions[tab.sessionId] ??
                         createSessionState(persistedPreferences)),
                     draftComposerParts:
@@ -1107,7 +1110,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             tab,
                             state.runtimeCatalogById[tab.runtimeId] ?? null,
                         ),
-                },
+                }),
             },
         }));
     },
@@ -1780,6 +1783,7 @@ function createSessionState(
         meta: null,
         queue: [],
         queuePaused: false,
+        runtimeLifecycle: "cold",
         snapshot: null,
         transcript: createEmptyAiSessionTranscriptModel(),
     };
@@ -2577,12 +2581,12 @@ async function dispatchPrompt(
         return {
             sessions: {
                 ...state.sessions,
-                [meta.sessionId]: {
+                [meta.sessionId]: withRuntimeLifecycle({
                     ...session,
                     activeDispatchToken: dispatchToken,
                     isDispatching: true,
                     localError: null,
-                },
+                }),
             },
         };
     });
@@ -2614,7 +2618,7 @@ async function dispatchPrompt(
                 return {
                     sessions: {
                         ...state.sessions,
-                        [meta.sessionId]: {
+                        [meta.sessionId]: withRuntimeLifecycle({
                             ...session,
                             localError: null,
                             snapshot: session.snapshot
@@ -2624,7 +2628,7 @@ async function dispatchPrompt(
                                       updatedAt: session.snapshot.updatedAt,
                                   }
                                 : session.snapshot,
-                        },
+                        }),
                     },
                 };
             });
@@ -2646,7 +2650,7 @@ async function dispatchPrompt(
             return {
                 sessions: {
                     ...state.sessions,
-                    [meta.sessionId]: {
+                    [meta.sessionId]: withRuntimeLifecycle({
                         ...session,
                         activeDispatchToken: null,
                         isDispatching: false,
@@ -2660,7 +2664,7 @@ async function dispatchPrompt(
                                   updatedAt: session.snapshot.updatedAt,
                               }
                             : session.snapshot,
-                    },
+                    }),
                 },
             };
         });
@@ -2676,11 +2680,11 @@ async function dispatchPrompt(
             return {
                 sessions: {
                     ...state.sessions,
-                    [meta.sessionId]: {
+                    [meta.sessionId]: withRuntimeLifecycle({
                         ...session,
                         activeDispatchToken: null,
                         isDispatching: false,
-                    },
+                    }),
                 },
             };
         });
@@ -2711,7 +2715,7 @@ async function drainQueueIfNeeded(
         !session.snapshot ||
         session.queue.length === 0 ||
         session.queuePaused ||
-        isBusySession(session.snapshot) ||
+        isRuntimeLifecycleBlockingDrain(session) ||
         isClosedSubagentSession(session.snapshot)
     ) {
         return;
@@ -2884,7 +2888,7 @@ function applyLocalPromptAcceptanceToSession(
         },
     );
 
-    return {
+    return withRuntimeLifecycle({
         ...session,
         localError: null,
         snapshot: writeAiSessionTranscriptToSnapshot(
@@ -2892,7 +2896,7 @@ function applyLocalPromptAcceptanceToSession(
             nextTranscript,
         ),
         transcript: nextTranscript,
-    };
+    });
 }
 
 function completeLocalStreamingMessages(
@@ -3051,7 +3055,7 @@ function commitQueuedPromptEdit(
         return {
             sessions: {
                 ...state.sessions,
-                [sessionId]: {
+                [sessionId]: withRuntimeLifecycle({
                     ...session,
                     meta: meta ?? session.meta,
                     queue: insertQueuedPromptAtEditPosition(
@@ -3059,7 +3063,7 @@ function commitQueuedPromptEdit(
                         queuedPrompt,
                         session.editingQueuedPromptState,
                     ),
-                },
+                }),
             },
         };
     });
@@ -3085,11 +3089,11 @@ function enqueuePrompt(
         return {
             sessions: {
                 ...state.sessions,
-                [sessionId]: {
+                [sessionId]: withRuntimeLifecycle({
                     ...session,
                     meta: meta ?? session.meta,
                     queue,
-                },
+                }),
             },
         };
     });
@@ -3130,10 +3134,10 @@ function setQueuedPromptStatusInState(
         return {
             sessions: {
                 ...state.sessions,
-                [sessionId]: {
+                [sessionId]: withRuntimeLifecycle({
                     ...session,
                     queue,
-                },
+                }),
             },
         };
     });
@@ -3214,7 +3218,7 @@ function restoreActiveQueuedPrompt(
         return {
             sessions: {
                 ...state.sessions,
-                [sessionId]: {
+                [sessionId]: withRuntimeLifecycle({
                     ...session,
                     activeQueuedPrompt: null,
                     queue: insertQueuedPromptAtPosition(
@@ -3225,7 +3229,7 @@ function restoreActiveQueuedPrompt(
                         },
                         activeQueuedPrompt.position,
                     ),
-                },
+                }),
             },
         };
     });
@@ -3250,25 +3254,27 @@ function completeActiveQueuedPromptAfterSuccessfulDispatch(
             return state;
         }
 
+        const nextSession = withRuntimeLifecycle({
+            ...session,
+            activeQueuedPrompt: null,
+        });
+
         shouldDrainAfterUnlock =
             hasIncomingSnapshotVersionAdvancedPastActiveQueuedPrompt(
                 session,
                 activeQueuedPrompt,
             ) &&
-            session.queue.some((queuedPrompt) =>
+            nextSession.queue.some((queuedPrompt) =>
                 isDispatchableQueuedPrompt(queuedPrompt),
             ) &&
-            !session.queuePaused &&
-            !isBusySession(session.snapshot) &&
+            !nextSession.queuePaused &&
+            !isRuntimeLifecycleBlockingDrain(nextSession) &&
             !isClosedSubagentSession(session.snapshot);
 
         return {
             sessions: {
                 ...state.sessions,
-                [sessionId]: {
-                    ...session,
-                    activeQueuedPrompt: null,
-                },
+                [sessionId]: nextSession,
             },
         };
     });
@@ -3545,6 +3551,105 @@ function isBusySession(snapshot: AiSessionSnapshot): boolean {
         snapshot.status === "waiting_permission" ||
         snapshot.status === "waiting_user_input"
     );
+}
+
+function isBlockingRuntimeLifecycle(
+    lifecycle: AiRuntimeLifecycle,
+): boolean {
+    return (
+        lifecycle === "warming" ||
+        lifecycle === "dispatching" ||
+        lifecycle === "streaming" ||
+        lifecycle === "waiting_permission" ||
+        lifecycle === "waiting_user_input" ||
+        lifecycle === "cooling" ||
+        lifecycle === "detached"
+    );
+}
+
+function isRuntimeLifecycleBlockingDrain(
+    session: AiSessionClientState,
+): boolean {
+    if (session.runtimeLifecycle === "dispatching") {
+        return Boolean(
+            session.isHydrating ||
+                hasActiveLocalDispatch(session) ||
+                (session.snapshot && isBusySession(session.snapshot)),
+        );
+    }
+
+    return isBlockingRuntimeLifecycle(session.runtimeLifecycle);
+}
+
+function withRuntimeLifecycle(
+    session: AiSessionClientState,
+): AiSessionClientState {
+    const runtimeLifecycle = deriveRuntimeLifecycle(session);
+    return runtimeLifecycle === session.runtimeLifecycle
+        ? session
+        : {
+              ...session,
+              runtimeLifecycle,
+          };
+}
+
+function deriveRuntimeLifecycle(
+    session: AiSessionClientState,
+): AiRuntimeLifecycle {
+    const snapshot = session.snapshot;
+    if (!snapshot) {
+        return session.isHydrating ? "warming" : "cold";
+    }
+
+    if (snapshot.parentSessionId && snapshot.closedAt) {
+        return "detached";
+    }
+
+    if (
+        session.localError ||
+        snapshot.lastError ||
+        snapshot.status === "error"
+    ) {
+        return "failed";
+    }
+
+    if (
+        session.isDispatching ||
+        session.activeQueuedPrompt ||
+        session.queue.some(
+            (queuedPrompt) =>
+                queuedPrompt.status === "pending_dispatch" ||
+                queuedPrompt.status === "sending",
+        )
+    ) {
+        return "dispatching";
+    }
+
+    if (session.isHydrating) {
+        return "warming";
+    }
+
+    if (snapshot.status === "streaming") {
+        return "streaming";
+    }
+
+    if (snapshot.status === "waiting_permission") {
+        return "waiting_permission";
+    }
+
+    if (snapshot.status === "waiting_user_input") {
+        return "waiting_user_input";
+    }
+
+    if (snapshot.status === "starting") {
+        return snapshot.activeTurnStartedAt ? "dispatching" : "warming";
+    }
+
+    if (!snapshot.runtimeSessionId) {
+        return "cold";
+    }
+
+    return "ready";
 }
 
 function hasActiveLocalDispatch(session: AiSessionClientState): boolean {

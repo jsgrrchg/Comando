@@ -29,7 +29,10 @@ import { resolveEditorLanguage } from "@shared/editor-language";
 
 import { useShallow } from "zustand/react/shallow";
 
-import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
+import {
+    DEFAULT_AI_DIFF_ZOOM,
+    type AiRuntimeLifecycle,
+} from "@renderer/app/ai/sessionReviewContracts";
 import {
     createEmptyAiSessionTranscriptModel,
     getAiSessionTranscriptMessages,
@@ -221,6 +224,7 @@ export const ChatTabView = memo(function ChatTabView({
                 editingQueuedPrompt: session.editingQueuedPrompt,
                 localError: session.localError,
                 queue: session.queue,
+                runtimeLifecycle: session.runtimeLifecycle,
                 snapshot: session.snapshot,
                 transcript: session.transcript,
             };
@@ -439,6 +443,14 @@ export const ChatTabView = memo(function ChatTabView({
         ? snapshot.plan
         : null;
     const runtimeDisplayName = getRuntimeDisplayName(tab.runtimeId);
+    const runtimeLifecycle =
+        sessionState?.runtimeLifecycle ??
+        deriveFallbackRuntimeLifecycle(snapshot);
+    const runtimeLifecycleNotice = getRuntimeLifecycleNotice(
+        runtimeLifecycle,
+        runtimeDisplayName,
+        currentError,
+    );
     const parentSessionId =
         snapshot.parentSessionId && snapshot.parentSessionId !== tab.sessionId
             ? snapshot.parentSessionId
@@ -674,6 +686,7 @@ export const ChatTabView = memo(function ChatTabView({
         pendingUserInput !== null ||
         editingQueuedPrompt !== null ||
         queuedPrompts.length > 0 ||
+        runtimeLifecycleNotice !== null ||
         currentError !== null ||
         composerError !== null ||
         pendingReviewCount > 0;
@@ -1834,6 +1847,11 @@ export const ChatTabView = memo(function ChatTabView({
                                     onDelete={handleRemoveQueuedPrompt}
                                     onEdit={handleEditQueuedPrompt}
                                     onSendNow={handleSendQueuedPromptNow}
+                                />
+                            ) : null}
+                            {runtimeLifecycleNotice ? (
+                                <RuntimeLifecycleNotice
+                                    notice={runtimeLifecycleNotice}
                                 />
                             ) : null}
                             {currentError ? renderError(currentError) : null}
@@ -3172,7 +3190,110 @@ function StreamingIndicator({ elapsed }: { readonly elapsed: string }) {
     );
 }
 
+interface RuntimeLifecycleNoticeModel {
+    readonly tone: "accent" | "danger" | "muted";
+    readonly text: string;
+}
+
+function RuntimeLifecycleNotice({
+    notice,
+}: {
+    readonly notice: RuntimeLifecycleNoticeModel;
+}) {
+    const color =
+        notice.tone === "danger"
+            ? "#ef4444"
+            : notice.tone === "accent"
+              ? "var(--color-accent)"
+              : "var(--color-text-secondary)";
+
+    return (
+        <div
+            className="rounded px-3 py-1.5"
+            style={{
+                backgroundColor:
+                    notice.tone === "danger"
+                        ? "color-mix(in srgb, #ef4444 7%, var(--color-bg-secondary))"
+                        : "color-mix(in srgb, var(--color-accent) 5%, var(--color-bg-secondary))",
+                border:
+                    notice.tone === "danger"
+                        ? "1px solid color-mix(in srgb, #ef4444 18%, var(--color-border))"
+                        : "1px solid color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
+                color,
+                fontFamily: "var(--font-mono)",
+                fontSize: "0.78em",
+                fontWeight: 500,
+            }}
+        >
+            {notice.text}
+        </div>
+    );
+}
+
 /* ─── Utility functions ─── */
+
+function deriveFallbackRuntimeLifecycle(
+    snapshot: AiSessionSnapshot,
+): AiRuntimeLifecycle {
+    if (snapshot.parentSessionId && snapshot.closedAt) {
+        return "detached";
+    }
+
+    if (snapshot.lastError || snapshot.status === "error") {
+        return "failed";
+    }
+
+    if (snapshot.status === "starting") {
+        return snapshot.activeTurnStartedAt ? "dispatching" : "warming";
+    }
+
+    if (snapshot.status === "streaming") {
+        return "streaming";
+    }
+
+    if (snapshot.status === "waiting_permission") {
+        return "waiting_permission";
+    }
+
+    if (snapshot.status === "waiting_user_input") {
+        return "waiting_user_input";
+    }
+
+    return snapshot.runtimeSessionId ? "ready" : "cold";
+}
+
+function getRuntimeLifecycleNotice(
+    lifecycle: AiRuntimeLifecycle,
+    runtimeName: string,
+    currentError: string | null,
+): RuntimeLifecycleNoticeModel | null {
+    switch (lifecycle) {
+        case "warming":
+            return {
+                text: `Connecting to ${runtimeName}...`,
+                tone: "accent",
+            };
+        case "dispatching":
+            return {
+                text: "Dispatching prompt...",
+                tone: "accent",
+            };
+        case "detached":
+            return {
+                text: "Session detached.",
+                tone: "muted",
+            };
+        case "failed":
+            return currentError
+                ? null
+                : {
+                      text: `${runtimeName} needs attention.`,
+                      tone: "danger",
+                  };
+        default:
+            return null;
+    }
+}
 
 function getRuntimeDisplayName(
     runtimeId: RuntimeWorkspaceChatTab["runtimeId"],
