@@ -303,6 +303,25 @@ type GetAiState = () => AiStore;
 
 const activeQueueDrainSessionIds = new Set<string>();
 const pendingQueueDrainSessionIds = new Set<string>();
+type SessionActorOperationPriority = "urgent" | "normal" | "background";
+
+interface SessionPrepareOperation {
+    readonly key: string;
+    readonly promise: Promise<void>;
+    readonly token: number;
+}
+
+interface SessionActorState {
+    invalidationToken: number;
+    prepare: SessionPrepareOperation | null;
+    queue: Promise<void>;
+}
+
+const sessionActors = new Map<string, SessionActorState>();
+
+export function resetAiSessionActorsForTests(): void {
+    sessionActors.clear();
+}
 
 export const useAiStore = create<AiStore>((set, get) => ({
     claudeSettings: createEmptyClaudeSettings(),
@@ -810,8 +829,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
         // snapshot that follows the cancel cannot race a drain and ship the
         // next queued prompt. Pausing with an empty queue is fine — pause
         // only matters while there is something to hold back.
+        invalidateSessionActorOperations(sessionId, set);
         pauseQueue(sessionId, set);
-        await getComandoApi().cancelAiSession(sessionId);
+        await runSessionActorOperation(sessionId, "urgent", () =>
+            getComandoApi().cancelAiSession(sessionId),
+        );
     },
 
     dismissSessionPlan: (sessionId, planUpdatedAt) => {
@@ -834,207 +856,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     ensureSession: async (tab, options) => {
-        get().registerSessionTab(tab);
-        const currentSession = get().sessions[tab.sessionId];
-
-        if (
-            !options?.force &&
-            (currentSession?.hydrated || currentSession?.isHydrating)
-        ) {
-            return;
-        }
-
-        set((state) => ({
-            sessions: {
-                ...state.sessions,
-                [tab.sessionId]: withRuntimeLifecycle({
-                    ...(state.sessions[tab.sessionId] ?? createSessionState()),
-                    isHydrating: true,
-                    meta: buildSessionMeta(tab),
-                }),
-            },
-        }));
-
-        try {
-            const runtimeStatusPromise = getComandoApi()
-                .getAiRuntimeStatus(tab.runtimeId)
-                .then((runtimeStatus) => {
-                    const runtimeCatalog =
-                        extractRuntimeCatalogFromStatus(runtimeStatus);
-
-                    set((state) => {
-                        const existingSession =
-                            state.sessions[tab.sessionId] ??
-                            createSessionState();
-                        const existingSnapshot =
-                            existingSession.snapshot ??
-                            createEmptySessionSnapshot(
-                                tab,
-                                state.runtimeCatalogById[tab.runtimeId] ?? null,
-                            );
-                        const nextCatalog =
-                            runtimeCatalog && hasRuntimeCatalog(runtimeCatalog)
-                                ? runtimeCatalog
-                                : (state.runtimeCatalogById[tab.runtimeId] ??
-                                  null);
-
-                        return {
-                            runtimeCatalogById:
-                                nextCatalog && hasRuntimeCatalog(nextCatalog)
-                                    ? {
-                                          ...state.runtimeCatalogById,
-                                          [tab.runtimeId]: nextCatalog,
-                                      }
-                                    : state.runtimeCatalogById,
-                            runtimeStatusById: {
-                                ...state.runtimeStatusById,
-                                [runtimeStatus.runtimeId]: runtimeStatus,
-                            },
-                            sessions: {
-                                ...state.sessions,
-                                [tab.sessionId]: withRuntimeLifecycle({
-                                    ...existingSession,
-                                    snapshot:
-                                        nextCatalog &&
-                                        hasRuntimeCatalog(nextCatalog)
-                                            ? mergeRuntimeCatalogIntoSnapshot(
-                                                  existingSnapshot,
-                                                  nextCatalog,
-                                              )
-                                            : existingSnapshot,
-                                }),
-                            },
-                        };
-                    });
-
-                    return runtimeStatus;
-                });
-            const snapshotPromise = getComandoApi()
-                .prepareAiSession({
-                    projectId: tab.projectId,
-                    runtimeId: tab.runtimeId,
-                    sessionId: tab.sessionId,
-                    title: tab.title,
-                    worktreeId: tab.worktreeId ?? null,
-                })
-                .catch(async (error) => {
-                    const fallbackSnapshot =
-                        await getComandoApi().getAiSessionSnapshot(
-                            tab.sessionId,
-                        );
-                    if (fallbackSnapshot) {
-                        return fallbackSnapshot;
-                    }
-                    throw error;
-                });
-            const [runtimeStatus, snapshot] = await Promise.all([
-                runtimeStatusPromise,
-                snapshotPromise,
-            ]);
-            const resolvedSnapshot =
-                snapshot ??
-                createEmptySessionSnapshot(
-                    tab,
-                    get().runtimeCatalogById[tab.runtimeId] ?? null,
-                );
-
-            set((state) => {
-                const runtimeCatalog =
-                    extractRuntimeCatalogFromStatus(runtimeStatus);
-                const nextCatalog =
-                    runtimeCatalog && hasRuntimeCatalog(runtimeCatalog)
-                        ? runtimeCatalog
-                        : (state.runtimeCatalogById[tab.runtimeId] ??
-                          extractRuntimeCatalog(resolvedSnapshot));
-                const incomingSnapshot = hasRuntimeCatalog(nextCatalog)
-                    ? mergeRuntimeCatalogIntoSnapshot(
-                          resolvedSnapshot,
-                          nextCatalog,
-                      )
-                    : resolvedSnapshot;
-                const currentSession = state.sessions[tab.sessionId];
-                const resolved = resolveIncomingSessionSnapshot(
-                    incomingSnapshot,
-                    currentSession,
-                );
-                const nextSnapshot = resolved.snapshot;
-                const nextTranscript = resolved.transcript;
-
-                return {
-                    runtimeCatalogById: hasRuntimeCatalog(nextCatalog)
-                        ? {
-                              ...state.runtimeCatalogById,
-                              [tab.runtimeId]: nextCatalog,
-                          }
-                        : state.runtimeCatalogById,
-                    runtimeStatusById: {
-                        ...state.runtimeStatusById,
-                        [runtimeStatus.runtimeId]: runtimeStatus,
-                    },
-                    sessions: {
-                        ...state.sessions,
-                        [tab.sessionId]: withRuntimeLifecycle({
-                            ...(state.sessions[tab.sessionId] ??
-                                createSessionState()),
-                            hydrated: true,
-                            ...(snapshot
-                                ? resolveIncomingSnapshotProgress(
-                                      currentSession,
-                                      incomingSnapshot.updatedAt,
-                                  )
-                                : {
-                                      incomingSnapshotVersion:
-                                          currentSession?.incomingSnapshotVersion ??
-                                          0,
-                                      lastIncomingSnapshotUpdatedAt:
-                                          currentSession?.lastIncomingSnapshotUpdatedAt ??
-                                          null,
-                                  }),
-                            isHydrating: false,
-                            meta: buildSessionMeta(tab),
-                            snapshot: nextSnapshot,
-                            transcript: nextTranscript,
-                        }),
-                    },
-                };
-            });
-            void drainQueueIfNeeded(tab.sessionId, get, set);
-        } catch (error) {
-            set((state) => ({
-                runtimeCatalogById: {
-                    ...state.runtimeCatalogById,
-                    [tab.runtimeId]: extractRuntimeCatalog(
-                        createEmptySessionSnapshot(
-                            tab,
-                            state.runtimeCatalogById[tab.runtimeId] ?? null,
-                        ),
-                    ),
-                },
-                sessions: {
-                    ...state.sessions,
-                    [tab.sessionId]: withRuntimeLifecycle({
-                        ...(state.sessions[tab.sessionId] ??
-                            createSessionState()),
-                        // Keep `hydrated: false` so a subsequent ensureSession
-                        // call (tab re-focus, window restore) can retry instead
-                        // of landing on the early-return that treats hydrated
-                        // as "done forever".
-                        hydrated: false,
-                        isHydrating: false,
-                        localError:
-                            error instanceof Error
-                                ? error.message
-                                : `Could not hydrate the ${getRuntimeDisplayName(tab.runtimeId)} session.`,
-                        meta: buildSessionMeta(tab),
-                        snapshot: createEmptySessionSnapshot(
-                            tab,
-                            state.runtimeCatalogById[tab.runtimeId] ?? null,
-                        ),
-                        transcript: createEmptyAiSessionTranscriptModel(),
-                    }),
-                },
-            }));
-        }
+        await runSessionPrepare(tab, options, get, set);
     },
 
     hydrateSettings: (settings) => {
@@ -1058,7 +880,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 trackedFiles: [],
                 updatedAt: new Date().toISOString(),
             }),
-            () => getComandoApi().keepAllAiTrackedFiles(sessionId),
+            () =>
+                runSessionActorOperation(sessionId, "background", () =>
+                    getComandoApi().keepAllAiTrackedFiles(sessionId),
+                ),
             set,
             get,
         );
@@ -1068,7 +893,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
         await runOptimisticSnapshotMutation(
             input.sessionId,
             (snapshot) => removeTrackedFileFromSnapshot(snapshot, input.path),
-            () => getComandoApi().keepAiTrackedFile(input),
+            () =>
+                runSessionActorOperation(input.sessionId, "background", () =>
+                    getComandoApi().keepAiTrackedFile(input),
+                ),
             set,
             get,
         );
@@ -1079,7 +907,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
             input.sessionId,
             (snapshot) =>
                 resolveTrackedFileHunksInSnapshot(snapshot, input, "keep"),
-            () => getComandoApi().keepAiTrackedFileHunks(input),
+            () =>
+                runSessionActorOperation(input.sessionId, "background", () =>
+                    getComandoApi().keepAiTrackedFileHunks(input),
+                ),
             set,
             get,
         );
@@ -1123,7 +954,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 trackedFiles: [],
                 updatedAt: new Date().toISOString(),
             }),
-            () => getComandoApi().rejectAllAiTrackedFiles(sessionId),
+            () =>
+                runSessionActorOperation(sessionId, "background", () =>
+                    getComandoApi().rejectAllAiTrackedFiles(sessionId),
+                ),
             set,
             get,
         );
@@ -1133,7 +967,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
         await runOptimisticSnapshotMutation(
             input.sessionId,
             (snapshot) => removeTrackedFileFromSnapshot(snapshot, input.path),
-            () => getComandoApi().rejectAiTrackedFile(input),
+            () =>
+                runSessionActorOperation(input.sessionId, "background", () =>
+                    getComandoApi().rejectAiTrackedFile(input),
+                ),
             set,
             get,
         );
@@ -1144,7 +981,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
             input.sessionId,
             (snapshot) =>
                 resolveTrackedFileHunksInSnapshot(snapshot, input, "reject"),
-            () => getComandoApi().rejectAiTrackedFileHunks(input),
+            () =>
+                runSessionActorOperation(input.sessionId, "background", () =>
+                    getComandoApi().rejectAiTrackedFileHunks(input),
+                ),
             set,
             get,
         );
@@ -1285,7 +1125,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     respondPermission: async (input) => {
-        await getComandoApi().respondAiPermission(input);
+        await runSessionActorOperation(input.sessionId, "urgent", () =>
+            getComandoApi().respondAiPermission(input),
+        );
     },
 
     respondUserInput: async (input) => {
@@ -1298,7 +1140,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 status: "starting",
                 updatedAt: new Date().toISOString(),
             }),
-            () => getComandoApi().respondAiUserInput(input),
+            () =>
+                runSessionActorOperation(input.sessionId, "urgent", () =>
+                    getComandoApi().respondAiUserInput(input),
+                ),
             set,
             get,
         );
@@ -1515,14 +1360,16 @@ export const useAiStore = create<AiStore>((set, get) => ({
             (currentSnapshot) =>
                 setModeOnSnapshot(currentSnapshot, input.modeId),
             () =>
-                modeConfig?.type === "select" &&
-                hasSelectConfigValue(modeConfig, input.modeId)
-                    ? getComandoApi().setAiSessionConfigOption({
-                          optionId: modeConfig.id,
-                          sessionId: input.sessionId,
-                          value: input.modeId,
-                      })
-                    : getComandoApi().setAiSessionMode(input),
+                runSessionActorOperation(input.sessionId, "background", () =>
+                    modeConfig?.type === "select" &&
+                    hasSelectConfigValue(modeConfig, input.modeId)
+                        ? getComandoApi().setAiSessionConfigOption({
+                              optionId: modeConfig.id,
+                              sessionId: input.sessionId,
+                              value: input.modeId,
+                          })
+                        : getComandoApi().setAiSessionMode(input),
+                ),
             set,
             get,
         );
@@ -1537,14 +1384,16 @@ export const useAiStore = create<AiStore>((set, get) => ({
             (currentSnapshot) =>
                 setModelOnSnapshot(currentSnapshot, input.modelId),
             () =>
-                modelConfig?.type === "select" &&
-                hasSelectConfigValue(modelConfig, input.modelId)
-                    ? getComandoApi().setAiSessionConfigOption({
-                          optionId: modelConfig.id,
-                          sessionId: input.sessionId,
-                          value: input.modelId,
-                      })
-                    : getComandoApi().setAiSessionModel(input),
+                runSessionActorOperation(input.sessionId, "background", () =>
+                    modelConfig?.type === "select" &&
+                    hasSelectConfigValue(modelConfig, input.modelId)
+                        ? getComandoApi().setAiSessionConfigOption({
+                              optionId: modelConfig.id,
+                              sessionId: input.sessionId,
+                              value: input.modelId,
+                          })
+                        : getComandoApi().setAiSessionModel(input),
+                ),
             set,
             get,
         );
@@ -1559,7 +1408,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     input.optionId,
                     input.value,
                 ),
-            () => getComandoApi().setAiSessionConfigOption(input),
+            () =>
+                runSessionActorOperation(input.sessionId, "background", () =>
+                    getComandoApi().setAiSessionConfigOption(input),
+                ),
             set,
             get,
         );
@@ -1591,7 +1443,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 title: input.title,
                 updatedAt: new Date().toISOString(),
             }),
-            () => getComandoApi().renameAiSession(input),
+            () =>
+                runSessionActorOperation(input.sessionId, "background", () =>
+                    getComandoApi().renameAiSession(input),
+                ),
             set,
             get,
         );
@@ -1626,7 +1481,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
             isBusySession(latestSession.snapshot)
         ) {
             try {
-                await getComandoApi().cancelAiSession(sessionId);
+                invalidateSessionActorOperations(sessionId, set);
+                await runSessionActorOperation(sessionId, "urgent", () =>
+                    getComandoApi().cancelAiSession(sessionId),
+                );
             } catch (error) {
                 set((state) => {
                     const session = state.sessions[sessionId];
@@ -1787,6 +1645,342 @@ function createSessionState(
         snapshot: null,
         transcript: createEmptyAiSessionTranscriptModel(),
     };
+}
+
+function getSessionActor(sessionId: string): SessionActorState {
+    let actor = sessionActors.get(sessionId);
+    if (!actor) {
+        actor = {
+            invalidationToken: 0,
+            prepare: null,
+            queue: Promise.resolve(),
+        };
+        sessionActors.set(sessionId, actor);
+    }
+
+    return actor;
+}
+
+function createPrepareActorKey(tab: RuntimeAiSessionTab): string {
+    return JSON.stringify({
+        projectId: tab.projectId,
+        runtimeId: tab.runtimeId,
+        sessionId: tab.sessionId,
+        title: tab.title,
+        worktreeId: tab.worktreeId ?? null,
+    });
+}
+
+function runSessionActorOperation<T>(
+    sessionId: string,
+    priority: SessionActorOperationPriority,
+    operation: () => Promise<T>,
+): Promise<T> {
+    const actor = getSessionActor(sessionId);
+
+    if (priority === "urgent") {
+        return Promise.resolve().then(operation);
+    }
+
+    const run = actor.queue.catch(() => undefined).then(operation);
+    actor.queue = run.then(
+        () => undefined,
+        () => undefined,
+    );
+
+    return run;
+}
+
+function invalidateSessionActorOperations(
+    sessionId: string,
+    set: SetAiState,
+): void {
+    const actor = getSessionActor(sessionId);
+    actor.invalidationToken += 1;
+    actor.prepare = null;
+
+    set((state) => {
+        const session = state.sessions[sessionId];
+        if (!session?.isHydrating) {
+            return state;
+        }
+
+        return {
+            sessions: {
+                ...state.sessions,
+                [sessionId]: withRuntimeLifecycle({
+                    ...session,
+                    isHydrating: false,
+                }),
+            },
+        };
+    });
+}
+
+function isSessionActorTokenCurrent(sessionId: string, token: number): boolean {
+    return getSessionActor(sessionId).invalidationToken === token;
+}
+
+async function waitForCurrentSessionPrepare(
+    sessionId: string,
+): Promise<"current" | "invalidated"> {
+    const actor = getSessionActor(sessionId);
+    const prepare = actor.prepare;
+    if (!prepare) {
+        return "current";
+    }
+
+    await prepare.promise.catch(() => undefined);
+    return isSessionActorTokenCurrent(sessionId, prepare.token)
+        ? "current"
+        : "invalidated";
+}
+
+function runSessionPrepare(
+    tab: RuntimeAiSessionTab,
+    options: { readonly force?: boolean } | undefined,
+    get: GetAiState,
+    set: SetAiState,
+): Promise<void> {
+    get().registerSessionTab(tab);
+
+    const actor = getSessionActor(tab.sessionId);
+    const currentSession = get().sessions[tab.sessionId];
+    const force = options?.force ?? false;
+    if (!force && currentSession?.hydrated) {
+        return Promise.resolve();
+    }
+
+    const prepareKey = createPrepareActorKey(tab);
+    if (!force && actor.prepare?.key === prepareKey) {
+        return actor.prepare.promise;
+    }
+
+    const token = actor.invalidationToken + 1;
+    actor.invalidationToken = token;
+
+    const promise = executeSessionPrepare(tab, token, get, set).finally(() => {
+        const latestActor = getSessionActor(tab.sessionId);
+        if (latestActor.prepare?.token === token) {
+            latestActor.prepare = null;
+        }
+    });
+    actor.prepare = {
+        key: prepareKey,
+        promise,
+        token,
+    };
+
+    return promise;
+}
+
+async function executeSessionPrepare(
+    tab: RuntimeAiSessionTab,
+    token: number,
+    get: GetAiState,
+    set: SetAiState,
+): Promise<void> {
+    set((state) => ({
+        sessions: {
+            ...state.sessions,
+            [tab.sessionId]: withRuntimeLifecycle({
+                ...(state.sessions[tab.sessionId] ?? createSessionState()),
+                isHydrating: true,
+                meta: buildSessionMeta(tab),
+            }),
+        },
+    }));
+
+    try {
+        const runtimeStatusPromise = getComandoApi()
+            .getAiRuntimeStatus(tab.runtimeId)
+            .then((runtimeStatus) => {
+                const runtimeCatalog =
+                    extractRuntimeCatalogFromStatus(runtimeStatus);
+
+                set((state) => {
+                    const existingSession =
+                        state.sessions[tab.sessionId] ?? createSessionState();
+                    const existingSnapshot =
+                        existingSession.snapshot ??
+                        createEmptySessionSnapshot(
+                            tab,
+                            state.runtimeCatalogById[tab.runtimeId] ?? null,
+                        );
+                    const nextCatalog =
+                        runtimeCatalog && hasRuntimeCatalog(runtimeCatalog)
+                            ? runtimeCatalog
+                            : (state.runtimeCatalogById[tab.runtimeId] ??
+                              null);
+                    const shouldUpdateSession = isSessionActorTokenCurrent(
+                        tab.sessionId,
+                        token,
+                    );
+
+                    return {
+                        runtimeCatalogById:
+                            nextCatalog && hasRuntimeCatalog(nextCatalog)
+                                ? {
+                                      ...state.runtimeCatalogById,
+                                      [tab.runtimeId]: nextCatalog,
+                                  }
+                                : state.runtimeCatalogById,
+                        runtimeStatusById: {
+                            ...state.runtimeStatusById,
+                            [runtimeStatus.runtimeId]: runtimeStatus,
+                        },
+                        sessions: shouldUpdateSession
+                            ? {
+                                  ...state.sessions,
+                                  [tab.sessionId]: withRuntimeLifecycle({
+                                      ...existingSession,
+                                      snapshot:
+                                          nextCatalog &&
+                                          hasRuntimeCatalog(nextCatalog)
+                                              ? mergeRuntimeCatalogIntoSnapshot(
+                                                    existingSnapshot,
+                                                    nextCatalog,
+                                                )
+                                              : existingSnapshot,
+                                  }),
+                              }
+                            : state.sessions,
+                    };
+                });
+
+                return runtimeStatus;
+            });
+        const snapshotPromise = getComandoApi()
+            .prepareAiSession({
+                projectId: tab.projectId,
+                runtimeId: tab.runtimeId,
+                sessionId: tab.sessionId,
+                title: tab.title,
+                worktreeId: tab.worktreeId ?? null,
+            })
+            .catch(async (error) => {
+                const fallbackSnapshot =
+                    await getComandoApi().getAiSessionSnapshot(tab.sessionId);
+                if (fallbackSnapshot) {
+                    return fallbackSnapshot;
+                }
+                throw error;
+            });
+        const [runtimeStatus, snapshot] = await Promise.all([
+            runtimeStatusPromise,
+            snapshotPromise,
+        ]);
+        if (!isSessionActorTokenCurrent(tab.sessionId, token)) {
+            return;
+        }
+
+        const resolvedSnapshot =
+            snapshot ??
+            createEmptySessionSnapshot(
+                tab,
+                get().runtimeCatalogById[tab.runtimeId] ?? null,
+            );
+
+        set((state) => {
+            if (!isSessionActorTokenCurrent(tab.sessionId, token)) {
+                return state;
+            }
+
+            const runtimeCatalog = extractRuntimeCatalogFromStatus(runtimeStatus);
+            const nextCatalog =
+                runtimeCatalog && hasRuntimeCatalog(runtimeCatalog)
+                    ? runtimeCatalog
+                    : (state.runtimeCatalogById[tab.runtimeId] ??
+                      extractRuntimeCatalog(resolvedSnapshot));
+            const incomingSnapshot = hasRuntimeCatalog(nextCatalog)
+                ? mergeRuntimeCatalogIntoSnapshot(resolvedSnapshot, nextCatalog)
+                : resolvedSnapshot;
+            const currentSession = state.sessions[tab.sessionId];
+            const resolved = resolveIncomingSessionSnapshot(
+                incomingSnapshot,
+                currentSession,
+            );
+            const nextSnapshot = resolved.snapshot;
+            const nextTranscript = resolved.transcript;
+
+            return {
+                runtimeCatalogById: hasRuntimeCatalog(nextCatalog)
+                    ? {
+                          ...state.runtimeCatalogById,
+                          [tab.runtimeId]: nextCatalog,
+                      }
+                    : state.runtimeCatalogById,
+                runtimeStatusById: {
+                    ...state.runtimeStatusById,
+                    [runtimeStatus.runtimeId]: runtimeStatus,
+                },
+                sessions: {
+                    ...state.sessions,
+                    [tab.sessionId]: withRuntimeLifecycle({
+                        ...(state.sessions[tab.sessionId] ??
+                            createSessionState()),
+                        hydrated: true,
+                        ...(snapshot
+                            ? resolveIncomingSnapshotProgress(
+                                  currentSession,
+                                  incomingSnapshot.updatedAt,
+                              )
+                            : {
+                                  incomingSnapshotVersion:
+                                      currentSession?.incomingSnapshotVersion ??
+                                      0,
+                                  lastIncomingSnapshotUpdatedAt:
+                                      currentSession?.lastIncomingSnapshotUpdatedAt ??
+                                      null,
+                              }),
+                        isHydrating: false,
+                        meta: buildSessionMeta(tab),
+                        snapshot: nextSnapshot,
+                        transcript: nextTranscript,
+                    }),
+                },
+            };
+        });
+        void drainQueueIfNeeded(tab.sessionId, get, set);
+    } catch (error) {
+        if (!isSessionActorTokenCurrent(tab.sessionId, token)) {
+            return;
+        }
+
+        set((state) => ({
+            runtimeCatalogById: {
+                ...state.runtimeCatalogById,
+                [tab.runtimeId]: extractRuntimeCatalog(
+                    createEmptySessionSnapshot(
+                        tab,
+                        state.runtimeCatalogById[tab.runtimeId] ?? null,
+                    ),
+                ),
+            },
+            sessions: {
+                ...state.sessions,
+                [tab.sessionId]: withRuntimeLifecycle({
+                    ...(state.sessions[tab.sessionId] ?? createSessionState()),
+                    // Keep `hydrated: false` so a subsequent ensureSession
+                    // call (tab re-focus, window restore) can retry instead
+                    // of landing on the early-return that treats hydrated
+                    // as "done forever".
+                    hydrated: false,
+                    isHydrating: false,
+                    localError:
+                        error instanceof Error
+                            ? error.message
+                            : `Could not hydrate the ${getRuntimeDisplayName(tab.runtimeId)} session.`,
+                    meta: buildSessionMeta(tab),
+                    snapshot: createEmptySessionSnapshot(
+                        tab,
+                        state.runtimeCatalogById[tab.runtimeId] ?? null,
+                    ),
+                    transcript: createEmptyAiSessionTranscriptModel(),
+                }),
+            },
+        }));
+    }
 }
 
 function getSessionTranscript(
@@ -2594,6 +2788,14 @@ async function dispatchPrompt(
     let result: "deferred" | "sent" = "sent";
 
     try {
+        const prepareState = await waitForCurrentSessionPrepare(
+            meta.sessionId,
+        );
+        if (prepareState === "invalidated") {
+            result = "deferred";
+            return result;
+        }
+
         await getComandoApi().sendAiPrompt({
             additionalRoots: meta.additionalRoots,
             attachments,

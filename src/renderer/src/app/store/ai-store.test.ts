@@ -18,7 +18,7 @@ import { AI_SESSION_BUSY_MESSAGE } from "@shared/ai-errors";
 
 import { getSessionReviewPreferencesStorageKey } from "@renderer/app/ai/sessionReviewPreferences";
 import { useAppStore } from "./app-store";
-import { useAiStore } from "./ai-store";
+import { resetAiSessionActorsForTests, useAiStore } from "./ai-store";
 
 // Electron's ipcRenderer.invoke wraps handler errors with a prefix before
 // they reach the renderer. Tests build busy errors via this helper so they
@@ -236,6 +236,7 @@ describe("ai-store queue", () => {
             runtimeStatusById: {},
             sessions: {},
         }));
+        resetAiSessionActorsForTests();
         useAppStore.setState({
             bootstrap: null,
             error: null,
@@ -352,6 +353,161 @@ describe("ai-store queue", () => {
         expect(sendAiPrompt.mock.calls[0]?.[0]).toMatchObject({
             prompt: "hello",
         });
+    });
+
+    it("deduplicates concurrent ensureSession calls for the same session actor", async () => {
+        const prepareSession = createDeferred<AiSessionSnapshot | null>();
+        const getAiRuntimeStatus = vi.fn().mockResolvedValue(createRuntimeStatus());
+        const prepareAiSession = vi
+            .fn()
+            .mockImplementation(() => prepareSession.promise);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus,
+                    prepareAiSession,
+                },
+            },
+            writable: true,
+        });
+
+        const firstEnsure = useAiStore.getState().ensureSession(TAB);
+        const secondEnsure = useAiStore.getState().ensureSession(TAB);
+
+        await vi.waitFor(() => {
+            expect(prepareAiSession).toHaveBeenCalledTimes(1);
+        });
+
+        prepareSession.resolve(createSnapshot());
+        await Promise.all([firstEnsure, secondEnsure]);
+
+        expect(getAiRuntimeStatus).toHaveBeenCalledTimes(1);
+        expect(prepareAiSession).toHaveBeenCalledTimes(1);
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
+        ).toBe("ready");
+    });
+
+    it("shares an in-flight startup between ensureSession and sendPrompt", async () => {
+        const prepareSession = createDeferred<AiSessionSnapshot | null>();
+        const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+        const prepareAiSession = vi
+            .fn()
+            .mockImplementation(() => prepareSession.promise);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    prepareAiSession,
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        const ensurePromise = useAiStore.getState().ensureSession(TAB);
+        await vi.waitFor(() => {
+            expect(prepareAiSession).toHaveBeenCalledTimes(1);
+        });
+
+        await useAiStore.getState().sendPrompt(TAB, "hello while warming");
+
+        expect(prepareAiSession).toHaveBeenCalledTimes(1);
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.queue[0]?.status,
+        ).toBe("pending_dispatch");
+
+        prepareSession.resolve(createSnapshot());
+        await ensurePromise;
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        });
+        expect(sendAiPrompt).toHaveBeenCalledWith(
+            expect.objectContaining({
+                prompt: "hello while warming",
+            }),
+        );
+    });
+
+    it("invalidates a warming startup when canceling so a queued prompt is not dispatched late", async () => {
+        const prepareSession = createDeferred<AiSessionSnapshot | null>();
+        const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+        const cancelAiSession = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    cancelAiSession,
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    prepareAiSession: vi
+                        .fn()
+                        .mockImplementation(() => prepareSession.promise),
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        const ensurePromise = useAiStore.getState().ensureSession(TAB);
+        await vi.waitFor(() => {
+            expect(
+                useAiStore.getState().sessions[TAB.sessionId]
+                    ?.runtimeLifecycle,
+            ).toBe("warming");
+        });
+
+        await useAiStore.getState().sendPrompt(TAB, "do not send late");
+        await useAiStore.getState().cancelSession(TAB.sessionId);
+
+        prepareSession.resolve(createSnapshot());
+        await ensurePromise;
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(cancelAiSession).toHaveBeenCalledWith(TAB.sessionId);
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+        expect(session?.isHydrating).toBe(false);
+        expect(session?.queuePaused).toBe(true);
+        expect(session?.queue[0]).toEqual(
+            expect.objectContaining({
+                prompt: "do not send late",
+                status: "pending_dispatch",
+            }),
+        );
+    });
+
+    it("runs review mutations for a cold registered session without preparing runtime", async () => {
+        const keepAllAiTrackedFiles = vi.fn().mockResolvedValue(undefined);
+        const prepareAiSession = vi.fn().mockResolvedValue(createSnapshot());
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    keepAllAiTrackedFiles,
+                    prepareAiSession,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+
+        await useAiStore.getState().keepAllTrackedFiles(TAB.sessionId);
+
+        expect(keepAllAiTrackedFiles).toHaveBeenCalledWith(TAB.sessionId);
+        expect(prepareAiSession).not.toHaveBeenCalled();
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
+        ).toBe("cold");
     });
 
     it("maps runtime lifecycle for streaming, idle, and failed snapshots", async () => {
