@@ -486,6 +486,7 @@ export class AiWorkerRuntime {
             );
         }
         if (
+            !liveSession.snapshot.runtimeSessionId ||
             liveSession.snapshot.status === "starting" ||
             liveSession.snapshot.status === "streaming" ||
             liveSession.snapshot.status === "waiting_permission" ||
@@ -1183,6 +1184,26 @@ export class AiWorkerRuntime {
         ) {
             this.#emitSessionDiagnostic(
                 "Reusing live AI runtime session.",
+                existing,
+                {
+                    ownerWindowId: launch.ownerWindowId,
+                },
+            );
+            existing.ownerWindowId = launch.ownerWindowId;
+            existing.runtimeConnection.ownerWindowId = launch.ownerWindowId;
+            existing.desiredSelections = launch.desiredSelections;
+            existing.projectRoot = launch.projectRoot;
+            existing.cwd = launch.cwd;
+            return existing;
+        }
+        if (
+            existing &&
+            !existing.snapshot.runtimeSessionId &&
+            existing.runtimeId === launch.input.runtimeId &&
+            sameAdditionalRoots(existing.additionalRoots, launch.additionalRoots)
+        ) {
+            this.#emitSessionDiagnostic(
+                "Reusing AI runtime session startup already in progress.",
                 existing,
                 {
                     ownerWindowId: launch.ownerWindowId,

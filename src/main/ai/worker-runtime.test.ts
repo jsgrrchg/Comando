@@ -37,6 +37,9 @@ type MockSessionCatalogResponse = {
     readonly modes: unknown;
     readonly models: unknown;
 };
+type MockNewSessionResponse = MockSessionCatalogResponse & {
+    readonly sessionId: string;
+};
 const loadSessionMock = vi.fn<() => Promise<MockSessionCatalogResponse>>(() =>
     Promise.resolve({
         configOptions: [],
@@ -162,7 +165,7 @@ type MockAcpClient = {
 
 type MockAcpClientFactory = () => MockAcpClient;
 let latestClientFactory: MockAcpClientFactory | null = null;
-const newSessionMock = vi.fn(() =>
+const newSessionMock = vi.fn<() => Promise<MockNewSessionResponse>>(() =>
     Promise.resolve({
         configOptions: [],
         modes: [],
@@ -364,6 +367,85 @@ describe("AiWorkerRuntime prepareSession", () => {
                     event.payload.event.kind === "session-info",
             ),
         ).toBe(true);
+    });
+
+    it("reuses an in-flight session startup when a prompt arrives before prepare finishes", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        let releaseNewSession: (value: MockNewSessionResponse) => void =
+            () => {};
+        let newSessionStarted: (() => void) | null = null;
+        const newSessionStartedPromise = new Promise<void>((resolve) => {
+            newSessionStarted = resolve;
+        });
+        const releaseNewSessionPromise = new Promise<MockNewSessionResponse>(
+            (resolve) => {
+                releaseNewSession = resolve;
+            },
+        );
+        newSessionMock.mockImplementationOnce(async () => {
+            newSessionStarted?.();
+            return await releaseNewSessionPromise;
+        });
+        const baseLaunch = createLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            title: "Fresh Codex session",
+        });
+        const launch: AiWorkerSessionLaunchInput = {
+            ...baseLaunch,
+            persistedSnapshot: {
+                ...baseLaunch.persistedSnapshot,
+                runtimeSessionId: null,
+            },
+        };
+        const runtime = new AiWorkerRuntime({
+            emitEvent: () => {},
+        });
+
+        const preparePromise = runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        await newSessionStartedPromise;
+
+        await expect(
+            runtime.dispatchMethod("ai.sendPrompt", {
+                input: {
+                    attachments: [],
+                    composerParts: [
+                        {
+                            text: "hello",
+                            type: "text",
+                        },
+                    ],
+                    projectId: null,
+                    prompt: "hello",
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                    title: "Fresh Codex session",
+                    worktreeId: null,
+                },
+                launch,
+            }),
+        ).rejects.toThrow("[ai:session-busy]");
+
+        expect(spawnMock).toHaveBeenCalledTimes(1);
+        expect(newSessionMock).toHaveBeenCalledTimes(1);
+        expect(promptMock).not.toHaveBeenCalled();
+
+        releaseNewSession({
+            configOptions: [],
+            modes: [],
+            models: [],
+            sessionId: "runtime-session-1",
+        });
+        const snapshot = (await preparePromise) as AiSessionSnapshot;
+
+        expect(snapshot.runtimeSessionId).toBe("runtime-session-1");
+        expect(spawnMock).toHaveBeenCalledTimes(1);
+        expect(newSessionMock).toHaveBeenCalledTimes(1);
     });
 
     it("resumes persisted runtime sessions without replaying history when advertised", async () => {
