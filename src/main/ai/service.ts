@@ -892,16 +892,21 @@ export class AiService {
             input,
             ownerWindowId,
         );
+        this.#rememberLiveSessionContext(
+            input,
+            ownerWindowId,
+            launch.additionalRoots,
+            launch.persistedSnapshot.parentSessionId ?? null,
+        );
         try {
             const snapshot = await this.#scheduleWorkerSessionStartup(
                 launch,
                 1,
                 async () => {
-                    this.#rememberLiveSessionContext(
-                        input,
+                    this.#assertScheduledSessionContextActive(
+                        input.sessionId,
                         ownerWindowId,
-                        launch.additionalRoots,
-                        launch.persistedSnapshot.parentSessionId ?? null,
+                        input.runtimeId,
                     );
                     return await worker.prepareSession({
                         input,
@@ -961,20 +966,53 @@ export class AiService {
                 "This subagent was closed by its parent thread and can’t receive new messages.",
             );
         }
-        const result = await this.#scheduleWorkerSessionStartup(launch, 0, async () => {
-            this.#rememberLiveSessionContext(
-                input,
-                ownerWindowId,
-                launch.additionalRoots,
-                launch.persistedSnapshot.parentSessionId ?? null,
-            );
-            return await worker.sendPrompt({
-                input,
+        this.#rememberLiveSessionContext(
+            input,
+            ownerWindowId,
+            launch.additionalRoots,
+            launch.persistedSnapshot.parentSessionId ?? null,
+        );
+        try {
+            const result = await this.#scheduleWorkerSessionStartup(
                 launch,
-            });
-        });
-        void this.#enforceSessionRetention();
-        return result;
+                0,
+                async () => {
+                    this.#assertScheduledSessionContextActive(
+                        input.sessionId,
+                        ownerWindowId,
+                        input.runtimeId,
+                    );
+                    return await worker.sendPrompt({
+                        input,
+                        launch,
+                    });
+                },
+            );
+            void this.#enforceSessionRetention();
+            return result;
+        } catch (error) {
+            this.#discardPreparedSessionContextOnFailure(
+                input.sessionId,
+                ownerWindowId,
+                input.runtimeId,
+            );
+            throw error;
+        }
+    }
+
+    #assertScheduledSessionContextActive(
+        sessionId: string,
+        ownerWindowId: string,
+        runtimeId: AiRuntimeId,
+    ): void {
+        const context = this.#liveSessionContexts.get(sessionId);
+        if (
+            !context ||
+            context.ownerWindowId !== ownerWindowId ||
+            context.runtimeId !== runtimeId
+        ) {
+            throw new Error("The AI session is no longer open.");
+        }
     }
 
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
@@ -1864,7 +1902,7 @@ export class AiService {
     }
 
     #isColdSessionLaunch(launch: AiWorkerSessionLaunchInput): boolean {
-        return !this.#liveSessionContexts.has(launch.input.sessionId);
+        return !this.#liveSnapshots.has(launch.input.sessionId);
     }
 
     async #scheduleWorkerSessionStartup<T>(
@@ -2211,6 +2249,7 @@ export class AiService {
             result.ownerWindowId,
             buildAiSessionUpdate(previousSnapshot, result.snapshot),
         );
+        void this.#enforceSessionRetention();
     }
 
     async keepTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {

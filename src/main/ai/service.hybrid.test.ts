@@ -1174,6 +1174,170 @@ describe("AiService hybrid persistence", () => {
         });
     });
 
+    it("does not start a queued cold start after its owner window closes", async () => {
+        const starts = new Map<
+            string,
+            ReturnType<typeof createDeferred<AiSessionSnapshot>>
+        >();
+        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
+            ({ input }) => {
+                const deferred = createDeferred<AiSessionSnapshot>();
+                starts.set(input.sessionId, deferred);
+                return deferred.promise;
+            },
+        );
+        const closeOwnedByWindow = vi.fn(() => Promise.resolve());
+        const service = createService({
+            aiScheduler: {
+                maxColdStartsGlobal: 1,
+                maxColdStartsPerRuntime: 1,
+            },
+            aiWorker: createMockWorker({
+                closeOwnedByWindow,
+                prepareSession,
+            }),
+        });
+
+        const firstPrepare = service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Session 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await vi.waitFor(() => {
+            expect(prepareSession).toHaveBeenCalledTimes(1);
+        });
+
+        const queuedPrepare = service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-2",
+                title: "Session 2",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await vi.waitFor(() => {
+            expect(service.getSchedulerDiagnostics().queued).toBe(1);
+        });
+
+        service.closeOwnedByWindow("window-1");
+        starts
+            .get("session-1")
+            ?.resolve(createSnapshot({ sessionId: "session-1" }));
+
+        await firstPrepare;
+        await expect(queuedPrepare).rejects.toThrow(
+            "The AI session is no longer open.",
+        );
+        expect(closeOwnedByWindow).toHaveBeenCalledWith("window-1");
+        expect(prepareSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("re-enforces the hot-session budget after pending review is resolved", async () => {
+        const trackedFile = {
+            hunks: [],
+            identityKey: "src/app.ts",
+            isText: true,
+            kind: "update",
+            newText: "after",
+            oldText: "before",
+            path: "src/app.ts",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: null,
+            updatedAt: "2026-04-16T00:00:00.000Z",
+        } satisfies AiTrackedFile;
+        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
+            ({ input }) =>
+                Promise.resolve(
+                    createSnapshot({
+                        sessionId: input.sessionId,
+                        trackedFiles:
+                            input.sessionId === "session-1"
+                                ? [trackedFile]
+                                : [],
+                    }),
+                ),
+        );
+        const freezeSession = vi.fn<AiWorkerGateway["freezeSession"]>(
+            ({ sessionId, reason }) =>
+                Promise.resolve({
+                    frozen: true,
+                    reason,
+                    sessionId,
+                }),
+        );
+        const keepAllTrackedFiles = vi.fn<
+            AiWorkerGateway["keepAllTrackedFiles"]
+        >(({ context }) =>
+            Promise.resolve({
+                ownerWindowId: context.ownerWindowId,
+                snapshot: {
+                    ...context.snapshot,
+                    trackedFiles: [],
+                    updatedAt: "2026-04-16T00:00:01.000Z",
+                },
+            }),
+        );
+        const service = createService({
+            aiSessionRetention: {
+                maxHotSessionsPerWindow: 1,
+            },
+            aiWorker: createMockWorker({
+                freezeSession,
+                keepAllTrackedFiles,
+                prepareSession,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Session 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-2",
+                title: "Session 2",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await vi.waitFor(() => {
+            expect(service.getSessionRetentionDiagnostics().skipped).toEqual([
+                expect.objectContaining({
+                    reason: "budget",
+                    sessionId: "session-1",
+                    skippedReason: "pending_review",
+                }),
+            ]);
+        });
+
+        await service.keepAllTrackedFiles("session-1");
+
+        await vi.waitFor(() => {
+            expect(freezeSession).toHaveBeenCalledWith({
+                reason: "budget",
+                sessionId: "session-2",
+            });
+        });
+    });
+
     it("reopens a frozen session through prepare without replaying a prompt", async () => {
         const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
             ({ input }) =>
