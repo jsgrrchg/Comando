@@ -42,6 +42,7 @@ export function PlanMessage({
     ).length;
     const totalCount = plan.entries.length;
     const statusLabel = getPlanStatusLabel(plan.entries);
+    const title = plan.title ?? "Plan";
 
     return (
         <div
@@ -88,7 +89,7 @@ export function PlanMessage({
                             fontSize: "0.875rem",
                         }}
                     >
-                        Plan
+                        {title}
                     </span>
                     <span
                         style={{

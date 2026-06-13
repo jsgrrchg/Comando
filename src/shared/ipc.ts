@@ -2267,6 +2267,7 @@ export interface AiPlanEntry {
 
 export interface AiPlan {
     readonly entries: readonly AiPlanEntry[];
+    readonly title: string | null;
     readonly updatedAt: string;
 }
 

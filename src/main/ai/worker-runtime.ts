@@ -75,6 +75,7 @@ import {
     CODEX_ACP_MODEL_KEY,
     CODEX_ACP_PARENT_SESSION_ID_KEY,
     CODEX_ACP_PARENT_THREAD_ID_KEY,
+    CODEX_ACP_PLAN_TITLE_KEY,
     CODEX_ACP_REASONING_EFFORT_KEY,
     CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE,
     CODEX_ACP_STATUS_EVENT_TYPE_KEY,
@@ -167,6 +168,13 @@ type ToolSessionNotificationUpdate = Extract<
     SessionNotification["update"],
     { readonly sessionUpdate: "tool_call" | "tool_call_update" }
 >;
+
+type LegacySetSessionModelConnection = {
+    readonly unstable_setSessionModel?: (params: {
+        readonly modelId: string;
+        readonly sessionId: string;
+    }) => Promise<unknown>;
+};
 
 const DEFAULT_TERMINAL_OUTPUT_BYTE_LIMIT = 128 * 1024;
 const TERMINAL_PERMISSION_ALLOW_OPTION_ID = "comando.terminal.allow_once";
@@ -478,6 +486,7 @@ export class AiWorkerRuntime {
             );
         }
         if (
+            !liveSession.snapshot.runtimeSessionId ||
             liveSession.snapshot.status === "starting" ||
             liveSession.snapshot.status === "streaming" ||
             liveSession.snapshot.status === "waiting_permission" ||
@@ -1078,7 +1087,26 @@ export class AiWorkerRuntime {
             throw new Error("The AI session was not found.");
         }
 
-        await liveSession.connection.unstable_setSessionModel({
+        const modelConfig = getModelConfigOption(
+            liveSession.snapshot.configOptions,
+        );
+        if (modelConfig?.type === "select") {
+            await this.#setSessionConfigOption({
+                optionId: modelConfig.id,
+                sessionId: input.sessionId,
+                value: input.modelId,
+            });
+            return;
+        }
+
+        const legacySetSessionModel = getLegacySetSessionModel(
+            liveSession.connection,
+        );
+        if (!legacySetSessionModel) {
+            throw new Error("This runtime does not support model changes.");
+        }
+
+        await legacySetSessionModel({
             modelId: input.modelId,
             sessionId: this.#requireRuntimeSessionId(liveSession),
         });
@@ -1156,6 +1184,26 @@ export class AiWorkerRuntime {
         ) {
             this.#emitSessionDiagnostic(
                 "Reusing live AI runtime session.",
+                existing,
+                {
+                    ownerWindowId: launch.ownerWindowId,
+                },
+            );
+            existing.ownerWindowId = launch.ownerWindowId;
+            existing.runtimeConnection.ownerWindowId = launch.ownerWindowId;
+            existing.desiredSelections = launch.desiredSelections;
+            existing.projectRoot = launch.projectRoot;
+            existing.cwd = launch.cwd;
+            return existing;
+        }
+        if (
+            existing &&
+            !existing.snapshot.runtimeSessionId &&
+            existing.runtimeId === launch.input.runtimeId &&
+            sameAdditionalRoots(existing.additionalRoots, launch.additionalRoots)
+        ) {
+            this.#emitSessionDiagnostic(
+                "Reusing AI runtime session startup already in progress.",
                 existing,
                 {
                     ownerWindowId: launch.ownerWindowId,
@@ -1418,7 +1466,10 @@ export class AiWorkerRuntime {
                 initializeResponse,
             );
 
-            const openedSession = await this.#openRuntimeSession(liveSession);
+            const openedSession = await this.#openRuntimeSession(
+                liveSession,
+                initializeResponse,
+            );
             liveSession.snapshot = {
                 ...applySessionCatalogToSnapshot(
                     liveSession.snapshot,
@@ -1522,6 +1573,9 @@ export class AiWorkerRuntime {
 
     async #openRuntimeSession(
         liveSession: LiveAcpSession,
+        initializeResponse: Awaited<
+            ReturnType<LiveAcpConnection["connection"]["initialize"]>
+        >,
     ): Promise<{
         readonly configOptions: Awaited<
             ReturnType<LiveAcpSession["connection"]["newSession"]>
@@ -1542,6 +1596,38 @@ export class AiWorkerRuntime {
         if (liveSession.snapshot.runtimeSessionId) {
             try {
                 liveSession.isRestoring = true;
+                if (
+                    shouldResumePersistedSessionWithoutReplay(
+                        liveSession,
+                        initializeResponse,
+                    )
+                ) {
+                    this.#emitSessionDiagnostic(
+                        "Resuming persisted AI runtime session.",
+                        liveSession,
+                        {
+                            restoreSource: "resumeSession",
+                        },
+                    );
+                    const response = await liveSession.connection.resumeSession({
+                        additionalDirectories,
+                        cwd: liveSession.cwd,
+                        mcpServers: [],
+                        sessionId: liveSession.snapshot.runtimeSessionId,
+                    });
+                    this.#registerRuntimeSessionMapping(
+                        liveSession.runtimeConnection,
+                        liveSession.snapshot.sessionId,
+                        liveSession.snapshot.runtimeSessionId,
+                    );
+                    return {
+                        configOptions: response.configOptions ?? null,
+                        models: response.models ?? null,
+                        modes: response.modes ?? null,
+                        runtimeSessionId: liveSession.snapshot.runtimeSessionId,
+                    };
+                }
+
                 this.#emitSessionDiagnostic(
                     "Loading persisted AI runtime session.",
                     liveSession,
@@ -1568,14 +1654,14 @@ export class AiWorkerRuntime {
                 };
             } catch (error) {
                 this.#emitSessionDiagnostic(
-                    "Persisted AI runtime session load failed; opening a new session.",
+                    "Persisted AI runtime session restore failed; opening a new session.",
                     liveSession,
                     {
                         lastError:
                             error instanceof Error ? error.message : String(error),
                     },
                 );
-                debugBenignError("ai.worker.loadSession.resume", error);
+                debugBenignError("ai.worker.restoreSession.resume", error);
             } finally {
                 liveSession.isRestoring = false;
             }
@@ -2111,6 +2197,10 @@ export class AiWorkerRuntime {
                             priority: entry.priority,
                             status: entry.status,
                         })),
+                        title: readRecordString(
+                            update._meta,
+                            CODEX_ACP_PLAN_TITLE_KEY,
+                        ),
                         updatedAt: now,
                     },
                 };
@@ -4853,6 +4943,28 @@ function setReasoningEffortOnSnapshot(
     }
 
     return nextSnapshot;
+}
+
+function getLegacySetSessionModel(
+    connection: LiveAcpSession["connection"],
+): LegacySetSessionModelConnection["unstable_setSessionModel"] | null {
+    const legacySetSessionModel = (connection as LegacySetSessionModelConnection)
+        .unstable_setSessionModel;
+    return typeof legacySetSessionModel === "function"
+        ? legacySetSessionModel.bind(connection)
+        : null;
+}
+
+function shouldResumePersistedSessionWithoutReplay(
+    liveSession: Pick<LiveAcpSession, "runtimeId">,
+    initializeResponse: Awaited<
+        ReturnType<LiveAcpConnection["connection"]["initialize"]>
+    >,
+): boolean {
+    return (
+        liveSession.runtimeId === "codex" &&
+        initializeResponse.agentCapabilities?.sessionCapabilities?.resume != null
+    );
 }
 
 function isSamePromptEchoContentBlock(

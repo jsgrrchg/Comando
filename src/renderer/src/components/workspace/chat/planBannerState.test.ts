@@ -13,6 +13,7 @@ function createPlan(overrides: Partial<AiPlan> = {}): AiPlan {
                 status: "in_progress",
             },
         ],
+        title: null,
         updatedAt: "2026-04-15T12:00:00.000Z",
         ...overrides,
     };

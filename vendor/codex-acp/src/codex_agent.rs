@@ -6,19 +6,18 @@ use acp::schema::{
     LoadSessionRequest, LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse,
     McpCapabilities, McpServer, McpServerHttp, McpServerStdio, NewSessionRequest,
     NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse, ProtocolVersion,
-    SessionCapabilities, SessionCloseCapabilities, SessionId, SessionInfo, SessionListCapabilities,
+    ResumeSessionRequest, ResumeSessionResponse, SessionCapabilities, SessionCloseCapabilities,
+    SessionId, SessionInfo, SessionListCapabilities, SessionResumeCapabilities,
     SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
-    SetSessionModeResponse, SetSessionModelRequest, SetSessionModelResponse,
+    SetSessionModeResponse,
 };
 use acp::{Agent, Client, ConnectTo, ConnectionTo, Error};
 use agent_client_protocol as acp;
-use codex_config::{McpServerConfig, McpServerTransportConfig};
+use codex_config::{DEFAULT_MCP_SERVER_ENVIRONMENT_ID, McpServerConfig, McpServerTransportConfig};
 use codex_core::{
-    NewThread, RolloutRecorder, SortDirection, StateDbHandle, ThreadConfigSnapshot, ThreadManager,
-    ThreadSortKey,
+    NewThread, RolloutRecorder, StateDbHandle, ThreadConfigSnapshot, ThreadManager,
     config::{Config, PermissionProfileSnapshot},
-    find_thread_path_by_id_str, init_state_db, parse_cursor, resolve_installation_id,
-    thread_store_from_config,
+    find_thread_path_by_id_str, init_state_db, resolve_installation_id, thread_store_from_config,
 };
 use codex_exec_server::{EnvironmentManager, ExecServerRuntimePaths};
 use codex_extension_api::empty_extension_registry;
@@ -28,8 +27,11 @@ use codex_login::{
 };
 use codex_protocol::{
     ThreadId,
-    openai_models::{ModelsResponse, ReasoningEffort, ReasoningEffortPreset},
     protocol::{InitialHistory, SessionConfiguredEvent, SessionSource},
+};
+use codex_thread_store::{
+    ListThreadsParams, SortDirection as StoreSortDirection, StoredThread,
+    ThreadSortKey as StoreThreadSortKey, ThreadStore,
 };
 use std::{
     collections::HashMap,
@@ -58,6 +60,8 @@ pub struct CodexAgent {
     config: Config,
     /// Thread manager for handling sessions
     thread_manager: Arc<ThreadManager>,
+    /// Store for listing and updating persisted thread metadata
+    thread_store: Arc<dyn ThreadStore>,
     /// SQLite-backed Codex state index, when initialization succeeds
     state_db: Option<StateDbHandle>,
     /// Active sessions mapped by `SessionId`
@@ -70,11 +74,6 @@ pub struct CodexAgent {
 
 const SESSION_LIST_PAGE_SIZE: usize = 25;
 const SESSION_TITLE_MAX_GRAPHEMES: usize = 120;
-const GPT_5_4_MODEL_SLUG: &str = "gpt-5.4";
-const GPT_5_5_MODEL_SLUG: &str = "gpt-5.5";
-const GPT_5_5_DISPLAY_NAME: &str = "GPT-5.5";
-const GPT_5_5_DESCRIPTION: &str =
-    "Frontier model for complex coding, research, and real-world work.";
 
 fn debug_ai_worker_enabled() -> bool {
     matches!(std::env::var("COMANDO_DEBUG_AI_WORKER").as_deref(), Ok("1"))
@@ -86,7 +85,6 @@ impl CodexAgent {
         config: Config,
         codex_linux_sandbox_exe: Option<PathBuf>,
     ) -> std::io::Result<Self> {
-        let config = augment_model_catalog(config);
         let auth_manager = AuthManager::shared(
             config.codex_home.to_path_buf(),
             false,
@@ -114,7 +112,7 @@ impl CodexAgent {
             environment_manager,
             empty_extension_registry(),
             None,
-            thread_store,
+            thread_store.clone(),
             state_db.clone(),
             installation_id,
             None,
@@ -124,6 +122,7 @@ impl CodexAgent {
             client_capabilities,
             config,
             thread_manager,
+            thread_store,
             state_db,
             sessions: Arc::default(),
             session_roots,
@@ -211,6 +210,24 @@ impl CodexAgent {
             .on_receive_request(
                 {
                     let agent = agent.clone();
+                    async move |request: ResumeSessionRequest,
+                                responder,
+                                cx: ConnectionTo<Client>| {
+                        let agent = agent.clone();
+                        let session_cx = cx.clone();
+                        cx.spawn(async move {
+                            responder.respond_with_result(
+                                agent.resume_session(request, session_cx).await,
+                            )
+                        })?;
+                        Ok(())
+                    }
+                },
+                acp::on_receive_request!(),
+            )
+            .on_receive_request(
+                {
+                    let agent = agent.clone();
                     async move |request: ListSessionsRequest,
                                 responder,
                                 cx: ConnectionTo<Client>| {
@@ -285,21 +302,6 @@ impl CodexAgent {
             .on_receive_request(
                 {
                     let agent = agent.clone();
-                    async move |request: SetSessionModelRequest,
-                                responder,
-                                cx: ConnectionTo<Client>| {
-                        let agent = agent.clone();
-                        cx.spawn(async move {
-                            responder.respond_with_result(agent.set_session_model(request).await)
-                        })?;
-                        Ok(())
-                    }
-                },
-                acp::on_receive_request!(),
-            )
-            .on_receive_request(
-                {
-                    let agent = agent.clone();
                     async move |request: SetSessionConfigOptionRequest,
                                 responder,
                                 cx: ConnectionTo<Client>| {
@@ -343,8 +345,8 @@ impl CodexAgent {
         let models_manager = Arc::new(self.thread_manager.get_models_manager());
         let client_capabilities = self.client_capabilities.clone();
         let base_config = self.config.clone();
-
         let task_cx = cx.clone();
+
         cx.spawn(async move {
             let mut thread_created_rx = thread_manager.subscribe_thread_created();
 
@@ -365,12 +367,12 @@ impl CodexAgent {
                         .await
                         {
                             warn!(
-                                "Failed to register spawned Codex subagent thread {thread_id}: {error:?}"
+                                "Failed to register spawned ACP subagent thread {thread_id}: {error:?}"
                             );
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        warn!("Skipped {skipped} Codex subagent thread creation notifications");
+                        warn!("Skipped {skipped} ACP subagent thread creation notifications");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -385,7 +387,7 @@ impl CodexAgent {
     async fn check_auth(&self) -> Result<(), Error> {
         if self.config.model_provider_id == "openai"
             && self.auth_manager.auth().await.is_none()
-            // Check if anything changed on disk since the last reload.
+            // Check if anything changed on disk since the last reload
             && !self.auth_manager.reload().await
         {
             return Err(Error::auth_required());
@@ -407,85 +409,8 @@ impl CodexAgent {
         // Propagate any client-provided MCP servers that codex-rs supports.
         let mut new_mcp_servers = config.mcp_servers.get().clone();
         for mcp_server in mcp_servers {
-            match mcp_server {
-                // Not supported in codex
-                McpServer::Sse(..) => {}
-                McpServer::Http(McpServerHttp {
-                    name, url, headers, ..
-                }) => {
-                    // Codex does not allow whitespace in MCP server names; replace with underscores.
-                    let name = name.replace(|c: char| c.is_whitespace(), "_");
-                    new_mcp_servers.insert(
-                        name,
-                        McpServerConfig {
-                            transport: McpServerTransportConfig::StreamableHttp {
-                                url,
-                                bearer_token_env_var: None,
-                                http_headers: if headers.is_empty() {
-                                    None
-                                } else {
-                                    Some(headers.into_iter().map(|h| (h.name, h.value)).collect())
-                                },
-                                env_http_headers: None,
-                            },
-                            required: false,
-                            enabled: true,
-                            startup_timeout_sec: None,
-                            tool_timeout_sec: None,
-                            disabled_tools: None,
-                            enabled_tools: None,
-                            disabled_reason: None,
-                            scopes: None,
-                            oauth: None,
-                            oauth_resource: None,
-                            tools: Default::default(),
-                            experimental_environment: None,
-                            supports_parallel_tool_calls: false,
-                            default_tools_approval_mode: None,
-                        },
-                    );
-                }
-                McpServer::Stdio(McpServerStdio {
-                    name,
-                    command,
-                    args,
-                    env,
-                    ..
-                }) => {
-                    // Codex does not allow whitespace in MCP server names; replace with underscores.
-                    let name = name.replace(|c: char| c.is_whitespace(), "_");
-                    new_mcp_servers.insert(
-                        name,
-                        McpServerConfig {
-                            transport: McpServerTransportConfig::Stdio {
-                                command: command.display().to_string(),
-                                args,
-                                env: if env.is_empty() {
-                                    None
-                                } else {
-                                    Some(env.into_iter().map(|env| (env.name, env.value)).collect())
-                                },
-                                env_vars: vec![],
-                                cwd: Some(cwd.to_path_buf()),
-                            },
-                            required: false,
-                            enabled: true,
-                            startup_timeout_sec: None,
-                            tool_timeout_sec: None,
-                            disabled_tools: None,
-                            enabled_tools: None,
-                            disabled_reason: None,
-                            scopes: None,
-                            oauth: None,
-                            oauth_resource: None,
-                            tools: Default::default(),
-                            experimental_environment: None,
-                            supports_parallel_tool_calls: false,
-                            default_tools_approval_mode: None,
-                        },
-                    );
-                }
-                _ => {}
+            if let Some((name, server_config)) = mcp_server_config_from_acp(mcp_server, &cwd) {
+                new_mcp_servers.insert(name, server_config);
             }
         }
 
@@ -663,7 +588,8 @@ impl CodexAgent {
 
         agent_capabilities.session_capabilities = SessionCapabilities::new()
             .close(SessionCloseCapabilities::new())
-            .list(SessionListCapabilities::new());
+            .list(SessionListCapabilities::new())
+            .resume(SessionResumeCapabilities::new());
 
         let mut auth_methods = vec![
             CodexAuthMethod::ChatGpt.into(),
@@ -718,8 +644,6 @@ impl CodexAgent {
                     .block_until_done()
                     .await
                     .map_err(Error::into_internal_error)?;
-
-                self.auth_manager.reload().await;
             }
             CodexAuthMethod::CodexApiKey => {
                 let api_key = read_codex_api_key_from_env().ok_or_else(|| {
@@ -810,7 +734,6 @@ impl CodexAgent {
 
         Ok(NewSessionResponse::new(session_id)
             .modes(load.modes)
-            .models(load.models)
             .config_options(load.config_options))
     }
 
@@ -830,6 +753,43 @@ impl CodexAgent {
             ..
         } = request;
 
+        self.restore_session(session_id, cwd, mcp_servers, cx, true)
+            .await
+    }
+
+    async fn resume_session(
+        &self,
+        request: ResumeSessionRequest,
+        cx: ConnectionTo<Client>,
+    ) -> Result<ResumeSessionResponse, Error> {
+        info!("Resuming session: {}", request.session_id);
+        // Check before sending if authentication was successful or not
+        self.check_auth().await?;
+
+        let ResumeSessionRequest {
+            session_id,
+            cwd,
+            mcp_servers,
+            ..
+        } = request;
+
+        let load = self
+            .restore_session(session_id, cwd, mcp_servers, cx, false)
+            .await?;
+
+        Ok(ResumeSessionResponse::new()
+            .modes(load.modes)
+            .config_options(load.config_options))
+    }
+
+    async fn restore_session(
+        &self,
+        session_id: SessionId,
+        cwd: PathBuf,
+        mcp_servers: Vec<McpServer>,
+        cx: ConnectionTo<Client>,
+        replay_history: bool,
+    ) -> Result<LoadSessionResponse, Error> {
         let rollout_path = find_thread_path_by_id_str(
             &self.config.codex_home,
             session_id.0.as_ref(),
@@ -839,14 +799,18 @@ impl CodexAgent {
         .map_err(|e| Error::internal_error().data(e.to_string()))?
         .ok_or_else(|| Error::resource_not_found(None))?;
 
-        let history = RolloutRecorder::get_rollout_history(&rollout_path)
-            .await
-            .map_err(|e| Error::internal_error().data(e.to_string()))?;
+        let rollout_items = if replay_history {
+            let history = RolloutRecorder::get_rollout_history(&rollout_path)
+                .await
+                .map_err(|e| Error::internal_error().data(e.to_string()))?;
 
-        let rollout_items = match &history {
-            InitialHistory::Resumed(resumed) => resumed.history.clone(),
-            InitialHistory::Forked(items) => items.clone(),
-            InitialHistory::Cleared | InitialHistory::New => Vec::new(),
+            match &history {
+                InitialHistory::Resumed(resumed) => resumed.history.clone(),
+                InitialHistory::Forked(items) => items.clone(),
+                InitialHistory::Cleared | InitialHistory::New => Vec::new(),
+            }
+        } else {
+            Vec::new()
         };
 
         let mut config = self.build_session_config(&cwd, mcp_servers)?;
@@ -876,7 +840,9 @@ impl CodexAgent {
             cx,
         ));
 
-        thread.replay_history(rollout_items).await?;
+        if replay_history {
+            thread.replay_history(rollout_items).await?;
+        }
 
         let load = thread.load().await?;
 
@@ -888,7 +854,6 @@ impl CodexAgent {
 
         Ok(LoadSessionResponse::new()
             .modes(load.modes)
-            .models(load.models)
             .config_options(load.config_options))
     }
 
@@ -899,62 +864,32 @@ impl CodexAgent {
         self.check_auth().await?;
 
         let ListSessionsRequest { cwd, cursor, .. } = request;
-        let cursor_obj = cursor.as_deref().and_then(parse_cursor);
+        let allowed_sources = list_session_allowed_sources();
+        let cwd_filter = cwd.clone();
 
-        let page = RolloutRecorder::list_threads(
-            self.state_db.clone(),
-            &self.config,
-            SESSION_LIST_PAGE_SIZE,
-            cursor_obj.as_ref(),
-            ThreadSortKey::UpdatedAt,
-            SortDirection::Desc,
-            &[
-                SessionSource::Cli,
-                SessionSource::VSCode,
-                SessionSource::Unknown,
-            ],
-            None,
-            None,
-            self.config.model_provider_id.as_str(),
-            None,
-        )
-        .await
-        .map_err(|err| Error::internal_error().data(format!("failed to list sessions: {err}")))?;
+        let page = self
+            .thread_store
+            .list_threads(list_sessions_params(cwd, cursor, &allowed_sources))
+            .await
+            .map_err(|err| {
+                Error::internal_error().data(format!("failed to list sessions: {err}"))
+            })?;
 
         let sessions = page
             .items
             .into_iter()
-            .filter_map(|item| {
-                let thread_id = item.thread_id?;
-                let item_cwd = item.cwd?;
-
-                if let Some(filter_cwd) = cwd.as_ref()
-                    && item_cwd != *filter_cwd
-                {
-                    return None;
-                }
-
-                let title = item
-                    .first_user_message
-                    .as_deref()
-                    .and_then(format_session_title);
-                let updated_at = item.updated_at.or(item.created_at);
-
-                Some(
-                    SessionInfo::new(SessionId::new(thread_id.to_string()), item_cwd)
-                        .title(title)
-                        .updated_at(updated_at),
+            .filter(|item| {
+                stored_thread_matches_list_request(
+                    &item.source,
+                    item.cwd.as_path(),
+                    &allowed_sources,
+                    cwd_filter.as_deref(),
                 )
             })
+            .map(stored_thread_session_info)
             .collect::<Vec<_>>();
 
-        let next_cursor = page
-            .next_cursor
-            .as_ref()
-            .and_then(|next_cursor| serde_json::to_value(next_cursor).ok())
-            .and_then(|value| value.as_str().map(str::to_owned));
-
-        Ok(ListSessionsResponse::new(sessions).next_cursor(next_cursor))
+        Ok(ListSessionsResponse::new(sessions).next_cursor(page.next_cursor))
     }
 
     async fn close_session(
@@ -973,9 +908,9 @@ impl CodexAgent {
             .lock()
             .unwrap()
             .remove(&request.session_id);
+
         Ok(CloseSessionResponse::new())
     }
-
     async fn prompt(&self, request: PromptRequest) -> Result<PromptResponse, Error> {
         info!("Processing prompt for session: {}", request.session_id);
         // Check before sending if authentication was successful or not
@@ -1026,19 +961,6 @@ impl CodexAgent {
             .set_mode(args.mode_id)
             .await?;
         Ok(SetSessionModeResponse::default())
-    }
-
-    async fn set_session_model(
-        &self,
-        args: SetSessionModelRequest,
-    ) -> Result<SetSessionModelResponse, Error> {
-        info!("Setting session model for session: {}", args.session_id);
-
-        self.get_thread(&args.session_id)?
-            .set_model(args.model_id)
-            .await?;
-
-        Ok(SetSessionModelResponse::default())
     }
 
     async fn set_session_config_option(
@@ -1122,6 +1044,77 @@ impl TryFrom<AuthMethodId> for CodexAuthMethod {
     }
 }
 
+fn normalize_mcp_server_name(name: String) -> String {
+    // Codex does not allow whitespace in MCP server names; replace with underscores.
+    name.replace(|c: char| c.is_whitespace(), "_")
+}
+
+fn default_client_mcp_server_config(transport: McpServerTransportConfig) -> McpServerConfig {
+    McpServerConfig {
+        transport,
+        required: false,
+        enabled: true,
+        startup_timeout_sec: None,
+        tool_timeout_sec: None,
+        disabled_tools: None,
+        enabled_tools: None,
+        disabled_reason: None,
+        scopes: None,
+        oauth: None,
+        oauth_resource: None,
+        tools: Default::default(),
+        environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+        supports_parallel_tool_calls: false,
+        default_tools_approval_mode: None,
+    }
+}
+
+fn mcp_server_config_from_acp(
+    mcp_server: McpServer,
+    cwd: &Path,
+) -> Option<(String, McpServerConfig)> {
+    match mcp_server {
+        // Not supported in codex.
+        McpServer::Sse(..) => None,
+        McpServer::Http(McpServerHttp {
+            name, url, headers, ..
+        }) => Some((
+            normalize_mcp_server_name(name),
+            default_client_mcp_server_config(McpServerTransportConfig::StreamableHttp {
+                url,
+                bearer_token_env_var: None,
+                http_headers: if headers.is_empty() {
+                    None
+                } else {
+                    Some(headers.into_iter().map(|h| (h.name, h.value)).collect())
+                },
+                env_http_headers: None,
+            }),
+        )),
+        McpServer::Stdio(McpServerStdio {
+            name,
+            command,
+            args,
+            env,
+            ..
+        }) => Some((
+            normalize_mcp_server_name(name),
+            default_client_mcp_server_config(McpServerTransportConfig::Stdio {
+                command: command.display().to_string(),
+                args,
+                env: if env.is_empty() {
+                    None
+                } else {
+                    Some(env.into_iter().map(|env| (env.name, env.value)).collect())
+                },
+                env_vars: vec![],
+                cwd: Some(cwd.to_path_buf()),
+            }),
+        )),
+        _ => None,
+    }
+}
+
 fn truncate_graphemes(text: &str, max_graphemes: usize) -> String {
     let mut graphemes = text.grapheme_indices(true);
 
@@ -1153,194 +1146,220 @@ fn format_session_title(message: &str) -> Option<String> {
     }
 }
 
-fn augment_model_catalog(mut config: Config) -> Config {
-    if let Some(catalog) = config.model_catalog.as_mut() {
-        inject_gpt_5_5_model(catalog);
-    }
-
-    config
+fn stored_session_title(name: Option<&str>, preview: &str) -> Option<String> {
+    [name, Some(preview)]
+        .into_iter()
+        .flatten()
+        .find_map(format_session_title)
 }
 
-fn inject_gpt_5_5_model(catalog: &mut ModelsResponse) {
-    if catalog
-        .models
-        .iter()
-        .any(|model| model.slug == GPT_5_5_MODEL_SLUG)
-    {
-        return;
+fn list_session_allowed_sources() -> Vec<SessionSource> {
+    vec![
+        SessionSource::Cli,
+        SessionSource::VSCode,
+        SessionSource::Unknown,
+    ]
+}
+
+fn list_sessions_params(
+    cwd: Option<PathBuf>,
+    cursor: Option<String>,
+    allowed_sources: &[SessionSource],
+) -> ListThreadsParams {
+    ListThreadsParams {
+        page_size: SESSION_LIST_PAGE_SIZE,
+        cursor,
+        sort_key: StoreThreadSortKey::UpdatedAt,
+        sort_direction: StoreSortDirection::Desc,
+        allowed_sources: allowed_sources.to_vec(),
+        model_providers: None,
+        cwd_filters: cwd.map(|cwd| vec![cwd]),
+        archived: false,
+        search_term: None,
+        use_state_db_only: false,
     }
+}
 
-    let Some(mut template) = catalog
-        .models
-        .iter()
-        .find(|model| model.slug == GPT_5_4_MODEL_SLUG)
-        .cloned()
-    else {
-        warn!("codex-acp could not seed gpt-5.5 because gpt-5.4 is missing from the model catalog");
-        return;
-    };
+fn stored_thread_matches_list_request(
+    source: &SessionSource,
+    cwd: &Path,
+    allowed_sources: &[SessionSource],
+    cwd_filter: Option<&Path>,
+) -> bool {
+    allowed_sources.contains(source) && cwd_filter.is_none_or(|filter_cwd| cwd == filter_cwd)
+}
 
-    template.slug = GPT_5_5_MODEL_SLUG.to_string();
-    template.display_name = GPT_5_5_DISPLAY_NAME.to_string();
-    template.description = Some(GPT_5_5_DESCRIPTION.to_string());
-    template.default_reasoning_level = Some(ReasoningEffort::Medium);
-    template.supported_reasoning_levels = vec![
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Low,
-            description: "Fast responses with lighter reasoning".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::Medium,
-            description: "Balances speed and reasoning depth for everyday tasks".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::High,
-            description: "Greater reasoning depth for complex problems".to_string(),
-        },
-        ReasoningEffortPreset {
-            effort: ReasoningEffort::XHigh,
-            description: "Extra high reasoning depth for complex problems".to_string(),
-        },
-    ];
-    template.priority = 0;
-    template.additional_speed_tiers.clear();
-    template.availability_nux = None;
-    template.upgrade = None;
-    template.context_window = Some(272_000);
-    template.max_context_window = None;
-    template.auto_compact_token_limit = None;
-    template.effective_context_window_percent = 95;
-    template.supports_reasoning_summaries = true;
-    template.support_verbosity = true;
-    template.supports_parallel_tool_calls = true;
-    template.supports_search_tool = true;
-    template.supports_image_detail_original = true;
-    template.used_fallback_model_metadata = false;
+fn stored_thread_session_info(item: StoredThread) -> SessionInfo {
+    let title = stored_session_title(item.name.as_deref(), &item.preview);
+    let updated_at = item.updated_at.to_rfc3339();
 
-    catalog.models.push(template);
+    SessionInfo::new(SessionId::new(item.thread_id.to_string()), item.cwd)
+        .title(title)
+        .updated_at(updated_at)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codex_core::config::ConfigOverrides;
-    use codex_models_manager::bundled_models_response;
-    use codex_protocol::{
-        config_types::{ApprovalsReviewer, ServiceTier},
-        models::PermissionProfile,
-        openai_models::ReasoningEffort,
-        protocol::AskForApproval,
-    };
+    use acp::schema::{EnvVariable, HttpHeader};
 
     #[test]
-    fn prompt_failure_policy_has_no_live_replay_retry() {
-        let source = include_str!("codex_agent.rs");
+    fn stored_session_title_prefers_thread_name() {
+        assert_eq!(
+            stored_session_title(Some("renamed"), "preview"),
+            Some("renamed".to_string())
+        );
+    }
 
-        for needle in [
-            ["reload", "_session", "_thread"].concat(),
-            ["replaying ACP rollout history during session ", "reload"].concat(),
-            ["reloading the rollout", " and retrying once"].concat(),
-        ] {
-            assert!(
-                !source.contains(&needle),
-                "prompt failure must be handled by the caller, not by live replay retry"
-            );
+    #[test]
+    fn stored_session_title_falls_back_to_preview() {
+        assert_eq!(
+            stored_session_title(None, "preview"),
+            Some("preview".to_string())
+        );
+        assert_eq!(
+            stored_session_title(Some("  "), "preview"),
+            Some("preview".to_string())
+        );
+    }
+
+    #[test]
+    fn list_sessions_params_preserve_cursor_and_filters_active_threads() {
+        let allowed_sources = list_session_allowed_sources();
+        let cwd = PathBuf::from("/workspace/project");
+        let params = list_sessions_params(
+            Some(cwd.clone()),
+            Some("cursor-1".to_string()),
+            &allowed_sources,
+        );
+
+        assert_eq!(params.page_size, SESSION_LIST_PAGE_SIZE);
+        assert_eq!(params.cursor, Some("cursor-1".to_string()));
+        assert_eq!(params.sort_key, StoreThreadSortKey::UpdatedAt);
+        assert_eq!(params.sort_direction, StoreSortDirection::Desc);
+        assert_eq!(params.allowed_sources, allowed_sources);
+        assert_eq!(params.cwd_filters, Some(vec![cwd]));
+        assert!(!params.archived);
+        assert_eq!(params.model_providers, None);
+        assert_eq!(params.search_term, None);
+        assert!(!params.use_state_db_only);
+    }
+
+    #[test]
+    fn stored_thread_filter_respects_source_and_exact_cwd() {
+        let allowed_sources = list_session_allowed_sources();
+
+        assert!(stored_thread_matches_list_request(
+            &SessionSource::Cli,
+            Path::new("/workspace/project"),
+            &allowed_sources,
+            Some(Path::new("/workspace/project")),
+        ));
+        assert!(!stored_thread_matches_list_request(
+            &SessionSource::Cli,
+            Path::new("/workspace/project"),
+            &allowed_sources,
+            Some(Path::new("/workspace/other")),
+        ));
+        assert!(!stored_thread_matches_list_request(
+            &SessionSource::Exec,
+            Path::new("/workspace/project"),
+            &allowed_sources,
+            Some(Path::new("/workspace/project")),
+        ));
+    }
+
+    #[test]
+    fn client_http_mcp_server_preserves_headers_and_local_environment() {
+        let (name, config) = mcp_server_config_from_acp(
+            McpServer::Http(
+                McpServerHttp::new("Remote Tools", "https://example.com/mcp").headers(vec![
+                    HttpHeader::new("Authorization", "Bearer token"),
+                    HttpHeader::new("X-Workspace", "comando"),
+                ]),
+            ),
+            Path::new("/workspace/project"),
+        )
+        .expect("http MCP server should be supported");
+
+        assert_eq!(name, "Remote_Tools");
+        assert_eq!(config.environment_id, DEFAULT_MCP_SERVER_ENVIRONMENT_ID);
+        assert!(config.enabled);
+        assert!(!config.required);
+        match config.transport {
+            McpServerTransportConfig::StreamableHttp {
+                url,
+                bearer_token_env_var,
+                http_headers,
+                env_http_headers,
+            } => {
+                assert_eq!(url, "https://example.com/mcp");
+                assert_eq!(bearer_token_env_var, None);
+                assert_eq!(env_http_headers, None);
+                let headers = http_headers.expect("headers should be preserved");
+                assert_eq!(
+                    headers.get("Authorization").map(String::as_str),
+                    Some("Bearer token"),
+                );
+                assert_eq!(
+                    headers.get("X-Workspace").map(String::as_str),
+                    Some("comando")
+                );
+            }
+            _ => panic!("expected streamable HTTP MCP transport"),
         }
     }
 
-    #[tokio::test]
-    async fn sync_config_with_session_restores_runtime_state() -> anyhow::Result<()> {
-        let mut config = Config::load_with_cli_overrides_and_harness_overrides(
-            vec![],
-            ConfigOverrides::default(),
+    #[test]
+    fn client_stdio_mcp_server_preserves_env_cwd_and_local_environment() {
+        let cwd = Path::new("/workspace/project");
+        let (name, config) = mcp_server_config_from_acp(
+            McpServer::Stdio(
+                McpServerStdio::new("Local Tools", "/usr/bin/env")
+                    .args(vec!["node".to_string(), "server.js".to_string()])
+                    .env(vec![EnvVariable::new("API_KEY", "secret")]),
+            ),
+            cwd,
         )
-        .await?;
-        let thread_id = ThreadId::new();
-        let session_configured = SessionConfiguredEvent {
-            session_id: thread_id.into(),
-            thread_id,
-            forked_from_id: None,
-            thread_source: None,
-            thread_name: Some("Fast session".to_string()),
-            model: "gpt-5".to_string(),
-            model_provider_id: "openai".to_string(),
-            service_tier: Some(ServiceTier::Fast.request_value().to_string()),
-            approval_policy: AskForApproval::OnFailure,
-            approvals_reviewer: ApprovalsReviewer::default(),
-            permission_profile: PermissionProfile::Disabled,
-            active_permission_profile: None,
-            cwd: std::env::current_dir()?.try_into()?,
-            reasoning_effort: Some(ReasoningEffort::High),
-            initial_messages: None,
-            network_proxy: None,
-            rollout_path: None,
-        };
+        .expect("stdio MCP server should be supported");
 
-        CodexAgent::sync_config_with_session(&mut config, &session_configured)?;
-
-        assert_eq!(config.model.as_deref(), Some("gpt-5"));
-        assert_eq!(config.model_provider_id, "openai");
-        assert_eq!(
-            config.service_tier.as_deref(),
-            Some(ServiceTier::Fast.request_value())
-        );
-        assert_eq!(config.model_reasoning_effort, Some(ReasoningEffort::High));
-        assert_eq!(
-            *config.permissions.approval_policy.get(),
-            AskForApproval::OnFailure
-        );
-        assert!(matches!(
-            config.permissions.permission_profile(),
-            PermissionProfile::Disabled
-        ));
-        assert_eq!(config.cwd.to_path_buf(), std::env::current_dir()?);
-
-        Ok(())
+        assert_eq!(name, "Local_Tools");
+        assert_eq!(config.environment_id, DEFAULT_MCP_SERVER_ENVIRONMENT_ID);
+        assert!(config.enabled);
+        assert!(!config.required);
+        match config.transport {
+            McpServerTransportConfig::Stdio {
+                command,
+                args,
+                env,
+                env_vars,
+                cwd: server_cwd,
+            } => {
+                assert_eq!(command, "/usr/bin/env");
+                assert_eq!(args, vec!["node".to_string(), "server.js".to_string()]);
+                assert_eq!(
+                    env.expect("env should be preserved")
+                        .get("API_KEY")
+                        .map(String::as_str),
+                    Some("secret"),
+                );
+                assert!(env_vars.is_empty());
+                assert_eq!(server_cwd.as_deref(), Some(cwd));
+            }
+            _ => panic!("expected stdio MCP transport"),
+        }
     }
 
-    #[tokio::test]
-    async fn augment_model_catalog_does_not_freeze_default_catalog() -> anyhow::Result<()> {
-        let config = Config::load_with_cli_overrides_and_harness_overrides(
-            vec![],
-            ConfigOverrides::default(),
-        )
-        .await?;
-        let config = augment_model_catalog(config);
+    #[test]
+    fn client_sse_mcp_server_is_ignored() {
+        let server = serde_json::from_value::<McpServer>(serde_json::json!({
+            "type": "sse",
+            "name": "Legacy SSE",
+            "url": "https://example.com/sse",
+            "headers": []
+        }))
+        .expect("sse MCP server should deserialize");
 
-        assert!(
-            config.model_catalog.is_none(),
-            "codex-acp should keep the default catalog dynamic"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn augment_model_catalog_seeds_gpt_5_5_for_custom_catalog() -> anyhow::Result<()> {
-        let mut config = Config::load_with_cli_overrides_and_harness_overrides(
-            vec![],
-            ConfigOverrides::default(),
-        )
-        .await?;
-        config.model_catalog = Some(bundled_models_response()?);
-
-        let config = augment_model_catalog(config);
-        let catalog = config
-            .model_catalog
-            .expect("custom catalog should remain configured");
-        let model = catalog
-            .models
-            .iter()
-            .find(|model| model.slug == GPT_5_5_MODEL_SLUG)
-            .expect("gpt-5.5 should be present in the catalog");
-
-        assert_eq!(model.display_name, GPT_5_5_DISPLAY_NAME);
-        assert_eq!(model.default_reasoning_level, Some(ReasoningEffort::Medium));
-        assert_eq!(model.supported_reasoning_levels.len(), 4);
-        assert!(model.supports_reasoning_summaries);
-        assert!(model.supports_parallel_tool_calls);
-        assert!(model.supports_search_tool);
-
-        Ok(())
+        assert!(mcp_server_config_from_acp(server, Path::new("/workspace/project")).is_none());
     }
 }
