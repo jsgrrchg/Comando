@@ -60,6 +60,10 @@ function summarizeQueuedPrompt(item: QueuedPrompt): string {
 }
 
 function getStatusLabel(status: QueuedPrompt["status"]): string | null {
+    if (status === "pending_dispatch") {
+        return "pending dispatch";
+    }
+
     if (status === "sending") {
         return "sending\u2026";
     }

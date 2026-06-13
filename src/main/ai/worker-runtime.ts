@@ -508,7 +508,7 @@ export class AiWorkerRuntime {
             throw new Error("Type a prompt before sending it.");
         }
 
-        const userMessageId = randomUUID();
+        const userMessageId = params.input.messageId;
         const promptContentBlocks = buildPromptContentBlocks(
             promptText,
             params.input.attachments,

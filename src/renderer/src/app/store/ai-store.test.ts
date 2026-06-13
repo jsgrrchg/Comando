@@ -10,6 +10,7 @@ import type {
     AiToolActivity,
     AiTrackedFile,
     AppBootstrapSnapshot,
+    SendAiPromptInput,
     WorkspaceChatTab,
 } from "@shared/ipc";
 
@@ -920,7 +921,7 @@ describe("ai-store queue", () => {
         expect(deferredSession?.localError).toBeNull();
         expect(deferredSession?.queue).toHaveLength(1);
         expect(deferredSession?.queue[0]?.prompt).toBe("hello");
-        expect(deferredSession?.queue[0]?.status).toBe("queued");
+        expect(deferredSession?.queue[0]?.status).toBe("pending_dispatch");
         expect(deferredSession?.snapshot?.status).toBe("starting");
 
         useAiStore.getState().applySessionSnapshot(
@@ -938,6 +939,149 @@ describe("ai-store queue", () => {
             expect(drainedSession?.queue).toHaveLength(0);
             expect(drainedSession?.localError).toBeNull();
         });
+    });
+
+    it("shows a local user message before the prompt IPC resolves", async () => {
+        const firstDispatch = createDeferred<void>();
+        const sendAiPrompt = vi
+            .fn()
+            .mockImplementationOnce(() => firstDispatch.promise);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        const sendPromise = useAiStore.getState().sendPrompt(TAB, "hello");
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        });
+
+        const firstSendInput = sendAiPrompt.mock.calls[0]?.[0] as
+            | SendAiPromptInput
+            | undefined;
+        const messageId = firstSendInput?.messageId ?? "";
+        const pendingSession = useAiStore.getState().sessions[TAB.sessionId];
+
+        expect(typeof messageId).toBe("string");
+        expect(pendingSession?.snapshot?.status).toBe("starting");
+        expect(pendingSession?.snapshot?.messages).toContainEqual(
+            expect.objectContaining({
+                content: "hello",
+                id: messageId,
+                kind: "user",
+                status: "completed",
+            }),
+        );
+        expect(pendingSession?.activeQueuedPrompt?.queuedPrompt.id).toBe(
+            messageId,
+        );
+
+        firstDispatch.resolve(undefined);
+        await sendPromise;
+    });
+
+    it("uses the local message id for backend dispatch and deduplicates the runtime echo", async () => {
+        const firstDispatch = createDeferred<void>();
+        const sendAiPrompt = vi
+            .fn()
+            .mockImplementationOnce(() => firstDispatch.promise);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        const sendPromise = useAiStore.getState().sendPrompt(TAB, "hello");
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        });
+
+        const firstSendInput = sendAiPrompt.mock.calls[0]?.[0] as
+            | SendAiPromptInput
+            | undefined;
+        const messageId = firstSendInput?.messageId ?? "";
+        expect(messageId).toBeTruthy();
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                activeTurnStartedAt: "2026-04-14T00:00:01.000Z",
+                messages: [
+                    {
+                        attachments: [],
+                        content: "hello",
+                        createdAt: "2026-04-14T00:00:01.000Z",
+                        id: messageId,
+                        kind: "user",
+                        status: "completed",
+                    },
+                ],
+                status: "starting",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        const echoedSession = useAiStore.getState().sessions[TAB.sessionId];
+        expect(
+            echoedSession?.snapshot?.messages.filter(
+                (message) => message.id === messageId,
+            ),
+        ).toHaveLength(1);
+
+        firstDispatch.resolve(undefined);
+        await sendPromise;
+    });
+
+    it("marks an immediately accepted prompt as failed when dispatch hard-fails", async () => {
+        const sendAiPrompt = vi
+            .fn()
+            .mockRejectedValueOnce(new Error("Spawn failed"));
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        await useAiStore.getState().sendPrompt(TAB, "hello");
+
+        const failedSession = useAiStore.getState().sessions[TAB.sessionId];
+        const failedPrompt = failedSession?.queue[0];
+        expect(failedPrompt?.prompt).toBe("hello");
+        expect(failedPrompt?.status).toBe("failed");
+        expect(failedSession?.localError).toBe("Spawn failed");
+        expect(failedSession?.snapshot?.messages).toContainEqual(
+            expect.objectContaining({
+                content: "hello",
+                id: failedPrompt?.id,
+                kind: "user",
+            }),
+        );
     });
 
     it("sends composer parts to main when dispatching immediately", async () => {
@@ -1814,7 +1958,7 @@ describe("ai-store queue", () => {
                     status: item.status,
                 })),
             ).toEqual([
-                { prompt: "first", status: "queued" },
+                { prompt: "first", status: "pending_dispatch" },
                 { prompt: "second", status: "queued" },
                 { prompt: "third", status: "queued" },
             ]);

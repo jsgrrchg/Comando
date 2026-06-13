@@ -1596,10 +1596,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     sendQueuedPromptNow: async (sessionId, promptId) => {
         const session = get().sessions[sessionId];
-        const queueIndex =
-            session?.queue.findIndex(
-                (candidate) => candidate.id === promptId,
-            ) ?? -1;
         const queuedPrompt = session?.queue.find(
             (candidate) => candidate.id === promptId,
         );
@@ -1653,7 +1649,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
             // The cancel succeeded, so the steer action becomes the new
             // intentional queue owner. Resume before draining the selected head.
             resumeQueue(sessionId, set);
-            await drainQueueIfNeeded(sessionId, get, set);
+            await drainQueueIfNeeded(sessionId, get, set, {
+                lockDrain: false,
+            });
             return;
         }
 
@@ -1661,54 +1659,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
         // user is taking over what to dispatch next. Lift any pause so the
         // remainder of the queue drains after this turn ends.
         resumeQueue(sessionId, set);
-
-        removeQueuedPromptById(sessionId, promptId, set);
-
-        try {
-            const result = await dispatchPrompt(
-                {
-                    additionalRoots: collectExternalComposerRoots(
-                        queuedPrompt.composerPartsSnapshot,
-                    ),
-                    composerParts: queuedPrompt.composerPartsSnapshot,
-                    projectId: latestSession.meta.projectId,
-                    runtimeId: latestSession.meta.runtimeId,
-                    sessionId,
-                    title: latestSession.meta.title,
-                    worktreeId: latestSession.meta.worktreeId,
-                },
-                queuedPrompt.prompt,
-                queuedPrompt.attachments,
-                set,
-            );
-
-            if (result === "sent") {
-                // Let the snapshot-patch pipeline trigger the next drain when
-                // the session returns to idle; draining now would race the
-                // "starting" patch from the backend.
-                return;
-            }
-
-            insertQueuedPromptAtIndex(
-                sessionId,
-                {
-                    ...queuedPrompt,
-                    status: "queued",
-                },
-                queueIndex,
-                set,
-            );
-        } catch {
-            insertQueuedPromptAtIndex(
-                sessionId,
-                {
-                    ...queuedPrompt,
-                    status: "failed",
-                },
-                queueIndex,
-                set,
-            );
-        }
+        await drainQueueIfNeeded(sessionId, get, set, {
+            lockDrain: false,
+        });
     },
 
     verifyCodexBinaryPath: async (binaryPath) => {
@@ -1735,6 +1688,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
         const session = get().sessions[tab.sessionId] ?? createSessionState();
         const editingQueuedPrompt = session.editingQueuedPrompt;
         const queuedPrompt = createQueuedPrompt({
+            additionalRoots: options.additionalRoots,
             attachments,
             composerPartsSnapshot: options.composerPartsSnapshot ?? [
                 { text: trimmedPrompt, type: "text" },
@@ -1780,45 +1734,27 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 buildSessionMeta(tab),
             );
             clearEditingQueuedPromptState(tab.sessionId, set);
-            await drainQueueIfNeeded(tab.sessionId, get, set);
+            await drainQueueIfNeeded(tab.sessionId, get, set, {
+                lockDrain: false,
+            });
             return;
         }
 
-        const dispatchResult = await dispatchPrompt(
+        enqueuePrompt(
+            tab.sessionId,
             {
-                additionalRoots:
-                    options.additionalRoots ??
-                    collectExternalComposerRoots(
-                        queuedPrompt.composerPartsSnapshot,
-                    ),
-                composerParts: queuedPrompt.composerPartsSnapshot,
-                projectId: tab.projectId,
-                runtimeId: tab.runtimeId,
-                sessionId: tab.sessionId,
-                title: tab.title,
-                worktreeId: tab.worktreeId ?? null,
+                ...queuedPrompt,
+                status: "pending_dispatch",
             },
-            trimmedPrompt,
-            attachments,
+            "head",
             set,
+            buildSessionMeta(tab),
         );
-
         clearEditingQueuedPromptState(tab.sessionId, set);
 
-        if (dispatchResult !== "sent") {
-            enqueuePrompt(
-                tab.sessionId,
-                {
-                    ...queuedPrompt,
-                    status: "queued",
-                },
-                "head",
-                set,
-                buildSessionMeta(tab),
-            );
-        }
-        // On "sent" the subsequent starting → idle snapshot patches drive the
-        // drain, so no explicit drain is needed here.
+        await drainQueueIfNeeded(tab.sessionId, get, set, {
+            lockDrain: false,
+        });
     },
 }));
 
@@ -2434,9 +2370,9 @@ function resolveIncomingSessionSnapshot(
         currentSnapshot,
     );
     const changedKeys = options.changedKeys ?? null;
-    const incomingIsFreshEnough = isIncomingSnapshotFreshEnough(
-        currentSnapshot,
-        incomingSnapshot,
+    const incomingIsFreshEnough = isUpdatedAtAtLeast(
+        session.lastIncomingSnapshotUpdatedAt ?? currentSnapshot.updatedAt,
+        incomingSnapshot.updatedAt,
     );
 
     if (
@@ -2512,13 +2448,6 @@ function mergeHydrationMetadataIntoCurrent(
         ...snapshotWithCatalog,
         runtimeSessionId: incomingSnapshot.runtimeSessionId,
     };
-}
-
-function isIncomingSnapshotFreshEnough(
-    currentSnapshot: AiSessionSnapshot,
-    incomingSnapshot: AiSessionSnapshot,
-): boolean {
-    return isUpdatedAtAtLeast(currentSnapshot.updatedAt, incomingSnapshot.updatedAt);
 }
 
 function getLatestIncomingSnapshotUpdatedAt(
@@ -2635,6 +2564,7 @@ async function dispatchPrompt(
         readonly title: string;
         readonly worktreeId: string | null;
     },
+    messageId: string,
     prompt: string,
     attachments: readonly AiImageAttachment[],
     set: SetAiState,
@@ -2664,6 +2594,7 @@ async function dispatchPrompt(
             additionalRoots: meta.additionalRoots,
             attachments,
             composerParts: meta.composerParts,
+            messageId,
             projectId: meta.projectId,
             prompt,
             runtimeId: meta.runtimeId,
@@ -2690,7 +2621,7 @@ async function dispatchPrompt(
                                 ? {
                                       ...session.snapshot,
                                       status: "starting",
-                                      updatedAt: new Date().toISOString(),
+                                      updatedAt: session.snapshot.updatedAt,
                                   }
                                 : session.snapshot,
                         },
@@ -2707,6 +2638,10 @@ async function dispatchPrompt(
             if (session.activeDispatchToken !== dispatchToken) {
                 return state;
             }
+            const message =
+                error instanceof Error
+                    ? error.message
+                    : `Could not send the prompt to ${getRuntimeDisplayName(meta.runtimeId)}.`;
 
             return {
                 sessions: {
@@ -2715,10 +2650,16 @@ async function dispatchPrompt(
                         ...session,
                         activeDispatchToken: null,
                         isDispatching: false,
-                        localError:
-                            error instanceof Error
-                                ? error.message
-                                : `Could not send the prompt to ${getRuntimeDisplayName(meta.runtimeId)}.`,
+                        localError: message,
+                        snapshot: session.snapshot
+                            ? {
+                                  ...session.snapshot,
+                                  activeTurnStartedAt: null,
+                                  lastError: message,
+                                  status: "error",
+                                  updatedAt: session.snapshot.updatedAt,
+                              }
+                            : session.snapshot,
                     },
                 },
             };
@@ -2752,8 +2693,12 @@ async function drainQueueIfNeeded(
     sessionId: string,
     get: GetAiState,
     set: SetAiState,
+    options: {
+        readonly lockDrain?: boolean;
+    } = {},
 ): Promise<void> {
-    if (activeQueueDrainSessionIds.has(sessionId)) {
+    const lockDrain = options.lockDrain ?? true;
+    if (lockDrain && activeQueueDrainSessionIds.has(sessionId)) {
         pendingQueueDrainSessionIds.add(sessionId);
         return;
     }
@@ -2772,8 +2717,8 @@ async function drainQueueIfNeeded(
         return;
     }
 
-    const nextQueuedPromptIndex = session.queue.findIndex(
-        (queuedPrompt) => queuedPrompt.status === "queued",
+    const nextQueuedPromptIndex = session.queue.findIndex((queuedPrompt) =>
+        isDispatchableQueuedPrompt(queuedPrompt),
     );
     const nextQueuedPrompt =
         nextQueuedPromptIndex >= 0
@@ -2792,14 +2737,18 @@ async function drainQueueIfNeeded(
         return;
     }
 
-    activeQueueDrainSessionIds.add(sessionId);
+    if (lockDrain) {
+        activeQueueDrainSessionIds.add(sessionId);
+    }
     let shouldDrainAfterUnlock = false;
     try {
         const result = await dispatchPrompt(
             {
-                additionalRoots: collectExternalComposerRoots(
-                    activeQueuedPrompt.queuedPrompt.composerPartsSnapshot,
-                ),
+                additionalRoots:
+                    activeQueuedPrompt.queuedPrompt.additionalRoots ??
+                    collectExternalComposerRoots(
+                        activeQueuedPrompt.queuedPrompt.composerPartsSnapshot,
+                    ),
                 composerParts:
                     activeQueuedPrompt.queuedPrompt.composerPartsSnapshot,
                 projectId: session.meta.projectId,
@@ -2808,6 +2757,7 @@ async function drainQueueIfNeeded(
                 title: session.meta.title,
                 worktreeId: session.meta.worktreeId,
             },
+            activeQueuedPrompt.queuedPrompt.id,
             activeQueuedPrompt.queuedPrompt.prompt,
             activeQueuedPrompt.queuedPrompt.attachments,
             set,
@@ -2822,7 +2772,7 @@ async function drainQueueIfNeeded(
             // arrived while IPC was still resolving, reconcile it after this
             // drain lock is released.
             shouldDrainAfterUnlock =
-                completeActiveQueuedPromptIfSnapshotAdvanced(
+                completeActiveQueuedPromptAfterSuccessfulDispatch(
                     sessionId,
                     activeQueuedPrompt,
                     get,
@@ -2834,7 +2784,7 @@ async function drainQueueIfNeeded(
         restoreActiveQueuedPrompt(
             sessionId,
             activeQueuedPrompt,
-            "queued",
+            "pending_dispatch",
             set,
         );
     } catch {
@@ -2845,8 +2795,11 @@ async function drainQueueIfNeeded(
             set,
         );
     } finally {
-        activeQueueDrainSessionIds.delete(sessionId);
-        const hasPendingDrain = pendingQueueDrainSessionIds.delete(sessionId);
+        if (lockDrain) {
+            activeQueueDrainSessionIds.delete(sessionId);
+        }
+        const hasPendingDrain =
+            lockDrain && pendingQueueDrainSessionIds.delete(sessionId);
         if (shouldDrainAfterUnlock || hasPendingDrain) {
             await drainQueueIfNeeded(sessionId, get, set);
         }
@@ -2854,6 +2807,7 @@ async function drainQueueIfNeeded(
 }
 
 function createQueuedPrompt(input: {
+    readonly additionalRoots?: readonly string[];
     readonly attachments: readonly AiImageAttachment[];
     readonly composerPartsSnapshot: readonly AiComposerDraftPart[];
     readonly existing?: QueuedPrompt | null;
@@ -2861,6 +2815,7 @@ function createQueuedPrompt(input: {
     readonly prompt: string;
 }): QueuedPrompt {
     return {
+        additionalRoots: input.additionalRoots,
         attachments: cloneDraftAttachments(input.attachments),
         composerPartsSnapshot: cloneComposerDraftParts(
             input.composerPartsSnapshot,
@@ -2873,6 +2828,115 @@ function createQueuedPrompt(input: {
         prompt: input.prompt,
         status: "queued",
     };
+}
+
+function isDispatchableQueuedPrompt(queuedPrompt: QueuedPrompt): boolean {
+    return (
+        queuedPrompt.status === "pending_dispatch" ||
+        queuedPrompt.status === "queued"
+    );
+}
+
+function applyLocalPromptAcceptanceToSession(
+    session: AiSessionClientState,
+    queuedPrompt: QueuedPrompt,
+): AiSessionClientState {
+    const snapshot = session.snapshot;
+    if (!snapshot) {
+        return session;
+    }
+
+    const acceptedAt = new Date().toISOString();
+    const baseSnapshot = completeLocalStreamingMessages(snapshot);
+    const hasMessage = baseSnapshot.messages.some(
+        (message) => message.id === queuedPrompt.id,
+    );
+    const nextSnapshot: AiSessionSnapshot = {
+        ...baseSnapshot,
+        activeTurnStartedAt: baseSnapshot.activeTurnStartedAt ?? acceptedAt,
+        lastError: null,
+        messages: hasMessage
+            ? baseSnapshot.messages
+            : [
+                  ...baseSnapshot.messages,
+                  {
+                      attachments: queuedPrompt.attachments,
+                      content: getQueuedPromptDisplayContent(queuedPrompt),
+                      createdAt: queuedPrompt.createdAt,
+                      id: queuedPrompt.id,
+                      kind: "user",
+                      status: "completed",
+                  },
+              ],
+        pendingPermission: null,
+        pendingUserInput: null,
+        status: "starting",
+        updatedAt: baseSnapshot.updatedAt,
+    };
+    const nextTranscript = mergeAiSessionTranscriptSources(
+        getSessionTranscript(session, snapshot),
+        buildAiSessionTranscriptModelFromSnapshot(nextSnapshot),
+        {
+            includeMessages: true,
+            includePlan: false,
+            includeStatus: true,
+            includeTools: false,
+        },
+    );
+
+    return {
+        ...session,
+        localError: null,
+        snapshot: writeAiSessionTranscriptToSnapshot(
+            nextSnapshot,
+            nextTranscript,
+        ),
+        transcript: nextTranscript,
+    };
+}
+
+function completeLocalStreamingMessages(
+    snapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        messages: snapshot.messages.map((message) =>
+            message.status === "streaming"
+                ? {
+                      ...message,
+                      status: "completed",
+                  }
+                : message,
+        ),
+    };
+}
+
+function getQueuedPromptDisplayContent(queuedPrompt: QueuedPrompt): string {
+    if (queuedPrompt.prompt.trim()) {
+        return queuedPrompt.prompt.trim();
+    }
+
+    return queuedPrompt.composerPartsSnapshot
+        .map((part) => {
+            switch (part.type) {
+                case "text":
+                    return part.text;
+                case "file_mention":
+                case "folder_mention":
+                case "file_attachment":
+                case "git_commit_mention":
+                case "github_issue_mention":
+                case "github_pull_request_mention":
+                case "selection_mention":
+                    return part.label;
+                case "fetch_mention":
+                    return "@fetch";
+                case "plan_mention":
+                    return "/plan";
+            }
+        })
+        .join("")
+        .trim();
 }
 
 function createQueuedPromptEditState(input: {
@@ -3075,38 +3139,6 @@ function setQueuedPromptStatusInState(
     });
 }
 
-function insertQueuedPromptAtIndex(
-    sessionId: string,
-    queuedPrompt: QueuedPrompt,
-    index: number,
-    set: SetAiState,
-): void {
-    set((state) => {
-        const session = state.sessions[sessionId] ?? createSessionState();
-        const remainingQueue = session.queue.filter(
-            (candidate) => candidate.id !== queuedPrompt.id,
-        );
-        const insertionIndex = Math.min(
-            Math.max(index, 0),
-            remainingQueue.length,
-        );
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                    ...session,
-                    queue: [
-                        ...remainingQueue.slice(0, insertionIndex),
-                        queuedPrompt,
-                        ...remainingQueue.slice(insertionIndex),
-                    ],
-                },
-            },
-        };
-    });
-}
-
 function activateQueuedPromptForDrain(
     sessionId: string,
     promptId: string,
@@ -3124,7 +3156,7 @@ function activateQueuedPromptForDrain(
             (candidate) => candidate.id === promptId,
         );
         const queuedPrompt = session.queue[queueIndex];
-        if (!queuedPrompt || queuedPrompt.status !== "queued") {
+        if (!queuedPrompt || !isDispatchableQueuedPrompt(queuedPrompt)) {
             return state;
         }
 
@@ -3141,16 +3173,21 @@ function activateQueuedPromptForDrain(
             },
         };
 
+        const nextSession = applyLocalPromptAcceptanceToSession(
+            {
+                ...session,
+                activeQueuedPrompt,
+                queue: session.queue.filter(
+                    (candidate) => candidate.id !== promptId,
+                ),
+            },
+            queuedPrompt,
+        );
+
         return {
             sessions: {
                 ...state.sessions,
-                [sessionId]: {
-                    ...session,
-                    activeQueuedPrompt,
-                    queue: session.queue.filter(
-                        (candidate) => candidate.id !== promptId,
-                    ),
-                },
+                [sessionId]: nextSession,
             },
         };
     });
@@ -3194,7 +3231,7 @@ function restoreActiveQueuedPrompt(
     });
 }
 
-function completeActiveQueuedPromptIfSnapshotAdvanced(
+function completeActiveQueuedPromptAfterSuccessfulDispatch(
     sessionId: string,
     activeQueuedPrompt: ActiveQueuedPromptState,
     get: GetAiState,
@@ -3208,17 +3245,19 @@ function completeActiveQueuedPromptIfSnapshotAdvanced(
             !session ||
             session.activeQueuedPrompt?.queuedPrompt.id !==
                 activeQueuedPrompt.queuedPrompt.id ||
-            !session.snapshot ||
-            !hasIncomingSnapshotVersionAdvancedPastActiveQueuedPrompt(
-                session,
-                activeQueuedPrompt,
-            )
+            !session.snapshot
         ) {
             return state;
         }
 
         shouldDrainAfterUnlock =
-            session.queue.some((queuedPrompt) => queuedPrompt.status === "queued") &&
+            hasIncomingSnapshotVersionAdvancedPastActiveQueuedPrompt(
+                session,
+                activeQueuedPrompt,
+            ) &&
+            session.queue.some((queuedPrompt) =>
+                isDispatchableQueuedPrompt(queuedPrompt),
+            ) &&
             !session.queuePaused &&
             !isBusySession(session.snapshot) &&
             !isClosedSubagentSession(session.snapshot);
@@ -3254,31 +3293,6 @@ function clearEditingQueuedPromptState(
                     ...session,
                     editingQueuedPromptState: null,
                     editingQueuedPrompt: null,
-                },
-            },
-        };
-    });
-}
-
-function removeQueuedPromptById(
-    sessionId: string,
-    promptId: string,
-    set: SetAiState,
-): void {
-    set((state) => {
-        const session = state.sessions[sessionId];
-        if (!session) {
-            return state;
-        }
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                    ...session,
-                    queue: session.queue.filter(
-                        (queuedPrompt) => queuedPrompt.id !== promptId,
-                    ),
                 },
             },
         };
@@ -3553,7 +3567,6 @@ function reconcileDispatchStateForIncomingSnapshot(
     }
 
     if (
-        !session.activeDispatchToken &&
         doesIncomingSnapshotAdvancePastActiveQueuedPrompt(
             session,
             snapshot,

@@ -10,11 +10,16 @@ export const FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM = 1.25;
 // Fase 0 / Ruta B: el undo de reject queda fuera del alcance inicial.
 export const AI_REVIEW_UNDO_ENABLED = false;
 
-export type AiQueuedPromptStatus = "failed" | "queued" | "sending";
+export type AiQueuedPromptStatus =
+    | "failed"
+    | "pending_dispatch"
+    | "queued"
+    | "sending";
 
 export type AiComposerDraftPart = AiComposerMessagePart;
 
 export interface QueuedPrompt {
+    readonly additionalRoots?: readonly string[];
     readonly attachments: readonly AiImageAttachment[];
     readonly composerPartsSnapshot: readonly AiComposerDraftPart[];
     readonly createdAt: string;

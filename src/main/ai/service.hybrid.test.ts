@@ -405,6 +405,7 @@ describe("AiService hybrid persistence", () => {
         await service.sendPrompt(
             {
                 attachments: [],
+                messageId: "message-child-1",
                 projectId: "project-1",
                 prompt: "hello child",
                 runtimeId: "codex",
