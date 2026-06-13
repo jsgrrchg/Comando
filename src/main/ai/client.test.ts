@@ -187,6 +187,104 @@ describe("createAiWorkerClient", () => {
 
         await client.close();
     });
+
+    it("keeps worker-emitted subagent sessions on the shard that owns their ACP connection", async () => {
+        const { connect, ports } = createShardedWorkerHarness(2);
+        const client = await createAiWorkerClient({
+            connect,
+            shardCount: 2,
+        });
+        const parentSessionId = "session-1";
+        const childSessionId = "session-child";
+
+        await client.prepareSession(createPrepareInput(parentSessionId));
+        const parentShardIndex = ports.findIndex((port) =>
+            port.messages.some((message) =>
+                isRpcMethod(message, "ai.prepareSession"),
+            ),
+        );
+        expect(parentShardIndex).toBeGreaterThanOrEqual(0);
+        clearPortMessages(ports);
+
+        ports[parentShardIndex].emit("message", {
+            event: "ai.snapshot.updated",
+            payload: {
+                ownerWindowId: "window-1",
+                update: {
+                    kind: "snapshot",
+                    snapshot: {
+                        ...createSnapshot(childSessionId),
+                        parentSessionId,
+                    },
+                },
+            },
+            type: "event",
+        });
+
+        await client.sendPrompt(createSendPromptInput(childSessionId));
+
+        expect(
+            ports[parentShardIndex].messages.some((message) =>
+                isRpcMethod(message, "ai.sendPrompt"),
+            ),
+        ).toBe(true);
+        ports.forEach((port, shardIndex) => {
+            if (shardIndex === parentShardIndex) {
+                return;
+            }
+            expect(
+                port.messages.some((message) =>
+                    isRpcMethod(message, "ai.sendPrompt"),
+                ),
+            ).toBe(false);
+        });
+
+        await client.close();
+    });
+
+    it("closes shards that already started when another shard fails startup", async () => {
+        const startedWorker = new FakeWorker();
+        const startedPort = new FakePort();
+        const bootstrap: AiWorkerBootstrapState = {
+            capabilities: {
+                fileBufferMirroring: true,
+                runtimeSessions: false,
+            },
+            protocolVersion: 1,
+            startedAt: new Date().toISOString(),
+        };
+        startedPort.onPostMessage = (message) => {
+            const payload = message as RpcMessage;
+            if (payload.method === "system.shutdown") {
+                startedPort.emit("message", {
+                    id: payload.id,
+                    result: true,
+                });
+            }
+        };
+        const startupError = new Error("Shard startup failed.");
+
+        await expect(
+            createAiWorkerClient({
+                connect: (context) =>
+                    context.shardIndex === 0
+                        ? Promise.resolve({
+                              port: startedPort as unknown as MessagePort,
+                              readyValue: bootstrap,
+                              worker: startedWorker as unknown as Worker,
+                          })
+                        : Promise.reject(startupError),
+                shardCount: 2,
+            }),
+        ).rejects.toThrow(startupError);
+
+        expect(
+            startedPort.messages.some((message) =>
+                (message as RpcMessage).method === "system.shutdown",
+            ),
+        ).toBe(true);
+        expect(startedWorker.terminate).toHaveBeenCalledTimes(1);
+    });
 });
 
 function createShardedWorkerHarness(shardCount: number) {
