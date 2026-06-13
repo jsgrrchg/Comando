@@ -178,6 +178,9 @@ if (!hasSingleInstanceLock) {
                     onWorkerRestarted: async () => {
                         await aiService?.handleWorkerRestarted();
                     },
+                    shardCount: parseAiWorkerShardCount(
+                        process.env.COMANDO_AI_WORKER_SHARDS,
+                    ),
                 });
                 aiService.setWorker(aiWorkerClient);
             } catch (error) {
@@ -373,6 +376,15 @@ async function shutdownApplication(): Promise<void> {
             debugBenignError("app.shutdown", result.reason);
         }
     }
+}
+
+function parseAiWorkerShardCount(value: string | undefined): number {
+    const parsed = Number.parseInt(value ?? "", 10);
+    if (!Number.isFinite(parsed)) {
+        return 1;
+    }
+
+    return Math.max(1, Math.min(8, parsed));
 }
 
 function restoreMainWindows(): void {
