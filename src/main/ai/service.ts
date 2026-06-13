@@ -70,6 +70,7 @@ import {
     type AiWorkerReviewMutationResult,
     type AiWorkerReviewSessionContext,
     type AiWorkerSessionLaunchInput,
+    type AiSchedulerConfig,
     type AiServiceOptions,
     type ResolvedAcpRuntime,
     type SessionDescriptor,
@@ -178,6 +179,174 @@ type LiveSessionContext = {
     readonly worktreeId: string | null;
 };
 
+const DEFAULT_AI_SCHEDULER_CONFIG: AiSchedulerConfig = {
+    maxColdStartsGlobal: 3,
+    maxColdStartsPerRuntime: 1,
+};
+
+type AiSchedulerPriority = 0 | 1 | 2 | 3;
+
+interface AiSchedulerDiagnostics {
+    readonly activeColdStarts: number;
+    readonly activeColdStartsByRuntime: Readonly<Record<string, number>>;
+    readonly maxColdStartsGlobal: number;
+    readonly maxColdStartsPerRuntime: number;
+    readonly queued: number;
+}
+
+interface AiSchedulerTask<T> {
+    readonly coldStart: boolean;
+    readonly createdOrder: number;
+    readonly priority: AiSchedulerPriority;
+    readonly reject: (reason: unknown) => void;
+    readonly resolve: (value: T | PromiseLike<T>) => void;
+    readonly run: () => Promise<T>;
+    readonly runtimeId: AiRuntimeId | null;
+}
+
+class AiWorkScheduler {
+    readonly #activeColdStartsByRuntime = new Map<AiRuntimeId, number>();
+    #activeColdStarts = 0;
+    readonly #config: AiSchedulerConfig;
+    #nextOrder = 0;
+    readonly #queue: AiSchedulerTask<unknown>[] = [];
+
+    constructor(config?: Partial<AiSchedulerConfig>) {
+        this.#config = {
+            maxColdStartsGlobal:
+                config?.maxColdStartsGlobal ??
+                DEFAULT_AI_SCHEDULER_CONFIG.maxColdStartsGlobal,
+            maxColdStartsPerRuntime:
+                config?.maxColdStartsPerRuntime ??
+                DEFAULT_AI_SCHEDULER_CONFIG.maxColdStartsPerRuntime,
+        };
+    }
+
+    getDiagnostics(): AiSchedulerDiagnostics {
+        return {
+            activeColdStarts: this.#activeColdStarts,
+            activeColdStartsByRuntime: Object.fromEntries(
+                this.#activeColdStartsByRuntime,
+            ),
+            maxColdStartsGlobal: this.#config.maxColdStartsGlobal,
+            maxColdStartsPerRuntime: this.#config.maxColdStartsPerRuntime,
+            queued: this.#queue.length,
+        };
+    }
+
+    schedule<T>(
+        input: {
+            readonly coldStart: boolean;
+            readonly priority: AiSchedulerPriority;
+            readonly runtimeId: AiRuntimeId | null;
+        },
+        run: () => Promise<T>,
+    ): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+            this.#queue.push({
+                coldStart: input.coldStart,
+                createdOrder: this.#nextOrder++,
+                priority: input.priority,
+                reject,
+                resolve: (value) => {
+                    resolve(value as T);
+                },
+                run: async () => await run(),
+                runtimeId: input.runtimeId,
+            });
+            this.#pump();
+        });
+    }
+
+    #pump(): void {
+        for (;;) {
+            const taskIndex = this.#findNextRunnableTaskIndex();
+            if (taskIndex < 0) {
+                return;
+            }
+
+            const [task] = this.#queue.splice(taskIndex, 1);
+            this.#startTask(task);
+        }
+    }
+
+    #findNextRunnableTaskIndex(): number {
+        let bestIndex = -1;
+        let bestTask: AiSchedulerTask<unknown> | null = null;
+
+        for (const [index, task] of this.#queue.entries()) {
+            if (!this.#canStart(task)) {
+                continue;
+            }
+
+            if (
+                !bestTask ||
+                task.priority < bestTask.priority ||
+                (task.priority === bestTask.priority &&
+                    task.createdOrder < bestTask.createdOrder)
+            ) {
+                bestIndex = index;
+                bestTask = task;
+            }
+        }
+
+        return bestIndex;
+    }
+
+    #canStart(task: AiSchedulerTask<unknown>): boolean {
+        if (!task.coldStart) {
+            return true;
+        }
+
+        if (this.#activeColdStarts >= this.#config.maxColdStartsGlobal) {
+            return false;
+        }
+
+        if (!task.runtimeId) {
+            return true;
+        }
+
+        return (
+            (this.#activeColdStartsByRuntime.get(task.runtimeId) ?? 0) <
+            this.#config.maxColdStartsPerRuntime
+        );
+    }
+
+    #startTask(task: AiSchedulerTask<unknown>): void {
+        if (task.coldStart) {
+            this.#activeColdStarts += 1;
+            if (task.runtimeId) {
+                this.#activeColdStartsByRuntime.set(
+                    task.runtimeId,
+                    (this.#activeColdStartsByRuntime.get(task.runtimeId) ?? 0) +
+                        1,
+                );
+            }
+        }
+
+        void task.run().then(task.resolve, task.reject).finally(() => {
+            if (task.coldStart) {
+                this.#activeColdStarts -= 1;
+                if (task.runtimeId) {
+                    const nextCount =
+                        (this.#activeColdStartsByRuntime.get(task.runtimeId) ??
+                            1) - 1;
+                    if (nextCount <= 0) {
+                        this.#activeColdStartsByRuntime.delete(task.runtimeId);
+                    } else {
+                        this.#activeColdStartsByRuntime.set(
+                            task.runtimeId,
+                            nextCount,
+                        );
+                    }
+                }
+            }
+
+            this.#pump();
+        });
+    }
+}
+
 export class AiService {
     #aiWorker: AiWorkerGateway | null;
     readonly #deletedSessionIds = new Set<string>();
@@ -194,6 +363,7 @@ export class AiService {
     ) => void;
     readonly #persistence: AiPersistenceGateway;
     readonly #projectService: ProjectService;
+    readonly #scheduler: AiWorkScheduler;
     readonly #secretStore: SecretStoreGateway;
     readonly #settingsService: SettingsGateway;
 
@@ -204,6 +374,7 @@ export class AiService {
         this.#onSessionSnapshot = options.onSessionSnapshot;
         this.#persistence = options.persistence;
         this.#projectService = options.projectService;
+        this.#scheduler = new AiWorkScheduler(options.aiScheduler);
         this.#secretStore = options.secretStore;
         this.#settingsService = options.settingsService;
     }
@@ -215,6 +386,10 @@ export class AiService {
     close(): void {
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
+    }
+
+    getSchedulerDiagnostics(): AiSchedulerDiagnostics {
+        return this.#scheduler.getDiagnostics();
     }
 
     handleWorkerRuntimeStatus(status: AiRuntimeStatus): void {
@@ -278,27 +453,36 @@ export class AiService {
                     return;
                 }
 
-                const relaunchedSnapshot = await worker.prepareSession({
-                    input: {
+                const input = {
+                    projectId: context.projectId,
+                    runtimeId: context.runtimeId,
+                    sessionId: context.sessionId,
+                    title: snapshot.title,
+                    worktreeId: context.worktreeId,
+                } satisfies PrepareAiSessionInput;
+                const launch = await this.#buildWorkerSessionLaunchInput(
+                    {
+                        additionalRoots: context.additionalRoots,
                         projectId: context.projectId,
                         runtimeId: context.runtimeId,
                         sessionId: context.sessionId,
                         title: snapshot.title,
                         worktreeId: context.worktreeId,
                     },
-                    launch: await this.#buildWorkerSessionLaunchInput(
-                        {
-                            additionalRoots: context.additionalRoots,
-                            projectId: context.projectId,
-                            runtimeId: context.runtimeId,
-                            sessionId: context.sessionId,
-                            title: snapshot.title,
-                            worktreeId: context.worktreeId,
-                        },
-                        context.ownerWindowId,
-                        snapshot,
-                    ),
-                });
+                    context.ownerWindowId,
+                    snapshot,
+                );
+                const relaunchedSnapshot =
+                    await this.#scheduleWorkerSessionStartup(
+                        launch,
+                        3,
+                        () =>
+                            worker.prepareSession({
+                                input,
+                                launch,
+                            }),
+                        { forceColdStart: true },
+                    );
                 this.#acceptPreparedLiveSnapshot(
                     relaunchedSnapshot,
                     context.ownerWindowId,
@@ -617,17 +801,23 @@ export class AiService {
             input,
             ownerWindowId,
         );
-        this.#rememberLiveSessionContext(
-            input,
-            ownerWindowId,
-            launch.additionalRoots,
-            launch.persistedSnapshot.parentSessionId ?? null,
-        );
         try {
-            const snapshot = await worker.prepareSession({
-                input,
+            const snapshot = await this.#scheduleWorkerSessionStartup(
                 launch,
-            });
+                1,
+                async () => {
+                    this.#rememberLiveSessionContext(
+                        input,
+                        ownerWindowId,
+                        launch.additionalRoots,
+                        launch.persistedSnapshot.parentSessionId ?? null,
+                    );
+                    return await worker.prepareSession({
+                        input,
+                        launch,
+                    });
+                },
+            );
             this.#acceptPreparedLiveSnapshot(snapshot, ownerWindowId);
             return snapshot;
         } catch (error) {
@@ -647,10 +837,19 @@ export class AiService {
             return;
         }
 
-        await worker.refreshProjectScopes({
-            projectId,
-            sessions,
-        } satisfies AiWorkerRefreshProjectScopesRpcInput);
+        await this.#scheduler.schedule(
+            {
+                coldStart: true,
+                priority: 3,
+                runtimeId: null,
+            },
+            async () => {
+                await worker.refreshProjectScopes({
+                    projectId,
+                    sessions,
+                } satisfies AiWorkerRefreshProjectScopesRpcInput);
+            },
+        );
     }
 
     async sendPrompt(
@@ -670,15 +869,17 @@ export class AiService {
                 "This subagent was closed by its parent thread and can’t receive new messages.",
             );
         }
-        this.#rememberLiveSessionContext(
-            input,
-            ownerWindowId,
-            launch.additionalRoots,
-            launch.persistedSnapshot.parentSessionId ?? null,
-        );
-        return worker.sendPrompt({
-            input,
-            launch,
+        return await this.#scheduleWorkerSessionStartup(launch, 0, async () => {
+            this.#rememberLiveSessionContext(
+                input,
+                ownerWindowId,
+                launch.additionalRoots,
+                launch.persistedSnapshot.parentSessionId ?? null,
+            );
+            return await worker.sendPrompt({
+                input,
+                launch,
+            });
         });
     }
 
@@ -1328,6 +1529,27 @@ export class AiService {
     #clearLiveSession(sessionId: string): void {
         this.#liveSnapshots.delete(sessionId);
         this.#liveSessionContexts.delete(sessionId);
+    }
+
+    #isColdSessionLaunch(launch: AiWorkerSessionLaunchInput): boolean {
+        return !this.#liveSessionContexts.has(launch.input.sessionId);
+    }
+
+    async #scheduleWorkerSessionStartup<T>(
+        launch: AiWorkerSessionLaunchInput,
+        priority: AiSchedulerPriority,
+        run: () => Promise<T>,
+        options: { readonly forceColdStart?: boolean } = {},
+    ): Promise<T> {
+        return await this.#scheduler.schedule(
+            {
+                coldStart:
+                    options.forceColdStart ?? this.#isColdSessionLaunch(launch),
+                priority,
+                runtimeId: launch.input.runtimeId,
+            },
+            run,
+        );
     }
 
     #discardPreparedSessionContextOnFailure(

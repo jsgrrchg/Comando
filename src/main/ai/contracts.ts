@@ -89,6 +89,7 @@ export const AI_SESSION_STREAMING_FLUSH_MS = 120;
 
 export interface AiServiceOptions {
     readonly aiWorker?: AiWorkerGateway | null;
+    readonly aiScheduler?: Partial<AiSchedulerConfig>;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsGateway;
     readonly secretStore: SecretStoreGateway;
@@ -102,6 +103,11 @@ export interface AiServiceOptions {
         update: AiSessionUpdate,
     ) => void;
     readonly persistence: AiPersistenceGateway;
+}
+
+export interface AiSchedulerConfig {
+    readonly maxColdStartsGlobal: number;
+    readonly maxColdStartsPerRuntime: number;
 }
 
 export interface AiWorkerGateway {
