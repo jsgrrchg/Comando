@@ -890,6 +890,295 @@ describe("AiService hybrid persistence", () => {
         blocker.resolve(createSnapshot({ sessionId: "blocked-session" }));
         await preparePromise;
     });
+
+    it("freezes the least recently used idle session outside the hot-session budget", async () => {
+        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
+            ({ input }) =>
+                Promise.resolve(createSnapshot({ sessionId: input.sessionId })),
+        );
+        const freezeSession = vi.fn<AiWorkerGateway["freezeSession"]>(() =>
+            Promise.resolve({
+                frozen: true,
+                reason: "budget",
+                sessionId: "session-1",
+            }),
+        );
+        const service = createService({
+            aiSessionRetention: {
+                maxHotSessionsPerWindow: 1,
+            },
+            aiWorker: createMockWorker({
+                freezeSession,
+                prepareSession,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Session 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-2",
+                title: "Session 2",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        await vi.waitFor(() => {
+            expect(freezeSession).toHaveBeenCalledWith({
+                reason: "budget",
+                sessionId: "session-1",
+            });
+        });
+        expect(service.getSessionRetentionDiagnostics()).toMatchObject({
+            closed: [
+                {
+                    reason: "budget",
+                    sessionId: "session-1",
+                },
+            ],
+        });
+    });
+
+    it("keeps a recently focused session hot when applying the LRU budget", async () => {
+        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
+            ({ input }) =>
+                Promise.resolve(createSnapshot({ sessionId: input.sessionId })),
+        );
+        const freezeSession = vi.fn<AiWorkerGateway["freezeSession"]>(
+            ({ sessionId, reason }) =>
+                Promise.resolve({
+                    frozen: true,
+                    reason,
+                    sessionId,
+                }),
+        );
+        const service = createService({
+            aiSessionRetention: {
+                maxHotSessionsPerWindow: 2,
+            },
+            aiWorker: createMockWorker({
+                freezeSession,
+                prepareSession,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Session 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-2",
+                title: "Session 2",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Session 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-3",
+                title: "Session 3",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        await vi.waitFor(() => {
+            expect(freezeSession).toHaveBeenCalledWith({
+                reason: "budget",
+                sessionId: "session-2",
+            });
+        });
+        expect(freezeSession).not.toHaveBeenCalledWith({
+            reason: "budget",
+            sessionId: "session-1",
+        });
+    });
+
+    it("does not freeze sessions with pending review state", async () => {
+        const trackedFile = {
+            hunks: [],
+            identityKey: "src/app.ts",
+            isText: true,
+            kind: "update",
+            newText: "after",
+            oldText: "before",
+            path: "src/app.ts",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: null,
+            updatedAt: "2026-04-16T00:00:00.000Z",
+        } satisfies AiTrackedFile;
+        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
+            ({ input }) =>
+                Promise.resolve(
+                    createSnapshot({
+                        sessionId: input.sessionId,
+                        trackedFiles:
+                            input.sessionId === "session-1"
+                                ? [trackedFile]
+                                : [],
+                    }),
+                ),
+        );
+        const freezeSession = vi.fn<AiWorkerGateway["freezeSession"]>(
+            ({ sessionId, reason }) =>
+                Promise.resolve({
+                    frozen: true,
+                    reason,
+                    sessionId,
+                }),
+        );
+        const service = createService({
+            aiSessionRetention: {
+                maxHotSessionsPerWindow: 1,
+            },
+            aiWorker: createMockWorker({
+                freezeSession,
+                prepareSession,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Session 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-2",
+                title: "Session 2",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        await vi.waitFor(() => {
+            expect(service.getSessionRetentionDiagnostics().skipped).toEqual([
+                expect.objectContaining({
+                    reason: "budget",
+                    sessionId: "session-1",
+                    skippedReason: "pending_review",
+                }),
+            ]);
+        });
+        expect(freezeSession).not.toHaveBeenCalledWith({
+            reason: "budget",
+            sessionId: "session-1",
+        });
+    });
+
+    it("reopens a frozen session through prepare without replaying a prompt", async () => {
+        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
+            ({ input }) =>
+                Promise.resolve(createSnapshot({ sessionId: input.sessionId })),
+        );
+        const sendPrompt = vi.fn<AiWorkerGateway["sendPrompt"]>(() =>
+            Promise.resolve({
+                sessionId: "session-1",
+                stopReason: "completed",
+            }),
+        );
+        const freezeSession = vi.fn<AiWorkerGateway["freezeSession"]>(
+            ({ sessionId, reason }) =>
+                Promise.resolve({
+                    frozen: true,
+                    reason,
+                    sessionId,
+                }),
+        );
+        const service = createService({
+            aiSessionRetention: {
+                maxHotSessionsPerWindow: 1,
+            },
+            aiWorker: createMockWorker({
+                freezeSession,
+                prepareSession,
+                sendPrompt,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Session 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-2",
+                title: "Session 2",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await vi.waitFor(() => {
+            expect(freezeSession).toHaveBeenCalledWith({
+                reason: "budget",
+                sessionId: "session-1",
+            });
+        });
+
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Session 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        expect(prepareSession).toHaveBeenCalledTimes(3);
+        expect(sendPrompt).not.toHaveBeenCalled();
+    });
 });
 
 function createDeferred<T>() {
@@ -907,6 +1196,7 @@ function createMockWorker(overrides: Record<string, unknown> = {}) {
         close: vi.fn(),
         closeOwnedByWindow: vi.fn(),
         closeSession: vi.fn(),
+        freezeSession: vi.fn(),
         keepAllTrackedFiles: vi.fn(),
         keepTrackedFile: vi.fn(),
         keepTrackedFileHunks: vi.fn(),
@@ -932,6 +1222,10 @@ function createService(overrides: {
         readonly maxColdStartsGlobal?: number;
         readonly maxColdStartsPerRuntime?: number;
     };
+    readonly aiSessionRetention?: {
+        readonly idleTtlMs?: number;
+        readonly maxHotSessionsPerWindow?: number;
+    };
     readonly loadSessionSnapshot?: ReturnType<typeof vi.fn>;
     readonly onSessionSnapshot?: (
         ownerWindowId: string,
@@ -943,6 +1237,7 @@ function createService(overrides: {
     return new AiService({
         aiWorker: overrides.aiWorker as never,
         aiScheduler: overrides.aiScheduler,
+        aiSessionRetention: overrides.aiSessionRetention,
         onRuntimeStatus: vi.fn(),
         onSessionSnapshot: overrides.onSessionSnapshot ?? vi.fn(),
         persistence: {

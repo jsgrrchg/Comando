@@ -366,6 +366,10 @@ export class AiWorkerRuntime {
                     params as AiWorkerRpcMethodMap["ai.closeSession"]["params"],
                 );
                 return null;
+            case "ai.freezeSession":
+                return this.#freezeSession(
+                    params as AiWorkerRpcMethodMap["ai.freezeSession"]["params"],
+                );
             case "ai.closeOwnedByWindow":
                 this.#closeOwnedByWindow(
                     params as AiWorkerRpcMethodMap["ai.closeOwnedByWindow"]["params"],
@@ -645,6 +649,84 @@ export class AiWorkerRuntime {
         this.#disposeLiveSession(sessionId, liveSession, {
             emitClosedEvent: true,
         });
+    }
+
+    #freezeSession(
+        input: AiWorkerRpcMethodMap["ai.freezeSession"]["params"],
+    ): AiWorkerRpcMethodMap["ai.freezeSession"]["result"] {
+        const liveSession = this.#sessions.get(input.sessionId);
+        if (!liveSession) {
+            return {
+                frozen: false,
+                reason: input.reason,
+                sessionId: input.sessionId,
+                skippedReason: "missing",
+            };
+        }
+
+        const skippedReason = this.#getFreezeSkippedReason(liveSession);
+        if (skippedReason) {
+            return {
+                frozen: false,
+                reason: input.reason,
+                sessionId: input.sessionId,
+                skippedReason,
+            };
+        }
+
+        this.#disposeLiveSession(input.sessionId, liveSession, {
+            emitClosedEvent: true,
+        });
+        return {
+            frozen: true,
+            reason: input.reason,
+            sessionId: input.sessionId,
+        };
+    }
+
+    #getFreezeSkippedReason(
+        liveSession: LiveAcpSession,
+    ): AiWorkerRpcMethodMap["ai.freezeSession"]["result"]["skippedReason"] | null {
+        if (
+            liveSession.activeTurnId ||
+            liveSession.snapshot.status === "starting" ||
+            liveSession.snapshot.status === "streaming"
+        ) {
+            return "active_turn";
+        }
+
+        if (
+            liveSession.pendingPermissions.size > 0 ||
+            liveSession.snapshot.pendingPermission ||
+            liveSession.snapshot.status === "waiting_permission"
+        ) {
+            return "pending_permission";
+        }
+
+        if (
+            liveSession.snapshot.pendingUserInput ||
+            liveSession.snapshot.status === "waiting_user_input"
+        ) {
+            return "pending_user_input";
+        }
+
+        if (
+            [...liveSession.terminals.values()].some(
+                (terminal) => !terminal.released && !terminal.exitStatus,
+            )
+        ) {
+            return "active_terminal";
+        }
+
+        if (
+            liveSession.snapshot.trackedFiles.some(
+                (trackedFile) => trackedFile.reviewState === "pending",
+            )
+        ) {
+            return "pending_review";
+        }
+
+        return null;
     }
 
     #markLiveSessionIdle(liveSession: LiveAcpSession): void {

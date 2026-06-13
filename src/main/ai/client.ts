@@ -21,6 +21,8 @@ import {
     type AiWorkerBootstrapState,
     type AiWorkerEventMessage,
     type AiWorkerFatalMessage,
+    type AiWorkerFreezeSessionRpcInput,
+    type AiWorkerFreezeSessionResult,
     type AiWorkerLogEventPayload,
     type AiWorkerGateway,
     type AiWorkerPrepareSessionRpcInput,
@@ -110,6 +112,12 @@ class RemoteAiWorkerClient implements AiWorkerClient {
 
     async closeSession(sessionId: string): Promise<void> {
         await this.#rpc.call("ai.closeSession", sessionId);
+    }
+
+    async freezeSession(
+        input: AiWorkerFreezeSessionRpcInput,
+    ): Promise<AiWorkerFreezeSessionResult> {
+        return await this.#rpc.call("ai.freezeSession", input);
     }
 
     async closeOwnedByWindow(ownerWindowId: string): Promise<void> {

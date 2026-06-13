@@ -71,6 +71,9 @@ import {
     type AiWorkerReviewSessionContext,
     type AiWorkerSessionLaunchInput,
     type AiSchedulerConfig,
+    type AiSessionFreezeReason,
+    type AiSessionFreezeSkippedReason,
+    type AiSessionRetentionConfig,
     type AiServiceOptions,
     type ResolvedAcpRuntime,
     type SessionDescriptor,
@@ -184,6 +187,11 @@ const DEFAULT_AI_SCHEDULER_CONFIG: AiSchedulerConfig = {
     maxColdStartsPerRuntime: 1,
 };
 
+const DEFAULT_AI_SESSION_RETENTION_CONFIG: AiSessionRetentionConfig = {
+    idleTtlMs: 15 * 60 * 1000,
+    maxHotSessionsPerWindow: 6,
+};
+
 type AiSchedulerPriority = 0 | 1 | 2 | 3;
 
 interface AiSchedulerDiagnostics {
@@ -192,6 +200,34 @@ interface AiSchedulerDiagnostics {
     readonly maxColdStartsGlobal: number;
     readonly maxColdStartsPerRuntime: number;
     readonly queued: number;
+}
+
+interface AiSessionRetentionDiagnostics {
+    readonly closed: readonly AiSessionRetentionCloseRecord[];
+    readonly hotSessions: readonly AiSessionRetentionHotSession[];
+    readonly idleTtlMs: number;
+    readonly maxHotSessionsPerWindow: number;
+    readonly skipped: readonly AiSessionRetentionSkippedRecord[];
+}
+
+interface AiSessionRetentionHotSession {
+    readonly lastUsedAtMs: number;
+    readonly ownerWindowId: string;
+    readonly runtimeId: AiRuntimeId;
+    readonly sessionId: string;
+}
+
+interface AiSessionRetentionCloseRecord {
+    readonly closedAtMs: number;
+    readonly reason: AiSessionFreezeReason;
+    readonly sessionId: string;
+}
+
+interface AiSessionRetentionSkippedRecord {
+    readonly reason: AiSessionFreezeReason;
+    readonly sessionId: string;
+    readonly skippedAtMs: number;
+    readonly skippedReason: AiSessionFreezeSkippedReason;
 }
 
 interface AiSchedulerTask<T> {
@@ -350,8 +386,18 @@ class AiWorkScheduler {
 export class AiService {
     #aiWorker: AiWorkerGateway | null;
     readonly #deletedSessionIds = new Set<string>();
+    readonly #freezingSessionIds = new Set<string>();
+    readonly #lastRetentionCloseRecords: AiSessionRetentionCloseRecord[] = [];
+    readonly #lastRetentionSkippedRecords: AiSessionRetentionSkippedRecord[] = [];
     readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
     readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
+    readonly #liveSessionTouches = new Map<
+        string,
+        {
+            readonly lastUsedAtMs: number;
+            readonly order: number;
+        }
+    >();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly #onSessionEvent: (
         ownerWindowId: string,
@@ -363,9 +409,11 @@ export class AiService {
     ) => void;
     readonly #persistence: AiPersistenceGateway;
     readonly #projectService: ProjectService;
+    readonly #retentionConfig: AiSessionRetentionConfig;
     readonly #scheduler: AiWorkScheduler;
     readonly #secretStore: SecretStoreGateway;
     readonly #settingsService: SettingsGateway;
+    #nextLiveSessionTouchOrder = 0;
 
     constructor(options: AiServiceOptions) {
         this.#aiWorker = options.aiWorker ?? null;
@@ -374,6 +422,14 @@ export class AiService {
         this.#onSessionSnapshot = options.onSessionSnapshot;
         this.#persistence = options.persistence;
         this.#projectService = options.projectService;
+        this.#retentionConfig = {
+            idleTtlMs:
+                options.aiSessionRetention?.idleTtlMs ??
+                DEFAULT_AI_SESSION_RETENTION_CONFIG.idleTtlMs,
+            maxHotSessionsPerWindow:
+                options.aiSessionRetention?.maxHotSessionsPerWindow ??
+                DEFAULT_AI_SESSION_RETENTION_CONFIG.maxHotSessionsPerWindow,
+        };
         this.#scheduler = new AiWorkScheduler(options.aiScheduler);
         this.#secretStore = options.secretStore;
         this.#settingsService = options.settingsService;
@@ -386,10 +442,41 @@ export class AiService {
     close(): void {
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
+        this.#liveSessionTouches.clear();
     }
 
     getSchedulerDiagnostics(): AiSchedulerDiagnostics {
         return this.#scheduler.getDiagnostics();
+    }
+
+    getSessionRetentionDiagnostics(): AiSessionRetentionDiagnostics {
+        return {
+            closed: [...this.#lastRetentionCloseRecords],
+            hotSessions: [...this.#liveSessionContexts.values()]
+                .map((context) => {
+                    const touch = this.#liveSessionTouches.get(
+                        context.sessionId,
+                    );
+                    return touch
+                        ? {
+                              lastUsedAtMs: touch.lastUsedAtMs,
+                              ownerWindowId: context.ownerWindowId,
+                              runtimeId: context.runtimeId,
+                              sessionId: context.sessionId,
+                          }
+                        : null;
+                })
+                .filter(
+                    (
+                        session,
+                    ): session is AiSessionRetentionHotSession =>
+                        session !== null,
+                ),
+            idleTtlMs: this.#retentionConfig.idleTtlMs,
+            maxHotSessionsPerWindow:
+                this.#retentionConfig.maxHotSessionsPerWindow,
+            skipped: [...this.#lastRetentionSkippedRecords],
+        };
     }
 
     handleWorkerRuntimeStatus(status: AiRuntimeStatus): void {
@@ -487,6 +574,7 @@ export class AiService {
                     relaunchedSnapshot,
                     context.ownerWindowId,
                 );
+                void this.#enforceSessionRetention();
             },
         );
 
@@ -819,6 +907,7 @@ export class AiService {
                 },
             );
             this.#acceptPreparedLiveSnapshot(snapshot, ownerWindowId);
+            void this.#enforceSessionRetention();
             return snapshot;
         } catch (error) {
             this.#discardPreparedSessionContextOnFailure(
@@ -869,7 +958,7 @@ export class AiService {
                 "This subagent was closed by its parent thread and can’t receive new messages.",
             );
         }
-        return await this.#scheduleWorkerSessionStartup(launch, 0, async () => {
+        const result = await this.#scheduleWorkerSessionStartup(launch, 0, async () => {
             this.#rememberLiveSessionContext(
                 input,
                 ownerWindowId,
@@ -881,6 +970,8 @@ export class AiService {
                 launch,
             });
         });
+        void this.#enforceSessionRetention();
+        return result;
     }
 
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
@@ -1021,6 +1112,7 @@ export class AiService {
                 debugBenignError("ai.service.closeOwnedByWindow", error);
             });
         for (const sessionId of sessionIds) {
+            this.#recordRetentionClose(sessionId, "window_close");
             this.#clearLiveSession(sessionId);
         }
     }
@@ -1485,6 +1577,7 @@ export class AiService {
             sessionId: input.sessionId,
             worktreeId: input.worktreeId ?? null,
         });
+        this.#touchLiveSession(input.sessionId);
     }
 
     #cacheLiveSessionSnapshot(
@@ -1492,6 +1585,7 @@ export class AiService {
         ownerWindowId: string,
     ): void {
         this.#liveSnapshots.set(snapshot.sessionId, snapshot);
+        this.#touchLiveSession(snapshot.sessionId);
         const context = this.#liveSessionContexts.get(snapshot.sessionId);
         if (context) {
             this.#liveSessionContexts.set(snapshot.sessionId, {
@@ -1529,6 +1623,147 @@ export class AiService {
     #clearLiveSession(sessionId: string): void {
         this.#liveSnapshots.delete(sessionId);
         this.#liveSessionContexts.delete(sessionId);
+        this.#liveSessionTouches.delete(sessionId);
+        this.#freezingSessionIds.delete(sessionId);
+    }
+
+    #touchLiveSession(sessionId: string): void {
+        if (!this.#liveSessionContexts.has(sessionId)) {
+            return;
+        }
+
+        this.#liveSessionTouches.set(sessionId, {
+            lastUsedAtMs: Date.now(),
+            order: this.#nextLiveSessionTouchOrder++,
+        });
+    }
+
+    async #enforceSessionRetention(): Promise<void> {
+        const candidates = this.#selectRetentionCandidates();
+        for (const candidate of candidates) {
+            await this.#freezeSessionForRetention(
+                candidate.sessionId,
+                candidate.reason,
+            );
+        }
+    }
+
+    #selectRetentionCandidates(): readonly {
+        readonly reason: AiSessionFreezeReason;
+        readonly sessionId: string;
+    }[] {
+        const candidates = new Map<string, AiSessionFreezeReason>();
+        const now = Date.now();
+        if (this.#retentionConfig.idleTtlMs >= 0) {
+            for (const [sessionId, touch] of this.#liveSessionTouches) {
+                if (now - touch.lastUsedAtMs >= this.#retentionConfig.idleTtlMs) {
+                    candidates.set(sessionId, "ttl");
+                }
+            }
+        }
+
+        const sessionsByWindow = new Map<string, LiveSessionContext[]>();
+        for (const context of this.#liveSessionContexts.values()) {
+            const sessions = sessionsByWindow.get(context.ownerWindowId) ?? [];
+            sessions.push(context);
+            sessionsByWindow.set(context.ownerWindowId, sessions);
+        }
+
+        for (const sessions of sessionsByWindow.values()) {
+            const ordered = [...sessions].sort((left, right) => {
+                const leftTouch = this.#liveSessionTouches.get(left.sessionId);
+                const rightTouch = this.#liveSessionTouches.get(right.sessionId);
+                const leftOrder = leftTouch?.order ?? -1;
+                const rightOrder = rightTouch?.order ?? -1;
+                return rightOrder - leftOrder;
+            });
+            for (
+                let index = this.#retentionConfig.maxHotSessionsPerWindow;
+                index < ordered.length;
+                index += 1
+            ) {
+                if (!candidates.has(ordered[index].sessionId)) {
+                    candidates.set(ordered[index].sessionId, "budget");
+                }
+            }
+        }
+
+        return [...candidates.entries()].map(([sessionId, reason]) => ({
+            reason,
+            sessionId,
+        }));
+    }
+
+    async #freezeSessionForRetention(
+        sessionId: string,
+        reason: AiSessionFreezeReason,
+    ): Promise<void> {
+        if (
+            this.#freezingSessionIds.has(sessionId) ||
+            !this.#liveSessionContexts.has(sessionId)
+        ) {
+            return;
+        }
+
+        const snapshot = this.#liveSnapshots.get(sessionId) ?? null;
+        const localSkippedReason = snapshot
+            ? getRetentionSkippedReasonFromSnapshot(snapshot)
+            : null;
+        if (localSkippedReason) {
+            this.#recordRetentionSkipped(sessionId, reason, localSkippedReason);
+            return;
+        }
+
+        this.#freezingSessionIds.add(sessionId);
+        try {
+            const result = await this.#requireAiWorker().freezeSession({
+                reason,
+                sessionId,
+            });
+            if (result.frozen) {
+                this.#recordRetentionClose(sessionId, reason);
+                this.#clearLiveSession(sessionId);
+                return;
+            }
+
+            if (result.skippedReason) {
+                this.#recordRetentionSkipped(
+                    sessionId,
+                    reason,
+                    result.skippedReason,
+                );
+            }
+        } catch (error) {
+            debugBenignError("ai.service.freezeSession", error);
+        } finally {
+            this.#freezingSessionIds.delete(sessionId);
+        }
+    }
+
+    #recordRetentionClose(
+        sessionId: string,
+        reason: AiSessionFreezeReason,
+    ): void {
+        this.#lastRetentionCloseRecords.push({
+            closedAtMs: Date.now(),
+            reason,
+            sessionId,
+        });
+        trimRetentionRecords(this.#lastRetentionCloseRecords);
+    }
+
+    #recordRetentionSkipped(
+        sessionId: string,
+        reason: AiSessionFreezeReason,
+        skippedReason: AiSessionFreezeSkippedReason,
+    ): void {
+        this.#lastRetentionSkippedRecords.push({
+            reason,
+            sessionId,
+            skippedAtMs: Date.now(),
+            skippedReason,
+        });
+        trimRetentionRecords(this.#lastRetentionSkippedRecords);
     }
 
     #isColdSessionLaunch(launch: AiWorkerSessionLaunchInput): boolean {
@@ -2679,6 +2914,39 @@ function parseSecretStorageKey(key: string): {
         namespace: keyBody.slice(0, separatorIndex),
         secretId: keyBody.slice(separatorIndex + 1),
     };
+}
+
+function getRetentionSkippedReasonFromSnapshot(
+    snapshot: AiSessionSnapshot,
+): AiSessionFreezeSkippedReason | null {
+    if (snapshot.status === "starting" || snapshot.status === "streaming") {
+        return "active_turn";
+    }
+
+    if (snapshot.pendingPermission || snapshot.status === "waiting_permission") {
+        return "pending_permission";
+    }
+
+    if (snapshot.pendingUserInput || snapshot.status === "waiting_user_input") {
+        return "pending_user_input";
+    }
+
+    if (
+        snapshot.trackedFiles.some(
+            (trackedFile) => trackedFile.reviewState === "pending",
+        )
+    ) {
+        return "pending_review";
+    }
+
+    return null;
+}
+
+function trimRetentionRecords<T>(records: T[]): void {
+    const maxRecords = 50;
+    if (records.length > maxRecords) {
+        records.splice(0, records.length - maxRecords);
+    }
 }
 
 export const __testing = {

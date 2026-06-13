@@ -305,6 +305,35 @@ describe("ai-store queue", () => {
         ).toBe("ready");
     });
 
+    it("forces a focused hydrated session to thaw without replaying a prompt", async () => {
+        const prepareAiSession = vi.fn().mockResolvedValue(createSnapshot());
+        const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    prepareAiSession,
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(TAB);
+        await useAiStore.getState().ensureSession(TAB, {
+            force: true,
+        });
+
+        expect(prepareAiSession).toHaveBeenCalledTimes(2);
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
+        ).toBe("ready");
+    });
+
     it("keeps a prompt pending while the runtime is warming and dispatches when ready", async () => {
         const prepareSession = createDeferred<AiSessionSnapshot | null>();
         const sendAiPrompt = vi.fn().mockResolvedValue(undefined);

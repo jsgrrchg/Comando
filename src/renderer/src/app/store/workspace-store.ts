@@ -1681,6 +1681,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 };
             })(),
         }));
+        const activeTabId = getPaneActiveTabId(get(), paneId);
+        const activeTab = activeTabId ? get().tabsById[activeTabId] : null;
+        if (activeTab?.kind === "chat" || activeTab?.kind === "review") {
+            void useAiStore.getState().ensureSession(activeTab, {
+                force: true,
+            });
+        }
         await persistWorkspaceState(get);
     },
 
@@ -1710,6 +1717,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 };
             })(),
         }));
+        const tab = get().tabsById[tabId];
+        if (tab?.kind === "chat" || tab?.kind === "review") {
+            void useAiStore.getState().ensureSession(tab, {
+                force: true,
+            });
+        }
         await persistWorkspaceState(get);
     },
 
