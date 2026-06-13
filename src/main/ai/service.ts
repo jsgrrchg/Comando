@@ -414,6 +414,8 @@ export class AiService {
     readonly #secretStore: SecretStoreGateway;
     readonly #settingsService: SettingsGateway;
     #nextLiveSessionTouchOrder = 0;
+    #retentionSweep: Promise<void> | null = null;
+    #retentionTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(options: AiServiceOptions) {
         this.#aiWorker = options.aiWorker ?? null;
@@ -440,6 +442,7 @@ export class AiService {
     }
 
     close(): void {
+        this.#clearSessionRetentionTimer();
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
         this.#liveSessionTouches.clear();
@@ -1618,6 +1621,7 @@ export class AiService {
             sessionId: snapshot.sessionId,
             worktreeId: snapshot.worktreeId ?? null,
         });
+        this.#touchLiveSession(snapshot.sessionId);
     }
 
     #clearLiveSession(sessionId: string): void {
@@ -1625,6 +1629,7 @@ export class AiService {
         this.#liveSessionContexts.delete(sessionId);
         this.#liveSessionTouches.delete(sessionId);
         this.#freezingSessionIds.delete(sessionId);
+        this.#scheduleSessionRetentionTimer();
     }
 
     #touchLiveSession(sessionId: string): void {
@@ -1636,9 +1641,28 @@ export class AiService {
             lastUsedAtMs: Date.now(),
             order: this.#nextLiveSessionTouchOrder++,
         });
+        this.#scheduleSessionRetentionTimer();
     }
 
     async #enforceSessionRetention(): Promise<void> {
+        if (this.#retentionSweep) {
+            await this.#retentionSweep;
+            return;
+        }
+
+        const sweep = this.#runSessionRetentionSweep();
+        this.#retentionSweep = sweep;
+        try {
+            await sweep;
+        } finally {
+            if (this.#retentionSweep === sweep) {
+                this.#retentionSweep = null;
+            }
+            this.#scheduleSessionRetentionTimer();
+        }
+    }
+
+    async #runSessionRetentionSweep(): Promise<void> {
         const candidates = this.#selectRetentionCandidates();
         for (const candidate of candidates) {
             await this.#freezeSessionForRetention(
@@ -1732,8 +1756,13 @@ export class AiService {
                     reason,
                     result.skippedReason,
                 );
+                this.#deferSessionRetentionRetry(sessionId);
+                return;
             }
+
+            this.#deferSessionRetentionRetry(sessionId);
         } catch (error) {
+            this.#deferSessionRetentionRetry(sessionId);
             debugBenignError("ai.service.freezeSession", error);
         } finally {
             this.#freezingSessionIds.delete(sessionId);
@@ -1764,6 +1793,74 @@ export class AiService {
             skippedReason,
         });
         trimRetentionRecords(this.#lastRetentionSkippedRecords);
+    }
+
+    #deferSessionRetentionRetry(sessionId: string): void {
+        const touch = this.#liveSessionTouches.get(sessionId);
+        if (!touch) {
+            return;
+        }
+
+        this.#liveSessionTouches.set(sessionId, {
+            lastUsedAtMs: Date.now(),
+            order: touch.order,
+        });
+    }
+
+    #scheduleSessionRetentionTimer(): void {
+        this.#clearSessionRetentionTimer();
+
+        const delayMs = this.#getNextSessionRetentionDelayMs();
+        if (delayMs === null) {
+            return;
+        }
+
+        const timer = setTimeout(() => {
+            this.#retentionTimer = null;
+            void this.#enforceSessionRetention();
+        }, delayMs);
+        unrefTimer(timer);
+        this.#retentionTimer = timer;
+    }
+
+    #clearSessionRetentionTimer(): void {
+        if (!this.#retentionTimer) {
+            return;
+        }
+
+        clearTimeout(this.#retentionTimer);
+        this.#retentionTimer = null;
+    }
+
+    #getNextSessionRetentionDelayMs(): number | null {
+        if (
+            this.#retentionConfig.idleTtlMs < 0 ||
+            this.#liveSessionTouches.size === 0
+        ) {
+            return null;
+        }
+
+        const now = Date.now();
+        let nextDueAtMs: number | null = null;
+        for (const [sessionId, touch] of this.#liveSessionTouches) {
+            if (
+                this.#freezingSessionIds.has(sessionId) ||
+                !this.#liveSessionContexts.has(sessionId)
+            ) {
+                continue;
+            }
+
+            const snapshot = this.#liveSnapshots.get(sessionId) ?? null;
+            if (snapshot && getRetentionSkippedReasonFromSnapshot(snapshot)) {
+                continue;
+            }
+
+            const dueAtMs = touch.lastUsedAtMs + this.#retentionConfig.idleTtlMs;
+            nextDueAtMs =
+                nextDueAtMs === null ? dueAtMs : Math.min(nextDueAtMs, dueAtMs);
+        }
+
+        return nextDueAtMs === null ? null : Math.max(0, nextDueAtMs - now);
     }
 
     #isColdSessionLaunch(launch: AiWorkerSessionLaunchInput): boolean {
@@ -2108,6 +2205,7 @@ export class AiService {
         this.#persistence.saveSessionSnapshot(result.snapshot);
         if (this.#liveSnapshots.has(result.snapshot.sessionId)) {
             this.#liveSnapshots.set(result.snapshot.sessionId, result.snapshot);
+            this.#touchLiveSession(result.snapshot.sessionId);
         }
         this.#onSessionSnapshot(
             result.ownerWindowId,
@@ -2946,6 +3044,17 @@ function trimRetentionRecords<T>(records: T[]): void {
     const maxRecords = 50;
     if (records.length > maxRecords) {
         records.splice(0, records.length - maxRecords);
+    }
+}
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+    if (
+        typeof timer === "object" &&
+        timer !== null &&
+        "unref" in timer &&
+        typeof timer.unref === "function"
+    ) {
+        timer.unref();
     }
 }
 

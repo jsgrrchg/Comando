@@ -950,6 +950,72 @@ describe("AiService hybrid persistence", () => {
         });
     });
 
+    it("freezes an idle session when the TTL elapses without another action", async () => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date("2026-04-16T00:00:00.000Z"));
+        let service: ReturnType<typeof createService> | null = null;
+
+        try {
+            const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
+                ({ input }) =>
+                    Promise.resolve(
+                        createSnapshot({ sessionId: input.sessionId }),
+                    ),
+            );
+            const freezeSession = vi.fn<AiWorkerGateway["freezeSession"]>(
+                ({ sessionId, reason }) =>
+                    Promise.resolve({
+                        frozen: true,
+                        reason,
+                        sessionId,
+                    }),
+            );
+            service = createService({
+                aiSessionRetention: {
+                    idleTtlMs: 1_000,
+                    maxHotSessionsPerWindow: 10,
+                },
+                aiWorker: createMockWorker({
+                    freezeSession,
+                    prepareSession,
+                }),
+            });
+
+            await service.prepareSession(
+                {
+                    projectId: "project-1",
+                    runtimeId: "codex",
+                    sessionId: "session-ttl",
+                    title: "Session TTL",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+
+            await vi.advanceTimersByTimeAsync(999);
+            expect(freezeSession).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            await vi.waitFor(() => {
+                expect(freezeSession).toHaveBeenCalledWith({
+                    reason: "ttl",
+                    sessionId: "session-ttl",
+                });
+            });
+            expect(service.getSessionRetentionDiagnostics()).toMatchObject({
+                closed: [
+                    {
+                        reason: "ttl",
+                        sessionId: "session-ttl",
+                    },
+                ],
+            });
+        } finally {
+            service?.close();
+            vi.useRealTimers();
+        }
+    });
+
     it("keeps a recently focused session hot when applying the LRU budget", async () => {
         const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
             ({ input }) =>
