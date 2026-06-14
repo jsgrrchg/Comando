@@ -3274,10 +3274,7 @@ function getRuntimeLifecycleNotice(
                 tone: "accent",
             };
         case "dispatching":
-            return {
-                text: "Dispatching prompt...",
-                tone: "accent",
-            };
+            return null;
         case "detached":
             return {
                 text: "Session detached.",
