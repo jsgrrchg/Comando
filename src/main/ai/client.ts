@@ -21,6 +21,8 @@ import {
     type AiWorkerBootstrapState,
     type AiWorkerEventMessage,
     type AiWorkerFatalMessage,
+    type AiWorkerFreezeSessionRpcInput,
+    type AiWorkerFreezeSessionResult,
     type AiWorkerLogEventPayload,
     type AiWorkerGateway,
     type AiWorkerPrepareSessionRpcInput,
@@ -40,7 +42,9 @@ import {
 import aiWorkerPath from "./worker?modulePath";
 
 export interface AiWorkerClientOptions {
-    readonly connect?: () => Promise<RpcWorkerConnection<AiWorkerBootstrapState>>;
+    readonly connect?: (
+        context: AiWorkerConnectionContext,
+    ) => Promise<RpcWorkerConnection<AiWorkerBootstrapState>>;
     readonly onLog?: (payload: AiWorkerLogEventPayload) => void;
     readonly onRuntimeStatus?: (status: AiRuntimeStatus) => void;
     readonly onSessionClosed?: (payload: {
@@ -58,9 +62,15 @@ export interface AiWorkerClientOptions {
     readonly onWorkerRestarted?: (
         bootstrap: AiWorkerBootstrapState,
     ) => void | Promise<void>;
+    readonly shardCount?: number;
 }
 
 export type AiWorkerClient = AiWorkerGateway;
+
+export interface AiWorkerConnectionContext {
+    readonly shardCount: number;
+    readonly shardIndex: number;
+}
 
 class AiRpcClient {
     readonly #supervisor: RpcWorkerSupervisor<AiWorkerBootstrapState>;
@@ -110,6 +120,12 @@ class RemoteAiWorkerClient implements AiWorkerClient {
 
     async closeSession(sessionId: string): Promise<void> {
         await this.#rpc.call("ai.closeSession", sessionId);
+    }
+
+    async freezeSession(
+        input: AiWorkerFreezeSessionRpcInput,
+    ): Promise<AiWorkerFreezeSessionResult> {
+        return await this.#rpc.call("ai.freezeSession", input);
     }
 
     async closeOwnedByWindow(ownerWindowId: string): Promise<void> {
@@ -197,68 +213,347 @@ class RemoteAiWorkerClient implements AiWorkerClient {
     }
 }
 
+class AiWorkerPool implements AiWorkerClient {
+    readonly #shards: readonly RemoteAiWorkerClient[];
+    readonly #sessionShardIndexes: Map<string, number>;
+
+    constructor(
+        shards: readonly RemoteAiWorkerClient[],
+        sessionShardIndexes: Map<string, number>,
+    ) {
+        if (shards.length === 0) {
+            throw new Error("The AI worker pool needs at least one shard.");
+        }
+        this.#shards = shards;
+        this.#sessionShardIndexes = sessionShardIndexes;
+    }
+
+    async prepareSession(
+        input: AiWorkerPrepareSessionRpcInput,
+    ): Promise<AiSessionSnapshot> {
+        const shard = this.#forSession(input.input.sessionId);
+        const snapshot = await shard.client.prepareSession(input);
+        this.#rememberSessionShard(snapshot.sessionId, shard.index);
+        return snapshot;
+    }
+
+    async sendPrompt(
+        input: AiWorkerSendPromptRpcInput,
+    ): Promise<AiPromptResult> {
+        const shard = this.#forSession(input.input.sessionId);
+        this.#rememberSessionShard(input.input.sessionId, shard.index);
+        return await shard.client.sendPrompt(input);
+    }
+
+    async cancelSession(sessionId: string): Promise<void> {
+        await this.#forSession(sessionId).client.cancelSession(sessionId);
+    }
+
+    async closeSession(sessionId: string): Promise<void> {
+        await this.#forSession(sessionId).client.closeSession(sessionId);
+        this.#forgetSessionShard(sessionId);
+    }
+
+    async freezeSession(
+        input: AiWorkerFreezeSessionRpcInput,
+    ): Promise<AiWorkerFreezeSessionResult> {
+        const result = await this.#forSession(input.sessionId).client.freezeSession(
+            input,
+        );
+        if (result.frozen) {
+            this.#forgetSessionShard(input.sessionId);
+        }
+        return result;
+    }
+
+    async closeOwnedByWindow(ownerWindowId: string): Promise<void> {
+        await Promise.all(
+            this.#shards.map(async (shard) => {
+                await shard.closeOwnedByWindow(ownerWindowId);
+            }),
+        );
+    }
+
+    async keepTrackedFile(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ) {
+        return await this.#forSession(input.context.snapshot.sessionId)
+            .client.keepTrackedFile(input);
+    }
+
+    async rejectTrackedFile(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ) {
+        return await this.#forSession(input.context.snapshot.sessionId)
+            .client.rejectTrackedFile(input);
+    }
+
+    async keepTrackedFileHunks(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ) {
+        return await this.#forSession(input.context.snapshot.sessionId)
+            .client.keepTrackedFileHunks(input);
+    }
+
+    async rejectTrackedFileHunks(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ) {
+        return await this.#forSession(input.context.snapshot.sessionId)
+            .client.rejectTrackedFileHunks(input);
+    }
+
+    async keepAllTrackedFiles(input: AiWorkerReviewSessionRpcInput<string>) {
+        return await this.#forSession(input.context.snapshot.sessionId)
+            .client.keepAllTrackedFiles(input);
+    }
+
+    async rejectAllTrackedFiles(input: AiWorkerReviewSessionRpcInput<string>) {
+        return await this.#forSession(input.context.snapshot.sessionId)
+            .client.rejectAllTrackedFiles(input);
+    }
+
+    async respondPermission(input: AiPermissionResponseInput): Promise<void> {
+        await this.#forSession(input.sessionId).client.respondPermission(input);
+    }
+
+    async respondUserInput(input: AiUserInputResponseInput): Promise<void> {
+        await this.#forSession(input.sessionId).client.respondUserInput(input);
+    }
+
+    async refreshProjectScopes(
+        input: AiWorkerRefreshProjectScopesRpcInput,
+    ): Promise<void> {
+        const sessionsByShard = new Map<
+            RemoteAiWorkerClient,
+            AiWorkerRefreshProjectScopesRpcInput["sessions"]
+        >();
+        for (const session of input.sessions) {
+            const shard = this.#forSession(session.input.sessionId);
+            sessionsByShard.set(shard.client, [
+                ...(sessionsByShard.get(shard.client) ?? []),
+                session,
+            ]);
+        }
+
+        await Promise.all(
+            [...sessionsByShard.entries()].map(async ([shard, sessions]) => {
+                await shard.refreshProjectScopes({
+                    projectId: input.projectId,
+                    sessions,
+                });
+            }),
+        );
+    }
+
+    async notifyFileBuffer(input: FileBufferNotificationInput): Promise<void> {
+        await Promise.all(
+            this.#shards.map(async (shard) => {
+                await shard.notifyFileBuffer(input);
+            }),
+        );
+    }
+
+    async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
+        await this.#forSession(input.sessionId).client.setSessionMode(input);
+    }
+
+    async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
+        await this.#forSession(input.sessionId).client.setSessionModel(input);
+    }
+
+    async setSessionConfigOption(
+        input: AiSessionConfigOptionMutationInput,
+    ): Promise<void> {
+        await this.#forSession(input.sessionId).client.setSessionConfigOption(
+            input,
+        );
+    }
+
+    async renameSession(input: AiSessionRenameMutationInput): Promise<void> {
+        await this.#forSession(input.sessionId).client.renameSession(input);
+    }
+
+    async close(): Promise<void> {
+        await Promise.all(
+            this.#shards.map(async (shard) => {
+                await shard.close();
+            }),
+        );
+    }
+
+    #forSession(sessionId: string): {
+        readonly client: RemoteAiWorkerClient;
+        readonly index: number;
+    } {
+        const index =
+            this.#sessionShardIndexes.get(sessionId) ??
+            getAiWorkerShardIndex(sessionId, this.#shards.length);
+        return {
+            client: this.#shards[index],
+            index,
+        };
+    }
+
+    #rememberSessionShard(sessionId: string, shardIndex: number): void {
+        this.#sessionShardIndexes.set(sessionId, shardIndex);
+    }
+
+    #forgetSessionShard(sessionId: string): void {
+        this.#sessionShardIndexes.delete(sessionId);
+    }
+}
+
 export async function createAiWorkerClient(
     options: AiWorkerClientOptions = {},
 ): Promise<AiWorkerClient> {
-    const supervisor = new RpcWorkerSupervisor<AiWorkerBootstrapState>({
-        connect: options.connect ?? createAiWorkerConnection,
-        domain: "ai",
-        // The ACP protocol signals turn completion explicitly and child-process
-        // exits are observed independently, so inference RPCs do not need a
-        // wall-clock deadman — a slow turn would otherwise tear down the whole
-        // worker and cancel every concurrent session.
-        methodTimeoutsMs: {
-            "ai.respondUserInput": null,
-            "ai.sendPrompt": null,
-        },
-        onConnected: (bootstrap, context) => {
-            if (context.reason === "restart") {
-                return options.onWorkerRestarted?.(bootstrap);
-            }
+    const shardCount = normalizeAiWorkerShardCount(options.shardCount);
+    const sessionShardIndexes = new Map<string, number>();
+    const shardStartupResults = await Promise.allSettled(
+        Array.from({ length: shardCount }, async (_, shardIndex) => {
+            const supervisor = new RpcWorkerSupervisor<AiWorkerBootstrapState>({
+                connect: async () =>
+                    await (options.connect ?? createAiWorkerConnection)({
+                        shardCount,
+                        shardIndex,
+                    }),
+                domain: "ai",
+                // The ACP protocol signals turn completion explicitly and child-process
+                // exits are observed independently, so inference RPCs do not need a
+                // wall-clock deadman — a slow turn would otherwise tear down the whole
+                // worker and cancel every concurrent session.
+                methodTimeoutsMs: {
+                    "ai.respondUserInput": null,
+                    "ai.sendPrompt": null,
+                },
+                onConnected: (bootstrap, context) => {
+                    if (context.reason === "restart") {
+                        return options.onWorkerRestarted?.(bootstrap);
+                    }
 
-            return undefined;
-        },
-        onMessage: (message) => {
-            const payload = message as AiWorkerEventMessage;
-            switch (payload.event) {
-                case "ai.snapshot.updated":
-                    options.onSessionSnapshot?.(
-                        payload.payload.ownerWindowId,
-                        payload.payload.update,
-                    );
-                    return true;
-                case "ai.runtime.status":
-                    options.onRuntimeStatus?.(payload.payload.status);
-                    return true;
-                case "ai.session.event":
-                    options.onSessionEvent?.(
-                        payload.payload.ownerWindowId,
-                        payload.payload.event,
-                    );
-                    return true;
-                case "ai.session.closed":
-                    options.onSessionClosed?.(payload.payload);
-                    return true;
-                case "ai.log":
-                    options.onLog?.(payload.payload);
-                    return true;
-                default:
-                    return false;
-            }
-        },
-        timeoutMs: WORKER_TIMEOUTS_MS.ai,
-    });
-    const rpc = new AiRpcClient(supervisor);
+                    return undefined;
+                },
+                onMessage: (message) =>
+                    handleAiWorkerMessage(message, options, {
+                        sessionShardIndexes,
+                        shardIndex,
+                    }),
+                timeoutMs: WORKER_TIMEOUTS_MS.ai,
+            });
+            const rpc = new AiRpcClient(supervisor);
 
-    await rpc.ready();
-    return new RemoteAiWorkerClient(rpc);
+            await rpc.ready();
+            return new RemoteAiWorkerClient(rpc);
+        }),
+    );
+    const shards = shardStartupResults
+        .filter(
+            (result): result is PromiseFulfilledResult<RemoteAiWorkerClient> =>
+                result.status === "fulfilled",
+        )
+        .map((result) => result.value);
+    const startupFailure = shardStartupResults.find(
+        (result): result is PromiseRejectedResult =>
+            result.status === "rejected",
+    );
+    if (startupFailure) {
+        await Promise.allSettled(
+            shards.map(async (shard) => {
+                await shard.close();
+            }),
+        );
+        throw startupFailure.reason;
+    }
+
+    return new AiWorkerPool(shards, sessionShardIndexes);
 }
 
-async function createAiWorkerConnection(): Promise<
+function handleAiWorkerMessage(
+    message: unknown,
+    options: AiWorkerClientOptions,
+    context: {
+        readonly sessionShardIndexes: Map<string, number>;
+        readonly shardIndex: number;
+    },
+): boolean {
+    const payload = message as AiWorkerEventMessage;
+    switch (payload.event) {
+        case "ai.snapshot.updated":
+            rememberSessionShardFromUpdate(
+                context.sessionShardIndexes,
+                payload.payload.update,
+                context.shardIndex,
+            );
+            options.onSessionSnapshot?.(
+                payload.payload.ownerWindowId,
+                payload.payload.update,
+            );
+            return true;
+        case "ai.runtime.status":
+            options.onRuntimeStatus?.(payload.payload.status);
+            return true;
+        case "ai.session.event":
+            context.sessionShardIndexes.set(
+                payload.payload.event.sessionId,
+                context.shardIndex,
+            );
+            options.onSessionEvent?.(
+                payload.payload.ownerWindowId,
+                payload.payload.event,
+            );
+            return true;
+        case "ai.session.closed":
+            context.sessionShardIndexes.delete(payload.payload.sessionId);
+            options.onSessionClosed?.(payload.payload);
+            return true;
+        case "ai.log":
+            options.onLog?.(payload.payload);
+            return true;
+        default:
+            return false;
+    }
+}
+
+function rememberSessionShardFromUpdate(
+    sessionShardIndexes: Map<string, number>,
+    update: AiSessionUpdate,
+    shardIndex: number,
+): void {
+    sessionShardIndexes.set(
+        update.kind === "snapshot"
+            ? update.snapshot.sessionId
+            : update.patch.sessionId,
+        shardIndex,
+    );
+}
+
+function normalizeAiWorkerShardCount(value: number | null | undefined): number {
+    if (!Number.isFinite(value) || !value) {
+        return 1;
+    }
+
+    return Math.max(1, Math.min(8, Math.floor(value)));
+}
+
+function getAiWorkerShardIndex(sessionId: string, shardCount: number): number {
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < sessionId.length; index += 1) {
+        hash ^= sessionId.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193);
+    }
+
+    return (hash >>> 0) % shardCount;
+}
+
+async function createAiWorkerConnection(
+    context: AiWorkerConnectionContext,
+): Promise<
     RpcWorkerConnection<AiWorkerBootstrapState>
 > {
     const worker = new Worker(aiWorkerPath, {
-        name: "comando-ai-worker",
+        name:
+            context.shardCount > 1
+                ? `comando-ai-worker-${context.shardIndex + 1}`
+                : "comando-ai-worker",
     });
     const channel = new MessageChannel();
     worker.postMessage(

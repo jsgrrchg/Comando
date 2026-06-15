@@ -824,6 +824,7 @@ function createAiWorker(overrides: Partial<AiWorkerGateway>): AiWorkerGateway {
         close: vi.fn(),
         closeOwnedByWindow: vi.fn(),
         closeSession: vi.fn(),
+        freezeSession: vi.fn(),
         keepAllTrackedFiles: vi.fn(),
         keepTrackedFile: vi.fn(),
         keepTrackedFileHunks: vi.fn(),

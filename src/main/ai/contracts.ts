@@ -89,6 +89,8 @@ export const AI_SESSION_STREAMING_FLUSH_MS = 120;
 
 export interface AiServiceOptions {
     readonly aiWorker?: AiWorkerGateway | null;
+    readonly aiScheduler?: Partial<AiSchedulerConfig>;
+    readonly aiSessionRetention?: Partial<AiSessionRetentionConfig>;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsGateway;
     readonly secretStore: SecretStoreGateway;
@@ -104,11 +106,50 @@ export interface AiServiceOptions {
     readonly persistence: AiPersistenceGateway;
 }
 
+export interface AiSchedulerConfig {
+    readonly maxColdStartsGlobal: number;
+    readonly maxColdStartsPerRuntime: number;
+}
+
+export interface AiSessionRetentionConfig {
+    readonly idleTtlMs: number;
+    readonly maxHotSessionsPerWindow: number;
+}
+
+export type AiSessionFreezeReason =
+    | "budget"
+    | "runtime_change"
+    | "ttl"
+    | "window_close";
+
+export type AiSessionFreezeSkippedReason =
+    | "active_terminal"
+    | "active_turn"
+    | "missing"
+    | "pending_permission"
+    | "pending_review"
+    | "pending_user_input";
+
+export interface AiWorkerFreezeSessionRpcInput {
+    readonly reason: AiSessionFreezeReason;
+    readonly sessionId: string;
+}
+
+export interface AiWorkerFreezeSessionResult {
+    readonly frozen: boolean;
+    readonly reason: AiSessionFreezeReason;
+    readonly sessionId: string;
+    readonly skippedReason?: AiSessionFreezeSkippedReason;
+}
+
 export interface AiWorkerGateway {
     cancelSession(sessionId: string): Promise<void>;
     close(): Promise<void>;
     closeOwnedByWindow(ownerWindowId: string): Promise<void>;
     closeSession(sessionId: string): Promise<void>;
+    freezeSession(
+        input: AiWorkerFreezeSessionRpcInput,
+    ): Promise<AiWorkerFreezeSessionResult>;
     keepAllTrackedFiles(input: AiWorkerReviewSessionRpcInput<string>): Promise<AiWorkerReviewMutationResult>;
     keepTrackedFile(
         input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
@@ -387,6 +428,10 @@ export interface AiWorkerRpcMethodMap {
     readonly "ai.closeSession": {
         readonly params: string;
         readonly result: void;
+    };
+    readonly "ai.freezeSession": {
+        readonly params: AiWorkerFreezeSessionRpcInput;
+        readonly result: AiWorkerFreezeSessionResult;
     };
     readonly "ai.notifyFileBuffer": {
         readonly params: FileBufferNotificationInput;

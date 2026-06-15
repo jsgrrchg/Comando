@@ -2603,6 +2603,7 @@ export interface SendAiPromptInput {
     readonly additionalRoots?: readonly string[];
     readonly attachments: readonly AiImageAttachment[];
     readonly composerParts?: readonly AiComposerMessagePart[];
+    readonly messageId: string;
     readonly projectId: string | null;
     readonly prompt: string;
     readonly runtimeId: AiRuntimeId;
