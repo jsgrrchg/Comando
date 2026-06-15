@@ -1257,6 +1257,25 @@ function shouldBreakListForBlockStart(
     );
 }
 
+function shouldBreakListForParagraphContinuation(
+    line: string,
+    baseIndentWidth: number,
+    requiresIndentedContinuation: boolean,
+): boolean {
+    if (!requiresIndentedContinuation) {
+        return false;
+    }
+
+    return getLineIndentWidth(line) <= baseIndentWidth;
+}
+
+function shouldBreakListForOutdent(
+    line: string,
+    baseIndentWidth: number,
+): boolean {
+    return getLineIndentWidth(line) < baseIndentWidth;
+}
+
 function findNextNonEmptyLineIndex(
     lines: readonly string[],
     startIndex: number,
@@ -1346,6 +1365,7 @@ function parseList(
         const childElements: ReactElement[] = [];
         let paragraphLines = [buildListItemLeadLine(currentItem)];
         let paragraphCount = 0;
+        let requiresIndentedContinuation = false;
         cursor += 1;
 
         const flushParagraph = () => {
@@ -1370,12 +1390,23 @@ function parseList(
 
             if (trimmedLine.length === 0) {
                 flushParagraph();
+                requiresIndentedContinuation = true;
                 const nextNonEmptyIndex = findNextNonEmptyLineIndex(
                     lines,
                     cursor + 1,
                 );
                 if (nextNonEmptyIndex === -1) {
                     cursor = lines.length;
+                    break;
+                }
+
+                if (
+                    shouldBreakListForOutdent(
+                        lines[nextNonEmptyIndex] ?? "",
+                        baseIndentWidth,
+                    )
+                ) {
+                    cursor = nextNonEmptyIndex;
                     break;
                 }
 
@@ -1401,8 +1432,23 @@ function parseList(
                     }
                 }
 
+                if (
+                    shouldBreakListForParagraphContinuation(
+                        lines[nextNonEmptyIndex] ?? "",
+                        baseIndentWidth,
+                        requiresIndentedContinuation,
+                    )
+                ) {
+                    cursor = nextNonEmptyIndex;
+                    break;
+                }
+
                 cursor = nextNonEmptyIndex;
                 continue;
+            }
+
+            if (shouldBreakListForOutdent(currentLine, baseIndentWidth)) {
+                break;
             }
 
             if (shouldBreakListForBlockStart(lines, cursor, baseIndentWidth)) {
@@ -1418,6 +1464,7 @@ function parseList(
                     if (nestedList) {
                         childElements.push(nestedList.element);
                         cursor = nestedList.nextIndex;
+                        requiresIndentedContinuation = true;
                         continue;
                     }
                 }
@@ -1427,7 +1474,18 @@ function parseList(
                 }
             }
 
+            if (
+                shouldBreakListForParagraphContinuation(
+                    currentLine,
+                    baseIndentWidth,
+                    requiresIndentedContinuation,
+                )
+            ) {
+                break;
+            }
+
             paragraphLines.push(trimmedLine);
+            requiresIndentedContinuation = false;
             cursor += 1;
         }
 

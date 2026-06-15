@@ -74,6 +74,28 @@ describe("MarkdownContent", () => {
         expect(graphqlMarkup).toContain("cm-static-code");
     });
 
+    it("closes a parent list before unindented text after a nested list", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: [
+                    "5. Bumps de SDK",
+                    "",
+                    "   - @agentclientprotocol/sdk: 0.24.0 -> 0.25.0",
+                    "   - @anthropic-ai/sdk dev: 0.100.1 -> 0.103.0",
+                    "Impacto En Comando",
+                    "Lo nuevo no se activa automaticamente del todo.",
+                ].join("\n"),
+            }),
+        );
+        const listCloseIndex = markup.indexOf("</ol>");
+        const nextHeadingIndex = markup.indexOf("Impacto En Comando");
+
+        expect(markup).toContain('start="5"');
+        expect(listCloseIndex).toBeGreaterThan(-1);
+        expect(nextHeadingIndex).toBeGreaterThan(-1);
+        expect(listCloseIndex).toBeLessThan(nextHeadingIndex);
+    });
+
     it("renders inline selection pills from serialized composer markers", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
