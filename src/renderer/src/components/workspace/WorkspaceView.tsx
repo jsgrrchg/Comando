@@ -110,6 +110,7 @@ import { GitCommitTabView } from "@renderer/components/workspace/GitCommitTabVie
 import { GitWorktreeDiffTabView } from "@renderer/components/workspace/GitWorktreeDiffTabView";
 import { GitTabView } from "@renderer/components/workspace/GitTabView";
 import { ReviewTabView } from "@renderer/components/workspace/ReviewTabView";
+import { WorkspacePaneEmptyState } from "@renderer/components/workspace/WorkspacePaneEmptyState";
 import { persistChatDraftForTab } from "@renderer/components/workspace/chatDraftPersistence";
 import {
     buildGitGutterDecorations,
@@ -2469,11 +2470,7 @@ function WorkspacePaneView({
                             />
                         )
                     ) : (
-                        <div className="flex h-full items-center justify-center px-6 text-center">
-                            <p className="text-[12px] text-text-secondary">
-                                Open a file, start a chat or launch a terminal.
-                            </p>
-                        </div>
+                        <WorkspacePaneEmptyState />
                     )}
                 </div>
             </section>

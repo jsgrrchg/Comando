@@ -303,3 +303,47 @@ export function formatShortcut(id: ShortcutDefinition["id"]): string {
         ? definition.keys.mac
         : definition.keys.windows;
 }
+
+const MAC_MODIFIER_SYMBOLS: Record<string, string> = {
+    Cmd: "⌘",
+    Ctrl: "⌃",
+    Alt: "⌥",
+    Shift: "⇧",
+};
+
+// macOS renders modifiers as glyphs in a fixed order; "Plus" is a token, not "+".
+const MAC_MODIFIER_ORDER = ["Cmd", "Ctrl", "Alt", "Shift"];
+
+function formatShortcutKeyToken(token: string): string {
+    return token === "Plus" ? "+" : token;
+}
+
+/**
+ * Pretty-print a shortcut for inline hints: "⌘⇧N" on macOS, "Ctrl+Shift+N"
+ * elsewhere. Unlike formatShortcut, which returns the raw "Cmd+Shift+N" form
+ * used in the settings list, this is meant for compact in-flow labels.
+ */
+export function formatShortcutSymbols(id: ShortcutDefinition["id"]): string {
+    const definition = shortcutDefinitions.find((entry) => entry.id === id);
+    if (!definition) {
+        return "";
+    }
+
+    const isMac = isMacShortcutPlatform();
+    const tokens = (isMac ? definition.keys.mac : definition.keys.windows).split(
+        "+",
+    );
+
+    if (!isMac) {
+        return tokens.map(formatShortcutKeyToken).join("+");
+    }
+
+    const modifiers = MAC_MODIFIER_ORDER.filter((modifier) =>
+        tokens.includes(modifier),
+    ).map((modifier) => MAC_MODIFIER_SYMBOLS[modifier]);
+    const keys = tokens
+        .filter((token) => !MAC_MODIFIER_ORDER.includes(token))
+        .map(formatShortcutKeyToken);
+
+    return [...modifiers, ...keys].join("");
+}
