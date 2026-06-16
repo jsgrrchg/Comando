@@ -1305,7 +1305,7 @@ function SidebarAgentsItem({
         : "text-text-secondary";
     const indentStyle =
         depth > 0
-            ? { paddingLeft: `${10 + Math.min(depth, 4) * 14}px` }
+            ? { paddingLeft: `${8 + Math.min(depth, 4) * 14}px` }
             : undefined;
 
     const emitDrag = useCallback(
@@ -1633,7 +1633,14 @@ function SidebarAgentsItem({
             <div className="sidebar-agents-meta flex w-full min-w-0 items-center gap-1.5 text-[10px] text-text-secondary">
                 {isSubagent ? (
                     <>
-                        <span className="shrink-0 rounded-[3px] border border-border/70 px-1 text-[8.5px] font-medium uppercase tracking-[0.08em]">
+                        <span
+                            className="shrink-0 rounded-[3px] px-1 text-[9px] font-medium"
+                            style={{
+                                color: "var(--color-accent)",
+                                background:
+                                    "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+                            }}
+                        >
                             Agent
                         </span>
                         <span aria-hidden="true" className="shrink-0">
