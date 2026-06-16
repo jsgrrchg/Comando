@@ -2263,7 +2263,9 @@ function WorkspacePaneView({
                         }}
                     >
                         {paneTabIds.length === 0 ? (
-                            <span className="px-2.5 py-1.5 text-[11px] text-text-secondary">
+                            // Match the tab button height so the strip keeps the
+                            // same height whether or not the pane has tabs.
+                            <span className="flex h-7.75 items-center px-2.5 text-[11px] text-text-secondary">
                                 Empty pane
                             </span>
                         ) : (
