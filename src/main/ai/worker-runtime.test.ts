@@ -603,6 +603,115 @@ describe("AiWorkerRuntime prepareSession", () => {
         expect(snapshot.runtimeSessionId).toBe("runtime-session-1");
     });
 
+    it("adds a Comando turn-start divider fallback for non-Codex prompts", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const launch = createRuntimeLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            runtimeId: "claude",
+            title: "Claude session",
+        });
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        await runtime.dispatchMethod("ai.sendPrompt", {
+            input: {
+                attachments: [],
+                composerParts: [
+                    {
+                        text: "hello",
+                        type: "text",
+                    },
+                ],
+                projectId: null,
+                prompt: "hello",
+                messageId: "message-1",
+                runtimeId: "claude",
+                sessionId: "session-1",
+                title: "Claude session",
+                worktreeId: null,
+            },
+            launch,
+        });
+
+        expect(
+            hasToolActivityMatching(
+                emittedEvents,
+                "session-1",
+                (activity) =>
+                    activity.id === "comando:status:turn:message-1" &&
+                    activity.kind === "other" &&
+                    activity.status === "completed" &&
+                    activity.title === "New turn",
+            ),
+        ).toBe(true);
+    });
+
+    it("does not add the Comando turn-start fallback for Codex prompts", async () => {
+        const tempDir = await fs.mkdtemp(
+            path.join(os.tmpdir(), "comando-ai-worker-"),
+        );
+        const emittedEvents: AiWorkerEventMessage[] = [];
+        const launch = createRuntimeLaunch({
+            cwd: tempDir,
+            projectRoot: tempDir,
+            runtimeId: "codex",
+            title: "Codex session",
+        });
+        const runtime = new AiWorkerRuntime({
+            emitEvent: (event) => {
+                emittedEvents.push(event);
+            },
+        });
+
+        await runtime.dispatchMethod("ai.prepareSession", {
+            input: launch.input,
+            launch,
+        });
+        emittedEvents.length = 0;
+
+        await runtime.dispatchMethod("ai.sendPrompt", {
+            input: {
+                attachments: [],
+                composerParts: [
+                    {
+                        text: "hello",
+                        type: "text",
+                    },
+                ],
+                projectId: null,
+                prompt: "hello",
+                messageId: "message-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex session",
+                worktreeId: null,
+            },
+            launch,
+        });
+
+        expect(
+            hasToolActivityMatching(
+                emittedEvents,
+                "session-1",
+                (activity) =>
+                    activity.id.startsWith("comando:status:turn:"),
+            ),
+        ).toBe(false);
+    });
+
     it("launches Windows batch ACP runtimes through cmd.exe", async () => {
         const tempDir = await fs.mkdtemp(
             path.join(os.tmpdir(), "comando-ai-worker-"),

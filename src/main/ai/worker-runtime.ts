@@ -32,6 +32,7 @@ import type {
     AiPermissionRequest,
     AiPromptResult,
     AiSessionSnapshot,
+    AiToolActivity,
     AiTrackedFile,
 } from "@shared/ipc";
 import {
@@ -89,6 +90,7 @@ import {
     CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE,
     CODEX_ACP_TURN_STARTED_EVENT_TYPE,
     CODEX_ACP_USER_INPUT_RESPONSE_PREFIX,
+    COMANDO_STATUS_TURN_EVENT_ID_PREFIX,
     type LiveAcpConnection,
     type LiveAcpSession,
     type LiveAcpTerminal,
@@ -197,6 +199,7 @@ const CODEX_ACP_REASONING_EFFORT_SUFFIXES = [
     "high",
     "xhigh",
 ] as const;
+const TURN_STARTED_STATUS_TITLE = "New turn";
 const MAX_PENDING_SESSION_UPDATES_PER_RUNTIME_SESSION = 16;
 const PRE_EDIT_SNAPSHOT_MAX_ENTRIES = 128;
 const PRE_EDIT_SNAPSHOT_MAX_BYTES = 5 * 1024 * 1024;
@@ -246,6 +249,67 @@ function shouldSuppressSessionToolActivityUpdate(
             : (existing?.title ?? null);
 
     return shouldSuppressToolActivityUpdate(update, title);
+}
+
+function createComandoTurnStartedActivity(
+    liveSession: LiveAcpSession,
+    turnId: string,
+    createdAt: string,
+): AiToolActivity {
+    return {
+        createdAt,
+        diffs: [],
+        exitCode: null,
+        id: `${COMANDO_STATUS_TURN_EVENT_ID_PREFIX}${turnId}`,
+        kind: "other",
+        locations: [],
+        rawInputJson: null,
+        rawOutputJson: null,
+        sessionId: liveSession.snapshot.sessionId,
+        status: "completed",
+        summary: null,
+        terminalOutput: null,
+        title: TURN_STARTED_STATUS_TITLE,
+        updatedAt: createdAt,
+    };
+}
+
+function shouldUseComandoTurnStartedFallback(
+    liveSession: LiveAcpSession,
+): boolean {
+    // Codex emits its own richer turn-start activities, including subagent turns.
+    return liveSession.runtimeId !== "codex";
+}
+
+function upsertComandoTurnStartedFallback(
+    liveSession: LiveAcpSession,
+    snapshot: AiSessionSnapshot,
+    turnId: string,
+    createdAt: string,
+): AiSessionSnapshot {
+    if (!shouldUseComandoTurnStartedFallback(liveSession)) {
+        return snapshot;
+    }
+
+    const activity = createComandoTurnStartedActivity(
+        liveSession,
+        turnId,
+        createdAt,
+    );
+    const existingIndex = snapshot.toolActivity.findIndex(
+        (candidate) => candidate.id === activity.id,
+    );
+    const toolActivity =
+        existingIndex >= 0
+            ? snapshot.toolActivity.map((candidate, index) =>
+                  index === existingIndex ? activity : candidate,
+              )
+            : [...snapshot.toolActivity, activity];
+
+    return {
+        ...snapshot,
+        toolActivity,
+    };
 }
 
 function isDirectStreamingSessionUpdate(
@@ -533,37 +597,42 @@ export class AiWorkerRuntime {
             expectedTexts: [promptText, displayContent],
             messageId: userMessageId,
         });
-        liveSession.snapshot = finalizeStreamingMessages({
-            ...liveSession.snapshot,
-            activeTurnStartedAt: now,
-            closedAt: null,
-            lastError: null,
-            messages: [
-                ...liveSession.snapshot.messages,
-                {
-                    attachments: params.input.attachments,
-                    content: displayContent,
-                    createdAt: now,
-                    id: userMessageId,
-                    kind: "user",
-                    status: "completed",
-                },
-            ],
-            pendingPermission: null,
-            pendingUserInput: null,
-            projectId: params.input.projectId,
-            status: "starting",
-            title: resolveSessionTitleOnPrompt({
-                currentTitle: liveSession.snapshot.title,
-                fallbackTitle: params.input.title,
-                displayContent,
-                hasPriorUserMessage: liveSession.snapshot.messages.some(
-                    (message) => message.kind === "user",
-                ),
+        liveSession.snapshot = upsertComandoTurnStartedFallback(
+            liveSession,
+            finalizeStreamingMessages({
+                ...liveSession.snapshot,
+                activeTurnStartedAt: now,
+                closedAt: null,
+                lastError: null,
+                messages: [
+                    ...liveSession.snapshot.messages,
+                    {
+                        attachments: params.input.attachments,
+                        content: displayContent,
+                        createdAt: now,
+                        id: userMessageId,
+                        kind: "user",
+                        status: "completed",
+                    },
+                ],
+                pendingPermission: null,
+                pendingUserInput: null,
+                projectId: params.input.projectId,
+                status: "starting",
+                title: resolveSessionTitleOnPrompt({
+                    currentTitle: liveSession.snapshot.title,
+                    fallbackTitle: params.input.title,
+                    displayContent,
+                    hasPriorUserMessage: liveSession.snapshot.messages.some(
+                        (message) => message.kind === "user",
+                    ),
+                }),
+                updatedAt: now,
+                worktreeId: params.input.worktreeId ?? null,
             }),
-            updatedAt: now,
-            worktreeId: params.input.worktreeId ?? null,
-        });
+            userMessageId,
+            now,
+        );
         this.#queueSnapshotFlush(liveSession);
 
         try {
@@ -1055,28 +1124,34 @@ export class AiWorkerRuntime {
             expectedTexts: [promptText],
             messageId: responseMessageId,
         });
-        liveSession.snapshot = finalizeStreamingMessages({
-            ...liveSession.snapshot,
-            activeTurnStartedAt: liveSession.snapshot.activeTurnStartedAt ?? now,
-            lastError: null,
-            messages: [
-                ...liveSession.snapshot.messages,
-                {
-                    attachments: [],
-                    content: summarizeUserInputAnswers(
-                        pendingUserInput.questions,
-                        answers,
-                    ),
-                    createdAt: now,
-                    id: randomUUID(),
-                    kind: "user",
-                    status: "completed",
-                },
-            ],
-            pendingUserInput: null,
-            status: "starting",
-            updatedAt: now,
-        });
+        liveSession.snapshot = upsertComandoTurnStartedFallback(
+            liveSession,
+            finalizeStreamingMessages({
+                ...liveSession.snapshot,
+                activeTurnStartedAt:
+                    liveSession.snapshot.activeTurnStartedAt ?? now,
+                lastError: null,
+                messages: [
+                    ...liveSession.snapshot.messages,
+                    {
+                        attachments: [],
+                        content: summarizeUserInputAnswers(
+                            pendingUserInput.questions,
+                            answers,
+                        ),
+                        createdAt: now,
+                        id: randomUUID(),
+                        kind: "user",
+                        status: "completed",
+                    },
+                ],
+                pendingUserInput: null,
+                status: "starting",
+                updatedAt: now,
+            }),
+            responseMessageId,
+            now,
+        );
         this.#queueSnapshotFlush(liveSession);
 
         try {
