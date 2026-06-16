@@ -12,7 +12,7 @@ import { MarkdownContent } from "../MarkdownContent";
 import { areMessagesEquivalent } from "./chatTimelineModel";
 
 interface ChatMessageRowProps {
-    readonly canRenderRawFileReference?: (
+    readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
@@ -34,7 +34,7 @@ interface ChatMessageRowProps {
 }
 
 export const ChatMessageRow = memo(function ChatMessageRow({
-    canRenderRawFileReference,
+    canRenderFileReference,
     chatFontFamily,
     chatFontSize,
     highlightQuery,
@@ -49,7 +49,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
         return (
             <UserMessage
                 attachments={message.attachments}
-                canRenderRawFileReference={canRenderRawFileReference}
+                canRenderFileReference={canRenderFileReference}
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 content={message.content}
@@ -66,7 +66,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
             <UserInputRequestMessage
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
-                canRenderRawFileReference={canRenderRawFileReference}
+                canRenderFileReference={canRenderFileReference}
                 content={message.content}
                 highlightQuery={highlightQuery}
                 onAddFileReferenceToChat={onAddFileReferenceToChat}
@@ -81,7 +81,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
             <ThinkingMessage
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
-                canRenderRawFileReference={canRenderRawFileReference}
+                canRenderFileReference={canRenderFileReference}
                 content={message.content}
                 highlightQuery={highlightQuery}
                 inProgress={message.status === "streaming"}
@@ -102,7 +102,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
     return (
         <AssistantMessage
             attachments={message.attachments}
-            canRenderRawFileReference={canRenderRawFileReference}
+            canRenderFileReference={canRenderFileReference}
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             content={message.content}
@@ -124,7 +124,7 @@ function areChatMessageRowPropsEqual(
 ) {
     return (
         previous.chatFontFamily === next.chatFontFamily &&
-        previous.canRenderRawFileReference === next.canRenderRawFileReference &&
+        previous.canRenderFileReference === next.canRenderFileReference &&
         previous.chatFontSize === next.chatFontSize &&
         previous.highlightQuery === next.highlightQuery &&
         previous.onAddFileReferenceToChat === next.onAddFileReferenceToChat &&
@@ -559,7 +559,7 @@ function splitContentByHighlightQuery(
 }
 
 function renderHighlightableMarkdown(params: {
-    readonly canRenderRawFileReference?: (
+    readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
@@ -592,7 +592,7 @@ function renderHighlightableMarkdown(params: {
 
     return (
         <MarkdownContent
-            canRenderRawFileReference={params.canRenderRawFileReference}
+            canRenderFileReference={params.canRenderFileReference}
             chatFontFamily={params.chatFontFamily}
             chatFontSize={params.chatFontSize}
             content={params.content}
@@ -606,7 +606,7 @@ function renderHighlightableMarkdown(params: {
 
 function UserMessage(props: {
     readonly attachments: readonly AiImageAttachment[];
-    readonly canRenderRawFileReference?: (
+    readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
@@ -643,8 +643,8 @@ function UserMessage(props: {
                 ? renderHighlightableMarkdown({
                       chatFontFamily: props.chatFontFamily,
                       chatFontSize: props.chatFontSize,
-                      canRenderRawFileReference:
-                          props.canRenderRawFileReference,
+                      canRenderFileReference:
+                          props.canRenderFileReference,
                       content: props.content,
                       highlightQuery: props.highlightQuery,
                       onAddFileReferenceToChat: props.onAddFileReferenceToChat,
@@ -665,7 +665,7 @@ function UserMessage(props: {
 
 function AssistantMessage(props: {
     readonly attachments: readonly AiImageAttachment[];
-    readonly canRenderRawFileReference?: (
+    readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
@@ -697,8 +697,8 @@ function AssistantMessage(props: {
                 ? renderHighlightableMarkdown({
                       chatFontFamily: props.chatFontFamily,
                       chatFontSize: props.chatFontSize,
-                      canRenderRawFileReference:
-                          props.canRenderRawFileReference,
+                      canRenderFileReference:
+                          props.canRenderFileReference,
                       content: props.content,
                       highlightQuery: props.highlightQuery,
                       onAddFileReferenceToChat: props.onAddFileReferenceToChat,
@@ -745,7 +745,7 @@ function MessageImageGrid(props: {
 }
 
 function UserInputRequestMessage({
-    canRenderRawFileReference,
+    canRenderFileReference,
     chatFontFamily,
     chatFontSize,
     content,
@@ -755,7 +755,7 @@ function UserInputRequestMessage({
     onRevealFileReference,
     resolveFileReference,
 }: {
-    readonly canRenderRawFileReference?: (
+    readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
@@ -808,7 +808,7 @@ function UserInputRequestMessage({
                     chatFontSize: chatFontSize
                         ? chatFontSize * 0.84
                         : chatFontSize,
-                    canRenderRawFileReference,
+                    canRenderFileReference,
                     content,
                     highlightQuery,
                     onAddFileReferenceToChat,
@@ -822,7 +822,7 @@ function UserInputRequestMessage({
 }
 
 function ThinkingMessage({
-    canRenderRawFileReference,
+    canRenderFileReference,
     chatFontFamily,
     chatFontSize,
     content,
@@ -833,7 +833,7 @@ function ThinkingMessage({
     onRevealFileReference,
     resolveFileReference,
 }: {
-    readonly canRenderRawFileReference?: (
+    readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
@@ -898,7 +898,7 @@ function ThinkingMessage({
                     {renderHighlightableMarkdown({
                         chatFontFamily,
                         chatFontSize: 13,
-                        canRenderRawFileReference,
+                        canRenderFileReference,
                         content,
                         highlightQuery,
                         onAddFileReferenceToChat,

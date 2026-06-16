@@ -7,6 +7,7 @@ import type {
     AiTrackedFile,
 } from "@shared/ipc";
 import { FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
+import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexStore";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import { HighlightedCodeText } from "@renderer/app/editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "@renderer/app/editor/useCodeLanguageSupport";
@@ -644,12 +645,17 @@ function ToolDetailCodeBlock({
 function ToolDetailSummary({
     accentBorder,
     backgroundColor,
+    canRenderFileReference,
     content,
     onOpenFileReference,
     resolveFileReference,
 }: {
     readonly accentBorder?: string;
     readonly backgroundColor: string;
+    readonly canRenderFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
     readonly content: string;
     readonly onOpenFileReference?: (
         reference: ResolvedProjectFileReference,
@@ -668,6 +674,7 @@ function ToolDetailSummary({
             }}
         >
             <MarkdownContent
+                canRenderFileReference={canRenderFileReference}
                 content={content}
                 onOpenFile={onOpenFileReference}
                 resolveFileReference={resolveFileReference}
@@ -779,6 +786,7 @@ function getToolExpansionResetKey(
 
 function FileToolMessage({
     activity,
+    canRenderFileReference,
     expansionMode,
     isLatestStreamingTool,
     onOpenFile,
@@ -789,6 +797,10 @@ function FileToolMessage({
     worktreeId,
 }: {
     readonly activity: AiToolActivity;
+    readonly canRenderFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
     readonly expansionMode: AiToolCardExpansionMode;
     readonly isLatestStreamingTool: boolean;
     readonly onOpenFile: (
@@ -1080,6 +1092,9 @@ function FileToolMessage({
                             <ToolDetailSummary
                                 accentBorder={`1px solid color-mix(in srgb, ${accent} 10%, var(--color-border))`}
                                 backgroundColor={`color-mix(in srgb, ${accent} 4%, var(--color-bg-tertiary))`}
+                                canRenderFileReference={
+                                    canRenderFileReference
+                                }
                                 content={activity.summary}
                                 onOpenFileReference={onOpenFileReference}
                                 resolveFileReference={resolveFileReference}
@@ -1414,11 +1429,16 @@ function getOpenSessionActionTitle(activity: AiToolActivity): string {
 
 function GenericToolMessage({
     activity,
+    canRenderFileReference,
     onOpenFileReference,
     onOpenSession,
     resolveFileReference,
 }: {
     readonly activity: AiToolActivity;
+    readonly canRenderFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
     readonly onOpenFileReference?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -1501,6 +1521,9 @@ function GenericToolMessage({
                     {activity.summary ? (
                         <ToolDetailSummary
                             backgroundColor="var(--color-bg-tertiary)"
+                            canRenderFileReference={
+                                canRenderFileReference
+                            }
                             content={activity.summary}
                             onOpenFileReference={onOpenFileReference}
                             resolveFileReference={resolveFileReference}
@@ -1580,6 +1603,14 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     );
     const hasInlineReview = trackedFiles.length > 0 || activity.diffs.length > 0;
 
+    // Validate file references in tool summaries against the real project file
+    // index so only existing files become clickable pills (mirrors chat
+    // messages). Derived here since this is where project context lives.
+    const canRenderFileReference = useFileReferenceValidator(
+        projectId,
+        worktreeId ?? null,
+    );
+
     useRenderProbe("ToolActivityItem", {
         activityId: activity.id,
         diffs: activity.diffs.length,
@@ -1628,6 +1659,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
         return (
             <FileToolMessage
                 activity={activity}
+                canRenderFileReference={canRenderFileReference}
                 expansionMode={fileToolExpansionMode}
                 isLatestStreamingTool={isLatestStreamingTool}
                 onOpenFile={onOpenFile}
@@ -1643,6 +1675,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     return (
         <GenericToolMessage
             activity={activity}
+            canRenderFileReference={canRenderFileReference}
             onOpenFileReference={onOpenFileReference}
             onOpenSession={onOpenSession}
             resolveFileReference={resolveFileReference}

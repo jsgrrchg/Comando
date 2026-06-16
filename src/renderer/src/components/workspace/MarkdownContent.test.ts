@@ -113,6 +113,7 @@ describe("MarkdownContent", () => {
             "src/renderer/src/components/workspace/chat/ExtraordinarilyLongFileNameForPillRendering.tsx";
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
+                canRenderFileReference: () => true,
                 content: `Review \`${longPath}\` please`,
                 onOpenFile: () => undefined,
                 resolveFileReference: () => ({
@@ -142,7 +143,7 @@ describe("MarkdownContent", () => {
         ].join("\n");
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
-                canRenderRawFileReference: () => true,
+                canRenderFileReference: () => true,
                 content,
                 onOpenFile: () => undefined,
                 resolveFileReference: (reference) =>
@@ -178,7 +179,7 @@ describe("MarkdownContent", () => {
         ].join(" ");
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
-                canRenderRawFileReference: () => true,
+                canRenderFileReference: () => true,
                 content,
                 onOpenFile: () => undefined,
                 resolveFileReference: (reference) =>
@@ -207,7 +208,7 @@ describe("MarkdownContent", () => {
         const target = "src/renderer/src/components/workspace/MarkdownContent.tsx";
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
-                canRenderRawFileReference: () => true,
+                canRenderFileReference: () => true,
                 content: `Open [workspace markdown](${target}).`,
                 onOpenFile: () => undefined,
                 resolveFileReference: (reference) =>
@@ -223,11 +224,11 @@ describe("MarkdownContent", () => {
         expect(markup).not.toContain(`href="${target}"`);
     });
 
-    it("keeps explicit markdown file links interactive before tree confirmation", () => {
+    it("does not pillify markdown file links the index cannot confirm", () => {
         const target = "/Users/test/workspace/comando/src/App.tsx";
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
-                canRenderRawFileReference: () => false,
+                canRenderFileReference: () => false,
                 content: `Open [App.tsx](${target}).`,
                 onOpenFile: () => undefined,
                 resolveFileReference: (reference) =>
@@ -237,16 +238,47 @@ describe("MarkdownContent", () => {
             }),
         );
 
-        expect(markup.match(/<button/g)?.length).toBe(1);
+        // An unconfirmed file link must not become a clickable pill.
+        expect(markup.match(/<button/g)?.length ?? 0).toBe(0);
+        expect(markup).not.toContain(`title="${target}"`);
         expect(markup).toContain(">App.tsx<");
-        expect(markup).toContain(`title="${target}"`);
-        expect(markup).not.toContain(`href="${target}"`);
+    });
+
+    it("requires existence confirmation for inline-code file references", () => {
+        const target = "src/renderer/src/components/workspace/MarkdownContent.tsx";
+        const content = `Edit \`${target}\` first.`;
+        const resolveFileReference = (reference: string) =>
+            resolveProjectFileReference(reference, {
+                projectRoots: ["/Users/test/workspace/comando"],
+            });
+
+        const withoutConfirmation = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderFileReference: () => false,
+                content,
+                onOpenFile: () => undefined,
+                resolveFileReference,
+            }),
+        );
+        expect(withoutConfirmation.match(/<button/g)?.length ?? 0).toBe(0);
+        expect(withoutConfirmation).not.toContain(`title="${target}"`);
+
+        const withConfirmation = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderFileReference: () => true,
+                content,
+                onOpenFile: () => undefined,
+                resolveFileReference,
+            }),
+        );
+        expect(withConfirmation.match(/<button/g)?.length).toBe(1);
+        expect(withConfirmation).toContain(`title="${target}"`);
     });
 
     it("keeps external markdown links as anchors", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
-                canRenderRawFileReference: () => true,
+                canRenderFileReference: () => true,
                 content: "Read [the docs](https://example.com/docs).",
                 onOpenFile: () => undefined,
                 resolveFileReference: (reference) =>
@@ -265,7 +297,7 @@ describe("MarkdownContent", () => {
         const target = "src/components/Foo(test).tsx";
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
-                canRenderRawFileReference: () => true,
+                canRenderFileReference: () => true,
                 content: `Review [test component](<${target}>).`,
                 onOpenFile: () => undefined,
                 resolveFileReference: (reference) =>
@@ -283,7 +315,7 @@ describe("MarkdownContent", () => {
     it("renders raw confirmed file paths without line references", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
-                canRenderRawFileReference: () => true,
+                canRenderFileReference: () => true,
                 content: "Touch src/app.ts before committing.",
                 onOpenFile: () => undefined,
                 resolveFileReference: (reference) =>
@@ -301,7 +333,7 @@ describe("MarkdownContent", () => {
     it("keeps incomplete streaming markdown links intact", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
-                canRenderRawFileReference: () => true,
+                canRenderFileReference: () => true,
                 content: "Streaming [app](src/app.ts",
                 onOpenFile: () => undefined,
                 resolveFileReference: (reference) =>
@@ -319,7 +351,7 @@ describe("MarkdownContent", () => {
     it("does not pillify dubious markdown path-like links", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
-                canRenderRawFileReference: () => true,
+                canRenderFileReference: () => true,
                 content: "Check [SAP](S/4) and [quarter](2024/Q1).",
                 onOpenFile: () => undefined,
                 resolveFileReference: (reference) =>
@@ -337,7 +369,7 @@ describe("MarkdownContent", () => {
     it("keeps URLs intact when they contain path-like diagnostic text", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
-                canRenderRawFileReference: () => true,
+                canRenderFileReference: () => true,
                 content:
                     "See https://example.com/src/app.ts:12 before src/app.ts:12.",
                 onOpenFile: () => undefined,
@@ -359,7 +391,7 @@ describe("MarkdownContent", () => {
     it("keeps raw diagnostic references as text when the project cannot confirm them", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
-                canRenderRawFileReference: () => false,
+                canRenderFileReference: () => false,
                 content: "Example path src/app.ts:12 should not be clickable.",
                 onOpenFile: () => undefined,
                 resolveFileReference: (reference) =>

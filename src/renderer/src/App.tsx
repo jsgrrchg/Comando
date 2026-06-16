@@ -44,6 +44,7 @@ import {
     type ProjectQuickOpenMatch,
 } from "./app/projects/quick-open";
 import { filterProjectEntriesForTreeFilter } from "./app/projects/tree-filter";
+import { getProjectContextKey } from "./app/projects/context-key";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
 import {
     edgePeekConfig,
@@ -4909,13 +4910,6 @@ function normalizeFileTreeClipboardWorktreeId(
 
 function getComandoApi(): ComandoApi | null {
     return "comando" in window ? window.comando : null;
-}
-
-function getProjectContextKey(
-    projectId: string | null,
-    worktreeId: string | null,
-): string {
-    return `${projectId ?? "__none__"}::${worktreeId ?? "__primary__"}`;
 }
 
 function startDragging(

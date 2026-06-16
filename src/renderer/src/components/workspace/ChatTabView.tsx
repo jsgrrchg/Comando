@@ -44,6 +44,7 @@ import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
+import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexStore";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
@@ -150,7 +151,6 @@ const EMPTY_DRAFT_FILE_CONTEXTS: readonly AiFileContextAttachment[] = [];
 const EMPTY_TRANSCRIPT_MODEL = createEmptyAiSessionTranscriptModel();
 const CLOSED_SUBAGENT_MESSAGE =
     "This subagent was closed by its parent thread and can’t receive new messages.";
-const PROJECT_TREE_PRIMARY_CONTEXT = "__primary__";
 const PROJECT_MENTION_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
 
 type AiRuntimeCatalog = Pick<
@@ -236,16 +236,12 @@ export const ChatTabView = memo(function ChatTabView({
               null)
             : null,
     );
-    const loadedProjectTreeNodes = useProjectsStore((state) => {
-        if (!tab.projectId) {
-            return null;
-        }
-
-        const contextKey = `${tab.projectId}::${
-            tab.worktreeId ?? PROJECT_TREE_PRIMARY_CONTEXT
-        }`;
-        return state.treeNodes[contextKey] ?? null;
-    });
+    // Validates that a chat file reference points at a real file in this tab's
+    // project before it is rendered as a clickable pill.
+    const canRenderFileReference = useFileReferenceValidator(
+        tab.projectId ?? null,
+        tab.worktreeId ?? null,
+    );
     const gitSnapshot = useGitStore((state) => {
         if (!tab.projectId) {
             return null;
@@ -660,25 +656,6 @@ export const ChatTabView = memo(function ChatTabView({
             });
         },
         [addDraftFileContext, tab.projectId, tab.sessionId],
-    );
-    const canRenderRawFileReference = useCallback(
-        (
-            _rawReference: string,
-            reference: ResolvedProjectFileReference,
-        ): boolean => {
-            if (!loadedProjectTreeNodes) {
-                return false;
-            }
-
-            return Object.values(loadedProjectTreeNodes).some((nodes) =>
-                nodes.some(
-                    (node) =>
-                        node.kind === "file" &&
-                        node.relativePath === reference.relativePath,
-                ),
-            );
-        },
-        [loadedProjectTreeNodes],
     );
     const diffZoom = DEFAULT_AI_DIFF_ZOOM;
     const hasComposerContext =
@@ -1775,7 +1752,7 @@ export const ChatTabView = memo(function ChatTabView({
                 ) : null}
 
                 <ChatTimeline
-                    canRenderRawFileReference={canRenderRawFileReference}
+                    canRenderFileReference={canRenderFileReference}
                     chatFontFamily={chatFontFamily}
                     chatFontSize={aiChatSettings.chatFontSize}
                     elapsed={elapsed}
@@ -2274,7 +2251,7 @@ function getLatestEditedFileToolRowId(
 }
 
 type ChatTimelineProps = {
-    readonly canRenderRawFileReference?: (
+    readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
@@ -2323,7 +2300,7 @@ type ChatTimelineProps = {
 };
 
 const ChatTimeline = memo(function ChatTimeline({
-    canRenderRawFileReference,
+    canRenderFileReference,
     chatFontFamily,
     chatFontSize,
     elapsed,
@@ -2393,8 +2370,8 @@ const ChatTimeline = memo(function ChatTimeline({
                         }}
                     >
                         <ChatTimelineHistory
-                            canRenderRawFileReference={
-                                canRenderRawFileReference
+                            canRenderFileReference={
+                                canRenderFileReference
                             }
                             chatFontFamily={chatFontFamily}
                             chatFontSize={chatFontSize}
@@ -2431,8 +2408,8 @@ const ChatTimeline = memo(function ChatTimeline({
                             worktreeId={worktreeId}
                         />
                         <ChatTimelineLiveTail
-                            canRenderRawFileReference={
-                                canRenderRawFileReference
+                            canRenderFileReference={
+                                canRenderFileReference
                             }
                             chatFontFamily={chatFontFamily}
                             chatFontSize={chatFontSize}
@@ -2516,7 +2493,7 @@ function ChatJumpToBottomButton(props: {
 }
 
 type ChatTimelineHistoryProps = {
-    readonly canRenderRawFileReference?: (
+    readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
@@ -2557,7 +2534,7 @@ type ChatTimelineHistoryProps = {
 };
 
 const ChatTimelineHistory = memo(function ChatTimelineHistory({
-    canRenderRawFileReference,
+    canRenderFileReference,
     chatFontFamily,
     chatFontSize,
     historyRows,
@@ -2592,7 +2569,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             // its row wrapper; the non-virtual path keys via Fragment), so this
             // renderer only describes a row's content.
             <ChatTimelineRowView
-                canRenderRawFileReference={canRenderRawFileReference}
+                canRenderFileReference={canRenderFileReference}
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 onAddFileReferenceToChat={onAddFileReferenceToChat}
@@ -2610,7 +2587,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             />
         ),
         [
-            canRenderRawFileReference,
+            canRenderFileReference,
             chatFontFamily,
             chatFontSize,
             onAddFileReferenceToChat,
@@ -2654,7 +2631,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
 ChatTimelineHistory.displayName = "ChatTimelineHistory";
 
 type ChatTimelineLiveTailProps = {
-    readonly canRenderRawFileReference?: (
+    readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
@@ -2688,7 +2665,7 @@ type ChatTimelineLiveTailProps = {
 };
 
 const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
-    canRenderRawFileReference,
+    canRenderFileReference,
     chatFontFamily,
     chatFontSize,
     onAddFileReferenceToChat,
@@ -2710,7 +2687,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
 
     return (
         <ChatTimelineRowView
-            canRenderRawFileReference={canRenderRawFileReference}
+            canRenderFileReference={canRenderFileReference}
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             key={row.id}
@@ -2735,7 +2712,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
 ChatTimelineLiveTail.displayName = "ChatTimelineLiveTail";
 
 type ChatTimelineRowViewProps = {
-    readonly canRenderRawFileReference?: (
+    readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
@@ -2769,7 +2746,7 @@ type ChatTimelineRowViewProps = {
 };
 
 const ChatTimelineRowView = memo(function ChatTimelineRowView({
-    canRenderRawFileReference,
+    canRenderFileReference,
     chatFontFamily,
     chatFontSize,
     onAddFileReferenceToChat,
@@ -2788,7 +2765,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     if (row.kind === "message") {
         return (
             <ChatMessageRow
-                canRenderRawFileReference={canRenderRawFileReference}
+                canRenderFileReference={canRenderFileReference}
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 message={row.message}

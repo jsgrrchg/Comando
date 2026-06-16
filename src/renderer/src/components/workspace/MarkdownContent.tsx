@@ -39,7 +39,7 @@ import {
 } from "./projectFileReferences";
 
 interface MarkdownContentProps {
-    readonly canRenderRawFileReference?: (
+    readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
@@ -248,7 +248,7 @@ function isMarkdownFenceClosingLine(
 /* ─── Inline rendering ─── */
 
 interface InlineOptions {
-    readonly canRenderRawFileReference?: (
+    readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
@@ -427,16 +427,17 @@ function canRenderResolvedFileReferencePill(
         return false;
     }
 
-    const canRenderRawFileReference = options?.canRenderRawFileReference;
-    if (!canRenderRawFileReference) {
-        return source !== "raw_text";
+    // A file pill must point at a file that actually exists in the project,
+    // regardless of how the reference was written (inline code, markdown link,
+    // or raw text). Without an existence verifier we cannot tell a real path
+    // from a look-alike (`v18.2.0`, `Array.map`, `example.com`), so we render
+    // nothing clickable rather than risk a false positive.
+    const canRenderFileReference = options?.canRenderFileReference;
+    if (!canRenderFileReference) {
+        return false;
     }
 
-    if (source !== "raw_text") {
-        return true;
-    }
-
-    return canRenderRawFileReference(rawReference, resolvedReference);
+    return canRenderFileReference(rawReference, resolvedReference);
 }
 
 function splitRawTextFileReferenceCandidate(rawCandidate: string): {
@@ -1939,7 +1940,7 @@ function TextBlock({
 /* ─── Main component ─── */
 
 export const MarkdownContent = memo(function MarkdownContent({
-    canRenderRawFileReference,
+    canRenderFileReference,
     content,
     chatFontFamily,
     chatFontSize = 14,
@@ -2028,7 +2029,7 @@ export const MarkdownContent = memo(function MarkdownContent({
     const inlineOptions: InlineOptions | undefined = useMemo(() => {
         if (!onOpenFile || !resolveFileReference) return undefined;
         return {
-            canRenderRawFileReference,
+            canRenderFileReference,
             onAddFileReferenceToChat,
             onFileContextMenu: handleFileReferenceContextMenu,
             metrics: getChatPillMetrics(chatFontSize),
@@ -2037,7 +2038,7 @@ export const MarkdownContent = memo(function MarkdownContent({
             resolveFileReference,
         };
     }, [
-        canRenderRawFileReference,
+        canRenderFileReference,
         chatFontSize,
         handleFileReferenceContextMenu,
         onAddFileReferenceToChat,
