@@ -370,11 +370,15 @@ export function GitWorktreeDiffTabView({
                 ref={setDiffScrollContainer}
             >
                 {isLoading && !result ? (
-                    <GitEmptyState>Loading project diff...</GitEmptyState>
+                    <div className="flex h-full items-center justify-center text-[13px] text-text-secondary">
+                        Loading project diff...
+                    </div>
                 ) : changedFileCount === 0 ? (
-                    <GitEmptyState>
+                    // Borderless, centered label reads cleaner than a boxed empty
+                    // state when the worktree is clean.
+                    <div className="flex h-full items-center justify-center text-[13px] text-text-secondary">
                         No uncommitted changes in this worktree.
-                    </GitEmptyState>
+                    </div>
                 ) : (
                     <div className="space-y-5">
                         {visibleSections.map((section) => (
