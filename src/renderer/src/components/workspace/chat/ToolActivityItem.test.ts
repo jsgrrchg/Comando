@@ -443,6 +443,34 @@ describe("ToolActivityItem", () => {
         expect(markup).toContain("text-decoration:none");
     });
 
+    it("compacts long read targets while keeping the full path as the open target", () => {
+        const longPath =
+            "src/renderer/src/components/workspace/chat/deeply/nested/ToolActivityItem.tsx";
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [],
+                rawInputJson: JSON.stringify({ file_path: longPath }),
+                summary: null,
+                title: `Read ${longPath}`,
+            }),
+            onOpenFile: async () => {},
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+        const linkButton = container.querySelector<HTMLButtonElement>(
+            `button[title="Open ${longPath}"]`,
+        );
+
+        expect(linkButton).not.toBeNull();
+        expect(linkButton?.textContent).toBe(
+            "src/renderer/.../nested/ToolActivityItem.tsx",
+        );
+        expect(linkButton?.style.textOverflow).toBe("ellipsis");
+        expect(linkButton?.style.whiteSpace).toBe("nowrap");
+    });
+
     it("uses structured read locations when the runtime sends a generic title", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {

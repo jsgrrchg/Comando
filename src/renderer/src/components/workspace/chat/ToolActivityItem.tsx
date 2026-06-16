@@ -153,6 +153,7 @@ const EDITED_FILE_TOOL_KINDS = new Set([
     "update",
     "write",
 ]);
+const TOOL_TITLE_TARGET_MAX_LENGTH = 72;
 
 function getToolAccent(kind: string): string {
     const lk = kind.toLowerCase();
@@ -256,6 +257,80 @@ function getToolActionPrefix(kind: string): string {
     if (lk === "delete" || lk === "remove") return "Delete ";
     if (lk === "move" || lk === "rename") return "Move ";
     return "";
+}
+
+function buildCompactedToolPathCandidate({
+    leadingSegments,
+    separator,
+    target,
+    trailingSegments,
+}: {
+    readonly leadingSegments: number;
+    readonly separator: string;
+    readonly target: readonly string[];
+    readonly trailingSegments: number;
+}): string | null {
+    if (target.length <= leadingSegments + trailingSegments) {
+        return null;
+    }
+
+    const leading = target.slice(0, leadingSegments);
+    const trailing = target.slice(-trailingSegments);
+    return [...leading, "...", ...trailing].join(separator);
+}
+
+function compactToolTitleTarget(target: string): string {
+    const trimmedTarget = target.trim();
+    if (trimmedTarget.length <= TOOL_TITLE_TARGET_MAX_LENGTH) {
+        return trimmedTarget;
+    }
+
+    const separator =
+        trimmedTarget.includes("\\") && !trimmedTarget.includes("/")
+            ? "\\"
+            : "/";
+    const rawSegments = trimmedTarget.split(/[\\/]+/).filter(Boolean);
+    const segments =
+        separator === "/" && trimmedTarget.startsWith("/")
+            ? ["", ...rawSegments]
+            : rawSegments;
+    if (segments.length <= 1) {
+        return trimmedTarget;
+    }
+
+    const candidates = [
+        buildCompactedToolPathCandidate({
+            leadingSegments: 2,
+            separator,
+            target: segments,
+            trailingSegments: 2,
+        }),
+        buildCompactedToolPathCandidate({
+            leadingSegments: 1,
+            separator,
+            target: segments,
+            trailingSegments: 2,
+        }),
+        buildCompactedToolPathCandidate({
+            leadingSegments: 0,
+            separator,
+            target: segments,
+            trailingSegments: 2,
+        }),
+        buildCompactedToolPathCandidate({
+            leadingSegments: 0,
+            separator,
+            target: segments,
+            trailingSegments: 1,
+        }),
+        segments.at(-1) ?? trimmedTarget,
+    ].filter((candidate): candidate is string => candidate !== null);
+
+    return (
+        candidates.find(
+            (candidate) => candidate.length <= TOOL_TITLE_TARGET_MAX_LENGTH,
+        ) ?? candidates.at(-1) ?? trimmedTarget
+    );
 }
 
 function parseToolRawInputJson(
@@ -736,6 +811,9 @@ function FileToolMessage({
     const isCompleted = activity.status === "completed";
     const accent = getToolAccent(activity.kind);
     const titleReference = getToolTitleReference(activity);
+    const compactTitleTarget = titleReference
+        ? compactToolTitleTarget(titleReference.displayTarget)
+        : null;
     const titleIsLink =
         titleReference !== null &&
         canOpenToolFileReference({
@@ -857,7 +935,7 @@ function FileToolMessage({
             >
                 <span className="shrink-0">{getToolIcon(activity.kind)}</span>
                 <span
-                    className="min-w-0 flex-1 truncate"
+                    className="flex min-w-0 flex-1 items-baseline"
                     style={{
                         color: "var(--color-text-primary)",
                         fontWeight: 400,
@@ -865,9 +943,11 @@ function FileToolMessage({
                 >
                     {titleReference && titleIsLink ? (
                         <>
-                            {titleReference.prefix}
+                            <span className="shrink-0 whitespace-pre">
+                                {titleReference.prefix}
+                            </span>
                             <button
-                                className="app-no-drag"
+                                className="app-no-drag min-w-0 truncate text-left"
                                 onBlur={(event) => {
                                     event.currentTarget.style.textDecoration =
                                         "none";
@@ -893,28 +973,44 @@ function FileToolMessage({
                                     border: "none",
                                     color: "inherit",
                                     cursor: "pointer",
-                                    display: "inline",
+                                    display: "block",
                                     font: "inherit",
                                     lineHeight: "inherit",
                                     margin: 0,
+                                    minWidth: 0,
+                                    overflow: "hidden",
                                     padding: 0,
                                     textDecoration: "none",
+                                    textOverflow: "ellipsis",
                                     textUnderlineOffset: "2px",
                                     verticalAlign: "baseline",
+                                    whiteSpace: "nowrap",
                                 }}
                                 title={`Open ${titleReference.target}`}
                                 type="button"
                             >
-                                {titleReference.displayTarget}
+                                {compactTitleTarget}
                             </button>
                         </>
                     ) : titleReference ? (
                         <>
-                            {titleReference.prefix}
-                            {titleReference.displayTarget}
+                            <span className="shrink-0 whitespace-pre">
+                                {titleReference.prefix}
+                            </span>
+                            <span
+                                className="min-w-0 truncate"
+                                title={titleReference.target}
+                            >
+                                {compactTitleTarget}
+                            </span>
                         </>
                     ) : (
-                        activity.title
+                        <span
+                            className="min-w-0 truncate"
+                            title={activity.title}
+                        >
+                            {activity.title}
+                        </span>
                     )}
                 </span>
                 {isInProgress ? (
