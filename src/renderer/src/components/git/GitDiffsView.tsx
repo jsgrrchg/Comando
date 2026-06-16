@@ -534,12 +534,14 @@ const DiffFileSurface = memo(function DiffFileSurface({
     const headerContent = (
         <>
             <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2">
+                {/* Single non-wrapping row: the path truncates instead of
+                    pushing the chevron or badge onto their own line. */}
+                <div className="flex items-center gap-2">
                     {isCollapsible ? (
                         <CollapseChevron collapsed={collapsed} />
                     ) : null}
                     <span
-                        className="truncate font-mono text-[14px] font-medium"
+                        className="min-w-0 flex-1 truncate font-mono text-[14px] font-medium"
                         title={file.statusLabel ?? file.kind}
                     >
                         <span className="text-text-secondary">
@@ -555,7 +557,9 @@ const DiffFileSurface = memo(function DiffFileSurface({
                         </span>
                     </span>
                     {file.reversible ? (
-                        <GitBadge tone="neutral">reversible</GitBadge>
+                        <GitBadge className="shrink-0" tone="neutral">
+                            reversible
+                        </GitBadge>
                     ) : null}
                 </div>
                 {file.previousPath ? (

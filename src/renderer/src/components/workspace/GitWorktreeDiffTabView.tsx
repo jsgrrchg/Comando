@@ -138,9 +138,13 @@ export function GitWorktreeDiffTabView({
             result,
         ],
     );
-    const allFiles = useMemo(
-        () => sections.flatMap((section) => section.files),
+    const visibleSections = useMemo(
+        () => sections.filter((section) => section.files.length > 0),
         [sections],
+    );
+    const allFiles = useMemo(
+        () => visibleSections.flatMap((section) => section.files),
+        [visibleSections],
     );
     const changedFileCount = allFiles.length;
     const totals = useMemo(
@@ -205,6 +209,26 @@ export function GitWorktreeDiffTabView({
         }
     }, [projectId, result, unstagePaths, worktreeId]);
 
+    const handleDiscardAll = useCallback(() => {
+        const paths = collectActionPaths(result, [
+            "staged",
+            "unstaged",
+            "untracked",
+        ]);
+        if (paths.length === 0) {
+            return;
+        }
+
+        const confirmed = window.confirm(
+            `Discard all ${paths.length} change${paths.length === 1 ? "" : "s"}?\n\nThis cannot be undone.`,
+        );
+        if (!confirmed) {
+            return;
+        }
+
+        void discardPaths(projectId, paths, worktreeId);
+    }, [discardPaths, projectId, result, worktreeId]);
+
     const handleToggleAll = useCallback(() => {
         setWorktreeDiffCollapsedFileIds(
             projectId,
@@ -256,21 +280,13 @@ export function GitWorktreeDiffTabView({
 
     return (
         <div className="flex h-full min-h-0 select-none flex-col bg-bg-primary">
-            <header className="border-b border-border px-5 py-4">
+            <header className="border-b border-border px-5 py-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
+                        {/* Project and worktree are already implied by the tab
+                            context, so the header only carries the section label. */}
                         <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-secondary">
                             Uncommitted Changes
-                        </p>
-                        <h2 className="mt-1 truncate text-[18px] font-semibold text-text-primary">
-                            {project?.name ?? "Repository"}
-                        </h2>
-                        <p className="mt-1 truncate text-[12px] text-text-secondary">
-                            {snapshot?.branch?.name ?? "Working tree"}
-                            {snapshot?.branch?.isDetached ? " (detached)" : ""}
-                            {snapshot?.currentWorktreeId ? (
-                                <> · {snapshot.currentWorktreeId}</>
-                            ) : null}
                         </p>
                     </div>
 
@@ -302,6 +318,13 @@ export function GitWorktreeDiffTabView({
                         >
                             unstage all
                         </IdeActionButton>
+                        <IdeActionButton
+                            disabled={changedFileCount === 0}
+                            onClick={handleDiscardAll}
+                            title="Discard all changes (cannot be undone)"
+                        >
+                            discard all
+                        </IdeActionButton>
                         {allFileIds.length > 0 ? (
                             <IdeActionButton
                                 onClick={handleToggleAll}
@@ -317,7 +340,7 @@ export function GitWorktreeDiffTabView({
                     </div>
                 </div>
 
-                <div className="mt-4 flex flex-wrap items-center gap-3 font-mono text-[11px] text-text-secondary">
+                <div className="mt-2 flex flex-wrap items-center gap-3 font-mono text-[11px] text-text-secondary">
                     <span>
                         {changedFileCount}{" "}
                         {changedFileCount === 1 ? "file" : "files"}
@@ -354,10 +377,12 @@ export function GitWorktreeDiffTabView({
                     </GitEmptyState>
                 ) : (
                     <div className="space-y-5">
-                        {sections
-                            .filter((section) => section.files.length > 0)
-                            .map((section) => (
-                                <section key={section.id}>
+                        {visibleSections.map((section) => (
+                            <section key={section.id}>
+                                {/* Scope header only adds value when several
+                                    sections coexist; with a single section the
+                                    totals are already shown in the tab header. */}
+                                {visibleSections.length > 1 ? (
                                     <div className="mb-2 flex items-center gap-2 px-2">
                                         <h3 className="text-[12px] font-semibold text-text-primary">
                                             {section.title}
@@ -389,27 +414,26 @@ export function GitWorktreeDiffTabView({
                                             ) : null}
                                         </span>
                                     </div>
-                                    <GitDiffsView
-                                        activeFileId={activeFileId}
-                                        codeFontFamily={codeFontFamily}
-                                        codeFontSize={codeFontSize}
-                                        codeLineHeight={codeLineHeight}
-                                        collapsedFileIds={collapsedFileIds}
-                                        displayMode="stack"
-                                        files={section.files}
-                                        lineWrapping={false}
-                                        onSelectFile={handleSelectFile}
-                                        onToggleFileCollapse={
-                                            handleToggleFileCollapse
-                                        }
-                                        scrollContainerRef={
-                                            diffScrollContainerRef
-                                        }
-                                        showFileSelector={false}
-                                        surfaceVariant="flat"
-                                    />
-                                </section>
-                            ))}
+                                ) : null}
+                                <GitDiffsView
+                                    activeFileId={activeFileId}
+                                    codeFontFamily={codeFontFamily}
+                                    codeFontSize={codeFontSize}
+                                    codeLineHeight={codeLineHeight}
+                                    collapsedFileIds={collapsedFileIds}
+                                    displayMode="stack"
+                                    files={section.files}
+                                    lineWrapping={false}
+                                    onSelectFile={handleSelectFile}
+                                    onToggleFileCollapse={
+                                        handleToggleFileCollapse
+                                    }
+                                    scrollContainerRef={diffScrollContainerRef}
+                                    showFileSelector={false}
+                                    surfaceVariant="flat"
+                                />
+                            </section>
+                        ))}
                     </div>
                 )}
             </main>
