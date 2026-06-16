@@ -128,7 +128,7 @@ describe("useProjectFileIndexStore.load", () => {
         expect(listProjectEntries).toHaveBeenCalledTimes(2);
     });
 
-    it("drops the cached index when the project tree is invalidated", async () => {
+    it("marks the index stale (keeping old paths) on invalidation, then reloads", async () => {
         listProjectEntries.mockResolvedValue([fileNode("a.ts")]);
 
         useProjectFileIndexStore.getState().load("p3", null);
@@ -137,13 +137,46 @@ describe("useProjectFileIndexStore.load", () => {
         });
 
         emitInvalidation("p3");
-        expect(entryFor("p3")).toBeUndefined();
+        // Stale-while-revalidate: old paths stay visible, not dropped.
+        expect(entryFor("p3")?.status).toBe("stale");
+        expect(entryFor("p3")?.paths?.has("a.ts")).toBe(true);
 
+        listProjectEntries.mockResolvedValue([fileNode("b.ts")]);
         useProjectFileIndexStore.getState().load("p3", null);
         await vi.waitFor(() => {
             expect(entryFor("p3")?.status).toBe("ready");
         });
+        expect(entryFor("p3")?.paths?.has("b.ts")).toBe(true);
+        expect(entryFor("p3")?.paths?.has("a.ts")).toBe(false);
         expect(listProjectEntries).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps the old paths visible while revalidating after an invalidation", async () => {
+        listProjectEntries.mockResolvedValue([fileNode("a.ts")]);
+        useProjectFileIndexStore.getState().load("p-swr", null);
+        await vi.waitFor(() => {
+            expect(entryFor("p-swr")?.status).toBe("ready");
+        });
+
+        // Hold the revalidation open so we can observe the in-between state.
+        let resolveReload: (entries: ProjectTreeNode[]) => void = () => {};
+        const reload = new Promise<ProjectTreeNode[]>((resolve) => {
+            resolveReload = resolve;
+        });
+        listProjectEntries.mockReturnValueOnce(reload);
+
+        emitInvalidation("p-swr");
+        useProjectFileIndexStore.getState().load("p-swr", null);
+
+        // While the fresh index is loading, the old paths remain available.
+        expect(entryFor("p-swr")?.status).toBe("loading");
+        expect(entryFor("p-swr")?.paths?.has("a.ts")).toBe(true);
+
+        resolveReload([fileNode("a.ts"), fileNode("c.ts")]);
+        await vi.waitFor(() => {
+            expect(entryFor("p-swr")?.status).toBe("ready");
+        });
+        expect(entryFor("p-swr")?.paths?.has("c.ts")).toBe(true);
     });
 
     it("discards a first in-flight load when an invalidation races it", async () => {
@@ -159,13 +192,15 @@ describe("useProjectFileIndexStore.load", () => {
 
         // Invalidation arrives before the first load resolves.
         emitInvalidation("p-race");
-        expect(entryFor("p-race")).toBeUndefined();
+        expect(entryFor("p-race")?.status).toBe("stale");
 
-        // The stale (pre-invalidation) response resolves now and must be ignored.
+        // The stale (pre-invalidation) response resolves now and must be ignored
+        // by the epoch guard — it must not become the cached index.
         resolveFirstLoad([fileNode("stale.ts")]);
         await Promise.resolve();
         await Promise.resolve();
-        expect(entryFor("p-race")).toBeUndefined();
+        expect(entryFor("p-race")?.status).toBe("stale");
+        expect(entryFor("p-race")?.paths?.has("stale.ts") ?? false).toBe(false);
 
         // A fresh load reflects post-invalidation state.
         listProjectEntries.mockResolvedValue([fileNode("fresh.ts")]);

@@ -323,10 +323,6 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                     ...state.fullyLoadedTreeProjects,
                     [contextKey]: false,
                 },
-                treeNodes: {
-                    ...state.treeNodes,
-                    [contextKey]: {},
-                },
             }));
             void get().refreshProjectTree(projectId, worktreeId);
             return entry;
@@ -360,10 +356,6 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                 fullyLoadedTreeProjects: {
                     ...state.fullyLoadedTreeProjects,
                     [contextKey]: false,
-                },
-                treeNodes: {
-                    ...state.treeNodes,
-                    [contextKey]: {},
                 },
             }));
             await get().refreshProjectTree(projectId, worktreeId);
@@ -399,10 +391,6 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                 fullyLoadedTreeProjects: {
                     ...state.fullyLoadedTreeProjects,
                     [contextKey]: false,
-                },
-                treeNodes: {
-                    ...state.treeNodes,
-                    [contextKey]: {},
                 },
             }));
             await get().refreshProjectTree(projectId, worktreeId);
@@ -440,10 +428,6 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                     ...state.fullyLoadedTreeProjects,
                     [contextKey]: false,
                 },
-                treeNodes: {
-                    ...state.treeNodes,
-                    [contextKey]: {},
-                },
             }));
             void get().refreshProjectTree(projectId, worktreeId);
         } catch (error) {
@@ -478,10 +462,6 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                 fullyLoadedTreeProjects: {
                     ...state.fullyLoadedTreeProjects,
                     [contextKey]: false,
-                },
-                treeNodes: {
-                    ...state.treeNodes,
-                    [contextKey]: {},
                 },
             }));
             void get().refreshProjectTree(projectId, worktreeId);
@@ -700,10 +680,6 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                 fullyLoadedTreeProjects: {
                     ...state.fullyLoadedTreeProjects,
                     [contextKey]: false,
-                },
-                treeNodes: {
-                    ...state.treeNodes,
-                    [contextKey]: {},
                 },
             }));
             void get().refreshProjectTree(projectId, worktreeId);

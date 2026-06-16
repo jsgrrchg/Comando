@@ -25,7 +25,10 @@ export function normalizeIndexPath(path: string): string {
     return path.replace(/^\.\//, "").replace(/\/+$/, "");
 }
 
-type ProjectFileIndexStatus = "loading" | "ready" | "error";
+// "stale" marks an entry whose data is still shown but must be revalidated
+// after a tree invalidation (stale-while-revalidate — keeps pills visible
+// instead of blanking them while the fresh index loads).
+type ProjectFileIndexStatus = "loading" | "ready" | "error" | "stale";
 
 interface ProjectFileIndexEntry {
     readonly status: ProjectFileIndexStatus;
@@ -81,8 +84,7 @@ export const useProjectFileIndexStore = create<ProjectFileIndexState>(
                 }
                 for (const contextKey of affectedKeys) {
                     // Advance the epoch so any in-flight load (including a first
-                    // load that has not yet resolved) is discarded, then drop the
-                    // entry so consumers reload fresh.
+                    // load that has not yet resolved) is discarded.
                     generationByContext.set(
                         contextKey,
                         (generationByContext.get(contextKey) ?? 0) + 1,
@@ -91,7 +93,13 @@ export const useProjectFileIndexStore = create<ProjectFileIndexState>(
                 set((state) => {
                     const nextByContext = { ...state.byContext };
                     for (const contextKey of affectedKeys) {
-                        delete nextByContext[contextKey];
+                        // Keep the old paths visible and mark the entry stale so
+                        // consumers revalidate without blanking pills in between.
+                        const previous = nextByContext[contextKey];
+                        nextByContext[contextKey] = {
+                            status: "stale",
+                            paths: previous?.paths ?? null,
+                        };
                     }
                     return { byContext: nextByContext };
                 });
@@ -112,8 +120,13 @@ export const useProjectFileIndexStore = create<ProjectFileIndexState>(
 
                 const contextKey = getProjectContextKey(projectId, worktreeId);
                 const existing = get().byContext[contextKey];
-                // Loaded or in flight → nothing to do. A prior error is retried.
-                if (existing && existing.status !== "error") {
+                // Ready or in flight → nothing to do. A prior error, or a stale
+                // entry awaiting revalidation, is (re)loaded.
+                if (
+                    existing &&
+                    existing.status !== "error" &&
+                    existing.status !== "stale"
+                ) {
                     return;
                 }
 
@@ -122,7 +135,11 @@ export const useProjectFileIndexStore = create<ProjectFileIndexState>(
                 set((state) => ({
                     byContext: {
                         ...state.byContext,
-                        [contextKey]: { status: "loading", paths: null },
+                        [contextKey]: {
+                            status: "loading",
+                            // Keep showing the previous paths while revalidating.
+                            paths: state.byContext[contextKey]?.paths ?? null,
+                        },
                     },
                 }));
 
@@ -157,10 +174,17 @@ export const useProjectFileIndexStore = create<ProjectFileIndexState>(
                         }
                         // Mark as error (retryable) instead of leaving it stuck
                         // in `loading`, so the next mount or invalidation retries.
+                        // Keep any previous paths so a failed *revalidation* does
+                        // not blank pills that were valid a moment ago.
                         set((state) => ({
                             byContext: {
                                 ...state.byContext,
-                                [contextKey]: { status: "error", paths: null },
+                                [contextKey]: {
+                                    status: "error",
+                                    paths:
+                                        state.byContext[contextKey]?.paths ??
+                                        null,
+                                },
                             },
                         }));
                     });
@@ -171,9 +195,10 @@ export const useProjectFileIndexStore = create<ProjectFileIndexState>(
 
 /**
  * Returns the complete set of file relative paths for a (project, worktree), or
- * `null` while the index is loading, errored, or not yet requested. A `null`
- * result means callers must not render file pills (better a brief absence than a
- * false positive).
+ * `null` while the first index load is pending/errored. After an invalidation it
+ * keeps returning the previous set (stale) while the fresh one loads, so pills
+ * never blank out. `null` means callers must not render file pills (better a
+ * brief absence than a false positive).
  */
 export function useProjectFileIndex(
     projectId: string | null,
@@ -187,19 +212,19 @@ export function useProjectFileIndex(
     );
     const load = useProjectFileIndexStore((state) => state.load);
 
-    // Re-run when the entry appears/disappears: on mount (absent), and after an
-    // invalidation drops it (absent again → reload). The dep is `entry ===
-    // undefined`, not `entry`, so reaching the `error` state does not re-trigger
-    // the effect and spin a tight retry loop — errors recover on the next mount
-    // or invalidation. `load` itself no-ops while loading or ready.
-    const isAbsent = entry === undefined;
+    // Re-run on mount (no entry) and after an invalidation marks the entry
+    // `stale` → revalidate. The dep is this boolean, not `entry`, so reaching
+    // `loading`/`ready`/`error` does not re-trigger the effect: no tight loop,
+    // and errors recover on the next mount or invalidation.
+    const needsLoad = entry === undefined || entry.status === "stale";
     useEffect(() => {
         if (projectId) {
             load(projectId, worktreeId);
         }
-    }, [load, projectId, worktreeId, isAbsent]);
+    }, [load, projectId, worktreeId, needsLoad]);
 
-    return entry?.status === "ready" ? entry.paths : null;
+    // Show paths whenever we have them (ready or revalidating), never blank.
+    return entry?.paths ?? null;
 }
 
 /**

@@ -401,6 +401,69 @@ export function App() {
     const fileTreeInlineSubmitPendingRef = useRef(false);
     const fileTreeEntryIndexGenerationsRef = useRef(new Map<string, number>());
     const fileTreeEntryIndexRequestsRef = useRef(new Map<string, number>());
+    // Mirror of the loaded index, readable from the (async) invalidation handler
+    // without capturing a stale closure over the state value.
+    const fileTreeEntryIndexByContextRef = useRef(fileTreeEntryIndexByContext);
+    useEffect(() => {
+        fileTreeEntryIndexByContextRef.current = fileTreeEntryIndexByContext;
+    }, [fileTreeEntryIndexByContext]);
+    // Loads (or revalidates) the full project file index for a context, keeping
+    // the previous entries visible until the fresh ones arrive (no blanking).
+    const loadFileTreeEntryIndex = useCallback(
+        (projectId: string, worktreeId: string | null) => {
+            const comandoApi = getComandoApi();
+            const listProjectEntries = (
+                comandoApi as {
+                    readonly listProjectEntries?: ComandoApi["listProjectEntries"];
+                } | null
+            )?.listProjectEntries;
+            if (!listProjectEntries) {
+                return;
+            }
+
+            const contextKey = getProjectContextKey(projectId, worktreeId);
+            const generation =
+                fileTreeEntryIndexGenerationsRef.current.get(contextKey) ?? 0;
+            // Dedupe a single in-flight request per (context, generation).
+            if (
+                fileTreeEntryIndexRequestsRef.current.get(contextKey) ===
+                generation
+            ) {
+                return;
+            }
+            fileTreeEntryIndexRequestsRef.current.set(contextKey, generation);
+
+            void listProjectEntries({ projectId, worktreeId })
+                .then((entries) => {
+                    if (
+                        fileTreeEntryIndexGenerationsRef.current.get(
+                            contextKey,
+                        ) !== generation
+                    ) {
+                        return; // stale response from a superseded generation
+                    }
+                    // Overwrite atomically (even if already present) so a
+                    // revalidation swaps the index without a blank gap.
+                    setFileTreeEntryIndexByContext((currentState) => ({
+                        ...currentState,
+                        [contextKey]: entries,
+                    }));
+                })
+                .catch(() => {
+                    // Keep the existing index usable; a later mount or
+                    // invalidation retries.
+                })
+                .finally(() => {
+                    if (
+                        fileTreeEntryIndexRequestsRef.current.get(contextKey) ===
+                        generation
+                    ) {
+                        fileTreeEntryIndexRequestsRef.current.delete(contextKey);
+                    }
+                });
+        },
+        [setFileTreeEntryIndexByContext],
+    );
     const fileTreeBackendSearchRequestRef = useRef(0);
     const sidebarOverlayRef = useRef<HTMLDivElement | null>(null);
     const sidebarPointerRef = useRef<EdgePeekPointerPosition | null>(null);
@@ -514,14 +577,23 @@ export function App() {
                 payload.worktreeId ??
                 useGitStore.getState().activeWorktreeIds[payload.projectId] ??
                 null;
-            const affectedContextKeys = [
-                getProjectContextKey(
-                    payload.projectId,
-                    payload.worktreeId ?? null,
-                ),
-                getProjectContextKey(payload.projectId, preferredWorktreeId),
+            const affectedPairs = [
+                {
+                    projectId: payload.projectId,
+                    worktreeId: payload.worktreeId ?? null,
+                },
+                {
+                    projectId: payload.projectId,
+                    worktreeId: preferredWorktreeId,
+                },
             ];
-            const uniqueAffectedContextKeys = [...new Set(affectedContextKeys)];
+            const uniqueAffectedContextKeys = [
+                ...new Set(
+                    affectedPairs.map(({ projectId, worktreeId }) =>
+                        getProjectContextKey(projectId, worktreeId),
+                    ),
+                ),
+            ];
 
             for (const contextKey of uniqueAffectedContextKeys) {
                 const nextGeneration =
@@ -535,21 +607,21 @@ export function App() {
                 fileTreeEntryIndexRequestsRef.current.delete(contextKey);
             }
 
-            setFileTreeEntryIndexByContext((currentState) => {
+            // Revalidate only contexts already loaded, keeping their old index
+            // visible until the fresh one replaces it (stale-while-revalidate),
+            // so the file-tree filter never blanks out.
+            const revalidatedKeys = new Set<string>();
+            for (const { projectId, worktreeId } of affectedPairs) {
+                const contextKey = getProjectContextKey(projectId, worktreeId);
                 if (
-                    uniqueAffectedContextKeys.every(
-                        (contextKey) => !currentState[contextKey],
-                    )
+                    revalidatedKeys.has(contextKey) ||
+                    !fileTreeEntryIndexByContextRef.current[contextKey]
                 ) {
-                    return currentState;
+                    continue;
                 }
-
-                const nextState = { ...currentState };
-                for (const contextKey of uniqueAffectedContextKeys) {
-                    delete nextState[contextKey];
-                }
-                return nextState;
-            });
+                revalidatedKeys.add(contextKey);
+                loadFileTreeEntryIndex(projectId, worktreeId);
+            }
 
             void refreshProjectTree(payload.projectId, preferredWorktreeId);
             void refreshProjectTabs(
@@ -560,7 +632,7 @@ export function App() {
         });
 
         return unsubscribe;
-    }, [refreshProjectTabs, refreshProjectTree]);
+    }, [loadFileTreeEntryIndex, refreshProjectTabs, refreshProjectTree]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -822,73 +894,21 @@ export function App() {
     }, [isFileTreeSearchOpen]);
 
     useEffect(() => {
-        const comandoApi = getComandoApi();
-        if (!activeProjectId || !comandoApi) {
+        if (!activeProjectId) {
             return;
         }
-        const listProjectEntries = (
-            comandoApi as {
-                readonly listProjectEntries?: ComandoApi["listProjectEntries"];
-            }
-        ).listProjectEntries;
-        if (!listProjectEntries) {
+        // Initial load only; revalidation after invalidation is driven by the
+        // invalidation handler (which keeps the old index visible meanwhile).
+        if (fileTreeEntryIndexByContext[activeProjectContextKey]) {
             return;
         }
-
-        const contextKey = activeProjectContextKey;
-        if (fileTreeEntryIndexByContext[contextKey]) {
-            return;
-        }
-
-        const generation =
-            fileTreeEntryIndexGenerationsRef.current.get(contextKey) ?? 0;
-        if (fileTreeEntryIndexRequestsRef.current.get(contextKey) === generation) {
-            return;
-        }
-
-        fileTreeEntryIndexRequestsRef.current.set(contextKey, generation);
-
-        void listProjectEntries({
-            projectId: activeProjectId,
-            worktreeId: activeWorktreeId,
-        })
-            .then((entries) => {
-                if (
-                    fileTreeEntryIndexGenerationsRef.current.get(contextKey) !==
-                        generation
-                ) {
-                    return;
-                }
-
-                setFileTreeEntryIndexByContext((currentState) => {
-                    if (currentState[contextKey]) {
-                        return currentState;
-                    }
-
-                    return {
-                        ...currentState,
-                        [contextKey]: entries,
-                    };
-                });
-            })
-            .catch(() => {
-                // Keep the existing tree usable; filtering will retry on the
-                // next active project/worktree change or invalidation.
-            })
-            .finally(() => {
-                if (
-                    fileTreeEntryIndexRequestsRef.current.get(contextKey) ===
-                    generation
-                ) {
-                    fileTreeEntryIndexRequestsRef.current.delete(contextKey);
-                }
-            });
-
+        loadFileTreeEntryIndex(activeProjectId, activeWorktreeId);
     }, [
         activeProjectContextKey,
         activeProjectId,
         activeWorktreeId,
         fileTreeEntryIndexByContext,
+        loadFileTreeEntryIndex,
     ]);
 
     useEffect(() => {
