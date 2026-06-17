@@ -1,5 +1,7 @@
 import type { AiSessionSnapshot } from "@shared/ipc";
 
+import { useAiStore } from "@renderer/app/store/ai-store";
+
 type LifecycleSessionEntry = {
     readonly meta?: {
         readonly title: string;
@@ -51,6 +53,27 @@ export function getStopAgentConfirmationMessage({
         activeChildren.length === 1 ? "child agent" : "child agents";
 
     return `Stop "${title}"? ${activeChildren.length} active ${childLabel}${childSummary} will keep running. This only stops the selected thread.`;
+}
+
+export function requestStopAgentSession({
+    sessionId,
+    title,
+}: {
+    readonly sessionId: string;
+    readonly title: string;
+}): void {
+    const { cancelSession, sessions } = useAiStore.getState();
+    const message = getStopAgentConfirmationMessage({
+        sessionId,
+        sessions,
+        title,
+    });
+
+    if (message && !window.confirm(message)) {
+        return;
+    }
+
+    void cancelSession(sessionId);
 }
 
 function isBusyAiSessionSnapshot(

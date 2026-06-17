@@ -128,6 +128,8 @@ import {
     type WorkspaceFileModelLease,
 } from "@renderer/components/workspace/editorModelPath";
 import { appendSelectionMentionToRegisteredComposer } from "@renderer/components/workspace/chat/composerSelectionBridge";
+import { requestStopAgentSession } from "@renderer/components/workspace/chat/aiSessionLifecycle";
+import { isActiveChatTurnStatus } from "@renderer/components/workspace/chat/chatTurnStatus";
 import { canResolveFileHunks } from "@renderer/components/workspace/review/editedFilesPresentationModel";
 import { createDiffFromTrackedFile } from "@renderer/components/workspace/review/reviewDiff";
 import { closeWorkspaceTabsWithConfirmation } from "@renderer/components/workspace/workspaceCloseGuard";
@@ -1604,6 +1606,34 @@ function WorkspacePaneView({
     );
     const isActivePane = activePaneId === paneNodeId;
     const activeTabWorktreeId = activeTab?.worktreeId ?? null;
+    const activeChatSessionId = activeChatTab?.sessionId ?? null;
+    const activeChatFallbackTitle = activeChatTab?.title ?? "Chat";
+    const activeChatSessionLifecycle = useAiStore(
+        useShallow(
+            useCallback(
+                (state) => {
+                    if (!activeChatSessionId) {
+                        return {
+                            status: null,
+                            title: activeChatFallbackTitle,
+                        };
+                    }
+
+                    const snapshot =
+                        state.sessions[activeChatSessionId]?.snapshot ?? null;
+
+                    return {
+                        status: snapshot?.status ?? null,
+                        title:
+                            snapshot?.title ||
+                            activeChatFallbackTitle ||
+                            "Chat",
+                    };
+                },
+                [activeChatFallbackTitle, activeChatSessionId],
+            ),
+        ),
+    );
 
     useRenderProbe("WorkspacePaneView", {
         activeTabId: activeTab?.id ?? null,
@@ -2110,6 +2140,23 @@ function WorkspacePaneView({
     // Keep the latest handler references in a ref so the keydown listener can
     // be registered a single time per active pane, instead of being torn down
     // and re-attached on every render where any of these callbacks change.
+    const paneActiveAgentStopRef = useRef({
+        sessionId: activeChatSessionId,
+        status: activeChatSessionLifecycle.status,
+        title: activeChatSessionLifecycle.title,
+    });
+    useEffect(() => {
+        paneActiveAgentStopRef.current = {
+            sessionId: activeChatSessionId,
+            status: activeChatSessionLifecycle.status,
+            title: activeChatSessionLifecycle.title,
+        };
+    }, [
+        activeChatSessionId,
+        activeChatSessionLifecycle.status,
+        activeChatSessionLifecycle.title,
+    ]);
+
     const paneShortcutHandlersRef = useRef({
         createTerminalTab,
         defaultProjectId,
@@ -2144,6 +2191,43 @@ function WorkspacePaneView({
         paneNodeId,
         selectAdjacentTab,
     ]);
+
+    useEffect(() => {
+        if (!isActivePane) {
+            return;
+        }
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.defaultPrevented || event.key !== "Escape") {
+                return;
+            }
+
+            if (
+                event.altKey ||
+                event.ctrlKey ||
+                event.metaKey ||
+                event.shiftKey
+            ) {
+                return;
+            }
+
+            const { sessionId, status, title } =
+                paneActiveAgentStopRef.current;
+            if (!sessionId || !status || !isActiveChatTurnStatus(status)) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            requestStopAgentSession({
+                sessionId,
+                title,
+            });
+        };
+
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [isActivePane]);
 
     useEffect(() => {
         if (!isActivePane) {
