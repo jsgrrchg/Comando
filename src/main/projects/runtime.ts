@@ -27,8 +27,9 @@ import {
     copyExternalProjectEntries,
     copyProjectEntries,
     createProjectEntry,
+    createProjectTreeNodesFromDirectoryEntries,
     deleteProjectEntry,
-    listProjectTreeChildren,
+    listProjectTreeDirectoryEntries,
     normalizeRelativePath,
     readProjectFile,
     renameProjectEntry,
@@ -38,6 +39,8 @@ import {
 interface GitSnapshot {
     readonly changedPaths: readonly string[];
     readonly exactBadges: ReadonlyMap<string, GitStatusBadge>;
+    readonly ignoredPathMatches: ReadonlyMap<string, boolean>;
+    readonly ignoredPaths: ReadonlySet<string>;
 }
 
 interface IndexedProjectEntry extends ProjectSearchCandidate {
@@ -140,6 +143,7 @@ export interface ProjectRuntimeEntryMutationInput
 }
 
 export interface ProjectRuntimeSearchInput extends ProjectRuntimeScopeInput {
+    readonly includeAncestorDirectories?: boolean;
     readonly limit?: number;
     readonly query: string;
 }
@@ -210,13 +214,20 @@ export class ProjectRuntime {
         input: ProjectRuntimeTreeInput,
     ): Promise<ProjectTreeNode[]> {
         this.#ensureRootContext(input);
-        const gitSnapshot = await this.#getGitSnapshot(input.rootPath);
+        const entries = listProjectTreeDirectoryEntries({
+            parentRelativePath: input.parentRelativePath,
+            rootPath: input.rootPath,
+        });
+        const gitSnapshot = await this.#getGitSnapshot(
+            input.rootPath,
+            entries.map((entry) => entry.relativePath),
+        );
 
-        return listProjectTreeChildren({
+        return createProjectTreeNodesFromDirectoryEntries({
+            entries,
             gitSnapshot,
             parentRelativePath: input.parentRelativePath,
             projectId: input.projectId,
-            rootPath: input.rootPath,
         });
     }
 
@@ -361,13 +372,21 @@ export class ProjectRuntime {
             };
         }
 
-        const gitSnapshot = await this.#getGitSnapshot(input.rootPath);
+        const resultEntries =
+            input.includeAncestorDirectories === true
+                ? includeAncestorDirectoryEntries(scoredEntries, entries)
+                : scoredEntries.map((match) => match.entry);
+
+        const gitSnapshot = await this.#getGitSnapshot(
+            input.rootPath,
+            resultEntries.map((entry) => entry.relativePath),
+        );
 
         return {
-            nodes: scoredEntries.map((match) =>
+            nodes: resultEntries.map((entry) =>
                 createProjectTreeNodeFromIndexEntry(
                     input.projectId,
-                    match.entry,
+                    entry,
                     gitSnapshot,
                 ),
             ),
@@ -379,9 +398,12 @@ export class ProjectRuntime {
         input: ProjectRuntimeListEntriesInput,
     ): Promise<ProjectRuntimeSearchResponse> {
         this.#ensureRootContext(input);
-        const gitSnapshot = await this.#getGitSnapshot(input.rootPath);
         const { entries, cacheState } = this.#getProjectSearchIndex(
             input.rootPath,
+        );
+        const gitSnapshot = await this.#getGitSnapshot(
+            input.rootPath,
+            entries.map((entry) => entry.relativePath),
         );
 
         return {
@@ -443,12 +465,20 @@ export class ProjectRuntime {
         this.#ensureWatcher(context);
     }
 
-    async #getGitSnapshot(rootPath: string): Promise<GitSnapshot> {
+    async #getGitSnapshot(
+        rootPath: string,
+        ignoreCandidates: readonly string[] = [],
+    ): Promise<GitSnapshot> {
         const resolvedRootPath = resolveRootPath(rootPath);
         const rootPathKey = normalizeRootPathKey(resolvedRootPath);
         const cachedSnapshot = this.#gitSnapshots.get(rootPathKey);
         if (cachedSnapshot) {
-            return cachedSnapshot;
+            return await this.#withGitIgnoredPaths(
+                resolvedRootPath,
+                rootPathKey,
+                cachedSnapshot,
+                ignoreCandidates,
+            );
         }
 
         try {
@@ -479,20 +509,79 @@ export class ProjectRuntime {
             const snapshot = {
                 changedPaths: [...exactBadges.keys()],
                 exactBadges,
+                ignoredPathMatches: new Map<string, boolean>(),
+                ignoredPaths: new Set<string>(),
             } satisfies GitSnapshot;
 
-            this.#gitSnapshots.set(rootPathKey, snapshot);
-            return snapshot;
+            return await this.#withGitIgnoredPaths(
+                resolvedRootPath,
+                rootPathKey,
+                snapshot,
+                ignoreCandidates,
+            );
         } catch (error) {
             debugBenignError("projects.runtime.computeGitSnapshot", error);
             const emptySnapshot = {
                 changedPaths: [],
                 exactBadges: new Map<string, GitStatusBadge>(),
+                ignoredPathMatches: new Map<string, boolean>(),
+                ignoredPaths: new Set<string>(),
             } satisfies GitSnapshot;
 
-            this.#gitSnapshots.set(rootPathKey, emptySnapshot);
-            return emptySnapshot;
+            return await this.#withGitIgnoredPaths(
+                resolvedRootPath,
+                rootPathKey,
+                emptySnapshot,
+                ignoreCandidates,
+            );
         }
+    }
+
+    async #withGitIgnoredPaths(
+        rootPath: string,
+        rootPathKey: string,
+        snapshot: GitSnapshot,
+        candidates: readonly string[],
+    ): Promise<GitSnapshot> {
+        const candidatePaths = normalizeGitIgnoreCandidatePaths(candidates);
+        const missingCandidates = candidatePaths.filter(
+            (relativePath) => !snapshot.ignoredPathMatches.has(relativePath),
+        );
+
+        if (missingCandidates.length === 0) {
+            this.#gitSnapshots.set(rootPathKey, snapshot);
+            return snapshot;
+        }
+
+        const nextMatches = new Map(snapshot.ignoredPathMatches);
+
+        try {
+            const ignoredPaths = await checkGitIgnoredPaths(
+                rootPath,
+                missingCandidates,
+            );
+            for (const relativePath of missingCandidates) {
+                nextMatches.set(relativePath, ignoredPaths.has(relativePath));
+            }
+        } catch (error) {
+            debugBenignError("projects.runtime.computeGitIgnoredPaths", error);
+            for (const relativePath of missingCandidates) {
+                nextMatches.set(relativePath, false);
+            }
+        }
+
+        const nextSnapshot = {
+            ...snapshot,
+            ignoredPathMatches: nextMatches,
+            ignoredPaths: new Set(
+                [...nextMatches.entries()]
+                    .filter(([, isIgnored]) => isIgnored)
+                    .map(([relativePath]) => relativePath),
+            ),
+        } satisfies GitSnapshot;
+
+        this.#gitSnapshots.set(rootPathKey, nextSnapshot);
+        return nextSnapshot;
     }
 
     #ensureWatcher(context: RegisteredRootContext): void {
@@ -782,6 +871,59 @@ function collectTopProjectSearchEntries(
     return topEntries;
 }
 
+function includeAncestorDirectoryEntries(
+    scoredEntries: readonly ScoredProjectSearchEntry[],
+    entries: readonly IndexedProjectEntry[],
+): readonly IndexedProjectEntry[] {
+    const entriesByPath = new Map(
+        entries.map((entry) => [entry.relativePath, entry]),
+    );
+    const resultEntries: IndexedProjectEntry[] = [];
+    const resultPaths = new Set<string>();
+
+    const pushEntry = (entry: IndexedProjectEntry) => {
+        if (resultPaths.has(entry.relativePath)) {
+            return;
+        }
+
+        resultPaths.add(entry.relativePath);
+        resultEntries.push(entry);
+    };
+
+    for (const { entry } of scoredEntries) {
+        for (const ancestorPath of getAncestorDirectoryPaths(
+            entry.relativePath,
+        )) {
+            const ancestor = entriesByPath.get(ancestorPath);
+            if (ancestor?.kind === "directory") {
+                pushEntry(ancestor);
+            }
+        }
+
+        pushEntry(entry);
+    }
+
+    return resultEntries;
+}
+
+function getAncestorDirectoryPaths(relativePath: string): readonly string[] {
+    const ancestorPaths: string[] = [];
+    const segments = relativePath.split("/");
+    let cursor = "";
+
+    for (let index = 0; index < segments.length - 1; index += 1) {
+        const segment = segments[index];
+        if (!segment) {
+            continue;
+        }
+
+        cursor = cursor ? `${cursor}/${segment}` : segment;
+        ancestorPaths.push(cursor);
+    }
+
+    return ancestorPaths;
+}
+
 function findProjectSearchInsertIndex(
     entries: readonly ScoredProjectSearchEntry[],
     candidate: ScoredProjectSearchEntry,
@@ -826,6 +968,7 @@ function createProjectTreeNodeFromIndexEntry(
                 ? getDirectoryBadge(entry.relativePath, gitSnapshot)
                 : (gitSnapshot.exactBadges.get(entry.relativePath) ?? null),
         hasChildren: entry.hasChildren,
+        isGitIgnored: gitSnapshot.ignoredPaths.has(entry.relativePath),
         kind: entry.kind,
         name: entry.name,
         parentRelativePath: entry.parentRelativePath,
@@ -953,6 +1096,60 @@ function createBackgroundSafeGit(rootPath: string) {
             GIT_OPTIONAL_LOCKS: "0",
         }),
     );
+}
+
+const GIT_CHECK_IGNORE_CHUNK_SIZE = 256;
+
+async function checkGitIgnoredPaths(
+    rootPath: string,
+    relativePaths: readonly string[],
+): Promise<ReadonlySet<string>> {
+    const ignoredPaths = new Set<string>();
+    const git = createBackgroundSafeGit(rootPath);
+
+    for (
+        let index = 0;
+        index < relativePaths.length;
+        index += GIT_CHECK_IGNORE_CHUNK_SIZE
+    ) {
+        const chunk = relativePaths.slice(
+            index,
+            index + GIT_CHECK_IGNORE_CHUNK_SIZE,
+        );
+        if (chunk.length === 0) {
+            continue;
+        }
+
+        const ignoredChunk = await git.checkIgnore(chunk);
+        for (const relativePath of ignoredChunk) {
+            ignoredPaths.add(normalizeGitPath(relativePath));
+        }
+    }
+
+    return ignoredPaths;
+}
+
+function normalizeGitIgnoreCandidatePaths(
+    relativePaths: readonly string[],
+): readonly string[] {
+    const normalizedPaths: string[] = [];
+    const seenPaths = new Set<string>();
+
+    for (const relativePath of relativePaths) {
+        const normalizedPath = normalizeGitPath(relativePath);
+        if (
+            normalizedPath.length === 0 ||
+            normalizedPath === "." ||
+            seenPaths.has(normalizedPath)
+        ) {
+            continue;
+        }
+
+        seenPaths.add(normalizedPath);
+        normalizedPaths.push(normalizedPath);
+    }
+
+    return normalizedPaths;
 }
 
 function getDirectoryBadge(

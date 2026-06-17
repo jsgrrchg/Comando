@@ -1080,11 +1080,14 @@ function GitTreeNodeRow({
     const isDropTarget = dropTargetPath === node.path;
     const isDragging = containsGitTreeDragPath(activeDragData, node.path);
     const statusTint = node.status ? statusColor(node.status) : null;
+    const isVisuallyIgnored = node.isGitIgnored === true && !statusTint;
     const titleColor = statusTint
         ? statusTint
-        : isDirectory
-          ? "var(--color-text-secondary)"
-          : "var(--color-text-primary)";
+        : isVisuallyIgnored
+          ? "color-mix(in srgb, var(--color-text-secondary) 64%, transparent)"
+          : isDirectory
+            ? "var(--color-text-secondary)"
+            : "var(--color-text-primary)";
 
     const paddingLeft = scalePx(BASE_PADDING + depth * INDENT_STEP);
     const isStickyHidden =
@@ -1129,6 +1132,7 @@ function GitTreeNodeRow({
             data-context-target={isContextTarget ? "true" : "false"}
             data-drop-target={isDropTarget ? "true" : "false"}
             data-dragging={isDragging ? "true" : "false"}
+            data-git-ignored={node.isGitIgnored === true ? "true" : "false"}
             data-keyboard-cursor={isKeyboardCursor ? "true" : "false"}
             data-path={node.path}
             data-selected={isSelected ? "true" : "false"}
@@ -1282,16 +1286,26 @@ function GitTreeNodeRow({
                 <span style={{ width: scalePx(ICON_SM), flexShrink: 0 }} />
             )}
 
-            {isDirectory ? (
-                <FolderIcon folderName={node.name} open={isExpanded} />
-            ) : (
-                <FileTypeIcon
-                    color={statusTint ?? undefined}
-                    fileName={node.name}
-                    scaled
-                    size={ICON_SM}
-                />
-            )}
+            <span
+                aria-hidden="true"
+                style={{
+                    display: "inline-flex",
+                    flexShrink: 0,
+                    opacity: isVisuallyIgnored ? 0.58 : 1,
+                }}
+            >
+                {isDirectory ? (
+                    <FolderIcon folderName={node.name} open={isExpanded} />
+                ) : (
+                    <FileTypeIcon
+                        color={statusTint ?? undefined}
+                        fileName={node.name}
+                        opacity={isVisuallyIgnored ? 0.52 : undefined}
+                        scaled
+                        size={ICON_SM}
+                    />
+                )}
+            </span>
 
             {isEditing ? (
                 <TreeInlineNameInput

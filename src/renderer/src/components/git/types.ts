@@ -60,6 +60,7 @@ export interface GitTreeNode {
     readonly path: string;
     readonly kind: GitNodeKind;
     readonly isProjectRoot?: boolean;
+    readonly isGitIgnored?: boolean;
     readonly status: GitNodeStatus | null;
     readonly secondaryText?: string | null;
     readonly meta?: ReactNode;

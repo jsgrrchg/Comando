@@ -297,6 +297,7 @@ export class ProjectService {
         const rootPathKey = normalizeRootPathKey(project.rootPath);
         const search = async () =>
             await this.#worker.searchProjectEntries({
+                includeAncestorDirectories: input.includeAncestorDirectories,
                 limit: input.limit,
                 projectId: input.projectId,
                 query: normalizedQuery,

@@ -1712,10 +1712,12 @@ export interface ProjectTreeNode {
     readonly kind: "directory" | "file";
     readonly extension: string | null;
     readonly hasChildren: boolean;
+    readonly isGitIgnored: boolean;
     readonly gitStatus: GitStatusBadge | null;
 }
 
 export interface SearchProjectEntriesInput {
+    readonly includeAncestorDirectories?: boolean;
     readonly limit?: number;
     readonly projectId: string;
     readonly query: string;

@@ -1298,6 +1298,7 @@ export function App() {
         const search = () => {
             void window.comando
                 .searchProjectEntries({
+                    includeAncestorDirectories: true,
                     limit: 160,
                     projectId: activeProjectId,
                     query: normalizedFileTreeFilter,
@@ -1337,26 +1338,33 @@ export function App() {
         normalizedFileTreeFilter,
     ]);
 
+    const fileTreeFilterEntries = useMemo(() => {
+        if (!fileTreeFilterSource) {
+            return [];
+        }
+
+        return fileTreeFilterSource.kind === "full" && cachedFileTreeEntryIndex
+            ? cachedFileTreeEntryIndex
+            : fileTreeBackendSearchResults;
+    }, [
+        cachedFileTreeEntryIndex,
+        fileTreeBackendSearchResults,
+        fileTreeFilterSource,
+    ]);
     const fileTreeFilterMatches = useMemo(() => {
         if (!fileTreeFilterSource) {
             return [];
         }
 
-        const entriesForFilter =
-            fileTreeFilterSource.kind === "full" && cachedFileTreeEntryIndex
-                ? cachedFileTreeEntryIndex
-                : fileTreeBackendSearchResults;
-
         return filterProjectEntriesForTreeFilter(
-            entriesForFilter,
+            fileTreeFilterEntries,
             normalizedFileTreeFilter,
             fileTreeFilterSource.kind === "backend"
                 ? "backend-ranked"
                 : "substring",
         );
     }, [
-        cachedFileTreeEntryIndex,
-        fileTreeBackendSearchResults,
+        fileTreeFilterEntries,
         fileTreeFilterSource,
         normalizedFileTreeFilter,
     ]);
@@ -1364,8 +1372,9 @@ export function App() {
         () =>
             buildHierarchicalGitTreeNodesFromProjectEntries(
                 fileTreeFilterMatches,
+                fileTreeFilterEntries,
             ),
-        [fileTreeFilterMatches],
+        [fileTreeFilterEntries, fileTreeFilterMatches],
     );
     const fileTreeSearchNodes = fileTreeSearchTree.nodes;
     const fileTreeSearchExpandedPaths = fileTreeSearchTree.expandedDirectoryPaths;

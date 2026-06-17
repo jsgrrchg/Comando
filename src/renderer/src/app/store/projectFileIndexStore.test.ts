@@ -17,6 +17,7 @@ function fileNode(relativePath: string): ProjectTreeNode {
         kind: "file",
         extension: null,
         hasChildren: false,
+        isGitIgnored: false,
         gitStatus: null,
     };
 }

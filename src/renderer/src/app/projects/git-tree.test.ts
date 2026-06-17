@@ -19,6 +19,7 @@ function makeNode(
         gitStatus: null,
         hasChildren: kind === "directory",
         id: `project:${relativePath}`,
+        isGitIgnored: false,
         kind,
         name: relativePath.split("/").at(-1) ?? relativePath,
         parentRelativePath,
@@ -71,6 +72,26 @@ describe("buildGitTreeNodesFromProjectTree", () => {
                 path: "src/app/main.ts",
             }),
         ]);
+    });
+
+    it("preserves Git ignored metadata when converting project nodes", () => {
+        const ignoredFile = {
+            ...makeNode("local.env", "file", null),
+            isGitIgnored: true,
+        };
+
+        const nodes = buildGitTreeNodesFromProjectTree(
+            [ignoredFile],
+            { __root__: [ignoredFile] },
+            [],
+        );
+
+        expect(nodes[0]).toEqual(
+            expect.objectContaining({
+                isGitIgnored: true,
+                path: "local.env",
+            }),
+        );
     });
 });
 
@@ -147,6 +168,36 @@ describe("buildHierarchicalGitTreeNodesFromProjectEntries", () => {
         expect(componentsDirectory?.id).toBe("project:src/components");
         expect(componentsDirectory?.children?.[0]?.path).toBe(
             "src/components/App.tsx",
+        );
+    });
+
+    it("uses metadata entries for synthesized ignored ancestor folders", () => {
+        const ignoredDirectory = {
+            ...makeNode("logs", "directory", null),
+            isGitIgnored: true,
+        };
+        const ignoredFile = {
+            ...makeNode("logs/app.log", "file", "logs"),
+            isGitIgnored: true,
+        };
+
+        const { nodes } = buildHierarchicalGitTreeNodesFromProjectEntries(
+            [ignoredFile],
+            [ignoredDirectory, ignoredFile],
+        );
+
+        expect(nodes[0]).toEqual(
+            expect.objectContaining({
+                id: "project:logs",
+                isGitIgnored: true,
+                path: "logs",
+            }),
+        );
+        expect(nodes[0]?.children?.[0]).toEqual(
+            expect.objectContaining({
+                isGitIgnored: true,
+                path: "logs/app.log",
+            }),
         );
     });
 });

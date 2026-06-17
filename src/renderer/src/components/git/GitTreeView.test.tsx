@@ -110,6 +110,28 @@ describe("GitTreeView", () => {
         expect(markup).not.toContain(">±</span>");
     });
 
+    it("marks clean Git ignored entries for dimmed file explorer rendering", () => {
+        const markup = renderToStaticMarkup(
+            <GitTreeView
+                nodes={[
+                    createFileNode({
+                        isGitIgnored: true,
+                        name: "local.env",
+                        path: "local.env",
+                        status: null,
+                    }),
+                ]}
+                showStatusIndicator={false}
+            />,
+        );
+
+        expect(markup).toContain('data-git-ignored="true"');
+        expect(markup).toContain("local.env");
+        expect(markup).toContain(
+            "color-mix(in srgb, var(--color-text-secondary) 64%, transparent)",
+        );
+    });
+
     it("renders an inline editor for the node being renamed", () => {
         const markup = renderToStaticMarkup(
             <GitTreeView
