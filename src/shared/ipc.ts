@@ -1712,6 +1712,7 @@ export interface ProjectTreeNode {
     readonly kind: "directory" | "file";
     readonly extension: string | null;
     readonly hasChildren: boolean;
+    readonly isGitIgnored: boolean;
     readonly gitStatus: GitStatusBadge | null;
 }
 

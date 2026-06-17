@@ -19,6 +19,7 @@ function makeNode(
         gitStatus: null,
         hasChildren: kind === "directory",
         id: `project:${relativePath}`,
+        isGitIgnored: false,
         kind,
         name: relativePath.split("/").at(-1) ?? relativePath,
         parentRelativePath,

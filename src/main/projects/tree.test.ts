@@ -17,6 +17,11 @@ import {
 } from "./tree";
 
 const temporaryDirectories: string[] = [];
+const EMPTY_GIT_SNAPSHOT = {
+    changedPaths: [],
+    exactBadges: new Map(),
+    ignoredPaths: new Set<string>(),
+};
 
 afterEach(() => {
     for (const directory of temporaryDirectories.splice(0)) {
@@ -34,10 +39,7 @@ describe("project tree helpers", () => {
         fs.writeFileSync(path.join(rootPath, ".DS_Store"), "");
 
         const nodes = listProjectTreeChildren({
-            gitSnapshot: {
-                changedPaths: [],
-                exactBadges: new Map(),
-            },
+            gitSnapshot: EMPTY_GIT_SNAPSHOT,
             parentRelativePath: null,
             projectId: "project-1",
             rootPath,
@@ -54,16 +56,37 @@ describe("project tree helpers", () => {
         const rootPath = createProjectFixture();
 
         const nodes = listProjectTreeChildren({
-            gitSnapshot: {
-                changedPaths: [],
-                exactBadges: new Map(),
-            },
+            gitSnapshot: EMPTY_GIT_SNAPSHOT,
             parentRelativePath: "assets",
             projectId: "project-1",
             rootPath,
         });
 
         expect(nodes).toEqual([]);
+    });
+
+    it("marks entries whose relative paths are ignored by Git", () => {
+        const rootPath = createProjectFixture();
+
+        fs.writeFileSync(path.join(rootPath, "local.env"), "SECRET=value\n");
+
+        const nodes = listProjectTreeChildren({
+            gitSnapshot: {
+                changedPaths: [],
+                exactBadges: new Map(),
+                ignoredPaths: new Set(["local.env"]),
+            },
+            parentRelativePath: null,
+            projectId: "project-1",
+            rootPath,
+        });
+
+        expect(nodes).toEqual([
+            expect.objectContaining({
+                isGitIgnored: true,
+                name: "local.env",
+            }),
+        ]);
     });
 
     it("resolves file operation paths inside the project root", () => {

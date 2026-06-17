@@ -105,6 +105,7 @@ function createNode(
         gitStatus: null,
         hasChildren: false,
         id: relativePath,
+        isGitIgnored: false,
         kind,
         name,
         parentRelativePath: relativePath.includes("/")

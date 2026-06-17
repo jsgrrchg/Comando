@@ -20,6 +20,7 @@ export function buildGitTreeNodesFromProjectTree(
 
 interface HierarchicalBuildNode {
     readonly id: string;
+    readonly isGitIgnored: boolean;
     readonly kind: "directory" | "file";
     readonly name: string;
     readonly path: string;
@@ -52,6 +53,7 @@ export function buildHierarchicalGitTreeNodesFromProjectEntries(
             children: [],
             hasChildren: true,
             id: `project-search-dir:${path}`,
+            isGitIgnored: false,
             kind: "directory",
             name,
             path,
@@ -86,6 +88,7 @@ export function buildHierarchicalGitTreeNodesFromProjectEntries(
                     : undefined,
             hasChildren: entry.hasChildren,
             id: entry.id,
+            isGitIgnored: entry.isGitIgnored,
             kind: entry.kind,
             name: entry.name,
             path: entry.relativePath,
@@ -184,6 +187,7 @@ function convertProjectTreeNode(
         children: buildGitTreeNodeChildren(node, nodesByParent, expandedPaths),
         hasChildren: node.hasChildren,
         id: node.id,
+        isGitIgnored: node.isGitIgnored,
         kind: node.kind,
         name: node.name,
         path: node.relativePath,

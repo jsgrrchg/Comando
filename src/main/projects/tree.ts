@@ -20,6 +20,14 @@ const IMAGE_PREVIEW_MAX_BYTES = 12 * 1024 * 1024;
 interface GitSnapshot {
     readonly changedPaths: readonly string[];
     readonly exactBadges: ReadonlyMap<string, GitStatusBadge>;
+    readonly ignoredPaths: ReadonlySet<string>;
+}
+
+export interface ProjectTreeDirectoryEntry {
+    readonly absolutePath: string;
+    readonly kind: ProjectTreeNode["kind"];
+    readonly name: string;
+    readonly relativePath: string;
 }
 
 export class ProjectFileConflictError extends Error {
@@ -37,6 +45,21 @@ export function listProjectTreeChildren(options: {
     readonly parentRelativePath: string | null;
     readonly gitSnapshot: GitSnapshot;
 }): ProjectTreeNode[] {
+    return createProjectTreeNodesFromDirectoryEntries({
+        entries: listProjectTreeDirectoryEntries({
+            parentRelativePath: options.parentRelativePath,
+            rootPath: options.rootPath,
+        }),
+        gitSnapshot: options.gitSnapshot,
+        parentRelativePath: options.parentRelativePath,
+        projectId: options.projectId,
+    });
+}
+
+export function listProjectTreeDirectoryEntries(options: {
+    readonly rootPath: string;
+    readonly parentRelativePath: string | null;
+}): ProjectTreeDirectoryEntry[] {
     const absoluteDirectoryPath = resolveProjectPath(
         options.rootPath,
         options.parentRelativePath,
@@ -60,35 +83,51 @@ export function listProjectTreeChildren(options: {
     }
 
     return entries.map((entry) => {
+        const absolutePath = path.join(absoluteDirectoryPath, entry.name);
         const relativePath = normalizeRelativePath(
-            path.relative(
-                options.rootPath,
-                path.join(absoluteDirectoryPath, entry.name),
-            ),
+            path.relative(options.rootPath, absolutePath),
         );
         const kind = entry.isDirectory() ? "directory" : "file";
 
         return {
-            id: `${options.projectId}:${relativePath}`,
+            absolutePath,
+            kind,
+            name: entry.name,
+            relativePath,
+        };
+    });
+}
+
+export function createProjectTreeNodesFromDirectoryEntries(options: {
+    readonly entries: readonly ProjectTreeDirectoryEntry[];
+    readonly projectId: string;
+    readonly parentRelativePath: string | null;
+    readonly gitSnapshot: GitSnapshot;
+}): ProjectTreeNode[] {
+    return options.entries.map((entry) => {
+        return {
+            id: `${options.projectId}:${entry.relativePath}`,
             extension:
-                kind === "file"
+                entry.kind === "file"
                     ? path.extname(entry.name).slice(1) || null
                     : null,
             gitStatus:
-                kind === "directory"
-                    ? getDirectoryBadge(relativePath, options.gitSnapshot)
-                    : (options.gitSnapshot.exactBadges.get(relativePath) ??
-                      null),
+                entry.kind === "directory"
+                    ? getDirectoryBadge(entry.relativePath, options.gitSnapshot)
+                    : (options.gitSnapshot.exactBadges.get(
+                          entry.relativePath,
+                      ) ?? null),
             hasChildren:
-                kind === "directory"
-                    ? directoryHasVisibleChildren(
-                          path.join(absoluteDirectoryPath, entry.name),
-                      )
+                entry.kind === "directory"
+                    ? directoryHasVisibleChildren(entry.absolutePath)
                     : false,
-            kind,
+            isGitIgnored: options.gitSnapshot.ignoredPaths.has(
+                entry.relativePath,
+            ),
+            kind: entry.kind,
             name: entry.name,
             parentRelativePath: options.parentRelativePath,
-            relativePath,
+            relativePath: entry.relativePath,
         };
     });
 }

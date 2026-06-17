@@ -159,6 +159,7 @@ function StickyFolderRow({
     const [isDropTarget, setIsDropTarget] = useState(false);
     const isDraggable = enableDrag === true && !node.isProjectRoot;
     const isSelected = selectedPaths?.has(node.path) === true;
+    const isVisuallyIgnored = node.isGitIgnored === true && !node.status;
 
     const handleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
         const hasSelectionModifier =
@@ -177,6 +178,7 @@ function StickyFolderRow({
         <div
             className="git-tree-row"
             data-drop-target={isDropTarget ? "true" : "false"}
+            data-git-ignored={node.isGitIgnored === true ? "true" : "false"}
             data-selected={isSelected ? "true" : "false"}
             draggable={isDraggable}
             style={{
@@ -189,7 +191,9 @@ function StickyFolderRow({
                 paddingRight: scalePx(8),
                 fontSize: scalePx(FONT_SIZE),
                 cursor: isDraggable || onToggle ? "pointer" : "default",
-                color: "var(--color-text-secondary)",
+                color: isVisuallyIgnored
+                    ? "color-mix(in srgb, var(--color-text-secondary) 64%, transparent)"
+                    : "var(--color-text-secondary)",
                 width: "100%",
                 boxSizing: "border-box",
                 borderRadius: scalePx(4),
@@ -271,7 +275,16 @@ function StickyFolderRow({
         >
             <TreeIndentGuides depth={depth} offsetX={8} />
             <ChevronIcon open />
-            <FolderIcon folderName={node.name} open />
+            <span
+                aria-hidden="true"
+                style={{
+                    display: "inline-flex",
+                    flexShrink: 0,
+                    opacity: isVisuallyIgnored ? 0.58 : 1,
+                }}
+            >
+                <FolderIcon folderName={node.name} open />
+            </span>
             <span
                 style={{
                     whiteSpace: "nowrap",

@@ -19,6 +19,7 @@ function makeNode(
         gitStatus: null,
         hasChildren: kind === "directory",
         id: `project:${relativePath}`,
+        isGitIgnored: false,
         kind,
         name: relativePath.split("/").at(-1) ?? relativePath,
         parentRelativePath,
@@ -71,6 +72,26 @@ describe("buildGitTreeNodesFromProjectTree", () => {
                 path: "src/app/main.ts",
             }),
         ]);
+    });
+
+    it("preserves Git ignored metadata when converting project nodes", () => {
+        const ignoredFile = {
+            ...makeNode("local.env", "file", null),
+            isGitIgnored: true,
+        };
+
+        const nodes = buildGitTreeNodesFromProjectTree(
+            [ignoredFile],
+            { __root__: [ignoredFile] },
+            [],
+        );
+
+        expect(nodes[0]).toEqual(
+            expect.objectContaining({
+                isGitIgnored: true,
+                path: "local.env",
+            }),
+        );
     });
 });
 
