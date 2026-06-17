@@ -101,7 +101,7 @@ import {
     isEditedFileToolActivity,
     ToolActivityItem,
 } from "./chat/ToolActivityItem";
-import { getStopAgentConfirmationMessage } from "./chat/aiSessionLifecycle";
+import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
     resolveProjectFileReference,
@@ -1510,16 +1510,10 @@ export const ChatTabView = memo(function ChatTabView({
         void onOpenReview();
     }, [onOpenReview]);
     const handleStopSession = useCallback(() => {
-        const message = getStopAgentConfirmationMessage({
+        requestStopAgentSession({
             sessionId: tab.sessionId,
-            sessions: useAiStore.getState().sessions,
             title: snapshot.title || tab.title || "Chat",
         });
-        if (message && !window.confirm(message)) {
-            return;
-        }
-
-        void useAiStore.getState().cancelSession(tab.sessionId);
     }, [snapshot.title, tab.sessionId, tab.title]);
 
     useEffect(() => {
