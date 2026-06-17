@@ -143,6 +143,7 @@ export interface ProjectRuntimeEntryMutationInput
 }
 
 export interface ProjectRuntimeSearchInput extends ProjectRuntimeScopeInput {
+    readonly includeAncestorDirectories?: boolean;
     readonly limit?: number;
     readonly query: string;
 }
@@ -371,16 +372,21 @@ export class ProjectRuntime {
             };
         }
 
+        const resultEntries =
+            input.includeAncestorDirectories === true
+                ? includeAncestorDirectoryEntries(scoredEntries, entries)
+                : scoredEntries.map((match) => match.entry);
+
         const gitSnapshot = await this.#getGitSnapshot(
             input.rootPath,
-            scoredEntries.map((match) => match.entry.relativePath),
+            resultEntries.map((entry) => entry.relativePath),
         );
 
         return {
-            nodes: scoredEntries.map((match) =>
+            nodes: resultEntries.map((entry) =>
                 createProjectTreeNodeFromIndexEntry(
                     input.projectId,
-                    match.entry,
+                    entry,
                     gitSnapshot,
                 ),
             ),
@@ -863,6 +869,59 @@ function collectTopProjectSearchEntries(
     }
 
     return topEntries;
+}
+
+function includeAncestorDirectoryEntries(
+    scoredEntries: readonly ScoredProjectSearchEntry[],
+    entries: readonly IndexedProjectEntry[],
+): readonly IndexedProjectEntry[] {
+    const entriesByPath = new Map(
+        entries.map((entry) => [entry.relativePath, entry]),
+    );
+    const resultEntries: IndexedProjectEntry[] = [];
+    const resultPaths = new Set<string>();
+
+    const pushEntry = (entry: IndexedProjectEntry) => {
+        if (resultPaths.has(entry.relativePath)) {
+            return;
+        }
+
+        resultPaths.add(entry.relativePath);
+        resultEntries.push(entry);
+    };
+
+    for (const { entry } of scoredEntries) {
+        for (const ancestorPath of getAncestorDirectoryPaths(
+            entry.relativePath,
+        )) {
+            const ancestor = entriesByPath.get(ancestorPath);
+            if (ancestor?.kind === "directory") {
+                pushEntry(ancestor);
+            }
+        }
+
+        pushEntry(entry);
+    }
+
+    return resultEntries;
+}
+
+function getAncestorDirectoryPaths(relativePath: string): readonly string[] {
+    const ancestorPaths: string[] = [];
+    const segments = relativePath.split("/");
+    let cursor = "";
+
+    for (let index = 0; index < segments.length - 1; index += 1) {
+        const segment = segments[index];
+        if (!segment) {
+            continue;
+        }
+
+        cursor = cursor ? `${cursor}/${segment}` : segment;
+        ancestorPaths.push(cursor);
+    }
+
+    return ancestorPaths;
 }
 
 function findProjectSearchInsertIndex(

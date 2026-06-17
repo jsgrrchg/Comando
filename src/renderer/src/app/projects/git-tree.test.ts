@@ -170,4 +170,34 @@ describe("buildHierarchicalGitTreeNodesFromProjectEntries", () => {
             "src/components/App.tsx",
         );
     });
+
+    it("uses metadata entries for synthesized ignored ancestor folders", () => {
+        const ignoredDirectory = {
+            ...makeNode("logs", "directory", null),
+            isGitIgnored: true,
+        };
+        const ignoredFile = {
+            ...makeNode("logs/app.log", "file", "logs"),
+            isGitIgnored: true,
+        };
+
+        const { nodes } = buildHierarchicalGitTreeNodesFromProjectEntries(
+            [ignoredFile],
+            [ignoredDirectory, ignoredFile],
+        );
+
+        expect(nodes[0]).toEqual(
+            expect.objectContaining({
+                id: "project:logs",
+                isGitIgnored: true,
+                path: "logs",
+            }),
+        );
+        expect(nodes[0]?.children?.[0]).toEqual(
+            expect.objectContaining({
+                isGitIgnored: true,
+                path: "logs/app.log",
+            }),
+        );
+    });
 });

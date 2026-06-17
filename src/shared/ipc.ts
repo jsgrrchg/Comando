@@ -1717,6 +1717,7 @@ export interface ProjectTreeNode {
 }
 
 export interface SearchProjectEntriesInput {
+    readonly includeAncestorDirectories?: boolean;
     readonly limit?: number;
     readonly projectId: string;
     readonly query: string;

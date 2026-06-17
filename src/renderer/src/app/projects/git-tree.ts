@@ -36,8 +36,14 @@ export interface HierarchicalGitTreeFromEntries {
 
 export function buildHierarchicalGitTreeNodesFromProjectEntries(
     entries: readonly ProjectTreeNode[],
+    metadataEntries: readonly ProjectTreeNode[] = entries,
 ): HierarchicalGitTreeFromEntries {
     const byPath = new Map<string, HierarchicalBuildNode>();
+    const directoryMetadataByPath = new Map(
+        metadataEntries
+            .filter((entry) => entry.kind === "directory")
+            .map((entry) => [entry.relativePath, entry]),
+    );
 
     const ensureDirectory = (path: string): HierarchicalBuildNode => {
         const existing = byPath.get(path);
@@ -49,15 +55,16 @@ export function buildHierarchicalGitTreeNodesFromProjectEntries(
         }
 
         const name = path.split("/").at(-1) ?? path;
+        const metadata = directoryMetadataByPath.get(path);
         const synthetic: HierarchicalBuildNode = {
             children: [],
-            hasChildren: true,
-            id: `project-search-dir:${path}`,
-            isGitIgnored: false,
+            hasChildren: metadata?.hasChildren ?? true,
+            id: metadata?.id ?? `project-search-dir:${path}`,
+            isGitIgnored: metadata?.isGitIgnored ?? false,
             kind: "directory",
-            name,
+            name: metadata?.name ?? name,
             path,
-            status: null,
+            status: mapGitNodeStatus(metadata?.gitStatus ?? null),
         };
         byPath.set(path, synthetic);
         return synthetic;

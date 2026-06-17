@@ -68,6 +68,56 @@ describe("ProjectRuntime Git ignore metadata", () => {
             runtime.close();
         }
     });
+
+    it("includes ignored ancestor directory metadata for backend file tree search", async () => {
+        const rootPath = createProjectFixture();
+        const git = simpleGit(rootPath);
+
+        await git.init();
+        fs.writeFileSync(path.join(rootPath, ".gitignore"), "logs/\n");
+        fs.mkdirSync(path.join(rootPath, "logs"));
+        fs.writeFileSync(path.join(rootPath, "logs", "app.log"), "boot\n");
+
+        const runtime = new ProjectRuntime({
+            onProjectTreeInvalidated: () => undefined,
+        });
+        runtime.syncRegistry({
+            projects: [{ id: "project-1", rootPath }],
+            worktrees: [],
+        });
+
+        try {
+            const results = await runtime.searchProjectEntries({
+                includeAncestorDirectories: true,
+                limit: 10,
+                projectId: "project-1",
+                query: "app.log",
+                rootPath,
+                worktreeId: null,
+            });
+
+            expect(
+                results.nodes.map((node) => ({
+                    isGitIgnored: node.isGitIgnored,
+                    kind: node.kind,
+                    relativePath: node.relativePath,
+                })),
+            ).toEqual([
+                {
+                    isGitIgnored: true,
+                    kind: "directory",
+                    relativePath: "logs",
+                },
+                {
+                    isGitIgnored: true,
+                    kind: "file",
+                    relativePath: "logs/app.log",
+                },
+            ]);
+        } finally {
+            runtime.close();
+        }
+    });
 });
 
 function createProjectFixture(): string {
