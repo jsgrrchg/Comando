@@ -295,6 +295,32 @@ export function GitHubIssueTabView({
                 <GitHubTabHeader
                     actions={
                         <>
+                            {detail && !isEditingIssue ? (
+                                <>
+                                    <IdeActionButton
+                                        disabled={!canWriteIssues}
+                                        onClick={handleStartEditingIssue}
+                                        title={
+                                            canWriteIssues
+                                                ? undefined
+                                                : writePermissionLabel
+                                        }
+                                    >
+                                        Edit details
+                                    </IdeActionButton>
+                                    <IdeActionButton
+                                        disabled={!detail.body}
+                                        onClick={() =>
+                                            void handleCopyIssueBody()
+                                        }
+                                        title="Copy issue description to clipboard"
+                                    >
+                                        {isIssueBodyCopied
+                                            ? "Copied"
+                                            : "Copy"}
+                                    </IdeActionButton>
+                                </>
+                            ) : null}
                             <IdeActionButton
                                 onClick={() => void handleCopyIssueLink()}
                                 title="Copy GitHub issue link to clipboard"
@@ -386,32 +412,6 @@ export function GitHubIssueTabView({
                                     ))}
                                 </div>
                             </div>
-                            {!isEditingIssue ? (
-                                <div className="flex justify-end gap-2 px-4 pt-3">
-                                    <IdeActionButton
-                                        disabled={!canWriteIssues}
-                                        onClick={handleStartEditingIssue}
-                                        title={
-                                            canWriteIssues
-                                                ? undefined
-                                                : writePermissionLabel
-                                        }
-                                    >
-                                        Edit details
-                                    </IdeActionButton>
-                                    <IdeActionButton
-                                        disabled={!detail.body}
-                                        onClick={() =>
-                                            void handleCopyIssueBody()
-                                        }
-                                        title="Copy issue description to clipboard"
-                                    >
-                                        {isIssueBodyCopied
-                                            ? "Copied"
-                                            : "Copy"}
-                                    </IdeActionButton>
-                                </div>
-                            ) : null}
                             {isEditingIssue ? (
                                 <div className="space-y-3 px-4 py-4">
                                     <textarea
