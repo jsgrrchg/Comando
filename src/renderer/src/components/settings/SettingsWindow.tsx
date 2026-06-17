@@ -173,6 +173,9 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Show Monaco code minimap on the side of the editor.",
         "Autocomplete suggestions",
         "Show Monaco suggestions automatically while typing trigger manually.",
+        "Vim mode",
+        "Use Vim keybindings in Monaco editors.",
+        "modal editing",
     ],
     terminal: [
         "Terminal",
@@ -1949,6 +1952,12 @@ function EditorContent({
             "Autocomplete suggestions",
             "Show Monaco suggestions automatically while typing. You can still trigger them manually.",
         ],
+        [
+            "Vim mode",
+            "Use Vim keybindings in Monaco editors. Disabled by default.",
+            "modal editing",
+            "normal insert visual command",
+        ],
     ]);
 
     return (
@@ -2046,6 +2055,19 @@ function EditorContent({
                     <Toggle
                         value={state.suggestionsEnabled}
                         onChange={(v) => state.onSuggestionsEnabledChange?.(v)}
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
+                label="Vim mode"
+                description="Use Vim keybindings in Monaco editors. Disabled by default."
+                keywords={["modal editing", "normal insert visual command"]}
+                control={
+                    <Toggle
+                        value={state.vimModeEnabled}
+                        onChange={(v) => state.onVimModeEnabledChange?.(v)}
                     />
                 }
             />

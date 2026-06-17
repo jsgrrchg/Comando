@@ -66,6 +66,7 @@ import {
     resolveLargeFileMonacoLanguageId,
     shouldDisableTextMateForDocumentSize,
 } from "@renderer/app/editor/monacoPerformance";
+import { enableMonacoVimMode } from "@renderer/app/editor/monacoVimMode";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
 import {
     loadAppEditorSettings,
@@ -3689,10 +3690,18 @@ function FileTabView({
         null,
     );
     const inlineReviewContainerRef = useRef<HTMLDivElement | null>(null);
+    const inlineReviewVimStatusRef = useRef<HTMLDivElement | null>(null);
     const inlineReviewOverlayPinnedRef = useRef(false);
     const inlineReviewHoverHideTimerRef = useRef<number | null>(null);
     const hoveredInlineReviewHunkIdRef = useRef<string | null>(null);
     const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+    const editorVimModeRef = useRef<ReturnType<
+        typeof enableMonacoVimMode
+    > | null>(null);
+    const inlineReviewVimModeRef = useRef<ReturnType<
+        typeof enableMonacoVimMode
+    > | null>(null);
+    const editorVimStatusRef = useRef<HTMLDivElement | null>(null);
     const editorMonacoRef = useRef<MonacoNamespace | null>(null);
     const workspaceFileModelLeaseRef =
         useRef<WorkspaceFileModelLease | null>(null);
@@ -3755,6 +3764,7 @@ function FileTabView({
             readonly hunkId: string;
             readonly top: number;
         } | null>(null);
+    const documentKind = document?.kind ?? null;
     const documentLanguageId = document?.languageId ?? "plaintext";
     const gitSnapshot = useGitStore((state) => {
         const contextKey = getWorkspaceGitContextKey(
@@ -5203,6 +5213,82 @@ function FileTabView({
     );
 
     useEffect(() => {
+        editorVimModeRef.current?.dispose();
+        editorVimModeRef.current = null;
+
+        if (
+            !editorSettings.vimModeEnabled ||
+            isInlineReviewActive ||
+            !documentKind ||
+            documentKind === "image" ||
+            !canEdit
+        ) {
+            return;
+        }
+
+        const editor = editorRef.current;
+        if (!editor) {
+            return;
+        }
+
+        const vimMode = enableMonacoVimMode({
+            editor,
+            statusNode: editorVimStatusRef.current,
+        });
+        editorVimModeRef.current = vimMode;
+
+        return () => {
+            if (editorVimModeRef.current === vimMode) {
+                editorVimModeRef.current = null;
+            }
+            vimMode.dispose();
+        };
+    }, [
+        canEdit,
+        documentKind,
+        editorMountVersion,
+        editorSettings.vimModeEnabled,
+        isInlineReviewActive,
+    ]);
+
+    useEffect(() => {
+        inlineReviewVimModeRef.current?.dispose();
+        inlineReviewVimModeRef.current = null;
+
+        if (
+            !editorSettings.vimModeEnabled ||
+            !isInlineReviewActive ||
+            !canEdit
+        ) {
+            return;
+        }
+
+        const modifiedEditor =
+            diffEditorRef.current?.getModifiedEditor() ?? null;
+        if (!modifiedEditor) {
+            return;
+        }
+
+        const vimMode = enableMonacoVimMode({
+            editor: modifiedEditor,
+            statusNode: inlineReviewVimStatusRef.current,
+        });
+        inlineReviewVimModeRef.current = vimMode;
+
+        return () => {
+            if (inlineReviewVimModeRef.current === vimMode) {
+                inlineReviewVimModeRef.current = null;
+            }
+            vimMode.dispose();
+        };
+    }, [
+        canEdit,
+        diffEditorMountVersion,
+        editorSettings.vimModeEnabled,
+        isInlineReviewActive,
+    ]);
+
+    useEffect(() => {
         const modifiedEditor = diffEditorRef.current?.getModifiedEditor();
         if (!modifiedEditor) {
             inlineReviewDecorationsRef.current?.clear();
@@ -5695,6 +5781,13 @@ function FileTabView({
                             }
                             theme={editorTheme}
                         />
+                        {editorSettings.vimModeEnabled ? (
+                            <div
+                                aria-live="polite"
+                                className="comando-vim-status"
+                                ref={inlineReviewVimStatusRef}
+                            />
+                        ) : null}
                         {inlineReviewHunkActionsEnabled &&
                         !isInlineReviewFindWidgetVisible &&
                         hoveredInlineReviewHunk &&
@@ -5732,7 +5825,9 @@ function FileTabView({
                     </div>
                 ) : null}
                 <div
-                    className={inlineReviewTrackedFile ? "hidden" : "h-full"}
+                    className={
+                        inlineReviewTrackedFile ? "hidden" : "relative h-full"
+                    }
                 >
                     <EditorComponent
                         beforeMount={handleEditorBeforeMount}
@@ -5930,6 +6025,13 @@ function FileTabView({
                         theme={editorTheme}
                         value={tab.draftContent}
                     />
+                    {editorSettings.vimModeEnabled ? (
+                        <div
+                            aria-live="polite"
+                            className="comando-vim-status"
+                            ref={editorVimStatusRef}
+                        />
+                    ) : null}
                 </div>
             </div>
         </div>

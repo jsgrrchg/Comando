@@ -63,6 +63,7 @@ function createSettingsWindowProps(
             lineHeight: 1.55,
             minimapEnabled: true,
             suggestionsEnabled: true,
+            vimModeEnabled: false,
         },
         github: {
             error: null,

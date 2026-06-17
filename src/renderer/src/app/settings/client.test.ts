@@ -25,6 +25,7 @@ function createEditorSettings(
         lineHeight: 1.55,
         minimapEnabled: false,
         suggestionsEnabled: true,
+        vimModeEnabled: false,
         ...overrides,
     };
 }

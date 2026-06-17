@@ -1718,6 +1718,49 @@ button {
     z-index: 8 !important;
 }
 
+.comando-vim-status {
+    position: absolute;
+    right: 10px;
+    bottom: 8px;
+    z-index: 9;
+    max-width: min(420px, calc(100% - 20px));
+    min-height: 20px;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-bg-elevated) 92%, transparent);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+    color: var(--color-text-primary);
+    font-family:
+        "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono",
+        monospace;
+    font-size: 11px;
+    line-height: 18px;
+    padding: 1px 7px;
+    pointer-events: auto;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.comando-vim-status:empty {
+    display: none;
+}
+
+.comando-vim-status input {
+    width: 220px;
+    max-width: 55vw;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+}
+
+.comando-vim-status .vim-notification {
+    margin-left: 6px;
+    color: var(--color-text-secondary);
+}
+
 @keyframes ai-bounce {
     0%,
     60%,

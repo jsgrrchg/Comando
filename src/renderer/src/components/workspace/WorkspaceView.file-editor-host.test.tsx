@@ -432,6 +432,7 @@ vi.mock("@renderer/app/hooks/use-resolved-editor-settings", () => ({
         lineHeight: 1.5,
         minimapEnabled: false,
         suggestionsEnabled: true,
+        vimModeEnabled: false,
     }),
 }));
 

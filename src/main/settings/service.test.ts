@@ -29,6 +29,7 @@ describe("SettingsService", () => {
                 lineHeight: 1.7,
                 minimapEnabled: false,
                 suggestionsEnabled: false,
+                vimModeEnabled: true,
             },
             shellState: {
                 activeSurface: "workspace",
@@ -55,6 +56,7 @@ describe("SettingsService", () => {
                 lineHeight: 1.7,
                 minimapEnabled: false,
                 suggestionsEnabled: false,
+                vimModeEnabled: true,
             },
             shellState: {
                 activeSurface: "workspace",
@@ -79,6 +81,7 @@ describe("SettingsService", () => {
                 "editor.line_height": "??",
                 "editor.minimap_enabled": "??",
                 "editor.suggestions_enabled": "??",
+                "editor.vim_mode_enabled": "??",
                 "terminal.claude_code_continue_session": "??",
                 "terminal.claude_code_max_turns": "5000",
                 "terminal.claude_code_model": "claude-opus-4-7; rm -rf /",
@@ -123,6 +126,7 @@ describe("SettingsService", () => {
                 lineHeight: 1.55,
                 minimapEnabled: true,
                 suggestionsEnabled: true,
+                vimModeEnabled: false,
             },
             shellState: null,
             terminal: {
@@ -563,6 +567,7 @@ describe("SettingsService", () => {
                 lineHeight: 1.55,
                 minimapEnabled: true,
                 suggestionsEnabled: true,
+                vimModeEnabled: false,
             },
             shellState: null,
         });

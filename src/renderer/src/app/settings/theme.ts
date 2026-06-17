@@ -1769,6 +1769,7 @@ export function getDefaultAppEditorSettings(): AppEditorSettings {
         lineHeight: 1.55,
         minimapEnabled: true,
         suggestionsEnabled: true,
+        vimModeEnabled: false,
     };
 }
 
@@ -1844,6 +1845,7 @@ export function resolveEditorSettings(
         minimapEnabled: appEditor?.minimapEnabled ?? defaults.minimapEnabled,
         suggestionsEnabled:
             appEditor?.suggestionsEnabled ?? defaults.suggestionsEnabled,
+        vimModeEnabled: appEditor?.vimModeEnabled ?? defaults.vimModeEnabled,
     };
 }
 

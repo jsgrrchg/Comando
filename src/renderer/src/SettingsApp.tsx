@@ -555,6 +555,16 @@ export function SettingsApp() {
         void saveAppEditorSettings(nextEditor);
     };
 
+    const handleAppEditorVimModeEnabledChange = (vimModeEnabled: boolean) => {
+        const nextEditor: AppEditorSettings = {
+            ...appEditor,
+            vimModeEnabled,
+        };
+
+        setAppEditor(nextEditor);
+        void saveAppEditorSettings(nextEditor);
+    };
+
     const updateAiChat = (patch: Partial<AppAiChatSettings>) => {
         const next: AppAiChatSettings = { ...aiChat, ...patch };
         setAiChat(next);
@@ -869,6 +879,7 @@ export function SettingsApp() {
                 lineHeight: appEditor.lineHeight,
                 minimapEnabled: appEditor.minimapEnabled,
                 suggestionsEnabled: appEditor.suggestionsEnabled,
+                vimModeEnabled: appEditor.vimModeEnabled,
                 onAutoSaveDelayMsChange: handleAppEditorAutoSaveDelayMsChange,
                 onFontFamilyChange: handleAppEditorFontFamilyChange,
                 onFontSizeChange: handleAppEditorFontSizeChange,
@@ -876,6 +887,7 @@ export function SettingsApp() {
                 onMinimapEnabledChange: handleAppEditorMinimapEnabledChange,
                 onSuggestionsEnabledChange:
                     handleAppEditorSuggestionsEnabledChange,
+                onVimModeEnabledChange: handleAppEditorVimModeEnabledChange,
             }}
             terminal={{
                 claudeCodeAvailable: null,

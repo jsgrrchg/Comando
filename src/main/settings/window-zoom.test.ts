@@ -44,6 +44,7 @@ describe("broadcastSettingsUpdated", () => {
                 lineHeight: 1.55,
                 minimapEnabled: true,
                 suggestionsEnabled: true,
+                vimModeEnabled: false,
             },
             {
                 chatFontFamily: "andale",
@@ -89,6 +90,7 @@ describe("broadcastSettingsUpdated", () => {
                 lineHeight: 1.55,
                 minimapEnabled: true,
                 suggestionsEnabled: true,
+                vimModeEnabled: false,
             },
             terminal: DEFAULT_APP_TERMINAL_SETTINGS,
         });

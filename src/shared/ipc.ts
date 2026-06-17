@@ -248,6 +248,7 @@ export interface AppEditorSettings {
     readonly lineHeight: number;
     readonly minimapEnabled: boolean;
     readonly suggestionsEnabled: boolean;
+    readonly vimModeEnabled: boolean;
 }
 
 export interface ProjectEditorSettings {
