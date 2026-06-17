@@ -543,6 +543,18 @@ export function SettingsApp() {
         void saveAppEditorSettings(nextEditor);
     };
 
+    const handleAppEditorRelativeLineNumbersEnabledChange = (
+        relativeLineNumbersEnabled: boolean,
+    ) => {
+        const nextEditor: AppEditorSettings = {
+            ...appEditor,
+            relativeLineNumbersEnabled,
+        };
+
+        setAppEditor(nextEditor);
+        void saveAppEditorSettings(nextEditor);
+    };
+
     const handleAppEditorSuggestionsEnabledChange = (
         suggestionsEnabled: boolean,
     ) => {
@@ -878,6 +890,8 @@ export function SettingsApp() {
                 fontSize: appEditor.fontSize,
                 lineHeight: appEditor.lineHeight,
                 minimapEnabled: appEditor.minimapEnabled,
+                relativeLineNumbersEnabled:
+                    appEditor.relativeLineNumbersEnabled,
                 suggestionsEnabled: appEditor.suggestionsEnabled,
                 vimModeEnabled: appEditor.vimModeEnabled,
                 onAutoSaveDelayMsChange: handleAppEditorAutoSaveDelayMsChange,
@@ -885,6 +899,8 @@ export function SettingsApp() {
                 onFontSizeChange: handleAppEditorFontSizeChange,
                 onLineHeightChange: handleAppEditorLineHeightChange,
                 onMinimapEnabledChange: handleAppEditorMinimapEnabledChange,
+                onRelativeLineNumbersEnabledChange:
+                    handleAppEditorRelativeLineNumbersEnabledChange,
                 onSuggestionsEnabledChange:
                     handleAppEditorSuggestionsEnabledChange,
                 onVimModeEnabledChange: handleAppEditorVimModeEnabledChange,

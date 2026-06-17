@@ -171,6 +171,8 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Line height multiplier for the editor.",
         "Minimap",
         "Show Monaco code minimap on the side of the editor.",
+        "Relative line numbers",
+        "Show line numbers as distance from the cursor.",
         "Autocomplete suggestions",
         "Show Monaco suggestions automatically while typing trigger manually.",
         "Vim mode",
@@ -1949,6 +1951,12 @@ function EditorContent({
         ["Line spacing", "Line height multiplier for the editor."],
         ["Minimap", "Show Monaco's code minimap on the side of the editor."],
         [
+            "Relative line numbers",
+            "Show line numbers as distance from the cursor.",
+            "vim motions",
+            "5j 3k",
+        ],
+        [
             "Autocomplete suggestions",
             "Show Monaco suggestions automatically while typing. You can still trigger them manually.",
         ],
@@ -2043,6 +2051,21 @@ function EditorContent({
                     <Toggle
                         value={state.minimapEnabled}
                         onChange={(v) => state.onMinimapEnabledChange?.(v)}
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
+                label="Relative line numbers"
+                description="Show line numbers as distance from the cursor."
+                keywords={["vim motions", "5j 3k"]}
+                control={
+                    <Toggle
+                        value={state.relativeLineNumbersEnabled}
+                        onChange={(v) =>
+                            state.onRelativeLineNumbersEnabledChange?.(v)
+                        }
                     />
                 }
             />

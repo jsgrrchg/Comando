@@ -5184,6 +5184,8 @@ function FileTabView({
     const editorLineHeightPx = Math.round(
         editorSettings.fontSize * editorSettings.lineHeight,
     );
+    const editorLineNumbers: MonacoEditor.LineNumbersType =
+        editorSettings.relativeLineNumbersEnabled ? "relative" : "on";
     const inlineReviewWordWrap =
         document && shouldEnableDocumentWrapping(document) ? "on" : "off";
     const inlineReviewDiffEditorOptions = useMemo(
@@ -5192,6 +5194,7 @@ function FileTabView({
                 fontFamily: editorFontFamily,
                 fontSize: editorSettings.fontSize,
                 lineHeight: editorLineHeightPx,
+                lineNumbers: editorLineNumbers,
                 minimapEnabled: editorSettings.minimapEnabled,
                 modifiedLineCount: countTextLines(
                     inlineReviewTrackedFile?.newText ?? "",
@@ -5204,6 +5207,7 @@ function FileTabView({
         [
             editorFontFamily,
             editorLineHeightPx,
+            editorLineNumbers,
             editorSettings.fontSize,
             editorSettings.minimapEnabled,
             inlineReviewTrackedFile?.newText,
@@ -5336,6 +5340,7 @@ function FileTabView({
             fontSize: editorSettings.fontSize,
             lineHeight: editorLineHeightPx,
             lineDecorationsWidth: 0,
+            lineNumbers: editorLineNumbers,
             lineNumbersMinChars: shouldShowGitGutter
                 ? gitGutterLineNumbersMinChars
                 : 4,
@@ -5366,6 +5371,7 @@ function FileTabView({
         document,
         editorFontFamily,
         editorLineHeightPx,
+        editorLineNumbers,
         editorSettings.fontSize,
         editorSettings.minimapEnabled,
         gitGutterLineNumbersMinChars,
@@ -5386,6 +5392,7 @@ function FileTabView({
             fontFamily: editorFontFamily,
             fontSize: editorSettings.fontSize,
             lineHeight: editorLineHeightPx,
+            lineNumbers: editorLineNumbers,
             minimap: {
                 enabled: editorSettings.minimapEnabled,
             },
@@ -5401,6 +5408,7 @@ function FileTabView({
         document,
         editorFontFamily,
         editorLineHeightPx,
+        editorLineNumbers,
         editorSettings.fontSize,
         editorSettings.minimapEnabled,
     ]);
@@ -5982,6 +5990,7 @@ function FileTabView({
                             glyphMargin: false,
                             lineHeight: editorLineHeightPx,
                             lineDecorationsWidth: 0,
+                            lineNumbers: editorLineNumbers,
                             lineNumbersMinChars: shouldShowGitGutter
                                 ? gitGutterLineNumbersMinChars
                                 : 4,
