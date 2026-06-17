@@ -1768,7 +1768,9 @@ export function getDefaultAppEditorSettings(): AppEditorSettings {
         fontSize: DEFAULT_EDITOR_FONT_SIZE,
         lineHeight: 1.55,
         minimapEnabled: true,
+        relativeLineNumbersEnabled: false,
         suggestionsEnabled: true,
+        vimModeEnabled: false,
     };
 }
 
@@ -1842,8 +1844,12 @@ export function resolveEditorSettings(
         fontSize: appEditor?.fontSize ?? defaults.fontSize,
         lineHeight: appEditor?.lineHeight ?? defaults.lineHeight,
         minimapEnabled: appEditor?.minimapEnabled ?? defaults.minimapEnabled,
+        relativeLineNumbersEnabled:
+            appEditor?.relativeLineNumbersEnabled ??
+            defaults.relativeLineNumbersEnabled,
         suggestionsEnabled:
             appEditor?.suggestionsEnabled ?? defaults.suggestionsEnabled,
+        vimModeEnabled: appEditor?.vimModeEnabled ?? defaults.vimModeEnabled,
     };
 }
 

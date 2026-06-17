@@ -102,7 +102,10 @@ const APP_EDITOR_FONT_SIZE_KEY = "editor.font_size";
 const APP_EDITOR_LINE_HEIGHT_KEY = "editor.line_height";
 const APP_EDITOR_AUTOSAVE_DELAY_MS_KEY = "editor.autosave_delay_ms";
 const APP_EDITOR_MINIMAP_ENABLED_KEY = "editor.minimap_enabled";
+const APP_EDITOR_RELATIVE_LINE_NUMBERS_ENABLED_KEY =
+    "editor.relative_line_numbers_enabled";
 const APP_EDITOR_SUGGESTIONS_ENABLED_KEY = "editor.suggestions_enabled";
+const APP_EDITOR_VIM_MODE_ENABLED_KEY = "editor.vim_mode_enabled";
 const APP_TERMINAL_FONT_FAMILY_KEY = "terminal.font_family";
 const APP_TERMINAL_FONT_SIZE_KEY = "terminal.font_size";
 const APP_TERMINAL_WINDOWS_SHELL_KEY = "terminal.windows_shell";
@@ -163,7 +166,9 @@ const DEFAULT_STICKY_FOLDERS_ENABLED = true;
 const DEFAULT_EDITOR_LINE_HEIGHT = 1.55;
 const DEFAULT_EDITOR_AUTOSAVE_DELAY_MS = EDITOR_AUTOSAVE_DELAY_MS_DEFAULT;
 const DEFAULT_EDITOR_MINIMAP_ENABLED = true;
+const DEFAULT_EDITOR_RELATIVE_LINE_NUMBERS_ENABLED = false;
 const DEFAULT_EDITOR_SUGGESTIONS_ENABLED = true;
+const DEFAULT_EDITOR_VIM_MODE_ENABLED = false;
 
 const VALID_THEME_MODES = new Set<ThemeMode>(["system", "light", "dark"]);
 const VALID_THEME_PRESETS = new Set<ThemePreset>([
@@ -415,8 +420,17 @@ export class SettingsService {
             minimapEnabled: this.#normalizeEditorMinimapEnabled(
                 this.#loadBooleanSetting(APP_EDITOR_MINIMAP_ENABLED_KEY),
             ),
+            relativeLineNumbersEnabled:
+                this.#normalizeEditorRelativeLineNumbersEnabled(
+                    this.#loadBooleanSetting(
+                        APP_EDITOR_RELATIVE_LINE_NUMBERS_ENABLED_KEY,
+                    ),
+                ),
             suggestionsEnabled: this.#normalizeEditorSuggestionsEnabled(
                 this.#loadBooleanSetting(APP_EDITOR_SUGGESTIONS_ENABLED_KEY),
+            ),
+            vimModeEnabled: this.#normalizeEditorVimModeEnabled(
+                this.#loadBooleanSetting(APP_EDITOR_VIM_MODE_ENABLED_KEY),
             ),
         };
     }
@@ -445,10 +459,20 @@ export class SettingsService {
             this.#normalizeEditorMinimapEnabled(settings.minimapEnabled),
         );
         this.#saveBooleanSetting(
+            APP_EDITOR_RELATIVE_LINE_NUMBERS_ENABLED_KEY,
+            this.#normalizeEditorRelativeLineNumbersEnabled(
+                settings.relativeLineNumbersEnabled,
+            ),
+        );
+        this.#saveBooleanSetting(
             APP_EDITOR_SUGGESTIONS_ENABLED_KEY,
             this.#normalizeEditorSuggestionsEnabled(
                 settings.suggestionsEnabled,
             ),
+        );
+        this.#saveBooleanSetting(
+            APP_EDITOR_VIM_MODE_ENABLED_KEY,
+            this.#normalizeEditorVimModeEnabled(settings.vimModeEnabled),
         );
     }
 
@@ -1074,6 +1098,26 @@ export class SettingsService {
     ): boolean {
         if (typeof value !== "boolean") {
             return DEFAULT_EDITOR_SUGGESTIONS_ENABLED;
+        }
+
+        return value;
+    }
+
+    #normalizeEditorRelativeLineNumbersEnabled(
+        value: boolean | null | undefined,
+    ): boolean {
+        if (typeof value !== "boolean") {
+            return DEFAULT_EDITOR_RELATIVE_LINE_NUMBERS_ENABLED;
+        }
+
+        return value;
+    }
+
+    #normalizeEditorVimModeEnabled(
+        value: boolean | null | undefined,
+    ): boolean {
+        if (typeof value !== "boolean") {
+            return DEFAULT_EDITOR_VIM_MODE_ENABLED;
         }
 
         return value;

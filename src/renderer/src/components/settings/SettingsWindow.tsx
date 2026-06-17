@@ -171,8 +171,13 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Line height multiplier for the editor.",
         "Minimap",
         "Show Monaco code minimap on the side of the editor.",
+        "Relative line numbers",
+        "Show line numbers as distance from the cursor.",
         "Autocomplete suggestions",
         "Show Monaco suggestions automatically while typing trigger manually.",
+        "Vim mode",
+        "Use Vim keybindings in Monaco editors.",
+        "modal editing",
     ],
     terminal: [
         "Terminal",
@@ -1946,8 +1951,20 @@ function EditorContent({
         ["Line spacing", "Line height multiplier for the editor."],
         ["Minimap", "Show Monaco's code minimap on the side of the editor."],
         [
+            "Relative line numbers",
+            "Show line numbers as distance from the cursor.",
+            "vim motions",
+            "5j 3k",
+        ],
+        [
             "Autocomplete suggestions",
             "Show Monaco suggestions automatically while typing. You can still trigger them manually.",
+        ],
+        [
+            "Vim mode",
+            "Use Vim keybindings in Monaco editors. Disabled by default.",
+            "modal editing",
+            "normal insert visual command",
         ],
     ]);
 
@@ -2040,12 +2057,40 @@ function EditorContent({
             <SearchableRow
                 searchQuery={searchQuery}
                 section="Typography"
+                label="Relative line numbers"
+                description="Show line numbers as distance from the cursor."
+                keywords={["vim motions", "5j 3k"]}
+                control={
+                    <Toggle
+                        value={state.relativeLineNumbersEnabled}
+                        onChange={(v) =>
+                            state.onRelativeLineNumbersEnabledChange?.(v)
+                        }
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
                 label="Autocomplete suggestions"
                 description="Show Monaco suggestions automatically while typing. You can still trigger them manually."
                 control={
                     <Toggle
                         value={state.suggestionsEnabled}
                         onChange={(v) => state.onSuggestionsEnabledChange?.(v)}
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Typography"
+                label="Vim mode"
+                description="Use Vim keybindings in Monaco editors. Disabled by default."
+                keywords={["modal editing", "normal insert visual command"]}
+                control={
+                    <Toggle
+                        value={state.vimModeEnabled}
+                        onChange={(v) => state.onVimModeEnabledChange?.(v)}
                     />
                 }
             />

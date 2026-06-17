@@ -55,14 +55,18 @@ export interface SettingsEditorControlState {
     readonly fontSize: number;
     readonly lineHeight: number;
     readonly minimapEnabled: boolean;
+    readonly relativeLineNumbersEnabled: boolean;
     readonly suggestionsEnabled: boolean;
+    readonly vimModeEnabled: boolean;
     readonly disabled?: boolean;
     readonly onAutoSaveDelayMsChange?: (autoSaveDelayMs: number) => void;
     readonly onFontFamilyChange?: (fontFamilyId: string) => void;
     readonly onFontSizeChange?: (fontSize: number) => void;
     readonly onLineHeightChange?: (lineHeight: number) => void;
     readonly onMinimapEnabledChange?: (enabled: boolean) => void;
+    readonly onRelativeLineNumbersEnabledChange?: (enabled: boolean) => void;
     readonly onSuggestionsEnabledChange?: (enabled: boolean) => void;
+    readonly onVimModeEnabledChange?: (enabled: boolean) => void;
 }
 
 export interface SettingsTerminalState {

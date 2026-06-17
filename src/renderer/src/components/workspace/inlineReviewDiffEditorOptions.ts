@@ -4,6 +4,7 @@ interface BuildInlineReviewDiffEditorOptionsInput {
     readonly fontFamily: string;
     readonly fontSize: number;
     readonly lineHeight: number;
+    readonly lineNumbers: MonacoEditor.LineNumbersType;
     readonly minimapEnabled: boolean;
     readonly modifiedLineCount: number;
     readonly originalLineCount: number;
@@ -36,6 +37,7 @@ export function buildInlineReviewDiffEditorOptions({
     fontFamily,
     fontSize,
     lineHeight,
+    lineNumbers,
     minimapEnabled,
     modifiedLineCount,
     originalLineCount,
@@ -59,6 +61,7 @@ export function buildInlineReviewDiffEditorOptions({
         },
         lineDecorationsWidth: 12,
         lineHeight,
+        lineNumbers,
         lineNumbersMinChars: getInlineReviewLineNumbersMinChars({
             modifiedLineCount,
             originalLineCount,

@@ -8,6 +8,7 @@ describe("buildInlineReviewDiffEditorOptions", () => {
             fontFamily: "var(--font-mono)",
             fontSize: 13,
             lineHeight: 20,
+            lineNumbers: "on",
             minimapEnabled: true,
             modifiedLineCount: 214,
             originalLineCount: 219,
@@ -32,6 +33,7 @@ describe("buildInlineReviewDiffEditorOptions", () => {
             fontFamily: "var(--font-mono)",
             fontSize: 13,
             lineHeight: 20,
+            lineNumbers: "relative",
             minimapEnabled: false,
             modifiedLineCount: 12034,
             originalLineCount: 9876,
@@ -39,6 +41,7 @@ describe("buildInlineReviewDiffEditorOptions", () => {
         });
 
         expect(options.lineNumbersMinChars).toBe(5);
+        expect(options.lineNumbers).toBe("relative");
         expect(options.minimap?.enabled).toBe(false);
     });
 });

@@ -543,12 +543,34 @@ export function SettingsApp() {
         void saveAppEditorSettings(nextEditor);
     };
 
+    const handleAppEditorRelativeLineNumbersEnabledChange = (
+        relativeLineNumbersEnabled: boolean,
+    ) => {
+        const nextEditor: AppEditorSettings = {
+            ...appEditor,
+            relativeLineNumbersEnabled,
+        };
+
+        setAppEditor(nextEditor);
+        void saveAppEditorSettings(nextEditor);
+    };
+
     const handleAppEditorSuggestionsEnabledChange = (
         suggestionsEnabled: boolean,
     ) => {
         const nextEditor: AppEditorSettings = {
             ...appEditor,
             suggestionsEnabled,
+        };
+
+        setAppEditor(nextEditor);
+        void saveAppEditorSettings(nextEditor);
+    };
+
+    const handleAppEditorVimModeEnabledChange = (vimModeEnabled: boolean) => {
+        const nextEditor: AppEditorSettings = {
+            ...appEditor,
+            vimModeEnabled,
         };
 
         setAppEditor(nextEditor);
@@ -868,14 +890,20 @@ export function SettingsApp() {
                 fontSize: appEditor.fontSize,
                 lineHeight: appEditor.lineHeight,
                 minimapEnabled: appEditor.minimapEnabled,
+                relativeLineNumbersEnabled:
+                    appEditor.relativeLineNumbersEnabled,
                 suggestionsEnabled: appEditor.suggestionsEnabled,
+                vimModeEnabled: appEditor.vimModeEnabled,
                 onAutoSaveDelayMsChange: handleAppEditorAutoSaveDelayMsChange,
                 onFontFamilyChange: handleAppEditorFontFamilyChange,
                 onFontSizeChange: handleAppEditorFontSizeChange,
                 onLineHeightChange: handleAppEditorLineHeightChange,
                 onMinimapEnabledChange: handleAppEditorMinimapEnabledChange,
+                onRelativeLineNumbersEnabledChange:
+                    handleAppEditorRelativeLineNumbersEnabledChange,
                 onSuggestionsEnabledChange:
                     handleAppEditorSuggestionsEnabledChange,
+                onVimModeEnabledChange: handleAppEditorVimModeEnabledChange,
             }}
             terminal={{
                 claudeCodeAvailable: null,
