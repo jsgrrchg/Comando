@@ -214,48 +214,6 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
         () => buildChatFontFamily(aiChatSettings.chatFontFamily),
         [aiChatSettings.chatFontFamily],
     );
-    const projectFileRoots = useMemo(() => {
-        const activeWorktreeRootPath = tab.worktreeId
-            ? (gitSnapshot?.worktrees.find(
-                  (worktree) => worktree.id === tab.worktreeId,
-              )?.rootPath ?? null)
-            : (gitSnapshot?.worktrees.find((worktree) => worktree.isCurrent)
-                  ?.rootPath ??
-              gitSnapshot?.worktrees.find((worktree) => worktree.isPrimary)
-                  ?.rootPath ??
-              null);
-
-        return collectProjectFileRoots({
-            canonicalProjectRoot: projectSummary?.canonicalRootPath,
-            currentWorktreeRoot: activeWorktreeRootPath,
-            projectRoot: projectSummary?.rootPath,
-            repositoryCanonicalRoot: gitSnapshot?.canonicalRootPath,
-            repositoryRoot: gitSnapshot?.rootPath,
-        });
-    }, [
-        gitSnapshot?.canonicalRootPath,
-        gitSnapshot?.rootPath,
-        gitSnapshot?.worktrees,
-        projectSummary?.canonicalRootPath,
-        projectSummary?.rootPath,
-        tab.worktreeId,
-    ]);
-    const resolveChatFileReference = useCallback(
-        (reference: string): ResolvedProjectFileReference | null => {
-            if (!tab.projectId || projectFileRoots.length === 0) {
-                return null;
-            }
-
-            return resolveProjectFileReference(reference, {
-                projectRoots: projectFileRoots,
-            });
-        },
-        [projectFileRoots, tab.projectId],
-    );
-    const canRenderFileReference = useFileReferenceValidator(
-        tab.projectId ?? null,
-        tab.worktreeId ?? null,
-    );
     const handleOpenFile = useCallback(
         async (
             projectId: string,
@@ -275,24 +233,6 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
             );
         },
         [openFileTab],
-    );
-    const handleOpenResolvedFileReference = useCallback(
-        (reference: ResolvedProjectFileReference) => {
-            if (!tab.projectId) {
-                return;
-            }
-
-            void openFileTab(
-                tab.projectId,
-                reference.relativePath,
-                tab.worktreeId ?? null,
-                null,
-                undefined,
-                undefined,
-                getOpenLocationFromResolvedFileReference(reference),
-            );
-        },
-        [openFileTab, tab.projectId, tab.worktreeId],
     );
     const handleOpenImage = useCallback(
         async (attachment: AiImageAttachment) => {
@@ -425,6 +365,68 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
     const selectedSession =
         sessions.find((session) => session.sessionId === selectedSessionId) ??
         null;
+    const selectedSessionWorktreeId =
+        selectedSession?.worktreeId ?? tab.worktreeId ?? null;
+    const transcriptProjectFileRoots = useMemo(() => {
+        const activeWorktreeRootPath = selectedSessionWorktreeId
+            ? (gitSnapshot?.worktrees.find(
+                  (worktree) => worktree.id === selectedSessionWorktreeId,
+              )?.rootPath ?? null)
+            : (gitSnapshot?.worktrees.find((worktree) => worktree.isCurrent)
+                  ?.rootPath ??
+              gitSnapshot?.worktrees.find((worktree) => worktree.isPrimary)
+                  ?.rootPath ??
+              null);
+
+        return collectProjectFileRoots({
+            canonicalProjectRoot: projectSummary?.canonicalRootPath,
+            currentWorktreeRoot: activeWorktreeRootPath,
+            projectRoot: projectSummary?.rootPath,
+            repositoryCanonicalRoot: gitSnapshot?.canonicalRootPath,
+            repositoryRoot: gitSnapshot?.rootPath,
+        });
+    }, [
+        gitSnapshot?.canonicalRootPath,
+        gitSnapshot?.rootPath,
+        gitSnapshot?.worktrees,
+        projectSummary?.canonicalRootPath,
+        projectSummary?.rootPath,
+        selectedSessionWorktreeId,
+    ]);
+    const resolveChatFileReference = useCallback(
+        (reference: string): ResolvedProjectFileReference | null => {
+            if (!tab.projectId || transcriptProjectFileRoots.length === 0) {
+                return null;
+            }
+
+            return resolveProjectFileReference(reference, {
+                projectRoots: transcriptProjectFileRoots,
+            });
+        },
+        [tab.projectId, transcriptProjectFileRoots],
+    );
+    const canRenderFileReference = useFileReferenceValidator(
+        tab.projectId ?? null,
+        selectedSessionWorktreeId,
+    );
+    const handleOpenResolvedFileReference = useCallback(
+        (reference: ResolvedProjectFileReference) => {
+            if (!tab.projectId) {
+                return;
+            }
+
+            void openFileTab(
+                tab.projectId,
+                reference.relativePath,
+                selectedSessionWorktreeId,
+                null,
+                undefined,
+                undefined,
+                getOpenLocationFromResolvedFileReference(reference),
+            );
+        },
+        [openFileTab, selectedSessionWorktreeId, tab.projectId],
+    );
     const selectedTranscript = selectedSessionId
         ? (transcriptsBySessionId[selectedSessionId] ?? null)
         : null;
