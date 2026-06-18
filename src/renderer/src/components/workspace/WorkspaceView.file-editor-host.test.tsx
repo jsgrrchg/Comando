@@ -1025,6 +1025,129 @@ describe("WorkspaceFileEditorHost", () => {
         ).toHaveBeenCalledWith("file-1", null);
     });
 
+    it("applies a pending file open range to the inline review modified editor", async () => {
+        const tab = {
+            ...createFileTab("file-1"),
+            pendingOpenLocation: {
+                endLine: 3,
+                startLine: 2,
+            },
+        } satisfies RuntimeWorkspaceFileTab;
+        mockAiStoreState.current.sessions = {
+            "session-1": {
+                snapshot: {
+                    trackedFiles: [createTrackedFileUpdate()],
+                },
+            },
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tab,
+                    fileTabs: [tab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const normalEditor = monacoHarness.codeEditors.find((editor) =>
+            editor.name.startsWith("editor-"),
+        );
+        const diffEditor = monacoHarness.diffEditors[0];
+        expect(diffEditor).toBeDefined();
+        if (!diffEditor) {
+            throw new Error("Expected inline review diff editor to mount.");
+        }
+
+        const modifiedEditor = diffEditor.getModifiedEditor();
+        const expectedSelection = {
+            endColumn: modifiedEditor.getModel()?.getLineMaxColumn(3) ?? 1,
+            endLineNumber: 3,
+            selectionStartColumn: 1,
+            selectionStartLineNumber: 2,
+            startColumn: 1,
+            startLineNumber: 2,
+        };
+        expect(modifiedEditor.setSelection).toHaveBeenCalledWith(
+            expectedSelection,
+        );
+        expect(modifiedEditor.revealRangeInCenter).toHaveBeenCalledWith(
+            expectedSelection,
+        );
+        expect(normalEditor?.setSelection).not.toHaveBeenCalled();
+        expect(
+            mockWorkspaceStoreState.current.updateFilePendingOpenLocation,
+        ).toHaveBeenCalledWith("file-1", null);
+    });
+
+    it("applies a pending file open range that arrives after inline review mounts", async () => {
+        const tab = createFileTab("file-1");
+        mockAiStoreState.current.sessions = {
+            "session-1": {
+                snapshot: {
+                    trackedFiles: [createTrackedFileUpdate()],
+                },
+            },
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tab,
+                    fileTabs: [tab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const diffEditor = monacoHarness.diffEditors[0];
+        expect(diffEditor).toBeDefined();
+        if (!diffEditor) {
+            throw new Error("Expected inline review diff editor to mount.");
+        }
+        const modifiedEditor = diffEditor.getModifiedEditor();
+        vi.mocked(modifiedEditor.setSelection).mockClear();
+        vi.mocked(modifiedEditor.revealRangeInCenter).mockClear();
+        mockWorkspaceStoreState.current.updateFilePendingOpenLocation.mockClear();
+
+        const tabWithPendingLocation = {
+            ...tab,
+            pendingOpenLocation: {
+                endLine: 3,
+                startLine: 2,
+            },
+        } satisfies RuntimeWorkspaceFileTab;
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tabWithPendingLocation,
+                    fileTabs: [tabWithPendingLocation],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const expectedSelection = {
+            endColumn: modifiedEditor.getModel()?.getLineMaxColumn(3) ?? 1,
+            endLineNumber: 3,
+            selectionStartColumn: 1,
+            selectionStartLineNumber: 2,
+            startColumn: 1,
+            startLineNumber: 2,
+        };
+        expect(modifiedEditor.setSelection).toHaveBeenCalledWith(
+            expectedSelection,
+        );
+        expect(modifiedEditor.revealRangeInCenter).toHaveBeenCalledWith(
+            expectedSelection,
+        );
+        expect(
+            mockWorkspaceStoreState.current.updateFilePendingOpenLocation,
+        ).toHaveBeenCalledWith("file-1", null);
+    });
+
     it("mounts inline review diff models without unmounting the normal file editor", async () => {
         const fileTab = createFileTab("file-1");
         mockAiStoreState.current.sessions = {

@@ -506,6 +506,21 @@ function applyEditorOpenLocation(
     return true;
 }
 
+function applyInlineReviewOpenLocation(
+    diffEditor: MonacoEditor.IStandaloneDiffEditor,
+    location: RuntimeWorkspaceFileOpenLocation,
+): boolean {
+    const modifiedEditor = diffEditor.getModifiedEditor();
+    if (!applyEditorOpenLocation(modifiedEditor, location)) {
+        return false;
+    }
+
+    const originalEditor = diffEditor.getOriginalEditor();
+    originalEditor.setScrollLeft(modifiedEditor.getScrollLeft());
+    originalEditor.setScrollTop(modifiedEditor.getScrollTop());
+    return true;
+}
+
 function isMonacoCancellationError(error: unknown): boolean {
     return error instanceof Error && error.message.includes("Canceled");
 }
@@ -4995,6 +5010,29 @@ function FileTabView({
         [clearInlineReviewScrollRestore],
     );
 
+    const consumePendingInlineReviewOpenLocation = useCallback(
+        (diffEditor: MonacoEditor.IStandaloneDiffEditor): boolean => {
+            const pendingOpenLocation = tab.pendingOpenLocation ?? null;
+            if (!pendingOpenLocation) {
+                return false;
+            }
+
+            if (!applyInlineReviewOpenLocation(diffEditor, pendingOpenLocation)) {
+                return false;
+            }
+
+            pendingEditorViewStateTabIdRef.current = tab.id;
+            pendingEditorViewStateRef.current = diffEditor
+                .getModifiedEditor()
+                .saveViewState();
+            inlineReviewScrollStateRef.current =
+                captureDiffEditorScrollState(diffEditor);
+            updateFilePendingOpenLocation(tab.id, null);
+            return true;
+        },
+        [tab.id, tab.pendingOpenLocation, updateFilePendingOpenLocation],
+    );
+
     const applyInlineReviewModels = useCallback(
         (trackedFile: AiTrackedFile | null) => {
             if (
@@ -5007,7 +5045,8 @@ function FileTabView({
                 return;
             }
 
-            const installedModels = diffEditorRef.current.getModel();
+            const diffEditor = diffEditorRef.current;
+            const installedModels = diffEditor.getModel();
             const currentReviewModels = inlineReviewCurrentModelsRef.current;
             if (
                 currentReviewModels.revision ===
@@ -5019,10 +5058,10 @@ function FileTabView({
                 installedModels?.original === currentReviewModels.original &&
                 installedModels?.modified === currentReviewModels.modified
             ) {
+                consumePendingInlineReviewOpenLocation(diffEditor);
                 return;
             }
 
-            const diffEditor = diffEditorRef.current;
             const monaco = inlineReviewMonacoRef.current;
             const previousModels = diffEditor.getModel();
             const currentInlineReviewRestoreState =
@@ -5078,7 +5117,9 @@ function FileTabView({
                     modified: nextModifiedModel,
                     original: nextOriginalModel,
                 };
-                if (currentInlineReviewRestoreState) {
+                if (consumePendingInlineReviewOpenLocation(diffEditor)) {
+                    // Explicit file reference navigation wins over review view state.
+                } else if (currentInlineReviewRestoreState) {
                     restorePortableInlineReviewState(
                         diffEditor,
                         currentInlineReviewRestoreState,
@@ -5125,6 +5166,7 @@ function FileTabView({
             document,
             inlineReviewModelRevision,
             monacoLanguageId,
+            consumePendingInlineReviewOpenLocation,
             restoreInlineReviewScrollState,
             restoreInlineReviewViewState,
             restorePortableInlineReviewState,
@@ -5982,7 +6024,10 @@ function FileTabView({
                                 );
                                 pendingInlineReviewRestoreStateRef.current =
                                     null;
-                            } else if (consumePendingOpenLocation(editor)) {
+                            } else if (
+                                !inlineReviewTrackedFile &&
+                                consumePendingOpenLocation(editor)
+                            ) {
                                 // The explicit location intent wins over saved view state.
                             } else {
                                 const persistedViewState =
