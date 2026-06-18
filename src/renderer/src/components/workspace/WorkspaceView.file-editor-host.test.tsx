@@ -973,6 +973,58 @@ describe("WorkspaceFileEditorHost", () => {
         ).toHaveBeenCalledWith("file-1", null);
     });
 
+    it("applies a pending file open location that arrives after mount", async () => {
+        const tab = createFileTab(
+            "file-1",
+            "src/app.ts",
+            ["one", "two", "three", ""].join("\n"),
+        );
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tab,
+                    fileTabs: [tab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const editor = monacoHarness.codeEditors[0];
+        expect(editor?.setPosition).not.toHaveBeenCalledWith({
+            column: 1,
+            lineNumber: 3,
+        });
+        mockWorkspaceStoreState.current.updateFilePendingOpenLocation.mockClear();
+
+        const tabWithPendingLocation = {
+            ...tab,
+            pendingOpenLocation: {
+                endLine: null,
+                startLine: 3,
+            },
+        } satisfies RuntimeWorkspaceFileTab;
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tabWithPendingLocation,
+                    fileTabs: [tabWithPendingLocation],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(editor?.setPosition).toHaveBeenCalledWith({
+            column: 1,
+            lineNumber: 3,
+        });
+        expect(editor?.revealLineInCenter).toHaveBeenCalledWith(3);
+        expect(
+            mockWorkspaceStoreState.current.updateFilePendingOpenLocation,
+        ).toHaveBeenCalledWith("file-1", null);
+    });
+
     it("mounts inline review diff models without unmounting the normal file editor", async () => {
         const fileTab = createFileTab("file-1");
         mockAiStoreState.current.sessions = {
