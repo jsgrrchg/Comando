@@ -28,9 +28,14 @@ import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { getGitContextKey } from "@renderer/app/git/context-key";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useGitStore } from "@renderer/app/store/git-store";
+import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexStore";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
-import type { RuntimeWorkspaceChatHistoryTab } from "@renderer/app/workspace/tree";
+import type {
+    RuntimeWorkspaceChatHistoryTab,
+    RuntimeWorkspaceFileOpenLocation,
+    RuntimeWorkspaceFileReviewContext,
+} from "@renderer/app/workspace/tree";
 
 import {
     IdeActionButton,
@@ -75,6 +80,19 @@ const MIN_HISTORY_SIDEBAR_WIDTH = 200;
 const MAX_HISTORY_SIDEBAR_WIDTH = 520;
 const MIN_HISTORY_DETAIL_PANE_WIDTH = 360;
 
+function getOpenLocationFromResolvedFileReference(
+    reference: ResolvedProjectFileReference,
+): RuntimeWorkspaceFileOpenLocation | null {
+    if (reference.startLine === null) {
+        return null;
+    }
+
+    return {
+        endLine: reference.endLine,
+        startLine: reference.startLine,
+    };
+}
+
 interface ChatHistoryTabViewProps {
     readonly tab: RuntimeWorkspaceChatHistoryTab;
 }
@@ -93,6 +111,10 @@ export interface SessionSnapshotState {
 }
 
 export interface ChatHistoryTabLayoutProps {
+    readonly canRenderFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly toolCardExpansionMode?: AiToolCardExpansionMode;
@@ -114,6 +136,8 @@ export interface ChatHistoryTabLayoutProps {
         projectId: string,
         relativePath: string,
         worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly handleOpenImage?: (
         attachment: AiImageAttachment,
@@ -228,13 +252,27 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
         },
         [projectFileRoots, tab.projectId],
     );
+    const canRenderFileReference = useFileReferenceValidator(
+        tab.projectId ?? null,
+        tab.worktreeId ?? null,
+    );
     const handleOpenFile = useCallback(
         async (
             projectId: string,
             relativePath: string,
             worktreeId?: string | null,
+            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+            openLocation?: RuntimeWorkspaceFileOpenLocation | null,
         ) => {
-            await openFileTab(projectId, relativePath, worktreeId ?? null);
+            await openFileTab(
+                projectId,
+                relativePath,
+                worktreeId ?? null,
+                reviewContext ?? null,
+                undefined,
+                undefined,
+                openLocation ?? null,
+            );
         },
         [openFileTab],
     );
@@ -248,6 +286,10 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
                 tab.projectId,
                 reference.relativePath,
                 tab.worktreeId ?? null,
+                null,
+                undefined,
+                undefined,
+                getOpenLocationFromResolvedFileReference(reference),
             );
         },
         [openFileTab, tab.projectId, tab.worktreeId],
@@ -868,6 +910,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
             chatFontFamily={chatFontFamily}
             chatFontSize={aiChatSettings.chatFontSize}
             toolCardExpansionMode={aiChatSettings.toolCardExpansionMode}
+            canRenderFileReference={canRenderFileReference}
             handleDelete={handleDelete}
             handleOpenFile={handleOpenFile}
             handleOpenImage={handleOpenImage}
@@ -913,6 +956,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
 }
 
 export function ChatHistoryTabLayout({
+    canRenderFileReference,
     chatFontFamily,
     chatFontSize,
     toolCardExpansionMode = "collapsed",
@@ -1661,6 +1705,9 @@ export function ChatHistoryTabLayout({
                                         style={{ fontFamily: chatFontFamily }}
                                     >
                                         <HistoryTranscriptTimeline
+                                            canRenderFileReference={
+                                                canRenderFileReference
+                                            }
                                             chatFontFamily={chatFontFamily}
                                             chatFontSize={chatFontSize}
                                             highlightQuery={
@@ -1753,7 +1800,15 @@ export function ChatHistoryTabLayout({
     );
 }
 
-const NOOP_OPEN_FILE = (...args: [string, string, (string | null | undefined)?]) => {
+const NOOP_OPEN_FILE = (
+    ...args: [
+        string,
+        string,
+        (string | null | undefined)?,
+        (RuntimeWorkspaceFileReviewContext | null | undefined)?,
+        (RuntimeWorkspaceFileOpenLocation | null | undefined)?,
+    ]
+) => {
     void args;
     return Promise.resolve();
 };
@@ -1778,6 +1833,10 @@ const NOOP_RESOLVE_FILE_REFERENCE = (
 };
 
 interface HistoryTimelineHandlers {
+    readonly canRenderFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly highlightQuery?: string;
@@ -1786,6 +1845,8 @@ interface HistoryTimelineHandlers {
         projectId: string,
         relativePath: string,
         worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenResolvedFileReference: (
@@ -1798,6 +1859,7 @@ interface HistoryTimelineHandlers {
 }
 
 function HistoryTranscriptTimeline({
+    canRenderFileReference,
     chatFontFamily,
     chatFontSize,
     highlightQuery,
@@ -1812,6 +1874,10 @@ function HistoryTranscriptTimeline({
     transcriptMessages,
     worktreeId,
 }: {
+    readonly canRenderFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly highlightQuery?: string;
@@ -1819,6 +1885,8 @@ function HistoryTranscriptTimeline({
         projectId: string,
         relativePath: string,
         worktreeId?: string | null,
+        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenImage?: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenResolvedFileReference?: (
@@ -1850,6 +1918,7 @@ function HistoryTranscriptTimeline({
 
     const handlers = useMemo<HistoryTimelineHandlers>(
         () => ({
+            canRenderFileReference,
             chatFontFamily,
             chatFontSize,
             highlightQuery,
@@ -1863,6 +1932,7 @@ function HistoryTranscriptTimeline({
                 resolveFileReference ?? NOOP_RESOLVE_FILE_REFERENCE,
         }),
         [
+            canRenderFileReference,
             chatFontFamily,
             chatFontSize,
             highlightQuery,
@@ -1904,6 +1974,7 @@ function HistoryTimelineRow({
     if (row.kind === "message") {
         return (
             <ChatMessageRow
+                canRenderFileReference={handlers.canRenderFileReference}
                 chatFontFamily={handlers.chatFontFamily}
                 chatFontSize={handlers.chatFontSize}
                 highlightQuery={handlers.highlightQuery}
