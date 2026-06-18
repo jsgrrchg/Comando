@@ -610,6 +610,20 @@ export const ChatTabView = memo(function ChatTabView({
                 return;
             }
 
+            if (reference.startLine !== null) {
+                void onOpenFile(
+                    tab.projectId,
+                    reference.relativePath,
+                    tab.worktreeId ?? null,
+                    undefined,
+                    {
+                        endLine: reference.endLine,
+                        startLine: reference.startLine,
+                    },
+                );
+                return;
+            }
+
             void onOpenFile(
                 tab.projectId,
                 reference.relativePath,
