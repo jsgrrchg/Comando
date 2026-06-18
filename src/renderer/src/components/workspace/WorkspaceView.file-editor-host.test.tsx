@@ -22,6 +22,7 @@ import type { RuntimeWorkspaceFileTab } from "@renderer/app/workspace/tree";
 
 const mockWorkspaceStoreState = vi.hoisted(() => ({
     current: {
+        updateFilePendingOpenLocation: vi.fn(),
         updateFileViewState: vi.fn(),
     },
 }));
@@ -125,6 +126,13 @@ const monacoHarness = vi.hoisted(() => {
         readonly onMouseLeave: () => Disposable;
         readonly onMouseMove: () => Disposable;
         readonly pushUndoStop: () => void;
+        readonly revealLineInCenter: (lineNumber: number) => void;
+        readonly revealRangeInCenter: (range: {
+            readonly endColumn: number;
+            readonly endLineNumber: number;
+            readonly startColumn: number;
+            readonly startLineNumber: number;
+        }) => void;
         readonly restoreViewState: (viewState: unknown) => void;
         readonly saveViewState: () => {
             readonly contributionsState: readonly unknown[];
@@ -138,6 +146,14 @@ const monacoHarness = vi.hoisted(() => {
         readonly setPosition: (position: {
             readonly column: number;
             readonly lineNumber: number;
+        }) => void;
+        readonly setSelection: (selection: {
+            readonly endColumn: number;
+            readonly endLineNumber: number;
+            readonly selectionStartColumn: number;
+            readonly selectionStartLineNumber: number;
+            readonly startColumn: number;
+            readonly startLineNumber: number;
         }) => void;
         readonly setScrollLeft: (scrollLeft: number) => void;
         readonly setScrollTop: (scrollTop: number) => void;
@@ -315,6 +331,8 @@ const monacoHarness = vi.hoisted(() => {
             onMouseLeave: () => createDisposable(),
             onMouseMove: () => createDisposable(),
             pushUndoStop: vi.fn(),
+            revealLineInCenter: vi.fn(),
+            revealRangeInCenter: vi.fn(),
             restoreViewState: vi.fn(),
             saveViewState: vi.fn(() => ({
                 contributionsState: [],
@@ -338,6 +356,7 @@ const monacoHarness = vi.hoisted(() => {
                     editor.position = position;
                 },
             ),
+            setSelection: vi.fn(),
             setScrollLeft: vi.fn((scrollLeft: number) => {
                 editor.scrollLeft = scrollLeft;
             }),
@@ -789,6 +808,7 @@ describe("WorkspaceFileEditorHost", () => {
         mockEditorRuntime.applyProjectTypeScriptConfigForPath.mockClear();
         mockEditorRuntime.ensureMonacoTextMateForLanguage.mockClear();
         mockEditorRuntime.installMonacoTokenDebugAction.mockClear();
+        mockWorkspaceStoreState.current.updateFilePendingOpenLocation.mockClear();
         mockWorkspaceStoreState.current.updateFileViewState.mockClear();
         mockAiStoreState.current.sessions = {};
     });
@@ -863,6 +883,94 @@ describe("WorkspaceFileEditorHost", () => {
         expect(monacoHarness.codeEditors).toHaveLength(1);
         expect(monacoHarness.codeEditors[0]?.disposed).toBe(false);
         expect(container.querySelector("[aria-hidden='true']")).not.toBeNull();
+    });
+
+    it("applies a pending file open line before restoring saved view state", async () => {
+        const tab = {
+            ...createFileTab(
+                "file-1",
+                "src/app.ts",
+                ["one", "two", "three", ""].join("\n"),
+            ),
+            pendingOpenLocation: {
+                endLine: null,
+                startLine: 99,
+            },
+            viewState: {
+                contributionsState: {},
+                cursorState: [],
+                viewState: {
+                    firstPosition: {
+                        column: 1,
+                        lineNumber: 1,
+                    },
+                    firstPositionDeltaTop: 0,
+                    scrollLeft: 0,
+                },
+            },
+        } satisfies RuntimeWorkspaceFileTab;
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tab,
+                    fileTabs: [tab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const editor = monacoHarness.codeEditors[0];
+        expect(editor?.setPosition).toHaveBeenCalledWith({
+            column: 1,
+            lineNumber: 4,
+        });
+        expect(editor?.revealLineInCenter).toHaveBeenCalledWith(4);
+        expect(editor?.restoreViewState).not.toHaveBeenCalled();
+        expect(
+            mockWorkspaceStoreState.current.updateFilePendingOpenLocation,
+        ).toHaveBeenCalledWith("file-1", null);
+    });
+
+    it("selects and reveals a pending file open range", async () => {
+        const tab = {
+            ...createFileTab(
+                "file-1",
+                "src/app.ts",
+                ["alpha", "beta", "gamma", ""].join("\n"),
+            ),
+            pendingOpenLocation: {
+                endLine: 3,
+                startLine: 2,
+            },
+        } satisfies RuntimeWorkspaceFileTab;
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tab,
+                    fileTabs: [tab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const expectedSelection = {
+            endColumn: 6,
+            endLineNumber: 3,
+            selectionStartColumn: 1,
+            selectionStartLineNumber: 2,
+            startColumn: 1,
+            startLineNumber: 2,
+        };
+        const editor = monacoHarness.codeEditors[0];
+        expect(editor?.setSelection).toHaveBeenCalledWith(expectedSelection);
+        expect(editor?.revealRangeInCenter).toHaveBeenCalledWith(
+            expectedSelection,
+        );
+        expect(
+            mockWorkspaceStoreState.current.updateFilePendingOpenLocation,
+        ).toHaveBeenCalledWith("file-1", null);
     });
 
     it("mounts inline review diff models without unmounting the normal file editor", async () => {

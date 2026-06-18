@@ -464,6 +464,48 @@ function capturePortableEditorRestoreState(
     };
 }
 
+function applyEditorOpenLocation(
+    editor: MonacoEditor.IStandaloneCodeEditor,
+    location: RuntimeWorkspaceFileOpenLocation,
+): boolean {
+    const model = editor.getModel();
+    if (!model) {
+        return false;
+    }
+
+    const startLine = Math.min(
+        Math.max(location.startLine, 1),
+        model.getLineCount(),
+    );
+    const endLine =
+        location.endLine === null || location.endLine === undefined
+            ? startLine
+            : Math.min(
+                  Math.max(location.endLine, startLine),
+                  model.getLineCount(),
+              );
+
+    editor.layout();
+
+    if (endLine > startLine) {
+        const selection = {
+            endColumn: model.getLineMaxColumn(endLine),
+            endLineNumber: endLine,
+            selectionStartColumn: 1,
+            selectionStartLineNumber: startLine,
+            startColumn: 1,
+            startLineNumber: startLine,
+        };
+        editor.setSelection(selection);
+        editor.revealRangeInCenter(selection);
+        return true;
+    }
+
+    editor.setPosition({ column: 1, lineNumber: startLine });
+    editor.revealLineInCenter(startLine);
+    return true;
+}
+
 function isMonacoCancellationError(error: unknown): boolean {
     return error instanceof Error && error.message.includes("Canceled");
 }
@@ -3691,6 +3733,9 @@ function FileTabView({
     const updateFileViewState = useWorkspaceStore(
         (state) => state.updateFileViewState,
     );
+    const updateFilePendingOpenLocation = useWorkspaceStore(
+        (state) => state.updateFilePendingOpenLocation,
+    );
     const diffEditorRef = useRef<MonacoEditor.IStandaloneDiffEditor | null>(
         null,
     );
@@ -4377,6 +4422,26 @@ function FileTabView({
         [restoreEditorViewState],
     );
 
+    const consumePendingOpenLocation = useCallback(
+        (editor: MonacoEditor.IStandaloneCodeEditor): boolean => {
+            const pendingOpenLocation = tab.pendingOpenLocation ?? null;
+            if (!pendingOpenLocation) {
+                return false;
+            }
+
+            if (!applyEditorOpenLocation(editor, pendingOpenLocation)) {
+                return false;
+            }
+
+            restoredEditorViewStateTabIdRef.current = tab.id;
+            pendingEditorViewStateTabIdRef.current = tab.id;
+            pendingEditorViewStateRef.current = editor.saveViewState();
+            updateFilePendingOpenLocation(tab.id, null);
+            return true;
+        },
+        [tab.id, tab.pendingOpenLocation, updateFilePendingOpenLocation],
+    );
+
     useEffect(() => {
         if (!isVisible) {
             return;
@@ -4403,12 +4468,17 @@ function FileTabView({
             return;
         }
 
+        if (consumePendingOpenLocation(editor)) {
+            return;
+        }
+
         restoreEditorViewStateForTab(
             editor,
             tab.id,
             getPendingEditorViewStateForTab(tab.id, tab.viewState ?? null),
         );
     }, [
+        consumePendingOpenLocation,
         getPendingEditorViewStateForTab,
         inlineReviewTrackedFile,
         isVisible,
@@ -4737,6 +4807,10 @@ function FileTabView({
             return;
         }
 
+        if (consumePendingOpenLocation(editor)) {
+            return;
+        }
+
         restoreEditorViewStateForTab(
             editor,
             tab.id,
@@ -4745,6 +4819,7 @@ function FileTabView({
     }, [
         canEdit,
         acquireFileEditorModel,
+        consumePendingOpenLocation,
         document,
         getPendingEditorViewStateForTab,
         inlineReviewTrackedFile,
@@ -5907,6 +5982,8 @@ function FileTabView({
                                 );
                                 pendingInlineReviewRestoreStateRef.current =
                                     null;
+                            } else if (consumePendingOpenLocation(editor)) {
+                                // The explicit location intent wins over saved view state.
                             } else {
                                 const persistedViewState =
                                     getPendingEditorViewStateForTab(

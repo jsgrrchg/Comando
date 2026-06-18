@@ -318,6 +318,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
     unpinPaneTab: (paneId: string, tabId: string) => Promise<void>;
     updateChatDraft: (tabId: string, draft: string) => Promise<void>;
     updateFileDraft: (tabId: string, draft: string) => void;
+    updateFilePendingOpenLocation: (
+        tabId: string,
+        pendingOpenLocation: RuntimeWorkspaceFileOpenLocation | null,
+    ) => void;
     updateFileViewState: (
         tabId: string,
         viewState: MonacoEditor.ICodeEditorViewState | null,
@@ -1865,6 +1869,16 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     updateFileViewState: (tabId, viewState) => {
         set((state) => ({
             ...setFileTabViewState(state, tabId, viewState),
+        }));
+    },
+
+    updateFilePendingOpenLocation: (tabId, pendingOpenLocation) => {
+        set((state) => ({
+            ...setFileTabPendingOpenLocation(
+                state,
+                tabId,
+                pendingOpenLocation,
+            ),
         }));
     },
 
