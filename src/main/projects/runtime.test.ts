@@ -118,6 +118,50 @@ describe("ProjectRuntime Git ignore metadata", () => {
             runtime.close();
         }
     });
+
+    it("marks ignored entries whose names contain accents", async () => {
+        const rootPath = createProjectFixture();
+        const git = simpleGit(rootPath);
+        const personalDirectory = ".personal";
+        const accentedDirectory = "diagnósticos";
+
+        await git.init();
+        fs.writeFileSync(path.join(rootPath, ".gitignore"), ".personal/\n");
+        fs.mkdirSync(path.join(rootPath, personalDirectory));
+        fs.mkdirSync(path.join(rootPath, personalDirectory, accentedDirectory));
+
+        const runtime = new ProjectRuntime({
+            onProjectTreeInvalidated: () => undefined,
+        });
+        runtime.syncRegistry({
+            projects: [{ id: "project-1", rootPath }],
+            worktrees: [],
+        });
+
+        try {
+            const rootNodes = await runtime.listProjectTreeChildren({
+                parentRelativePath: null,
+                projectId: "project-1",
+                rootPath,
+                worktreeId: null,
+            });
+            const personalNodes = await runtime.listProjectTreeChildren({
+                parentRelativePath: personalDirectory,
+                projectId: "project-1",
+                rootPath,
+                worktreeId: null,
+            });
+
+            expect(
+                findNode(rootNodes, personalDirectory)?.isGitIgnored,
+            ).toBe(true);
+            expect(
+                findNode(personalNodes, accentedDirectory)?.isGitIgnored,
+            ).toBe(true);
+        } finally {
+            runtime.close();
+        }
+    });
 });
 
 function createProjectFixture(): string {

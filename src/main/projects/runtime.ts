@@ -556,12 +556,15 @@ export class ProjectRuntime {
         const nextMatches = new Map(snapshot.ignoredPathMatches);
 
         try {
-            const ignoredPaths = await checkGitIgnoredPaths(
+            const ignoredPathKeys = await checkGitIgnoredPaths(
                 rootPath,
                 missingCandidates,
             );
             for (const relativePath of missingCandidates) {
-                nextMatches.set(relativePath, ignoredPaths.has(relativePath));
+                nextMatches.set(
+                    relativePath,
+                    ignoredPathKeys.has(toGitIgnoreMatchKey(relativePath)),
+                );
             }
         } catch (error) {
             debugBenignError("projects.runtime.computeGitIgnoredPaths", error);
@@ -1104,7 +1107,7 @@ async function checkGitIgnoredPaths(
     rootPath: string,
     relativePaths: readonly string[],
 ): Promise<ReadonlySet<string>> {
-    const ignoredPaths = new Set<string>();
+    const ignoredPathKeys = new Set<string>();
     const git = createBackgroundSafeGit(rootPath);
 
     for (
@@ -1120,13 +1123,30 @@ async function checkGitIgnoredPaths(
             continue;
         }
 
-        const ignoredChunk = await git.checkIgnore(chunk);
-        for (const relativePath of ignoredChunk) {
-            ignoredPaths.add(normalizeGitPath(relativePath));
+        // Git quotes non-ASCII paths by default; keep output comparable to fs paths.
+        const ignoredChunk = await git.raw([
+            "-c",
+            "core.quotePath=false",
+            "check-ignore",
+            "--",
+            ...chunk,
+        ]);
+        for (const relativePath of parseGitCheckIgnoreOutput(ignoredChunk)) {
+            ignoredPathKeys.add(toGitIgnoreMatchKey(relativePath));
         }
     }
 
-    return ignoredPaths;
+    return ignoredPathKeys;
+}
+
+function parseGitCheckIgnoreOutput(output: string): readonly string[] {
+    return output
+        .split(/\r?\n/)
+        .filter((relativePath) => relativePath.length > 0);
+}
+
+function toGitIgnoreMatchKey(relativePath: string): string {
+    return normalizeGitPath(relativePath).normalize("NFC");
 }
 
 function normalizeGitIgnoreCandidatePaths(
