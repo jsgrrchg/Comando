@@ -50,6 +50,7 @@ import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import type {
     RuntimeWorkspaceChatTab,
+    RuntimeWorkspaceFileOpenLocation,
     RuntimeWorkspaceFileReviewContext,
 } from "@renderer/app/workspace/tree";
 import type { MeasuredVirtualRange } from "@renderer/components/virtual/MeasuredVirtualList";
@@ -122,6 +123,7 @@ interface ChatTabViewProps {
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenReview: () => Promise<void>;
@@ -2264,6 +2266,7 @@ type ChatTimelineProps = {
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenResolvedFileReference: (
@@ -2502,6 +2505,7 @@ type ChatTimelineHistoryProps = {
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenResolvedFileReference: (
@@ -2639,6 +2643,7 @@ type ChatTimelineLiveTailProps = {
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenResolvedFileReference: (
@@ -2720,6 +2725,7 @@ type ChatTimelineRowViewProps = {
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenResolvedFileReference: (

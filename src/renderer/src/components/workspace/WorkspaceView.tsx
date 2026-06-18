@@ -92,6 +92,7 @@ import {
 import {
     collectPaneNodes,
     findWorkspaceNodeById,
+    type RuntimeWorkspaceFileOpenLocation,
     type RuntimeWorkspaceFileReviewContext,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceTab,
@@ -1535,6 +1536,7 @@ function WorkspacePaneView({
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         targetPaneId?: string | null,
         targetIndex?: number,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void> = useWorkspaceStore((state) => state.openFileTab);
     const openChatImageTab = useWorkspaceStore((state) => state.openChatImageTab);
     const openReviewTab = useWorkspaceStore((state) => state.openReviewTab);
@@ -1820,6 +1822,7 @@ function WorkspacePaneView({
             relativePath: string,
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+            openLocation?: RuntimeWorkspaceFileOpenLocation | null,
         ) => {
             await openFileTab(
                 projectId,
@@ -1827,6 +1830,8 @@ function WorkspacePaneView({
                 worktreeId ?? activeTabWorktreeId,
                 reviewContext,
                 paneNodeId,
+                undefined,
+                openLocation,
             );
         },
         [activeTabWorktreeId, openFileTab, paneNodeId],

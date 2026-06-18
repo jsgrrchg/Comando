@@ -61,6 +61,7 @@ import {
     type RuntimeWorkspaceGitHubPullRequestsTab,
     type MoveDirection,
     type RuntimeWorkspaceGitTab,
+    type RuntimeWorkspaceFileOpenLocation,
     type RuntimeWorkspaceFileReviewContext,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceReviewTab,
@@ -230,8 +231,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         targetPaneId?: string | null,
         targetIndex?: number,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     openFileTabAtTarget: (input: {
+        readonly openLocation?: RuntimeWorkspaceFileOpenLocation | null;
         readonly projectId: string;
         readonly relativePath: string;
         readonly reviewContext?: RuntimeWorkspaceFileReviewContext | null;
@@ -1126,6 +1129,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         targetPaneId?: string | null,
         targetIndex?: number,
+        _openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => {
         try {
             const trackedFiles = collectPendingTrackedFilesFromSessions(
@@ -1320,6 +1324,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             input.reviewContext ?? null,
             paneId,
             getWorkspaceOpenTargetInsertIndex(input.target),
+            input.openLocation ?? null,
         );
 
         return paneId;

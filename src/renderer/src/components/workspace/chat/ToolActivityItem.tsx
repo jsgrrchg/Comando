@@ -11,7 +11,10 @@ import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexS
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import { HighlightedCodeText } from "@renderer/app/editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "@renderer/app/editor/useCodeLanguageSupport";
-import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/tree";
+import type {
+    RuntimeWorkspaceFileOpenLocation,
+    RuntimeWorkspaceFileReviewContext,
+} from "@renderer/app/workspace/tree";
 
 import { MarkdownContent } from "../MarkdownContent";
 import {
@@ -446,6 +449,7 @@ function openToolFileReference({
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenFileReference?: (
         reference: ResolvedProjectFileReference,
@@ -808,6 +812,7 @@ function FileToolMessage({
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenFileReference?: (
         reference: ResolvedProjectFileReference,
@@ -1586,6 +1591,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenFileReference?: (
         reference: ResolvedProjectFileReference,
@@ -1695,6 +1701,7 @@ function areToolActivityItemPropsEqual(
             relativePath: string,
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+            openLocation?: RuntimeWorkspaceFileOpenLocation | null,
         ) => Promise<void>;
         readonly onOpenFileReference?: (
             reference: ResolvedProjectFileReference,
@@ -1716,6 +1723,7 @@ function areToolActivityItemPropsEqual(
             relativePath: string,
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+            openLocation?: RuntimeWorkspaceFileOpenLocation | null,
         ) => Promise<void>;
         readonly onOpenFileReference?: (
             reference: ResolvedProjectFileReference,

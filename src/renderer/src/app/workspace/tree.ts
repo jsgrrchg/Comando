@@ -30,6 +30,11 @@ export interface RuntimeWorkspaceFileReviewContext {
     readonly sessionId: string;
 }
 
+export interface RuntimeWorkspaceFileOpenLocation {
+    readonly endLine?: number | null;
+    readonly startLine: number;
+}
+
 export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
     readonly document: ProjectFileDocument | null;
     readonly draftContent: string;
