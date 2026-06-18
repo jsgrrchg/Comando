@@ -436,6 +436,20 @@ function canOpenToolFileReference({
     return !!parsedReference && !parsedReference.isAbsolute && !!projectId;
 }
 
+function getOpenLocationFromFileReference(reference: {
+    readonly endLine: number | null;
+    readonly startLine: number | null;
+}): RuntimeWorkspaceFileOpenLocation | null {
+    if (reference.startLine === null) {
+        return null;
+    }
+
+    return {
+        endLine: reference.endLine,
+        startLine: reference.startLine,
+    };
+}
+
 function openToolFileReference({
     onOpenFile,
     onOpenFileReference,
@@ -469,17 +483,41 @@ function openToolFileReference({
         }
 
         if (projectId) {
-            void onOpenFile(
-                projectId,
-                resolvedReference.relativePath,
-                worktreeId,
-            );
+            const openLocation =
+                getOpenLocationFromFileReference(resolvedReference);
+            if (openLocation) {
+                void onOpenFile(
+                    projectId,
+                    resolvedReference.relativePath,
+                    worktreeId,
+                    undefined,
+                    openLocation,
+                );
+            } else {
+                void onOpenFile(
+                    projectId,
+                    resolvedReference.relativePath,
+                    worktreeId,
+                );
+            }
         }
         return;
     }
 
     const parsedReference = parseProjectFileReference(target);
     if (!parsedReference || parsedReference.isAbsolute || !projectId) {
+        return;
+    }
+
+    const openLocation = getOpenLocationFromFileReference(parsedReference);
+    if (openLocation) {
+        void onOpenFile(
+            projectId,
+            parsedReference.path,
+            worktreeId,
+            undefined,
+            openLocation,
+        );
         return;
     }
 
