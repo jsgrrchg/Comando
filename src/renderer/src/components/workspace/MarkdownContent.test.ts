@@ -1,9 +1,47 @@
+/** @vitest-environment jsdom */
 import { createElement } from "react";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { MarkdownContent } from "./MarkdownContent";
 import { resolveProjectFileReference } from "./projectFileReferences";
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
+
+const mountedRoots: Root[] = [];
+const mountedContainers: HTMLDivElement[] = [];
+
+afterEach(() => {
+    for (const root of mountedRoots.splice(0)) {
+        act(() => {
+            root.unmount();
+        });
+    }
+
+    for (const container of mountedContainers.splice(0)) {
+        container.remove();
+    }
+});
+
+function renderInteractiveMarkdownContent(
+    props: Parameters<typeof MarkdownContent>[0],
+): HTMLElement {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    mountedContainers.push(container);
+
+    act(() => {
+        root.render(createElement(MarkdownContent, props));
+    });
+
+    return container;
+}
 
 describe("MarkdownContent", () => {
     it("renders diff blocks with DiffLineView", () => {
@@ -202,6 +240,35 @@ describe("MarkdownContent", () => {
         expect(markup).toContain(
             'title="file:///Users/test/workspace/comando/src/app.ts#L9-L14"',
         );
+    });
+
+    it("opens raw diagnostic file reference pills with parsed line ranges", () => {
+        const onOpenFile = vi.fn();
+        const container = renderInteractiveMarkdownContent({
+            canRenderFileReference: () => true,
+            content: "Errors at src/app.ts:12-18.",
+            onOpenFile,
+            resolveFileReference: (reference) =>
+                resolveProjectFileReference(reference, {
+                    projectRoots: ["/Users/test/workspace/comando"],
+                }),
+        });
+        const pillButton = container.querySelector<HTMLButtonElement>(
+            'button[title="src/app.ts:12-18"]',
+        );
+        expect(pillButton).not.toBeNull();
+
+        act(() => {
+            pillButton?.click();
+        });
+
+        expect(onOpenFile).toHaveBeenCalledWith({
+            endLine: 18,
+            isAbsolute: false,
+            path: "src/app.ts",
+            relativePath: "src/app.ts",
+            startLine: 12,
+        });
     });
 
     it("renders markdown project file links as interactive pills", () => {

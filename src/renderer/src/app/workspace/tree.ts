@@ -30,6 +30,11 @@ export interface RuntimeWorkspaceFileReviewContext {
     readonly sessionId: string;
 }
 
+export interface RuntimeWorkspaceFileOpenLocation {
+    readonly endLine?: number | null;
+    readonly startLine: number;
+}
+
 export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
     readonly document: ProjectFileDocument | null;
     readonly draftContent: string;
@@ -39,6 +44,7 @@ export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
     readonly isLoading: boolean;
     readonly isSaving: boolean;
     readonly loadError: string | null;
+    readonly pendingOpenLocation?: RuntimeWorkspaceFileOpenLocation | null;
     readonly reviewContext: RuntimeWorkspaceFileReviewContext | null;
     readonly saveError: string | null;
     readonly savedContent: string;
@@ -965,6 +971,28 @@ export function setFileTabReviewContext(
             [tabId]: {
                 ...tab,
                 reviewContext,
+            },
+        },
+    };
+}
+
+export function setFileTabPendingOpenLocation(
+    state: WorkspaceTreeState,
+    tabId: string,
+    pendingOpenLocation: RuntimeWorkspaceFileOpenLocation | null,
+): WorkspaceTreeState {
+    const tab = state.tabsById[tabId];
+    if (!tab || tab.kind !== "file") {
+        return state;
+    }
+
+    return {
+        ...state,
+        tabsById: {
+            ...state.tabsById,
+            [tabId]: {
+                ...tab,
+                pendingOpenLocation,
             },
         },
     };

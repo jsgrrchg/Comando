@@ -1,6 +1,9 @@
+/** @vitest-environment jsdom */
 import { createElement } from "react";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
     AiHistorySessionSummary,
@@ -9,6 +12,24 @@ import type {
 import type { RuntimeWorkspaceChatHistoryTab } from "@renderer/app/workspace/tree";
 
 import { ChatHistoryTabLayout } from "./ChatHistoryTabView";
+import { resolveProjectFileReference } from "./projectFileReferences";
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
+
+const mountedRoots: Root[] = [];
+const mountedContainers: HTMLDivElement[] = [];
+
+beforeEach(() => {
+    Object.defineProperty(window, "localStorage", {
+        configurable: true,
+        value: {
+            getItem: vi.fn(() => null),
+            removeItem: vi.fn(),
+            setItem: vi.fn(),
+        },
+    });
+});
 
 const BASE_TAB: RuntimeWorkspaceChatHistoryTab = {
     createdAt: "2026-04-17T10:00:00.000Z",
@@ -151,6 +172,63 @@ function renderLayout(
     );
 }
 
+afterEach(() => {
+    for (const root of mountedRoots.splice(0)) {
+        act(() => {
+            root.unmount();
+        });
+    }
+
+    for (const container of mountedContainers.splice(0)) {
+        container.remove();
+    }
+});
+
+function renderInteractiveLayout(
+    overrides: Partial<Parameters<typeof ChatHistoryTabLayout>[0]> = {},
+): HTMLElement {
+    const selectedSession = overrides.selectedSession ?? null;
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    mountedContainers.push(container);
+
+    act(() => {
+        root.render(
+            createElement(ChatHistoryTabLayout, {
+                hasMoreMessages: false,
+                handleDelete: vi.fn(async () => {}),
+                handleOpenInChat: vi.fn(async () => {}),
+                handleRefresh: vi.fn(async () => {}),
+                handleRename: vi.fn(() => Promise.resolve()),
+                isBusy: false,
+                isLoadingSessions: false,
+                loadSessionSnapshot: vi.fn(async () => {}),
+                loadTranscriptPage: vi.fn(async () => {}),
+                mutatingSessionId: null,
+                scopeLabel: "Project One",
+                selectedSession,
+                selectedSessionId: selectedSession?.sessionId ?? null,
+                selectedSnapshot: null,
+                selectedSnapshotState: null,
+                selectedSnapshotStatus: null,
+                selectedTranscript: null,
+                sessions: [],
+                sessionsError: null,
+                setSelectedSessionId: vi.fn(),
+                tab: BASE_TAB,
+                transcriptMessages: [],
+                worktreeLabel: "worktree-1",
+                ...overrides,
+            }),
+        );
+    });
+
+    return container;
+}
+
 describe("ChatHistoryTabLayout", () => {
     it("renders the loading state", () => {
         const markup = renderLayout({
@@ -237,6 +315,153 @@ describe("ChatHistoryTabLayout", () => {
         expect(markup).toContain("Assistant returns a concise answer.");
         expect(markup).toContain("open in chat");
         expect(markup).toContain("Load More");
+    });
+
+    it("opens transcript file reference pills with parsed line ranges", () => {
+        const session = createSession();
+        const handleOpenResolvedFileReference = vi.fn();
+        const container = renderInteractiveLayout({
+            canRenderFileReference: () => true,
+            handleOpenResolvedFileReference,
+            resolveFileReference: (reference) =>
+                resolveProjectFileReference(reference, {
+                    projectRoots: ["/Users/test/workspace/comando"],
+                }),
+            selectedSession: session,
+            selectedTranscript: {
+                error: null,
+                isLoading: false,
+                messages: [
+                    {
+                        attachments: [],
+                        content: "See src/app.ts:12-18.",
+                        createdAt: "2026-04-17T10:02:00.000Z",
+                        id: "msg-2",
+                        kind: "assistant",
+                        status: "completed",
+                    },
+                ],
+                totalMessages: 1,
+            },
+            sessions: [session],
+            transcriptMessages: [
+                {
+                    attachments: [],
+                    content: "See src/app.ts:12-18.",
+                    createdAt: "2026-04-17T10:02:00.000Z",
+                    id: "msg-2",
+                    kind: "assistant",
+                    status: "completed",
+                },
+            ],
+        });
+        const pillButton = container.querySelector<HTMLButtonElement>(
+            'button[title="src/app.ts:12-18"]',
+        );
+        expect(pillButton).not.toBeNull();
+
+        act(() => {
+            pillButton?.click();
+        });
+
+        expect(handleOpenResolvedFileReference).toHaveBeenCalledWith({
+            endLine: 18,
+            isAbsolute: false,
+            path: "src/app.ts",
+            relativePath: "src/app.ts",
+            startLine: 12,
+        });
+    });
+
+    it("passes transcript tool location ranges through onOpenFile", () => {
+        const session = createSession();
+        const handleOpenFile = vi.fn(async () => {});
+        const container = renderInteractiveLayout({
+            handleOpenFile,
+            selectedSession: session,
+            selectedSnapshot: createSnapshot({
+                trackedFiles: [],
+                toolActivity: [
+                    {
+                        createdAt: "2026-04-17T10:04:00.000Z",
+                        diffs: [],
+                        exitCode: null,
+                        id: "tool-read",
+                        kind: "read",
+                        locations: [
+                            {
+                                endLine: 11,
+                                line: 10,
+                                path: "src/app.ts",
+                            },
+                        ],
+                        rawInputJson: null,
+                        rawOutputJson: null,
+                        sessionId: "session-1",
+                        status: "completed",
+                        summary: null,
+                        terminalOutput: null,
+                        title: "Read src/app.ts",
+                        updatedAt: "2026-04-17T10:04:01.000Z",
+                    },
+                ],
+            }),
+            selectedTranscript: {
+                error: null,
+                isLoading: false,
+                messages: [
+                    {
+                        attachments: [],
+                        content: "Reading the file.",
+                        createdAt: "2026-04-17T10:03:00.000Z",
+                        id: "msg-1",
+                        kind: "assistant",
+                        status: "completed",
+                    },
+                ],
+                totalMessages: 1,
+            },
+            sessions: [session],
+            toolCardExpansionMode: "expanded",
+            transcriptMessages: [
+                {
+                    attachments: [],
+                    content: "Reading the file.",
+                    createdAt: "2026-04-17T10:03:00.000Z",
+                    id: "msg-1",
+                    kind: "assistant",
+                    status: "completed",
+                },
+            ],
+        });
+        const expandButton = container.querySelector<HTMLButtonElement>(
+            'button[aria-label="Expand details"]',
+        );
+        expect(expandButton).not.toBeNull();
+
+        act(() => {
+            expandButton?.click();
+        });
+
+        const locationButton = Array.from(
+            container.querySelectorAll<HTMLButtonElement>("button"),
+        ).find((button) => button.textContent === "src/app.ts:10-11");
+        expect(locationButton).not.toBeNull();
+
+        act(() => {
+            locationButton?.click();
+        });
+
+        expect(handleOpenFile).toHaveBeenCalledWith(
+            "project-1",
+            "src/app.ts",
+            "worktree-1",
+            undefined,
+            {
+                endLine: 11,
+                startLine: 10,
+            },
+        );
     });
 
     it("renders child agents under their parent without rename actions", () => {

@@ -40,6 +40,7 @@ import {
     resizeSplit,
     selectAdjacentPaneTab,
     setFileTabExternalChange,
+    setFileTabPendingOpenLocation,
     setFileTabViewState,
     setFileTabReviewContext,
     selectPaneTab,
@@ -61,6 +62,7 @@ import {
     type RuntimeWorkspaceGitHubPullRequestsTab,
     type MoveDirection,
     type RuntimeWorkspaceGitTab,
+    type RuntimeWorkspaceFileOpenLocation,
     type RuntimeWorkspaceFileReviewContext,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceReviewTab,
@@ -230,8 +232,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         targetPaneId?: string | null,
         targetIndex?: number,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     openFileTabAtTarget: (input: {
+        readonly openLocation?: RuntimeWorkspaceFileOpenLocation | null;
         readonly projectId: string;
         readonly relativePath: string;
         readonly reviewContext?: RuntimeWorkspaceFileReviewContext | null;
@@ -314,6 +318,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
     unpinPaneTab: (paneId: string, tabId: string) => Promise<void>;
     updateChatDraft: (tabId: string, draft: string) => Promise<void>;
     updateFileDraft: (tabId: string, draft: string) => void;
+    updateFilePendingOpenLocation: (
+        tabId: string,
+        pendingOpenLocation: RuntimeWorkspaceFileOpenLocation | null,
+    ) => void;
     updateFileViewState: (
         tabId: string,
         viewState: MonacoEditor.ICodeEditorViewState | null,
@@ -1126,8 +1134,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         targetPaneId?: string | null,
         targetIndex?: number,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => {
         try {
+            const pendingOpenLocation = openLocation ?? null;
             const trackedFiles = collectPendingTrackedFilesFromSessions(
                 useAiStore.getState().sessions,
             );
@@ -1168,30 +1178,34 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 });
 
                 set((state) => ({
-                    ...setFileTabReviewContext(
-                        paneId === resolvedPaneId
-                            ? selectPaneTab(
-                                  state,
-                                  paneId,
-                                  existingTabInResolvedPane.id,
-                              )
-                            : restoreSourcePaneActiveTabAfterMove(
-                                  moveTabToPaneAtIndex(
-                                      state,
-                                      existingTabInResolvedPane.id,
-                                      paneId,
-                                      resolvedPaneId,
-                                      Number.POSITIVE_INFINITY,
-                                  ),
-                                  paneId,
-                                  getSourcePaneFallbackTabIdAfterMove(
+                    ...setFileTabPendingOpenLocation(
+                        setFileTabReviewContext(
+                            paneId === resolvedPaneId
+                                ? selectPaneTab(
                                       state,
                                       paneId,
                                       existingTabInResolvedPane.id,
+                                  )
+                                : restoreSourcePaneActiveTabAfterMove(
+                                      moveTabToPaneAtIndex(
+                                          state,
+                                          existingTabInResolvedPane.id,
+                                          paneId,
+                                          resolvedPaneId,
+                                          Number.POSITIVE_INFINITY,
+                                      ),
+                                      paneId,
+                                      getSourcePaneFallbackTabIdAfterMove(
+                                          state,
+                                          paneId,
+                                          existingTabInResolvedPane.id,
+                                      ),
                                   ),
-                              ),
+                            existingTabInResolvedPane.id,
+                            nextReviewContext,
+                        ),
                         existingTabInResolvedPane.id,
-                        nextReviewContext,
+                        pendingOpenLocation,
                     ),
                     error: null,
                     recentActiveTabIds: recordRecentTabActivation(
@@ -1227,6 +1241,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     ...sourceTab,
                     createdAt: new Date().toISOString(),
                     id: crypto.randomUUID(),
+                    pendingOpenLocation,
                     reviewContext: nextReviewContext,
                     viewState: sourceTab.viewState ?? null,
                 };
@@ -1266,6 +1281,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 isSaving: false,
                 kind: "file",
                 loadError: null,
+                pendingOpenLocation,
                 reviewContext: resolveFileTabReviewContext({
                     relativePath,
                     requestedReviewContext: reviewContext,
@@ -1320,6 +1336,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             input.reviewContext ?? null,
             paneId,
             getWorkspaceOpenTargetInsertIndex(input.target),
+            input.openLocation ?? null,
         );
 
         return paneId;
@@ -1852,6 +1869,16 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     updateFileViewState: (tabId, viewState) => {
         set((state) => ({
             ...setFileTabViewState(state, tabId, viewState),
+        }));
+    },
+
+    updateFilePendingOpenLocation: (tabId, pendingOpenLocation) => {
+        set((state) => ({
+            ...setFileTabPendingOpenLocation(
+                state,
+                tabId,
+                pendingOpenLocation,
+            ),
         }));
     },
 

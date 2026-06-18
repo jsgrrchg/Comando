@@ -92,6 +92,7 @@ import {
 import {
     collectPaneNodes,
     findWorkspaceNodeById,
+    type RuntimeWorkspaceFileOpenLocation,
     type RuntimeWorkspaceFileReviewContext,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceTab,
@@ -461,6 +462,63 @@ function capturePortableEditorRestoreState(
         scrollLeft: editor.getScrollLeft(),
         scrollTop: editor.getScrollTop(),
     };
+}
+
+function applyEditorOpenLocation(
+    editor: MonacoEditor.IStandaloneCodeEditor,
+    location: RuntimeWorkspaceFileOpenLocation,
+): boolean {
+    const model = editor.getModel();
+    if (!model) {
+        return false;
+    }
+
+    const startLine = Math.min(
+        Math.max(location.startLine, 1),
+        model.getLineCount(),
+    );
+    const endLine =
+        location.endLine === null || location.endLine === undefined
+            ? startLine
+            : Math.min(
+                  Math.max(location.endLine, startLine),
+                  model.getLineCount(),
+              );
+
+    editor.layout();
+
+    if (endLine > startLine) {
+        const selection = {
+            endColumn: model.getLineMaxColumn(endLine),
+            endLineNumber: endLine,
+            selectionStartColumn: 1,
+            selectionStartLineNumber: startLine,
+            startColumn: 1,
+            startLineNumber: startLine,
+        };
+        editor.setSelection(selection);
+        editor.revealRangeInCenter(selection);
+        return true;
+    }
+
+    editor.setPosition({ column: 1, lineNumber: startLine });
+    editor.revealLineInCenter(startLine);
+    return true;
+}
+
+function applyInlineReviewOpenLocation(
+    diffEditor: MonacoEditor.IStandaloneDiffEditor,
+    location: RuntimeWorkspaceFileOpenLocation,
+): boolean {
+    const modifiedEditor = diffEditor.getModifiedEditor();
+    if (!applyEditorOpenLocation(modifiedEditor, location)) {
+        return false;
+    }
+
+    const originalEditor = diffEditor.getOriginalEditor();
+    originalEditor.setScrollLeft(modifiedEditor.getScrollLeft());
+    originalEditor.setScrollTop(modifiedEditor.getScrollTop());
+    return true;
 }
 
 function isMonacoCancellationError(error: unknown): boolean {
@@ -1535,6 +1593,7 @@ function WorkspacePaneView({
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         targetPaneId?: string | null,
         targetIndex?: number,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void> = useWorkspaceStore((state) => state.openFileTab);
     const openChatImageTab = useWorkspaceStore((state) => state.openChatImageTab);
     const openReviewTab = useWorkspaceStore((state) => state.openReviewTab);
@@ -1820,6 +1879,7 @@ function WorkspacePaneView({
             relativePath: string,
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+            openLocation?: RuntimeWorkspaceFileOpenLocation | null,
         ) => {
             await openFileTab(
                 projectId,
@@ -1827,6 +1887,8 @@ function WorkspacePaneView({
                 worktreeId ?? activeTabWorktreeId,
                 reviewContext,
                 paneNodeId,
+                undefined,
+                openLocation,
             );
         },
         [activeTabWorktreeId, openFileTab, paneNodeId],
@@ -3686,6 +3748,9 @@ function FileTabView({
     const updateFileViewState = useWorkspaceStore(
         (state) => state.updateFileViewState,
     );
+    const updateFilePendingOpenLocation = useWorkspaceStore(
+        (state) => state.updateFilePendingOpenLocation,
+    );
     const diffEditorRef = useRef<MonacoEditor.IStandaloneDiffEditor | null>(
         null,
     );
@@ -4372,6 +4437,26 @@ function FileTabView({
         [restoreEditorViewState],
     );
 
+    const consumePendingOpenLocation = useCallback(
+        (editor: MonacoEditor.IStandaloneCodeEditor): boolean => {
+            const pendingOpenLocation = tab.pendingOpenLocation ?? null;
+            if (!pendingOpenLocation) {
+                return false;
+            }
+
+            if (!applyEditorOpenLocation(editor, pendingOpenLocation)) {
+                return false;
+            }
+
+            restoredEditorViewStateTabIdRef.current = tab.id;
+            pendingEditorViewStateTabIdRef.current = tab.id;
+            pendingEditorViewStateRef.current = editor.saveViewState();
+            updateFilePendingOpenLocation(tab.id, null);
+            return true;
+        },
+        [tab.id, tab.pendingOpenLocation, updateFilePendingOpenLocation],
+    );
+
     useEffect(() => {
         if (!isVisible) {
             return;
@@ -4398,12 +4483,17 @@ function FileTabView({
             return;
         }
 
+        if (consumePendingOpenLocation(editor)) {
+            return;
+        }
+
         restoreEditorViewStateForTab(
             editor,
             tab.id,
             getPendingEditorViewStateForTab(tab.id, tab.viewState ?? null),
         );
     }, [
+        consumePendingOpenLocation,
         getPendingEditorViewStateForTab,
         inlineReviewTrackedFile,
         isVisible,
@@ -4732,6 +4822,10 @@ function FileTabView({
             return;
         }
 
+        if (consumePendingOpenLocation(editor)) {
+            return;
+        }
+
         restoreEditorViewStateForTab(
             editor,
             tab.id,
@@ -4740,6 +4834,7 @@ function FileTabView({
     }, [
         canEdit,
         acquireFileEditorModel,
+        consumePendingOpenLocation,
         document,
         getPendingEditorViewStateForTab,
         inlineReviewTrackedFile,
@@ -4915,6 +5010,29 @@ function FileTabView({
         [clearInlineReviewScrollRestore],
     );
 
+    const consumePendingInlineReviewOpenLocation = useCallback(
+        (diffEditor: MonacoEditor.IStandaloneDiffEditor): boolean => {
+            const pendingOpenLocation = tab.pendingOpenLocation ?? null;
+            if (!pendingOpenLocation) {
+                return false;
+            }
+
+            if (!applyInlineReviewOpenLocation(diffEditor, pendingOpenLocation)) {
+                return false;
+            }
+
+            pendingEditorViewStateTabIdRef.current = tab.id;
+            pendingEditorViewStateRef.current = diffEditor
+                .getModifiedEditor()
+                .saveViewState();
+            inlineReviewScrollStateRef.current =
+                captureDiffEditorScrollState(diffEditor);
+            updateFilePendingOpenLocation(tab.id, null);
+            return true;
+        },
+        [tab.id, tab.pendingOpenLocation, updateFilePendingOpenLocation],
+    );
+
     const applyInlineReviewModels = useCallback(
         (trackedFile: AiTrackedFile | null) => {
             if (
@@ -4927,7 +5045,8 @@ function FileTabView({
                 return;
             }
 
-            const installedModels = diffEditorRef.current.getModel();
+            const diffEditor = diffEditorRef.current;
+            const installedModels = diffEditor.getModel();
             const currentReviewModels = inlineReviewCurrentModelsRef.current;
             if (
                 currentReviewModels.revision ===
@@ -4939,10 +5058,10 @@ function FileTabView({
                 installedModels?.original === currentReviewModels.original &&
                 installedModels?.modified === currentReviewModels.modified
             ) {
+                consumePendingInlineReviewOpenLocation(diffEditor);
                 return;
             }
 
-            const diffEditor = diffEditorRef.current;
             const monaco = inlineReviewMonacoRef.current;
             const previousModels = diffEditor.getModel();
             const currentInlineReviewRestoreState =
@@ -4998,7 +5117,9 @@ function FileTabView({
                     modified: nextModifiedModel,
                     original: nextOriginalModel,
                 };
-                if (currentInlineReviewRestoreState) {
+                if (consumePendingInlineReviewOpenLocation(diffEditor)) {
+                    // Explicit file reference navigation wins over review view state.
+                } else if (currentInlineReviewRestoreState) {
                     restorePortableInlineReviewState(
                         diffEditor,
                         currentInlineReviewRestoreState,
@@ -5045,6 +5166,7 @@ function FileTabView({
             document,
             inlineReviewModelRevision,
             monacoLanguageId,
+            consumePendingInlineReviewOpenLocation,
             restoreInlineReviewScrollState,
             restoreInlineReviewViewState,
             restorePortableInlineReviewState,
@@ -5902,6 +6024,11 @@ function FileTabView({
                                 );
                                 pendingInlineReviewRestoreStateRef.current =
                                     null;
+                            } else if (
+                                !inlineReviewTrackedFile &&
+                                consumePendingOpenLocation(editor)
+                            ) {
+                                // The explicit location intent wins over saved view state.
                             } else {
                                 const persistedViewState =
                                     getPendingEditorViewStateForTab(

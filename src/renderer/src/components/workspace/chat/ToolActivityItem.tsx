@@ -11,7 +11,10 @@ import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexS
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import { HighlightedCodeText } from "@renderer/app/editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "@renderer/app/editor/useCodeLanguageSupport";
-import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/tree";
+import type {
+    RuntimeWorkspaceFileOpenLocation,
+    RuntimeWorkspaceFileReviewContext,
+} from "@renderer/app/workspace/tree";
 
 import { MarkdownContent } from "../MarkdownContent";
 import {
@@ -433,6 +436,20 @@ function canOpenToolFileReference({
     return !!parsedReference && !parsedReference.isAbsolute && !!projectId;
 }
 
+function getOpenLocationFromFileReference(reference: {
+    readonly endLine: number | null;
+    readonly startLine: number | null;
+}): RuntimeWorkspaceFileOpenLocation | null {
+    if (reference.startLine === null) {
+        return null;
+    }
+
+    return {
+        endLine: reference.endLine,
+        startLine: reference.startLine,
+    };
+}
+
 function openToolFileReference({
     onOpenFile,
     onOpenFileReference,
@@ -446,6 +463,7 @@ function openToolFileReference({
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenFileReference?: (
         reference: ResolvedProjectFileReference,
@@ -465,17 +483,41 @@ function openToolFileReference({
         }
 
         if (projectId) {
-            void onOpenFile(
-                projectId,
-                resolvedReference.relativePath,
-                worktreeId,
-            );
+            const openLocation =
+                getOpenLocationFromFileReference(resolvedReference);
+            if (openLocation) {
+                void onOpenFile(
+                    projectId,
+                    resolvedReference.relativePath,
+                    worktreeId,
+                    undefined,
+                    openLocation,
+                );
+            } else {
+                void onOpenFile(
+                    projectId,
+                    resolvedReference.relativePath,
+                    worktreeId,
+                );
+            }
         }
         return;
     }
 
     const parsedReference = parseProjectFileReference(target);
     if (!parsedReference || parsedReference.isAbsolute || !projectId) {
+        return;
+    }
+
+    const openLocation = getOpenLocationFromFileReference(parsedReference);
+    if (openLocation) {
+        void onOpenFile(
+            projectId,
+            parsedReference.path,
+            worktreeId,
+            undefined,
+            openLocation,
+        );
         return;
     }
 
@@ -808,6 +850,7 @@ function FileToolMessage({
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenFileReference?: (
         reference: ResolvedProjectFileReference,
@@ -1586,6 +1629,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenFileReference?: (
         reference: ResolvedProjectFileReference,
@@ -1695,6 +1739,7 @@ function areToolActivityItemPropsEqual(
             relativePath: string,
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+            openLocation?: RuntimeWorkspaceFileOpenLocation | null,
         ) => Promise<void>;
         readonly onOpenFileReference?: (
             reference: ResolvedProjectFileReference,
@@ -1716,6 +1761,7 @@ function areToolActivityItemPropsEqual(
             relativePath: string,
             worktreeId?: string | null,
             reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+            openLocation?: RuntimeWorkspaceFileOpenLocation | null,
         ) => Promise<void>;
         readonly onOpenFileReference?: (
             reference: ResolvedProjectFileReference,

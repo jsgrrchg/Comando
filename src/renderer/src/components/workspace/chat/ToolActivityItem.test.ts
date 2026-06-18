@@ -543,6 +543,56 @@ describe("ToolActivityItem", () => {
         );
     });
 
+    it("passes raw relative location line ranges when no resolver is available", () => {
+        const onOpenFile = vi.fn(async () => {});
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [
+                    {
+                        endLine: 11,
+                        line: 10,
+                        path: "src/example.ts",
+                    },
+                ],
+                summary: null,
+                title: "Read src/example.ts",
+            }),
+            onOpenFile,
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+        const chevronButton = container.querySelector<HTMLButtonElement>(
+            'button[aria-label="Expand details"]',
+        );
+        expect(chevronButton).not.toBeNull();
+
+        act(() => {
+            chevronButton?.click();
+        });
+
+        const locationButton = Array.from(
+            container.querySelectorAll<HTMLButtonElement>("button"),
+        ).find((button) => button.textContent === "src/example.ts:10-11");
+        expect(locationButton).not.toBeNull();
+
+        act(() => {
+            locationButton?.click();
+        });
+
+        expect(onOpenFile).toHaveBeenCalledWith(
+            "project-1",
+            "src/example.ts",
+            null,
+            undefined,
+            {
+                endLine: 11,
+                startLine: 10,
+            },
+        );
+    });
+
     it("activates read title links visually on hover and keyboard focus", () => {
         const container = renderInteractiveToolActivityItem({
             activity: createActivity({

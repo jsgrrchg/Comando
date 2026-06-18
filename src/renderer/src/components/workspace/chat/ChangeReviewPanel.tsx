@@ -1,7 +1,10 @@
 import { memo, useCallback, useMemo, type CSSProperties } from "react";
 
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
-import type { RuntimeWorkspaceFileReviewContext } from "@renderer/app/workspace/tree";
+import type {
+    RuntimeWorkspaceFileOpenLocation,
+    RuntimeWorkspaceFileReviewContext,
+} from "@renderer/app/workspace/tree";
 
 import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
@@ -390,6 +393,7 @@ export interface ChangeReviewPanelProps {
         relativePath: string,
         worktreeId?: string | null,
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly projectId: string | null;
     readonly resolveFileReference?: (
