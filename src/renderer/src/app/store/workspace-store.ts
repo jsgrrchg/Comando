@@ -40,6 +40,7 @@ import {
     resizeSplit,
     selectAdjacentPaneTab,
     setFileTabExternalChange,
+    setFileTabPendingOpenLocation,
     setFileTabViewState,
     setFileTabReviewContext,
     selectPaneTab,
@@ -1129,9 +1130,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         reviewContext?: RuntimeWorkspaceFileReviewContext | null,
         targetPaneId?: string | null,
         targetIndex?: number,
-        _openLocation?: RuntimeWorkspaceFileOpenLocation | null,
+        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => {
         try {
+            const pendingOpenLocation = openLocation ?? null;
             const trackedFiles = collectPendingTrackedFilesFromSessions(
                 useAiStore.getState().sessions,
             );
@@ -1172,30 +1174,34 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 });
 
                 set((state) => ({
-                    ...setFileTabReviewContext(
-                        paneId === resolvedPaneId
-                            ? selectPaneTab(
-                                  state,
-                                  paneId,
-                                  existingTabInResolvedPane.id,
-                              )
-                            : restoreSourcePaneActiveTabAfterMove(
-                                  moveTabToPaneAtIndex(
-                                      state,
-                                      existingTabInResolvedPane.id,
-                                      paneId,
-                                      resolvedPaneId,
-                                      Number.POSITIVE_INFINITY,
-                                  ),
-                                  paneId,
-                                  getSourcePaneFallbackTabIdAfterMove(
+                    ...setFileTabPendingOpenLocation(
+                        setFileTabReviewContext(
+                            paneId === resolvedPaneId
+                                ? selectPaneTab(
                                       state,
                                       paneId,
                                       existingTabInResolvedPane.id,
+                                  )
+                                : restoreSourcePaneActiveTabAfterMove(
+                                      moveTabToPaneAtIndex(
+                                          state,
+                                          existingTabInResolvedPane.id,
+                                          paneId,
+                                          resolvedPaneId,
+                                          Number.POSITIVE_INFINITY,
+                                      ),
+                                      paneId,
+                                      getSourcePaneFallbackTabIdAfterMove(
+                                          state,
+                                          paneId,
+                                          existingTabInResolvedPane.id,
+                                      ),
                                   ),
-                              ),
+                            existingTabInResolvedPane.id,
+                            nextReviewContext,
+                        ),
                         existingTabInResolvedPane.id,
-                        nextReviewContext,
+                        pendingOpenLocation,
                     ),
                     error: null,
                     recentActiveTabIds: recordRecentTabActivation(
@@ -1231,6 +1237,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     ...sourceTab,
                     createdAt: new Date().toISOString(),
                     id: crypto.randomUUID(),
+                    pendingOpenLocation,
                     reviewContext: nextReviewContext,
                     viewState: sourceTab.viewState ?? null,
                 };
@@ -1270,6 +1277,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 isSaving: false,
                 kind: "file",
                 loadError: null,
+                pendingOpenLocation,
                 reviewContext: resolveFileTabReviewContext({
                     relativePath,
                     requestedReviewContext: reviewContext,

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { editor as MonacoEditor } from "monaco-editor";
 
 import type {
     ProjectFileDocument,
@@ -333,6 +334,125 @@ describe("workspace file opening", () => {
         });
         await flushWorkspacePersistenceForTests();
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+    });
+
+    it("stores file open locations as runtime-only tab intent", async () => {
+        await useWorkspaceStore.getState().openFileTab(
+            "project-1",
+            "src/app.ts",
+            null,
+            undefined,
+            undefined,
+            undefined,
+            {
+                endLine: 14,
+                startLine: 12,
+            },
+        );
+
+        const state = useWorkspaceStore.getState();
+        const openedTab = Object.values(state.tabsById).find(
+            (tab) => tab.kind === "file" && tab.relativePath === "src/app.ts",
+        );
+        expect(openedTab).toMatchObject({
+            kind: "file",
+            pendingOpenLocation: {
+                endLine: 14,
+                startLine: 12,
+            },
+            relativePath: "src/app.ts",
+        });
+
+        await flushWorkspacePersistenceForTests();
+        const persistedSnapshot =
+            saveWorkspaceSnapshotMock.mock.calls.at(-1)?.[0];
+        if (!persistedSnapshot) {
+            throw new Error("Expected workspace snapshot to be persisted.");
+        }
+        const persistedFileTab = persistedSnapshot.tabs.find(
+            (tab) => tab.kind === "file" && tab.relativePath === "src/app.ts",
+        );
+        expect(persistedFileTab).toBeTruthy();
+        expect(persistedFileTab).not.toHaveProperty("pendingOpenLocation");
+    });
+
+    it("updates only the pending location when opening an existing file tab at a line", async () => {
+        const viewState: MonacoEditor.ICodeEditorViewState = {
+            contributionsState: {},
+            cursorState: [],
+            viewState: {
+                firstPosition: {
+                    column: 1,
+                    lineNumber: 1,
+                },
+                firstPositionDeltaTop: 0,
+                scrollLeft: 0,
+            },
+        };
+        const existingTab = createWorkspaceFileTab("file-tab-1", "src/app.ts");
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            rootNode: {
+                activeTabId: "file-tab-1",
+                id: "pane-root",
+                tabIds: ["file-tab-1"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-tab-1": {
+                    ...existingTab,
+                    document: {
+                        absolutePath: "/tmp/src/app.ts",
+                        content: "export const value = 1;\n",
+                        imageDataBase64: null,
+                        isBinary: false,
+                        isTooLarge: false,
+                        kind: "text",
+                        languageId: "typescript",
+                        languageLabel: "TypeScript",
+                        mimeType: "text/typescript",
+                        modifiedAtMs: 1,
+                        name: "app.ts",
+                        projectId: "project-1",
+                        relativePath: "src/app.ts",
+                        sizeBytes: 24,
+                    },
+                    draftContent: "export const value = 1;\n",
+                    pendingOpenLocation: {
+                        endLine: 4,
+                        startLine: 4,
+                    },
+                    savedContent: "export const value = 1;\n",
+                    viewState,
+                },
+            },
+        }));
+
+        await useWorkspaceStore.getState().openFileTab(
+            "project-1",
+            "src/app.ts",
+            null,
+            undefined,
+            "pane-root",
+            undefined,
+            {
+                endLine: 22,
+                startLine: 20,
+            },
+        );
+
+        const state = useWorkspaceStore.getState();
+        const tab = state.tabsById["file-tab-1"];
+        expect(tab).toMatchObject({
+            kind: "file",
+            pendingOpenLocation: {
+                endLine: 22,
+                startLine: 20,
+            },
+            relativePath: "src/app.ts",
+        });
+        expect(tab?.kind === "file" ? tab.viewState : null).toBe(viewState);
+        expect(openProjectFileMock).not.toHaveBeenCalled();
     });
 
     it("opens a singleton project diff tab per project and worktree", async () => {
@@ -746,6 +866,11 @@ describe("workspace file opening", () => {
                 "worktree-1",
                 undefined,
                 "pane-right",
+                undefined,
+                {
+                    endLine: 34,
+                    startLine: 30,
+                },
             );
 
         const state = useWorkspaceStore.getState();
@@ -780,6 +905,10 @@ describe("workspace file opening", () => {
             draftContent: "export const value = 1;\n",
             isDirty: false,
             kind: "file",
+            pendingOpenLocation: {
+                endLine: 34,
+                startLine: 30,
+            },
             projectId: "project-1",
             relativePath: "src/app.ts",
             reviewContext: null,
