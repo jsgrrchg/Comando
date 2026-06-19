@@ -125,6 +125,8 @@ type UsageSnapshot = {
   cache_creation_input_tokens: number;
 };
 
+type ContextWindowSizeSource = "default" | "heuristic" | "modelUsage";
+
 const ZERO_USAGE = Object.freeze({
   input_tokens: 0,
   output_tokens: 0,
@@ -190,6 +192,10 @@ type Session = {
    *  DEFAULT_CONTEXT_WINDOW, refreshed from each result's modelUsage, and
    *  invalidated when the user switches the session's model. */
   contextWindowSize: number;
+  /** Describes whether `contextWindowSize` is still the generic default or was
+   *  learned from model metadata. Streaming usage updates are only safe once the
+   *  size is no longer the default placeholder. */
+  contextWindowSizeSource: ContextWindowSizeSource;
   /** Accumulated task list for the session, keyed by task ID. Task IDs are
    *  per-session, so this state must not be shared across sessions. */
   taskState: TaskState;
@@ -1149,6 +1155,7 @@ export class ClaudeAcpAgent implements Agent {
             // leave the next prompt's mid-stream updates reporting 200k.
             if (matchingModelUsage) {
               session.contextWindowSize = matchingModelUsage.contextWindow;
+              session.contextWindowSizeSource = "modelUsage";
             }
 
             // Task-notification followups are autonomous work triggered by a
@@ -1300,6 +1307,7 @@ export class ClaudeAcpAgent implements Agent {
                     const inferred = inferContextWindowFromModel(model);
                     if (inferred !== null) {
                       session.contextWindowSize = inferred;
+                      session.contextWindowSizeSource = "heuristic";
                     }
                   }
                 }
@@ -1323,14 +1331,20 @@ export class ClaudeAcpAgent implements Agent {
               const nextUsage = totalTokens(lastAssistantUsage);
               if (nextUsage !== lastAssistantTotalUsage) {
                 lastAssistantTotalUsage = nextUsage;
-                await this.client.sessionUpdate({
-                  sessionId: params.sessionId,
-                  update: {
-                    sessionUpdate: "usage_update",
-                    used: nextUsage,
-                    size: session.contextWindowSize,
-                  },
-                });
+                // Do not publish live context usage while the window is still
+                // the generic 200k placeholder. The final `result.modelUsage`
+                // update below supplies the real window, and publishing the
+                // placeholder here makes 1M sessions look artificially full.
+                if (session.contextWindowSizeSource !== "default") {
+                  await this.client.sessionUpdate({
+                    sessionId: params.sessionId,
+                    update: {
+                      sessionUpdate: "usage_update",
+                      used: nextUsage,
+                      size: session.contextWindowSize,
+                    },
+                  });
+                }
               }
             }
             for (const notification of streamEventToAcpNotifications(
@@ -2088,7 +2102,10 @@ export class ClaudeAcpAgent implements Agent {
         // to the new model's heuristic so mid-stream updates between now and
         // the next `result` reflect the user's selection instead of the old
         // model's window.
-        session.contextWindowSize = inferContextWindowFromModel(value) ?? DEFAULT_CONTEXT_WINDOW;
+        const inferredContextWindowSize = inferContextWindowFromModel(value);
+        session.contextWindowSize = inferredContextWindowSize ?? DEFAULT_CONTEXT_WINDOW;
+        session.contextWindowSizeSource =
+          inferredContextWindowSize === null ? "default" : "heuristic";
       }
       session.models = { ...session.models, currentModelId: value };
 
@@ -2546,6 +2563,7 @@ export class ClaudeAcpAgent implements Agent {
         effortLevel: initialEffort.currentValue as Settings["effortLevel"],
       });
     }
+    const inferredContextWindowSize = inferContextWindowFromModel(models.currentModelId);
     this.sessions[sessionId] = {
       query: q,
       input: input,
@@ -2568,8 +2586,8 @@ export class ClaudeAcpAgent implements Agent {
       nextPendingOrder: 0,
       abortController,
       emitRawSDKMessages: sessionMeta?.claudeCode?.emitRawSDKMessages ?? false,
-      contextWindowSize:
-        inferContextWindowFromModel(models.currentModelId) ?? DEFAULT_CONTEXT_WINDOW,
+      contextWindowSize: inferredContextWindowSize ?? DEFAULT_CONTEXT_WINDOW,
+      contextWindowSizeSource: inferredContextWindowSize === null ? "default" : "heuristic",
       taskState,
       toolUseCache: {},
       messageIdToUuid: new Map(),
