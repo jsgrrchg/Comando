@@ -18,6 +18,10 @@ import type {
     WorkspaceReviewTab,
     WorkspaceSnapshot,
 } from "@shared/ipc";
+import {
+    getAiRuntimeDisplayName,
+    type ActiveAiRuntimeId,
+} from "@shared/ai-runtimes";
 
 import {
     activatePane,
@@ -81,14 +85,9 @@ import { useAiStore } from "./ai-store";
 import { useProjectsStore } from "./projects-store";
 
 export type WorkspaceQuickCreateAction =
-    | "claude"
-    | "codex"
-    | "gemini"
+    | ActiveAiRuntimeId
     | "git"
-    | "grok"
     | "history"
-    | "kilo"
-    | "opencode"
     | "file"
     | "terminal";
 
@@ -121,7 +120,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     createChatTab: (
         projectId: string | null,
         worktreeId?: string | null,
-        runtimeId?: AiRuntimeId,
+        runtimeId?: ActiveAiRuntimeId,
     ) => Promise<void>;
     createTerminalTab: (
         projectId: string | null,
@@ -478,10 +477,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     createChatTab: async (
         projectId: string | null,
         worktreeId: string | null = null,
-        runtimeId: AiRuntimeId = "codex",
+        runtimeId: ActiveAiRuntimeId = "codex",
     ) => {
         const paneId = get().activePaneId;
-        const runtimeTitle = getRuntimeDisplayName(runtimeId);
+        const runtimeTitle = getAiRuntimeDisplayName(runtimeId);
         const tab: WorkspaceChatTab = {
             createdAt: new Date().toISOString(),
             draft: "",
@@ -3021,24 +3020,6 @@ function getNextNumberedTitleValue(
     }
 
     return maxValue + 1;
-}
-
-function getRuntimeDisplayName(runtimeId: AiRuntimeId): string {
-    switch (runtimeId) {
-        case "claude":
-            return "Claude";
-        case "gemini":
-            return "Gemini";
-        case "grok":
-            return "Grok";
-        case "kilo":
-            return "Kilo";
-        case "opencode":
-            return "OpenCode";
-        case "codex":
-        default:
-            return "Codex";
-    }
 }
 
 function getFileTitle(relativePath: string): string {

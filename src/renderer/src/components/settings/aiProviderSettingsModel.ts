@@ -1,11 +1,6 @@
-export const AI_PROVIDER_IDS = [
-    "codex",
-    "claude",
-    "gemini",
-    "grok",
-    "kilo",
-    "opencode",
-] as const;
+import { LEGACY_AI_RUNTIME_IDS } from "@shared/ai-runtimes";
+
+export const AI_PROVIDER_IDS = LEGACY_AI_RUNTIME_IDS;
 
 export type AiProviderId = (typeof AI_PROVIDER_IDS)[number];
 

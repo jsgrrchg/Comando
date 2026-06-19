@@ -24,9 +24,11 @@ import type {
     ThemeMode,
     ThemePreset,
 } from "@shared/ipc";
+import { getAiRuntimeDisplayName } from "@shared/ai-runtimes";
 
 import {
     SettingsWindow,
+    AI_PROVIDER_IDS,
     type AiProviderDiagnosticEntry,
     type AiProviderDiagnosticsState,
     type AiProviderId,
@@ -59,14 +61,7 @@ import { useResolvedAppearance } from "./app/hooks/use-resolved-appearance";
 import { useSettingsStore } from "./app/store/settings-store";
 import { shortcutDefinitions, formatShortcut } from "./app/shortcuts/registry";
 
-const AI_PROVIDER_RUNTIME_IDS = [
-    "codex",
-    "claude",
-    "gemini",
-    "grok",
-    "kilo",
-    "opencode",
-] as const satisfies readonly AiProviderId[];
+const AI_PROVIDER_RUNTIME_IDS = AI_PROVIDER_IDS;
 
 export function SettingsApp() {
     const runtimeProjectId = useMemo(() => {
@@ -1134,21 +1129,7 @@ function createDefaultGitHubAuthStatus(): GitHubAuthStatus {
 }
 
 function getRuntimeName(runtimeId: AiRuntimeId): string {
-    switch (runtimeId) {
-        case "claude":
-            return "Claude";
-        case "gemini":
-            return "Gemini";
-        case "grok":
-            return "Grok";
-        case "kilo":
-            return "Kilo";
-        case "opencode":
-            return "OpenCode";
-        case "codex":
-        default:
-            return "Codex";
-    }
+    return getAiRuntimeDisplayName(runtimeId);
 }
 
 function isAiProviderId(runtimeId: AiRuntimeId): runtimeId is AiProviderId {

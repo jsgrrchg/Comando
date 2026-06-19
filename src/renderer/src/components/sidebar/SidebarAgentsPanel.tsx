@@ -15,6 +15,10 @@ import type {
     AiRuntimeId,
     ComandoApi,
 } from "@shared/ipc";
+import {
+    ACTIVE_AI_RUNTIME_IDS,
+    type ActiveAiRuntimeId,
+} from "@shared/ai-runtimes";
 import { truncateChatTitle } from "@shared/chatTitle";
 
 import { useAiStore } from "@renderer/app/store/ai-store";
@@ -99,14 +103,7 @@ const SIDEBAR_AGENTS_REFRESH_DEBOUNCE_MS = 800;
 const EMPTY_AGENTS_SESSIONS: readonly AiHistorySessionSummary[] = [];
 const EMPTY_COLLAPSED_IDS: ReadonlySet<string> = new Set();
 
-const SIDEBAR_AGENTS_NEW_RUNTIMES: readonly AiRuntimeId[] = [
-    "codex",
-    "claude",
-    "gemini",
-    "grok",
-    "kilo",
-    "opencode",
-];
+const SIDEBAR_AGENTS_NEW_RUNTIMES = ACTIVE_AI_RUNTIME_IDS;
 const SIDEBAR_AGENT_DRAG_THRESHOLD_PX = 6;
 const CLAUDE_CODE_TERMINAL_DESCRIPTION =
     "Open the claude CLI in a workspace terminal.";
@@ -475,7 +472,7 @@ export function SidebarAgentsPanel({
     );
 
     const handleCreateNewAgentTab = useCallback(
-        (runtimeId: AiRuntimeId) => {
+        (runtimeId: ActiveAiRuntimeId) => {
             void createChatTab(projectId, worktreeId, runtimeId);
         },
         [createChatTab, projectId, worktreeId],
@@ -1117,7 +1114,7 @@ export function buildSidebarAgentsNewAgentMenuEntries({
     onOpenClaudeCodeTerminal,
 }: {
     readonly claudeCodeAvailable: boolean | null;
-    readonly onCreateNewAgentTab: (runtimeId: AiRuntimeId) => void;
+    readonly onCreateNewAgentTab: (runtimeId: ActiveAiRuntimeId) => void;
     readonly onOpenClaudeCodeTerminal: () => void;
 }): readonly ContextMenuEntry[] {
     return [

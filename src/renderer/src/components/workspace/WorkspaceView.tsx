@@ -26,6 +26,12 @@ import type {
     ProjectFileDocument,
 } from "@shared/ipc";
 import {
+    ACTIVE_AI_RUNTIME_IDS,
+    getAiRuntimeDisplayName,
+    isActiveAiRuntimeId,
+    type ActiveAiRuntimeId,
+} from "@shared/ai-runtimes";
+import {
     resolveEditorLanguage,
     shouldWrapEditorLanguage,
 } from "@shared/editor-language";
@@ -601,22 +607,20 @@ export function buildWorkspaceAgentsQuickCreateEntries({
     readonly onCreateChatTab: (
         projectId: string | null,
         worktreeId: string | null,
-        runtimeId: AiRuntimeId,
+        runtimeId: ActiveAiRuntimeId,
     ) => void;
     readonly onOpenClaudeCodeTerminal: () => void;
 }): readonly QuickCreateMenuEntry[] {
     const createRuntimeEntry = (
-        label: string,
-        runtimeId: AiRuntimeId,
+        runtimeId: ActiveAiRuntimeId,
     ): QuickCreateMenuEntry => ({
         action: () =>
             onCreateChatTab(defaultProjectId, defaultWorktreeId, runtimeId),
-        label,
+        label: getAiRuntimeDisplayName(runtimeId),
     });
 
     return [
-        createRuntimeEntry("Codex", "codex"),
-        createRuntimeEntry("Claude", "claude"),
+        ...ACTIVE_AI_RUNTIME_IDS.slice(0, 2).map(createRuntimeEntry),
         {
             action: onOpenClaudeCodeTerminal,
             label: "Claude Code",
@@ -625,11 +629,12 @@ export function buildWorkspaceAgentsQuickCreateEntries({
                     ? CLAUDE_CODE_NOT_FOUND_MESSAGE
                     : CLAUDE_CODE_TERMINAL_DESCRIPTION,
         },
-        createRuntimeEntry("Gemini", "gemini"),
-        createRuntimeEntry("Grok", "grok"),
-        createRuntimeEntry("Kilo", "kilo"),
-        createRuntimeEntry("OpenCode", "opencode"),
+        ...ACTIVE_AI_RUNTIME_IDS.slice(2).map(createRuntimeEntry),
     ];
+}
+
+function resolveActiveRuntimeId(runtimeId: AiRuntimeId): ActiveAiRuntimeId {
+    return isActiveAiRuntimeId(runtimeId) ? runtimeId : "codex";
 }
 
 export function WorkspaceView({
@@ -1929,7 +1934,7 @@ function WorkspacePaneView({
         void createChatTab(
             defaultProjectId,
             defaultWorktreeId ?? null,
-            lastFocusedRuntimeId,
+            resolveActiveRuntimeId(lastFocusedRuntimeId),
         );
     }, [
         createChatTab,
@@ -2000,7 +2005,7 @@ function WorkspacePaneView({
             await createChatTab(
                 context.projectId,
                 worktreeId,
-                currentState.lastFocusedRuntimeId,
+                resolveActiveRuntimeId(currentState.lastFocusedRuntimeId),
             );
 
             const createdChatTab = Object.values(
@@ -2046,13 +2051,6 @@ function WorkspacePaneView({
                     defaultProjectId,
                     defaultWorktreeId ?? null,
                     "claude",
-                );
-                return;
-            case "gemini":
-                void createChatTab(
-                    defaultProjectId,
-                    defaultWorktreeId ?? null,
-                    "gemini",
                 );
                 return;
             case "grok":
@@ -3190,8 +3188,6 @@ export function getQuickCreateButtonTitle(
     switch (action) {
         case "claude":
             return "Open last item: Claude chat";
-        case "gemini":
-            return "Open last item: Gemini chat";
         case "grok":
             return "Open last item: Grok chat";
         case "kilo":

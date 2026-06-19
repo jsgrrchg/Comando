@@ -19,6 +19,7 @@ import type {
     SettingsSnapshot,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
+import { isActiveAiRuntimeId } from "@shared/ai-runtimes";
 
 import { useSystemTheme } from "./app/hooks/use-system-theme";
 import { setCachedAppEditorSettings } from "./app/settings/client";
@@ -2204,7 +2205,9 @@ export function App() {
                 await createChatTab(
                     activeProjectId,
                     worktreeId,
-                    lastFocusedRuntimeId,
+                    isActiveAiRuntimeId(lastFocusedRuntimeId)
+                        ? lastFocusedRuntimeId
+                        : "codex",
                 );
             } catch (error) {
                 window.alert(
@@ -2285,7 +2288,9 @@ export function App() {
                 await createChatTab(
                     request.projectId,
                     worktreeId,
-                    lastFocusedRuntimeId,
+                    isActiveAiRuntimeId(lastFocusedRuntimeId)
+                        ? lastFocusedRuntimeId
+                        : "codex",
                 );
             } catch (error) {
                 window.alert(

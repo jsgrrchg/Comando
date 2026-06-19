@@ -27,6 +27,7 @@ import type {
     ProjectSettingsSnapshot,
     ProjectSummary,
 } from "@shared/ipc";
+import { LEGACY_AI_RUNTIME_IDS } from "@shared/ai-runtimes";
 
 import {
     type AiPersistenceGateway,
@@ -92,14 +93,7 @@ export interface CreateDbWorkerClientOptions {
     readonly fileName?: string;
 }
 
-const runtimeIds = [
-    "claude",
-    "codex",
-    "gemini",
-    "grok",
-    "kilo",
-    "opencode",
-] as const satisfies readonly AiRuntimeId[];
+const runtimeIds = LEGACY_AI_RUNTIME_IDS;
 
 const DB_WORKER_METHOD_TIMEOUTS_MS: Readonly<Record<string, number>> = {
     // Project imports can synchronously touch the filesystem and invoke git

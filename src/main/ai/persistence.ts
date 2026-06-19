@@ -24,6 +24,7 @@ import type {
     ListAiSessionHistoryInput,
 } from "@shared/ipc";
 import { syncTrackedFile } from "@shared/ai-tracked-file";
+import { isKnownAiRuntimeId } from "@shared/ai-runtimes";
 
 import type { Awaitable } from "../db/awaitable";
 import { debugBenignError } from "../observability/logging";
@@ -2608,13 +2609,7 @@ function normalizeDiffHunks(value: unknown): readonly AiDiffHunk[] {
 function normalizeRuntimeId(
     value: unknown,
 ): AiSessionSnapshot["runtimeId"] {
-    return value === "claude" ||
-        value === "codex" ||
-        value === "gemini" ||
-        value === "kilo" ||
-        value === "opencode"
-        ? value
-        : "codex";
+    return isKnownAiRuntimeId(value) ? value : "codex";
 }
 
 function normalizeParentSessionId(value: unknown): string | null {

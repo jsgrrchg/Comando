@@ -13,6 +13,7 @@ import type {
     OpenCodeRuntimeSettings,
     PersistenceSnapshot,
 } from "@shared/ipc";
+import { LEGACY_AI_RUNTIME_IDS } from "@shared/ai-runtimes";
 
 import { AiPersistence } from "../ai/persistence";
 import { bootstrapDatabase } from "./index";
@@ -74,14 +75,7 @@ export interface DbWorkerBootstrapState {
     readonly settings: ReturnType<SettingsService["loadSnapshot"]>;
 }
 
-const runtimeIds = [
-    "claude",
-    "codex",
-    "gemini",
-    "grok",
-    "kilo",
-    "opencode",
-] as const satisfies readonly AiRuntimeId[];
+const runtimeIds = LEGACY_AI_RUNTIME_IDS;
 
 export const bootstrapSecretKeys = [
     "secret.ai.claude.anthropic_api_key",

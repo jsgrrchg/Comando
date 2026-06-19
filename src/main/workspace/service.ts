@@ -22,6 +22,7 @@ import type {
     WorkspaceTab,
     WorkspaceTerminalTab,
 } from "@shared/ipc";
+import { isKnownAiRuntimeId } from "@shared/ai-runtimes";
 
 import type { Awaitable } from "../db/awaitable";
 import { debugBenignError } from "../observability/logging";
@@ -846,14 +847,7 @@ function parseNullableString(
 }
 
 function parseAiRuntimeId(value: unknown): AiRuntimeId {
-    return value === "claude" ||
-        value === "codex" ||
-        value === "gemini" ||
-        value === "grok" ||
-        value === "kilo" ||
-        value === "opencode"
-        ? value
-        : "codex";
+    return isKnownAiRuntimeId(value) ? value : "codex";
 }
 
 function parseGitHubRepositoryRef(
