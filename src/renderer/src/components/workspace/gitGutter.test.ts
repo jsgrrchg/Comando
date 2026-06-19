@@ -57,7 +57,12 @@ describe("computeGitGutterMarkers", () => {
         ]);
 
         expect(computeGitGutterMarkers(diff, 12)).toEqual([
-            { lineNumber: 4, tone: "add" },
+            {
+                deletedAtLineEnd: false,
+                endLineNumber: 4,
+                lineNumber: 4,
+                type: "add",
+            },
         ]);
     });
 
@@ -81,7 +86,12 @@ describe("computeGitGutterMarkers", () => {
         ]);
 
         expect(computeGitGutterMarkers(diff, 20)).toEqual([
-            { lineNumber: 8, tone: "modify" },
+            {
+                deletedAtLineEnd: false,
+                endLineNumber: 8,
+                lineNumber: 8,
+                type: "modify",
+            },
         ]);
     });
 
@@ -110,8 +120,18 @@ describe("computeGitGutterMarkers", () => {
         ]);
 
         expect(computeGitGutterMarkers(diff, 30)).toEqual([
-            { lineNumber: 10, tone: "modify" },
-            { lineNumber: 11, tone: "add" },
+            {
+                deletedAtLineEnd: false,
+                endLineNumber: 10,
+                lineNumber: 10,
+                type: "modify",
+            },
+            {
+                deletedAtLineEnd: false,
+                endLineNumber: 11,
+                lineNumber: 11,
+                type: "add",
+            },
         ]);
     });
 
@@ -135,7 +155,12 @@ describe("computeGitGutterMarkers", () => {
         ]);
 
         expect(computeGitGutterMarkers(diff, 18)).toEqual([
-            { lineNumber: 6, tone: "delete-top" },
+            {
+                deletedAtLineEnd: false,
+                endLineNumber: 6,
+                lineNumber: 6,
+                type: "delete",
+            },
         ]);
     });
 
@@ -154,7 +179,12 @@ describe("computeGitGutterMarkers", () => {
         ]);
 
         expect(computeGitGutterMarkers(diff, 13)).toEqual([
-            { lineNumber: 13, tone: "delete-bottom" },
+            {
+                deletedAtLineEnd: true,
+                endLineNumber: 13,
+                lineNumber: 13,
+                type: "delete",
+            },
         ]);
     });
 });
@@ -163,15 +193,26 @@ describe("buildGitGutterDecorations", () => {
     it("renders git markers in the dedicated line decorations lane", () => {
         expect(
             buildGitGutterDecorations([
-                { lineNumber: 8, tone: "modify" },
-                { lineNumber: 13, tone: "delete-bottom" },
+                {
+                    deletedAtLineEnd: false,
+                    endLineNumber: 8,
+                    lineNumber: 8,
+                    type: "modify",
+                },
+                {
+                    deletedAtLineEnd: true,
+                    endLineNumber: 13,
+                    lineNumber: 13,
+                    type: "delete",
+                },
             ]),
         ).toEqual([
             {
                 options: {
+                    description: "git-gutter-decoration",
                     isWholeLine: true,
-                    lineNumberClassName:
-                        "git-gutter-line-number git-gutter-line-number--modify",
+                    linesDecorationsClassName:
+                        "git-diff-glyph git-diff-modified",
                 },
                 range: {
                     endColumn: 1,
@@ -182,27 +223,47 @@ describe("buildGitGutterDecorations", () => {
             },
             {
                 options: {
-                    isWholeLine: true,
-                    lineNumberClassName:
-                        "git-gutter-line-number git-gutter-line-number--delete-bottom",
+                    description: "git-gutter-decoration",
+                    isWholeLine: false,
+                    linesDecorationsClassName:
+                        "git-diff-glyph git-diff-deleted git-diff-deleted-end",
                 },
                 range: {
-                    endColumn: 1,
+                    endColumn: Number.MAX_VALUE,
                     endLineNumber: 13,
-                    startColumn: 1,
+                    startColumn: Number.MAX_VALUE,
                     startLineNumber: 13,
                 },
             },
         ]);
     });
+
+    it("does not attach git marker styles to line-number nodes", () => {
+        const decorations = buildGitGutterDecorations([
+            {
+                deletedAtLineEnd: false,
+                endLineNumber: 4,
+                lineNumber: 4,
+                type: "add",
+            },
+        ]);
+
+        expect(JSON.stringify(decorations)).not.toContain(
+            "lineNumberClassName",
+        );
+        expect(decorations[0]?.options.linesDecorationsClassName).toBe(
+            "git-diff-glyph git-diff-added",
+        );
+    });
 });
 
 describe("getGitGutterLineNumbersMinChars", () => {
-    it("reserves breathing room for the git marker gap", () => {
+    it("keeps line-number width independent from git marker space", () => {
         expect(getGitGutterLineNumbersMinChars(9)).toBe(4);
         expect(getGitGutterLineNumbersMinChars(87)).toBe(4);
-        expect(getGitGutterLineNumbersMinChars(120)).toBe(5);
-        expect(getGitGutterLineNumbersMinChars(2048)).toBe(6);
+        expect(getGitGutterLineNumbersMinChars(120)).toBe(4);
+        expect(getGitGutterLineNumbersMinChars(2048)).toBe(4);
+        expect(getGitGutterLineNumbersMinChars(10000)).toBe(5);
     });
 });
 

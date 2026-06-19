@@ -13,6 +13,8 @@ import {
 
 import type {
     AiTrackedFile,
+    GitFileDiff,
+    GitRepositorySnapshot,
     ProjectFileDocument,
 } from "@shared/ipc";
 import type { RuntimeWorkspaceFileTab } from "@renderer/app/workspace/tree";
@@ -37,11 +39,15 @@ const mockAiStoreState = vi.hoisted(() => ({
     },
 }));
 
-const mockGitStoreState = vi.hoisted(() => ({
-    current: {
-        snapshots: {},
-    },
-}));
+const mockGitStoreState = vi.hoisted(() => {
+    const snapshots: Record<string, GitRepositorySnapshot> = {};
+
+    return {
+        current: {
+            snapshots,
+        },
+    };
+});
 
 const mockProjectsStoreState = vi.hoisted(() => ({
     current: {
@@ -102,8 +108,11 @@ const monacoHarness = vi.hoisted(() => {
     };
 
     type FakeCodeEditor = {
-        readonly createDecorationsCollection: () => {
+        readonly createDecorationsCollection: (
+            decorations?: readonly unknown[],
+        ) => {
             readonly clear: () => void;
+            readonly initialDecorations: readonly unknown[];
             readonly set: (decorations: readonly unknown[]) => void;
         };
         readonly dispose: () => void;
@@ -120,6 +129,7 @@ const monacoHarness = vi.hoisted(() => {
         readonly layout: () => void;
         readonly onDidChangeCursorSelection: () => Disposable;
         readonly onDidChangeHiddenAreas: () => Disposable;
+        readonly onDidChangeModel: (listener: () => void) => Disposable;
         readonly onDidDispose: (listener: () => void) => Disposable;
         readonly onDidLayoutChange: () => Disposable;
         readonly onDidScrollChange: () => Disposable;
@@ -191,6 +201,11 @@ const monacoHarness = vi.hoisted(() => {
     const models = new Map<string, FakeModel>();
     const createdModels: FakeModel[] = [];
     const codeEditors: FakeCodeEditor[] = [];
+    const decorationCollections: Array<{
+        readonly clear: ReturnType<typeof vi.fn>;
+        readonly initialDecorations: readonly unknown[];
+        readonly set: ReturnType<typeof vi.fn>;
+    }> = [];
     const diffEditors: FakeDiffEditor[] = [];
     let editorCounter = 0;
     let diffEditorCounter = 0;
@@ -287,11 +302,19 @@ const monacoHarness = vi.hoisted(() => {
     const createCodeEditor = (name = `editor-${++editorCounter}`) => {
         const domNode = document.createElement("div");
         const disposeListeners = new Set<() => void>();
+        const modelChangeListeners = new Set<() => void>();
         const editor: FakeCodeEditor = {
-            createDecorationsCollection: vi.fn(() => ({
-                clear: vi.fn(),
-                set: vi.fn(),
-            })),
+            createDecorationsCollection: vi.fn(
+                (decorations: readonly unknown[] = []) => {
+                    const collection = {
+                        clear: vi.fn(),
+                        initialDecorations: decorations,
+                        set: vi.fn(),
+                    };
+                    decorationCollections.push(collection);
+                    return collection;
+                },
+            ),
             dispose: () => {
                 if (editor.disposed) {
                     return;
@@ -318,6 +341,14 @@ const monacoHarness = vi.hoisted(() => {
             name,
             onDidChangeCursorSelection: () => createDisposable(),
             onDidChangeHiddenAreas: () => createDisposable(),
+            onDidChangeModel: (listener) => {
+                modelChangeListeners.add(listener);
+                return {
+                    dispose: () => {
+                        modelChangeListeners.delete(listener);
+                    },
+                };
+            },
             onDidDispose: (listener) => {
                 disposeListeners.add(listener);
                 return {
@@ -346,7 +377,13 @@ const monacoHarness = vi.hoisted(() => {
             scrollLeft: 0,
             scrollTop: 0,
             setModel: (model: FakeModel | null) => {
+                const previousModel = editor.model;
                 editor.model = model;
+                if (previousModel !== model) {
+                    for (const listener of modelChangeListeners) {
+                        listener();
+                    }
+                }
             },
             setPosition: vi.fn(
                 (position: {
@@ -426,6 +463,7 @@ const monacoHarness = vi.hoisted(() => {
         createdModels,
         createCodeEditor,
         createDiffEditor,
+        decorationCollections,
         diffEditors,
         models,
         monaco,
@@ -433,6 +471,7 @@ const monacoHarness = vi.hoisted(() => {
             models.clear();
             createdModels.length = 0;
             codeEditors.length = 0;
+            decorationCollections.length = 0;
             diffEditors.length = 0;
             editorCounter = 0;
             diffEditorCounter = 0;
@@ -508,12 +547,14 @@ vi.mock("@monaco-editor/react", async () => {
         beforeMount,
         language,
         onMount,
+        options,
         path,
         value,
     }: {
         readonly beforeMount?: () => void;
         readonly language?: string;
         readonly onMount?: (editor: unknown, monaco: unknown) => void;
+        readonly options?: unknown;
         readonly path?: string;
         readonly value?: string;
     }) => {
@@ -524,6 +565,7 @@ vi.mock("@monaco-editor/react", async () => {
             beforeMount,
             language,
             onMount,
+            options,
             path,
             value,
         });
@@ -541,8 +583,11 @@ vi.mock("@monaco-editor/react", async () => {
                     mountProps.value ?? "",
                     mountProps.language ?? "plaintext",
                     uri,
-                );
+            );
             editor.setModel(model);
+            if (mountProps.options) {
+                editor.updateOptions(mountProps.options);
+            }
             editorRef.current = editor;
             mountProps.onMount?.(editor, monacoHarness.monaco);
 
@@ -727,6 +772,82 @@ function createTrackedFileUpdate(): AiTrackedFile {
     };
 }
 
+function createGitDiff(path = "src/app.ts", newStart = 1): GitFileDiff {
+    return {
+        hunks: [
+            {
+                id: "git-hunk-1",
+                lines: [
+                    {
+                        id: "git-line-1",
+                        text: "const value = 1;",
+                        type: "remove",
+                    },
+                    {
+                        id: "git-line-2",
+                        text: "const value = 2;",
+                        type: "add",
+                    },
+                ],
+                newCount: 1,
+                newStart,
+                oldCount: 1,
+                oldStart: newStart,
+            },
+        ],
+        isText: true,
+        kind: "update",
+        newText: null,
+        oldText: null,
+        path,
+        previousPath: null,
+        reversible: true,
+    };
+}
+
+function createGitSnapshot(
+    changedPaths: readonly string[] = ["src/app.ts"],
+): GitRepositorySnapshot {
+    return {
+        aheadBy: 0,
+        behindBy: 0,
+        branch: null,
+        canonicalRootPath: "/workspace/comando",
+        changedPaths,
+        changes: changedPaths.map((path) => ({
+            additions: 1,
+            deletions: 1,
+            hasChildren: false,
+            isBinary: false,
+            isConflicted: false,
+            isRenamed: false,
+            kind: "modified",
+            path,
+            previousPath: null,
+            scope: "unstaged",
+            worktreeId: null,
+        })),
+        currentWorktreeId: null,
+        defaultTreeViewMode: "tree",
+        headSha: "abc123",
+        projectId: "project-1",
+        remotes: [],
+        repositoryState: "ready",
+        rootPath: "/workspace/comando",
+        selectedRemoteName: null,
+        status: {
+            changedCount: changedPaths.length,
+            conflictedCount: 0,
+            stagedCount: 0,
+            unstagedCount: changedPaths.length,
+            untrackedCount: 0,
+        },
+        syncStatus: "in_sync",
+        updatedAt: "2026-06-05T00:02:00.000Z",
+        worktrees: [],
+    };
+}
+
 function renderHost({
     activeFileTab,
     fileTabs,
@@ -811,6 +932,7 @@ describe("WorkspaceFileEditorHost", () => {
         mockWorkspaceStoreState.current.updateFilePendingOpenLocation.mockClear();
         mockWorkspaceStoreState.current.updateFileViewState.mockClear();
         mockAiStoreState.current.sessions = {};
+        mockGitStoreState.current.snapshots = {};
     });
 
     afterEach(() => {
@@ -883,6 +1005,188 @@ describe("WorkspaceFileEditorHost", () => {
         expect(monacoHarness.codeEditors).toHaveLength(1);
         expect(monacoHarness.codeEditors[0]?.disposed).toBe(false);
         expect(container.querySelector("[aria-hidden='true']")).not.toBeNull();
+    });
+
+    it("keeps the git gutter decoration collection stable while typing", async () => {
+        const tab = createFileTab("file-1");
+        const getGitDiff = vi.fn(() => Promise.resolve(createGitDiff()));
+        vi.stubGlobal("comando", { getGitDiff });
+        mockGitStoreState.current.snapshots = {
+            "project-1::primary": createGitSnapshot(),
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tab,
+                    fileTabs: [tab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushEffects();
+
+        const editor = monacoHarness.codeEditors[0];
+        expect(editor?.updateOptions).toHaveBeenCalledWith(
+            expect.objectContaining({
+                lineDecorationsWidth: 10,
+                lineNumbersMinChars: 4,
+            }),
+        );
+        expect(getGitDiff).toHaveBeenCalledWith({
+            path: "src/app.ts",
+            projectId: "project-1",
+            worktreeId: null,
+        });
+
+        expect(monacoHarness.decorationCollections).toHaveLength(1);
+        const gitGutterCollection = monacoHarness.decorationCollections[0];
+        expect(gitGutterCollection?.initialDecorations).toEqual([
+            {
+                options: {
+                    description: "git-gutter-decoration",
+                    isWholeLine: true,
+                    linesDecorationsClassName:
+                        "git-diff-glyph git-diff-modified",
+                },
+                range: {
+                    endColumn: 1,
+                    endLineNumber: 1,
+                    startColumn: 1,
+                    startLineNumber: 1,
+                },
+            },
+        ]);
+
+        const createCollectionCalls =
+            editor
+                ? vi.mocked(editor.createDecorationsCollection).mock.calls
+                      .length
+                : 0;
+        const setCalls = gitGutterCollection?.set.mock.calls.length ?? 0;
+        const typedTab = {
+            ...tab,
+            draftContent: "const value = 2;\nfunction selectedName() {}\n",
+            isDirty: true,
+        } satisfies RuntimeWorkspaceFileTab;
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: typedTab,
+                    fileTabs: [typedTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(editor?.createDecorationsCollection).toHaveBeenCalledTimes(
+            createCollectionCalls,
+        );
+        expect(gitGutterCollection?.set).toHaveBeenCalledTimes(setCalls);
+    });
+
+    it("clears git gutter decorations when switching to a clean file in the same editor", async () => {
+        const changedTab = createFileTab("file-1", "src/app.ts");
+        const cleanTab = createFileTab("file-2", "src/clean.ts");
+        const getGitDiff = vi.fn(() => Promise.resolve(createGitDiff()));
+        vi.stubGlobal("comando", { getGitDiff });
+        mockGitStoreState.current.snapshots = {
+            "project-1::primary": createGitSnapshot(["src/app.ts"]),
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: changedTab,
+                    fileTabs: [changedTab, cleanTab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushEffects();
+
+        const gitGutterCollection = monacoHarness.decorationCollections[0];
+        expect(gitGutterCollection?.initialDecorations).toHaveLength(1);
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: cleanTab,
+                    fileTabs: [changedTab, cleanTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(gitGutterCollection?.set).toHaveBeenCalledWith([]);
+    });
+
+    it("clears stale git gutter decorations before applying the next file diff", async () => {
+        const firstTab = createFileTab("file-1", "src/app.ts");
+        const secondTab = createFileTab(
+            "file-2",
+            "src/other.ts",
+            ["one", "two", "three", "four", ""].join("\n"),
+        );
+        const getGitDiff = vi.fn(
+            ({ path }: { readonly path: string }) =>
+                Promise.resolve(
+                    path === "src/other.ts"
+                        ? createGitDiff("src/other.ts", 3)
+                        : createGitDiff("src/app.ts", 1),
+                ),
+        );
+        vi.stubGlobal("comando", { getGitDiff });
+        mockGitStoreState.current.snapshots = {
+            "project-1::primary": createGitSnapshot([
+                "src/app.ts",
+                "src/other.ts",
+            ]),
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: firstTab,
+                    fileTabs: [firstTab, secondTab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushEffects();
+
+        const gitGutterCollection = monacoHarness.decorationCollections[0];
+        expect(gitGutterCollection?.initialDecorations).toHaveLength(1);
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: secondTab,
+                    fileTabs: [firstTab, secondTab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushEffects();
+
+        expect(gitGutterCollection?.set.mock.calls).toContainEqual([[]]);
+        expect(gitGutterCollection?.set.mock.calls.at(-1)?.[0]).toEqual([
+            {
+                options: {
+                    description: "git-gutter-decoration",
+                    isWholeLine: true,
+                    linesDecorationsClassName:
+                        "git-diff-glyph git-diff-modified",
+                },
+                range: {
+                    endColumn: 1,
+                    endLineNumber: 3,
+                    startColumn: 1,
+                    startLineNumber: 3,
+                },
+            },
+        ]);
     });
 
     it("applies a pending file open line before restoring saved view state", async () => {

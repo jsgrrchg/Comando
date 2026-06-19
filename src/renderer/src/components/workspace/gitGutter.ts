@@ -1,156 +1,102 @@
 import type { editor as MonacoEditor } from "monaco-editor";
 
-import type { GitChangeEntry, GitDiffHunk, GitFileDiff } from "@shared/ipc";
+import type { GitFileDiff } from "@shared/ipc";
 
-export type GitGutterMarkerTone =
-    | "add"
-    | "delete-bottom"
-    | "delete-top"
-    | "modify";
+import {
+    computeGitGutterMarkers,
+    type GitGutterChangeType,
+    getGitGutterLineNumbersMinChars,
+    hasRenderableGitGutterChange,
+    type GitGutterMarker,
+} from "@renderer/components/workspace/gitGutterModel";
 
-export interface GitGutterMarker {
-    readonly lineNumber: number;
-    readonly tone: GitGutterMarkerTone;
-}
+export {
+    computeGitGutterMarkers,
+    getGitGutterLineNumbersMinChars,
+    hasRenderableGitGutterChange,
+};
 
-export function hasRenderableGitGutterChange(
-    change: Pick<GitChangeEntry, "isBinary"> | null | undefined,
-): boolean {
-    return Boolean(change && !change.isBinary);
-}
+export const GIT_GUTTER_LINE_DECORATIONS_WIDTH = 10;
 
-export function computeGitGutterMarkers(
-    diff: GitFileDiff | null,
-    lineCount: number,
-): readonly GitGutterMarker[] {
-    if (!diff?.isText || lineCount < 1) {
-        return [];
-    }
-
-    const markers: GitGutterMarker[] = [];
-
-    for (const hunk of diff.hunks) {
-        markers.push(...computeHunkMarkers(hunk, lineCount));
-    }
-
-    return dedupeMarkers(markers);
-}
-
-export function getGitGutterLineNumbersMinChars(lineCount: number): number {
-    const digits = String(Math.max(1, lineCount)).length;
-
-    return Math.max(4, digits + 2);
-}
+const gitGutterDecorationClassByType: Record<GitGutterChangeType, string> = {
+    add: "git-diff-added",
+    delete: "git-diff-deleted",
+    modify: "git-diff-modified",
+};
 
 export function buildGitGutterDecorations(
     markers: readonly GitGutterMarker[],
 ): MonacoEditor.IModelDeltaDecoration[] {
-    return markers.map((marker) => ({
-        options: {
-            isWholeLine: true,
-            lineNumberClassName: [
-                "git-gutter-line-number",
-                `git-gutter-line-number--${marker.tone}`,
-            ].join(" "),
-        },
-        range: {
-            endColumn: 1,
-            endLineNumber: marker.lineNumber,
-            startColumn: 1,
-            startLineNumber: marker.lineNumber,
-        },
-    }));
-}
+    return markers.map((marker) => {
+        const isDelete = marker.type === "delete";
+        const startLineNumber = marker.lineNumber;
+        const endLineNumber = isDelete
+            ? marker.lineNumber
+            : marker.endLineNumber;
+        const column = isDelete ? Number.MAX_VALUE : 1;
 
-function computeHunkMarkers(
-    hunk: GitDiffHunk,
-    lineCount: number,
-): readonly GitGutterMarker[] {
-    const markers: GitGutterMarker[] = [];
-    const { lines } = hunk;
-    let index = 0;
-    let nextNewLineNumber = hunk.newStart;
-
-    while (index < lines.length) {
-        const currentLine = lines[index];
-
-        if (currentLine.type === "context") {
-            nextNewLineNumber += 1;
-            index += 1;
-            continue;
-        }
-
-        if (currentLine.type === "add") {
-            while (index < lines.length && lines[index]?.type === "add") {
-                markers.push({
-                    lineNumber: clampLineNumber(nextNewLineNumber, lineCount),
-                    tone: "add",
-                });
-                nextNewLineNumber += 1;
-                index += 1;
-            }
-            continue;
-        }
-
-        const removedStartIndex = index;
-        while (index < lines.length && lines[index]?.type === "remove") {
-            index += 1;
-        }
-        const removedCount = index - removedStartIndex;
-
-        const addedStartIndex = index;
-        const addedLineNumbers: number[] = [];
-        while (index < lines.length && lines[index]?.type === "add") {
-            addedLineNumbers.push(nextNewLineNumber);
-            nextNewLineNumber += 1;
-            index += 1;
-        }
-        const addedCount = index - addedStartIndex;
-
-        if (addedCount > 0) {
-            const modifiedCount = Math.min(removedCount, addedCount);
-
-            for (let offset = 0; offset < addedCount; offset += 1) {
-                markers.push({
-                    lineNumber: clampLineNumber(
-                        addedLineNumbers[offset] ?? nextNewLineNumber,
-                        lineCount,
-                    ),
-                    tone: offset < modifiedCount ? "modify" : "add",
-                });
-            }
-
-            continue;
-        }
-
-        const hasFollowingVisibleLine = index < lines.length;
-
-        markers.push({
-            lineNumber: clampLineNumber(
-                hasFollowingVisibleLine ? nextNewLineNumber : lineCount,
-                lineCount,
-            ),
-            tone: hasFollowingVisibleLine ? "delete-top" : "delete-bottom",
-        });
-    }
-
-    return markers;
-}
-
-function dedupeMarkers(
-    markers: readonly GitGutterMarker[],
-): readonly GitGutterMarker[] {
-    const seen = new Set<string>();
-    return markers.filter((marker) => {
-        const key = `${marker.tone}:${marker.lineNumber}`;
-        if (seen.has(key)) {
-            return false;
-        }
-        seen.add(key);
-        return true;
+        return {
+            options: {
+                description: "git-gutter-decoration",
+                isWholeLine: !isDelete,
+                linesDecorationsClassName: [
+                    "git-diff-glyph",
+                    gitGutterDecorationClassByType[marker.type],
+                    marker.deletedAtLineEnd ? "git-diff-deleted-end" : "",
+                ]
+                    .filter(Boolean)
+                    .join(" "),
+            },
+            range: {
+                endColumn: column,
+                endLineNumber,
+                startColumn: column,
+                startLineNumber,
+            },
+        };
     });
 }
 
-function clampLineNumber(lineNumber: number, lineCount: number): number {
-    return Math.min(Math.max(lineNumber, 1), lineCount);
+export class GitGutterDecorator {
+    private collection: MonacoEditor.IEditorDecorationsCollection | null = null;
+    private readonly modelChangeDisposable: { readonly dispose: () => void };
+
+    constructor(
+        private readonly editor: MonacoEditor.IStandaloneCodeEditor,
+    ) {
+        this.modelChangeDisposable = editor.onDidChangeModel(() => {
+            this.collection?.set([]);
+        });
+    }
+
+    isForEditor(editor: MonacoEditor.IStandaloneCodeEditor): boolean {
+        return this.editor === editor;
+    }
+
+    setDiff(diff: GitFileDiff | null): void {
+        const model = this.editor.getModel();
+
+        if (!model || !diff?.isText) {
+            this.collection?.set([]);
+            return;
+        }
+
+        const decorations = buildGitGutterDecorations(
+            computeGitGutterMarkers(diff, model.getLineCount()),
+        );
+
+        if (!this.collection) {
+            this.collection =
+                this.editor.createDecorationsCollection(decorations);
+            return;
+        }
+
+        this.collection.set(decorations);
+    }
+
+    dispose(): void {
+        this.modelChangeDisposable.dispose();
+        this.collection?.clear();
+        this.collection = null;
+    }
 }

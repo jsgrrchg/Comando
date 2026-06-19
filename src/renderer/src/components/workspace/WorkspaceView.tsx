@@ -121,8 +121,8 @@ import { ReviewTabView } from "@renderer/components/workspace/ReviewTabView";
 import { WorkspacePaneEmptyState } from "@renderer/components/workspace/WorkspacePaneEmptyState";
 import { persistChatDraftForTab } from "@renderer/components/workspace/chatDraftPersistence";
 import {
-    buildGitGutterDecorations,
-    computeGitGutterMarkers,
+    GIT_GUTTER_LINE_DECORATIONS_WIDTH,
+    GitGutterDecorator,
     getGitGutterLineNumbersMinChars,
     hasRenderableGitGutterChange,
 } from "@renderer/components/workspace/gitGutter";
@@ -1165,6 +1165,18 @@ function getWorkspaceGitContextKey(
     worktreeId: string | null,
 ): string {
     return getGitContextKey(projectId, worktreeId);
+}
+
+function getGitGutterDiffRequestKey(options: {
+    readonly projectId: string;
+    readonly relativePath: string;
+    readonly worktreeId: string | null;
+}): string {
+    return [
+        options.projectId,
+        options.worktreeId ?? "primary",
+        options.relativePath,
+    ].join("\u0000");
 }
 
 async function openProjectFileEntriesAtTarget(input: {
@@ -3799,8 +3811,7 @@ function FileTabView({
         readonly tabId: string;
     } | null>(null);
     const fileTabIdRef = useRef(tab.id);
-    const gitGutterDecorationsRef =
-        useRef<MonacoEditor.IEditorDecorationsCollection | null>(null);
+    const gitGutterDecoratorRef = useRef<GitGutterDecorator | null>(null);
     const inlineReviewDecorationsRef =
         useRef<MonacoEditor.IEditorDecorationsCollection | null>(null);
     const pendingEditorViewStateRef =
@@ -3841,10 +3852,28 @@ function FileTabView({
             ) ?? null,
         [gitSnapshot?.changes, tab.relativePath],
     );
-    const [gitGutterDiff, setGitGutterDiff] = useState<GitFileDiff | null>(
-        null,
-    );
     const shouldShowGitGutter = hasRenderableGitGutterChange(activeGitChange);
+    const gitGutterDiffRequestKey = useMemo(
+        () =>
+            getGitGutterDiffRequestKey({
+                projectId: tab.projectId,
+                relativePath: tab.relativePath,
+                worktreeId: tab.worktreeId ?? null,
+            }),
+        [
+            tab.projectId,
+            tab.relativePath,
+            tab.worktreeId,
+        ],
+    );
+    const [gitGutterDiffState, setGitGutterDiffState] = useState<{
+        readonly diff: GitFileDiff | null;
+        readonly key: string;
+    } | null>(null);
+    const gitGutterDiff =
+        gitGutterDiffState?.key === gitGutterDiffRequestKey
+            ? gitGutterDiffState.diff
+            : null;
     const gitGutterLineNumbersMinChars = useMemo(
         () => getGitGutterLineNumbersMinChars(countTextLines(tab.draftContent)),
         [tab.draftContent],
@@ -5179,13 +5208,19 @@ function FileTabView({
             !shouldShowGitGutter
         ) {
             return scheduleEffectStateUpdate(() => {
-                setGitGutterDiff(null);
+                setGitGutterDiffState({
+                    diff: null,
+                    key: gitGutterDiffRequestKey,
+                });
             });
         }
 
         const controller = new AbortController();
         const cancelPendingReset = scheduleEffectStateUpdate(() => {
-            setGitGutterDiff(null);
+            setGitGutterDiffState({
+                diff: null,
+                key: gitGutterDiffRequestKey,
+            });
         });
 
         const loadGitDiff = async () => {
@@ -5202,11 +5237,17 @@ function FileTabView({
                 });
 
                 if (!controller.signal.aborted) {
-                    setGitGutterDiff(diff);
+                    setGitGutterDiffState({
+                        diff,
+                        key: gitGutterDiffRequestKey,
+                    });
                 }
             } catch {
                 if (!controller.signal.aborted) {
-                    setGitGutterDiff(null);
+                    setGitGutterDiffState({
+                        diff: null,
+                        key: gitGutterDiffRequestKey,
+                    });
                 }
             }
         };
@@ -5221,47 +5262,39 @@ function FileTabView({
         activeGitChange,
         canEdit,
         document,
+        gitGutterDiffRequestKey,
         shouldShowGitGutter,
         tab.projectId,
         tab.relativePath,
         tab.worktreeId,
     ]);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         const editor = editorRef.current;
+        gitGutterDecoratorRef.current?.dispose();
+        gitGutterDecoratorRef.current = null;
+
         if (!editor) {
-            gitGutterDecorationsRef.current?.clear();
-            gitGutterDecorationsRef.current = null;
             return;
         }
 
-        const model = editor.getModel();
-        if (!model) {
-            gitGutterDecorationsRef.current?.clear();
-            gitGutterDecorationsRef.current = null;
-            return;
-        }
+        const decorator = new GitGutterDecorator(editor);
+        gitGutterDecoratorRef.current = decorator;
 
-        const collection =
-            gitGutterDecorationsRef.current ??
-            editor.createDecorationsCollection();
+        return () => {
+            if (gitGutterDecoratorRef.current === decorator) {
+                gitGutterDecoratorRef.current = null;
+            }
+            decorator.dispose();
+        };
+    }, [editorMountVersion]);
 
-        collection.set(
-            gitGutterDiff
-                ? buildGitGutterDecorations(
-                      computeGitGutterMarkers(
-                          gitGutterDiff,
-                          model.getLineCount(),
-                      ),
-                  )
-                : [],
-        );
-        gitGutterDecorationsRef.current = collection;
+    useLayoutEffect(() => {
+        gitGutterDecoratorRef.current?.setDiff(gitGutterDiff);
     }, [
         documentAbsolutePath,
         editorMountVersion,
         gitGutterDiff,
-        tab.draftContent,
         tab.id,
     ]);
 
@@ -5457,7 +5490,7 @@ function FileTabView({
             fontFamily: editorFontFamily,
             fontSize: editorSettings.fontSize,
             lineHeight: editorLineHeightPx,
-            lineDecorationsWidth: 0,
+            lineDecorationsWidth: GIT_GUTTER_LINE_DECORATIONS_WIDTH,
             lineNumbers: editorLineNumbers,
             lineNumbersMinChars: shouldShowGitGutter
                 ? gitGutterLineNumbersMinChars
@@ -6091,7 +6124,8 @@ function FileTabView({
                                 flushScheduledEditorViewStatePersist();
                                 editorRef.current = null;
                                 editorMonacoRef.current = null;
-                                gitGutterDecorationsRef.current = null;
+                                gitGutterDecoratorRef.current?.dispose();
+                                gitGutterDecoratorRef.current = null;
                                 cleanupTokenDebug?.dispose();
                                 scrollListener.dispose();
                                 cursorListener.dispose();
@@ -6112,7 +6146,8 @@ function FileTabView({
                             fontSize: editorSettings.fontSize,
                             glyphMargin: false,
                             lineHeight: editorLineHeightPx,
-                            lineDecorationsWidth: 0,
+                            lineDecorationsWidth:
+                                GIT_GUTTER_LINE_DECORATIONS_WIDTH,
                             lineNumbers: editorLineNumbers,
                             lineNumbersMinChars: shouldShowGitGutter
                                 ? gitGutterLineNumbersMinChars
