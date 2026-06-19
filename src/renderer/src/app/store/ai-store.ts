@@ -27,7 +27,6 @@ import type {
     ClaudeRuntimeSettings,
     CodexRuntimeSettings,
     ClaudeRuntimeSettingsInput,
-    GeminiRuntimeSettings,
     GrokRuntimeSettings,
     GrokRuntimeSettingsInput,
     KiloRuntimeSettings,
@@ -174,7 +173,6 @@ interface AiStore {
     readonly claudeSettings: ClaudeRuntimeSettings;
     readonly codexBinaryPath: string;
     readonly codexSettings: CodexRuntimeSettings;
-    readonly geminiSettings: GeminiRuntimeSettings;
     readonly grokSettings: GrokRuntimeSettings;
     readonly kiloSettings: KiloRuntimeSettings;
     readonly opencodeSettings: OpenCodeRuntimeSettings;
@@ -323,7 +321,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
     claudeSettings: createEmptyClaudeSettings(),
     codexBinaryPath: "",
     codexSettings: createEmptyCodexSettings(),
-    geminiSettings: createEmptyGeminiSettings(),
     grokSettings: createEmptyGrokSettings(),
     kiloSettings: createEmptyKiloSettings(),
     opencodeSettings: createEmptyOpenCodeSettings(),
@@ -860,7 +857,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
             claudeSettings: settings?.claude ?? createEmptyClaudeSettings(),
             codexBinaryPath: settings?.codex.binaryPath ?? "",
             codexSettings: settings?.codex ?? createEmptyCodexSettings(),
-            geminiSettings: settings?.gemini ?? createEmptyGeminiSettings(),
             grokSettings: settings?.grok ?? createEmptyGrokSettings(),
             kiloSettings: settings?.kilo ?? createEmptyKiloSettings(),
             opencodeSettings:
@@ -1160,7 +1156,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
         set((state) => ({
             claudeSettings: snapshot.ai?.claude ?? state.claudeSettings,
             codexSettings: snapshot.ai?.codex ?? state.codexSettings,
-            geminiSettings: snapshot.ai?.gemini ?? state.geminiSettings,
             grokSettings: snapshot.ai?.grok ?? state.grokSettings,
             kiloSettings: snapshot.ai?.kilo ?? state.kiloSettings,
             opencodeSettings:
@@ -1181,7 +1176,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
         set((state) => ({
             claudeSettings: snapshot.ai?.claude ?? state.claudeSettings,
             codexSettings: snapshot.ai?.codex ?? state.codexSettings,
-            geminiSettings: snapshot.ai?.gemini ?? state.geminiSettings,
             grokSettings: snapshot.ai?.grok ?? state.grokSettings,
             kiloSettings: snapshot.ai?.kilo ?? state.kiloSettings,
             opencodeSettings:
@@ -2009,18 +2003,6 @@ function createEmptyCodexSettings(): CodexRuntimeSettings {
         binaryPath: null,
         hasCodexApiKey: false,
         hasOpenAiApiKey: false,
-    };
-}
-
-function createEmptyGeminiSettings(): GeminiRuntimeSettings {
-    return {
-        authInvalidatedAtMs: null,
-        authMethod: null,
-        binaryPath: null,
-        googleCloudLocation: null,
-        googleCloudProject: null,
-        hasGeminiApiKey: false,
-        hasGoogleApiKey: false,
     };
 }
 

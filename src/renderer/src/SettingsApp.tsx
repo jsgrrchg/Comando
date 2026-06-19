@@ -23,7 +23,10 @@ import type {
     ThemeMode,
     ThemePreset,
 } from "@shared/ipc";
-import { getAiRuntimeDisplayName } from "@shared/ai-runtimes";
+import {
+    getAiRuntimeDisplayName,
+    isActiveAiRuntimeId,
+} from "@shared/ai-runtimes";
 
 import {
     SettingsWindow,
@@ -82,11 +85,10 @@ export function SettingsApp() {
     const [isWindows, setIsWindows] = useState(false);
     const [pwshAvailable, setPwshAvailable] = useState<boolean | null>(null);
     const [runtimeStatuses, setRuntimeStatuses] = useState<
-        Record<AiRuntimeId, AiRuntimeStatus | null>
+        Record<AiProviderId, AiRuntimeStatus | null>
     >({
         claude: null,
         codex: null,
-        gemini: null,
         grok: null,
         kilo: null,
         opencode: null,
@@ -203,12 +205,11 @@ export function SettingsApp() {
             return;
         }
 
-        const [settingsSnapshot, codex, claude, gemini, grok, kilo, opencode] =
+        const [settingsSnapshot, codex, claude, grok, kilo, opencode] =
             await Promise.all([
                 window.comando.getSettingsSnapshot(),
                 window.comando.getAiRuntimeStatus("codex"),
                 window.comando.getAiRuntimeStatus("claude"),
-                window.comando.getAiRuntimeStatus("gemini"),
                 window.comando.getAiRuntimeStatus("grok"),
                 window.comando.getAiRuntimeStatus("kilo"),
                 window.comando.getAiRuntimeStatus("opencode"),
@@ -218,7 +219,6 @@ export function SettingsApp() {
         setRuntimeStatuses({
             claude,
             codex,
-            gemini,
             grok,
             kilo,
             opencode,
@@ -629,10 +629,6 @@ export function SettingsApp() {
                 case "codex":
                     return await window.comando.saveCodexRuntimeSettings(
                         settings as CodexRuntimeSettingsInput,
-                    );
-                case "gemini":
-                    throw new Error(
-                        "Gemini ACP support has been removed. Use Kilo or OpenCode with a Gemini API key instead.",
                     );
                 case "grok":
                     return await window.comando.saveGrokRuntimeSettings(
@@ -1132,11 +1128,11 @@ function getRuntimeName(runtimeId: AiRuntimeId): string {
 }
 
 function isAiProviderId(runtimeId: AiRuntimeId): runtimeId is AiProviderId {
-    return AI_PROVIDER_RUNTIME_IDS.includes(runtimeId);
+    return isActiveAiRuntimeId(runtimeId);
 }
 
 function mapProviderRuntimeStatuses(
-    statuses: Record<AiRuntimeId, AiRuntimeStatus | null>,
+    statuses: Record<AiProviderId, AiRuntimeStatus | null>,
 ): Partial<Record<AiProviderId, AiProviderRuntimeStatus | null>> {
     return Object.fromEntries(
         AI_PROVIDER_RUNTIME_IDS.map((providerId) => {

@@ -32,16 +32,6 @@ const RUNTIME_STATUSES: AiProviderRuntimeStatusMap = {
         source: "env",
         state: "ready",
     },
-    gemini: {
-        authCredentialSourceLabel: "Comando secure storage",
-        authMethod: "use_gemini",
-        authReady: true,
-        checkedAt: "2026-05-19T12:00:00.000Z",
-        command: "gemini",
-        runtimeId: "gemini",
-        source: "settings",
-        state: "ready",
-    },
     grok: {
         authCredentialSourceLabel: "Using environment variable",
         authMethod: "xai-api-key",
@@ -86,14 +76,6 @@ const RUNTIME_SETTINGS: AiProviderRuntimeSettingsMap = {
         hasCodexApiKey: true,
         hasOpenAiApiKey: true,
     },
-    gemini: {
-        authMethod: "use_gemini",
-        binaryPath: null,
-        googleCloudLocation: "us-central1",
-        googleCloudProject: "comando-dev",
-        hasGeminiApiKey: true,
-        hasGoogleApiKey: true,
-    },
     grok: {
         authMethod: "xai-api-key",
         binaryPath: null,
@@ -122,7 +104,7 @@ describe("AIProvidersSettings", () => {
 
         expect(markup).toContain("Codex");
         expect(markup).toContain("Claude");
-        expect(markup).toContain("Gemini");
+        expect(markup).not.toContain("Gemini");
         expect(markup).toContain("Grok");
         expect(markup).toContain("Kilo");
         expect(markup).toContain("OpenCode");
@@ -130,8 +112,8 @@ describe("AIProvidersSettings", () => {
         expect(markup).toContain("Bedrock gateway");
         expect(markup).toContain("Custom headers JSON");
         expect(markup).not.toContain("Auth token");
-        expect(markup).toContain("Gemini API key");
-        expect(markup).toContain("Google Cloud project");
+        expect(markup).not.toContain("Gemini API key");
+        expect(markup).not.toContain("Google Cloud project");
         expect(markup).toContain("Grok login");
         expect(markup).toContain("xAI API key");
         expect(markup).toContain("Kilo API key");

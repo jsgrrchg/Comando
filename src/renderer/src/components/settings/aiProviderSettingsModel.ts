@@ -1,6 +1,6 @@
-import { LEGACY_AI_RUNTIME_IDS } from "@shared/ai-runtimes";
+import { ACTIVE_AI_RUNTIME_IDS } from "@shared/ai-runtimes";
 
-export const AI_PROVIDER_IDS = LEGACY_AI_RUNTIME_IDS;
+export const AI_PROVIDER_IDS = ACTIVE_AI_RUNTIME_IDS;
 
 export type AiProviderId = (typeof AI_PROVIDER_IDS)[number];
 
@@ -17,8 +17,6 @@ export type ClaudeProviderAuthMethodId =
     | "gateway"
     | "gateway-bedrock";
 
-export type GeminiProviderAuthMethodId = "login_with_google" | "use_gemini";
-
 export type GrokProviderAuthMethodId = "grok-login" | "xai-api-key";
 
 export type KiloProviderAuthMethodId = "kilo-login" | "kilo-api-key";
@@ -28,7 +26,6 @@ export type OpenCodeProviderAuthMethodId = "opencode-login";
 export interface AiProviderAuthMethodById {
     readonly codex: CodexProviderAuthMethodId;
     readonly claude: ClaudeProviderAuthMethodId;
-    readonly gemini: GeminiProviderAuthMethodId;
     readonly grok: GrokProviderAuthMethodId;
     readonly kilo: KiloProviderAuthMethodId;
     readonly opencode: OpenCodeProviderAuthMethodId;
@@ -121,25 +118,6 @@ export interface ClaudeProviderSettingsInput {
     readonly gatewayCustomHeaders: AiProviderSecretPatch;
 }
 
-export interface GeminiProviderSettings {
-    readonly authInvalidatedAtMs?: number | null;
-    readonly authMethod?: GeminiProviderAuthMethodId | null;
-    readonly binaryPath?: string | null;
-    readonly googleCloudLocation?: string | null;
-    readonly googleCloudProject?: string | null;
-    readonly hasGeminiApiKey?: boolean;
-    readonly hasGoogleApiKey?: boolean;
-}
-
-export interface GeminiProviderSettingsInput {
-    readonly authMethod: GeminiProviderAuthMethodId | null;
-    readonly binaryPath: string | null;
-    readonly geminiApiKey: AiProviderSecretPatch;
-    readonly googleApiKey: AiProviderSecretPatch;
-    readonly googleCloudLocation: string | null;
-    readonly googleCloudProject: string | null;
-}
-
 export interface GrokProviderSettings {
     readonly authInvalidatedAtMs?: number | null;
     readonly authMethod?: GrokProviderAuthMethodId | null;
@@ -180,7 +158,6 @@ export interface OpenCodeProviderSettingsInput {
 export interface AiProviderRuntimeSettingsById {
     readonly codex: CodexProviderSettings;
     readonly claude: ClaudeProviderSettings;
-    readonly gemini: GeminiProviderSettings;
     readonly grok: GrokProviderSettings;
     readonly kilo: KiloProviderSettings;
     readonly opencode: OpenCodeProviderSettings;
@@ -189,7 +166,6 @@ export interface AiProviderRuntimeSettingsById {
 export interface AiProviderRuntimeSettingsInputById {
     readonly codex: CodexProviderSettingsInput;
     readonly claude: ClaudeProviderSettingsInput;
-    readonly gemini: GeminiProviderSettingsInput;
     readonly grok: GrokProviderSettingsInput;
     readonly kilo: KiloProviderSettingsInput;
     readonly opencode: OpenCodeProviderSettingsInput;
@@ -314,27 +290,6 @@ export const AI_PROVIDER_DEFINITIONS = {
             },
         ],
         name: "Claude",
-    },
-    gemini: {
-        defaultMethodId: "login_with_google",
-        description: "Gemini runtime with Google login or API key credentials.",
-        envVars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-        id: "gemini",
-        methods: [
-            {
-                description: "Use Google account sign-in from the Gemini CLI.",
-                id: "login_with_google",
-                label: "Login with Google",
-                terminalAuth: true,
-            },
-            {
-                description: "Store Gemini and Google API credentials in Comando.",
-                id: "use_gemini",
-                label: "Gemini API key",
-                terminalAuth: false,
-            },
-        ],
-        name: "Gemini",
     },
     grok: {
         defaultMethodId: "grok-login",

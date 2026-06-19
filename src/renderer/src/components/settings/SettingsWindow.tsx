@@ -478,7 +478,6 @@ function getDynamicCategorySearchValues(
                 "AI Providers",
                 "Codex",
                 "Claude",
-                "Gemini",
                 "Kilo",
                 "API keys",
                 "terminal sign-in",
@@ -486,9 +485,6 @@ function getDynamicCategorySearchValues(
                 "Anthropic API key",
                 "Bedrock gateway",
                 "Custom gateway",
-                "Google API key",
-                "Google Cloud project",
-                "Google Cloud location",
                 "Kilo API key",
                 "Diagnostics",
             ];
