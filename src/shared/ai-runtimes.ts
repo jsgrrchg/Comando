@@ -3,8 +3,8 @@ import type { AiRuntimeId } from "./ipc";
 export type ActiveAiRuntimeId = Exclude<AiRuntimeId, "gemini">;
 
 export const ACTIVE_AI_RUNTIME_IDS = [
-    "claude",
     "codex",
+    "claude",
     "grok",
     "kilo",
     "opencode",
