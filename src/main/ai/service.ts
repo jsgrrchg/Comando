@@ -2979,12 +2979,7 @@ function trimRetentionRecords<T>(records: T[]): void {
 }
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
-    if (
-        typeof timer === "object" &&
-        timer !== null &&
-        "unref" in timer &&
-        typeof timer.unref === "function"
-    ) {
+    if (typeof timer.unref === "function") {
         timer.unref();
     }
 }
