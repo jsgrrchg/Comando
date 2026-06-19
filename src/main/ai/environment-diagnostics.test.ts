@@ -29,7 +29,6 @@ describe("AI environment diagnostics", () => {
                 "claude-agent-acp",
             );
             const codexPath = writeTestExecutable(binDir, "codex-acp");
-            const geminiPath = writeTestExecutable(binDir, "gemini");
             const grokPath = writeTestExecutable(binDir, "grok");
             const kiloPath = writeTestExecutable(binDir, "kilo");
             const opencodePath = writeTestExecutable(binDir, "opencode");
@@ -38,7 +37,6 @@ describe("AI environment diagnostics", () => {
                     CODEX_API_KEY: "codex-secret-value",
                     COMANDO_CLAUDE_ACP_BIN: claudePath,
                     COMANDO_CODEX_ACP_BIN: codexPath,
-                    COMANDO_GEMINI_ACP_BIN: geminiPath,
                     COMANDO_GROK_ACP_BIN: grokPath,
                     COMANDO_KILO_ACP_BIN: kiloPath,
                     COMANDO_OPENCODE_ACP_BIN: opencodePath,
@@ -56,15 +54,6 @@ describe("AI environment diagnostics", () => {
                         binaryPath: null,
                         hasCodexApiKey: false,
                         hasOpenAiApiKey: false,
-                    },
-                    gemini: {
-                        authInvalidatedAtMs: null,
-                        authMethod: "use_gemini",
-                        binaryPath: null,
-                        googleCloudLocation: null,
-                        googleCloudProject: null,
-                        hasGeminiApiKey: false,
-                        hasGoogleApiKey: false,
                     },
                     grok: {
                         authInvalidatedAtMs: null,
@@ -86,15 +75,6 @@ describe("AI environment diagnostics", () => {
                 state: "ready",
             });
             expectPathToBe(codexExecutable?.path, codexPath);
-
-            const geminiOverride = diagnostics.runtimePathOverrides.find(
-                (entry) => entry.name === "COMANDO_GEMINI_ACP_BIN",
-            );
-            expect(geminiOverride).toMatchObject({
-                present: true,
-                runtimeId: "gemini",
-            });
-            expectPathToBe(geminiOverride?.pathOrCommand, geminiPath);
 
             const grokOverride = diagnostics.runtimePathOverrides.find(
                 (entry) => entry.name === "COMANDO_GROK_ACP_BIN",
@@ -126,21 +106,6 @@ describe("AI environment diagnostics", () => {
             expectPathCommandToBe(codexRuntime?.command, codexPath);
             expectPathToBe(codexRuntime?.executablePath, codexPath);
 
-            const geminiRuntime = diagnostics.runtimes.find(
-                (runtime) => runtime.runtimeId === "gemini",
-            );
-            expect(geminiRuntime).toMatchObject({
-                authCredentialSource: "environment",
-                authMethod: "use_gemini",
-                authReady: true,
-                source: "env",
-                state: "ready",
-            });
-            expectPathCommandToBe(geminiRuntime?.command, `${geminiPath} --acp`);
-            expectPathToBe(geminiRuntime?.executablePath, geminiPath);
-            expect(
-                geminiRuntime?.preferredPathEntries[0],
-            ).toBe(binDir);
             const grokRuntime = diagnostics.runtimes.find(
                 (runtime) => runtime.runtimeId === "grok",
             );
@@ -279,7 +244,6 @@ describe("AI environment diagnostics", () => {
                 },
                 secretStore: createSecretStore({
                     "ai.codex:codex_api_key": "stored-codex-secret",
-                    "ai.gemini:gemini_api_key": "stored-gemini-secret",
                     "ai.grok:xai_api_key": "stored-xai-secret",
                 }),
                 settings: createSettings({
@@ -288,15 +252,6 @@ describe("AI environment diagnostics", () => {
                         binaryPath: null,
                         hasCodexApiKey: true,
                         hasOpenAiApiKey: false,
-                    },
-                    gemini: {
-                        authInvalidatedAtMs: null,
-                        authMethod: "use_gemini",
-                        binaryPath: path.join(tempDir, "missing-gemini"),
-                        googleCloudLocation: null,
-                        googleCloudProject: null,
-                        hasGeminiApiKey: true,
-                        hasGoogleApiKey: false,
                     },
                     grok: {
                         authInvalidatedAtMs: null,
@@ -309,7 +264,6 @@ describe("AI environment diagnostics", () => {
             const payload = JSON.stringify(diagnostics);
 
             expect(payload).not.toContain("stored-codex-secret");
-            expect(payload).not.toContain("stored-gemini-secret");
             expect(payload).not.toContain("stored-xai-secret");
             expect(
                 diagnostics.credentialEnvironment.find(

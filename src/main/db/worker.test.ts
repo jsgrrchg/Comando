@@ -11,11 +11,15 @@ describe("db worker bootstrap", () => {
                 "secret.ai.claude.anthropic_custom_headers",
                 "secret.ai.codex.codex_api_key",
                 "secret.ai.codex.openai_api_key",
-                "secret.ai.gemini.gemini_api_key",
-                "secret.ai.gemini.google_api_key",
                 "secret.ai.grok.xai_api_key",
                 "secret.ai.kilo.kilo_api_key",
             ]),
+        );
+        expect(bootstrapSecretKeys).not.toContain(
+            "secret.ai.gemini.gemini_api_key",
+        );
+        expect(bootstrapSecretKeys).not.toContain(
+            "secret.ai.gemini.google_api_key",
         );
     });
 });

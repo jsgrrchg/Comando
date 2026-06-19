@@ -153,22 +153,12 @@ describe("AiService prepareSession", () => {
                     hasCodexApiKey: false,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
                 })),
                 saveClaudeRuntimeSettings: vi.fn(),
                 saveCodexRuntimeSettings: vi.fn(),
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });
@@ -215,6 +205,85 @@ describe("AiService prepareSession", () => {
         });
         expect(saveSessionSnapshot).toHaveBeenCalledWith(workerSnapshot);
         expect(runtimeStatusEvents.at(-1)).toEqual(readyStatus);
+    });
+
+    it("rejects legacy Gemini sessions before worker startup", async () => {
+        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>();
+        const runtimeStatusEvents: AiRuntimeStatus[] = [];
+        const service = new AiService({
+            aiWorker: {
+                cancelSession: vi.fn(),
+                close: vi.fn(),
+                closeOwnedByWindow: vi.fn(),
+                closeSession: vi.fn(),
+                freezeSession: vi.fn(),
+                keepAllTrackedFiles: vi.fn(),
+                keepTrackedFile: vi.fn(),
+                keepTrackedFileHunks: vi.fn(),
+                notifyFileBuffer: vi.fn(),
+                prepareSession,
+                rejectAllTrackedFiles: vi.fn(),
+                rejectTrackedFile: vi.fn(),
+                rejectTrackedFileHunks: vi.fn(),
+                refreshProjectScopes: vi.fn(),
+                renameSession: vi.fn(),
+                respondPermission: vi.fn(),
+                respondUserInput: vi.fn(),
+                sendPrompt: vi.fn(),
+                setSessionConfigOption: vi.fn(),
+                setSessionMode: vi.fn(),
+                setSessionModel: vi.fn(),
+            },
+            onRuntimeStatus: (status) => runtimeStatusEvents.push(status),
+            onSessionSnapshot: vi.fn(),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {},
+                    modeId: null,
+                    modelId: null,
+                })),
+            } as never,
+            projectService: {
+                getProjectRootPath: vi.fn(() => process.cwd()),
+                listProjectWorktrees: vi.fn(() => []),
+            } as never,
+            secretStore: {
+                loadSecret: vi.fn(() => null),
+                saveSecret: vi.fn(),
+            },
+            settingsService: {
+                loadCodexRuntimeSettings: vi.fn(() => ({
+                    authMethod: "chatgpt",
+                    binaryPath: null,
+                    hasCodexApiKey: false,
+                    hasOpenAiApiKey: false,
+                })),
+            } as never,
+        });
+
+        await expect(
+            service.prepareSession(
+                {
+                    projectId: null,
+                    runtimeId: "gemini",
+                    sessionId: "session-gemini",
+                    title: "Gemini 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            ),
+        ).rejects.toThrow(
+            "Gemini ACP support has been removed. Use Kilo or OpenCode with a Gemini API key instead.",
+        );
+
+        expect(prepareSession).not.toHaveBeenCalled();
+        expect(runtimeStatusEvents.at(-1)).toMatchObject({
+            message:
+                "Gemini ACP support has been removed. Use Kilo or OpenCode with a Gemini API key instead.",
+            runtimeId: "gemini",
+            state: "error",
+        });
     });
 
     it("clears the live context when worker startup fails", async () => {
@@ -312,22 +381,12 @@ describe("AiService prepareSession", () => {
                     hasCodexApiKey: false,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
                 })),
                 saveClaudeRuntimeSettings: vi.fn(),
                 saveCodexRuntimeSettings: vi.fn(),
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });
@@ -455,22 +514,12 @@ describe("AiService prepareSession", () => {
                     hasCodexApiKey: false,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
                 })),
                 saveClaudeRuntimeSettings: vi.fn(),
                 saveCodexRuntimeSettings: vi.fn(),
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });

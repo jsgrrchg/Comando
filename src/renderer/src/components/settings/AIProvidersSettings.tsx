@@ -29,7 +29,6 @@ import {
     type AiProviderSecretDraft,
     type ClaudeProviderAuthMethodId,
     type CodexProviderAuthMethodId,
-    type GeminiProviderAuthMethodId,
     type GrokProviderAuthMethodId,
     type KiloProviderAuthMethodId,
     type OpenCodeProviderAuthMethodId,
@@ -60,7 +59,6 @@ export interface AIProvidersSettingsProps {
 interface ProviderDrafts {
     readonly claude: ClaudeProviderDraft;
     readonly codex: CodexProviderDraft;
-    readonly gemini: GeminiProviderDraft;
     readonly grok: GrokProviderDraft;
     readonly kilo: KiloProviderDraft;
     readonly opencode: OpenCodeProviderDraft;
@@ -81,15 +79,6 @@ interface ClaudeProviderDraft {
     readonly gatewayAuthToken: AiProviderSecretDraft;
     readonly gatewayBaseUrl: string;
     readonly gatewayCustomHeaders: AiProviderSecretDraft;
-}
-
-interface GeminiProviderDraft {
-    readonly authMethod: GeminiProviderAuthMethodId | null;
-    readonly binaryPath: string;
-    readonly geminiApiKey: AiProviderSecretDraft;
-    readonly googleApiKey: AiProviderSecretDraft;
-    readonly googleCloudLocation: string;
-    readonly googleCloudProject: string;
 }
 
 interface GrokProviderDraft {
@@ -257,31 +246,6 @@ export function AIProvidersSettings({
                     anthropicApiKey: createEmptySecretDraft(),
                     gatewayAuthToken: createEmptySecretDraft(),
                     gatewayCustomHeaders: createEmptySecretDraft(),
-                },
-            }));
-        });
-    };
-
-    const saveGemini = () => {
-        runProviderAction("gemini", async () => {
-            await onSaveProviderSettings?.("gemini", {
-                authMethod: drafts.gemini.authMethod,
-                binaryPath: normalizeNullableText(drafts.gemini.binaryPath),
-                geminiApiKey: buildSecretPatch(drafts.gemini.geminiApiKey),
-                googleApiKey: buildSecretPatch(drafts.gemini.googleApiKey),
-                googleCloudLocation: normalizeNullableText(
-                    drafts.gemini.googleCloudLocation,
-                ),
-                googleCloudProject: normalizeNullableText(
-                    drafts.gemini.googleCloudProject,
-                ),
-            });
-            setDrafts((current) => ({
-                ...current,
-                gemini: {
-                    ...current.gemini,
-                    geminiApiKey: createEmptySecretDraft(),
-                    googleApiKey: createEmptySecretDraft(),
                 },
             }));
         });
@@ -543,64 +507,6 @@ export function AIProvidersSettings({
                         ),
                         providerId: "claude",
                         save: saveClaude,
-                    })}
-                </ProviderCard>
-
-                <ProviderCard
-                    error={errorByProviderId?.gemini ?? localErrors.gemini}
-                    expanded={expandedProviderIds.has("gemini")}
-                    methodId={resolveMethodId(
-                        "gemini",
-                        drafts.gemini.authMethod,
-                        runtimeStatuses?.gemini,
-                    )}
-                    providerId="gemini"
-                    status={runtimeStatuses?.gemini ?? null}
-                    onToggle={() => toggleExpanded("gemini")}
-                >
-                    <CommonFields
-                        binaryPath={drafts.gemini.binaryPath}
-                        binaryPathPlaceholder="Custom Gemini runtime path, for example gemini"
-                        notice={getRuntimeNotice(runtimeStatuses?.gemini)}
-                        onBinaryPathChange={(binaryPath) =>
-                            setDrafts((current) => ({
-                                ...current,
-                                gemini: { ...current.gemini, binaryPath },
-                            }))
-                        }
-                    />
-                    <MethodPicker
-                        methods={getAvailableProviderMethods(
-                            "gemini",
-                            runtimeStatuses?.gemini,
-                        )}
-                        value={resolveMethodId(
-                            "gemini",
-                            drafts.gemini.authMethod,
-                            runtimeStatuses?.gemini,
-                        )}
-                        onChange={(authMethod) =>
-                            setDrafts((current) => ({
-                                ...current,
-                                gemini: { ...current.gemini, authMethod },
-                            }))
-                        }
-                    />
-                    <GeminiFields
-                        draft={drafts.gemini}
-                        settings={runtimeSettings?.gemini}
-                        onChange={(gemini) =>
-                            setDrafts((current) => ({ ...current, gemini }))
-                        }
-                    />
-                    {renderActions({
-                        methodId: resolveMethodId(
-                            "gemini",
-                            drafts.gemini.authMethod,
-                            runtimeStatuses?.gemini,
-                        ),
-                        providerId: "gemini",
-                        save: saveGemini,
                     })}
                 </ProviderCard>
 
@@ -1172,59 +1078,6 @@ function ClaudeConditionalFields({
             This method uses the provider CLI login. Comando opens the system
             terminal for sign-in and never asks you to paste the session token.
         </InfoNote>
-    );
-}
-
-function GeminiFields({
-    draft,
-    onChange,
-    settings,
-}: {
-    readonly draft: GeminiProviderDraft;
-    readonly onChange: (draft: GeminiProviderDraft) => void;
-    readonly settings?: AiProviderRuntimeSettingsMap["gemini"];
-}) {
-    return (
-        <div style={{ display: "grid", gap: 10 }}>
-            <div style={twoColumnGridStyle}>
-                <SecretField
-                    draft={draft.geminiApiKey}
-                    label="Gemini API key"
-                    placeholder="Optional GEMINI_API_KEY"
-                    stored={Boolean(settings?.hasGeminiApiKey)}
-                    onChange={(geminiApiKey) =>
-                        onChange({ ...draft, geminiApiKey })
-                    }
-                />
-                <SecretField
-                    draft={draft.googleApiKey}
-                    label="Google API key"
-                    placeholder="Optional GOOGLE_API_KEY"
-                    stored={Boolean(settings?.hasGoogleApiKey)}
-                    onChange={(googleApiKey) =>
-                        onChange({ ...draft, googleApiKey })
-                    }
-                />
-            </div>
-            <div style={twoColumnGridStyle}>
-                <LabeledTextField
-                    label="Google Cloud project"
-                    placeholder="Optional Google Cloud project"
-                    value={draft.googleCloudProject}
-                    onChange={(googleCloudProject) =>
-                        onChange({ ...draft, googleCloudProject })
-                    }
-                />
-                <LabeledTextField
-                    label="Google Cloud location"
-                    placeholder="Optional Google Cloud location"
-                    value={draft.googleCloudLocation}
-                    onChange={(googleCloudLocation) =>
-                        onChange({ ...draft, googleCloudLocation })
-                    }
-                />
-            </div>
-        </div>
     );
 }
 
@@ -1891,7 +1744,6 @@ function createInitialDrafts(
 ): ProviderDrafts {
     const claudeAuthMethod = settings?.claude?.authMethod;
     const codexAuthMethod = settings?.codex?.authMethod;
-    const geminiAuthMethod = settings?.gemini?.authMethod;
     const grokAuthMethod = settings?.grok?.authMethod;
     const kiloAuthMethod = settings?.kilo?.authMethod;
     const opencodeAuthMethod = settings?.opencode?.authMethod;
@@ -1915,16 +1767,6 @@ function createInitialDrafts(
             binaryPath: settings?.codex?.binaryPath ?? "",
             codexApiKey: createEmptySecretDraft(),
             openAiApiKey: createEmptySecretDraft(),
-        },
-        gemini: {
-            authMethod: isMethodIdForProvider("gemini", geminiAuthMethod)
-                ? geminiAuthMethod
-                : null,
-            binaryPath: settings?.gemini?.binaryPath ?? "",
-            geminiApiKey: createEmptySecretDraft(),
-            googleApiKey: createEmptySecretDraft(),
-            googleCloudLocation: settings?.gemini?.googleCloudLocation ?? "",
-            googleCloudProject: settings?.gemini?.googleCloudProject ?? "",
         },
         grok: {
             authMethod: isMethodIdForProvider("grok", grokAuthMethod)

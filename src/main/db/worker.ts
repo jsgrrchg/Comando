@@ -5,7 +5,6 @@ import type {
     ClaudeRuntimeSettings,
     CodexRuntimeSettings,
     DatabaseStatus,
-    GeminiRuntimeSettings,
     GetAiSessionTranscriptPageInput,
     GrokRuntimeSettings,
     KiloRuntimeSettings,
@@ -13,6 +12,7 @@ import type {
     OpenCodeRuntimeSettings,
     PersistenceSnapshot,
 } from "@shared/ipc";
+import { LEGACY_AI_RUNTIME_IDS } from "@shared/ai-runtimes";
 
 import { AiPersistence } from "../ai/persistence";
 import { bootstrapDatabase } from "./index";
@@ -74,14 +74,7 @@ export interface DbWorkerBootstrapState {
     readonly settings: ReturnType<SettingsService["loadSnapshot"]>;
 }
 
-const runtimeIds = [
-    "claude",
-    "codex",
-    "gemini",
-    "grok",
-    "kilo",
-    "opencode",
-] as const satisfies readonly AiRuntimeId[];
+const runtimeIds = LEGACY_AI_RUNTIME_IDS;
 
 export const bootstrapSecretKeys = [
     "secret.ai.claude.anthropic_api_key",
@@ -89,8 +82,6 @@ export const bootstrapSecretKeys = [
     "secret.ai.claude.anthropic_custom_headers",
     "secret.ai.codex.codex_api_key",
     "secret.ai.codex.openai_api_key",
-    "secret.ai.gemini.gemini_api_key",
-    "secret.ai.gemini.google_api_key",
     "secret.ai.grok.xai_api_key",
     "secret.ai.kilo.kilo_api_key",
     "secret.github.token",
@@ -451,17 +442,6 @@ function dispatchMethod(method: string, params: unknown): unknown {
             });
             return null;
         }
-        case "ai.saveGeminiAuth": {
-            const settings = requireSettingsService();
-            const input = params as {
-                readonly secrets: readonly SecretRecordMutation[];
-                readonly settings: GeminiRuntimeSettings;
-            };
-            runAuthSettingsTransaction(input.secrets, () => {
-                settings.saveGeminiRuntimeSettings(input.settings);
-            });
-            return null;
-        }
         case "ai.saveGrokAuth": {
             const settings = requireSettingsService();
             const input = params as {
@@ -544,13 +524,6 @@ function dispatchMethod(method: string, params: unknown): unknown {
             settingsService.saveClaudeRuntimeSettings(
                 params as Parameters<
                     SettingsService["saveClaudeRuntimeSettings"]
-                >[0],
-            );
-            return null;
-        case "settings.saveGeminiRuntimeSettings":
-            settingsService.saveGeminiRuntimeSettings(
-                params as Parameters<
-                    SettingsService["saveGeminiRuntimeSettings"]
                 >[0],
             );
             return null;

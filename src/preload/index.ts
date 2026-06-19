@@ -67,7 +67,6 @@ import {
     type ProjectTreeInvalidation,
     type ThemeMode,
     type WindowContextSnapshot,
-    type GeminiRuntimeSettingsInput,
     type GitBranchListInput,
     type GitBranchSummary,
     type GitChangesListInput,
@@ -1281,8 +1280,6 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.verifyCodexRuntimeSettings, settings),
     saveClaudeRuntimeSettings: (settings: ClaudeRuntimeSettingsInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveClaudeRuntimeSettings, settings),
-    saveGeminiRuntimeSettings: (settings: GeminiRuntimeSettingsInput) =>
-        ipcRenderer.invoke(IPC_CHANNELS.saveGeminiRuntimeSettings, settings),
     saveGrokRuntimeSettings: (settings: GrokRuntimeSettingsInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveGrokRuntimeSettings, settings),
     saveKiloRuntimeSettings: (settings: KiloRuntimeSettingsInput) =>

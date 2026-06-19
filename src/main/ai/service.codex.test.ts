@@ -73,15 +73,6 @@ describe("AiService Codex branch", () => {
                 hasCodexApiKey: false,
                 hasOpenAiApiKey: false,
             })),
-            loadGeminiRuntimeSettings: vi.fn(() => ({
-                authInvalidatedAtMs: null,
-                authMethod: null,
-                binaryPath: null,
-                googleCloudLocation: null,
-                googleCloudProject: null,
-                hasGeminiApiKey: false,
-                hasGoogleApiKey: false,
-            })),
             loadKiloRuntimeSettings: vi.fn(() => ({
                 authInvalidatedAtMs: null,
                 binaryPath: null,
@@ -90,7 +81,6 @@ describe("AiService Codex branch", () => {
             saveCodexRuntimeSettings: (settings: CodexRuntimeSettings) => {
                 savedSettings = settings;
             },
-            saveGeminiRuntimeSettings: vi.fn(),
             saveKiloRuntimeSettings: vi.fn(),
         };
         const secretStore = {
@@ -206,15 +196,6 @@ describe("AiService Codex branch", () => {
                     hasCodexApiKey: false,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
@@ -222,7 +203,6 @@ describe("AiService Codex branch", () => {
                 saveClaudeRuntimeSettings: vi.fn(),
                 saveCodexAuth,
                 saveCodexRuntimeSettings: vi.fn(),
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });
@@ -301,15 +281,6 @@ describe("AiService Codex branch", () => {
                     hasCodexApiKey: true,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
@@ -318,7 +289,6 @@ describe("AiService Codex branch", () => {
                 saveCodexRuntimeSettings: (settings: CodexRuntimeSettings) => {
                     savedSettings = settings;
                 },
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });
@@ -380,22 +350,12 @@ describe("AiService Codex branch", () => {
                     hasCodexApiKey: false,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
                 })),
                 saveClaudeRuntimeSettings: vi.fn(),
                 saveCodexRuntimeSettings: vi.fn(),
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });
@@ -465,15 +425,6 @@ describe("AiService Codex branch", () => {
                     hasCodexApiKey: true,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
@@ -482,7 +433,6 @@ describe("AiService Codex branch", () => {
                 saveCodexRuntimeSettings: (settings: CodexRuntimeSettings) => {
                     savedSettings = settings;
                 },
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });
@@ -548,22 +498,12 @@ describe("AiService Codex branch", () => {
                     hasCodexApiKey: true,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
                 })),
                 saveClaudeRuntimeSettings: vi.fn(),
                 saveCodexRuntimeSettings,
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });
@@ -619,22 +559,12 @@ describe("AiService Codex branch", () => {
                     hasCodexApiKey: false,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
                 })),
                 saveClaudeRuntimeSettings: vi.fn(),
                 saveCodexRuntimeSettings: vi.fn(),
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });
@@ -708,15 +638,6 @@ describe("AiService Codex branch", () => {
                     hasCodexApiKey: true,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
@@ -725,7 +646,6 @@ describe("AiService Codex branch", () => {
                 saveCodexRuntimeSettings: (settings: CodexRuntimeSettings) => {
                     savedSettings = settings;
                 },
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });
@@ -795,15 +715,6 @@ describe("AiService Codex branch", () => {
                     hasCodexApiKey: true,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
@@ -812,7 +723,6 @@ describe("AiService Codex branch", () => {
                 saveCodexRuntimeSettings: (settings: CodexRuntimeSettings) => {
                     savedSettings = settings;
                 },
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });
@@ -866,22 +776,12 @@ describe("AiService Codex branch", () => {
                     hasCodexApiKey: false,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
                 })),
                 saveClaudeRuntimeSettings: vi.fn(),
                 saveCodexRuntimeSettings: vi.fn(),
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });
@@ -987,22 +887,12 @@ describe("AiService Codex branch", () => {
                     hasCodexApiKey: false,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
                 })),
                 saveClaudeRuntimeSettings: vi.fn(),
                 saveCodexRuntimeSettings: vi.fn(),
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });
@@ -1111,22 +1001,12 @@ describe("AiService Codex branch", () => {
                     hasCodexApiKey: false,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     binaryPath: null,
                 })),
                 saveClaudeRuntimeSettings: vi.fn(),
                 saveCodexRuntimeSettings: vi.fn(),
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });

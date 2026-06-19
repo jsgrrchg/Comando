@@ -16,7 +16,6 @@ import type {
     AppUpdateState,
     AppEditorSettings,
     ChatFontFamily,
-    GeminiRuntimeSettingsInput,
     GrokRuntimeSettingsInput,
     GitHubAuthStatus,
     KiloRuntimeSettingsInput,
@@ -24,9 +23,14 @@ import type {
     ThemeMode,
     ThemePreset,
 } from "@shared/ipc";
+import {
+    getAiRuntimeDisplayName,
+    isActiveAiRuntimeId,
+} from "@shared/ai-runtimes";
 
 import {
     SettingsWindow,
+    AI_PROVIDER_IDS,
     type AiProviderDiagnosticEntry,
     type AiProviderDiagnosticsState,
     type AiProviderId,
@@ -59,14 +63,7 @@ import { useResolvedAppearance } from "./app/hooks/use-resolved-appearance";
 import { useSettingsStore } from "./app/store/settings-store";
 import { shortcutDefinitions, formatShortcut } from "./app/shortcuts/registry";
 
-const AI_PROVIDER_RUNTIME_IDS = [
-    "codex",
-    "claude",
-    "gemini",
-    "grok",
-    "kilo",
-    "opencode",
-] as const satisfies readonly AiProviderId[];
+const AI_PROVIDER_RUNTIME_IDS = AI_PROVIDER_IDS;
 
 export function SettingsApp() {
     const runtimeProjectId = useMemo(() => {
@@ -88,11 +85,10 @@ export function SettingsApp() {
     const [isWindows, setIsWindows] = useState(false);
     const [pwshAvailable, setPwshAvailable] = useState<boolean | null>(null);
     const [runtimeStatuses, setRuntimeStatuses] = useState<
-        Record<AiRuntimeId, AiRuntimeStatus | null>
+        Record<AiProviderId, AiRuntimeStatus | null>
     >({
         claude: null,
         codex: null,
-        gemini: null,
         grok: null,
         kilo: null,
         opencode: null,
@@ -209,12 +205,11 @@ export function SettingsApp() {
             return;
         }
 
-        const [settingsSnapshot, codex, claude, gemini, grok, kilo, opencode] =
+        const [settingsSnapshot, codex, claude, grok, kilo, opencode] =
             await Promise.all([
                 window.comando.getSettingsSnapshot(),
                 window.comando.getAiRuntimeStatus("codex"),
                 window.comando.getAiRuntimeStatus("claude"),
-                window.comando.getAiRuntimeStatus("gemini"),
                 window.comando.getAiRuntimeStatus("grok"),
                 window.comando.getAiRuntimeStatus("kilo"),
                 window.comando.getAiRuntimeStatus("opencode"),
@@ -224,7 +219,6 @@ export function SettingsApp() {
         setRuntimeStatuses({
             claude,
             codex,
-            gemini,
             grok,
             kilo,
             opencode,
@@ -635,10 +629,6 @@ export function SettingsApp() {
                 case "codex":
                     return await window.comando.saveCodexRuntimeSettings(
                         settings as CodexRuntimeSettingsInput,
-                    );
-                case "gemini":
-                    return await window.comando.saveGeminiRuntimeSettings(
-                        settings as GeminiRuntimeSettingsInput,
                     );
                 case "grok":
                     return await window.comando.saveGrokRuntimeSettings(
@@ -1134,29 +1124,15 @@ function createDefaultGitHubAuthStatus(): GitHubAuthStatus {
 }
 
 function getRuntimeName(runtimeId: AiRuntimeId): string {
-    switch (runtimeId) {
-        case "claude":
-            return "Claude";
-        case "gemini":
-            return "Gemini";
-        case "grok":
-            return "Grok";
-        case "kilo":
-            return "Kilo";
-        case "opencode":
-            return "OpenCode";
-        case "codex":
-        default:
-            return "Codex";
-    }
+    return getAiRuntimeDisplayName(runtimeId);
 }
 
 function isAiProviderId(runtimeId: AiRuntimeId): runtimeId is AiProviderId {
-    return AI_PROVIDER_RUNTIME_IDS.includes(runtimeId);
+    return isActiveAiRuntimeId(runtimeId);
 }
 
 function mapProviderRuntimeStatuses(
-    statuses: Record<AiRuntimeId, AiRuntimeStatus | null>,
+    statuses: Record<AiProviderId, AiRuntimeStatus | null>,
 ): Partial<Record<AiProviderId, AiProviderRuntimeStatus | null>> {
     return Object.fromEntries(
         AI_PROVIDER_RUNTIME_IDS.map((providerId) => {

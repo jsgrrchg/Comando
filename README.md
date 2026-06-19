@@ -58,13 +58,15 @@ Comando implements the [Agent Client Protocol (ACP)](https://github.com/agentcli
 | Runtime | Provider | Delivery | Authentication |
 |---------|----------|----------|----------------|
 | **Claude** | Anthropic | Bundled/staged ACP runtime | `~/.claude.json` or `ANTHROPIC_API_KEY` (gateway-compatible via `ANTHROPIC_BASE_URL`) |
-| **Codex** | OpenAI | Bundled/staged ACP runtime (`codex-acp` 0.14.0) | ChatGPT login, Codex API key, or OpenAI API key |
-| **Gemini** | Google | External runtime | Login via Gemini CLI or API-key-based configuration |
+| **Codex** | OpenAI | Bundled/staged ACP runtime (`codex-acp` 0.15.0) | ChatGPT login, Codex API key, or OpenAI API key |
+| **Grok** | xAI | External runtime | Grok CLI login or `XAI_API_KEY` |
 | **Kilo** | Kilo | External runtime | `kilo auth` |
+| **OpenCode** | SST | External runtime | OpenCode CLI auth or external provider environment |
 
 Credentials are stored encrypted via Electron's `safeStorage`.
-The `stage:ai` flow currently bundles and packages the Claude and Codex runtimes; Gemini and Kilo are configured as external runtimes.
-The bundled Codex runtime is vendored from Zed's `codex-acp`, pinned to OpenAI Codex Rust `rust-v0.129.0`, and carries Comando-specific patches for Fast mode, subagent session projection, generated-image rendering, custom prompt expansion, and ACP metadata compatibility.
+The `stage:ai` flow currently bundles and packages the Claude and Codex runtimes; Grok, Kilo, and OpenCode are configured as external runtimes.
+Comando no longer launches a dedicated Gemini ACP runtime. To use a Gemini API key, configure it through a compatible external runtime such as Kilo or OpenCode instead of the Gemini CLI ACP path.
+The bundled Codex runtime is vendored from Zed's `codex-acp`, pinned to OpenAI Codex Rust `rust-v0.133.0`, and carries Comando-specific patches for Fast mode, subagent session projection, generated-image rendering, custom prompt expansion, and ACP metadata compatibility.
 
 ## Requirements
 
@@ -184,7 +186,7 @@ For automatic GitHub releases:
                 │
                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  External runtimes: Claude · Codex · Gemini · Kilo          │
+│  External runtimes: Grok · Kilo · OpenCode                  │
 │  (spawned as child processes, NDJSON/stdio communication)   │
 └─────────────────────────────────────────────────────────────┘
 ```

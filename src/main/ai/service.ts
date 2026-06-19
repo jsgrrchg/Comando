@@ -33,7 +33,6 @@ import type {
     ClaudeRuntimeSettingsInput,
     CodexRuntimeSettingsInput,
     CodexRuntimeSettings,
-    GeminiRuntimeSettingsInput,
     GrokRuntimeSettings,
     GrokRuntimeSettingsInput,
     GetAiSessionTranscriptPageInput,
@@ -125,15 +124,6 @@ import {
     resolveClaudeRuntime,
 } from "./claude/setup";
 import {
-    applyGeminiAuthEnv,
-    buildGeminiSecretPatches,
-    getGeminiRuntimeStatus,
-    isGeminiAuthenticationError,
-    launchGeminiLogin,
-    markGeminiAuthInvalidated,
-    resolveGeminiRuntime,
-} from "./gemini/setup";
-import {
     applyKiloAuthEnv,
     buildKiloSecretPatches,
     getKiloRuntimeStatus,
@@ -163,6 +153,39 @@ import {
     markOpenCodeAuthInvalidated,
     resolveOpenCodeRuntime,
 } from "./opencode/setup";
+
+const GEMINI_ACP_REMOVED_MESSAGE =
+    "Gemini ACP support has been removed. Use Kilo or OpenCode with a Gemini API key instead.";
+
+function createRemovedGeminiRuntimeSettings() {
+    return {
+        authInvalidatedAtMs: null,
+        authMethod: null,
+        binaryPath: null,
+        googleCloudLocation: null,
+        googleCloudProject: null,
+        hasGeminiApiKey: false,
+        hasGoogleApiKey: false,
+    };
+}
+
+function createRemovedGeminiRuntimeStatus(): AiRuntimeStatus {
+    return {
+        authMethod: null,
+        authMethods: [],
+        authReady: false,
+        checkedAt: new Date().toISOString(),
+        command: null,
+        hasCustomBinaryPath: false,
+        hasGatewayConfig: false,
+        hasGatewayUrl: false,
+        message: GEMINI_ACP_REMOVED_MESSAGE,
+        onboardingRequired: true,
+        runtimeId: "gemini",
+        source: null,
+        state: "error",
+    };
+}
 
 function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
     return Writable.toWeb(stream) as WritableStream<Uint8Array>;
@@ -602,7 +625,7 @@ export class AiService {
             settings: {
                 claude: this.#settingsService.loadClaudeRuntimeSettings(),
                 codex: this.#settingsService.loadCodexRuntimeSettings(),
-                gemini: this.#settingsService.loadGeminiRuntimeSettings(),
+                gemini: createRemovedGeminiRuntimeSettings(),
                 grok: this.#settingsService.loadGrokRuntimeSettings(),
                 kilo: this.#settingsService.loadKiloRuntimeSettings(),
                 opencode: this.#settingsService.loadOpenCodeRuntimeSettings(),
@@ -677,45 +700,6 @@ export class AiService {
         await this.#saveClaudeAuthSettings(nextSettings, secretPatch.patches);
         const status = this.#withPersistedRuntimeCatalog(
             getClaudeRuntimeStatus(nextSettings, this.#secretStore),
-        );
-        this.#onRuntimeStatus(status);
-        return status;
-    }
-
-    async saveGeminiRuntimeSettings(
-        settings: GeminiRuntimeSettingsInput,
-    ): Promise<AiRuntimeStatus> {
-        const currentSettings =
-            this.#settingsService.loadGeminiRuntimeSettings();
-        const geminiApiKey = applySecretValuePatch(
-            this.#secretStore.loadSecret("ai.gemini", "gemini_api_key"),
-            settings.geminiApiKey,
-        );
-        const googleApiKey = applySecretValuePatch(
-            this.#secretStore.loadSecret("ai.gemini", "google_api_key"),
-            settings.googleApiKey,
-        );
-        const secretPatch = buildGeminiSecretPatches(this.#secretStore, {
-            geminiApiKey,
-            googleApiKey,
-        });
-        const nextSettings = {
-            authInvalidatedAtMs: currentSettings.authInvalidatedAtMs,
-            authMethod: settings.authMethod,
-            binaryPath: normalizeOptionalText(settings.binaryPath),
-            googleCloudLocation: normalizeOptionalText(
-                settings.googleCloudLocation,
-            ),
-            googleCloudProject: normalizeOptionalText(
-                settings.googleCloudProject,
-            ),
-            hasGeminiApiKey: secretPatch.flags.hasGeminiApiKey,
-            hasGoogleApiKey: secretPatch.flags.hasGoogleApiKey,
-        };
-
-        await this.#saveGeminiAuthSettings(nextSettings, secretPatch.patches);
-        const status = this.#withPersistedRuntimeCatalog(
-            getGeminiRuntimeStatus(nextSettings, this.#secretStore),
         );
         this.#onRuntimeStatus(status);
         return status;
@@ -1202,39 +1186,7 @@ export class AiService {
             return;
         }
 
-        if (input.runtimeId === "gemini") {
-            const currentSettings =
-                this.#settingsService.loadGeminiRuntimeSettings();
-            const authMethod =
-                input.methodId === "login_with_google" ||
-                input.methodId === "use_gemini"
-                    ? input.methodId
-                    : null;
-
-            if (authMethod === null) {
-                throw new Error(
-                    "Select a valid Gemini login method before opening authentication.",
-                );
-            }
-
-            if (authMethod === "use_gemini") {
-                throw new Error(
-                    "The Gemini API key does not need a login terminal. Save the API key from settings.",
-                );
-            }
-
-            const nextSettings = markGeminiAuthInvalidated({
-                ...currentSettings,
-                authMethod,
-            });
-            await this.#saveGeminiAuthSettings(nextSettings, []);
-
-            await launchGeminiLogin(nextSettings, cwd);
-            this.#onRuntimeStatus(
-                getGeminiRuntimeStatus(nextSettings, this.#secretStore),
-            );
-            return;
-        }
+        this.#rejectGeminiRuntime(input.runtimeId);
 
         if (input.runtimeId === "kilo") {
             if (input.methodId === "kilo-api-key") {
@@ -1503,30 +1455,7 @@ export class AiService {
             return status;
         }
 
-        if (input.runtimeId === "gemini") {
-            const currentSettings =
-                this.#settingsService.loadGeminiRuntimeSettings();
-            const secretPatch = buildGeminiSecretPatches(this.#secretStore, {
-                geminiApiKey: null,
-                googleApiKey: null,
-            });
-            const nextSettings = {
-                ...currentSettings,
-                authInvalidatedAtMs:
-                    currentSettings.authMethod === "use_gemini"
-                        ? currentSettings.authInvalidatedAtMs
-                        : Date.now(),
-                authMethod: null,
-                hasGeminiApiKey: secretPatch.flags.hasGeminiApiKey,
-                hasGoogleApiKey: secretPatch.flags.hasGoogleApiKey,
-            };
-            await this.#saveGeminiAuthSettings(nextSettings, secretPatch.patches);
-            const status = this.#withPersistedRuntimeCatalog(
-                getGeminiRuntimeStatus(nextSettings, this.#secretStore),
-            );
-            this.#onRuntimeStatus(status);
-            return status;
-        }
+        this.#rejectGeminiRuntime(input.runtimeId);
 
         if (input.runtimeId === "opencode") {
             const nextSettings = {
@@ -2442,10 +2371,7 @@ export class AiService {
         }
 
         if (runtimeId === "gemini") {
-            return getGeminiRuntimeStatus(
-                this.#settingsService.loadGeminiRuntimeSettings(),
-                this.#secretStore,
-            );
+            return createRemovedGeminiRuntimeStatus();
         }
 
         if (runtimeId === "grok") {
@@ -2475,6 +2401,15 @@ export class AiService {
         );
     }
 
+    #rejectGeminiRuntime(runtimeId: AiRuntimeId): void {
+        if (runtimeId !== "gemini") {
+            return;
+        }
+
+        this.#onRuntimeStatus(createRemovedGeminiRuntimeStatus());
+        throw new Error(GEMINI_ACP_REMOVED_MESSAGE);
+    }
+
     async #saveCodexAuthSettings(
         settings: CodexRuntimeSettings,
         secrets: readonly SecretRecordPatch[],
@@ -2501,20 +2436,6 @@ export class AiService {
 
         await this.#saveSecretPatches(secrets);
         this.#settingsService.saveClaudeRuntimeSettings(settings);
-    }
-
-    async #saveGeminiAuthSettings(
-        settings: ReturnType<SettingsGateway["loadGeminiRuntimeSettings"]>,
-        secrets: readonly SecretRecordPatch[],
-    ): Promise<void> {
-        if (this.#settingsService.saveGeminiAuth) {
-            await this.#settingsService.saveGeminiAuth(settings, secrets);
-            this.#secretStore.cacheSecretPatches?.(secrets);
-            return;
-        }
-
-        await this.#saveSecretPatches(secrets);
-        this.#settingsService.saveGeminiRuntimeSettings(settings);
     }
 
     async #saveGrokAuthSettings(
@@ -2658,25 +2579,7 @@ export class AiService {
             };
         }
 
-        if (runtimeId === "gemini") {
-            const settings = this.#settingsService.loadGeminiRuntimeSettings();
-            const resolved = resolveGeminiRuntime(settings, this.#secretStore);
-
-            return {
-                args: resolved.args,
-                command: resolved.command,
-                env: buildRuntimeSpawnEnv(
-                    applyGeminiAuthEnv(
-                        process.env,
-                        settings,
-                        this.#secretStore,
-                    ),
-                    resolved.program,
-                ),
-                executable: resolved.program,
-                status: resolved.status,
-            };
-        }
+        this.#rejectGeminiRuntime(runtimeId);
 
         if (runtimeId === "grok") {
             const settings = this.#settingsService.loadGrokRuntimeSettings();
@@ -2887,17 +2790,6 @@ export class AiService {
             this.#settingsService.saveClaudeRuntimeSettings(nextSettings);
             this.#onRuntimeStatus(
                 getClaudeRuntimeStatus(nextSettings, this.#secretStore),
-            );
-            return;
-        }
-
-        if (runtimeId === "gemini" && isGeminiAuthenticationError(message)) {
-            const nextSettings = markGeminiAuthInvalidated(
-                this.#settingsService.loadGeminiRuntimeSettings(),
-            );
-            this.#settingsService.saveGeminiRuntimeSettings(nextSettings);
-            this.#onRuntimeStatus(
-                getGeminiRuntimeStatus(nextSettings, this.#secretStore),
             );
             return;
         }

@@ -18,16 +18,18 @@ describe("WorkspaceView quick create agents menu", () => {
             onOpenClaudeCodeTerminal: openClaudeCodeTerminal,
         });
 
-        expect(entries.map((entry) => entry.type === "separator" ? "" : entry.label))
-            .toEqual([
-                "Codex",
-                "Claude",
-                "Claude Code",
-                "Gemini",
-                "Grok",
-                "Kilo",
-                "OpenCode",
-            ]);
+        const labels = entries.map((entry) =>
+            entry.type === "separator" ? "" : entry.label,
+        );
+        expect(labels).toEqual([
+            "Codex",
+            "Claude",
+            "Claude Code",
+            "Grok",
+            "Kilo",
+            "OpenCode",
+        ]);
+        expect(labels).not.toContain("Gemini");
 
         const claudeEntry = entries.find(
             (entry) => entry.type !== "separator" && entry.label === "Claude",

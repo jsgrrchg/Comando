@@ -1,25 +1,12 @@
 import type { AiRuntimeId } from "@shared/ipc";
+import { getAiRuntimeDisplayName } from "@shared/ai-runtimes";
 
 const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", {
     numeric: "auto",
 });
 
 export function getHistoryRuntimeLabel(runtimeId: AiRuntimeId): string {
-    switch (runtimeId) {
-        case "claude":
-            return "Claude";
-        case "gemini":
-            return "Gemini";
-        case "grok":
-            return "Grok";
-        case "kilo":
-            return "Kilo";
-        case "opencode":
-            return "OpenCode";
-        case "codex":
-        default:
-            return "Codex";
-    }
+    return getAiRuntimeDisplayName(runtimeId);
 }
 
 export function formatHistoryRelativeDate(

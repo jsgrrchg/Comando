@@ -294,15 +294,6 @@ function createSettingsService(overrides: Record<string, unknown>) {
             hasCodexApiKey: false,
             hasOpenAiApiKey: false,
         })),
-        loadGeminiRuntimeSettings: vi.fn(() => ({
-            authInvalidatedAtMs: null,
-            authMethod: null,
-            binaryPath: null,
-            googleCloudLocation: null,
-            googleCloudProject: null,
-            hasGeminiApiKey: false,
-            hasGoogleApiKey: false,
-        })),
         loadKiloRuntimeSettings: vi.fn(() => ({
             authInvalidatedAtMs: null,
             authMethod: null,
@@ -312,7 +303,6 @@ function createSettingsService(overrides: Record<string, unknown>) {
         loadOpenCodeRuntimeSettings: vi.fn(() => createOpenCodeSettings()),
         saveClaudeRuntimeSettings: vi.fn(),
         saveCodexRuntimeSettings: vi.fn(),
-        saveGeminiRuntimeSettings: vi.fn(),
         saveKiloRuntimeSettings: vi.fn(),
         saveOpenCodeRuntimeSettings: vi.fn(),
         ...overrides,

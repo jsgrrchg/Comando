@@ -1,4 +1,5 @@
 export { AIProvidersSettings } from "./AIProvidersSettings";
+export { AI_PROVIDER_IDS } from "./aiProviderSettingsModel";
 export { SettingsWindow } from "./SettingsWindow";
 export {
     NumberStepper,

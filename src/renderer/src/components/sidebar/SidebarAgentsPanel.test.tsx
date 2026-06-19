@@ -199,16 +199,18 @@ describe("SidebarAgentsPanel new agent menu", () => {
             onOpenClaudeCodeTerminal: openClaudeCodeTerminal,
         });
 
-        expect(entries.map((entry) => entry.type === "separator" ? "" : entry.label))
-            .toEqual([
-                "New Codex thread",
-                "New Claude thread",
-                "New Gemini thread",
-                "New Grok thread",
-                "New Kilo thread",
-                "New OpenCode thread",
-                "New Claude Code Terminal",
-            ]);
+        const labels = entries.map((entry) =>
+            entry.type === "separator" ? "" : entry.label,
+        );
+        expect(labels).toEqual([
+            "New Codex thread",
+            "New Claude thread",
+            "New Grok thread",
+            "New Kilo thread",
+            "New OpenCode thread",
+            "New Claude Code Terminal",
+        ]);
+        expect(labels).not.toContain("New Gemini thread");
 
         const claudeEntry = entries.find(
             (entry) =>

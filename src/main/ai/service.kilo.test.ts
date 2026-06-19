@@ -26,15 +26,6 @@ describe("AiService Kilo branch", () => {
                 hasCodexApiKey: false,
                 hasOpenAiApiKey: false,
             })),
-            loadGeminiRuntimeSettings: vi.fn(() => ({
-                authInvalidatedAtMs: null,
-                authMethod: null,
-                binaryPath: null,
-                googleCloudLocation: null,
-                googleCloudProject: null,
-                hasGeminiApiKey: false,
-                hasGoogleApiKey: false,
-            })),
             loadKiloRuntimeSettings: vi.fn(() => ({
                 authInvalidatedAtMs: null,
                 authMethod: null,
@@ -43,7 +34,6 @@ describe("AiService Kilo branch", () => {
             })),
             saveClaudeRuntimeSettings: vi.fn(),
             saveCodexRuntimeSettings: vi.fn(),
-            saveGeminiRuntimeSettings: vi.fn(),
             saveKiloRuntimeSettings: (settings: KiloRuntimeSettings) => {
                 savedSettings = settings;
             },
@@ -122,15 +112,6 @@ describe("AiService Kilo branch", () => {
                     hasCodexApiKey: false,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     authMethod: "kilo-login",
@@ -139,7 +120,6 @@ describe("AiService Kilo branch", () => {
                 })),
                 saveClaudeRuntimeSettings: vi.fn(),
                 saveCodexRuntimeSettings: vi.fn(),
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: (settings: KiloRuntimeSettings) => {
                     savedSettings = settings;
                 },
