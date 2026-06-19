@@ -22,7 +22,9 @@ import type {
     AiImageAttachment,
     AiRuntimeId,
     AiTrackedFile,
+    GitChangeEntry,
     GitFileDiff,
+    GitOriginalFile,
     ProjectFileDocument,
 } from "@shared/ipc";
 import {
@@ -60,6 +62,7 @@ import {
 } from "@renderer/app/pointerGuards";
 
 import {
+    computeMinimalTextEdit,
     continueMarkdownList,
     indentMarkdownListItems,
     outdentMarkdownListItems,
@@ -126,6 +129,7 @@ import {
     getGitGutterLineNumbersMinChars,
     hasRenderableGitGutterChange,
 } from "@renderer/components/workspace/gitGutter";
+import { buildLiveGitGutterDiff } from "@renderer/components/workspace/gitGutterLiveDiff";
 import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
 import {
@@ -226,6 +230,18 @@ const CLAUDE_CODE_TERMINAL_DESCRIPTION =
     "Open the claude CLI in a workspace terminal.";
 const CLAUDE_CODE_NOT_FOUND_MESSAGE =
     "The claude command was not found in Comando's PATH. Your shell may still resolve it.";
+const GIT_GUTTER_LIVE_DIFF_DEBOUNCE_MS = 200;
+
+type GitGutterLiveDiffState =
+    | {
+          readonly diff: GitFileDiff;
+          readonly key: string;
+          readonly status: "ready";
+      }
+    | {
+          readonly key: string;
+          readonly status: "unavailable";
+      };
 
 type QuickCreateSubmenuState = {
     readonly anchorRect: MenuAnchorRect;
@@ -1177,6 +1193,42 @@ function getGitGutterDiffRequestKey(options: {
         options.worktreeId ?? "primary",
         options.relativePath,
     ].join("\u0000");
+}
+
+function getGitGutterChangeSignature(
+    change: GitChangeEntry | null,
+): string | null {
+    if (!change) {
+        return null;
+    }
+
+    return JSON.stringify([
+        change.path,
+        change.previousPath,
+        change.kind,
+        change.scope,
+        change.isBinary,
+        change.isConflicted,
+        change.isRenamed,
+        change.additions,
+        change.deletions,
+    ]);
+}
+
+function mapGitOriginalFileKindToDiffKind(
+    kind: GitOriginalFile["kind"],
+): GitFileDiff["kind"] {
+    switch (kind) {
+        case "added":
+        case "untracked":
+            return "create";
+        case "deleted":
+            return "delete";
+        case "renamed":
+            return "move";
+        default:
+            return "update";
+    }
 }
 
 async function openProjectFileEntriesAtTarget(input: {
@@ -3581,12 +3633,24 @@ function handleMarkdownListEditingShortcut(
     event.stopPropagation();
     event.stopImmediatePropagation();
 
+    // Apply only the minimal changed region. Replacing the full model range
+    // (with forceMoveMarkers) drags every tracked decoration — including the
+    // git gutter markers — to the end of the document, which is what made the
+    // whole gutter flicker on each Enter/Tab in markdown files.
+    const minimalEdit = computeMinimalTextEdit(text, result.text);
+    const editStart = model.getPositionAt(minimalEdit.rangeStart);
+    const editEnd = model.getPositionAt(minimalEdit.rangeEnd);
+
     editor.pushUndoStop();
     editor.executeEdits("markdown-list-continuation", [
         {
-            forceMoveMarkers: true,
-            range: model.getFullModelRange(),
-            text: result.text,
+            range: {
+                endColumn: editEnd.column,
+                endLineNumber: editEnd.lineNumber,
+                startColumn: editStart.column,
+                startLineNumber: editStart.lineNumber,
+            },
+            text: minimalEdit.insert,
         },
     ]);
 
@@ -3811,6 +3875,7 @@ function FileTabView({
         readonly tabId: string;
     } | null>(null);
     const fileTabIdRef = useRef(tab.id);
+    const latestDraftContentRef = useRef(tab.draftContent);
     const gitGutterDecoratorRef = useRef<GitGutterDecorator | null>(null);
     const inlineReviewDecorationsRef =
         useRef<MonacoEditor.IEditorDecorationsCollection | null>(null);
@@ -3852,6 +3917,10 @@ function FileTabView({
             ) ?? null,
         [gitSnapshot?.changes, tab.relativePath],
     );
+    const activeGitChangeSignature = useMemo(
+        () => getGitGutterChangeSignature(activeGitChange),
+        [activeGitChange],
+    );
     const shouldShowGitGutter = hasRenderableGitGutterChange(activeGitChange);
     const gitGutterDiffRequestKey = useMemo(
         () =>
@@ -3867,13 +3936,26 @@ function FileTabView({
         ],
     );
     const [gitGutterDiffState, setGitGutterDiffState] = useState<{
+        readonly base: GitOriginalFile | null;
         readonly diff: GitFileDiff | null;
         readonly key: string;
     } | null>(null);
-    const gitGutterDiff =
+    const [gitGutterLiveDiffState, setGitGutterLiveDiffState] =
+        useState<GitGutterLiveDiffState | null>(null);
+    const gitGutterSource =
         gitGutterDiffState?.key === gitGutterDiffRequestKey
-            ? gitGutterDiffState.diff
+            ? gitGutterDiffState
             : null;
+    const gitGutterLiveState =
+        gitGutterLiveDiffState?.key === gitGutterDiffRequestKey
+            ? gitGutterLiveDiffState
+            : null;
+    const gitGutterDiff =
+        gitGutterLiveState?.status === "ready"
+            ? gitGutterLiveState.diff
+            : gitGutterLiveState?.status === "unavailable"
+              ? null
+              : (gitGutterSource?.diff ?? null);
     const gitGutterLineNumbersMinChars = useMemo(
         () => getGitGutterLineNumbersMinChars(countTextLines(tab.draftContent)),
         [tab.draftContent],
@@ -4813,6 +4895,10 @@ function FileTabView({
     }, [runtime]);
 
     useLayoutEffect(() => {
+        latestDraftContentRef.current = tab.draftContent;
+    }, [tab.draftContent]);
+
+    useLayoutEffect(() => {
         if (
             !document ||
             document.kind === "image" ||
@@ -4832,7 +4918,7 @@ function FileTabView({
                 absolutePath: document.absolutePath,
                 language: monacoLanguageId,
                 monaco,
-                value: tab.draftContent,
+                value: latestDraftContentRef.current,
             }),
         );
 
@@ -4867,7 +4953,6 @@ function FileTabView({
         monacoLanguageId,
         restoreEditorViewStateForTab,
         runWithoutEditorChangeNotification,
-        tab.draftContent,
         tab.id,
         tab.viewState,
     ]);
@@ -5209,6 +5294,7 @@ function FileTabView({
         ) {
             return scheduleEffectStateUpdate(() => {
                 setGitGutterDiffState({
+                    base: null,
                     diff: null,
                     key: gitGutterDiffRequestKey,
                 });
@@ -5216,12 +5302,6 @@ function FileTabView({
         }
 
         const controller = new AbortController();
-        const cancelPendingReset = scheduleEffectStateUpdate(() => {
-            setGitGutterDiffState({
-                diff: null,
-                key: gitGutterDiffRequestKey,
-            });
-        });
 
         const loadGitDiff = async () => {
             try {
@@ -5230,14 +5310,19 @@ function FileTabView({
                     throw new Error("The desktop bridge is not available yet.");
                 }
 
-                const diff = await comandoApi.getGitDiff({
+                const diffInput = {
                     path: tab.relativePath,
                     projectId: tab.projectId,
                     worktreeId: tab.worktreeId ?? null,
-                });
+                };
+                const [diff, base] = await Promise.all([
+                    comandoApi.getGitDiff(diffInput),
+                    comandoApi.getGitOriginalFile(diffInput),
+                ]);
 
                 if (!controller.signal.aborted) {
                     setGitGutterDiffState({
+                        base,
                         diff,
                         key: gitGutterDiffRequestKey,
                     });
@@ -5245,6 +5330,7 @@ function FileTabView({
             } catch {
                 if (!controller.signal.aborted) {
                     setGitGutterDiffState({
+                        base: null,
                         diff: null,
                         key: gitGutterDiffRequestKey,
                     });
@@ -5255,11 +5341,10 @@ function FileTabView({
         void loadGitDiff();
 
         return () => {
-            cancelPendingReset();
             controller.abort();
         };
     }, [
-        activeGitChange,
+        activeGitChangeSignature,
         canEdit,
         document,
         gitGutterDiffRequestKey,
@@ -5267,6 +5352,53 @@ function FileTabView({
         tab.projectId,
         tab.relativePath,
         tab.worktreeId,
+    ]);
+
+    useEffect(() => {
+        const base = gitGutterSource?.base ?? null;
+        if (!base?.isText || base.baseText === null) {
+            return scheduleEffectStateUpdate(() => {
+                setGitGutterLiveDiffState(null);
+            });
+        }
+
+        const baseText = base.baseText;
+        const diffKind =
+            gitGutterSource?.diff?.kind ??
+            mapGitOriginalFileKindToDiffKind(base.kind);
+
+        const timeout = window.setTimeout(() => {
+            const diff = buildLiveGitGutterDiff({
+                baseText,
+                currentText: tab.draftContent,
+                kind: diffKind,
+                path: base.path,
+                previousPath: base.previousPath,
+            });
+
+            if (diff) {
+                setGitGutterLiveDiffState({
+                    diff,
+                    key: gitGutterDiffRequestKey,
+                    status: "ready",
+                });
+                return;
+            }
+
+            setGitGutterLiveDiffState({
+                key: gitGutterDiffRequestKey,
+                status: "unavailable",
+            });
+        }, GIT_GUTTER_LIVE_DIFF_DEBOUNCE_MS);
+
+        return () => {
+            window.clearTimeout(timeout);
+        };
+    }, [
+        gitGutterDiffRequestKey,
+        gitGutterSource?.base,
+        gitGutterSource?.diff?.kind,
+        tab.draftContent,
     ]);
 
     useLayoutEffect(() => {
@@ -5589,6 +5721,63 @@ function FileTabView({
             revision: null,
         };
     }, [clearInlineReviewScrollRestore, inlineReviewTrackedFile]);
+
+    const fileEditorOptions = useMemo(
+        (): MonacoEditor.IStandaloneEditorConstructionOptions => ({
+            automaticLayout: true,
+            fontFamily: editorFontFamily,
+            fontLigatures: true,
+            fontSize: editorSettings.fontSize,
+            glyphMargin: false,
+            lineHeight: editorLineHeightPx,
+            lineDecorationsWidth: GIT_GUTTER_LINE_DECORATIONS_WIDTH,
+            lineNumbers: editorLineNumbers,
+            lineNumbersMinChars: shouldShowGitGutter
+                ? gitGutterLineNumbersMinChars
+                : 4,
+            ...createComandoEditorFeatureOptions(),
+            largeFileOptimizations: true,
+            maxTokenizationLineLength: MONACO_MAX_TOKENIZATION_LINE_LENGTH,
+            minimap: {
+                enabled: editorSettings.minimapEnabled,
+            },
+            overviewRulerBorder: false,
+            overviewRulerLanes: 0,
+            padding: { top: 16, bottom: 16 },
+            quickSuggestions: areSuggestionsEnabled,
+            scrollBeyondLastLine: false,
+            snippetSuggestions: areSuggestionsEnabled ? "inline" : "none",
+            smoothScrolling: true,
+            suggest: {
+                showColors: areSuggestionsEnabled,
+                showFiles: areSuggestionsEnabled,
+                showFolders: areSuggestionsEnabled,
+                showKeywords: areSuggestionsEnabled,
+                showSnippets: areSuggestionsEnabled,
+                showWords: areSuggestionsEnabled,
+            },
+            suggestOnTriggerCharacters: areSuggestionsEnabled,
+            ...semanticHighlightingEditorOptions,
+            wordBasedSuggestions: areSuggestionsEnabled
+                ? "matchingDocuments"
+                : "off",
+            wordWrap:
+                document && shouldEnableDocumentWrapping(document)
+                    ? "on"
+                    : "off",
+        }),
+        [
+            areSuggestionsEnabled,
+            document,
+            editorFontFamily,
+            editorLineHeightPx,
+            editorLineNumbers,
+            editorSettings.fontSize,
+            editorSettings.minimapEnabled,
+            gitGutterLineNumbersMinChars,
+            shouldShowGitGutter,
+        ],
+    );
 
     if (!document) {
         return (
@@ -5990,6 +6179,7 @@ function FileTabView({
                 >
                     <EditorComponent
                         beforeMount={handleEditorBeforeMount}
+                        defaultValue={tab.draftContent}
                         language={monacoLanguageId}
                         onChange={(value: string | undefined) => {
                             if (
@@ -6139,58 +6329,12 @@ function FileTabView({
                             });
                         }}
                         keepCurrentModel
-                        options={{
-                            automaticLayout: true,
-                            fontFamily: editorFontFamily,
-                            fontLigatures: true,
-                            fontSize: editorSettings.fontSize,
-                            glyphMargin: false,
-                            lineHeight: editorLineHeightPx,
-                            lineDecorationsWidth:
-                                GIT_GUTTER_LINE_DECORATIONS_WIDTH,
-                            lineNumbers: editorLineNumbers,
-                            lineNumbersMinChars: shouldShowGitGutter
-                                ? gitGutterLineNumbersMinChars
-                                : 4,
-                            ...createComandoEditorFeatureOptions(),
-                            largeFileOptimizations: true,
-                            maxTokenizationLineLength:
-                                MONACO_MAX_TOKENIZATION_LINE_LENGTH,
-                            minimap: {
-                                enabled: editorSettings.minimapEnabled,
-                            },
-                            overviewRulerBorder: false,
-                            overviewRulerLanes: 0,
-                            padding: { top: 16, bottom: 16 },
-                            quickSuggestions: areSuggestionsEnabled,
-                            scrollBeyondLastLine: false,
-                            snippetSuggestions: areSuggestionsEnabled
-                                ? "inline"
-                                : "none",
-                            smoothScrolling: true,
-                            suggest: {
-                                showColors: areSuggestionsEnabled,
-                                showFiles: areSuggestionsEnabled,
-                                showFolders: areSuggestionsEnabled,
-                                showKeywords: areSuggestionsEnabled,
-                                showSnippets: areSuggestionsEnabled,
-                                showWords: areSuggestionsEnabled,
-                            },
-                            suggestOnTriggerCharacters: areSuggestionsEnabled,
-                            ...semanticHighlightingEditorOptions,
-                            wordBasedSuggestions: areSuggestionsEnabled
-                                ? "matchingDocuments"
-                                : "off",
-                            wordWrap: shouldEnableDocumentWrapping(document)
-                                ? "on"
-                                : "off",
-                        }}
+                        options={fileEditorOptions}
                         saveViewState
                         path={buildWorkspaceFileEditorModelPath(
                             document.absolutePath,
                         )}
                         theme={editorTheme}
-                        value={tab.draftContent}
                     />
                     {editorSettings.vimModeEnabled ? (
                         <div

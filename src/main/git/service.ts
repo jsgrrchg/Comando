@@ -11,6 +11,7 @@ import type {
     GitDiffStatRecord,
     GitFileDiff,
     GitFileDiffOptions,
+    GitFileTextReference,
     GitHistoryListResult,
     GitListBranchesOptions,
     GitListHistoryOptions,
@@ -30,7 +31,7 @@ import {
     listGitWorktrees,
     resolveGitRepository,
 } from "./worktrees";
-import { getGitFileDiff } from "./diff";
+import { getGitFileDiff, getGitFileText } from "./diff";
 import { getGitCommitDetail, listGitHistory } from "./history";
 import { createSafeGitEnvironment } from "./environment";
 import { buildRuntimePathEntries } from "../ai/runtime-env";
@@ -54,6 +55,11 @@ export interface GitGateway {
         relativePath: string,
         options?: GitFileDiffOptions,
     ): Promise<GitFileDiff>;
+    getFileText(
+        inputPath: string,
+        relativePath: string,
+        reference: GitFileTextReference,
+    ): Promise<string | null>;
     listHistory(
         inputPath: string,
         options?: GitListHistoryOptions,
@@ -421,6 +427,23 @@ export class GitService implements GitGateway {
             resolution.canonicalRootPath,
             relativePath,
             options,
+        );
+    }
+
+    async getFileText(
+        inputPath: string,
+        relativePath: string,
+        reference: GitFileTextReference,
+    ): Promise<string | null> {
+        const resolution = await this.resolveRepository(inputPath);
+        if (resolution.state !== "ready" || !resolution.canonicalRootPath) {
+            return null;
+        }
+
+        return getGitFileText(
+            resolution.canonicalRootPath,
+            relativePath,
+            reference,
         );
     }
 

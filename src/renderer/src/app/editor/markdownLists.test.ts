@@ -2,12 +2,65 @@ import { describe, expect, it } from "vitest";
 
 import {
     buildContinuedListPrefix,
+    computeMinimalTextEdit,
     continueMarkdownList,
     indentMarkdownListItems,
     normalizeMarkdownListText,
     outdentMarkdownListItems,
     parseMarkdownListItem,
 } from "./markdownLists";
+
+function applyMinimalEdit(oldText: string, newText: string): string {
+    const edit = computeMinimalTextEdit(oldText, newText);
+    return (
+        oldText.slice(0, edit.rangeStart) +
+        edit.insert +
+        oldText.slice(edit.rangeEnd)
+    );
+}
+
+describe("computeMinimalTextEdit", () => {
+    it("reduces a list continuation to a localized insertion", () => {
+        const oldText = "- one\n- two\n- three\n";
+        const newText = "- one\n- two\n- \n- three\n";
+        const edit = computeMinimalTextEdit(oldText, newText);
+
+        // A pure insertion that does not span the whole document.
+        expect(edit.rangeStart).toBe(edit.rangeEnd);
+        expect(edit.rangeStart).toBeGreaterThan(0);
+        expect(edit.rangeEnd).toBeLessThan(oldText.length);
+        expect(edit.insert).toBe("\n- ");
+        expect(applyMinimalEdit(oldText, newText)).toBe(newText);
+    });
+
+    it("trims the common prefix and suffix around a renumbered marker", () => {
+        const oldText = "1. a\n2. b\n9. c\n";
+        const newText = "1. a\n2. b\n3. c\n";
+        const edit = computeMinimalTextEdit(oldText, newText);
+
+        expect(oldText.slice(edit.rangeStart, edit.rangeEnd)).toBe("9");
+        expect(edit.insert).toBe("3");
+        expect(applyMinimalEdit(oldText, newText)).toBe(newText);
+    });
+
+    it("returns an empty edit when the text is unchanged", () => {
+        const text = "- stable\n";
+        const edit = computeMinimalTextEdit(text, text);
+
+        expect(edit.insert).toBe("");
+        expect(edit.rangeStart).toBe(edit.rangeEnd);
+        expect(applyMinimalEdit(text, text)).toBe(text);
+    });
+
+    it("handles a pure deletion (collapsing an empty item)", () => {
+        const oldText = "- one\n- \n";
+        const newText = "- one\n";
+        const edit = computeMinimalTextEdit(oldText, newText);
+
+        expect(edit.insert).toBe("");
+        expect(applyMinimalEdit(oldText, newText)).toBe(newText);
+    });
+});
 
 describe("markdownLists", () => {
     it("continues nested bullet items with the same indentation", () => {

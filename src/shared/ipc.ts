@@ -49,6 +49,7 @@ export const IPC_CHANNELS = {
     listGitHistory: "git:list-history",
     listGitWorktreeDiff: "git:list-worktree-diff",
     getGitDiff: "git:get-diff",
+    getGitOriginalFile: "git:get-original-file",
     getGitCommitDetail: "git:get-commit-detail",
     initGitRepository: "git:init-repository",
     stageGitPaths: "git:stage-paths",
@@ -906,6 +907,17 @@ export interface GitChangesListInput extends GitRepositoryScopeInput {
 export interface GitDiffInput extends GitRepositoryScopeInput {
     readonly path: string;
     readonly scope?: GitDiffScope | "auto";
+}
+
+export type GitOriginalFileInput = GitDiffInput;
+
+export interface GitOriginalFile {
+    readonly baseText: string | null;
+    readonly isText: boolean;
+    readonly kind: GitChangeKind;
+    readonly path: string;
+    readonly previousPath: string | null;
+    readonly scope: GitDiffScope;
 }
 
 export interface GitWorktreeDiffInput extends GitRepositoryScopeInput {
@@ -2780,6 +2792,9 @@ export interface ComandoApi {
         input: GitWorktreeDiffInput,
     ) => Promise<GitWorktreeDiffResult | null>;
     getGitDiff: (input: GitDiffInput) => Promise<GitFileDiff | null>;
+    getGitOriginalFile: (
+        input: GitOriginalFileInput,
+    ) => Promise<GitOriginalFile | null>;
     getGitCommitDetail: (
         input: GitCommitDetailInput,
     ) => Promise<GitCommitDetail | null>;

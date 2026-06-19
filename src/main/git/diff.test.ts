@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const execFileMock = vi.hoisted(() => vi.fn());
 
@@ -10,7 +10,11 @@ vi.mock("node:child_process", () => ({
     execFile: execFileMock,
 }));
 
-import { getGitFileDiff } from "./diff";
+import { getGitFileDiff, getGitFileText } from "./diff";
+
+beforeEach(() => {
+    execFileMock.mockReset();
+});
 
 describe("getGitFileDiff", () => {
     it("times out and reports a clear error for hung untracked no-index diffs", async () => {
@@ -75,5 +79,62 @@ describe("getGitFileDiff", () => {
             vi.useRealTimers();
             fs.rmSync(rootPath, { force: true, recursive: true });
         }
+    });
+});
+
+describe("getGitFileText", () => {
+    it("reads a text-converted blob with a bounded git show call", async () => {
+        execFileMock.mockImplementation(
+            (
+                _command: string,
+                _args: readonly string[],
+                _options: unknown,
+                callback: (
+                    error: Error | null,
+                    stdout: string,
+                    stderr: string,
+                ) => void,
+            ) => {
+                callback(null, "const value = 1;\n", "");
+            },
+        );
+
+        await expect(
+            getGitFileText("/workspace/repo", "src/app.ts", "index"),
+        ).resolves.toBe("const value = 1;\n");
+
+        expect(execFileMock).toHaveBeenCalledWith(
+            "git",
+            ["show", "--textconv", ":src/app.ts"],
+            expect.objectContaining({
+                cwd: "/workspace/repo",
+                encoding: "utf8",
+                killSignal: "SIGTERM",
+                maxBuffer: 5 * 1024 * 1024,
+                timeout: 10_000,
+            }),
+            expect.any(Function),
+        );
+    });
+
+    it("returns null when the requested blob cannot be read", async () => {
+        execFileMock.mockImplementation(
+            (
+                _command: string,
+                _args: readonly string[],
+                _options: unknown,
+                callback: (
+                    error: Error | null,
+                    stdout: string,
+                    stderr: string,
+                ) => void,
+            ) => {
+                callback(new Error("not found"), "", "");
+            },
+        );
+
+        await expect(
+            getGitFileText("/workspace/repo", "src/missing.ts", "head"),
+        ).resolves.toBeNull();
     });
 });

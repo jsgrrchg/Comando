@@ -139,6 +139,20 @@ class GitWorkerGateway implements GitWorkerClient {
         });
     }
 
+    async getFileText(
+        inputPath: string,
+        relativePath: string,
+        reference: Parameters<GitGateway["getFileText"]>[2],
+    ) {
+        return await this.#rpc.call<
+            Awaited<ReturnType<GitGateway["getFileText"]>>
+        >("git.getFileText", {
+            inputPath,
+            reference,
+            relativePath,
+        });
+    }
+
     async listHistory(
         inputPath: string,
         options?: Parameters<GitGateway["listHistory"]>[1],
