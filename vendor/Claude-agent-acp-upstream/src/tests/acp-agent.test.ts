@@ -2485,6 +2485,48 @@ describe("usage_update computation", () => {
     expect(usageUpdates[1].update.cost).toBeDefined();
   });
 
+  it("does not publish a default-window streaming usage update before modelUsage is known", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    injectSession(agent, [
+      createStreamEvent("message_start", {
+        model: "claude-opus-4-20250514",
+        usage: {
+          input_tokens: 100000,
+          output_tokens: 10000,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      }),
+      createResultMessageWithModel({
+        modelUsage: {
+          "claude-opus-4-20250514": {
+            inputTokens: 100000,
+            outputTokens: 10000,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            webSearchRequests: 0,
+            costUSD: 0.01,
+            contextWindow: 1000000,
+            maxOutputTokens: 16384,
+          },
+        },
+      }),
+      { type: "system", subtype: "session_state_changed", state: "idle" },
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+
+    const usageUpdates = updates.filter((u: any) => u.update?.sessionUpdate === "usage_update");
+    const unsafeStreamingUpdates = usageUpdates.filter(
+      (u: any) => u.update.cost === undefined && u.update.size === 200000,
+    );
+    expect(unsafeStreamingUpdates).toHaveLength(0);
+
+    const finalUsageUpdate = usageUpdates.find((u: any) => u.update.cost !== undefined);
+    expect(finalUsageUpdate?.update.used).toBe(110000);
+    expect(finalUsageUpdate?.update.size).toBe(1000000);
+  });
+
   it("stream_event message_delta patches previous snapshot", async () => {
     const { agent, updates } = createMockAgentWithCapture();
     injectSession(agent, [
@@ -2527,6 +2569,51 @@ describe("usage_update computation", () => {
     expect(usageUpdates[1].update.cost).toBeUndefined();
     expect(usageUpdates[2].update.used).toBe(1800);
     expect(usageUpdates[2].update.cost).toBeDefined();
+  });
+
+  it("does not publish default-window streaming usage updates while deltas are still provisional", async () => {
+    const { agent, updates } = createMockAgentWithCapture();
+    injectSession(agent, [
+      createStreamEvent("message_start", {
+        model: "claude-opus-4-20250514",
+        usage: {
+          input_tokens: 90000,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      }),
+      createStreamEvent("message_delta", {
+        usage: { output_tokens: 20000 },
+      }),
+      createResultMessageWithModel({
+        modelUsage: {
+          "claude-opus-4-20250514": {
+            inputTokens: 90000,
+            outputTokens: 20000,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            webSearchRequests: 0,
+            costUSD: 0.01,
+            contextWindow: 1000000,
+            maxOutputTokens: 16384,
+          },
+        },
+      }),
+      { type: "system", subtype: "session_state_changed", state: "idle" },
+    ]);
+
+    await agent.prompt({ sessionId: "test-session", prompt: [{ type: "text", text: "test" }] });
+
+    const usageUpdates = updates.filter((u: any) => u.update?.sessionUpdate === "usage_update");
+    const unsafeStreamingUpdates = usageUpdates.filter(
+      (u: any) => u.update.cost === undefined && u.update.size === 200000,
+    );
+    expect(unsafeStreamingUpdates).toHaveLength(0);
+
+    const finalUsageUpdate = usageUpdates.find((u: any) => u.update.cost !== undefined);
+    expect(finalUsageUpdate?.update.used).toBe(110000);
+    expect(finalUsageUpdate?.update.size).toBe(1000000);
   });
 
   it("mid-stream size is inferred from a 1M model name before the first result", async () => {
