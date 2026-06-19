@@ -57,8 +57,31 @@ Comando's ACP client lives in TypeScript/Electron under `src/main/ai/` and curre
 ## Current Claude Delta
 
 The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp`
-`0.42.0`. Comando currently carries no source-level Claude ACP delta; the
-vendored source is the upstream snapshot and `dist/` is rebuilt from it.
+`0.42.0`.
+
+Comando currently carries one source-level Claude ACP delta in:
+
+- `vendor/Claude-agent-acp-upstream/src/acp-agent.ts`
+- `vendor/Claude-agent-acp-upstream/src/tests/acp-agent.test.ts`
+
+The delta suppresses provisional live `usage_update` notifications while
+Claude ACP still only knows the generic `200000` token context-window fallback.
+Claude can emit those updates during `stream_event` before the later
+`result.modelUsage` message reports the real model context window, such as a
+1M-token Opus window. Publishing the provisional value makes Comando's context
+usage bar appear artificially inflated during the turn, then snap back when the
+final result arrives.
+
+The local patch tracks whether `contextWindowSize` came from the default
+placeholder, a model-name heuristic, or authoritative `modelUsage`. Streaming
+usage updates are only published once the size is no longer the default
+placeholder; final result usage updates still publish normally with cost and
+the modelUsage window.
+
+When updating Claude again, check upstream for an equivalent fix before
+carrying this delta forward. As of upstream `v0.48.0`, upstream still emits the
+streaming `usage_update` with `session.contextWindowSize` and has no equivalent
+`contextWindowSizeSource` guard.
 
 ## Updating Vendored Runtimes
 
