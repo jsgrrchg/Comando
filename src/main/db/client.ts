@@ -18,7 +18,6 @@ import type {
     AppTerminalSettings,
     ClaudeRuntimeSettings,
     CodexRuntimeSettings,
-    GeminiRuntimeSettings,
     GrokRuntimeSettings,
     KiloRuntimeSettings,
     OpenCodeRuntimeSettings,
@@ -411,15 +410,6 @@ class SettingsClient implements SettingsGateway {
         this.#dispatch("settings.saveClaudeRuntimeSettings", settings);
     }
 
-    loadGeminiRuntimeSettings(): GeminiRuntimeSettings {
-        return requireAiSettings(this.#snapshot.ai).gemini;
-    }
-
-    saveGeminiRuntimeSettings(settings: GeminiRuntimeSettings): void {
-        this.#setGeminiRuntimeSettings(settings);
-        this.#dispatch("settings.saveGeminiRuntimeSettings", settings);
-    }
-
     loadGrokRuntimeSettings(): GrokRuntimeSettings {
         return requireAiSettings(this.#snapshot.ai).grok;
     }
@@ -479,24 +469,6 @@ class SettingsClient implements SettingsGateway {
             });
         } catch (error) {
             this.#setClaudeRuntimeSettings(previousSettings);
-            throw error;
-        }
-    }
-
-    async saveGeminiAuth(
-        settings: GeminiRuntimeSettings,
-        secrets: readonly SecretRecordPatch[],
-    ): Promise<void> {
-        const records = serializeSecretRecordPatches(secrets);
-        const previousSettings = this.loadGeminiRuntimeSettings();
-        this.#setGeminiRuntimeSettings(settings);
-        try {
-            await this.#rpc.call("ai.saveGeminiAuth", {
-                secrets: records,
-                settings,
-            });
-        } catch (error) {
-            this.#setGeminiRuntimeSettings(previousSettings);
             throw error;
         }
     }
@@ -571,16 +543,6 @@ class SettingsClient implements SettingsGateway {
             ai: {
                 ...requireAiSettings(this.#snapshot.ai),
                 claude: settings,
-            },
-        };
-    }
-
-    #setGeminiRuntimeSettings(settings: GeminiRuntimeSettings): void {
-        this.#snapshot = {
-            ...this.#snapshot,
-            ai: {
-                ...requireAiSettings(this.#snapshot.ai),
-                gemini: settings,
             },
         };
     }

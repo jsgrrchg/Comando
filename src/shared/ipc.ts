@@ -29,7 +29,6 @@ export const IPC_CHANNELS = {
     saveCodexRuntimeSettings: "settings:save-codex-runtime-settings",
     verifyCodexRuntimeSettings: "settings:verify-codex-runtime-settings",
     saveClaudeRuntimeSettings: "settings:save-claude-runtime-settings",
-    saveGeminiRuntimeSettings: "settings:save-gemini-runtime-settings",
     saveGrokRuntimeSettings: "settings:save-grok-runtime-settings",
     saveKiloRuntimeSettings: "settings:save-kilo-runtime-settings",
     saveOpenCodeRuntimeSettings: "settings:save-opencode-runtime-settings",
@@ -406,15 +405,6 @@ export interface GeminiRuntimeSettings {
     readonly hasGoogleApiKey: boolean;
 }
 
-export interface GeminiRuntimeSettingsInput {
-    readonly authMethod: GeminiAuthMethodId | null;
-    readonly binaryPath: string | null;
-    readonly geminiApiKey: SecretValuePatch;
-    readonly googleApiKey: SecretValuePatch;
-    readonly googleCloudLocation: string | null;
-    readonly googleCloudProject: string | null;
-}
-
 export interface GrokRuntimeSettings {
     readonly authInvalidatedAtMs: number | null;
     readonly authMethod: GrokAuthMethodId | null;
@@ -533,7 +523,6 @@ export interface AiRuntimePathOverrideDiagnostic {
     readonly name:
         | "COMANDO_CLAUDE_ACP_BIN"
         | "COMANDO_CODEX_ACP_BIN"
-        | "COMANDO_GEMINI_ACP_BIN"
         | "COMANDO_GROK_ACP_BIN"
         | "COMANDO_KILO_ACP_BIN"
         | "COMANDO_OPENCODE_ACP_BIN";
@@ -3043,9 +3032,6 @@ export interface ComandoApi {
     ) => Promise<AiRuntimeStatus>;
     saveClaudeRuntimeSettings: (
         settings: ClaudeRuntimeSettingsInput,
-    ) => Promise<AiRuntimeStatus>;
-    saveGeminiRuntimeSettings: (
-        settings: GeminiRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
     saveGrokRuntimeSettings: (
         settings: GrokRuntimeSettingsInput,

@@ -259,15 +259,6 @@ describe("AiService Claude branch", () => {
                     hasCodexApiKey: false,
                     hasOpenAiApiKey: false,
                 })),
-                loadGeminiRuntimeSettings: vi.fn(() => ({
-                    authInvalidatedAtMs: null,
-                    authMethod: null,
-                    binaryPath: null,
-                    googleCloudLocation: null,
-                    googleCloudProject: null,
-                    hasGeminiApiKey: false,
-                    hasGoogleApiKey: false,
-                })),
                 loadKiloRuntimeSettings: vi.fn(() => ({
                     authInvalidatedAtMs: null,
                     authMethod: null,
@@ -278,7 +269,6 @@ describe("AiService Claude branch", () => {
                     savedSettings = settings;
                 },
                 saveCodexRuntimeSettings: vi.fn(),
-                saveGeminiRuntimeSettings: vi.fn(),
                 saveKiloRuntimeSettings: vi.fn(),
             } as never,
         });

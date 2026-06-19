@@ -71,13 +71,6 @@ const CLAUDE_HAS_ANTHROPIC_API_KEY_KEY = "ai.claude.has_anthropic_api_key";
 const CLAUDE_HAS_GATEWAY_AUTH_TOKEN_KEY = "ai.claude.has_gateway_auth_token";
 const CLAUDE_HAS_GATEWAY_CUSTOM_HEADERS_KEY =
     "ai.claude.has_gateway_custom_headers";
-const GEMINI_AUTH_INVALIDATED_AT_KEY = "ai.gemini.auth_invalidated_at_ms";
-const GEMINI_AUTH_METHOD_KEY = "ai.gemini.auth_method";
-const GEMINI_BINARY_PATH_KEY = "ai.gemini.binary_path";
-const GEMINI_GOOGLE_CLOUD_LOCATION_KEY = "ai.gemini.google_cloud_location";
-const GEMINI_GOOGLE_CLOUD_PROJECT_KEY = "ai.gemini.google_cloud_project";
-const GEMINI_HAS_GEMINI_API_KEY_KEY = "ai.gemini.has_gemini_api_key";
-const GEMINI_HAS_GOOGLE_API_KEY_KEY = "ai.gemini.has_google_api_key";
 const GROK_AUTH_INVALIDATED_AT_KEY = "ai.grok.auth_invalidated_at_ms";
 const GROK_AUTH_METHOD_KEY = "ai.grok.auth_method";
 const GROK_BINARY_PATH_KEY = "ai.grok.binary_path";
@@ -198,6 +191,18 @@ const VALID_EDITOR_FONT_FAMILIES = new Set<EditorFontFamily>(
     EDITOR_FONT_FAMILY_IDS,
 );
 
+function createRemovedGeminiRuntimeSettings(): GeminiRuntimeSettings {
+    return {
+        authInvalidatedAtMs: null,
+        authMethod: null,
+        binaryPath: null,
+        googleCloudLocation: null,
+        googleCloudProject: null,
+        hasGeminiApiKey: false,
+        hasGoogleApiKey: false,
+    };
+}
+
 function normalizeFontFamilyAlias(
     value: string | null | undefined,
 ): string | null | undefined {
@@ -220,10 +225,6 @@ export interface SettingsGateway {
     ): Promise<void>;
     saveClaudeAuth?(
         settings: ClaudeRuntimeSettings,
-        secrets: readonly SecretRecordPatch[],
-    ): Promise<void>;
-    saveGeminiAuth?(
-        settings: GeminiRuntimeSettings,
         secrets: readonly SecretRecordPatch[],
     ): Promise<void>;
     saveGrokAuth?(
@@ -254,8 +255,6 @@ export interface SettingsGateway {
     saveCodexRuntimeSettings(settings: CodexRuntimeSettings): void;
     loadClaudeRuntimeSettings(): ClaudeRuntimeSettings;
     saveClaudeRuntimeSettings(settings: ClaudeRuntimeSettings): void;
-    loadGeminiRuntimeSettings(): GeminiRuntimeSettings;
-    saveGeminiRuntimeSettings(settings: GeminiRuntimeSettings): void;
     loadGrokRuntimeSettings(): GrokRuntimeSettings;
     saveGrokRuntimeSettings(settings: GrokRuntimeSettings): void;
     loadKiloRuntimeSettings(): KiloRuntimeSettings;
@@ -280,7 +279,7 @@ export class SettingsService {
             ai: {
                 claude: this.loadClaudeRuntimeSettings(),
                 codex: this.loadCodexRuntimeSettings(),
-                gemini: this.loadGeminiRuntimeSettings(),
+                gemini: createRemovedGeminiRuntimeSettings(),
                 grok: this.loadGrokRuntimeSettings(),
                 kilo: this.loadKiloRuntimeSettings(),
                 opencode: this.loadOpenCodeRuntimeSettings(),
@@ -310,10 +309,6 @@ export class SettingsService {
 
         if (snapshot.ai?.claude) {
             this.saveClaudeRuntimeSettings(snapshot.ai.claude);
-        }
-
-        if (snapshot.ai?.gemini) {
-            this.saveGeminiRuntimeSettings(snapshot.ai.gemini);
         }
 
         if (snapshot.ai?.grok) {
@@ -726,62 +721,6 @@ export class SettingsService {
         this.#saveBooleanSetting(
             CLAUDE_HAS_GATEWAY_CUSTOM_HEADERS_KEY,
             settings.hasGatewayCustomHeaders,
-        );
-    }
-
-    loadGeminiRuntimeSettings(): GeminiRuntimeSettings {
-        return {
-            authInvalidatedAtMs: this.#loadNumberSetting(
-                GEMINI_AUTH_INVALIDATED_AT_KEY,
-            ),
-            authMethod:
-                (this.#loadStringSetting(
-                    GEMINI_AUTH_METHOD_KEY,
-                ) as GeminiRuntimeSettings["authMethod"]) ?? null,
-            binaryPath: this.#loadStringSetting(GEMINI_BINARY_PATH_KEY) ?? null,
-            googleCloudLocation:
-                this.#loadStringSetting(GEMINI_GOOGLE_CLOUD_LOCATION_KEY) ??
-                null,
-            googleCloudProject:
-                this.#loadStringSetting(GEMINI_GOOGLE_CLOUD_PROJECT_KEY) ??
-                null,
-            hasGeminiApiKey:
-                this.#loadBooleanSetting(GEMINI_HAS_GEMINI_API_KEY_KEY) ??
-                false,
-            hasGoogleApiKey:
-                this.#loadBooleanSetting(GEMINI_HAS_GOOGLE_API_KEY_KEY) ??
-                false,
-        };
-    }
-
-    saveGeminiRuntimeSettings(settings: GeminiRuntimeSettings): void {
-        this.#saveOptionalTrimmedStringSetting(
-            GEMINI_BINARY_PATH_KEY,
-            settings.binaryPath,
-        );
-        this.#saveOptionalTrimmedStringSetting(
-            GEMINI_AUTH_METHOD_KEY,
-            settings.authMethod,
-        );
-        this.#saveOptionalNumberSetting(
-            GEMINI_AUTH_INVALIDATED_AT_KEY,
-            settings.authInvalidatedAtMs,
-        );
-        this.#saveOptionalTrimmedStringSetting(
-            GEMINI_GOOGLE_CLOUD_PROJECT_KEY,
-            settings.googleCloudProject,
-        );
-        this.#saveOptionalTrimmedStringSetting(
-            GEMINI_GOOGLE_CLOUD_LOCATION_KEY,
-            settings.googleCloudLocation,
-        );
-        this.#saveBooleanSetting(
-            GEMINI_HAS_GEMINI_API_KEY_KEY,
-            settings.hasGeminiApiKey,
-        );
-        this.#saveBooleanSetting(
-            GEMINI_HAS_GOOGLE_API_KEY_KEY,
-            settings.hasGoogleApiKey,
         );
     }
 

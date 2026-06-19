@@ -16,7 +16,6 @@ import type {
     AppUpdateState,
     AppEditorSettings,
     ChatFontFamily,
-    GeminiRuntimeSettingsInput,
     GrokRuntimeSettingsInput,
     GitHubAuthStatus,
     KiloRuntimeSettingsInput,
@@ -632,8 +631,8 @@ export function SettingsApp() {
                         settings as CodexRuntimeSettingsInput,
                     );
                 case "gemini":
-                    return await window.comando.saveGeminiRuntimeSettings(
-                        settings as GeminiRuntimeSettingsInput,
+                    throw new Error(
+                        "Gemini ACP support has been removed. Use Kilo or OpenCode with a Gemini API key instead.",
                     );
                 case "grok":
                     return await window.comando.saveGrokRuntimeSettings(

@@ -28,7 +28,6 @@ import type {
     CodexRuntimeSettings,
     ClaudeRuntimeSettingsInput,
     GeminiRuntimeSettings,
-    GeminiRuntimeSettingsInput,
     GrokRuntimeSettings,
     GrokRuntimeSettingsInput,
     KiloRuntimeSettings,
@@ -244,9 +243,6 @@ interface AiStore {
     ) => Promise<AiRuntimeStatus>;
     saveClaudeRuntimeSettings: (
         settings: ClaudeRuntimeSettingsInput,
-    ) => Promise<AiRuntimeStatus>;
-    saveGeminiRuntimeSettings: (
-        settings: GeminiRuntimeSettingsInput,
     ) => Promise<AiRuntimeStatus>;
     saveGrokRuntimeSettings: (
         settings: GrokRuntimeSettingsInput,
@@ -1209,22 +1205,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
             runtimeStatusById: {
                 ...state.runtimeStatusById,
                 claude: status,
-            },
-        }));
-
-        return status;
-    },
-
-    saveGeminiRuntimeSettings: async (settings) => {
-        const status =
-            await getComandoApi().saveGeminiRuntimeSettings(settings);
-        const snapshot = await getComandoApi().getSettingsSnapshot();
-
-        set((state) => ({
-            geminiSettings: snapshot.ai?.gemini ?? state.geminiSettings,
-            runtimeStatusById: {
-                ...state.runtimeStatusById,
-                gemini: status,
             },
         }));
 

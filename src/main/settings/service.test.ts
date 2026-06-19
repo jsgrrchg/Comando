@@ -174,42 +174,20 @@ describe("SettingsService", () => {
         });
     });
 
-    it("stores and reloads Gemini settings", () => {
-        const connection = createFakeSettingsConnection();
+    it("returns inert Gemini settings without reading persisted Gemini keys", () => {
+        const connection = createFakeSettingsConnection({
+            app: {
+                "ai.gemini.auth_method": "login_with_google",
+                "ai.gemini.binary_path": "/bin/gemini",
+                "ai.gemini.has_gemini_api_key": "true",
+            },
+        });
         const service = new SettingsService(
             connection as unknown as Database.Database,
         );
 
-        service.saveGeminiRuntimeSettings({
-            authInvalidatedAtMs: 1234,
-            authMethod: "login_with_google",
-            binaryPath: "/opt/homebrew/bin/gemini",
-            googleCloudLocation: "us-central1",
-            googleCloudProject: "demo-project",
-            hasGeminiApiKey: true,
-            hasGoogleApiKey: false,
-        });
-
-        expect(service.loadGeminiRuntimeSettings()).toEqual({
-            authInvalidatedAtMs: 1234,
-            authMethod: "login_with_google",
-            binaryPath: "/opt/homebrew/bin/gemini",
-            googleCloudLocation: "us-central1",
-            googleCloudProject: "demo-project",
-            hasGeminiApiKey: true,
-            hasGoogleApiKey: false,
-        });
         expect(service.loadSnapshot().ai).toEqual({
             ...createEmptyAiSettings(),
-            gemini: {
-                authInvalidatedAtMs: 1234,
-                authMethod: "login_with_google",
-                binaryPath: "/opt/homebrew/bin/gemini",
-                googleCloudLocation: "us-central1",
-                googleCloudProject: "demo-project",
-                hasGeminiApiKey: true,
-                hasGoogleApiKey: false,
-            },
         });
     });
 

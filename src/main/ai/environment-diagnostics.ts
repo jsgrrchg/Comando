@@ -19,7 +19,6 @@ import {
     resolveClaudeRuntime,
     type ResolveClaudeRuntimeOptions,
 } from "./claude/setup";
-import { getGeminiRuntimeStatus, resolveGeminiRuntime } from "./gemini/setup";
 import { getGrokRuntimeStatus, resolveGrokRuntime } from "./grok/setup";
 import { getKiloRuntimeStatus, resolveKiloRuntime } from "./kilo/setup";
 import {
@@ -51,7 +50,6 @@ const EXECUTABLE_PROBES = [
     "claude-agent-acp",
     "codex-acp",
     "codex",
-    "gemini",
     "grok",
     "kilo",
     "opencode",
@@ -69,10 +67,6 @@ const RUNTIME_PATH_OVERRIDES: readonly {
     {
         name: "COMANDO_CODEX_ACP_BIN",
         runtimeId: "codex",
-    },
-    {
-        name: "COMANDO_GEMINI_ACP_BIN",
-        runtimeId: "gemini",
     },
     {
         name: "COMANDO_GROK_ACP_BIN",
@@ -119,14 +113,6 @@ const CREDENTIAL_ENVIRONMENT: readonly {
     {
         name: "CODEX_API_KEY",
         runtimeId: "codex",
-    },
-    {
-        name: "GEMINI_API_KEY",
-        runtimeId: "gemini",
-    },
-    {
-        name: "GOOGLE_API_KEY",
-        runtimeId: "gemini",
     },
     {
         name: "XAI_API_KEY",
@@ -229,9 +215,6 @@ function createRuntimeDiagnostics(
             input.claudeResolveOptions,
         ),
     );
-    const geminiStatus = readRuntimeStatus("gemini", settings.gemini, () =>
-        getGeminiRuntimeStatus(settings.gemini, secretStore),
-    );
     const grokStatus = readRuntimeStatus("grok", settings.grok, () =>
         getGrokRuntimeStatus(settings.grok, secretStore),
     );
@@ -253,11 +236,6 @@ function createRuntimeDiagnostics(
         toRuntimeDiagnostic(
             claudeStatus,
             resolveRuntimeExecutable("claude", input),
-            env,
-        ),
-        toRuntimeDiagnostic(
-            geminiStatus,
-            resolveRuntimeExecutable("gemini", input),
             env,
         ),
         toRuntimeDiagnostic(
@@ -322,10 +300,7 @@ function resolveRuntimeExecutable(
                     input.codexResolveOptions,
                 ).executable;
             case "gemini":
-                return resolveGeminiRuntime(
-                    input.settings.gemini,
-                    input.secretStore,
-                ).program;
+                return null;
             case "grok":
                 return resolveGrokRuntime(
                     input.settings.grok,
