@@ -194,9 +194,9 @@ binary.
 
 ### External AI Runtimes
 
-Gemini and Kilo are configured as external runtimes. They are not vendored in
-this repository and remain governed by their own upstream licenses, terms, and
-installation channels.
+Grok, Kilo, and OpenCode are configured as external runtimes. They are not
+vendored in this repository and remain governed by their own upstream licenses,
+terms, and installation channels.
 
 ---
 
