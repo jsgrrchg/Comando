@@ -136,6 +136,8 @@ import {
     type GitHubWorkflowRunsResult,
     type GitHistoryListInput,
     type GitHistoryListResult,
+    type GitOriginalFile,
+    type GitOriginalFileInput,
     type GitPullInput,
     type GitPushInput,
     type GitRemoveWorktreeInput,
@@ -891,6 +893,11 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.getGitDiff,
             input,
         ) as Promise<GitFileDiff | null>,
+    getGitOriginalFile: (input: GitOriginalFileInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.getGitOriginalFile,
+            input,
+        ) as Promise<GitOriginalFile | null>,
     listGitWorktreeDiff: (input: GitWorktreeDiffInput) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.listGitWorktreeDiff,

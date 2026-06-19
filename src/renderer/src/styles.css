@@ -1639,44 +1639,53 @@ button {
     background: transparent;
 }
 
-.monaco-editor .line-numbers.git-gutter-line-number {
+.monaco-editor .git-diff-glyph {
     box-sizing: border-box;
-    padding-right: 4px;
+    margin-left: 5px;
     pointer-events: none;
-    position: relative !important;
+    z-index: 5;
 }
 
-.monaco-editor .line-numbers.git-gutter-line-number::before {
+.monaco-editor .git-diff-added,
+.monaco-editor .git-diff-modified {
+    border-left-style: solid;
+    border-left-width: 3px;
+}
+
+.monaco-editor .git-diff-added {
+    border-left-color: color-mix(in srgb, var(--diff-add) 88%, transparent);
+}
+
+.monaco-editor .git-diff-modified {
+    border-left-color: color-mix(in srgb, var(--diff-warn) 86%, transparent);
+}
+
+.monaco-editor .git-diff-deleted {
+    position: relative;
+}
+
+.monaco-editor .git-diff-deleted::after {
     content: "";
     position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 2px;
-    width: 2px;
-    border-radius: 0;
-    opacity: 0.9;
+    bottom: -4px;
+    left: 0;
+    box-sizing: border-box;
+    width: 4px;
+    height: 0;
+    z-index: 9;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    border-left: 4px solid
+        color-mix(in srgb, var(--diff-remove) 90%, transparent);
     pointer-events: none;
 }
 
-.monaco-editor .line-numbers.git-gutter-line-number--add::before {
-    background: color-mix(in srgb, var(--diff-add) 88%, transparent);
+.monaco-editor .git-diff-deleted.git-diff-deleted-end::after {
+    bottom: 0;
 }
 
-.monaco-editor .line-numbers.git-gutter-line-number--modify::before {
-    background: color-mix(in srgb, var(--diff-warn) 86%, transparent);
-}
-
-.monaco-editor .line-numbers.git-gutter-line-number--delete-top::before,
-.monaco-editor .line-numbers.git-gutter-line-number--delete-bottom::before {
-    background: color-mix(in srgb, var(--diff-remove) 90%, transparent);
-    height: 6px;
-    top: -2px;
-    bottom: auto;
-}
-
-.monaco-editor .line-numbers.git-gutter-line-number--delete-bottom::before {
-    top: auto;
-    bottom: -2px;
+.inline-review-diff .monaco-editor .git-diff-glyph {
+    display: none !important;
 }
 
 .inline-review-diff .monaco-editor .line-numbers.dimmed-line-number {

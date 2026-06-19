@@ -331,6 +331,52 @@ export function outdentMarkdownListItems(
     );
 }
 
+export interface MinimalTextEdit {
+    readonly insert: string;
+    // `rangeStart`/`rangeEnd` are character offsets into the original text:
+    // replace `oldText.slice(rangeStart, rangeEnd)` with `insert`.
+    readonly rangeEnd: number;
+    readonly rangeStart: number;
+}
+
+// Reduce a full-document rewrite to the smallest contiguous edit by trimming the
+// common prefix and suffix. Applying this localized edit (instead of replacing
+// the whole model) keeps Monaco decorations anchored to the lines they belong to
+// — replacing the entire range drags every tracked decoration to the document
+// end and makes the git gutter flicker on each keystroke.
+export function computeMinimalTextEdit(
+    oldText: string,
+    newText: string,
+): MinimalTextEdit {
+    const oldLength = oldText.length;
+    const newLength = newText.length;
+
+    let prefix = 0;
+    const maxAffix = Math.min(oldLength, newLength);
+    while (
+        prefix < maxAffix &&
+        oldText.charCodeAt(prefix) === newText.charCodeAt(prefix)
+    ) {
+        prefix += 1;
+    }
+
+    let suffix = 0;
+    const maxSuffix = maxAffix - prefix;
+    while (
+        suffix < maxSuffix &&
+        oldText.charCodeAt(oldLength - 1 - suffix) ===
+            newText.charCodeAt(newLength - 1 - suffix)
+    ) {
+        suffix += 1;
+    }
+
+    return {
+        insert: newText.slice(prefix, newLength - suffix),
+        rangeEnd: oldLength - suffix,
+        rangeStart: prefix,
+    };
+}
+
 function buildNormalizedLine(
     originalLine: string,
     item: MarkdownListItem,

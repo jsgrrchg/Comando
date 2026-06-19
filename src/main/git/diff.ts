@@ -14,10 +14,13 @@ import type {
     GitFileDiffLine,
     GitFileDiffOptions,
     GitFileDiffSummary,
+    GitFileTextReference,
 } from "./types";
 
 const execFileAsync = promisify(execFile);
 const GIT_DIFF_MAX_BUFFER_BYTES = 20 * 1024 * 1024;
+const GIT_SHOW_TEXT_MAX_BUFFER_BYTES = 5 * 1024 * 1024;
+const GIT_SHOW_TEXT_TIMEOUT_MS = 10_000;
 const GIT_UNTRACKED_DIFF_TIMEOUT_MS = 30_000;
 
 export async function getGitFileDiff(
@@ -42,6 +45,34 @@ export async function getGitFileDiff(
         summary: parsed.summary,
         hunks: parsed.hunks,
     };
+}
+
+export async function getGitFileText(
+    rootPath: string,
+    relativePath: string,
+    reference: GitFileTextReference,
+): Promise<string | null> {
+    const normalizedPath = normalizeSafeGitPath(relativePath);
+    const objectName =
+        reference === "index" ? `:${normalizedPath}` : `HEAD:${normalizedPath}`;
+
+    try {
+        const result = (await execFileAsync(
+            "git",
+            ["show", "--textconv", objectName],
+            {
+                cwd: rootPath,
+                encoding: "utf8",
+                killSignal: "SIGTERM",
+                maxBuffer: GIT_SHOW_TEXT_MAX_BUFFER_BYTES,
+                timeout: GIT_SHOW_TEXT_TIMEOUT_MS,
+            },
+        )) as string | { readonly stdout: string };
+        return readExecFileStdout(result);
+    } catch (error) {
+        debugBenignError("git.diff.getFileText", error);
+        return null;
+    }
 }
 
 export function parseUnifiedGitDiff(raw: string): {
@@ -232,14 +263,14 @@ async function runGitDiff(
     }
 
     try {
-        const result = await execFileAsync("git", [...args], {
+        const result = (await execFileAsync("git", [...args], {
             cwd: rootPath,
             encoding: "utf8",
             killSignal: "SIGTERM",
             maxBuffer: GIT_DIFF_MAX_BUFFER_BYTES,
             timeout: GIT_UNTRACKED_DIFF_TIMEOUT_MS,
-        });
-        return result.stdout;
+        })) as string | { readonly stdout: string };
+        return readExecFileStdout(result);
     } catch (error) {
         if (isGitDiffTimeoutError(error)) {
             throw new Error(
@@ -258,6 +289,12 @@ async function runGitDiff(
 
         throw error;
     }
+}
+
+function readExecFileStdout(
+    result: string | { readonly stdout: string },
+): string {
+    return typeof result === "string" ? result : result.stdout;
 }
 
 function isGitDiffTimeoutError(error: unknown): boolean {

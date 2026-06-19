@@ -151,6 +151,18 @@ async function dispatchMethod(
                 input.options,
             );
         }
+        case "git.getFileText": {
+            const input = params as {
+                readonly inputPath: string;
+                readonly reference: Parameters<GitService["getFileText"]>[2];
+                readonly relativePath: string;
+            };
+            return await gitService.getFileText(
+                input.inputPath,
+                input.relativePath,
+                input.reference,
+            );
+        }
         case "git.listHistory": {
             const input = params as {
                 readonly inputPath: string;

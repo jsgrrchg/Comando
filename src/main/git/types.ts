@@ -158,6 +158,8 @@ export interface GitFileDiffOptions {
     readonly staged?: boolean;
 }
 
+export type GitFileTextReference = "head" | "index";
+
 export interface GitListBranchesOptions {
     readonly scope?: "all" | "local";
 }

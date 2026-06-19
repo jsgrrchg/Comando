@@ -103,6 +103,8 @@ import {
     type GitHubWorkflowRunsResult,
     type GitHistoryListInput,
     type GitHistoryListResult as SharedGitHistoryListResult,
+    type GitOriginalFile,
+    type GitOriginalFileInput,
     type GitPullInput,
     type GitPushInput,
     type GitRemoteSummary,
@@ -257,6 +259,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.listGitHistory);
     ipcMain.removeHandler(IPC_CHANNELS.listGitWorktreeDiff);
     ipcMain.removeHandler(IPC_CHANNELS.getGitDiff);
+    ipcMain.removeHandler(IPC_CHANNELS.getGitOriginalFile);
     ipcMain.removeHandler(IPC_CHANNELS.getGitCommitDetail);
     ipcMain.removeHandler(IPC_CHANNELS.initGitRepository);
     ipcMain.removeHandler(IPC_CHANNELS.stageGitPaths);
@@ -702,6 +705,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             input: GitDiffInput,
         ): Promise<SharedGitFileDiff | null> =>
             buildSharedGitDiff(
+                options.projectService,
+                options.gitService,
+                input,
+            ),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getGitOriginalFile,
+        async (
+            _event,
+            input: GitOriginalFileInput,
+        ): Promise<GitOriginalFile | null> =>
+            buildGitOriginalFile(
                 options.projectService,
                 options.gitService,
                 input,
@@ -2027,6 +2042,131 @@ async function buildSharedGitDiff(
     });
 
     return adaptGitFileDiff(diff, entry, null);
+}
+
+async function buildGitOriginalFile(
+    projectService: ProjectService,
+    gitService: GitGateway,
+    input: GitOriginalFileInput,
+): Promise<GitOriginalFile | null> {
+    const scope = resolveGitScope(projectService, input);
+    const snapshot = await gitService.getRepositorySnapshot(scope.rootPath);
+    if (snapshot.resolution.state !== "ready") {
+        return null;
+    }
+
+    const normalizedPath = normalizeGitPath(input.path);
+    const entry =
+        snapshot.status.entries.find(
+            (candidate) => candidate.relativePath === normalizedPath,
+        ) ?? null;
+    if (!entry) {
+        return null;
+    }
+
+    const requestedScope = normalizeRequestedDiffScope(input.scope);
+    if (
+        requestedScope !== "auto" &&
+        !entry.scopes.includes(requestedScope)
+    ) {
+        return null;
+    }
+
+    const resolvedScope = resolveEffectiveGitDiffScope(entry, requestedScope);
+
+    if (entry.isBinary || resolvedScope === "conflicted") {
+        return {
+            baseText: null,
+            isText: false,
+            kind: mapSharedChangeKind(entry.kind),
+            path: entry.relativePath,
+            previousPath: entry.previousPath,
+            scope: resolvedScope,
+        };
+    }
+
+    const baseText = await resolveGitOriginalFileText(
+        gitService,
+        scope.rootPath,
+        entry,
+        resolvedScope,
+    );
+
+    return {
+        baseText,
+        isText: baseText !== null,
+        kind: mapSharedChangeKind(entry.kind),
+        path: entry.relativePath,
+        previousPath: entry.previousPath,
+        scope: resolvedScope,
+    };
+}
+
+async function resolveGitOriginalFileText(
+    gitService: GitGateway,
+    rootPath: string,
+    entry: MainGitChangeEntry,
+    diffScope: GitDiffScope,
+): Promise<string | null> {
+    if (diffScope === "untracked") {
+        return "";
+    }
+
+    const reference = diffScope === "staged" ? "head" : "index";
+    const basePath = resolveGitOriginalFileBasePath(entry, diffScope);
+    const baseText = await gitService.getFileText(
+        rootPath,
+        basePath,
+        reference,
+    );
+
+    if (baseText !== null) {
+        return baseText;
+    }
+
+    return entry.kind === "added" || entry.kind === "untracked" ? "" : null;
+}
+
+function resolveGitOriginalFileBasePath(
+    entry: MainGitChangeEntry,
+    diffScope: GitDiffScope,
+): string {
+    if (diffScope === "staged") {
+        return entry.previousPath ?? entry.relativePath;
+    }
+
+    if (diffScope === "unstaged" && entry.scopes.includes("staged")) {
+        return entry.relativePath;
+    }
+
+    return entry.previousPath ?? entry.relativePath;
+}
+
+function resolveEffectiveGitDiffScope(
+    entry: MainGitChangeEntry,
+    requestedScope: GitDiffScope | "auto",
+): GitDiffScope {
+    if (requestedScope !== "auto") {
+        return requestedScope;
+    }
+
+    if (entry.scopes.includes("unstaged")) {
+        return "unstaged";
+    }
+
+    if (entry.scopes.includes("untracked")) {
+        return "untracked";
+    }
+
+    if (entry.scopes.includes("staged")) {
+        return "staged";
+    }
+
+    if (entry.scopes.includes("conflicted")) {
+        return "conflicted";
+    }
+
+    return "unstaged";
 }
 
 async function buildSharedGitWorktreeDiff(

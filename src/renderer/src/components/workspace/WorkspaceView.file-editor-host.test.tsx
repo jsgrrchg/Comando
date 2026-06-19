@@ -13,6 +13,9 @@ import {
 
 import type {
     AiTrackedFile,
+    GitFileDiff,
+    GitOriginalFile,
+    GitRepositorySnapshot,
     ProjectFileDocument,
 } from "@shared/ipc";
 import type { RuntimeWorkspaceFileTab } from "@renderer/app/workspace/tree";
@@ -37,11 +40,15 @@ const mockAiStoreState = vi.hoisted(() => ({
     },
 }));
 
-const mockGitStoreState = vi.hoisted(() => ({
-    current: {
-        snapshots: {},
-    },
-}));
+const mockGitStoreState = vi.hoisted(() => {
+    const snapshots: Record<string, GitRepositorySnapshot> = {};
+
+    return {
+        current: {
+            snapshots,
+        },
+    };
+});
 
 const mockProjectsStoreState = vi.hoisted(() => ({
     current: {
@@ -73,8 +80,22 @@ const monacoHarness = vi.hoisted(() => {
         readonly dispose: () => void;
     };
 
+    type FakeDecorationRange = {
+        readonly endColumn: number;
+        readonly endLineNumber: number;
+        readonly startColumn: number;
+        readonly startLineNumber: number;
+    };
+
+    type FakeDeltaDecoration = {
+        readonly options: unknown;
+        readonly range: FakeDecorationRange;
+    };
+
     type FakeModel = {
         readonly dispose: () => void;
+        readonly decorations: Map<string, FakeDeltaDecoration>;
+        readonly getDecorationRange: (id: string) => FakeDecorationRange | null;
         readonly getFullModelRange: () => {
             readonly endColumn: number;
             readonly endLineNumber: number;
@@ -102,10 +123,17 @@ const monacoHarness = vi.hoisted(() => {
     };
 
     type FakeCodeEditor = {
-        readonly createDecorationsCollection: () => {
+        readonly createDecorationsCollection: (
+            decorations?: readonly unknown[],
+        ) => {
             readonly clear: () => void;
+            readonly initialDecorations: readonly unknown[];
             readonly set: (decorations: readonly unknown[]) => void;
         };
+        readonly deltaDecorations: (
+            oldDecorations: readonly string[],
+            newDecorations: readonly FakeDeltaDecoration[],
+        ) => string[];
         readonly dispose: () => void;
         readonly getContribution: () => null;
         readonly getDomNode: () => HTMLElement;
@@ -120,9 +148,11 @@ const monacoHarness = vi.hoisted(() => {
         readonly layout: () => void;
         readonly onDidChangeCursorSelection: () => Disposable;
         readonly onDidChangeHiddenAreas: () => Disposable;
+        readonly onDidChangeModel: (listener: () => void) => Disposable;
         readonly onDidDispose: (listener: () => void) => Disposable;
         readonly onDidLayoutChange: () => Disposable;
         readonly onDidScrollChange: () => Disposable;
+        readonly onWillChangeModel: (listener: () => void) => Disposable;
         readonly onMouseLeave: () => Disposable;
         readonly onMouseMove: () => Disposable;
         readonly pushUndoStop: () => void;
@@ -191,9 +221,20 @@ const monacoHarness = vi.hoisted(() => {
     const models = new Map<string, FakeModel>();
     const createdModels: FakeModel[] = [];
     const codeEditors: FakeCodeEditor[] = [];
+    const decorationCollections: Array<{
+        readonly clear: ReturnType<typeof vi.fn>;
+        readonly initialDecorations: readonly unknown[];
+        readonly set: ReturnType<typeof vi.fn>;
+    }> = [];
     const diffEditors: FakeDiffEditor[] = [];
+    const editorPropSnapshots: Array<{
+        readonly defaultValue: string | undefined;
+        readonly path: string | undefined;
+        readonly value: string | undefined;
+    }> = [];
     let editorCounter = 0;
     let diffEditorCounter = 0;
+    let decorationCounter = 0;
 
     const toLines = (value: string) => value.split("\n");
 
@@ -207,10 +248,12 @@ const monacoHarness = vi.hoisted(() => {
         uri: FakeUri,
     ): FakeModel => {
         const model: FakeModel = {
+            decorations: new Map(),
             dispose: vi.fn(() => {
                 model.disposed = true;
                 models.delete(uri.toString());
             }),
+            getDecorationRange: (id) => model.decorations.get(id)?.range ?? null,
             disposed: false,
             getFullModelRange: () => ({
                 endColumn: toLines(model.value).at(-1)!.length + 1,
@@ -257,9 +300,9 @@ const monacoHarness = vi.hoisted(() => {
             getValue: () => model.value,
             isDisposed: () => model.disposed,
             language,
-            setValue: (nextValue) => {
+            setValue: vi.fn((nextValue: string) => {
                 model.value = nextValue;
-            },
+            }),
             uri: uri.toString(),
             value,
         };
@@ -287,11 +330,44 @@ const monacoHarness = vi.hoisted(() => {
     const createCodeEditor = (name = `editor-${++editorCounter}`) => {
         const domNode = document.createElement("div");
         const disposeListeners = new Set<() => void>();
+        const modelChangeListeners = new Set<() => void>();
+        const modelWillChangeListeners = new Set<() => void>();
         const editor: FakeCodeEditor = {
-            createDecorationsCollection: vi.fn(() => ({
-                clear: vi.fn(),
-                set: vi.fn(),
-            })),
+            createDecorationsCollection: vi.fn(
+                (decorations: readonly unknown[] = []) => {
+                    const collection = {
+                        clear: vi.fn(),
+                        initialDecorations: decorations,
+                        set: vi.fn(),
+                    };
+                    decorationCollections.push(collection);
+                    return collection;
+                },
+            ),
+            deltaDecorations: vi.fn(
+                (
+                    oldDecorations: readonly string[],
+                    newDecorations: readonly FakeDeltaDecoration[],
+                ): string[] => {
+                    const model = editor.model;
+                    if (!model) {
+                        return [];
+                    }
+
+                    for (const decorationId of oldDecorations) {
+                        model.decorations.delete(decorationId);
+                    }
+
+                    return newDecorations.map((decoration) => {
+                        const id = `${editor.name}-decoration-${++decorationCounter}`;
+                        model.decorations.set(id, {
+                            options: decoration.options,
+                            range: { ...decoration.range },
+                        });
+                        return id;
+                    });
+                },
+            ),
             dispose: () => {
                 if (editor.disposed) {
                     return;
@@ -318,6 +394,14 @@ const monacoHarness = vi.hoisted(() => {
             name,
             onDidChangeCursorSelection: () => createDisposable(),
             onDidChangeHiddenAreas: () => createDisposable(),
+            onDidChangeModel: (listener) => {
+                modelChangeListeners.add(listener);
+                return {
+                    dispose: () => {
+                        modelChangeListeners.delete(listener);
+                    },
+                };
+            },
             onDidDispose: (listener) => {
                 disposeListeners.add(listener);
                 return {
@@ -328,6 +412,14 @@ const monacoHarness = vi.hoisted(() => {
             },
             onDidLayoutChange: () => createDisposable(),
             onDidScrollChange: () => createDisposable(),
+            onWillChangeModel: (listener) => {
+                modelWillChangeListeners.add(listener);
+                return {
+                    dispose: () => {
+                        modelWillChangeListeners.delete(listener);
+                    },
+                };
+            },
             onMouseLeave: () => createDisposable(),
             onMouseMove: () => createDisposable(),
             pushUndoStop: vi.fn(),
@@ -346,7 +438,18 @@ const monacoHarness = vi.hoisted(() => {
             scrollLeft: 0,
             scrollTop: 0,
             setModel: (model: FakeModel | null) => {
+                const previousModel = editor.model;
+                if (previousModel !== model) {
+                    for (const listener of modelWillChangeListeners) {
+                        listener();
+                    }
+                }
                 editor.model = model;
+                if (previousModel !== model) {
+                    for (const listener of modelChangeListeners) {
+                        listener();
+                    }
+                }
             },
             setPosition: vi.fn(
                 (position: {
@@ -426,16 +529,21 @@ const monacoHarness = vi.hoisted(() => {
         createdModels,
         createCodeEditor,
         createDiffEditor,
+        decorationCollections,
         diffEditors,
+        editorPropSnapshots,
         models,
         monaco,
         reset: () => {
             models.clear();
             createdModels.length = 0;
             codeEditors.length = 0;
+            decorationCollections.length = 0;
             diffEditors.length = 0;
+            editorPropSnapshots.length = 0;
             editorCounter = 0;
             diffEditorCounter = 0;
+            decorationCounter = 0;
             monaco.editor.createModel.mockClear();
             monaco.editor.getModel.mockClear();
             monaco.editor.setModelLanguage.mockClear();
@@ -506,14 +614,18 @@ vi.mock("@monaco-editor/react", async () => {
 
     const MockEditor = ({
         beforeMount,
+        defaultValue,
         language,
         onMount,
+        options,
         path,
         value,
     }: {
         readonly beforeMount?: () => void;
+        readonly defaultValue?: string;
         readonly language?: string;
         readonly onMount?: (editor: unknown, monaco: unknown) => void;
+        readonly options?: unknown;
         readonly path?: string;
         readonly value?: string;
     }) => {
@@ -522,8 +634,15 @@ vi.mock("@monaco-editor/react", async () => {
         > | null>(null);
         const mountPropsRef = React.useRef({
             beforeMount,
+            defaultValue,
             language,
             onMount,
+            options,
+            path,
+            value,
+        });
+        monacoHarness.editorPropSnapshots.push({
+            defaultValue,
             path,
             value,
         });
@@ -538,11 +657,14 @@ vi.mock("@monaco-editor/react", async () => {
             const model =
                 monacoHarness.monaco.editor.getModel(uri) ??
                 monacoHarness.monaco.editor.createModel(
-                    mountProps.value ?? "",
+                    mountProps.defaultValue ?? mountProps.value ?? "",
                     mountProps.language ?? "plaintext",
                     uri,
-                );
+            );
             editor.setModel(model);
+            if (mountProps.options) {
+                editor.updateOptions(mountProps.options);
+            }
             editorRef.current = editor;
             mountProps.onMount?.(editor, monacoHarness.monaco);
 
@@ -551,6 +673,27 @@ vi.mock("@monaco-editor/react", async () => {
                 editorRef.current = null;
             };
         }, []);
+
+        React.useEffect(() => {
+            const editor = editorRef.current;
+            if (!editor || value === undefined) {
+                return;
+            }
+
+            const model = editor.getModel();
+            if (model && model.getValue() !== value) {
+                model.setValue(value);
+            }
+        }, [value]);
+
+        React.useEffect(() => {
+            const editor = editorRef.current;
+            if (!editor || !options) {
+                return;
+            }
+
+            editor.updateOptions(options);
+        }, [options]);
 
         return React.createElement("div", {
             "data-mock-editor": path ?? "",
@@ -727,6 +870,96 @@ function createTrackedFileUpdate(): AiTrackedFile {
     };
 }
 
+function createGitDiff(path = "src/app.ts", newStart = 1): GitFileDiff {
+    return {
+        hunks: [
+            {
+                id: "git-hunk-1",
+                lines: [
+                    {
+                        id: "git-line-1",
+                        text: "const value = 1;",
+                        type: "remove",
+                    },
+                    {
+                        id: "git-line-2",
+                        text: "const value = 2;",
+                        type: "add",
+                    },
+                ],
+                newCount: 1,
+                newStart,
+                oldCount: 1,
+                oldStart: newStart,
+            },
+        ],
+        isText: true,
+        kind: "update",
+        newText: null,
+        oldText: null,
+        path,
+        previousPath: null,
+        reversible: true,
+    };
+}
+
+function createGitOriginalFile(
+    path = "src/app.ts",
+    baseText = "const value = 1;\n",
+): GitOriginalFile {
+    return {
+        baseText,
+        isText: true,
+        kind: "modified",
+        path,
+        previousPath: null,
+        scope: "unstaged",
+    };
+}
+
+function createGitSnapshot(
+    changedPaths: readonly string[] = ["src/app.ts"],
+): GitRepositorySnapshot {
+    return {
+        aheadBy: 0,
+        behindBy: 0,
+        branch: null,
+        canonicalRootPath: "/workspace/comando",
+        changedPaths,
+        changes: changedPaths.map((path) => ({
+            additions: 1,
+            deletions: 1,
+            hasChildren: false,
+            isBinary: false,
+            isConflicted: false,
+            isRenamed: false,
+            kind: "modified",
+            path,
+            previousPath: null,
+            scope: "unstaged",
+            worktreeId: null,
+        })),
+        currentWorktreeId: null,
+        defaultTreeViewMode: "tree",
+        headSha: "abc123",
+        projectId: "project-1",
+        remotes: [],
+        repositoryState: "ready",
+        rootPath: "/workspace/comando",
+        selectedRemoteName: null,
+        status: {
+            changedCount: changedPaths.length,
+            conflictedCount: 0,
+            stagedCount: 0,
+            unstagedCount: changedPaths.length,
+            untrackedCount: 0,
+        },
+        syncStatus: "in_sync",
+        updatedAt: "2026-06-05T00:02:00.000Z",
+        worktrees: [],
+    };
+}
+
 function renderHost({
     activeFileTab,
     fileTabs,
@@ -785,6 +1018,14 @@ async function flushEffects() {
     });
 }
 
+async function waitForGitGutterLiveDiff() {
+    await act(async () => {
+        await new Promise((resolve) => {
+            window.setTimeout(resolve, 250);
+        });
+    });
+}
+
 describe("WorkspaceFileEditorHost", () => {
     let container: HTMLDivElement;
     let root: Root;
@@ -811,6 +1052,7 @@ describe("WorkspaceFileEditorHost", () => {
         mockWorkspaceStoreState.current.updateFilePendingOpenLocation.mockClear();
         mockWorkspaceStoreState.current.updateFileViewState.mockClear();
         mockAiStoreState.current.sessions = {};
+        mockGitStoreState.current.snapshots = {};
     });
 
     afterEach(() => {
@@ -883,6 +1125,284 @@ describe("WorkspaceFileEditorHost", () => {
         expect(monacoHarness.codeEditors).toHaveLength(1);
         expect(monacoHarness.codeEditors[0]?.disposed).toBe(false);
         expect(container.querySelector("[aria-hidden='true']")).not.toBeNull();
+    });
+
+    it("keeps the git gutter decoration collection stable while typing", async () => {
+        const tab = createFileTab("file-1");
+        const getGitDiff = vi.fn(() => Promise.resolve(createGitDiff()));
+        const getGitOriginalFile = vi.fn(() =>
+            Promise.resolve(createGitOriginalFile()),
+        );
+        vi.stubGlobal("comando", { getGitDiff, getGitOriginalFile });
+        mockGitStoreState.current.snapshots = {
+            "project-1::primary": createGitSnapshot(),
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tab,
+                    fileTabs: [tab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushEffects();
+
+        const editor = monacoHarness.codeEditors[0];
+        expect(editor).toBeDefined();
+        if (!editor) {
+            throw new Error("Expected Monaco editor to mount.");
+        }
+        expect(editor?.updateOptions).toHaveBeenCalledWith(
+            expect.objectContaining({
+                lineDecorationsWidth: 10,
+                lineNumbersMinChars: 4,
+            }),
+        );
+        expect(getGitDiff).toHaveBeenCalledWith({
+            path: "src/app.ts",
+            projectId: "project-1",
+            worktreeId: null,
+        });
+        expect(getGitOriginalFile).toHaveBeenCalledWith({
+            path: "src/app.ts",
+            projectId: "project-1",
+            worktreeId: null,
+        });
+        expect(monacoHarness.editorPropSnapshots.at(-1)).toEqual(
+            expect.objectContaining({
+                defaultValue: tab.draftContent,
+                value: undefined,
+            }),
+        );
+
+        expect(editor?.createDecorationsCollection).not.toHaveBeenCalled();
+        expect(editor?.deltaDecorations).toHaveBeenCalledWith([], [
+            {
+                options: {
+                    description: "git-gutter-decoration",
+                    isWholeLine: true,
+                    linesDecorationsClassName:
+                        "git-diff-glyph git-diff-modified",
+                },
+                range: {
+                    endColumn: 1,
+                    endLineNumber: 1,
+                    startColumn: 1,
+                    startLineNumber: 1,
+                },
+            },
+        ]);
+
+        vi.mocked(editor.deltaDecorations).mockClear();
+        const typedTab = {
+            ...tab,
+            draftContent: "const value = 2;\nfunction selectedName() {}\n",
+            isDirty: true,
+        } satisfies RuntimeWorkspaceFileTab;
+        const model = editor?.getModel();
+        const setValueMock = model ? vi.mocked(model.setValue) : null;
+        setValueMock?.mockClear();
+        vi.mocked(editor.updateOptions).mockClear();
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: typedTab,
+                    fileTabs: [typedTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(monacoHarness.editorPropSnapshots.at(-1)).toEqual(
+            expect.objectContaining({
+                defaultValue: typedTab.draftContent,
+                value: undefined,
+            }),
+        );
+        expect(setValueMock).not.toHaveBeenCalled();
+        expect(editor?.updateOptions).not.toHaveBeenCalled();
+        expect(editor?.createDecorationsCollection).not.toHaveBeenCalled();
+        expect(editor?.deltaDecorations).not.toHaveBeenCalled();
+
+        await waitForGitGutterLiveDiff();
+
+        expect(setValueMock).not.toHaveBeenCalled();
+        expect(editor?.updateOptions).not.toHaveBeenCalled();
+        expect(editor?.createDecorationsCollection).not.toHaveBeenCalled();
+        expect(editor?.deltaDecorations).toHaveBeenCalledTimes(1);
+        expect(editor?.deltaDecorations).toHaveBeenCalledWith([], [
+            {
+                options: {
+                    description: "git-gutter-decoration",
+                    isWholeLine: true,
+                    linesDecorationsClassName: "git-diff-glyph git-diff-added",
+                },
+                range: {
+                    endColumn: 1,
+                    endLineNumber: 2,
+                    startColumn: 1,
+                    startLineNumber: 2,
+                },
+            },
+        ]);
+        expect(editor?.getModel()?.decorations.size).toBe(2);
+
+        getGitDiff.mockClear();
+        getGitOriginalFile.mockClear();
+        mockGitStoreState.current.snapshots = {
+            "project-1::primary": {
+                ...createGitSnapshot(),
+                updatedAt: "2026-06-05T00:03:00.000Z",
+            },
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: typedTab,
+                    fileTabs: [typedTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(getGitDiff).not.toHaveBeenCalled();
+        expect(getGitOriginalFile).not.toHaveBeenCalled();
+    });
+
+    it("clears git gutter decorations when switching to a clean file in the same editor", async () => {
+        const changedTab = createFileTab("file-1", "src/app.ts");
+        const cleanTab = createFileTab("file-2", "src/clean.ts");
+        const getGitDiff = vi.fn(() => Promise.resolve(createGitDiff()));
+        const getGitOriginalFile = vi.fn(() =>
+            Promise.resolve(createGitOriginalFile()),
+        );
+        vi.stubGlobal("comando", { getGitDiff, getGitOriginalFile });
+        mockGitStoreState.current.snapshots = {
+            "project-1::primary": createGitSnapshot(["src/app.ts"]),
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: changedTab,
+                    fileTabs: [changedTab, cleanTab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushEffects();
+
+        const editor = monacoHarness.codeEditors[0];
+        expect(editor).toBeDefined();
+        if (!editor) {
+            throw new Error("Expected Monaco editor to mount.");
+        }
+        const changedModel = editor.getModel();
+        expect(changedModel?.decorations.size).toBe(1);
+        const initialDecorationIds = [...(changedModel?.decorations.keys() ?? [])];
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: cleanTab,
+                    fileTabs: [changedTab, cleanTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(editor.deltaDecorations).toHaveBeenCalledWith(
+            initialDecorationIds,
+            [],
+        );
+        expect(changedModel?.decorations.size).toBe(0);
+    });
+
+    it("clears stale git gutter decorations before applying the next file diff", async () => {
+        const firstTab = createFileTab("file-1", "src/app.ts");
+        const secondTab = createFileTab(
+            "file-2",
+            "src/other.ts",
+            ["one", "two", "three", "four", ""].join("\n"),
+        );
+        const getGitDiff = vi.fn(
+            ({ path }: { readonly path: string }) =>
+                Promise.resolve(
+                    path === "src/other.ts"
+                        ? createGitDiff("src/other.ts", 3)
+                        : createGitDiff("src/app.ts", 1),
+                ),
+        );
+        const getGitOriginalFile = vi.fn(
+            ({ path }: { readonly path: string }) =>
+                Promise.resolve(
+                    path === "src/other.ts"
+                        ? createGitOriginalFile(
+                              "src/other.ts",
+                              ["one", "two", "old", "four", ""].join("\n"),
+                          )
+                        : createGitOriginalFile("src/app.ts"),
+                ),
+        );
+        vi.stubGlobal("comando", { getGitDiff, getGitOriginalFile });
+        mockGitStoreState.current.snapshots = {
+            "project-1::primary": createGitSnapshot([
+                "src/app.ts",
+                "src/other.ts",
+            ]),
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: firstTab,
+                    fileTabs: [firstTab, secondTab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushEffects();
+
+        const editor = monacoHarness.codeEditors[0];
+        expect(editor).toBeDefined();
+        if (!editor) {
+            throw new Error("Expected Monaco editor to mount.");
+        }
+        const firstModel = editor.getModel();
+        expect(firstModel?.decorations.size).toBe(1);
+        const firstDecorationIds = [...(firstModel?.decorations.keys() ?? [])];
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: secondTab,
+                    fileTabs: [firstTab, secondTab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushEffects();
+
+        expect(editor.deltaDecorations).toHaveBeenCalledWith(
+            firstDecorationIds,
+            [],
+        );
+        expect(firstModel?.decorations.size).toBe(0);
+        expect(editor.getModel()?.decorations.size).toBe(1);
+        expect([...(editor.getModel()?.decorations.values() ?? [])]).toEqual([
+            expect.objectContaining({
+                range: {
+                    endColumn: 1,
+                    endLineNumber: 3,
+                    startColumn: 1,
+                    startLineNumber: 3,
+                },
+            }),
+        ]);
     });
 
     it("applies a pending file open line before restoring saved view state", async () => {
