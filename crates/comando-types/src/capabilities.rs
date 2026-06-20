@@ -88,6 +88,9 @@ pub fn backend_capabilities() -> NativeCapabilitySet {
             "native-project-registry".to_string(),
             "native-fs".to_string(),
             "native-watchers".to_string(),
+            "native-index".to_string(),
+            "native-path-search".to_string(),
+            "native-search-cancel".to_string(),
         ],
     }
 }

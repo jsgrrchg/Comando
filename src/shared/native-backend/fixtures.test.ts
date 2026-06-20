@@ -17,6 +17,12 @@ import {
 } from ".";
 import type { NativeAiRuntimeStatus } from "./ai";
 import type { NativeGitRepositorySnapshot } from "./git";
+import type {
+    NativeIndexedProjectEntry,
+    NativeIndexStatusResult,
+    NativeProjectEntrySearchResult,
+    NativeSearchCancelled,
+} from "./search";
 import type { NativePersistenceStorageHealth } from "./persistence";
 import type {
     NativeProjectState,
@@ -184,6 +190,23 @@ describe("native backend fixtures", () => {
             "git/repository.snapshot.json",
         );
         expect(snapshot.status.changedCount).toBe(1);
+
+        const indexStatus = fixture<NativeIndexStatusResult>(
+            "index/index.status.json",
+        );
+        expect(indexStatus.status).toBe("ready");
+        const indexedEntry = fixture<NativeIndexedProjectEntry>(
+            "index/indexed.entry.json",
+        );
+        expect(indexedEntry.policyState).toBe("indexed");
+        const searchResult = fixture<NativeProjectEntrySearchResult>(
+            "index/search.entries_result.json",
+        );
+        expect(searchResult.entries[0].relativePath).toBe("src/main.ts");
+        const cancelled = fixture<NativeSearchCancelled>(
+            "index/search.cancelled.json",
+        );
+        expect(cancelled.cancelled).toBe(true);
 
         expect(
             nativeGitInvalidationToIpc({

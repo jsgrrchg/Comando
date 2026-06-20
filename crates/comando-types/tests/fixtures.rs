@@ -10,6 +10,10 @@ use comando_types::error::NativeErrorCode;
 use comando_types::events::all_events;
 use comando_types::fs::NativeFsReadFileResult;
 use comando_types::git::{NativeGitFileDiff, NativeGitRepositorySnapshot};
+use comando_types::index::{
+    NativeIndexStatusResult, NativeIndexedProjectEntry, NativeProjectEntrySearchResult,
+    NativeSearchCancelled,
+};
 use comando_types::persistence::{NativePersistenceStorageHealth, NativeWorkspaceSnapshotRef};
 use comando_types::projects::{NativeProjectState, NativeProjectSummary, NativeProjectTreeEntry};
 use comando_types::protocol::{NativeRpcOutput, NativeRpcRequest};
@@ -152,6 +156,16 @@ fn local_domain_fixtures_deserialize() {
     let git_diff: NativeGitFileDiff = fixture("git/diff.file.json");
     assert_eq!(git_diff.hunks.len(), 1);
 
+    let index_status: NativeIndexStatusResult = fixture("index/index.status.json");
+    assert_eq!(index_status.generation, 3);
+    let indexed_entry: NativeIndexedProjectEntry = fixture("index/indexed.entry.json");
+    assert_eq!(indexed_entry.relative_path.0, "src/main.ts");
+    let search_result: NativeProjectEntrySearchResult =
+        fixture("index/search.entries_result.json");
+    assert_eq!(search_result.entries.len(), 1);
+    let cancelled: NativeSearchCancelled = fixture("index/search.cancelled.json");
+    assert!(cancelled.cancelled);
+
     let terminal: NativeTerminalSession = fixture("terminal/terminal.session.json");
     assert_eq!(terminal.cols, 120);
     let terminal_event: NativeTerminalDataEvent = fixture("terminal/terminal.data_event.json");
@@ -181,6 +195,11 @@ fn key_dtos_roundtrip_without_losing_required_fields() {
     assert_typed_roundtrip::<NativeFsReadFileResult>("fs/file.read_result.binary.json");
     assert_typed_roundtrip::<NativeGitRepositorySnapshot>("git/repository.snapshot.json");
     assert_typed_roundtrip::<NativeGitFileDiff>("git/diff.file.json");
+    assert_typed_roundtrip::<NativeIndexStatusResult>("index/index.status.json");
+    assert_typed_roundtrip::<NativeIndexedProjectEntry>("index/indexed.entry.json");
+    assert_typed_roundtrip::<NativeProjectEntrySearchResult>("index/search.entries_result.json");
+    assert_typed_roundtrip::<NativeSearchCancelled>("index/search.cancelled.json");
+    assert_typed_roundtrip::<NativeRpcOutput>("index/event.index_ready.json");
     assert_typed_roundtrip::<NativeTerminalSession>("terminal/terminal.session.json");
     assert_typed_roundtrip::<NativeTerminalDataEvent>("terminal/terminal.data_event.json");
     assert_typed_roundtrip::<NativeTerminalExitEvent>("terminal/terminal.exit_event.json");

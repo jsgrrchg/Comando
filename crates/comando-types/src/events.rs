@@ -24,9 +24,13 @@ pub const PROJECT_FS_INDEX_EVENTS: &[&str] = &[
     "fs://watch-stopped",
     "fs://operation-error",
     "fs://origin-tracked",
+    "index://building",
     "index://ready",
     "index://updated",
+    "index://stale",
     "index://error",
+    "index://cancelled",
+    "index://progress",
 ];
 
 pub const GIT_EVENTS: &[&str] = &[

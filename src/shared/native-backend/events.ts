@@ -19,9 +19,13 @@ export const NATIVE_PROJECT_FS_INDEX_EVENTS = [
     "fs://watch-stopped",
     "fs://operation-error",
     "fs://origin-tracked",
+    "index://building",
     "index://ready",
     "index://updated",
+    "index://stale",
     "index://error",
+    "index://cancelled",
+    "index://progress",
 ] as const;
 
 export const NATIVE_GIT_EVENTS = [

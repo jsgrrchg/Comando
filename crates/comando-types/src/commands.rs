@@ -56,6 +56,8 @@ pub const FS_COMMANDS: &[&str] = &[
 pub const INDEX_COMMANDS: &[&str] = &[
     "index_rebuild_project",
     "index_update_entries",
+    "index_get_status",
+    "index_drop_project",
     "search_project_entries",
     "search_project_content",
     "search_cancel",
