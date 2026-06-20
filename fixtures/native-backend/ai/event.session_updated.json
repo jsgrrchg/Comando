@@ -1,0 +1,19 @@
+{
+  "type": "event",
+  "eventName": "ai://session-updated",
+  "payload": {
+    "sessionId": "session_1",
+    "runtimeId": "opencode",
+    "runtimeSessionId": "runtime_session_1",
+    "status": "streaming",
+    "title": null,
+    "updatedAt": "2026-06-20T00:00:01.000Z"
+  },
+  "meta": {
+    "protocolVersion": 1,
+    "emittedAt": "2026-06-20T00:00:01.000Z",
+    "projectId": "project_1",
+    "worktreeId": "worktree_1",
+    "windowId": "window_main"
+  }
+}

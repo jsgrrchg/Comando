@@ -1,0 +1,18 @@
+pub mod acp;
+pub mod adapter;
+pub mod commands;
+pub mod engine;
+pub mod error;
+pub mod events;
+pub mod permissions;
+pub mod redaction;
+pub mod runtime;
+pub mod scope;
+pub mod session;
+pub mod stream;
+pub mod user_input;
+
+pub use engine::{AiEngine, AiEngineConfig};
+pub use error::{AiError, AiResult};
+pub use runtime::{RuntimeDefinition, RuntimeRegistry};
+pub use session::{ManagedAiSession, NativeAiSession, SessionRegistry};

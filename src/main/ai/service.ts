@@ -1,5 +1,6 @@
 import path from "node:path";
-import { spawn } from "node:child_process";
+import fs from "node:fs";
+import { execFile, spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 
 import {
@@ -10,6 +11,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import type {
     AiHistorySessionSummary,
+    AiMessage,
     AiPermissionResponseInput,
     AiPromptResult,
     PrepareAiSessionInput,
@@ -26,7 +28,9 @@ import type {
     AiSessionUpdate,
     AiSessionRenameMutationInput,
     AiSessionSnapshot,
+    AiToolActivity,
     AiSessionTranscriptPage,
+    AiTrackedFile,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiUserInputResponseInput,
@@ -74,6 +78,7 @@ import {
     type AiSessionFreezeSkippedReason,
     type AiSessionRetentionConfig,
     type AiServiceOptions,
+    type NativeAiGateway,
     type ResolvedAcpRuntime,
     type SessionDescriptor,
 } from "./contracts";
@@ -204,6 +209,22 @@ type LiveSessionContext = {
     readonly sessionId: string;
     readonly worktreeId: string | null;
 };
+
+interface NativeReviewBaseline {
+    readonly cwd: string;
+    readonly files: ReadonlyMap<string, string | null>;
+    readonly messageId: string;
+    readonly turnStarted: boolean;
+}
+
+interface NativeGitStatusEntry {
+    readonly code: string;
+    readonly path: string;
+    readonly previousPath: string | null;
+}
+
+const NATIVE_REVIEW_MAX_FILE_BYTES = 5 * 1024 * 1024;
+const NATIVE_REVIEW_GIT_MAX_BUFFER = 16 * 1024 * 1024;
 
 const DEFAULT_AI_SCHEDULER_CONFIG: AiSchedulerConfig = {
     maxColdStartsGlobal: 3,
@@ -421,6 +442,10 @@ export class AiService {
             readonly order: number;
         }
     >();
+    #nativeAi: NativeAiGateway | null;
+    readonly #nativeReviewBaselines = new Map<string, NativeReviewBaseline>();
+    readonly #nativeReviewReconciliations = new Set<string>();
+    readonly #nativeSessionIds = new Set<string>();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly #onSessionEvent: (
         ownerWindowId: string,
@@ -442,6 +467,7 @@ export class AiService {
 
     constructor(options: AiServiceOptions) {
         this.#aiWorker = options.aiWorker ?? null;
+        this.#nativeAi = options.nativeAi ?? null;
         this.#onRuntimeStatus = options.onRuntimeStatus;
         this.#onSessionEvent = options.onSessionEvent ?? (() => undefined);
         this.#onSessionSnapshot = options.onSessionSnapshot;
@@ -464,8 +490,18 @@ export class AiService {
         this.#aiWorker = worker;
     }
 
+    setNativeAiGateway(nativeAi: NativeAiGateway | null): void {
+        this.#nativeAi = nativeAi;
+    }
+
     close(): void {
         this.#clearSessionRetentionTimer();
+        void Promise.resolve(this.#nativeAi?.close()).catch((error: unknown) => {
+            debugBenignError("ai.service.close.native", error);
+        });
+        this.#nativeReviewBaselines.clear();
+        this.#nativeReviewReconciliations.clear();
+        this.#nativeSessionIds.clear();
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
         this.#liveSessionTouches.clear();
@@ -545,6 +581,50 @@ export class AiService {
         ownerWindowId: string,
         event: AiSessionDomainEvent,
     ): void {
+        this.#onSessionEvent(ownerWindowId, event);
+    }
+
+    handleNativeSessionEvent(
+        ownerWindowId: string,
+        event: AiSessionDomainEvent,
+    ): void {
+        if (this.#deletedSessionIds.has(event.sessionId)) {
+            return;
+        }
+
+        const previousSnapshot = this.#liveSnapshots.get(event.sessionId);
+        if (previousSnapshot) {
+            const nextSnapshot = this.#applyNativeSessionEvent(
+                previousSnapshot,
+                event,
+            );
+            this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+            this.#persistence.saveSessionSnapshot(nextSnapshot);
+            this.#onSessionSnapshot(
+                ownerWindowId,
+                buildAiSessionUpdate(previousSnapshot, nextSnapshot),
+            );
+            if (nextSnapshot.lastError) {
+                this.#invalidateRuntimeAuthIfNeeded(
+                    nextSnapshot.runtimeId,
+                    nextSnapshot.lastError,
+                );
+            }
+            if (this.#isNativeAiSession(event.sessionId)) {
+                if (event.kind === "status" && event.status === "streaming") {
+                    this.#markNativeReviewTurnStarted(event.sessionId);
+                }
+            }
+            if (this.#shouldReconcileNativeReviewFiles(event)) {
+                void this.#reconcileNativeReviewFiles(
+                    event.sessionId,
+                    ownerWindowId,
+                ).catch((error: unknown) => {
+                    debugBenignError("ai.service.nativeReviewReconcile", error);
+                });
+            }
+        }
+
         this.#onSessionEvent(ownerWindowId, event);
     }
 
@@ -871,17 +951,52 @@ export class AiService {
         input: PrepareAiSessionInput,
         ownerWindowId: string,
     ): Promise<AiSessionSnapshot> {
-        const worker = this.#requireAiWorker();
         const launch = await this.#buildWorkerSessionLaunchInput(
             input,
             ownerWindowId,
         );
+        const nativeAi = this.#selectNativeAiGateway(input.runtimeId);
         this.#rememberLiveSessionContext(
             input,
             ownerWindowId,
             launch.additionalRoots,
             launch.persistedSnapshot.parentSessionId ?? null,
         );
+
+        if (nativeAi) {
+            try {
+                const snapshot = await this.#scheduleWorkerSessionStartup(
+                    launch,
+                    1,
+                    async () => {
+                        this.#assertScheduledSessionContextActive(
+                            input.sessionId,
+                            ownerWindowId,
+                            input.runtimeId,
+                        );
+                        return await nativeAi.prepareSession({
+                            input,
+                            launch,
+                        });
+                    },
+                );
+                this.#nativeSessionIds.add(snapshot.sessionId);
+                this.#acceptPreparedLiveSnapshot(snapshot, ownerWindowId);
+                void this.#enforceSessionRetention();
+                return snapshot;
+            } catch (error) {
+                this.#nativeSessionIds.delete(input.sessionId);
+                this.#discardPreparedSessionContextOnFailure(
+                    input.sessionId,
+                    ownerWindowId,
+                    input.runtimeId,
+                );
+                throw error;
+            }
+        }
+
+        const worker = this.#requireAiWorker();
+        this.#nativeSessionIds.delete(input.sessionId);
         try {
             const snapshot = await this.#scheduleWorkerSessionStartup(
                 launch,
@@ -937,7 +1052,6 @@ export class AiService {
         input: SendAiPromptInput,
         ownerWindowId: string,
     ): Promise<AiPromptResult> {
-        const worker = this.#requireAiWorker();
         const launch = await this.#buildWorkerSessionLaunchInput(
             input,
             ownerWindowId,
@@ -950,12 +1064,77 @@ export class AiService {
                 "This subagent was closed by its parent thread and can’t receive new messages.",
             );
         }
+        const nativeAi = this.#selectNativeAiGateway(input.runtimeId);
         this.#rememberLiveSessionContext(
             input,
             ownerWindowId,
             launch.additionalRoots,
             launch.persistedSnapshot.parentSessionId ?? null,
         );
+
+        if (nativeAi) {
+            const nativeSendState = {
+                capturedReviewBaseline: false,
+                preparedSession: false,
+            };
+            try {
+                const result = await this.#scheduleWorkerSessionStartup(
+                    launch,
+                    0,
+                    async () => {
+                        this.#assertScheduledSessionContextActive(
+                            input.sessionId,
+                            ownerWindowId,
+                            input.runtimeId,
+                        );
+                        if (!this.#nativeSessionIds.has(input.sessionId)) {
+                            const snapshot = await nativeAi.prepareSession({
+                                input,
+                                launch,
+                            });
+                            this.#nativeSessionIds.add(snapshot.sessionId);
+                            nativeSendState.preparedSession = true;
+                            this.#acceptPreparedLiveSnapshot(
+                                snapshot,
+                                ownerWindowId,
+                            );
+                        }
+                        if (
+                            !this.#nativeReviewBaselines.has(input.sessionId)
+                        ) {
+                            nativeSendState.capturedReviewBaseline =
+                                await this.#captureNativeReviewBaseline(
+                                    input.sessionId,
+                                    launch,
+                                    input.messageId,
+                                );
+                        }
+                        return await nativeAi.sendPrompt({
+                            input,
+                            launch,
+                        });
+                    },
+                );
+                void this.#enforceSessionRetention();
+                return result;
+            } catch (error) {
+                if (nativeSendState.capturedReviewBaseline) {
+                    this.#nativeReviewBaselines.delete(input.sessionId);
+                }
+                if (nativeSendState.preparedSession) {
+                    this.#nativeSessionIds.delete(input.sessionId);
+                    this.#discardPreparedSessionContextOnFailure(
+                        input.sessionId,
+                        ownerWindowId,
+                        input.runtimeId,
+                    );
+                }
+                throw error;
+            }
+        }
+
+        const worker = this.#requireAiWorker();
+        this.#nativeSessionIds.delete(input.sessionId);
         try {
             const result = await this.#scheduleWorkerSessionStartup(
                 launch,
@@ -1013,7 +1192,11 @@ export class AiService {
             return;
         }
 
-        await this.#requireAiWorker().setSessionMode(input);
+        if (this.#isNativeAiSession(input.sessionId)) {
+            await this.#requireNativeAiGateway().setSessionMode(input);
+        } else {
+            await this.#requireAiWorker().setSessionMode(input);
+        }
         this.#persistence.saveRuntimeModePreference(
             this.#getLiveSessionRuntimeId(input.sessionId),
             input.modeId,
@@ -1034,7 +1217,11 @@ export class AiService {
             return;
         }
 
-        await this.#requireAiWorker().setSessionModel(input);
+        if (this.#isNativeAiSession(input.sessionId)) {
+            await this.#requireNativeAiGateway().setSessionModel(input);
+        } else {
+            await this.#requireAiWorker().setSessionModel(input);
+        }
         this.#persistence.saveRuntimeModelPreference(
             this.#getLiveSessionRuntimeId(input.sessionId),
             input.modelId,
@@ -1065,7 +1252,11 @@ export class AiService {
 
         const runtimeId = this.#getLiveSessionRuntimeId(input.sessionId);
         const snapshot = this.#liveSnapshots.get(input.sessionId) ?? null;
-        await this.#requireAiWorker().setSessionConfigOption(input);
+        if (this.#isNativeAiSession(input.sessionId)) {
+            await this.#requireNativeAiGateway().setSessionConfigOption(input);
+        } else {
+            await this.#requireAiWorker().setSessionConfigOption(input);
+        }
         this.#persistRuntimeConfigOptionSelection(
             runtimeId,
             snapshot,
@@ -1076,6 +1267,12 @@ export class AiService {
 
     async renameSession(input: AiSessionRenameMutationInput): Promise<void> {
         if (this.#liveSessionContexts.has(input.sessionId)) {
+            if (this.#isNativeAiSession(input.sessionId)) {
+                await this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
+                    setTitleOnSnapshot(snapshot, input.title),
+                );
+                return;
+            }
             await this.#requireAiWorker().renameSession(input);
             return;
         }
@@ -1090,6 +1287,11 @@ export class AiService {
             return;
         }
 
+        if (this.#isNativeAiSession(sessionId)) {
+            await this.#requireNativeAiGateway().cancelSession(sessionId);
+            return;
+        }
+
         await this.#requireAiWorker().cancelSession(sessionId);
     }
 
@@ -1098,7 +1300,11 @@ export class AiService {
             return;
         }
 
-        await this.#requireAiWorker().closeSession(sessionId);
+        if (this.#isNativeAiSession(sessionId)) {
+            await this.#requireNativeAiGateway().closeSession(sessionId);
+        } else {
+            await this.#requireAiWorker().closeSession(sessionId);
+        }
         this.#clearLiveSession(sessionId);
     }
 
@@ -1136,6 +1342,11 @@ export class AiService {
             .catch((error: unknown) => {
                 debugBenignError("ai.service.closeOwnedByWindow", error);
             });
+        Promise.resolve(this.#nativeAi?.closeOwnedByWindow(ownerWindowId)).catch(
+            (error: unknown) => {
+                debugBenignError("ai.service.closeOwnedByWindow.native", error);
+            },
+        );
         for (const sessionId of sessionIds) {
             this.#recordRetentionClose(sessionId, "window_close");
             this.#clearLiveSession(sessionId);
@@ -1509,11 +1720,40 @@ export class AiService {
     }
 
     respondPermission(input: AiPermissionResponseInput): Promise<void> {
+        if (this.#isNativeAiSession(input.sessionId)) {
+            return this.#requireNativeAiGateway().respondPermission(input);
+        }
+
         return this.#requireAiWorker().respondPermission(input);
     }
 
     async respondUserInput(input: AiUserInputResponseInput): Promise<void> {
+        if (this.#isNativeAiSession(input.sessionId)) {
+            await this.#requireNativeAiGateway().respondUserInput(input);
+            return;
+        }
+
         await this.#requireAiWorker().respondUserInput(input);
+    }
+
+    #selectNativeAiGateway(runtimeId: AiRuntimeId): NativeAiGateway | null {
+        if (!this.#nativeAi?.shouldHandleRuntime(runtimeId)) {
+            return null;
+        }
+
+        return this.#nativeAi;
+    }
+
+    #isNativeAiSession(sessionId: string): boolean {
+        return this.#nativeSessionIds.has(sessionId);
+    }
+
+    #requireNativeAiGateway(): NativeAiGateway {
+        if (!this.#nativeAi) {
+            throw new Error("The native AI backend is not available.");
+        }
+
+        return this.#nativeAi;
     }
 
     #requireAiWorker(): AiWorkerGateway {
@@ -1596,6 +1836,9 @@ export class AiService {
         this.#liveSessionContexts.delete(sessionId);
         this.#liveSessionTouches.delete(sessionId);
         this.#freezingSessionIds.delete(sessionId);
+        this.#nativeReviewBaselines.delete(sessionId);
+        this.#nativeReviewReconciliations.delete(sessionId);
+        this.#nativeSessionIds.delete(sessionId);
         this.#scheduleSessionRetentionTimer();
     }
 
@@ -1702,6 +1945,21 @@ export class AiService {
             : null;
         if (localSkippedReason) {
             this.#recordRetentionSkipped(sessionId, reason, localSkippedReason);
+            return;
+        }
+
+        if (this.#isNativeAiSession(sessionId)) {
+            this.#freezingSessionIds.add(sessionId);
+            try {
+                await this.#requireNativeAiGateway().closeSession(sessionId);
+                this.#recordRetentionClose(sessionId, reason);
+                this.#clearLiveSession(sessionId);
+            } catch (error) {
+                this.#deferSessionRetentionRetry(sessionId);
+                debugBenignError("ai.service.freezeNativeSession", error);
+            } finally {
+                this.#freezingSessionIds.delete(sessionId);
+            }
             return;
         }
 
@@ -1879,6 +2137,277 @@ export class AiService {
     ): void {
         this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
         this.#persistence.saveSessionSnapshot(snapshot);
+    }
+
+    #applyNativeSessionEvent(
+        snapshot: AiSessionSnapshot,
+        event: AiSessionDomainEvent,
+    ): AiSessionSnapshot {
+        const base = {
+            ...snapshot,
+            runtimeSessionId:
+                event.runtimeSessionId ?? snapshot.runtimeSessionId,
+            updatedAt: event.updatedAt,
+        };
+
+        if (event.kind === "session-info") {
+            return {
+                ...base,
+                projectId: event.projectId,
+                title: event.title,
+                worktreeId: event.worktreeId,
+            };
+        }
+
+        if (event.kind === "status") {
+            return {
+                ...base,
+                activeTurnStartedAt: event.activeTurnStartedAt,
+                lastError: event.lastError,
+                pendingPermission:
+                    event.status === "waiting_permission"
+                        ? snapshot.pendingPermission
+                        : null,
+                pendingUserInput:
+                    event.status === "waiting_user_input"
+                        ? snapshot.pendingUserInput
+                        : null,
+                status: event.status,
+            };
+        }
+
+        if (event.kind === "message-started") {
+            return {
+                ...base,
+                messages: upsertNativeMessage(
+                    snapshot.messages,
+                    event.message,
+                ),
+            };
+        }
+
+        if (event.kind === "message-delta") {
+            return {
+                ...base,
+                messages: updateNativeMessageContent(
+                    snapshot.messages,
+                    event.messageId,
+                    event.content,
+                ),
+            };
+        }
+
+        if (event.kind === "message-completed") {
+            return {
+                ...base,
+                messages: completeNativeMessage(
+                    snapshot.messages,
+                    event.messageId,
+                ),
+            };
+        }
+
+        if (event.kind === "thinking-started") {
+            return {
+                ...base,
+                messages: upsertNativeMessage(
+                    snapshot.messages,
+                    event.message,
+                ),
+            };
+        }
+
+        if (event.kind === "thinking-delta") {
+            return {
+                ...base,
+                messages: updateNativeMessageContent(
+                    snapshot.messages,
+                    event.messageId,
+                    event.content,
+                ),
+            };
+        }
+
+        if (event.kind === "thinking-completed") {
+            return {
+                ...base,
+                messages: completeNativeMessage(
+                    snapshot.messages,
+                    event.messageId,
+                ),
+            };
+        }
+
+        if (event.kind === "tool-activity") {
+            return {
+                ...base,
+                toolActivity: upsertNativeToolActivity(
+                    snapshot.toolActivity,
+                    event.activity,
+                ),
+            };
+        }
+
+        if (event.kind === "plan") {
+            return {
+                ...base,
+                plan: event.plan,
+            };
+        }
+
+        if (event.kind === "permission-request") {
+            return {
+                ...base,
+                pendingPermission: event.request,
+                status: event.request ? "waiting_permission" : snapshot.status,
+            };
+        }
+
+        if (event.kind === "user-input-request") {
+            return {
+                ...base,
+                pendingUserInput: event.request,
+                status: event.request ? "waiting_user_input" : snapshot.status,
+            };
+        }
+
+        if (event.kind === "token-usage") {
+            return {
+                ...base,
+                tokenUsage: event.tokenUsage,
+            };
+        }
+
+        return base;
+    }
+
+    async #captureNativeReviewBaseline(
+        sessionId: string,
+        launch: AiWorkerSessionLaunchInput,
+        messageId: string,
+    ): Promise<boolean> {
+        try {
+            const statusEntries = await listNativeGitStatusEntries(launch.cwd);
+            const files = new Map<string, string | null>();
+            for (const entry of statusEntries) {
+                if (!files.has(entry.path)) {
+                    files.set(
+                        entry.path,
+                        await readNativeReviewWorkingTreeText(
+                            launch.cwd,
+                            entry.path,
+                        ),
+                    );
+                }
+                if (entry.previousPath && !files.has(entry.previousPath)) {
+                    files.set(
+                        entry.previousPath,
+                        await readNativeReviewWorkingTreeText(
+                            launch.cwd,
+                            entry.previousPath,
+                        ),
+                    );
+                }
+            }
+
+            this.#nativeReviewBaselines.set(sessionId, {
+                cwd: launch.cwd,
+                files,
+                messageId,
+                turnStarted: false,
+            });
+            return true;
+        } catch (error) {
+            this.#nativeReviewBaselines.delete(sessionId);
+            debugBenignError("ai.service.nativeReviewBaseline", error);
+            return false;
+        }
+    }
+
+    #markNativeReviewTurnStarted(sessionId: string): void {
+        const baseline = this.#nativeReviewBaselines.get(sessionId);
+        if (!baseline || baseline.turnStarted) {
+            return;
+        }
+
+        this.#nativeReviewBaselines.set(sessionId, {
+            ...baseline,
+            turnStarted: true,
+        });
+    }
+
+    #shouldReconcileNativeReviewFiles(event: AiSessionDomainEvent): boolean {
+        const baseline = this.#nativeReviewBaselines.get(event.sessionId);
+        if (!baseline || !this.#isNativeAiSession(event.sessionId)) {
+            return false;
+        }
+
+        if (
+            event.kind === "tool-activity" &&
+            event.activity.id === `acp:turn:${baseline.messageId}` &&
+            isTerminalNativeReviewActivityStatus(event.activity.status)
+        ) {
+            return true;
+        }
+
+        return (
+            event.kind === "status" &&
+            baseline.turnStarted &&
+            (event.status === "idle" || event.status === "error")
+        );
+    }
+
+    async #reconcileNativeReviewFiles(
+        sessionId: string,
+        ownerWindowId: string,
+    ): Promise<void> {
+        const baseline = this.#nativeReviewBaselines.get(sessionId);
+        if (!baseline || this.#nativeReviewReconciliations.has(sessionId)) {
+            return;
+        }
+
+        this.#nativeReviewBaselines.delete(sessionId);
+        this.#nativeReviewReconciliations.add(sessionId);
+        try {
+            const snapshot = this.#liveSnapshots.get(sessionId);
+            if (!snapshot) {
+                return;
+            }
+
+            const trackedFiles = await buildNativeReviewTrackedFiles(
+                snapshot.sessionId,
+                baseline,
+            );
+            if (trackedFiles.length === 0) {
+                return;
+            }
+
+            let nextTrackedFiles = snapshot.trackedFiles;
+            for (const trackedFile of trackedFiles) {
+                nextTrackedFiles = upsertTrackedFile(
+                    nextTrackedFiles,
+                    trackedFile,
+                );
+            }
+            if (nextTrackedFiles === snapshot.trackedFiles) {
+                return;
+            }
+
+            const nextSnapshot = {
+                ...snapshot,
+                trackedFiles: nextTrackedFiles,
+                updatedAt: new Date().toISOString(),
+            };
+            this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+            this.#persistence.saveSessionSnapshot(nextSnapshot);
+            this.#onSessionSnapshot(
+                ownerWindowId,
+                buildAiSessionUpdate(snapshot, nextSnapshot),
+            );
+            void this.#enforceSessionRetention();
+        } finally {
+            this.#nativeReviewReconciliations.delete(sessionId);
+        }
     }
 
     async #reconcilePersistedTrackedFiles(
@@ -2116,8 +2645,9 @@ export class AiService {
     #listRelaunchableLiveSessionContexts(): readonly LiveSessionContext[] {
         return [...this.#liveSessionContexts.values()].filter(
             (context) =>
-                !context.parentSessionId ||
-                !this.#liveSessionContexts.has(context.parentSessionId),
+                !this.#isNativeAiSession(context.sessionId) &&
+                (!context.parentSessionId ||
+                    !this.#liveSessionContexts.has(context.parentSessionId)),
         );
     }
 
@@ -2871,6 +3401,306 @@ export class AiService {
     }
 }
 
+async function buildNativeReviewTrackedFiles(
+    sessionId: string,
+    baseline: NativeReviewBaseline,
+): Promise<readonly AiTrackedFile[]> {
+    const statusEntries = mergeNativeReviewCandidateEntries(
+        await listNativeGitStatusEntries(baseline.cwd),
+        baseline,
+    );
+    const trackedFiles: AiTrackedFile[] = [];
+    const updatedAt = new Date().toISOString();
+
+    for (const entry of statusEntries) {
+        const baselineText = getNativeReviewBaselineText(baseline, entry);
+        const deleted = isNativeGitDeleted(entry);
+        const currentText = deleted
+            ? null
+            : await readNativeReviewWorkingTreeText(
+                  baseline.cwd,
+                  entry.path,
+              );
+        if (
+            !deleted &&
+            currentText === null &&
+            (!baselineText.known || baselineText.text === null)
+        ) {
+            continue;
+        }
+
+        const oldText = baselineText.known
+            ? baselineText.text
+            : await readNativeReviewHeadText(
+                  baseline.cwd,
+                  entry.previousPath ?? entry.path,
+              );
+        const previousPath =
+            entry.previousPath && entry.previousPath !== entry.path
+                ? entry.previousPath
+                : null;
+        if (
+            oldText === null &&
+            currentText === null &&
+            previousPath === null
+        ) {
+            continue;
+        }
+        if (
+            previousPath === null &&
+            oldText !== null &&
+            currentText !== null &&
+            oldText === currentText
+        ) {
+            continue;
+        }
+
+        const diffBase = oldText ?? "";
+        const currentReviewText = currentText ?? "";
+        const kind = inferNativeTrackedFileKind(
+            previousPath,
+            oldText,
+            currentText,
+        );
+
+        trackedFiles.push({
+            currentText: currentReviewText,
+            diffBase,
+            hunks: computeDiffHunks(diffBase, currentReviewText, entry.path),
+            identityKey: `native:${sessionId}:${previousPath ?? ""}:${entry.path}`,
+            isText: true,
+            kind,
+            newText: currentText,
+            oldText,
+            path: entry.path,
+            previousPath,
+            reviewState: "pending",
+            reversible: kind === "create" || oldText !== null,
+            sessionId,
+            toolCallId: null,
+            updatedAt,
+            version: 1,
+        });
+    }
+
+    return trackedFiles;
+}
+
+function mergeNativeReviewCandidateEntries(
+    statusEntries: readonly NativeGitStatusEntry[],
+    baseline: NativeReviewBaseline,
+): readonly NativeGitStatusEntry[] {
+    const coveredPaths = new Set<string>();
+    for (const entry of statusEntries) {
+        coveredPaths.add(entry.path);
+        if (entry.previousPath) {
+            coveredPaths.add(entry.previousPath);
+        }
+    }
+
+    const baselineOnlyEntries = [...baseline.files.keys()]
+        .filter((baselinePath) => !coveredPaths.has(baselinePath))
+        .map((baselinePath) => ({
+            code: "  ",
+            path: baselinePath,
+            previousPath: null,
+        }));
+
+    return [...statusEntries, ...baselineOnlyEntries];
+}
+
+function getNativeReviewBaselineText(
+    baseline: NativeReviewBaseline,
+    entry: NativeGitStatusEntry,
+): {
+    readonly known: boolean;
+    readonly text: string | null;
+} {
+    if (baseline.files.has(entry.path)) {
+        return {
+            known: true,
+            text: baseline.files.get(entry.path) ?? null,
+        };
+    }
+
+    if (entry.previousPath && baseline.files.has(entry.previousPath)) {
+        return {
+            known: true,
+            text: baseline.files.get(entry.previousPath) ?? null,
+        };
+    }
+
+    return {
+        known: false,
+        text: null,
+    };
+}
+
+async function listNativeGitStatusEntries(
+    cwd: string,
+): Promise<readonly NativeGitStatusEntry[]> {
+    const output = await execNativeGit(cwd, [
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+    ]);
+
+    return parseNativeGitStatusOutput(output);
+}
+
+function parseNativeGitStatusOutput(
+    output: string,
+): readonly NativeGitStatusEntry[] {
+    const entries: NativeGitStatusEntry[] = [];
+    const tokens = output.split("\0");
+
+    for (let index = 0; index < tokens.length; index += 1) {
+        const token = tokens[index];
+        if (!token || token.length < 4 || token[2] !== " ") {
+            continue;
+        }
+
+        const code = token.slice(0, 2);
+        if (code === "!!") {
+            continue;
+        }
+
+        let entryPath = token.slice(3);
+        let previousPath: string | null = null;
+        if (code.includes("R") || code.includes("C")) {
+            const secondaryPath = tokens[index + 1];
+            if (secondaryPath) {
+                previousPath = secondaryPath;
+                index += 1;
+            } else {
+                const arrowIndex = entryPath.indexOf(" -> ");
+                if (arrowIndex >= 0) {
+                    previousPath = entryPath.slice(0, arrowIndex);
+                    entryPath = entryPath.slice(arrowIndex + 4);
+                }
+            }
+        }
+
+        if (entryPath.length === 0) {
+            continue;
+        }
+
+        entries.push({
+            code,
+            path: entryPath,
+            previousPath,
+        });
+    }
+
+    return entries;
+}
+
+async function readNativeReviewWorkingTreeText(
+    cwd: string,
+    relativePath: string,
+): Promise<string | null> {
+    const resolvedPath = resolveSessionScopedPath(cwd, relativePath);
+    if (!resolvedPath.insideRoot) {
+        return null;
+    }
+
+    const openBufferText = readOpenFileBuffer(resolvedPath.absolutePath);
+    if (openBufferText !== null) {
+        return isNativeReviewText(openBufferText) ? openBufferText : null;
+    }
+
+    try {
+        const stat = await fs.promises.stat(resolvedPath.absolutePath);
+        if (!stat.isFile() || stat.size > NATIVE_REVIEW_MAX_FILE_BYTES) {
+            return null;
+        }
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return null;
+        }
+        throw error;
+    }
+
+    const text = await readTextIfExists(resolvedPath.absolutePath);
+    return text !== null && isNativeReviewText(text) ? text : null;
+}
+
+async function readNativeReviewHeadText(
+    cwd: string,
+    relativePath: string,
+): Promise<string | null> {
+    try {
+        const text = await execNativeGit(cwd, ["show", `HEAD:${relativePath}`]);
+        return isNativeReviewText(text) ? text : null;
+    } catch {
+        return null;
+    }
+}
+
+function execNativeGit(cwd: string, args: readonly string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+        execFile(
+            "git",
+            ["-C", cwd, ...args],
+            {
+                encoding: "utf8",
+                maxBuffer: NATIVE_REVIEW_GIT_MAX_BUFFER,
+            },
+            (error, stdout, stderr) => {
+                if (error) {
+                    reject(
+                        new Error(
+                            String(stderr || error.message || "git failed"),
+                            { cause: error },
+                        ),
+                    );
+                    return;
+                }
+
+                resolve(String(stdout));
+            },
+        );
+    });
+}
+
+function isNativeGitDeleted(entry: NativeGitStatusEntry): boolean {
+    return entry.code[0] === "D" || entry.code[1] === "D";
+}
+
+function inferNativeTrackedFileKind(
+    previousPath: string | null,
+    oldText: string | null,
+    newText: string | null,
+): AiTrackedFile["kind"] {
+    if (previousPath) {
+        return "move";
+    }
+
+    if (oldText === null) {
+        return "create";
+    }
+
+    if (newText === null) {
+        return "delete";
+    }
+
+    return "update";
+}
+
+function isTerminalNativeReviewActivityStatus(
+    status: AiToolActivity["status"],
+): boolean {
+    return status === "completed" || status === "failed";
+}
+
+function isNativeReviewText(text: string): boolean {
+    return (
+        text.length <= NATIVE_REVIEW_MAX_FILE_BYTES &&
+        !text.includes("\u0000")
+    );
+}
+
 function normalizeOptionalText(value: string | null): string | null {
     const trimmed = value?.trim() ?? "";
     return trimmed.length > 0 ? trimmed : null;
@@ -2922,6 +3752,68 @@ function resolveCodexSecretBundle(
         codexApiKey,
         openaiApiKey,
     };
+}
+
+function upsertNativeMessage(
+    messages: readonly AiMessage[],
+    message: AiMessage,
+): readonly AiMessage[] {
+    const existingIndex = messages.findIndex(
+        (candidate) => candidate.id === message.id,
+    );
+    if (existingIndex < 0) {
+        return [...messages, message];
+    }
+
+    return messages.map((candidate, index) =>
+        index === existingIndex ? { ...candidate, ...message } : candidate,
+    );
+}
+
+function updateNativeMessageContent(
+    messages: readonly AiMessage[],
+    messageId: string,
+    content: string,
+): readonly AiMessage[] {
+    return messages.map((message) =>
+        message.id === messageId
+            ? {
+                  ...message,
+                  content,
+                  status: "streaming" as const,
+              }
+            : message,
+    );
+}
+
+function completeNativeMessage(
+    messages: readonly AiMessage[],
+    messageId: string,
+): readonly AiMessage[] {
+    return messages.map((message) =>
+        message.id === messageId
+            ? {
+                  ...message,
+                  status: "completed" as const,
+              }
+            : message,
+    );
+}
+
+function upsertNativeToolActivity(
+    activities: readonly AiToolActivity[],
+    activity: AiToolActivity,
+): readonly AiToolActivity[] {
+    const existingIndex = activities.findIndex(
+        (candidate) => candidate.id === activity.id,
+    );
+    if (existingIndex < 0) {
+        return [...activities, activity];
+    }
+
+    return activities.map((candidate, index) =>
+        index === existingIndex ? { ...candidate, ...activity } : candidate,
+    );
 }
 
 function parseSecretStorageKey(key: string): {

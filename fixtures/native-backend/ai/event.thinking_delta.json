@@ -1,0 +1,14 @@
+{
+  "type": "event",
+  "eventName": "ai://thinking-delta",
+  "payload": {
+    "sessionId": "session_1",
+    "runtimeId": "opencode",
+    "runtimeSessionId": "runtime_session_1",
+    "updatedAt": "2026-06-20T00:00:01.200Z",
+    "messageId": "thinking_1",
+    "messageKind": "thinking",
+    "delta": "Thinking",
+    "content": "Thinking"
+  }
+}

@@ -217,7 +217,8 @@
       "native-git-worktrees",
       "native-git-mutations",
       "native-git-network",
-      "native-terminal"
+      "native-terminal",
+      "native-ai"
     ]
   }
 }

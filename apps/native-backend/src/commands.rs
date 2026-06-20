@@ -2,6 +2,11 @@ use std::env;
 use std::sync::mpsc;
 use std::thread;
 
+use comando_ai::AiEngine;
+use comando_ai::events::{
+    AI_RUNTIME_STATUS_EVENT, AI_SESSION_CLOSED_EVENT, AI_SESSION_CREATED_EVENT,
+    AI_SESSION_UPDATED_EVENT, AiRuntimeEvent, session_closed, session_created, session_updated,
+};
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
 use comando_git::{
     GitBranchListScope, GitError, GitFileDiffRequest, GitRunner, checkout_branch, commit,
@@ -36,8 +41,8 @@ use comando_types::persistence::{
 };
 use comando_types::projects::{NativeProjectAddInput, NativeProjectState};
 use comando_types::{
-    fs as native_fs, git as native_git, index as native_index, projects as native_projects,
-    terminal as native_terminal,
+    ai as native_ai, fs as native_fs, git as native_git, index as native_index,
+    projects as native_projects, terminal as native_terminal,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -52,6 +57,8 @@ pub struct CommandResult {
 
 #[derive(Default)]
 pub struct NativeBackend {
+    ai_engine: AiEngine,
+    ai_event_bridge_started: bool,
     fs_service: ProjectFsService,
     git_runner: GitRunner,
     index_service: IndexService,
@@ -87,6 +94,7 @@ pub fn handle_request(request: RpcRequest) -> CommandResult {
 }
 
 impl NativeBackend {
+    const AI_EVENT_CHANNEL_CAPACITY: usize = 256;
     const TERMINAL_EVENT_CHANNEL_CAPACITY: usize = 256;
 
     pub fn handle_request_background(
@@ -105,6 +113,22 @@ impl NativeBackend {
             | "terminal_close"
             | "terminal_close_window"
             | "terminal_list" => self.handle_terminal_request(request, background_sender),
+            "ai_list_runtimes"
+            | "ai_get_runtime_status"
+            | "ai_prepare_session"
+            | "ai_send_prompt"
+            | "ai_cancel_session"
+            | "ai_close_session"
+            | "ai_respond_permission"
+            | "ai_respond_user_input"
+            | "ai_set_session_model"
+            | "ai_set_session_mode"
+            | "ai_set_session_config_option" => {
+                if let Err(error) = self.ensure_ai_event_bridge(background_sender) {
+                    return error_only(request.id, error);
+                }
+                self.handle_ai_request(request)
+            }
             _ => self.handle_request(request),
         }
     }
@@ -175,6 +199,17 @@ impl NativeBackend {
             "git_pull" => self.git_pull(request),
             "git_push" => self.git_push(request),
             "git_delete_remote_branch" => self.git_delete_remote_branch(request),
+            "ai_list_runtimes"
+            | "ai_get_runtime_status"
+            | "ai_prepare_session"
+            | "ai_send_prompt"
+            | "ai_cancel_session"
+            | "ai_close_session"
+            | "ai_respond_permission"
+            | "ai_respond_user_input"
+            | "ai_set_session_model"
+            | "ai_set_session_mode"
+            | "ai_set_session_config_option" => self.handle_ai_request(request),
             #[cfg(test)]
             "backend_queue_test_fs_event" => self.queue_test_fs_event(request),
             command => CommandResult {
@@ -1111,6 +1146,204 @@ impl NativeBackend {
         }
     }
 
+    fn handle_ai_request(&mut self, request: RpcRequest) -> CommandResult {
+        match request.command.as_str() {
+            "ai_list_runtimes" => response_only(
+                request.id,
+                serde_json::to_value(self.ai_engine.list_runtimes())
+                    .expect("ai list runtimes output serializes"),
+            ),
+            "ai_get_runtime_status" => {
+                let input = match parse_args::<native_ai::NativeAiGetRuntimeStatusInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_engine.get_runtime_status(input) {
+                    Ok(status) => CommandResult {
+                        outputs: vec![
+                            response_ok(
+                                request.id,
+                                serde_json::to_value(&status)
+                                    .expect("ai runtime status serializes"),
+                            ),
+                            event(
+                                AI_RUNTIME_STATUS_EVENT,
+                                serde_json::to_value(status)
+                                    .expect("ai runtime status event serializes"),
+                            ),
+                        ],
+                        should_shutdown: false,
+                    },
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "ai_prepare_session" => {
+                let input = match parse_args::<native_ai::NativeAiPrepareSessionInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_engine.prepare_session(input) {
+                    Ok(summary) => CommandResult {
+                        outputs: vec![
+                            response_ok(
+                                request.id,
+                                serde_json::to_value(&summary)
+                                    .expect("ai prepare output serializes"),
+                            ),
+                            event(
+                                AI_SESSION_CREATED_EVENT,
+                                serde_json::to_value(session_created(summary.clone()))
+                                    .expect("ai session created event serializes"),
+                            ),
+                            event(
+                                AI_SESSION_UPDATED_EVENT,
+                                serde_json::to_value(session_updated(&summary))
+                                    .expect("ai session updated event serializes"),
+                            ),
+                        ],
+                        should_shutdown: false,
+                    },
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "ai_send_prompt" => {
+                let input = match parse_args::<native_ai::NativeAiSendPromptInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_engine.send_prompt(input) {
+                    Ok((output, summary)) => CommandResult {
+                        outputs: vec![
+                            response_ok(
+                                request.id,
+                                serde_json::to_value(output)
+                                    .expect("ai send prompt output serializes"),
+                            ),
+                            event(
+                                AI_SESSION_UPDATED_EVENT,
+                                serde_json::to_value(session_updated(&summary))
+                                    .expect("ai session updated event serializes"),
+                            ),
+                        ],
+                        should_shutdown: false,
+                    },
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "ai_cancel_session" => {
+                let input = match parse_args::<native_ai::NativeAiSessionIdInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_engine.cancel_session(input) {
+                    Ok((output, summary)) => CommandResult {
+                        outputs: vec![
+                            response_ok(
+                                request.id,
+                                serde_json::to_value(output).expect("ai cancel output serializes"),
+                            ),
+                            event(
+                                AI_SESSION_UPDATED_EVENT,
+                                serde_json::to_value(session_updated(&summary))
+                                    .expect("ai session updated event serializes"),
+                            ),
+                        ],
+                        should_shutdown: false,
+                    },
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "ai_close_session" => {
+                let input = match parse_args::<native_ai::NativeAiSessionIdInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_engine.close_session(input) {
+                    Ok((output, summary)) => CommandResult {
+                        outputs: vec![
+                            response_ok(
+                                request.id,
+                                serde_json::to_value(output).expect("ai close output serializes"),
+                            ),
+                            event(
+                                AI_SESSION_CLOSED_EVENT,
+                                serde_json::to_value(session_closed(&summary))
+                                    .expect("ai session closed event serializes"),
+                            ),
+                        ],
+                        should_shutdown: false,
+                    },
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "ai_set_session_mode" => {
+                let input = match parse_args::<native_ai::NativeAiSetSessionModeInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_engine.set_session_mode(input) {
+                    Ok(()) => response_only(request.id, json!({"ok": true})),
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "ai_set_session_model" => {
+                let input = match parse_args::<native_ai::NativeAiSetSessionModelInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_engine.set_session_model(input) {
+                    Ok(()) => response_only(request.id, json!({"ok": true})),
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "ai_set_session_config_option" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiSetSessionConfigOptionInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.ai_engine.set_session_config_option(input) {
+                    Ok(()) => response_only(request.id, json!({"ok": true})),
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "ai_respond_permission" => {
+                match parse_args::<native_ai::NativeAiPermissionResponseInput>(&request) {
+                    Ok(_input) => error_only(
+                        request.id,
+                        NativeError::new(
+                            NativeErrorCode::NotSupported,
+                            "Native permission responses are not implemented for this runtime yet.",
+                        ),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_respond_user_input" => {
+                match parse_args::<native_ai::NativeAiUserInputResponseInput>(&request) {
+                    Ok(_input) => error_only(
+                        request.id,
+                        NativeError::new(
+                            NativeErrorCode::NotSupported,
+                            "Native user input responses are not implemented for this runtime yet.",
+                        ),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            command => CommandResult {
+                outputs: vec![error_response(
+                    Some(request.id),
+                    NativeError::new(
+                        NativeErrorCode::UnknownCommand,
+                        format!("Unknown command: {command}"),
+                    ),
+                )],
+                should_shutdown: false,
+            },
+        }
+    }
+
     fn ensure_terminal_service(
         &mut self,
         background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
@@ -1129,6 +1362,31 @@ impl NativeBackend {
 
             TerminalService::new(event_sender)
         })
+    }
+
+    fn ensure_ai_event_bridge(
+        &mut self,
+        background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
+    ) -> Result<(), NativeError> {
+        if self.ai_event_bridge_started {
+            return Ok(());
+        }
+
+        let (event_sender, event_receiver) =
+            mpsc::sync_channel::<AiRuntimeEvent>(Self::AI_EVENT_CHANNEL_CAPACITY);
+        self.ai_engine
+            .set_event_sender(event_sender)
+            .map_err(|error| error.to_native_error())?;
+        thread::spawn(move || {
+            for event in event_receiver {
+                let output = ai_runtime_event_output(event);
+                if background_sender.send(vec![output]).is_err() {
+                    break;
+                }
+            }
+        });
+        self.ai_event_bridge_started = true;
+        Ok(())
     }
 
     fn search_project_content(&mut self, request: RpcRequest) -> CommandResult {
@@ -1795,6 +2053,10 @@ fn terminal_runtime_event_output(event_payload: TerminalRuntimeEvent) -> RpcOutp
             serde_json::to_value(payload).expect("terminal error event serializes"),
         ),
     }
+}
+
+fn ai_runtime_event_output(event_payload: AiRuntimeEvent) -> RpcOutput {
+    event(event_payload.event_name, event_payload.payload)
 }
 
 fn disabled_git_operation(request: RpcRequest) -> CommandResult {

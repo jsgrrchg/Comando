@@ -1,0 +1,13 @@
+{
+  "type": "event",
+  "eventName": "ai://token-usage",
+  "payload": {
+    "sessionId": "session_1",
+    "runtimeId": "opencode",
+    "runtimeSessionId": "runtime_session_1",
+    "updatedAt": "2026-06-20T00:00:01.600Z",
+    "used": 42,
+    "size": 1000,
+    "cost": null
+  }
+}

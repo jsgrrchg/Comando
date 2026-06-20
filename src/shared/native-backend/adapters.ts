@@ -3,9 +3,12 @@ import type {
     AiRuntimeStatus,
     AiRuntimeSource,
     AiRuntimeState,
+    AiSessionStatus,
     AiSessionDomainEvent,
     AiSessionMessageEventKind,
+    AiPermissionOption,
     AiToolActivity,
+    AiUserInputQuestion,
     GitRepositoryInvalidation,
     ProjectEntryMutationResult,
     ProjectFileDocument,
@@ -17,9 +20,23 @@ import type {
 } from "../ipc";
 import { resolveEditorLanguage } from "../editor-language";
 import type {
+    NativeAiErrorPayload,
+    NativeAiEventBase,
+    NativeAiMessageCompletedPayload,
     NativeAiMessageDeltaPayload,
+    NativeAiMessageStartedPayload,
+    NativeAiPermissionRequestPayload,
+    NativeAiPlanUpdatedPayload,
     NativeAiRuntimeStatus,
+    NativeAiSessionCreatedPayload,
+    NativeAiSessionUpdatedPayload,
+    NativeAiStatusEventPayload,
+    NativeAiThinkingCompletedPayload,
+    NativeAiThinkingDeltaPayload,
+    NativeAiThinkingStartedPayload,
+    NativeAiTokenUsagePayload,
     NativeAiToolActivityPayload,
+    NativeAiUserInputRequestPayload,
 } from "./ai";
 import type {
     NativeFsEntryKind,
@@ -59,15 +76,93 @@ export function nativeAiRuntimeStatusToIpc(
 export function nativeAiEventToIpc(
     event: NativeBackendEvent,
 ): AiSessionDomainEvent | null {
+    if (event.eventName === "ai://session-created") {
+        return nativeAiSessionCreatedToIpc(
+            requireRecord(event.payload) as unknown as NativeAiSessionCreatedPayload,
+        );
+    }
+
+    if (event.eventName === "ai://session-updated") {
+        return nativeAiSessionUpdatedToIpc(
+            requireRecord(event.payload) as unknown as NativeAiSessionUpdatedPayload,
+        );
+    }
+
+    if (event.eventName === "ai://message-started") {
+        return nativeAiMessageStartedToIpc(
+            requireRecord(event.payload) as unknown as NativeAiMessageStartedPayload,
+        );
+    }
+
     if (event.eventName === "ai://message-delta") {
         return nativeAiMessageDeltaToIpc(
             requireRecord(event.payload) as unknown as NativeAiMessageDeltaPayload,
         );
     }
 
+    if (event.eventName === "ai://message-completed") {
+        return nativeAiMessageCompletedToIpc(
+            requireRecord(event.payload) as unknown as NativeAiMessageCompletedPayload,
+        );
+    }
+
+    if (event.eventName === "ai://thinking-started") {
+        return nativeAiThinkingStartedToIpc(
+            requireRecord(event.payload) as unknown as NativeAiThinkingStartedPayload,
+        );
+    }
+
+    if (event.eventName === "ai://thinking-delta") {
+        return nativeAiThinkingDeltaToIpc(
+            requireRecord(event.payload) as unknown as NativeAiThinkingDeltaPayload,
+        );
+    }
+
+    if (event.eventName === "ai://thinking-completed") {
+        return nativeAiThinkingCompletedToIpc(
+            requireRecord(event.payload) as unknown as NativeAiThinkingCompletedPayload,
+        );
+    }
+
     if (event.eventName === "ai://tool-activity") {
         return nativeAiToolActivityToIpc(
             requireRecord(event.payload) as unknown as NativeAiToolActivityPayload,
+        );
+    }
+
+    if (event.eventName === "ai://status-event") {
+        return nativeAiStatusEventToIpc(
+            requireRecord(event.payload) as unknown as NativeAiStatusEventPayload,
+        );
+    }
+
+    if (event.eventName === "ai://plan-updated") {
+        return nativeAiPlanUpdatedToIpc(
+            requireRecord(event.payload) as unknown as NativeAiPlanUpdatedPayload,
+        );
+    }
+
+    if (event.eventName === "ai://permission-request") {
+        return nativeAiPermissionRequestToIpc(
+            requireRecord(event.payload) as unknown as NativeAiPermissionRequestPayload,
+        );
+    }
+
+    if (event.eventName === "ai://user-input-request") {
+        return nativeAiUserInputRequestToIpc(
+            requireRecord(event.payload) as unknown as NativeAiUserInputRequestPayload,
+        );
+    }
+
+    if (event.eventName === "ai://token-usage") {
+        return nativeAiTokenUsageToIpc(
+            requireRecord(event.payload) as unknown as NativeAiTokenUsagePayload,
+        );
+    }
+
+    if (event.eventName === "ai://error") {
+        return nativeAiErrorToIpc(
+            requireRecord(event.payload) as unknown as NativeAiErrorPayload,
         );
     }
 
@@ -209,6 +304,59 @@ export function nativeTerminalExitEventToIpc(
     };
 }
 
+function nativeAiSessionCreatedToIpc(
+    payload: NativeAiSessionCreatedPayload,
+): AiSessionDomainEvent {
+    return {
+        origin: "live",
+        parentSessionId: null,
+        projectId: payload.projectId,
+        runtimeId: payload.runtimeId as AiSessionDomainEvent["runtimeId"],
+        runtimeSessionId: payload.runtimeSessionId,
+        sessionId: payload.sessionId,
+        kind: "session-info",
+        title: payload.title,
+        updatedAt: payload.updatedAt,
+        worktreeId: payload.worktreeId,
+    };
+}
+
+function nativeAiSessionUpdatedToIpc(
+    payload: NativeAiSessionUpdatedPayload,
+): AiSessionDomainEvent {
+    return {
+        activeTurnStartedAt: payload.status === "streaming" ? payload.updatedAt : null,
+        kind: "status",
+        lastError: payload.status === "error" ? "Native AI session failed." : null,
+        origin: "live",
+        parentSessionId: null,
+        runtimeId: payload.runtimeId as AiSessionDomainEvent["runtimeId"],
+        runtimeSessionId: payload.runtimeSessionId,
+        sessionId: payload.sessionId,
+        status: nativeAiSessionStatusToIpc(payload.status),
+        updatedAt: payload.updatedAt,
+    };
+}
+
+function nativeAiMessageStartedToIpc(
+    payload: NativeAiMessageStartedPayload,
+): AiSessionDomainEvent {
+    const messageKind = payload.messageKind as AiSessionMessageEventKind;
+    return {
+        ...nativeAiEventBase(payload),
+        kind: "message-started",
+        message: {
+            attachments: [],
+            content: payload.content,
+            createdAt: payload.updatedAt,
+            id: payload.messageId,
+            kind: messageKind,
+            status: "streaming",
+        },
+        messageKind,
+    };
+}
+
 function nativeAiMessageDeltaToIpc(
     payload: NativeAiMessageDeltaPayload,
 ): AiSessionDomainEvent {
@@ -219,6 +367,56 @@ function nativeAiMessageDeltaToIpc(
         kind: "message-delta",
         messageId: payload.messageId,
         messageKind: payload.messageKind as AiSessionMessageEventKind,
+    };
+}
+
+function nativeAiMessageCompletedToIpc(
+    payload: NativeAiMessageCompletedPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        kind: "message-completed",
+        messageId: payload.messageId,
+        messageKind: payload.messageKind as AiSessionMessageEventKind,
+    };
+}
+
+function nativeAiThinkingStartedToIpc(
+    payload: NativeAiThinkingStartedPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        kind: "thinking-started",
+        message: {
+            attachments: [],
+            content: payload.content,
+            createdAt: payload.updatedAt,
+            id: payload.messageId,
+            kind: "thinking",
+            status: "streaming",
+        },
+    };
+}
+
+function nativeAiThinkingDeltaToIpc(
+    payload: NativeAiThinkingDeltaPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        content: payload.content,
+        delta: payload.delta,
+        kind: "thinking-delta",
+        messageId: payload.messageId,
+    };
+}
+
+function nativeAiThinkingCompletedToIpc(
+    payload: NativeAiThinkingCompletedPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        kind: "thinking-completed",
+        messageId: payload.messageId,
     };
 }
 
@@ -250,11 +448,136 @@ function nativeAiToolActivityToIpc(
     };
 }
 
+function nativeAiStatusEventToIpc(
+    payload: NativeAiStatusEventPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        activity: {
+            action: null,
+            createdAt: payload.updatedAt,
+            diffs: [],
+            exitCode: null,
+            id: payload.eventId,
+            kind: "status",
+            locations: [],
+            rawInputJson: null,
+            rawOutputJson: null,
+            sessionId: payload.sessionId,
+            status: payload.status as AiToolActivity["status"],
+            summary: payload.detail,
+            terminalOutput: null,
+            title: payload.title,
+            updatedAt: payload.updatedAt,
+        },
+        kind: "tool-activity",
+    };
+}
+
+function nativeAiPlanUpdatedToIpc(
+    payload: NativeAiPlanUpdatedPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        kind: "plan",
+        plan: {
+            entries: payload.entries.map((entry) => ({
+                content: entry.content,
+                priority: entry.priority as "high" | "low" | "medium",
+                status: entry.status as "completed" | "in_progress" | "pending",
+            })),
+            title: payload.title,
+            updatedAt: payload.updatedAt,
+        },
+    };
+}
+
+function nativeAiPermissionRequestToIpc(
+    payload: NativeAiPermissionRequestPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        kind: "permission-request",
+        request: {
+            description: payload.description,
+            options: payload.options.map((option) => ({
+                kind: option.kind as AiPermissionOption["kind"],
+                name: option.name,
+                optionId: option.optionId,
+            })),
+            requestId: payload.requestId,
+            sessionId: payload.sessionId,
+            title: payload.title,
+            toolCallId: payload.toolCallId,
+            updatedAt: payload.updatedAt,
+        },
+    };
+}
+
+function nativeAiUserInputRequestToIpc(
+    payload: NativeAiUserInputRequestPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        kind: "user-input-request",
+        request: {
+            questions: payload.questions.map((question): AiUserInputQuestion => ({
+                header: question.header,
+                id: question.id,
+                isOther: question.isOther,
+                isSecret: question.isSecret,
+                options: question.options.map((option) => ({
+                    description: option.description,
+                    label: option.label,
+                })),
+                question: question.question,
+            })),
+            requestId: payload.requestId,
+            sessionId: payload.sessionId,
+            title: payload.title,
+            toolCallId: payload.toolCallId,
+            turnId: payload.turnId,
+            updatedAt: payload.updatedAt,
+        },
+    };
+}
+
+function nativeAiTokenUsageToIpc(
+    payload: NativeAiTokenUsagePayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        kind: "token-usage",
+        tokenUsage: {
+            cost: payload.cost,
+            size: payload.size,
+            updatedAt: payload.updatedAt,
+            used: payload.used,
+        },
+    };
+}
+
+function nativeAiErrorToIpc(payload: NativeAiErrorPayload): AiSessionDomainEvent | null {
+    if (!payload.sessionId || !payload.runtimeId) {
+        return null;
+    }
+
+    return {
+        activeTurnStartedAt: null,
+        kind: "status",
+        lastError: payload.message,
+        origin: "live",
+        parentSessionId: null,
+        runtimeId: payload.runtimeId as AiSessionDomainEvent["runtimeId"],
+        runtimeSessionId: null,
+        sessionId: payload.sessionId,
+        status: "error",
+        updatedAt: payload.updatedAt,
+    };
+}
+
 function nativeAiEventBase(
-    payload: Pick<
-        NativeAiMessageDeltaPayload | NativeAiToolActivityPayload,
-        "runtimeId" | "runtimeSessionId" | "sessionId" | "updatedAt"
-    >,
+    payload: NativeAiEventBase,
 ) {
     return {
         origin: "live" as const,
@@ -264,6 +587,22 @@ function nativeAiEventBase(
         sessionId: payload.sessionId,
         updatedAt: payload.updatedAt,
     };
+}
+
+function nativeAiSessionStatusToIpc(status: string): AiSessionStatus {
+    if (status === "streaming") {
+        return "streaming";
+    }
+    if (status === "waiting_permission") {
+        return "waiting_permission";
+    }
+    if (status === "waiting_user_input") {
+        return "waiting_user_input";
+    }
+    if (status === "error") {
+        return "error";
+    }
+    return "idle";
 }
 
 function parseSignalCode(signalCode: string | null): number | null {

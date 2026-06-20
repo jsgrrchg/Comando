@@ -56,6 +56,7 @@ import {
     isNativePersistenceStrict,
     normalizeNativePersistenceMode,
 } from "./native-backend/persistence";
+import { NativeAiGateway, shouldUseNativeAi } from "./native-backend/ai";
 import { NativeFsGateway } from "./native-backend/fs";
 import { NativeGitGateway, NativeGitRoutingGateway } from "./native-backend/git";
 import { NativeSearchGateway } from "./native-backend/index-search";
@@ -210,6 +211,16 @@ if (!hasSingleInstanceLock) {
                 worker: projectWorker,
             });
             aiService = new AiService({
+                nativeAi: createNativeAiGateway({
+                    nativeClient: nativeBackendClient,
+                    onRuntimeStatus: broadcastAiRuntimeStatus,
+                    onSessionEvent: (ownerWindowId, event) => {
+                        aiService?.handleNativeSessionEvent(
+                            ownerWindowId,
+                            event,
+                        );
+                    },
+                }),
                 onRuntimeStatus: broadcastAiRuntimeStatus,
                 onSessionEvent: broadcastAiSessionEvent,
                 onSessionSnapshot: broadcastAiSessionSnapshot,
@@ -455,6 +466,36 @@ function parseAiWorkerShardCount(value: string | undefined): number {
     }
 
     return Math.max(1, Math.min(8, parsed));
+}
+
+function createNativeAiGateway(input: {
+    readonly nativeClient: NativeBackendClient | null;
+    readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
+    readonly onSessionEvent: (
+        ownerWindowId: string,
+        event: AiSessionDomainEvent,
+    ) => void;
+}): NativeAiGateway | null {
+    if (!shouldUseNativeAi()) {
+        return null;
+    }
+
+    if (input.nativeClient) {
+        console.info("[native-backend] Native AI backend enabled.");
+        return new NativeAiGateway({
+            client: input.nativeClient,
+            onDiagnostic: (message) => {
+                console.warn(`[native-ai] ${message}`);
+            },
+            onRuntimeStatus: input.onRuntimeStatus,
+            onSessionEvent: input.onSessionEvent,
+        });
+    }
+
+    console.warn(
+        "[native-backend] Native AI backend is enabled but the native backend sidecar is not running; using the legacy AI worker.",
+    );
+    return null;
 }
 
 function createTerminalGateway(input: {

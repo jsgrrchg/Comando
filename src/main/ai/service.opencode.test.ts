@@ -1,17 +1,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
     AiRuntimeStatus,
     AiSessionSnapshot,
+    AiSessionUpdate,
     OpenCodeRuntimeSettings,
 } from "@shared/ipc";
 
 import { AiService } from "./service";
-import type { AiWorkerGateway } from "./contracts";
+import type { AiWorkerGateway, NativeAiGateway } from "./contracts";
 
 const OPENCODE_ENV_CREDENTIAL_NAMES = [
     "ANTHROPIC_API_KEY",
@@ -231,32 +233,382 @@ describe("AiService OpenCode branch", () => {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
     });
+
+    it("persists native session events through the service snapshot cache", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-native-events-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            const saveSessionSnapshot = vi.fn();
+            const onSessionSnapshot = vi.fn();
+            const nativeAi: NativeAiGateway = {
+                cancelSession: vi.fn(),
+                close: vi.fn(),
+                closeOwnedByWindow: vi.fn(),
+                closeSession: vi.fn(),
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-native-1",
+                            status: "idle",
+                            updatedAt: "2026-06-20T00:00:00.000Z",
+                        }),
+                ),
+                respondPermission: vi.fn(),
+                respondUserInput: vi.fn(),
+                sendPrompt: vi.fn(),
+                setSessionConfigOption: vi.fn(),
+                setSessionMode: vi.fn(),
+                setSessionModel: vi.fn(),
+                shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "opencode"),
+            };
+            const service = createService({
+                nativeAi,
+                onSessionSnapshot,
+                persistence: {
+                    saveSessionSnapshot,
+                },
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+
+            await service.prepareSession(
+                {
+                    projectId: null,
+                    runtimeId: "opencode",
+                    sessionId: "session-opencode",
+                    title: "OpenCode 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            service.handleNativeSessionEvent("window-1", {
+                kind: "message-started",
+                message: {
+                    attachments: [],
+                    content: "",
+                    createdAt: "2026-06-20T00:00:01.000Z",
+                    id: "assistant-1",
+                    kind: "assistant",
+                    status: "streaming",
+                },
+                messageKind: "assistant",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-native-1",
+                sessionId: "session-opencode",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            });
+            service.handleNativeSessionEvent("window-1", {
+                content: "Hello",
+                delta: "Hello",
+                kind: "message-delta",
+                messageId: "assistant-1",
+                messageKind: "assistant",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-native-1",
+                sessionId: "session-opencode",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
+
+            const persistedSnapshots = saveSessionSnapshot.mock.calls.map(
+                ([snapshot]) => snapshot as AiSessionSnapshot,
+            );
+            expect(persistedSnapshots.at(-1)?.messages).toEqual([
+                expect.objectContaining({
+                    content: "Hello",
+                    id: "assistant-1",
+                    status: "streaming",
+                }),
+            ]);
+            expect(onSessionSnapshot).toHaveBeenCalledWith(
+                "window-1",
+                expect.objectContaining({ kind: "patch" }),
+            );
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("tracks native working tree edits after a turn for review", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-native-review-"),
+        );
+
+        try {
+            createGitRepository(tempDir);
+            const sourceDir = path.join(tempDir, "src");
+            fs.mkdirSync(sourceDir, { recursive: true });
+            fs.writeFileSync(
+                path.join(sourceDir, "app.ts"),
+                "export const value = 1;\n",
+                "utf8",
+            );
+            fs.writeFileSync(
+                path.join(sourceDir, "dirty.ts"),
+                "export const dirty = false;\n",
+                "utf8",
+            );
+            fs.writeFileSync(
+                path.join(sourceDir, "restored.ts"),
+                "export const restored = false;\n",
+                "utf8",
+            );
+            execGitSync(tempDir, ["add", "."]);
+            execGitSync(tempDir, ["commit", "-m", "initial"]);
+            fs.writeFileSync(
+                path.join(sourceDir, "dirty.ts"),
+                "export const dirty = true;\n",
+                "utf8",
+            );
+            fs.writeFileSync(
+                path.join(sourceDir, "restored.ts"),
+                "export const restored = true;\n",
+                "utf8",
+            );
+            fs.writeFileSync(
+                path.join(tempDir, "scratch.txt"),
+                "temporary local note\n",
+                "utf8",
+            );
+
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            const saveSessionSnapshot = vi.fn();
+            let promptCallCount = 0;
+            const serviceRef: { current: AiService | null } = {
+                current: null,
+            };
+            const nativeAi: NativeAiGateway = {
+                cancelSession: vi.fn(),
+                close: vi.fn(),
+                closeOwnedByWindow: vi.fn(),
+                closeSession: vi.fn(),
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-native-review",
+                            status: "idle",
+                            updatedAt: "2026-06-20T00:00:00.000Z",
+                        }),
+                ),
+                respondPermission: vi.fn(),
+                respondUserInput: vi.fn(),
+                sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(() => {
+                    promptCallCount += 1;
+                    if (promptCallCount > 1) {
+                        return Promise.reject(new Error("Session busy"));
+                    }
+                    if (!serviceRef.current) {
+                        throw new Error("The AI service was not initialized.");
+                    }
+                    serviceRef.current.handleNativeSessionEvent("window-1", {
+                        activeTurnStartedAt: null,
+                        kind: "status",
+                        lastError: null,
+                        origin: "live",
+                        parentSessionId: null,
+                        runtimeId: "opencode",
+                        runtimeSessionId: "runtime-native-review",
+                        sessionId: "session-opencode",
+                        status: "idle",
+                        updatedAt: "2026-06-20T00:00:01.000Z",
+                    });
+                    fs.writeFileSync(
+                        path.join(sourceDir, "app.ts"),
+                        "export const value = 2;\n",
+                        "utf8",
+                    );
+                    fs.writeFileSync(
+                        path.join(sourceDir, "restored.ts"),
+                        "export const restored = false;\n",
+                        "utf8",
+                    );
+                    fs.unlinkSync(path.join(tempDir, "scratch.txt"));
+                    return Promise.resolve({
+                        sessionId: "session-opencode",
+                        stopReason: "accepted",
+                    });
+                }),
+                setSessionConfigOption: vi.fn(),
+                setSessionMode: vi.fn(),
+                setSessionModel: vi.fn(),
+                shouldHandleRuntime: vi.fn(
+                    (runtimeId) => runtimeId === "opencode",
+                ),
+            };
+            const service = createService({
+                nativeAi,
+                persistence: {
+                    saveSessionSnapshot,
+                },
+                projectRootPath: tempDir,
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+            serviceRef.current = service;
+
+            await service.sendPrompt(
+                {
+                    additionalRoots: [],
+                    attachments: [],
+                    messageId: "user-message-1",
+                    projectId: "project-1",
+                    prompt: "Update the value.",
+                    runtimeId: "opencode",
+                    sessionId: "session-opencode",
+                    title: "OpenCode 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            await expect(
+                service.sendPrompt(
+                    {
+                        additionalRoots: [],
+                        attachments: [],
+                        messageId: "user-message-2",
+                        projectId: "project-1",
+                        prompt: "Try again immediately.",
+                        runtimeId: "opencode",
+                        sessionId: "session-opencode",
+                        title: "OpenCode 1",
+                        worktreeId: null,
+                    },
+                    "window-1",
+                ),
+            ).rejects.toThrow("Session busy");
+            service.handleNativeSessionEvent("window-1", {
+                activeTurnStartedAt: "2026-06-20T00:00:02.000Z",
+                kind: "status",
+                lastError: null,
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-native-review",
+                sessionId: "session-opencode",
+                status: "streaming",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
+            service.handleNativeSessionEvent("window-1", {
+                activeTurnStartedAt: null,
+                kind: "status",
+                lastError: null,
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-native-review",
+                sessionId: "session-opencode",
+                status: "idle",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
+
+            await waitForAssertion(() => {
+                const snapshots = saveSessionSnapshot.mock.calls.map(
+                    ([snapshot]) => snapshot as AiSessionSnapshot,
+                );
+                const trackedFiles = snapshots.at(-1)?.trackedFiles ?? [];
+                expect(
+                    trackedFiles.map((trackedFile) => trackedFile.path).sort(),
+                ).toEqual(["scratch.txt", "src/app.ts", "src/restored.ts"]);
+                expect(
+                    trackedFiles.find(
+                        (trackedFile) => trackedFile.path === "src/app.ts",
+                    ),
+                ).toMatchObject({
+                    kind: "update",
+                    newText: "export const value = 2;\n",
+                    oldText: "export const value = 1;\n",
+                    path: "src/app.ts",
+                    reviewState: "pending",
+                });
+                expect(
+                    trackedFiles.find(
+                        (trackedFile) =>
+                            trackedFile.path === "src/restored.ts",
+                    ),
+                ).toMatchObject({
+                    kind: "update",
+                    newText: "export const restored = false;\n",
+                    oldText: "export const restored = true;\n",
+                    path: "src/restored.ts",
+                    reviewState: "pending",
+                });
+                expect(
+                    trackedFiles.find(
+                        (trackedFile) => trackedFile.path === "scratch.txt",
+                    ),
+                ).toMatchObject({
+                    kind: "delete",
+                    newText: null,
+                    oldText: "temporary local note\n",
+                    path: "scratch.txt",
+                    reviewState: "pending",
+                });
+            });
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
 });
 
 function createService(overrides: {
     readonly aiWorker?: AiWorkerGateway;
+    readonly nativeAi?: NativeAiGateway;
     readonly onRuntimeStatus?: (status: AiRuntimeStatus) => void;
+    readonly onSessionSnapshot?: (
+        ownerWindowId: string,
+        update: AiSessionUpdate,
+    ) => void;
+    readonly persistence?: Partial<ConstructorParameters<typeof AiService>[0]["persistence"]>;
+    readonly projectRootPath?: string;
     readonly settingsService?: unknown;
 }): AiService {
+    const persistence = {
+        loadLatestRuntimeCatalog: vi.fn(() => null),
+        loadRuntimeSelectionPreferences: vi.fn(() => ({
+            configOptions: {},
+            modeId: null,
+            modelId: null,
+        })),
+        loadSessionSnapshot: vi.fn(() => null),
+        saveRuntimeModePreference: vi.fn(),
+        saveRuntimeModelPreference: vi.fn(),
+        saveRuntimeSelectionPreferenceOption: vi.fn(),
+        saveSessionSnapshot: vi.fn(),
+        ...overrides.persistence,
+    };
+
     return new AiService({
         aiWorker: overrides.aiWorker ?? null,
+        nativeAi: overrides.nativeAi ?? null,
         onRuntimeStatus: overrides.onRuntimeStatus ?? vi.fn(),
-        onSessionSnapshot: vi.fn(),
-        persistence: {
-            loadLatestRuntimeCatalog: vi.fn(() => null),
-            loadRuntimeSelectionPreferences: vi.fn(() => ({
-                configOptions: {},
-                modeId: null,
-                modelId: null,
-            })),
-            loadSessionSnapshot: vi.fn(() => null),
-            saveRuntimeModePreference: vi.fn(),
-            saveRuntimeModelPreference: vi.fn(),
-            saveRuntimeSelectionPreferenceOption: vi.fn(),
-            saveSessionSnapshot: vi.fn(),
-        } as never,
+        onSessionSnapshot: overrides.onSessionSnapshot ?? vi.fn(),
+        persistence: persistence as never,
         projectService: {
-            getProjectRootPath: vi.fn(() => process.cwd()),
+            getProjectRootPath: vi.fn(
+                () => overrides.projectRootPath ?? process.cwd(),
+            ),
             listProjectWorktrees: vi.fn(() => []),
         } as never,
         secretStore: {
@@ -381,6 +733,37 @@ function writeExecutable(dir: string, name: string): string {
     fs.writeFileSync(binaryPath, "#!/bin/sh\nexit 0\n", "utf8");
     fs.chmodSync(binaryPath, 0o755);
     return binaryPath;
+}
+
+function createGitRepository(dir: string): void {
+    execGitSync(dir, ["init"]);
+    execGitSync(dir, ["config", "user.email", "test@example.com"]);
+    execGitSync(dir, ["config", "user.name", "Test User"]);
+}
+
+function execGitSync(dir: string, args: readonly string[]): void {
+    execFileSync("git", args, {
+        cwd: dir,
+        stdio: "ignore",
+    });
+}
+
+async function waitForAssertion(
+    assertion: () => void,
+    timeoutMs = 1_000,
+): Promise<void> {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+        try {
+            assertion();
+            return;
+        } catch {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+    }
+
+    assertion();
 }
 
 function restoreEnv(name: string, value: string | undefined): void {
