@@ -1,7 +1,7 @@
 use comando_types::capabilities::{
     BACKEND_NAME, NativeBackendCapabilitiesOutput, NativeBackendHandshakeInput,
     NativeBackendHandshakeOutput, PROTOCOL_VERSION, RUST_VERSION, backend_capabilities,
-    bootstrap_capabilities, is_protocol_supported,
+    bootstrap_capabilities, negotiate_protocol_version,
 };
 use comando_types::commands::{
     BACKEND_CAPABILITIES, BACKEND_EMIT_TEST_EVENT, BACKEND_HANDSHAKE, BACKEND_PING,
@@ -87,11 +87,9 @@ fn handle_handshake(request: RpcRequest) -> CommandResult {
         }
     };
 
-    if !is_protocol_supported(input.protocol_version)
-        || !input
-            .supported_protocol_versions
-            .contains(&PROTOCOL_VERSION)
-    {
+    let Some(protocol_version) =
+        negotiate_protocol_version(input.protocol_version, &input.supported_protocol_versions)
+    else {
         return CommandResult {
             outputs: vec![error_response(
                 Some(request.id),
@@ -110,14 +108,14 @@ fn handle_handshake(request: RpcRequest) -> CommandResult {
             )],
             should_shutdown: false,
         };
-    }
+    };
 
     response_only(
         request.id,
         serde_json::to_value(NativeBackendHandshakeOutput {
             backend_name: BACKEND_NAME.to_string(),
             backend_version: env!("CARGO_PKG_VERSION").to_string(),
-            protocol_version: PROTOCOL_VERSION,
+            protocol_version,
             minimum_client_protocol_version: comando_types::MINIMUM_CLIENT_PROTOCOL_VERSION,
             capabilities: bootstrap_capabilities(),
         })

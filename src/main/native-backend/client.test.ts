@@ -105,6 +105,41 @@ describe("NativeBackendClient", () => {
         });
     });
 
+    it("rejects a backend that requires a newer client minimum", async () => {
+        const { child, client } = createClient();
+        const linePromise = readStdinLine(child);
+
+        const handshakePromise = client.handshake();
+        const request = JSON.parse(await linePromise);
+        child.stdout.write(
+            `${JSON.stringify({
+                type: "response",
+                id: request.id,
+                ok: true,
+                result: {
+                    backendName: "comando-native-backend",
+                    backendVersion: "0.1.0",
+                    protocolVersion: 1,
+                    minimumClientProtocolVersion: 2,
+                    capabilities: {
+                        domains: ["backend"],
+                        commands: [],
+                        events: [],
+                        features: [],
+                    },
+                },
+            })}\n`,
+        );
+
+        await expect(handshakePromise).rejects.toMatchObject({
+            code: "unsupported_protocol_version",
+            details: {
+                clientProtocolVersion: 1,
+                minimumClientProtocolVersion: 2,
+            },
+        });
+    });
+
     it("handles out-of-order responses by id", async () => {
         const { child, client } = createClient();
         const linesPromise = readStdinLines(child, 2);

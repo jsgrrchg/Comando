@@ -68,9 +68,11 @@ pub fn backend_capabilities() -> NativeCapabilitySet {
             "projects".to_string(),
             "fs".to_string(),
             "index".to_string(),
+            "search".to_string(),
             "git".to_string(),
             "terminal".to_string(),
             "settings".to_string(),
+            "secret".to_string(),
             "ai".to_string(),
             "review".to_string(),
             "workspace".to_string(),
@@ -104,6 +106,47 @@ pub fn default_request_meta() -> NativeRequestMeta {
     NativeRequestMeta::default()
 }
 
-pub fn is_protocol_supported(version: NativeProtocolVersion) -> bool {
-    version == PROTOCOL_VERSION
+pub fn negotiate_protocol_version(
+    client_protocol_version: NativeProtocolVersion,
+    client_supported_protocol_versions: &[NativeProtocolVersion],
+) -> Option<NativeProtocolVersion> {
+    if client_protocol_version < MINIMUM_CLIENT_PROTOCOL_VERSION {
+        return None;
+    }
+
+    if PROTOCOL_VERSION < MINIMUM_BACKEND_PROTOCOL_VERSION {
+        return None;
+    }
+
+    client_supported_protocol_versions
+        .contains(&PROTOCOL_VERSION)
+        .then_some(PROTOCOL_VERSION)
+}
+
+pub fn is_protocol_supported(
+    client_protocol_version: NativeProtocolVersion,
+    client_supported_protocol_versions: &[NativeProtocolVersion],
+) -> bool {
+    negotiate_protocol_version(client_protocol_version, client_supported_protocol_versions)
+        .is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negotiates_protocol_v1_when_client_supports_it() {
+        assert_eq!(negotiate_protocol_version(1, &[1]), Some(1));
+    }
+
+    #[test]
+    fn rejects_clients_without_a_common_protocol() {
+        assert_eq!(negotiate_protocol_version(99, &[99]), None);
+    }
+
+    #[test]
+    fn rejects_clients_below_backend_minimum() {
+        assert_eq!(negotiate_protocol_version(0, &[0, 1]), None);
+    }
 }

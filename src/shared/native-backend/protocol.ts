@@ -134,31 +134,45 @@ function parseNativeBackendResponse(
         if (!isRecord(value.error)) {
             throw new Error("Native backend error response is missing error.");
         }
+        const error = parseNativeError(value.error);
 
         return {
             type: "response",
             id,
             ok: false,
-            error: {
-                code:
-                    typeof value.error.code === "string"
-                        ? value.error.code
-                        : "internal_error",
-                message:
-                    typeof value.error.message === "string"
-                        ? value.error.message
-                        : "Native backend request failed.",
-                details: value.error.details ?? null,
-                retryable:
-                    typeof value.error.retryable === "boolean"
-                        ? value.error.retryable
-                        : false,
-            },
+            error,
             meta: parseOptionalResponseMeta(value.meta),
         };
     }
 
     throw new Error("Native backend response ok must be a boolean.");
+}
+
+function parseNativeError(
+    value: Record<string, unknown>,
+): NativeBackendErrorPayload {
+    if (typeof value.code !== "string") {
+        throw new Error("Native backend error code must be a string.");
+    }
+
+    if (typeof value.message !== "string") {
+        throw new Error("Native backend error message must be a string.");
+    }
+
+    if (!Object.hasOwn(value, "details")) {
+        throw new Error("Native backend error details is required.");
+    }
+
+    if (typeof value.retryable !== "boolean") {
+        throw new Error("Native backend error retryable must be a boolean.");
+    }
+
+    return {
+        code: value.code,
+        message: value.message,
+        details: value.details,
+        retryable: value.retryable,
+    };
 }
 
 function parseResponseId(value: unknown): NativeBackendRequestId | null {

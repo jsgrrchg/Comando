@@ -11,13 +11,13 @@ use crate::ids::{ProjectId, RequestId, WindowId, WorktreeId};
 #[serde(rename_all = "camelCase")]
 pub struct NativeRequestMeta {
     pub protocol_version: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub sent_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub window_id: Option<WindowId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub project_id: Option<ProjectId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub worktree_id: Option<WorktreeId>,
 }
 
@@ -37,7 +37,7 @@ impl Default for NativeRequestMeta {
 #[serde(rename_all = "camelCase")]
 pub struct NativeResponseMeta {
     pub protocol_version: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub handled_at: Option<String>,
 }
 
@@ -54,13 +54,13 @@ impl Default for NativeResponseMeta {
 #[serde(rename_all = "camelCase")]
 pub struct NativeEventMeta {
     pub protocol_version: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub emitted_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub project_id: Option<ProjectId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub worktree_id: Option<WorktreeId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub window_id: Option<WindowId>,
 }
 

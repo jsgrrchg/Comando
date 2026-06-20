@@ -12,9 +12,11 @@
       "projects",
       "fs",
       "index",
+      "search",
       "git",
       "terminal",
       "settings",
+      "secret",
       "ai",
       "review",
       "workspace"

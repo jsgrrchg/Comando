@@ -16,6 +16,7 @@ import {
     type NativeBackendOutput,
     type NativeBackendRequestId,
     type NativeCommandName,
+    isNativeProtocolCompatible,
     parseNativeBackendCapabilitiesOutput,
     parseNativeBackendHandshakeOutput,
     parseNativeBackendOutput,
@@ -118,13 +119,21 @@ export class NativeBackendClient {
             ...createNativeHandshakeInput(input),
         });
         const handshake = parseNativeBackendHandshakeOutput(result);
-        if (handshake.protocolVersion !== NATIVE_PROTOCOL_VERSION) {
+        if (
+            !isNativeProtocolCompatible({
+                backendProtocolVersion: handshake.protocolVersion,
+                minimumClientProtocolVersion:
+                    handshake.minimumClientProtocolVersion,
+            })
+        ) {
             throw new NativeBackendError({
                 code: "unsupported_protocol_version",
-                message: `Native backend protocol ${handshake.protocolVersion} is not supported by this client.`,
+                message: `Native backend protocol ${handshake.protocolVersion} is not compatible with this client.`,
                 details: {
                     backendProtocolVersion: handshake.protocolVersion,
                     clientProtocolVersion: NATIVE_PROTOCOL_VERSION,
+                    minimumClientProtocolVersion:
+                        handshake.minimumClientProtocolVersion,
                 },
                 retryable: false,
             });

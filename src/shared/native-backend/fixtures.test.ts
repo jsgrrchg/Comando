@@ -11,13 +11,14 @@ import {
     nativeGitInvalidationToIpc,
     nativeProjectSummaryToIpc,
     nativeTerminalDataEventToIpc,
+    nativeTerminalExitEventToIpc,
     parseNativeBackendCapabilitiesOutput,
     parseNativeBackendOutput,
 } from ".";
 import type { NativeAiRuntimeStatus } from "./ai";
 import type { NativeGitRepositorySnapshot } from "./git";
 import type { NativeProjectSummary, NativeProjectTreeEntry } from "./projects";
-import type { NativeTerminalDataEvent } from "./terminal";
+import type { NativeTerminalDataEvent, NativeTerminalExitEvent } from "./terminal";
 
 const fixtureRoot = path.join(process.cwd(), "fixtures", "native-backend");
 
@@ -52,6 +53,19 @@ describe("native backend fixtures", () => {
             type: "response",
         });
 
+        expect(() =>
+            parseNativeBackendOutput({
+                error: {
+                    code: "unknown_command",
+                    details: null,
+                    message: "Unknown command",
+                },
+                id: "req_missing",
+                ok: false,
+                type: "response",
+            }),
+        ).toThrow("retryable");
+
         expect(
             parseNativeBackendOutput(fixture("protocol/event.backend_test.json")),
         ).toMatchObject({
@@ -73,6 +87,8 @@ describe("native backend fixtures", () => {
         );
 
         expect(capabilities.protocolVersion).toBe(1);
+        expect(capabilities.capabilities.domains).toContain("search");
+        expect(capabilities.capabilities.domains).toContain("secret");
         expect(capabilities.capabilities.commands).toContain("backend_handshake");
         expect(capabilities.capabilities.events).toContain("ai://message-delta");
     });
@@ -175,6 +191,15 @@ describe("native backend fixtures", () => {
         expect(nativeTerminalDataEventToIpc(event)).toEqual({
             data: "ready\n",
             sessionId: "terminal_1",
+        });
+
+        const exitEvent = fixture<NativeTerminalExitEvent>(
+            "terminal/terminal.exit_event.json",
+        );
+        expect(nativeTerminalExitEventToIpc(exitEvent)).toEqual({
+            exitCode: 0,
+            sessionId: "terminal_1",
+            signalCode: null,
         });
     });
 });

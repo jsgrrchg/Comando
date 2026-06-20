@@ -13,7 +13,10 @@ use comando_types::git::{NativeGitFileDiff, NativeGitRepositorySnapshot};
 use comando_types::persistence::NativeWorkspaceSnapshotRef;
 use comando_types::projects::{NativeProjectSummary, NativeProjectTreeEntry};
 use comando_types::protocol::{NativeRpcOutput, NativeRpcRequest};
-use comando_types::terminal::{NativeTerminalDataEvent, NativeTerminalSession};
+use comando_types::terminal::{
+    NativeTerminalDataEvent, NativeTerminalExitEvent, NativeTerminalSession,
+};
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -30,6 +33,19 @@ fn fixture<T: DeserializeOwned>(relative_path: &str) -> T {
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
     serde_json::from_str(&text)
         .unwrap_or_else(|error| panic!("failed to deserialize {}: {error}", path.display()))
+}
+
+fn assert_typed_roundtrip<T>(relative_path: &str)
+where
+    T: DeserializeOwned + Serialize,
+{
+    let value: Value = fixture(relative_path);
+    let dto: T = serde_json::from_value(value.clone())
+        .unwrap_or_else(|error| panic!("failed to parse {relative_path}: {error}"));
+    let serialized = serde_json::to_value(dto)
+        .unwrap_or_else(|error| panic!("failed to serialize {relative_path}: {error}"));
+
+    assert_eq!(serialized, value, "{relative_path} roundtrip drifted");
 }
 
 #[test]
@@ -79,6 +95,18 @@ fn capability_and_registry_fixtures_match_rust_registries() {
     assert_eq!(events, rust_events);
     assert_eq!(capabilities.capabilities.commands, commands);
     assert_eq!(capabilities.capabilities.events, events);
+    assert!(
+        capabilities
+            .capabilities
+            .domains
+            .contains(&"search".to_string())
+    );
+    assert!(
+        capabilities
+            .capabilities
+            .domains
+            .contains(&"secret".to_string())
+    );
 }
 
 #[test]
@@ -126,6 +154,8 @@ fn local_domain_fixtures_deserialize() {
     assert_eq!(terminal.cols, 120);
     let terminal_event: NativeTerminalDataEvent = fixture("terminal/terminal.data_event.json");
     assert_eq!(terminal_event.data, "ready\n");
+    let terminal_exit: NativeTerminalExitEvent = fixture("terminal/terminal.exit_event.json");
+    assert_eq!(terminal_exit.exit_code, Some(0));
 
     let workspace_ref: NativeWorkspaceSnapshotRef =
         fixture("persistence/workspace.snapshot_ref.json");
@@ -134,15 +164,20 @@ fn local_domain_fixtures_deserialize() {
 
 #[test]
 fn key_dtos_roundtrip_without_losing_required_fields() {
-    for relative_path in [
-        "projects/project.summary.json",
-        "fs/file.read_result.text.json",
-        "git/repository.snapshot.json",
-        "terminal/terminal.session.json",
-        "persistence/workspace.snapshot_ref.json",
-    ] {
-        let value: Value = fixture(relative_path);
-        let serialized = serde_json::to_value(&value).expect("fixture should serialize");
-        assert_eq!(serialized, value);
-    }
+    assert_typed_roundtrip::<NativeRpcRequest>("protocol/request.backend_ping.json");
+    assert_typed_roundtrip::<NativeRpcOutput>("protocol/response.backend_ping.json");
+    assert_typed_roundtrip::<NativeRpcOutput>("protocol/response.error.unknown_command.json");
+    assert_typed_roundtrip::<NativeRpcOutput>("protocol/event.backend_test.json");
+    assert_typed_roundtrip::<NativeBackendCapabilitiesOutput>("protocol/capabilities.v1.json");
+    assert_typed_roundtrip::<NativeAiSessionSummary>("ai/session.summary.json");
+    assert_typed_roundtrip::<NativeProjectSummary>("projects/project.summary.json");
+    assert_typed_roundtrip::<NativeProjectTreeEntry>("projects/project.tree_entry.json");
+    assert_typed_roundtrip::<NativeFsReadFileResult>("fs/file.read_result.text.json");
+    assert_typed_roundtrip::<NativeFsReadFileResult>("fs/file.read_result.binary.json");
+    assert_typed_roundtrip::<NativeGitRepositorySnapshot>("git/repository.snapshot.json");
+    assert_typed_roundtrip::<NativeGitFileDiff>("git/diff.file.json");
+    assert_typed_roundtrip::<NativeTerminalSession>("terminal/terminal.session.json");
+    assert_typed_roundtrip::<NativeTerminalDataEvent>("terminal/terminal.data_event.json");
+    assert_typed_roundtrip::<NativeTerminalExitEvent>("terminal/terminal.exit_event.json");
+    assert_typed_roundtrip::<NativeWorkspaceSnapshotRef>("persistence/workspace.snapshot_ref.json");
 }

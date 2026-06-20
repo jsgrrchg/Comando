@@ -115,7 +115,7 @@ Bootstrap commands implemented by the sidecar:
   "minimumClientProtocolVersion": 1,
   "minimumBackendProtocolVersion": 1,
   "capabilities": {
-    "domains": ["backend"],
+    "domains": ["backend", "persistence", "projects", "fs", "index", "search", "git", "terminal", "settings", "secret", "ai", "review", "workspace"],
     "commands": ["backend_ping"],
     "events": ["backend://test-event"],
     "features": ["bootstrap", "versioned-protocol"]

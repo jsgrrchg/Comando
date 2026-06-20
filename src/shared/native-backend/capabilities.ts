@@ -94,6 +94,25 @@ export function parseNativeBackendCapabilitiesOutput(
     };
 }
 
+export function isNativeProtocolCompatible(input: {
+    readonly backendProtocolVersion: NativeProtocolVersion;
+    readonly minimumClientProtocolVersion: NativeProtocolVersion;
+    readonly clientProtocolVersion?: NativeProtocolVersion;
+    readonly minimumBackendProtocolVersion?: NativeProtocolVersion;
+}): boolean {
+    const clientProtocolVersion =
+        input.clientProtocolVersion ?? NATIVE_PROTOCOL_VERSION;
+    const minimumBackendProtocolVersion =
+        input.minimumBackendProtocolVersion ??
+        NATIVE_MINIMUM_BACKEND_PROTOCOL_VERSION;
+
+    return (
+        input.backendProtocolVersion >= minimumBackendProtocolVersion &&
+        clientProtocolVersion >= input.minimumClientProtocolVersion &&
+        input.backendProtocolVersion === NATIVE_PROTOCOL_VERSION
+    );
+}
+
 function parseStringArray(value: unknown, fieldName: string): readonly string[] {
     if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
         throw new Error(`Native capabilities ${fieldName} must be string[].`);
