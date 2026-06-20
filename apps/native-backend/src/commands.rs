@@ -5,10 +5,11 @@ use std::thread;
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
 use comando_git::{
     GitBranchListScope, GitError, GitFileDiffRequest, GitRunner, checkout_branch, commit,
-    create_branch, create_worktree, delete_local_branch, discard_paths, get_commit_detail,
-    get_diff_stats, get_file_diff, get_original_file, get_repository_snapshot, get_status,
-    init_repository, list_branches, list_history, list_remotes, list_worktree_diff, list_worktrees,
-    remove_worktree, resolve_repository, stage_paths, unstage_paths,
+    create_branch, create_worktree, delete_local_branch, delete_remote_branch, discard_paths,
+    fetch, get_commit_detail, get_diff_stats, get_file_diff, get_original_file,
+    get_repository_snapshot, get_status, init_repository, list_branches, list_history,
+    list_remotes, list_worktree_diff, list_worktrees, pull, push, remove_worktree,
+    resolve_repository, stage_paths, unstage_paths,
 };
 use comando_index::{
     IndexBuildOptions, IndexEvent, IndexPolicy, IndexService, IndexUpdate, IndexUpdateKind,
@@ -158,9 +159,10 @@ impl NativeBackend {
             "git_delete_local_branch" => self.git_delete_local_branch(request),
             "git_create_worktree" => self.git_create_worktree(request),
             "git_remove_worktree" => self.git_remove_worktree(request),
-            "git_fetch" | "git_pull" | "git_push" | "git_delete_remote_branch" => {
-                disabled_git_network_operation(request)
-            }
+            "git_fetch" => self.git_fetch(request),
+            "git_pull" => self.git_pull(request),
+            "git_push" => self.git_push(request),
+            "git_delete_remote_branch" => self.git_delete_remote_branch(request),
             #[cfg(test)]
             "backend_queue_test_fs_event" => self.queue_test_fs_event(request),
             command => CommandResult {
@@ -1384,6 +1386,95 @@ impl NativeBackend {
         )
     }
 
+    fn git_fetch(&mut self, request: RpcRequest) -> CommandResult {
+        if !native_git_network_enabled() {
+            return disabled_git_network_operation(request);
+        }
+        let input = match parse_args::<native_git::NativeGitFetchInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        git_response(
+            request.id,
+            fetch(
+                &self.git_runner,
+                &input.scope,
+                input.all.unwrap_or(false),
+                input.prune.unwrap_or(false),
+                input.remote_name.as_deref(),
+            ),
+            "git fetch result serializes",
+        )
+    }
+
+    fn git_pull(&mut self, request: RpcRequest) -> CommandResult {
+        if !native_git_network_enabled() {
+            return disabled_git_network_operation(request);
+        }
+        let input = match parse_args::<native_git::NativeGitPullInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        git_response(
+            request.id,
+            pull(
+                &self.git_runner,
+                &input.scope,
+                input.rebase.unwrap_or(false),
+                input.remote_name.as_deref(),
+                input.remote_ref.as_deref(),
+            ),
+            "git pull result serializes",
+        )
+    }
+
+    fn git_push(&mut self, request: RpcRequest) -> CommandResult {
+        if !native_git_network_enabled() {
+            return disabled_git_network_operation(request);
+        }
+        let input = match parse_args::<native_git::NativeGitPushInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        git_response(
+            request.id,
+            push(
+                &self.git_runner,
+                &input.scope,
+                input.force.unwrap_or(false),
+                input.force_with_lease.unwrap_or(false),
+                input.remote_name.as_deref(),
+                input.remote_ref.as_deref(),
+                input.set_upstream.unwrap_or(false),
+            ),
+            "git push result serializes",
+        )
+    }
+
+    fn git_delete_remote_branch(&mut self, request: RpcRequest) -> CommandResult {
+        if !native_git_network_enabled() {
+            return disabled_git_network_operation(request);
+        }
+        let input = match parse_args::<native_git::NativeGitDeleteRemoteBranchInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        git_response(
+            request.id,
+            delete_remote_branch(
+                &self.git_runner,
+                &input.scope,
+                &input.remote_name,
+                &input.remote_ref,
+            ),
+            "git delete remote branch result serializes",
+        )
+    }
+
     fn git_paths_operation(
         &mut self,
         request: RpcRequest,
@@ -1547,6 +1638,11 @@ fn disabled_git_network_operation(request: RpcRequest) -> CommandResult {
 
 fn native_git_mutations_enabled() -> bool {
     env::var("COMANDO_NATIVE_GIT_MUTATIONS").ok().as_deref() == Some("1")
+}
+
+fn native_git_network_enabled() -> bool {
+    native_git_mutations_enabled()
+        && env::var("COMANDO_NATIVE_GIT_NETWORK").ok().as_deref() == Some("1")
 }
 
 fn parse_args<T: DeserializeOwned>(request: &RpcRequest) -> Result<T, NativeError> {

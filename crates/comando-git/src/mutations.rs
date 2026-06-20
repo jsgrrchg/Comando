@@ -240,6 +240,107 @@ pub fn remove_worktree(
     operation_result(runner, scope, None, None)
 }
 
+pub fn fetch(
+    runner: &GitRunner,
+    scope: &NativeGitRepositoryScope,
+    all: bool,
+    prune: bool,
+    remote_name: Option<&str>,
+) -> GitResult<NativeGitOperationResult> {
+    let mut args = vec!["fetch".to_string()];
+    if prune {
+        args.push("--prune".to_string());
+    }
+
+    if all {
+        args.push("--all".to_string());
+    } else if let Some(remote_name) = remote_name {
+        args.push(remote_name.to_string());
+    }
+
+    runner.run(&scope.root_path, &args, network_options())?;
+    operation_result(runner, scope, None, None)
+}
+
+pub fn pull(
+    runner: &GitRunner,
+    scope: &NativeGitRepositoryScope,
+    rebase: bool,
+    remote_name: Option<&str>,
+    remote_ref: Option<&str>,
+) -> GitResult<NativeGitOperationResult> {
+    let mut args = vec!["pull".to_string()];
+    if rebase {
+        args.push("--rebase".to_string());
+    }
+    if let Some(remote_name) = remote_name {
+        args.push(remote_name.to_string());
+    }
+    if let Some(remote_ref) = remote_ref {
+        args.push(remote_ref.to_string());
+    }
+
+    runner.run(&scope.root_path, &args, network_options())?;
+    operation_result(runner, scope, None, None)
+}
+
+pub fn push(
+    runner: &GitRunner,
+    scope: &NativeGitRepositoryScope,
+    force: bool,
+    force_with_lease: bool,
+    remote_name: Option<&str>,
+    remote_ref: Option<&str>,
+    set_upstream: bool,
+) -> GitResult<NativeGitOperationResult> {
+    let mut args = vec!["push".to_string()];
+    if force_with_lease {
+        args.push("--force-with-lease".to_string());
+    } else if force {
+        args.push("--force".to_string());
+    }
+    if set_upstream {
+        args.push("--set-upstream".to_string());
+    }
+    if let Some(remote_name) = remote_name {
+        args.push(remote_name.to_string());
+    }
+    if let Some(remote_ref) = remote_ref {
+        args.push(remote_ref.to_string());
+    }
+
+    runner.run(&scope.root_path, &args, network_options())?;
+    operation_result(runner, scope, None, None)
+}
+
+pub fn delete_remote_branch(
+    runner: &GitRunner,
+    scope: &NativeGitRepositoryScope,
+    remote_name: &str,
+    remote_ref: &str,
+) -> GitResult<NativeGitOperationResult> {
+    runner.run(
+        &scope.root_path,
+        &[
+            "push".to_string(),
+            remote_name.to_string(),
+            "--delete".to_string(),
+            remote_ref.to_string(),
+        ],
+        network_options(),
+    )?;
+    runner.run(
+        &scope.root_path,
+        &[
+            "fetch".to_string(),
+            remote_name.to_string(),
+            "--prune".to_string(),
+        ],
+        network_options(),
+    )?;
+    operation_result(runner, scope, None, None)
+}
+
 fn run_path_mutation(
     runner: &GitRunner,
     scope: &NativeGitRepositoryScope,
@@ -402,6 +503,13 @@ fn mutation_options() -> GitRunOptions {
     }
 }
 
+fn network_options() -> GitRunOptions {
+    GitRunOptions {
+        timeout: MUTATION_TIMEOUT,
+        ..GitRunOptions::network()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -416,7 +524,8 @@ mod tests {
 
     use super::{
         checkout_branch, commit, create_branch, create_worktree, delete_local_branch,
-        discard_paths, init_repository, remove_worktree, stage_paths, unstage_paths,
+        delete_remote_branch, discard_paths, fetch, init_repository, pull, push, remove_worktree,
+        stage_paths, unstage_paths,
     };
 
     #[test]
@@ -519,6 +628,116 @@ mod tests {
     }
 
     #[test]
+    fn pushes_fetches_and_deletes_remote_branches_against_local_remotes() {
+        let temp = initialized_repo();
+        let remote = TempDir::new().expect("remote temp");
+        run_git_fixture(remote.path(), &["init", "--bare"]);
+        run_git_fixture(
+            temp.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.path().to_str().expect("utf8 remote"),
+            ],
+        );
+        let scope = scope(temp.path());
+
+        push(
+            &GitRunner::new(),
+            &scope,
+            false,
+            false,
+            Some("origin"),
+            Some("main"),
+            true,
+        )
+        .expect("push main");
+        create_branch(&GitRunner::new(), &scope, "feature/remote", Some("main"))
+            .expect("create branch");
+        checkout_branch(
+            &GitRunner::new(),
+            &scope,
+            "feature/remote",
+            false,
+            None,
+            None,
+        )
+        .expect("checkout feature");
+        push(
+            &GitRunner::new(),
+            &scope,
+            false,
+            false,
+            Some("origin"),
+            Some("feature/remote"),
+            true,
+        )
+        .expect("push feature");
+
+        fetch(&GitRunner::new(), &scope, false, true, Some("origin")).expect("fetch");
+        delete_remote_branch(&GitRunner::new(), &scope, "origin", "feature/remote")
+            .expect("delete remote branch");
+
+        assert!(!ls_remote_heads(&temp, "feature/remote").contains("feature/remote"));
+    }
+
+    #[test]
+    fn pulls_from_local_remotes() {
+        let temp = initialized_repo();
+        let remote = TempDir::new().expect("remote temp");
+        let clone = TempDir::new().expect("clone temp");
+        run_git_fixture(remote.path(), &["init", "--bare"]);
+        run_git_fixture(
+            temp.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.path().to_str().expect("utf8 remote"),
+            ],
+        );
+        let scope = scope(temp.path());
+        push(
+            &GitRunner::new(),
+            &scope,
+            false,
+            false,
+            Some("origin"),
+            Some("main"),
+            true,
+        )
+        .expect("push main");
+        run_git_fixture(
+            clone.path(),
+            &["clone", remote.path().to_str().expect("utf8 remote"), "."],
+        );
+        run_git_fixture(clone.path(), &["config", "user.name", "Other User"]);
+        run_git_fixture(
+            clone.path(),
+            &["config", "user.email", "other@example.invalid"],
+        );
+        fs::write(clone.path().join("remote.txt"), "remote\n").expect("remote file");
+        run_git_fixture(clone.path(), &["add", "remote.txt"]);
+        run_git_fixture(clone.path(), &["commit", "-m", "remote update"]);
+        run_git_fixture(clone.path(), &["push", "origin", "main"]);
+
+        pull(
+            &GitRunner::new(),
+            &scope,
+            false,
+            Some("origin"),
+            Some("main"),
+        )
+        .expect("pull");
+
+        assert_eq!(
+            fs::read_to_string(temp.path().join("remote.txt")).expect("remote file"),
+            "remote\n"
+        );
+    }
+
+    #[test]
     fn initializes_plain_directories() {
         let temp = TempDir::new().expect("temp");
         let scope = scope(temp.path());
@@ -555,6 +774,10 @@ mod tests {
 
     fn branches(temp: &TempDir) -> String {
         output(temp.path(), &["branch", "--format=%(refname:short)"])
+    }
+
+    fn ls_remote_heads(temp: &TempDir, branch: &str) -> String {
+        output(temp.path(), &["ls-remote", "--heads", "origin", branch])
     }
 
     fn output(root: &Path, args: &[&str]) -> String {

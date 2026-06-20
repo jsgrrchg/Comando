@@ -24,8 +24,9 @@ pub use error::{GitError, GitResult};
 pub use history::{get_commit_detail, list_history};
 pub use invalidation::{GitInvalidationCoalescer, GitInvalidationReason};
 pub use mutations::{
-    checkout_branch, commit, create_branch, create_worktree, delete_local_branch, discard_paths,
-    init_repository, remove_worktree, stage_paths, unstage_paths,
+    checkout_branch, commit, create_branch, create_worktree, delete_local_branch,
+    delete_remote_branch, discard_paths, fetch, init_repository, pull, push, remove_worktree,
+    stage_paths, unstage_paths,
 };
 pub use original_file::{GitFileTextReference, get_file_text, get_original_file};
 pub use remotes::list_remotes;
