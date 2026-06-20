@@ -4,6 +4,7 @@ import path from "node:path";
 export const NATIVE_BACKEND_ENABLED_ENV = "COMANDO_NATIVE_BACKEND";
 export const NATIVE_BACKEND_PATH_ENV = "COMANDO_NATIVE_BACKEND_PATH";
 export const NATIVE_BACKEND_STRICT_ENV = "COMANDO_NATIVE_BACKEND_STRICT";
+const NATIVE_TERMINAL_ENABLED_ENV = "COMANDO_NATIVE_TERMINAL";
 
 export type NativeBackendPathSource =
     | "override"
@@ -33,7 +34,10 @@ const BASE_EXECUTABLE_NAME = "comando-native-backend";
 export function isNativeBackendEnabled(
     env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-    return env[NATIVE_BACKEND_ENABLED_ENV] === "1";
+    return (
+        env[NATIVE_BACKEND_ENABLED_ENV] === "1" ||
+        env[NATIVE_TERMINAL_ENABLED_ENV] === "1"
+    );
 }
 
 export function isNativeBackendStrict(

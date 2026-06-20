@@ -189,7 +189,7 @@ import {
     broadcastSettingsUpdated,
 } from "@main/settings/window-zoom";
 import { openSettingsWindow } from "@main/settings/window";
-import type { TerminalService } from "@main/terminals/service";
+import type { TerminalGateway } from "@main/terminals/service";
 import {
     checkForAppUpdates,
     getAppUpdateState,
@@ -218,7 +218,7 @@ interface RegisterIpcHandlersOptions {
     readonly persistenceService: PersistenceGateway;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsGateway;
-    readonly terminalService: TerminalService;
+    readonly terminalService: TerminalGateway;
     readonly workspaceService: WorkspaceGateway;
 }
 
