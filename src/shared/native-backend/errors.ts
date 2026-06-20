@@ -30,10 +30,12 @@ export type NativeErrorCode =
     | "ai_runtime_exited"
     | "internal_error";
 
+type UnknownNativeErrorCode = string & { readonly __nativeErrorCode?: never };
+
 export type NativeError = {
-    readonly code: NativeErrorCode | string;
+    readonly code: NativeErrorCode | UnknownNativeErrorCode;
     readonly message: string;
-    readonly details: unknown | null;
+    readonly details: unknown;
     readonly retryable: boolean;
 };
 

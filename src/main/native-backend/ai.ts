@@ -428,9 +428,7 @@ function parseNativeAiRuntimeIds(
         return DEFAULT_NATIVE_AI_RUNTIME_IDS;
     }
 
-    return new Set(
-        normalized.filter(isNativeAiRuntimeId),
-    ) as ReadonlySet<AiRuntimeId>;
+    return new Set(normalized.filter(isNativeAiRuntimeId));
 }
 
 function nativeSummaryToSnapshot(
