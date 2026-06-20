@@ -3,6 +3,7 @@ pub mod diff;
 pub mod env;
 pub mod error;
 pub mod history;
+pub mod invalidation;
 pub mod original_file;
 pub mod remotes;
 pub mod repository;
@@ -20,6 +21,7 @@ pub use diff::{GitFileDiffRequest, get_diff_stats, get_file_diff, parse_unified_
 pub use env::GitEnvironment;
 pub use error::{GitError, GitResult};
 pub use history::{get_commit_detail, list_history};
+pub use invalidation::{GitInvalidationCoalescer, GitInvalidationReason};
 pub use original_file::{GitFileTextReference, get_file_text, get_original_file};
 pub use remotes::list_remotes;
 pub use repository::{GitRepositoryContext, resolve_repository};
