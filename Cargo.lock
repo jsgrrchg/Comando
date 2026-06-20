@@ -62,10 +62,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "comando-index"
+version = "0.1.0"
+dependencies = [
+ "comando-fs",
+ "comando-types",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "time",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "comando-native-backend"
 version = "0.1.0"
 dependencies = [
  "comando-fs",
+ "comando-index",
  "comando-persistence",
  "comando-projects",
  "comando-types",

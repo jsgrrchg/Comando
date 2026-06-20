@@ -146,6 +146,7 @@ export interface ProjectRuntimeSearchInput extends ProjectRuntimeScopeInput {
     readonly includeAncestorDirectories?: boolean;
     readonly limit?: number;
     readonly query: string;
+    readonly searchContext?: string;
 }
 
 export type ProjectRuntimeListEntriesInput = ProjectRuntimeScopeInput;

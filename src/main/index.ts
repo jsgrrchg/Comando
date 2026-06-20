@@ -57,6 +57,7 @@ import {
     normalizeNativePersistenceMode,
 } from "./native-backend/persistence";
 import { NativeFsGateway } from "./native-backend/fs";
+import { NativeSearchGateway } from "./native-backend/index-search";
 import {
     createNativeProjectRegistryStore,
     resolveNativeProjectRegistryMode,
@@ -167,6 +168,10 @@ if (!hasSingleInstanceLock) {
                 nativeFs:
                     nativePersistenceReady && nativeBackendClient
                         ? new NativeFsGateway(nativeBackendClient)
+                        : null,
+                nativeSearch:
+                    nativePersistenceReady && nativeBackendClient
+                        ? new NativeSearchGateway(nativeBackendClient)
                         : null,
                 onProjectTreeInvalidated: (payload) => {
                     broadcastProjectTreeInvalidation(payload);

@@ -13,6 +13,13 @@ import {
     NATIVE_FS_MODE_ENV,
     NATIVE_PROJECT_TREE_ENABLED_ENV,
 } from "@main/native-backend/fs";
+import {
+    NativeSearchGateway,
+    NATIVE_INDEX_ENABLED_ENV,
+    NATIVE_SEARCH_ENABLED_ENV,
+    NATIVE_SEARCH_FALLBACK_ENV,
+    NATIVE_SEARCH_MODE_ENV,
+} from "@main/native-backend/index-search";
 import type { NativeBackendRequester } from "@main/native-backend/persistence";
 import {
     applyMigrations,
@@ -897,6 +904,198 @@ describe("ProjectService", () => {
         });
     });
 
+    it("routes project list and search through native index in read mode", async () => {
+        const connection = createTestConnection();
+        const requestMock = vi.fn(async (command: string) => {
+            if (command === "project_list_entries") {
+                return {
+                    entries: [
+                        nativeTreeEntry({
+                            hasChildren: false,
+                            kind: "file",
+                            name: "native.ts",
+                            relativePath: "src/native.ts",
+                        }),
+                    ],
+                    truncated: false,
+                };
+            }
+
+            if (command === "project_search_entries") {
+                return {
+                    entries: [nativeIndexedEntry("src/native.ts")],
+                    generation: 1,
+                    matches: [
+                        {
+                            entry: nativeIndexedEntry("src/native.ts"),
+                            score: 400,
+                        },
+                    ],
+                    operationId: "operation_1",
+                    stats: nativeIndexStats(),
+                    status: "ready",
+                };
+            }
+
+            throw new Error(`Unexpected command ${command}`);
+        });
+        const projectService = createProjectService(connection, undefined, {
+            env: {
+                [NATIVE_INDEX_ENABLED_ENV]: "1",
+                [NATIVE_SEARCH_ENABLED_ENV]: "1",
+                [NATIVE_SEARCH_MODE_ENV]: "read",
+            },
+            nativeSearch: searchGatewayWith(requestMock),
+        });
+        const projectRoot = createTempProject(tempDirs, "native-search-read");
+        fs.mkdirSync(path.join(projectRoot, "src"), { recursive: true });
+        fs.writeFileSync(path.join(projectRoot, "src/native.ts"), "legacy\n");
+        const [project] = (
+            await projectService.addProjectPaths([projectRoot])
+        ).projects;
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+
+        await expect(
+            projectService.listProjectEntries({
+                projectId: project.id,
+                worktreeId: null,
+            }),
+        ).resolves.toEqual([
+            expect.objectContaining({ relativePath: "src/native.ts" }),
+        ]);
+        await expect(
+            projectService.searchProjectEntries({
+                limit: 20,
+                projectId: project.id,
+                query: "native",
+                worktreeId: null,
+            }),
+        ).resolves.toEqual([
+            expect.objectContaining({ relativePath: "src/native.ts" }),
+        ]);
+        expect(requestMock).toHaveBeenCalledWith("project_list_entries", {
+            projectId: project.id,
+            worktreeId: `${project.id}:primary`,
+        });
+        expect(requestMock).toHaveBeenCalledWith(
+            "project_search_entries",
+            expect.objectContaining({
+                projectId: project.id,
+                query: "native",
+                worktreeId: `${project.id}:primary`,
+            }),
+        );
+    });
+
+    it("falls back from native search only when explicitly enabled", async () => {
+        const connection = createTestConnection();
+        const projectRoot = createTempProject(tempDirs, "native-search-fallback");
+        fs.writeFileSync(path.join(projectRoot, "fallback.ts"), "fallback\n");
+        const failingSearch = searchGatewayWith(
+            vi.fn(async () => {
+                throw new Error("native unavailable");
+            }),
+        );
+        const strictService = createProjectService(connection, undefined, {
+            env: {
+                [NATIVE_INDEX_ENABLED_ENV]: "1",
+                [NATIVE_SEARCH_ENABLED_ENV]: "1",
+                [NATIVE_SEARCH_MODE_ENV]: "read",
+            },
+            nativeSearch: failingSearch,
+        });
+        const [project] = (
+            await strictService.addProjectPaths([projectRoot])
+        ).projects;
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+
+        await expect(
+            strictService.listProjectEntries({
+                projectId: project.id,
+                worktreeId: null,
+            }),
+        ).rejects.toThrow("native unavailable");
+
+        const fallbackService = createProjectService(connection, undefined, {
+            env: {
+                [NATIVE_INDEX_ENABLED_ENV]: "1",
+                [NATIVE_SEARCH_ENABLED_ENV]: "1",
+                [NATIVE_SEARCH_FALLBACK_ENV]: "1",
+                [NATIVE_SEARCH_MODE_ENV]: "read",
+            },
+            nativeSearch: failingSearch,
+        });
+
+        await expect(
+            fallbackService.listProjectEntries({
+                projectId: project.id,
+                worktreeId: null,
+            }),
+        ).resolves.toEqual([
+            expect.objectContaining({ relativePath: "fallback.ts" }),
+        ]);
+    });
+
+    it("runs native search shadow parity without changing visible results", async () => {
+        const connection = createTestConnection();
+        const requestMock = vi.fn(async (command: string) => {
+            if (command === "project_search_entries") {
+                return {
+                    entries: [nativeIndexedEntry("shadow.ts")],
+                    generation: 1,
+                    matches: [
+                        {
+                            entry: nativeIndexedEntry("shadow.ts"),
+                            score: 400,
+                        },
+                    ],
+                    operationId: "operation_1",
+                    stats: nativeIndexStats(),
+                    status: "ready",
+                };
+            }
+
+            throw new Error(`Unexpected command ${command}`);
+        });
+        const projectService = createProjectService(connection, undefined, {
+            env: {
+                [NATIVE_INDEX_ENABLED_ENV]: "1",
+                [NATIVE_SEARCH_ENABLED_ENV]: "1",
+                [NATIVE_SEARCH_MODE_ENV]: "shadow",
+            },
+            nativeSearch: searchGatewayWith(requestMock),
+        });
+        const projectRoot = createTempProject(tempDirs, "native-search-shadow");
+        fs.writeFileSync(path.join(projectRoot, "shadow.ts"), "shadow\n");
+        const [project] = (
+            await projectService.addProjectPaths([projectRoot])
+        ).projects;
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+
+        await expect(
+            projectService.searchProjectEntries({
+                limit: 20,
+                projectId: project.id,
+                query: "shadow",
+                worktreeId: null,
+            }),
+        ).resolves.toEqual([
+            expect.objectContaining({ relativePath: "shadow.ts" }),
+        ]);
+        await vi.waitFor(() => {
+            expect(requestMock).toHaveBeenCalledWith(
+                "project_search_entries",
+                expect.objectContaining({ query: "shadow" }),
+            );
+        });
+    });
+
     it("routes writes and mutations through native filesystem only in write mode", async () => {
         const connection = createTestConnection();
         const requestMock = vi.fn(async (command: string, args: unknown) => {
@@ -1004,7 +1203,7 @@ function createProjectService(
     >[0]["onProjectTreeInvalidated"] = () => {},
     options: Pick<
         ConstructorParameters<typeof ProjectService>[0],
-        "env" | "nativeFs"
+        "env" | "nativeFs" | "nativeSearch"
     > = {},
 ) {
     return new ProjectService({
@@ -1020,6 +1219,14 @@ function gatewayWith(
     const request: NativeBackendRequester["request"] = async (...args) =>
         (await requestMock(...args)) as never;
     return new NativeFsGateway({ request });
+}
+
+function searchGatewayWith(
+    requestMock: (command: string, args?: Record<string, unknown>) => Promise<unknown>,
+): NativeSearchGateway {
+    const request: NativeBackendRequester["request"] = async (...args) =>
+        (await requestMock(...args)) as never;
+    return new NativeSearchGateway({ request });
 }
 
 function nativeTreeEntry(overrides: {
@@ -1040,6 +1247,30 @@ function nativeTreeEntry(overrides: {
         projectId: "project-1",
         relativePath: overrides.relativePath,
         worktreeId: "project-1:primary",
+    };
+}
+
+function nativeIndexedEntry(relativePath: string) {
+    return {
+        ...nativeTreeEntry({
+            hasChildren: false,
+            kind: "file",
+            name: relativePath.split("/").at(-1) ?? relativePath,
+            relativePath,
+        }),
+        policyState: "indexed",
+    };
+}
+
+function nativeIndexStats() {
+    return {
+        durationMs: 1,
+        entryCount: 1,
+        indexedDirectoryCount: 0,
+        indexedFileCount: 1,
+        reason: null,
+        skippedCount: 0,
+        truncated: false,
     };
 }
 

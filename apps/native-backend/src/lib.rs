@@ -8,7 +8,7 @@ pub mod logging;
 pub mod protocol;
 
 use commands::NativeBackend;
-use protocol::{error_response, parse_request_line, JsonlWriter, RpcOutput};
+use protocol::{JsonlWriter, RpcOutput, error_response, parse_request_line};
 
 enum InputMessage {
     Line(io::Result<String>),
@@ -23,6 +23,7 @@ where
     let mut writer = JsonlWriter::new(writer);
     let mut backend = NativeBackend::default();
     let (sender, receiver) = mpsc::channel::<InputMessage>();
+    let (background_sender, background_receiver) = mpsc::channel::<Vec<RpcOutput>>();
 
     thread::spawn(move || {
         for line_result in reader.lines() {
@@ -37,6 +38,7 @@ where
         let message = match receiver.recv_timeout(Duration::from_millis(50)) {
             Ok(message) => message,
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                write_background_outputs(&mut writer, &background_receiver)?;
                 write_outputs(&mut writer, backend.drain_fs_events(false))?;
                 continue;
             }
@@ -46,6 +48,7 @@ where
         let line = match message {
             InputMessage::Line(line_result) => line_result?,
             InputMessage::Eof => {
+                write_background_outputs(&mut writer, &background_receiver)?;
                 write_outputs(&mut writer, backend.drain_fs_events(true))?;
                 break;
             }
@@ -56,7 +59,7 @@ where
         }
 
         let command_result = match parse_request_line(&line) {
-            Ok(request) => backend.handle_request(request),
+            Ok(request) => backend.handle_request_background(request, background_sender.clone()),
             Err(error) => {
                 logging::diagnostic(format!(
                     "Rejected malformed request: {}",
@@ -70,12 +73,26 @@ where
         };
 
         write_outputs(&mut writer, command_result.outputs)?;
+        write_background_outputs(&mut writer, &background_receiver)?;
 
         if command_result.should_shutdown {
             break;
         }
     }
 
+    Ok(())
+}
+
+fn write_background_outputs<W>(
+    writer: &mut JsonlWriter<W>,
+    receiver: &mpsc::Receiver<Vec<RpcOutput>>,
+) -> io::Result<()>
+where
+    W: Write,
+{
+    for outputs in receiver.try_iter() {
+        write_outputs(writer, outputs)?;
+    }
     Ok(())
 }
 
@@ -104,7 +121,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::io::{self, BufReader, Cursor, Read, Write};
-    use std::sync::{mpsc, Arc, Mutex};
+    use std::sync::{Arc, Mutex, mpsc};
     use std::thread;
     use std::time::{Duration, Instant};
 

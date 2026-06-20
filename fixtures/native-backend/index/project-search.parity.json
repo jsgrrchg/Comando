@@ -1,0 +1,116 @@
+{
+    "entries": [
+        {
+            "kind": "file",
+            "name": "index.ts",
+            "relativePath": "src/index.ts"
+        },
+        {
+            "kind": "file",
+            "name": "indexer.ts",
+            "relativePath": "src/indexer.ts"
+        },
+        {
+            "kind": "file",
+            "name": "project-search.ts",
+            "relativePath": "src/shared/project-search.ts"
+        },
+        {
+            "kind": "file",
+            "name": "search.ts",
+            "relativePath": "src/shared/native-backend/search.ts"
+        },
+        {
+            "kind": "file",
+            "name": "Alpha.ts",
+            "relativePath": "src/Alpha.ts"
+        },
+        {
+            "kind": "file",
+            "name": "alpha.ts",
+            "relativePath": "src/alpha.ts"
+        },
+        {
+            "kind": "file",
+            "name": "projectFileIndexStore.ts",
+            "relativePath": "src/renderer/src/app/store/projectFileIndexStore.ts"
+        },
+        {
+            "kind": "directory",
+            "name": "src",
+            "relativePath": "src"
+        },
+        {
+            "kind": "directory",
+            "name": "shared",
+            "relativePath": "src/shared"
+        },
+        {
+            "kind": "directory",
+            "name": "native-backend",
+            "relativePath": "src/shared/native-backend"
+        },
+        {
+            "kind": "file",
+            "name": ".env",
+            "relativePath": ".env"
+        },
+        {
+            "kind": "file",
+            "name": "package.json",
+            "relativePath": "package.json"
+        }
+    ],
+    "cases": [
+        {
+            "name": "empty query returns no project runtime results",
+            "query": "",
+            "limit": 5,
+            "includeAncestorDirectories": false,
+            "expected": []
+        },
+        {
+            "name": "exact filename beats substring",
+            "query": "index.ts",
+            "limit": 5,
+            "includeAncestorDirectories": false,
+            "expected": [
+                "src/index.ts",
+                "src/indexer.ts",
+                "src/renderer/src/app/store/projectFileIndexStore.ts"
+            ]
+        },
+        {
+            "name": "broad search respects top-k order",
+            "query": "search",
+            "limit": 3,
+            "includeAncestorDirectories": false,
+            "expected": [
+                "src/shared/native-backend/search.ts",
+                "src/shared/project-search.ts"
+            ]
+        },
+        {
+            "name": "case-only tie follows runtime locale ordering",
+            "query": "alpha",
+            "limit": 5,
+            "includeAncestorDirectories": false,
+            "expected": [
+                "src/alpha.ts",
+                "src/Alpha.ts"
+            ]
+        },
+        {
+            "name": "ancestor directories are included before matches",
+            "query": "native search",
+            "limit": 1,
+            "includeAncestorDirectories": true,
+            "expected": [
+                "src",
+                "src/shared",
+                "src/shared/native-backend",
+                "src/shared/native-backend/search.ts"
+            ]
+        }
+    ]
+}

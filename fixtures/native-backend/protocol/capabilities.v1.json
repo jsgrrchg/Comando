@@ -57,6 +57,8 @@
       "fs_watch_sync_registry",
       "index_rebuild_project",
       "index_update_entries",
+      "index_get_status",
+      "index_drop_project",
       "search_project_entries",
       "search_project_content",
       "search_cancel",
@@ -139,9 +141,13 @@
       "fs://watch-stopped",
       "fs://operation-error",
       "fs://origin-tracked",
+      "index://building",
       "index://ready",
       "index://updated",
+      "index://stale",
       "index://error",
+      "index://cancelled",
+      "index://progress",
       "git://repository-invalidated",
       "git://snapshot-updated",
       "git://worktrees-updated",
@@ -185,7 +191,10 @@
       "native-persistence",
       "native-project-registry",
       "native-fs",
-      "native-watchers"
+      "native-watchers",
+      "native-index",
+      "native-path-search",
+      "native-search-cancel"
     ]
   }
 }

@@ -939,6 +939,7 @@ export function App() {
                     limit: 120,
                     projectId: activeProjectId,
                     query: normalizedQuery,
+                    searchContext: "quick-open",
                     worktreeId: activeWorktreeId,
                 })
                 .then((results) => {
@@ -1303,6 +1304,7 @@ export function App() {
                     limit: 160,
                     projectId: activeProjectId,
                     query: normalizedFileTreeFilter,
+                    searchContext: "file-tree",
                     worktreeId: activeWorktreeId,
                 })
                 .then((results) => {

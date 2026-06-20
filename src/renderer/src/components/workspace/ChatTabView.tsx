@@ -1610,6 +1610,7 @@ export const ChatTabView = memo(function ChatTabView({
                             limit: 12,
                             projectId,
                             query: searchQuery,
+                            searchContext: "chat-file-search",
                             worktreeId: tab.worktreeId ?? null,
                         })
                         .then((entries) => {
