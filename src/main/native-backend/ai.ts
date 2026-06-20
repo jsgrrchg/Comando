@@ -119,8 +119,13 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     async sendPrompt(
         request: NativeAiSendPromptRpcInput,
     ): Promise<AiPromptResult> {
+        if (request.input.attachments.length > 0) {
+            throw new Error(
+                "Native AI image attachments are not supported in this rollout yet.",
+            );
+        }
+
         this.#rememberOwner(request.input.sessionId, request.launch);
-        this.#emitUserMessage(request.input, request.launch);
 
         const result = await this.#client.request<NativeAiSendPromptOutput>(
             "ai_send_prompt",
@@ -133,6 +138,10 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 sessionId: request.input.sessionId,
             },
         );
+
+        if (result.accepted) {
+            this.#emitUserMessage(request.input, request.launch);
+        }
 
         return {
             sessionId: result.sessionId,

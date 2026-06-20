@@ -194,19 +194,14 @@ async fn run_acp_session(
             async move |request: RequestPermissionRequest, responder, _connection| {
                 if let Some(sender) = &permission_event_sender {
                     let _ = sender.send(AiRuntimeEvent::new(
-                        crate::events::AI_STATUS_EVENT,
-                        &crate::events::status_event(
-                            &permission_session.summary(),
-                            format!("acp:permission:{}", request.session_id),
-                            "pending",
-                            request
-                                .tool_call
-                                .fields
-                                .title
-                                .clone()
-                                .unwrap_or_else(|| "Permission required".to_string()),
-                            None,
-                        ),
+                        AI_ERROR_EVENT,
+                        &NativeAiErrorPayload {
+                            session_id: Some(permission_session.session_id.clone()),
+                            runtime_id: Some(permission_session.runtime_id.clone()),
+                            message: "Native AI permission prompts are not supported in this rollout yet.".to_string(),
+                            recoverable: true,
+                            updated_at: now_iso8601(),
+                        },
                     ));
                 }
                 let selected_reject = request

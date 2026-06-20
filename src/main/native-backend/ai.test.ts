@@ -163,6 +163,22 @@ describe("NativeAiGateway", () => {
             sessionId: "session-1",
         });
     });
+
+    it("does not emit a local user message when the native backend rejects the prompt", async () => {
+        const client = createClient();
+        client.request.mockRejectedValueOnce(new Error("session busy"));
+        const onSessionEvent = vi.fn();
+        const gateway = createGateway(client, { onSessionEvent });
+
+        await expect(
+            gateway.sendPrompt({
+                input: createPromptInput(),
+                launch: createLaunch(),
+            }),
+        ).rejects.toThrow("session busy");
+
+        expect(onSessionEvent).not.toHaveBeenCalled();
+    });
 });
 
 function createGateway(

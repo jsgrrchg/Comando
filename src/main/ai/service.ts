@@ -10,6 +10,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import type {
     AiHistorySessionSummary,
+    AiMessage,
     AiPermissionResponseInput,
     AiPromptResult,
     PrepareAiSessionInput,
@@ -26,6 +27,7 @@ import type {
     AiSessionUpdate,
     AiSessionRenameMutationInput,
     AiSessionSnapshot,
+    AiToolActivity,
     AiSessionTranscriptPage,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
@@ -555,6 +557,37 @@ export class AiService {
         ownerWindowId: string,
         event: AiSessionDomainEvent,
     ): void {
+        this.#onSessionEvent(ownerWindowId, event);
+    }
+
+    handleNativeSessionEvent(
+        ownerWindowId: string,
+        event: AiSessionDomainEvent,
+    ): void {
+        if (this.#deletedSessionIds.has(event.sessionId)) {
+            return;
+        }
+
+        const previousSnapshot = this.#liveSnapshots.get(event.sessionId);
+        if (previousSnapshot) {
+            const nextSnapshot = this.#applyNativeSessionEvent(
+                previousSnapshot,
+                event,
+            );
+            this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+            this.#persistence.saveSessionSnapshot(nextSnapshot);
+            this.#onSessionSnapshot(
+                ownerWindowId,
+                buildAiSessionUpdate(previousSnapshot, nextSnapshot),
+            );
+            if (nextSnapshot.lastError) {
+                this.#invalidateRuntimeAuthIfNeeded(
+                    nextSnapshot.runtimeId,
+                    nextSnapshot.lastError,
+                );
+            }
+        }
+
         this.#onSessionEvent(ownerWindowId, event);
     }
 
@@ -2047,6 +2080,148 @@ export class AiService {
         this.#persistence.saveSessionSnapshot(snapshot);
     }
 
+    #applyNativeSessionEvent(
+        snapshot: AiSessionSnapshot,
+        event: AiSessionDomainEvent,
+    ): AiSessionSnapshot {
+        const base = {
+            ...snapshot,
+            runtimeSessionId:
+                event.runtimeSessionId ?? snapshot.runtimeSessionId,
+            updatedAt: event.updatedAt,
+        };
+
+        if (event.kind === "session-info") {
+            return {
+                ...base,
+                projectId: event.projectId,
+                title: event.title,
+                worktreeId: event.worktreeId,
+            };
+        }
+
+        if (event.kind === "status") {
+            return {
+                ...base,
+                activeTurnStartedAt: event.activeTurnStartedAt,
+                lastError: event.lastError,
+                pendingPermission:
+                    event.status === "waiting_permission"
+                        ? snapshot.pendingPermission
+                        : null,
+                pendingUserInput:
+                    event.status === "waiting_user_input"
+                        ? snapshot.pendingUserInput
+                        : null,
+                status: event.status,
+            };
+        }
+
+        if (event.kind === "message-started") {
+            return {
+                ...base,
+                messages: upsertNativeMessage(
+                    snapshot.messages,
+                    event.message,
+                ),
+            };
+        }
+
+        if (event.kind === "message-delta") {
+            return {
+                ...base,
+                messages: updateNativeMessageContent(
+                    snapshot.messages,
+                    event.messageId,
+                    event.content,
+                ),
+            };
+        }
+
+        if (event.kind === "message-completed") {
+            return {
+                ...base,
+                messages: completeNativeMessage(
+                    snapshot.messages,
+                    event.messageId,
+                ),
+            };
+        }
+
+        if (event.kind === "thinking-started") {
+            return {
+                ...base,
+                messages: upsertNativeMessage(
+                    snapshot.messages,
+                    event.message,
+                ),
+            };
+        }
+
+        if (event.kind === "thinking-delta") {
+            return {
+                ...base,
+                messages: updateNativeMessageContent(
+                    snapshot.messages,
+                    event.messageId,
+                    event.content,
+                ),
+            };
+        }
+
+        if (event.kind === "thinking-completed") {
+            return {
+                ...base,
+                messages: completeNativeMessage(
+                    snapshot.messages,
+                    event.messageId,
+                ),
+            };
+        }
+
+        if (event.kind === "tool-activity") {
+            return {
+                ...base,
+                toolActivity: upsertNativeToolActivity(
+                    snapshot.toolActivity,
+                    event.activity,
+                ),
+            };
+        }
+
+        if (event.kind === "plan") {
+            return {
+                ...base,
+                plan: event.plan,
+            };
+        }
+
+        if (event.kind === "permission-request") {
+            return {
+                ...base,
+                pendingPermission: event.request,
+                status: event.request ? "waiting_permission" : snapshot.status,
+            };
+        }
+
+        if (event.kind === "user-input-request") {
+            return {
+                ...base,
+                pendingUserInput: event.request,
+                status: event.request ? "waiting_user_input" : snapshot.status,
+            };
+        }
+
+        if (event.kind === "token-usage") {
+            return {
+                ...base,
+                tokenUsage: event.tokenUsage,
+            };
+        }
+
+        return base;
+    }
+
     async #reconcilePersistedTrackedFiles(
         snapshot: AiSessionSnapshot,
     ): Promise<AiSessionSnapshot> {
@@ -2348,18 +2523,7 @@ export class AiService {
         void this.#enforceSessionRetention();
     }
 
-    #assertLegacyReviewSession(sessionId: string): void {
-        if (!this.#isNativeAiSession(sessionId)) {
-            return;
-        }
-
-        throw new Error(
-            "Native AI review changes are not supported in this rollout yet.",
-        );
-    }
-
     async keepTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
-        this.#assertLegacyReviewSession(input.sessionId);
         const reviewSession = await this.#buildWorkerReviewContext(
             input.sessionId,
         );
@@ -2371,7 +2535,6 @@ export class AiService {
     }
 
     async rejectTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
-        this.#assertLegacyReviewSession(input.sessionId);
         const reviewSession = await this.#buildWorkerReviewContext(
             input.sessionId,
         );
@@ -2385,7 +2548,6 @@ export class AiService {
     async keepTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
-        this.#assertLegacyReviewSession(input.sessionId);
         const reviewSession = await this.#buildWorkerReviewContext(
             input.sessionId,
         );
@@ -2399,7 +2561,6 @@ export class AiService {
     async rejectTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
-        this.#assertLegacyReviewSession(input.sessionId);
         const reviewSession = await this.#buildWorkerReviewContext(
             input.sessionId,
         );
@@ -2411,7 +2572,6 @@ export class AiService {
     }
 
     async keepAllTrackedFiles(sessionId: string): Promise<void> {
-        this.#assertLegacyReviewSession(sessionId);
         const reviewSession = await this.#buildWorkerReviewContext(sessionId);
         const result = await this.#requireAiWorker().keepAllTrackedFiles({
             context: reviewSession.context,
@@ -2421,7 +2581,6 @@ export class AiService {
     }
 
     async rejectAllTrackedFiles(sessionId: string): Promise<void> {
-        this.#assertLegacyReviewSession(sessionId);
         const reviewSession = await this.#buildWorkerReviewContext(sessionId);
         const result = await this.#requireAiWorker().rejectAllTrackedFiles({
             context: reviewSession.context,
@@ -3105,6 +3264,68 @@ function resolveCodexSecretBundle(
         codexApiKey,
         openaiApiKey,
     };
+}
+
+function upsertNativeMessage(
+    messages: readonly AiMessage[],
+    message: AiMessage,
+): readonly AiMessage[] {
+    const existingIndex = messages.findIndex(
+        (candidate) => candidate.id === message.id,
+    );
+    if (existingIndex < 0) {
+        return [...messages, message];
+    }
+
+    return messages.map((candidate, index) =>
+        index === existingIndex ? { ...candidate, ...message } : candidate,
+    );
+}
+
+function updateNativeMessageContent(
+    messages: readonly AiMessage[],
+    messageId: string,
+    content: string,
+): readonly AiMessage[] {
+    return messages.map((message) =>
+        message.id === messageId
+            ? {
+                  ...message,
+                  content,
+                  status: "streaming" as const,
+              }
+            : message,
+    );
+}
+
+function completeNativeMessage(
+    messages: readonly AiMessage[],
+    messageId: string,
+): readonly AiMessage[] {
+    return messages.map((message) =>
+        message.id === messageId
+            ? {
+                  ...message,
+                  status: "completed" as const,
+              }
+            : message,
+    );
+}
+
+function upsertNativeToolActivity(
+    activities: readonly AiToolActivity[],
+    activity: AiToolActivity,
+): readonly AiToolActivity[] {
+    const existingIndex = activities.findIndex(
+        (candidate) => candidate.id === activity.id,
+    );
+    if (existingIndex < 0) {
+        return [...activities, activity];
+    }
+
+    return activities.map((candidate, index) =>
+        index === existingIndex ? { ...candidate, ...activity } : candidate,
+    );
 }
 
 function parseSecretStorageKey(key: string): {

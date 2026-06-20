@@ -251,15 +251,15 @@ impl RuntimeCapabilitiesPreset {
     const fn opencode() -> Self {
         Self {
             thinking: true,
-            tools: true,
+            tools: false,
             plan_updates: true,
-            permissions: true,
-            user_input: true,
+            permissions: false,
+            user_input: false,
             subagents: false,
             resume_session: false,
             load_session: true,
             auth_terminal: true,
-            image_input: true,
+            image_input: false,
             embedded_context: true,
         }
     }

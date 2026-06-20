@@ -135,6 +135,11 @@ impl AiEngine {
                 message: "Type a prompt before sending it.".to_string(),
             });
         }
+        if !input.prompt.attachments.is_empty() {
+            return Err(AiError::Unsupported(
+                "Native AI image attachments are not supported in this rollout yet.".to_string(),
+            ));
+        }
 
         let mut sessions = self.lock_sessions()?;
         let session = sessions.get_mut(&input.session_id)?;

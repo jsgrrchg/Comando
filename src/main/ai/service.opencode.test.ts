@@ -7,11 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
     AiRuntimeStatus,
     AiSessionSnapshot,
+    AiSessionUpdate,
     OpenCodeRuntimeSettings,
 } from "@shared/ipc";
 
 import { AiService } from "./service";
-import type { AiWorkerGateway } from "./contracts";
+import type { AiWorkerGateway, NativeAiGateway } from "./contracts";
 
 const OPENCODE_ENV_CREDENTIAL_NAMES = [
     "ANTHROPIC_API_KEY",
@@ -231,30 +232,146 @@ describe("AiService OpenCode branch", () => {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
     });
+
+    it("persists native session events through the service snapshot cache", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-native-events-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            const saveSessionSnapshot = vi.fn();
+            const onSessionSnapshot = vi.fn();
+            const nativeAi: NativeAiGateway = {
+                cancelSession: vi.fn(),
+                close: vi.fn(),
+                closeOwnedByWindow: vi.fn(),
+                closeSession: vi.fn(),
+                prepareSession: vi.fn(async ({ launch }) => ({
+                    ...launch.persistedSnapshot,
+                    runtimeSessionId: "runtime-native-1",
+                    status: "idle",
+                    updatedAt: "2026-06-20T00:00:00.000Z",
+                })),
+                respondPermission: vi.fn(),
+                respondUserInput: vi.fn(),
+                sendPrompt: vi.fn(),
+                setSessionConfigOption: vi.fn(),
+                setSessionMode: vi.fn(),
+                setSessionModel: vi.fn(),
+                shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "opencode"),
+            };
+            const service = createService({
+                nativeAi,
+                onSessionSnapshot,
+                persistence: {
+                    saveSessionSnapshot,
+                },
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+
+            await service.prepareSession(
+                {
+                    projectId: null,
+                    runtimeId: "opencode",
+                    sessionId: "session-opencode",
+                    title: "OpenCode 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            service.handleNativeSessionEvent("window-1", {
+                kind: "message-started",
+                message: {
+                    attachments: [],
+                    content: "",
+                    createdAt: "2026-06-20T00:00:01.000Z",
+                    id: "assistant-1",
+                    kind: "assistant",
+                    status: "streaming",
+                },
+                messageKind: "assistant",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-native-1",
+                sessionId: "session-opencode",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            });
+            service.handleNativeSessionEvent("window-1", {
+                content: "Hello",
+                delta: "Hello",
+                kind: "message-delta",
+                messageId: "assistant-1",
+                messageKind: "assistant",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-native-1",
+                sessionId: "session-opencode",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
+
+            const persistedSnapshots = saveSessionSnapshot.mock.calls.map(
+                ([snapshot]) => snapshot as AiSessionSnapshot,
+            );
+            expect(persistedSnapshots.at(-1)?.messages).toEqual([
+                expect.objectContaining({
+                    content: "Hello",
+                    id: "assistant-1",
+                    status: "streaming",
+                }),
+            ]);
+            expect(onSessionSnapshot).toHaveBeenCalledWith(
+                "window-1",
+                expect.objectContaining({ kind: "patch" }),
+            );
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
 });
 
 function createService(overrides: {
     readonly aiWorker?: AiWorkerGateway;
+    readonly nativeAi?: NativeAiGateway;
     readonly onRuntimeStatus?: (status: AiRuntimeStatus) => void;
+    readonly onSessionSnapshot?: (
+        ownerWindowId: string,
+        update: AiSessionUpdate,
+    ) => void;
+    readonly persistence?: Partial<ConstructorParameters<typeof AiService>[0]["persistence"]>;
     readonly settingsService?: unknown;
 }): AiService {
+    const persistence = {
+        loadLatestRuntimeCatalog: vi.fn(() => null),
+        loadRuntimeSelectionPreferences: vi.fn(() => ({
+            configOptions: {},
+            modeId: null,
+            modelId: null,
+        })),
+        loadSessionSnapshot: vi.fn(() => null),
+        saveRuntimeModePreference: vi.fn(),
+        saveRuntimeModelPreference: vi.fn(),
+        saveRuntimeSelectionPreferenceOption: vi.fn(),
+        saveSessionSnapshot: vi.fn(),
+        ...overrides.persistence,
+    };
+
     return new AiService({
         aiWorker: overrides.aiWorker ?? null,
+        nativeAi: overrides.nativeAi ?? null,
         onRuntimeStatus: overrides.onRuntimeStatus ?? vi.fn(),
-        onSessionSnapshot: vi.fn(),
-        persistence: {
-            loadLatestRuntimeCatalog: vi.fn(() => null),
-            loadRuntimeSelectionPreferences: vi.fn(() => ({
-                configOptions: {},
-                modeId: null,
-                modelId: null,
-            })),
-            loadSessionSnapshot: vi.fn(() => null),
-            saveRuntimeModePreference: vi.fn(),
-            saveRuntimeModelPreference: vi.fn(),
-            saveRuntimeSelectionPreferenceOption: vi.fn(),
-            saveSessionSnapshot: vi.fn(),
-        } as never,
+        onSessionSnapshot: overrides.onSessionSnapshot ?? vi.fn(),
+        persistence: persistence as never,
         projectService: {
             getProjectRootPath: vi.fn(() => process.cwd()),
             listProjectWorktrees: vi.fn(() => []),

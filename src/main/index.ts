@@ -214,7 +214,12 @@ if (!hasSingleInstanceLock) {
                 nativeAi: createNativeAiGateway({
                     nativeClient: nativeBackendClient,
                     onRuntimeStatus: broadcastAiRuntimeStatus,
-                    onSessionEvent: broadcastAiSessionEvent,
+                    onSessionEvent: (ownerWindowId, event) => {
+                        aiService?.handleNativeSessionEvent(
+                            ownerWindowId,
+                            event,
+                        );
+                    },
                 }),
                 onRuntimeStatus: broadcastAiRuntimeStatus,
                 onSessionEvent: broadcastAiSessionEvent,
