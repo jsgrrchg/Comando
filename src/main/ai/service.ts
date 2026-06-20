@@ -1073,6 +1073,10 @@ export class AiService {
         );
 
         if (nativeAi) {
+            const nativeSendState = {
+                capturedReviewBaseline: false,
+                preparedSession: false,
+            };
             try {
                 const result = await this.#scheduleWorkerSessionStartup(
                     launch,
@@ -1089,16 +1093,22 @@ export class AiService {
                                 launch,
                             });
                             this.#nativeSessionIds.add(snapshot.sessionId);
+                            nativeSendState.preparedSession = true;
                             this.#acceptPreparedLiveSnapshot(
                                 snapshot,
                                 ownerWindowId,
                             );
                         }
-                        await this.#captureNativeReviewBaseline(
-                            input.sessionId,
-                            launch,
-                            input.messageId,
-                        );
+                        if (
+                            !this.#nativeReviewBaselines.has(input.sessionId)
+                        ) {
+                            nativeSendState.capturedReviewBaseline =
+                                await this.#captureNativeReviewBaseline(
+                                    input.sessionId,
+                                    launch,
+                                    input.messageId,
+                                );
+                        }
                         return await nativeAi.sendPrompt({
                             input,
                             launch,
@@ -1108,13 +1118,17 @@ export class AiService {
                 void this.#enforceSessionRetention();
                 return result;
             } catch (error) {
-                this.#nativeReviewBaselines.delete(input.sessionId);
-                this.#nativeSessionIds.delete(input.sessionId);
-                this.#discardPreparedSessionContextOnFailure(
-                    input.sessionId,
-                    ownerWindowId,
-                    input.runtimeId,
-                );
+                if (nativeSendState.capturedReviewBaseline) {
+                    this.#nativeReviewBaselines.delete(input.sessionId);
+                }
+                if (nativeSendState.preparedSession) {
+                    this.#nativeSessionIds.delete(input.sessionId);
+                    this.#discardPreparedSessionContextOnFailure(
+                        input.sessionId,
+                        ownerWindowId,
+                        input.runtimeId,
+                    );
+                }
                 throw error;
             }
         }
@@ -2271,7 +2285,7 @@ export class AiService {
         sessionId: string,
         launch: AiWorkerSessionLaunchInput,
         messageId: string,
-    ): Promise<void> {
+    ): Promise<boolean> {
         try {
             const statusEntries = await listNativeGitStatusEntries(launch.cwd);
             const files = new Map<string, string | null>();
@@ -2302,9 +2316,11 @@ export class AiService {
                 messageId,
                 turnStarted: false,
             });
+            return true;
         } catch (error) {
             this.#nativeReviewBaselines.delete(sessionId);
             debugBenignError("ai.service.nativeReviewBaseline", error);
+            return false;
         }
     }
 
@@ -3397,6 +3413,7 @@ async function buildNativeReviewTrackedFiles(
     const updatedAt = new Date().toISOString();
 
     for (const entry of statusEntries) {
+        const baselineText = getNativeReviewBaselineText(baseline, entry);
         const deleted = isNativeGitDeleted(entry);
         const currentText = deleted
             ? null
@@ -3404,11 +3421,14 @@ async function buildNativeReviewTrackedFiles(
                   baseline.cwd,
                   entry.path,
               );
-        if (!deleted && currentText === null) {
+        if (
+            !deleted &&
+            currentText === null &&
+            (!baselineText.known || baselineText.text === null)
+        ) {
             continue;
         }
 
-        const baselineText = getNativeReviewBaselineText(baseline, entry);
         const oldText = baselineText.known
             ? baselineText.text
             : await readNativeReviewHeadText(

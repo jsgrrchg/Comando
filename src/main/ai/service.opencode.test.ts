@@ -379,10 +379,16 @@ describe("AiService OpenCode branch", () => {
                 "export const restored = true;\n",
                 "utf8",
             );
+            fs.writeFileSync(
+                path.join(tempDir, "scratch.txt"),
+                "temporary local note\n",
+                "utf8",
+            );
 
             const binaryPath = writeExecutable(tempDir, "opencode");
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const saveSessionSnapshot = vi.fn();
+            let promptCallCount = 0;
             const serviceRef: { current: AiService | null } = {
                 current: null,
             };
@@ -403,6 +409,10 @@ describe("AiService OpenCode branch", () => {
                 respondPermission: vi.fn(),
                 respondUserInput: vi.fn(),
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(() => {
+                    promptCallCount += 1;
+                    if (promptCallCount > 1) {
+                        return Promise.reject(new Error("Session busy"));
+                    }
                     if (!serviceRef.current) {
                         throw new Error("The AI service was not initialized.");
                     }
@@ -428,6 +438,7 @@ describe("AiService OpenCode branch", () => {
                         "export const restored = false;\n",
                         "utf8",
                     );
+                    fs.unlinkSync(path.join(tempDir, "scratch.txt"));
                     return Promise.resolve({
                         sessionId: "session-opencode",
                         stopReason: "accepted",
@@ -471,6 +482,22 @@ describe("AiService OpenCode branch", () => {
                 },
                 "window-1",
             );
+            await expect(
+                service.sendPrompt(
+                    {
+                        additionalRoots: [],
+                        attachments: [],
+                        messageId: "user-message-2",
+                        projectId: "project-1",
+                        prompt: "Try again immediately.",
+                        runtimeId: "opencode",
+                        sessionId: "session-opencode",
+                        title: "OpenCode 1",
+                        worktreeId: null,
+                    },
+                    "window-1",
+                ),
+            ).rejects.toThrow("Session busy");
             service.handleNativeSessionEvent("window-1", {
                 activeTurnStartedAt: "2026-06-20T00:00:02.000Z",
                 kind: "status",
@@ -503,7 +530,7 @@ describe("AiService OpenCode branch", () => {
                 const trackedFiles = snapshots.at(-1)?.trackedFiles ?? [];
                 expect(
                     trackedFiles.map((trackedFile) => trackedFile.path).sort(),
-                ).toEqual(["src/app.ts", "src/restored.ts"]);
+                ).toEqual(["scratch.txt", "src/app.ts", "src/restored.ts"]);
                 expect(
                     trackedFiles.find(
                         (trackedFile) => trackedFile.path === "src/app.ts",
@@ -525,6 +552,17 @@ describe("AiService OpenCode branch", () => {
                     newText: "export const restored = false;\n",
                     oldText: "export const restored = true;\n",
                     path: "src/restored.ts",
+                    reviewState: "pending",
+                });
+                expect(
+                    trackedFiles.find(
+                        (trackedFile) => trackedFile.path === "scratch.txt",
+                    ),
+                ).toMatchObject({
+                    kind: "delete",
+                    newText: null,
+                    oldText: "temporary local note\n",
+                    path: "scratch.txt",
                     reviewState: "pending",
                 });
             });
