@@ -362,6 +362,11 @@ describe("AiService OpenCode branch", () => {
                 "export const dirty = false;\n",
                 "utf8",
             );
+            fs.writeFileSync(
+                path.join(sourceDir, "restored.ts"),
+                "export const restored = false;\n",
+                "utf8",
+            );
             execGitSync(tempDir, ["add", "."]);
             execGitSync(tempDir, ["commit", "-m", "initial"]);
             fs.writeFileSync(
@@ -369,10 +374,18 @@ describe("AiService OpenCode branch", () => {
                 "export const dirty = true;\n",
                 "utf8",
             );
+            fs.writeFileSync(
+                path.join(sourceDir, "restored.ts"),
+                "export const restored = true;\n",
+                "utf8",
+            );
 
             const binaryPath = writeExecutable(tempDir, "opencode");
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const saveSessionSnapshot = vi.fn();
+            const serviceRef: { current: AiService | null } = {
+                current: null,
+            };
             const nativeAi: NativeAiGateway = {
                 cancelSession: vi.fn(),
                 close: vi.fn(),
@@ -390,9 +403,29 @@ describe("AiService OpenCode branch", () => {
                 respondPermission: vi.fn(),
                 respondUserInput: vi.fn(),
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(() => {
+                    if (!serviceRef.current) {
+                        throw new Error("The AI service was not initialized.");
+                    }
+                    serviceRef.current.handleNativeSessionEvent("window-1", {
+                        activeTurnStartedAt: null,
+                        kind: "status",
+                        lastError: null,
+                        origin: "live",
+                        parentSessionId: null,
+                        runtimeId: "opencode",
+                        runtimeSessionId: "runtime-native-review",
+                        sessionId: "session-opencode",
+                        status: "idle",
+                        updatedAt: "2026-06-20T00:00:01.000Z",
+                    });
                     fs.writeFileSync(
                         path.join(sourceDir, "app.ts"),
                         "export const value = 2;\n",
+                        "utf8",
+                    );
+                    fs.writeFileSync(
+                        path.join(sourceDir, "restored.ts"),
+                        "export const restored = false;\n",
                         "utf8",
                     );
                     return Promise.resolve({
@@ -422,6 +455,7 @@ describe("AiService OpenCode branch", () => {
                     ),
                 }),
             });
+            serviceRef.current = service;
 
             await service.sendPrompt(
                 {
@@ -437,6 +471,18 @@ describe("AiService OpenCode branch", () => {
                 },
                 "window-1",
             );
+            service.handleNativeSessionEvent("window-1", {
+                activeTurnStartedAt: "2026-06-20T00:00:02.000Z",
+                kind: "status",
+                lastError: null,
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-native-review",
+                sessionId: "session-opencode",
+                status: "streaming",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
             service.handleNativeSessionEvent("window-1", {
                 activeTurnStartedAt: null,
                 kind: "status",
@@ -455,12 +501,30 @@ describe("AiService OpenCode branch", () => {
                     ([snapshot]) => snapshot as AiSessionSnapshot,
                 );
                 const trackedFiles = snapshots.at(-1)?.trackedFiles ?? [];
-                expect(trackedFiles).toHaveLength(1);
-                expect(trackedFiles[0]).toMatchObject({
+                expect(
+                    trackedFiles.map((trackedFile) => trackedFile.path).sort(),
+                ).toEqual(["src/app.ts", "src/restored.ts"]);
+                expect(
+                    trackedFiles.find(
+                        (trackedFile) => trackedFile.path === "src/app.ts",
+                    ),
+                ).toMatchObject({
                     kind: "update",
                     newText: "export const value = 2;\n",
                     oldText: "export const value = 1;\n",
                     path: "src/app.ts",
+                    reviewState: "pending",
+                });
+                expect(
+                    trackedFiles.find(
+                        (trackedFile) =>
+                            trackedFile.path === "src/restored.ts",
+                    ),
+                ).toMatchObject({
+                    kind: "update",
+                    newText: "export const restored = false;\n",
+                    oldText: "export const restored = true;\n",
+                    path: "src/restored.ts",
                     reviewState: "pending",
                 });
             });

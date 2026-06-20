@@ -213,6 +213,8 @@ type LiveSessionContext = {
 interface NativeReviewBaseline {
     readonly cwd: string;
     readonly files: ReadonlyMap<string, string | null>;
+    readonly messageId: string;
+    readonly turnStarted: boolean;
 }
 
 interface NativeGitStatusEntry {
@@ -608,11 +610,12 @@ export class AiService {
                     nextSnapshot.lastError,
                 );
             }
-            if (
-                event.kind === "status" &&
-                (event.status === "idle" || event.status === "error") &&
-                this.#isNativeAiSession(event.sessionId)
-            ) {
+            if (this.#isNativeAiSession(event.sessionId)) {
+                if (event.kind === "status" && event.status === "streaming") {
+                    this.#markNativeReviewTurnStarted(event.sessionId);
+                }
+            }
+            if (this.#shouldReconcileNativeReviewFiles(event)) {
                 void this.#reconcileNativeReviewFiles(
                     event.sessionId,
                     ownerWindowId,
@@ -1094,6 +1097,7 @@ export class AiService {
                         await this.#captureNativeReviewBaseline(
                             input.sessionId,
                             launch,
+                            input.messageId,
                         );
                         return await nativeAi.sendPrompt({
                             input,
@@ -2266,6 +2270,7 @@ export class AiService {
     async #captureNativeReviewBaseline(
         sessionId: string,
         launch: AiWorkerSessionLaunchInput,
+        messageId: string,
     ): Promise<void> {
         try {
             const statusEntries = await listNativeGitStatusEntries(launch.cwd);
@@ -2294,11 +2299,46 @@ export class AiService {
             this.#nativeReviewBaselines.set(sessionId, {
                 cwd: launch.cwd,
                 files,
+                messageId,
+                turnStarted: false,
             });
         } catch (error) {
             this.#nativeReviewBaselines.delete(sessionId);
             debugBenignError("ai.service.nativeReviewBaseline", error);
         }
+    }
+
+    #markNativeReviewTurnStarted(sessionId: string): void {
+        const baseline = this.#nativeReviewBaselines.get(sessionId);
+        if (!baseline || baseline.turnStarted) {
+            return;
+        }
+
+        this.#nativeReviewBaselines.set(sessionId, {
+            ...baseline,
+            turnStarted: true,
+        });
+    }
+
+    #shouldReconcileNativeReviewFiles(event: AiSessionDomainEvent): boolean {
+        const baseline = this.#nativeReviewBaselines.get(event.sessionId);
+        if (!baseline || !this.#isNativeAiSession(event.sessionId)) {
+            return false;
+        }
+
+        if (
+            event.kind === "tool-activity" &&
+            event.activity.id === `acp:turn:${baseline.messageId}` &&
+            isTerminalNativeReviewActivityStatus(event.activity.status)
+        ) {
+            return true;
+        }
+
+        return (
+            event.kind === "status" &&
+            baseline.turnStarted &&
+            (event.status === "idle" || event.status === "error")
+        );
     }
 
     async #reconcileNativeReviewFiles(
@@ -3349,7 +3389,10 @@ async function buildNativeReviewTrackedFiles(
     sessionId: string,
     baseline: NativeReviewBaseline,
 ): Promise<readonly AiTrackedFile[]> {
-    const statusEntries = await listNativeGitStatusEntries(baseline.cwd);
+    const statusEntries = mergeNativeReviewCandidateEntries(
+        await listNativeGitStatusEntries(baseline.cwd),
+        baseline,
+    );
     const trackedFiles: AiTrackedFile[] = [];
     const updatedAt = new Date().toISOString();
 
@@ -3421,6 +3464,29 @@ async function buildNativeReviewTrackedFiles(
     }
 
     return trackedFiles;
+}
+
+function mergeNativeReviewCandidateEntries(
+    statusEntries: readonly NativeGitStatusEntry[],
+    baseline: NativeReviewBaseline,
+): readonly NativeGitStatusEntry[] {
+    const coveredPaths = new Set<string>();
+    for (const entry of statusEntries) {
+        coveredPaths.add(entry.path);
+        if (entry.previousPath) {
+            coveredPaths.add(entry.previousPath);
+        }
+    }
+
+    const baselineOnlyEntries = [...baseline.files.keys()]
+        .filter((baselinePath) => !coveredPaths.has(baselinePath))
+        .map((baselinePath) => ({
+            code: "  ",
+            path: baselinePath,
+            previousPath: null,
+        }));
+
+    return [...statusEntries, ...baselineOnlyEntries];
 }
 
 function getNativeReviewBaselineText(
@@ -3600,6 +3666,12 @@ function inferNativeTrackedFileKind(
     }
 
     return "update";
+}
+
+function isTerminalNativeReviewActivityStatus(
+    status: AiToolActivity["status"],
+): boolean {
+    return status === "completed" || status === "failed";
 }
 
 function isNativeReviewText(text: string): boolean {
