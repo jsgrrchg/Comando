@@ -5,7 +5,7 @@ use std::thread;
 use comando_ai::AiEngine;
 use comando_ai::events::{
     AI_RUNTIME_STATUS_EVENT, AI_SESSION_CLOSED_EVENT, AI_SESSION_CREATED_EVENT,
-    AI_SESSION_UPDATED_EVENT, session_closed, session_created, session_updated,
+    AI_SESSION_UPDATED_EVENT, AiRuntimeEvent, session_closed, session_created, session_updated,
 };
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
 use comando_git::{
@@ -58,6 +58,7 @@ pub struct CommandResult {
 #[derive(Default)]
 pub struct NativeBackend {
     ai_engine: AiEngine,
+    ai_event_bridge_started: bool,
     fs_service: ProjectFsService,
     git_runner: GitRunner,
     index_service: IndexService,
@@ -93,6 +94,7 @@ pub fn handle_request(request: RpcRequest) -> CommandResult {
 }
 
 impl NativeBackend {
+    const AI_EVENT_CHANNEL_CAPACITY: usize = 256;
     const TERMINAL_EVENT_CHANNEL_CAPACITY: usize = 256;
 
     pub fn handle_request_background(
@@ -111,7 +113,22 @@ impl NativeBackend {
             | "terminal_close"
             | "terminal_close_window"
             | "terminal_list" => self.handle_terminal_request(request, background_sender),
-            "ai_send_prompt" => self.handle_ai_request(request),
+            "ai_list_runtimes"
+            | "ai_get_runtime_status"
+            | "ai_prepare_session"
+            | "ai_send_prompt"
+            | "ai_cancel_session"
+            | "ai_close_session"
+            | "ai_respond_permission"
+            | "ai_respond_user_input"
+            | "ai_set_session_model"
+            | "ai_set_session_mode"
+            | "ai_set_session_config_option" => {
+                if let Err(error) = self.ensure_ai_event_bridge(background_sender) {
+                    return error_only(request.id, error);
+                }
+                self.handle_ai_request(request)
+            }
             _ => self.handle_request(request),
         }
     }
@@ -1347,6 +1364,31 @@ impl NativeBackend {
         })
     }
 
+    fn ensure_ai_event_bridge(
+        &mut self,
+        background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
+    ) -> Result<(), NativeError> {
+        if self.ai_event_bridge_started {
+            return Ok(());
+        }
+
+        let (event_sender, event_receiver) =
+            mpsc::sync_channel::<AiRuntimeEvent>(Self::AI_EVENT_CHANNEL_CAPACITY);
+        self.ai_engine
+            .set_event_sender(event_sender)
+            .map_err(|error| error.to_native_error())?;
+        thread::spawn(move || {
+            for event in event_receiver {
+                let output = ai_runtime_event_output(event);
+                if background_sender.send(vec![output]).is_err() {
+                    break;
+                }
+            }
+        });
+        self.ai_event_bridge_started = true;
+        Ok(())
+    }
+
     fn search_project_content(&mut self, request: RpcRequest) -> CommandResult {
         match parse_args::<native_index::NativeContentSearchInput>(&request) {
             Ok(_) => error_only(
@@ -2011,6 +2053,10 @@ fn terminal_runtime_event_output(event_payload: TerminalRuntimeEvent) -> RpcOutp
             serde_json::to_value(payload).expect("terminal error event serializes"),
         ),
     }
+}
+
+fn ai_runtime_event_output(event_payload: AiRuntimeEvent) -> RpcOutput {
+    event(event_payload.event_name, event_payload.payload)
 }
 
 fn disabled_git_operation(request: RpcRequest) -> CommandResult {

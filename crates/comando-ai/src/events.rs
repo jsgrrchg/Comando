@@ -4,6 +4,8 @@ use comando_types::ai::{
     NativeAiSessionSummary, NativeAiSessionUpdatedPayload, NativeAiStatusEventPayload,
 };
 use comando_types::ids::{MessageId, RuntimeId, RuntimeSessionId, SessionId};
+use serde::Serialize;
+use serde_json::Value;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -25,6 +27,21 @@ pub const AI_PERMISSION_REQUEST_EVENT: &str = "ai://permission-request";
 pub const AI_USER_INPUT_REQUEST_EVENT: &str = "ai://user-input-request";
 pub const AI_TOKEN_USAGE_EVENT: &str = "ai://token-usage";
 pub const AI_ERROR_EVENT: &str = "ai://error";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AiRuntimeEvent {
+    pub event_name: String,
+    pub payload: Value,
+}
+
+impl AiRuntimeEvent {
+    pub fn new<T: Serialize>(event_name: impl Into<String>, payload: &T) -> Self {
+        Self {
+            event_name: event_name.into(),
+            payload: serde_json::to_value(payload).expect("AI runtime event payload serializes"),
+        }
+    }
+}
 
 pub fn now_iso8601() -> String {
     OffsetDateTime::now_utc()

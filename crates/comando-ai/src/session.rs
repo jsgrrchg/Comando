@@ -5,6 +5,7 @@ use comando_types::ai::{
 };
 use comando_types::ids::{RuntimeId, RuntimeSessionId, SessionId};
 
+use crate::acp::AcpSessionController;
 use crate::error::{AiError, AiResult};
 use crate::events::now_iso8601;
 use crate::scope::SessionScope;
@@ -67,6 +68,7 @@ impl NativeAiSession {
 #[derive(Debug)]
 pub struct ManagedAiSession {
     pub session: NativeAiSession,
+    pub acp_controller: Option<AcpSessionController>,
     pub active_message_id: Option<String>,
     pub prompt_in_flight: bool,
 }
@@ -75,6 +77,19 @@ impl ManagedAiSession {
     pub fn new(session: NativeAiSession) -> Self {
         Self {
             session,
+            acp_controller: None,
+            active_message_id: None,
+            prompt_in_flight: false,
+        }
+    }
+
+    pub fn with_acp_controller(
+        session: NativeAiSession,
+        acp_controller: AcpSessionController,
+    ) -> Self {
+        Self {
+            session,
+            acp_controller: Some(acp_controller),
             active_message_id: None,
             prompt_in_flight: false,
         }
@@ -110,6 +125,28 @@ impl SessionRegistry {
         let summary = session.summary();
         self.sessions
             .insert(summary.session_id.0.clone(), ManagedAiSession::new(session));
+        Ok(summary)
+    }
+
+    pub fn insert_with_acp_controller(
+        &mut self,
+        session: NativeAiSession,
+        acp_controller: AcpSessionController,
+    ) -> AiResult<NativeAiSessionSummary> {
+        let session_id = session.session_id.0.clone();
+        if self.sessions.contains_key(&session_id) {
+            return Err(AiError::SessionOwnerMismatch {
+                session_id,
+                owner: "native".to_string(),
+                expected: "new".to_string(),
+            });
+        }
+
+        let summary = session.summary();
+        self.sessions.insert(
+            summary.session_id.0.clone(),
+            ManagedAiSession::with_acp_controller(session, acp_controller),
+        );
         Ok(summary)
     }
 

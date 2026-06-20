@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use comando_types::ai::{
     NativeAiCancelSessionOutput, NativeAiCloseSessionOutput, NativeAiGetRuntimeStatusInput,
@@ -8,11 +8,13 @@ use comando_types::ai::{
     NativeAiSetSessionModeInput, NativeAiSetSessionModelInput,
 };
 
+use crate::acp::{AcpProcessSpec, start_acp_session};
 use crate::commands::{
     cancel_session_output, close_session_output, list_runtimes_output, prepare_session_output,
     send_prompt_output,
 };
 use crate::error::{AiError, AiResult};
+use crate::events::AiRuntimeEvent;
 use crate::runtime::RuntimeRegistry;
 use crate::session::{NativeAiSession, SessionRegistry};
 
@@ -32,7 +34,9 @@ impl Default for AiEngineConfig {
 #[derive(Clone)]
 pub struct AiEngine {
     config: AiEngineConfig,
+    event_sender: Arc<Mutex<Option<mpsc::SyncSender<AiRuntimeEvent>>>>,
     registry: RuntimeRegistry,
+    runtime: Arc<tokio::runtime::Runtime>,
     sessions: Arc<Mutex<SessionRegistry>>,
 }
 
@@ -46,9 +50,26 @@ impl AiEngine {
     pub fn new(config: AiEngineConfig) -> Self {
         Self {
             config,
+            event_sender: Arc::new(Mutex::new(None)),
             registry: RuntimeRegistry::default(),
+            runtime: Arc::new(
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .thread_name("comando-ai-acp")
+                    .build()
+                    .expect("native AI Tokio runtime starts"),
+            ),
             sessions: Arc::new(Mutex::new(SessionRegistry::default())),
         }
+    }
+
+    pub fn set_event_sender(&self, sender: mpsc::SyncSender<AiRuntimeEvent>) -> AiResult<()> {
+        let mut event_sender = self
+            .event_sender
+            .lock()
+            .map_err(|error| AiError::Internal(format!("AI event sender lock failed: {error}")))?;
+        *event_sender = Some(sender);
+        Ok(())
     }
 
     pub fn list_runtimes(&self) -> NativeAiListRuntimesOutput {
@@ -75,9 +96,33 @@ impl AiEngine {
             });
         }
 
+        let launch = input.launch.clone();
         let session = NativeAiSession::from_prepare_input(input)?;
         let mut sessions = self.lock_sessions()?;
-        prepare_session_output(sessions.insert(session)?).pipe(Ok)
+        if let Some(launch) = launch {
+            if sessions.get(&session.session_id).is_ok() {
+                return Err(AiError::SessionOwnerMismatch {
+                    session_id: session.session_id.0,
+                    owner: "native".to_string(),
+                    expected: "new".to_string(),
+                });
+            }
+            let event_sender = self.event_sender()?;
+            drop(sessions);
+            let spec = AcpProcessSpec::from_launch(&launch);
+            let (session, controller) = start_acp_session(
+                &self.runtime,
+                spec,
+                session,
+                Arc::clone(&self.sessions),
+                event_sender,
+            )?;
+            let mut sessions = self.lock_sessions()?;
+            prepare_session_output(sessions.insert_with_acp_controller(session, controller)?)
+                .pipe(Ok)
+        } else {
+            prepare_session_output(sessions.insert(session)?).pipe(Ok)
+        }
     }
 
     pub fn send_prompt(
@@ -100,8 +145,18 @@ impl AiEngine {
         }
 
         session.prompt_in_flight = true;
-        session.active_message_id = Some(input.message_id.0);
+        session.active_message_id = Some(input.message_id.0.clone());
         session.set_status(NativeAiSessionStatus::Streaming);
+        if let Some(controller) = session.acp_controller.clone() {
+            if let Err(error) =
+                controller.send_prompt(input.message_id.clone(), input.prompt.text.clone())
+            {
+                session.prompt_in_flight = false;
+                session.active_message_id = None;
+                session.set_status(NativeAiSessionStatus::Error);
+                return Err(error);
+            }
+        }
         let summary = session.session.summary();
         Ok((send_prompt_output(input.session_id), summary))
     }
@@ -114,6 +169,12 @@ impl AiEngine {
         let session = sessions.get_mut(&input.session_id)?;
         session.prompt_in_flight = false;
         session.active_message_id = None;
+        if let (Some(controller), Some(runtime_session_id)) = (
+            session.acp_controller.clone(),
+            session.session.runtime_session_id.clone(),
+        ) {
+            controller.cancel(runtime_session_id)?;
+        }
         session.set_status(NativeAiSessionStatus::Idle);
         let summary = session.session.summary();
         Ok((cancel_session_output(input.session_id), summary))
@@ -125,6 +186,9 @@ impl AiEngine {
     ) -> AiResult<(NativeAiCloseSessionOutput, NativeAiSessionSummary)> {
         let mut sessions = self.lock_sessions()?;
         let mut session = sessions.close(&input.session_id)?;
+        if let Some(controller) = session.acp_controller.take() {
+            controller.close();
+        }
         session.prompt_in_flight = false;
         session.active_message_id = None;
         session.set_status(NativeAiSessionStatus::Closed);
@@ -164,7 +228,12 @@ impl AiEngine {
         Ok(sessions
             .close_owned_by_window(owner_window_id)
             .into_iter()
-            .map(|session| session.session.summary())
+            .map(|mut session| {
+                if let Some(controller) = session.acp_controller.take() {
+                    controller.close();
+                }
+                session.session.summary()
+            })
             .collect())
     }
 
@@ -176,6 +245,13 @@ impl AiEngine {
         self.sessions
             .lock()
             .map_err(|error| AiError::Internal(format!("AI session registry lock failed: {error}")))
+    }
+
+    fn event_sender(&self) -> AiResult<Option<mpsc::SyncSender<AiRuntimeEvent>>> {
+        self.event_sender
+            .lock()
+            .map(|sender| sender.clone())
+            .map_err(|error| AiError::Internal(format!("AI event sender lock failed: {error}")))
     }
 }
 
