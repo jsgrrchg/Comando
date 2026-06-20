@@ -89,6 +89,7 @@ export const AI_SESSION_STREAMING_FLUSH_MS = 120;
 
 export interface AiServiceOptions {
     readonly aiWorker?: AiWorkerGateway | null;
+    readonly nativeAi?: NativeAiGateway | null;
     readonly aiScheduler?: Partial<AiSchedulerConfig>;
     readonly aiSessionRetention?: Partial<AiSessionRetentionConfig>;
     readonly projectService: ProjectService;
@@ -178,6 +179,23 @@ export interface AiWorkerGateway {
     setSessionModel(input: AiSessionModelMutationInput): Promise<void>;
 }
 
+export interface NativeAiGateway {
+    cancelSession(sessionId: string): Promise<void>;
+    close(): Promise<void> | void;
+    closeOwnedByWindow(ownerWindowId: string): Promise<void> | void;
+    closeSession(sessionId: string): Promise<void>;
+    prepareSession(input: NativeAiPrepareSessionRpcInput): Promise<AiSessionSnapshot>;
+    respondPermission(input: AiPermissionResponseInput): Promise<void>;
+    respondUserInput(input: AiUserInputResponseInput): Promise<void>;
+    sendPrompt(input: NativeAiSendPromptRpcInput): Promise<AiPromptResult>;
+    setSessionConfigOption(
+        input: AiSessionConfigOptionMutationInput,
+    ): Promise<void>;
+    setSessionMode(input: AiSessionModeMutationInput): Promise<void>;
+    setSessionModel(input: AiSessionModelMutationInput): Promise<void>;
+    shouldHandleRuntime(runtimeId: AiRuntimeId): boolean;
+}
+
 export interface AiWorkerDesiredSelections {
     readonly configOptions: readonly AiSessionConfigOption[];
     readonly modeId: string | null;
@@ -202,6 +220,16 @@ export interface AiWorkerSessionLaunchInput {
     readonly persistedSubagentSessionMappings?: readonly AiWorkerRuntimeSessionMapping[];
     readonly projectRoot: string | null;
     readonly resolvedRuntime: ResolvedAcpRuntime;
+}
+
+export interface NativeAiPrepareSessionRpcInput {
+    readonly input: SessionDescriptor;
+    readonly launch: AiWorkerSessionLaunchInput;
+}
+
+export interface NativeAiSendPromptRpcInput {
+    readonly input: SendAiPromptInput;
+    readonly launch: AiWorkerSessionLaunchInput;
 }
 
 export interface AiWorkerReviewSessionContext {

@@ -74,6 +74,7 @@ import {
     type AiSessionFreezeSkippedReason,
     type AiSessionRetentionConfig,
     type AiServiceOptions,
+    type NativeAiGateway,
     type ResolvedAcpRuntime,
     type SessionDescriptor,
 } from "./contracts";
@@ -421,6 +422,8 @@ export class AiService {
             readonly order: number;
         }
     >();
+    #nativeAi: NativeAiGateway | null;
+    readonly #nativeSessionIds = new Set<string>();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly #onSessionEvent: (
         ownerWindowId: string,
@@ -442,6 +445,7 @@ export class AiService {
 
     constructor(options: AiServiceOptions) {
         this.#aiWorker = options.aiWorker ?? null;
+        this.#nativeAi = options.nativeAi ?? null;
         this.#onRuntimeStatus = options.onRuntimeStatus;
         this.#onSessionEvent = options.onSessionEvent ?? (() => undefined);
         this.#onSessionSnapshot = options.onSessionSnapshot;
@@ -464,8 +468,14 @@ export class AiService {
         this.#aiWorker = worker;
     }
 
+    setNativeAiGateway(nativeAi: NativeAiGateway | null): void {
+        this.#nativeAi = nativeAi;
+    }
+
     close(): void {
         this.#clearSessionRetentionTimer();
+        this.#nativeAi?.close();
+        this.#nativeSessionIds.clear();
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
         this.#liveSessionTouches.clear();
@@ -871,17 +881,52 @@ export class AiService {
         input: PrepareAiSessionInput,
         ownerWindowId: string,
     ): Promise<AiSessionSnapshot> {
-        const worker = this.#requireAiWorker();
         const launch = await this.#buildWorkerSessionLaunchInput(
             input,
             ownerWindowId,
         );
+        const nativeAi = this.#selectNativeAiGateway(input.runtimeId);
         this.#rememberLiveSessionContext(
             input,
             ownerWindowId,
             launch.additionalRoots,
             launch.persistedSnapshot.parentSessionId ?? null,
         );
+
+        if (nativeAi) {
+            try {
+                const snapshot = await this.#scheduleWorkerSessionStartup(
+                    launch,
+                    1,
+                    async () => {
+                        this.#assertScheduledSessionContextActive(
+                            input.sessionId,
+                            ownerWindowId,
+                            input.runtimeId,
+                        );
+                        return await nativeAi.prepareSession({
+                            input,
+                            launch,
+                        });
+                    },
+                );
+                this.#nativeSessionIds.add(snapshot.sessionId);
+                this.#acceptPreparedLiveSnapshot(snapshot, ownerWindowId);
+                void this.#enforceSessionRetention();
+                return snapshot;
+            } catch (error) {
+                this.#nativeSessionIds.delete(input.sessionId);
+                this.#discardPreparedSessionContextOnFailure(
+                    input.sessionId,
+                    ownerWindowId,
+                    input.runtimeId,
+                );
+                throw error;
+            }
+        }
+
+        const worker = this.#requireAiWorker();
+        this.#nativeSessionIds.delete(input.sessionId);
         try {
             const snapshot = await this.#scheduleWorkerSessionStartup(
                 launch,
@@ -937,7 +982,6 @@ export class AiService {
         input: SendAiPromptInput,
         ownerWindowId: string,
     ): Promise<AiPromptResult> {
-        const worker = this.#requireAiWorker();
         const launch = await this.#buildWorkerSessionLaunchInput(
             input,
             ownerWindowId,
@@ -950,12 +994,57 @@ export class AiService {
                 "This subagent was closed by its parent thread and can’t receive new messages.",
             );
         }
+        const nativeAi = this.#selectNativeAiGateway(input.runtimeId);
         this.#rememberLiveSessionContext(
             input,
             ownerWindowId,
             launch.additionalRoots,
             launch.persistedSnapshot.parentSessionId ?? null,
         );
+
+        if (nativeAi) {
+            try {
+                const result = await this.#scheduleWorkerSessionStartup(
+                    launch,
+                    0,
+                    async () => {
+                        this.#assertScheduledSessionContextActive(
+                            input.sessionId,
+                            ownerWindowId,
+                            input.runtimeId,
+                        );
+                        if (!this.#nativeSessionIds.has(input.sessionId)) {
+                            const snapshot = await nativeAi.prepareSession({
+                                input,
+                                launch,
+                            });
+                            this.#nativeSessionIds.add(snapshot.sessionId);
+                            this.#acceptPreparedLiveSnapshot(
+                                snapshot,
+                                ownerWindowId,
+                            );
+                        }
+                        return await nativeAi.sendPrompt({
+                            input,
+                            launch,
+                        });
+                    },
+                );
+                void this.#enforceSessionRetention();
+                return result;
+            } catch (error) {
+                this.#nativeSessionIds.delete(input.sessionId);
+                this.#discardPreparedSessionContextOnFailure(
+                    input.sessionId,
+                    ownerWindowId,
+                    input.runtimeId,
+                );
+                throw error;
+            }
+        }
+
+        const worker = this.#requireAiWorker();
+        this.#nativeSessionIds.delete(input.sessionId);
         try {
             const result = await this.#scheduleWorkerSessionStartup(
                 launch,
@@ -1013,7 +1102,11 @@ export class AiService {
             return;
         }
 
-        await this.#requireAiWorker().setSessionMode(input);
+        if (this.#isNativeAiSession(input.sessionId)) {
+            await this.#requireNativeAiGateway().setSessionMode(input);
+        } else {
+            await this.#requireAiWorker().setSessionMode(input);
+        }
         this.#persistence.saveRuntimeModePreference(
             this.#getLiveSessionRuntimeId(input.sessionId),
             input.modeId,
@@ -1034,7 +1127,11 @@ export class AiService {
             return;
         }
 
-        await this.#requireAiWorker().setSessionModel(input);
+        if (this.#isNativeAiSession(input.sessionId)) {
+            await this.#requireNativeAiGateway().setSessionModel(input);
+        } else {
+            await this.#requireAiWorker().setSessionModel(input);
+        }
         this.#persistence.saveRuntimeModelPreference(
             this.#getLiveSessionRuntimeId(input.sessionId),
             input.modelId,
@@ -1065,7 +1162,11 @@ export class AiService {
 
         const runtimeId = this.#getLiveSessionRuntimeId(input.sessionId);
         const snapshot = this.#liveSnapshots.get(input.sessionId) ?? null;
-        await this.#requireAiWorker().setSessionConfigOption(input);
+        if (this.#isNativeAiSession(input.sessionId)) {
+            await this.#requireNativeAiGateway().setSessionConfigOption(input);
+        } else {
+            await this.#requireAiWorker().setSessionConfigOption(input);
+        }
         this.#persistRuntimeConfigOptionSelection(
             runtimeId,
             snapshot,
@@ -1076,6 +1177,12 @@ export class AiService {
 
     async renameSession(input: AiSessionRenameMutationInput): Promise<void> {
         if (this.#liveSessionContexts.has(input.sessionId)) {
+            if (this.#isNativeAiSession(input.sessionId)) {
+                await this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
+                    setTitleOnSnapshot(snapshot, input.title),
+                );
+                return;
+            }
             await this.#requireAiWorker().renameSession(input);
             return;
         }
@@ -1090,6 +1197,11 @@ export class AiService {
             return;
         }
 
+        if (this.#isNativeAiSession(sessionId)) {
+            await this.#requireNativeAiGateway().cancelSession(sessionId);
+            return;
+        }
+
         await this.#requireAiWorker().cancelSession(sessionId);
     }
 
@@ -1098,7 +1210,11 @@ export class AiService {
             return;
         }
 
-        await this.#requireAiWorker().closeSession(sessionId);
+        if (this.#isNativeAiSession(sessionId)) {
+            await this.#requireNativeAiGateway().closeSession(sessionId);
+        } else {
+            await this.#requireAiWorker().closeSession(sessionId);
+        }
         this.#clearLiveSession(sessionId);
     }
 
@@ -1136,6 +1252,11 @@ export class AiService {
             .catch((error: unknown) => {
                 debugBenignError("ai.service.closeOwnedByWindow", error);
             });
+        Promise.resolve(this.#nativeAi?.closeOwnedByWindow(ownerWindowId)).catch(
+            (error: unknown) => {
+                debugBenignError("ai.service.closeOwnedByWindow.native", error);
+            },
+        );
         for (const sessionId of sessionIds) {
             this.#recordRetentionClose(sessionId, "window_close");
             this.#clearLiveSession(sessionId);
@@ -1509,11 +1630,40 @@ export class AiService {
     }
 
     respondPermission(input: AiPermissionResponseInput): Promise<void> {
+        if (this.#isNativeAiSession(input.sessionId)) {
+            return this.#requireNativeAiGateway().respondPermission(input);
+        }
+
         return this.#requireAiWorker().respondPermission(input);
     }
 
     async respondUserInput(input: AiUserInputResponseInput): Promise<void> {
+        if (this.#isNativeAiSession(input.sessionId)) {
+            await this.#requireNativeAiGateway().respondUserInput(input);
+            return;
+        }
+
         await this.#requireAiWorker().respondUserInput(input);
+    }
+
+    #selectNativeAiGateway(runtimeId: AiRuntimeId): NativeAiGateway | null {
+        if (!this.#nativeAi?.shouldHandleRuntime(runtimeId)) {
+            return null;
+        }
+
+        return this.#nativeAi;
+    }
+
+    #isNativeAiSession(sessionId: string): boolean {
+        return this.#nativeSessionIds.has(sessionId);
+    }
+
+    #requireNativeAiGateway(): NativeAiGateway {
+        if (!this.#nativeAi) {
+            throw new Error("The native AI backend is not available.");
+        }
+
+        return this.#nativeAi;
     }
 
     #requireAiWorker(): AiWorkerGateway {
@@ -1596,6 +1746,7 @@ export class AiService {
         this.#liveSessionContexts.delete(sessionId);
         this.#liveSessionTouches.delete(sessionId);
         this.#freezingSessionIds.delete(sessionId);
+        this.#nativeSessionIds.delete(sessionId);
         this.#scheduleSessionRetentionTimer();
     }
 
@@ -1702,6 +1853,21 @@ export class AiService {
             : null;
         if (localSkippedReason) {
             this.#recordRetentionSkipped(sessionId, reason, localSkippedReason);
+            return;
+        }
+
+        if (this.#isNativeAiSession(sessionId)) {
+            this.#freezingSessionIds.add(sessionId);
+            try {
+                await this.#requireNativeAiGateway().closeSession(sessionId);
+                this.#recordRetentionClose(sessionId, reason);
+                this.#clearLiveSession(sessionId);
+            } catch (error) {
+                this.#deferSessionRetentionRetry(sessionId);
+                debugBenignError("ai.service.freezeNativeSession", error);
+            } finally {
+                this.#freezingSessionIds.delete(sessionId);
+            }
             return;
         }
 
@@ -2116,8 +2282,9 @@ export class AiService {
     #listRelaunchableLiveSessionContexts(): readonly LiveSessionContext[] {
         return [...this.#liveSessionContexts.values()].filter(
             (context) =>
-                !context.parentSessionId ||
-                !this.#liveSessionContexts.has(context.parentSessionId),
+                !this.#isNativeAiSession(context.sessionId) &&
+                (!context.parentSessionId ||
+                    !this.#liveSessionContexts.has(context.parentSessionId)),
         );
     }
 
@@ -2181,7 +2348,18 @@ export class AiService {
         void this.#enforceSessionRetention();
     }
 
+    #assertLegacyReviewSession(sessionId: string): void {
+        if (!this.#isNativeAiSession(sessionId)) {
+            return;
+        }
+
+        throw new Error(
+            "Native AI review changes are not supported in this rollout yet.",
+        );
+    }
+
     async keepTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
+        this.#assertLegacyReviewSession(input.sessionId);
         const reviewSession = await this.#buildWorkerReviewContext(
             input.sessionId,
         );
@@ -2193,6 +2371,7 @@ export class AiService {
     }
 
     async rejectTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
+        this.#assertLegacyReviewSession(input.sessionId);
         const reviewSession = await this.#buildWorkerReviewContext(
             input.sessionId,
         );
@@ -2206,6 +2385,7 @@ export class AiService {
     async keepTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
+        this.#assertLegacyReviewSession(input.sessionId);
         const reviewSession = await this.#buildWorkerReviewContext(
             input.sessionId,
         );
@@ -2219,6 +2399,7 @@ export class AiService {
     async rejectTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
+        this.#assertLegacyReviewSession(input.sessionId);
         const reviewSession = await this.#buildWorkerReviewContext(
             input.sessionId,
         );
@@ -2230,6 +2411,7 @@ export class AiService {
     }
 
     async keepAllTrackedFiles(sessionId: string): Promise<void> {
+        this.#assertLegacyReviewSession(sessionId);
         const reviewSession = await this.#buildWorkerReviewContext(sessionId);
         const result = await this.#requireAiWorker().keepAllTrackedFiles({
             context: reviewSession.context,
@@ -2239,6 +2421,7 @@ export class AiService {
     }
 
     async rejectAllTrackedFiles(sessionId: string): Promise<void> {
+        this.#assertLegacyReviewSession(sessionId);
         const reviewSession = await this.#buildWorkerReviewContext(sessionId);
         const result = await this.#requireAiWorker().rejectAllTrackedFiles({
             context: reviewSession.context,
