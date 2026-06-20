@@ -109,6 +109,7 @@ export class NativeSearchGateway {
     ): Promise<ProjectTreeNode[]> {
         const result = parseNativeProjectEntrySearchResult(
             await this.#client.request("project_search_entries", {
+                contextKey: nativeSearchContextKey(input),
                 includeAncestorDirectories:
                     input.includeAncestorDirectories === true,
                 limit: input.limit ?? 20,
@@ -282,4 +283,8 @@ function requireString(value: unknown, fieldName: string): string {
         throw new Error(`Native search field ${fieldName} must be a string.`);
     }
     return value;
+}
+
+function nativeSearchContextKey(input: ProjectRuntimeSearchInput): string {
+    return `${input.projectId}:${input.worktreeId ?? "primary"}:project-search`;
 }

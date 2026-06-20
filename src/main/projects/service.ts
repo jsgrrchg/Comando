@@ -854,7 +854,10 @@ export class ProjectService {
     }
 
     #recordNativeIndexInvalidation(payload: ProjectTreeInvalidation): void {
-        if (!this.#nativeSearch || this.#nativeSearchMode === null) {
+        if (
+            !this.#nativeSearch ||
+            this.#nativeSearchMode === null
+        ) {
             return;
         }
 

@@ -1,4 +1,6 @@
+use crate::cancellation::CancellationToken;
 use crate::entry::IndexedProjectEntry;
+use crate::error::{IndexError, IndexResult};
 use crate::query::{ProjectSearchQuery, compact_project_search_value};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -29,11 +31,21 @@ pub fn search_entries(
     query: &ProjectSearchQuery,
     limit: usize,
 ) -> Vec<SearchMatch> {
+    search_entries_cancellable(entries, query, limit, None)
+        .expect("uncancelled search should not fail")
+}
+
+pub fn search_entries_cancellable(
+    entries: &[IndexedProjectEntry],
+    query: &ProjectSearchQuery,
+    limit: usize,
+    cancellation: Option<&CancellationToken>,
+) -> IndexResult<Vec<SearchMatch>> {
     if query.is_empty() || query.has_pathological_token() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
-    collect_top_project_search_entries(entries, query, limit.max(1))
+    collect_top_project_search_entries(entries, query, limit.max(1), cancellation)
 }
 
 fn score_project_search_token(entry: &IndexedProjectEntry, token: &str) -> Option<f64> {
@@ -76,10 +88,14 @@ fn collect_top_project_search_entries(
     entries: &[IndexedProjectEntry],
     query: &ProjectSearchQuery,
     limit: usize,
-) -> Vec<SearchMatch> {
+    cancellation: Option<&CancellationToken>,
+) -> IndexResult<Vec<SearchMatch>> {
     let mut top_entries = Vec::<SearchMatch>::new();
 
-    for entry in entries {
+    for (index, entry) in entries.iter().enumerate() {
+        if index % 256 == 0 && cancellation.is_some_and(CancellationToken::is_cancelled) {
+            return Err(IndexError::Cancelled);
+        }
         let Some(score) = score_project_search_candidate(entry, query) else {
             continue;
         };
@@ -102,7 +118,11 @@ fn collect_top_project_search_entries(
         }
     }
 
-    top_entries
+    if cancellation.is_some_and(CancellationToken::is_cancelled) {
+        return Err(IndexError::Cancelled);
+    }
+
+    Ok(top_entries)
 }
 
 pub fn compare_search_matches(left: &SearchMatch, right: &SearchMatch) -> std::cmp::Ordering {
@@ -116,7 +136,13 @@ pub fn compare_search_matches(left: &SearchMatch, right: &SearchMatch) -> std::c
                 .len()
                 .cmp(&right.entry.relative_path.len())
         })
-        .then_with(|| left.entry.relative_path.cmp(&right.entry.relative_path))
+        .then_with(|| locale_like_path_cmp(&left.entry.relative_path, &right.entry.relative_path))
+}
+
+fn locale_like_path_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    left.to_lowercase()
+        .cmp(&right.to_lowercase())
+        .then_with(|| left.cmp(right))
 }
 
 fn find_search_insert_index(entries: &[SearchMatch], candidate: &SearchMatch) -> usize {
@@ -212,5 +238,17 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(paths, vec!["src/beta.ts", "src/alpha.ts"]);
+    }
+
+    #[test]
+    fn stable_sort_is_case_insensitive_before_original_path() {
+        let entries = vec![entry("src/Beta.ts"), entry("src/Alfa.ts")];
+        let matches = search_entries(&entries, &ProjectSearchQuery::new("ts"), 10);
+        let paths = matches
+            .iter()
+            .map(|entry| entry.entry.relative_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(paths, vec!["src/Alfa.ts", "src/Beta.ts"]);
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use comando_types::ids::OperationId;
@@ -27,6 +27,7 @@ impl CancellationToken {
 pub struct CancellationRegistry {
     active: Arc<Mutex<HashSet<String>>>,
     cancelled: Arc<Mutex<HashSet<String>>>,
+    contexts: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl CancellationRegistry {
@@ -34,8 +35,32 @@ impl CancellationRegistry {
         Self::default()
     }
 
-    pub fn start_operation(&self) -> CancellationToken {
+    pub fn start_operation(&self, context_key: Option<&str>) -> CancellationToken {
         let operation_id = OperationId(format!("operation_{}", Uuid::new_v4().simple()));
+        self.active
+            .lock()
+            .expect("cancel registry lock")
+            .insert(operation_id.0.clone());
+        if let Some(context_key) = context_key {
+            if let Some(previous_operation_id) = self
+                .contexts
+                .lock()
+                .expect("cancel registry lock")
+                .insert(context_key.to_string(), operation_id.0.clone())
+            {
+                self.cancelled
+                    .lock()
+                    .expect("cancel registry lock")
+                    .insert(previous_operation_id);
+            }
+        }
+        CancellationToken {
+            operation_id,
+            cancelled: Arc::clone(&self.cancelled),
+        }
+    }
+
+    pub fn token_for_operation(&self, operation_id: OperationId) -> CancellationToken {
         self.active
             .lock()
             .expect("cancel registry lock")
@@ -67,6 +92,10 @@ impl CancellationRegistry {
             .lock()
             .expect("cancel registry lock")
             .remove(&operation_id.0);
+        self.contexts
+            .lock()
+            .expect("cancel registry lock")
+            .retain(|_, active_operation_id| active_operation_id != &operation_id.0);
         self.cancelled
             .lock()
             .expect("cancel registry lock")
