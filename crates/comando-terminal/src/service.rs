@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
-    mpsc::{self, Sender, SyncSender},
+    mpsc::{self, SyncSender},
 };
 use std::thread;
 use std::time::Duration;
@@ -50,7 +50,7 @@ pub struct TerminalService {
 }
 
 impl TerminalService {
-    pub fn new(event_sender: Sender<TerminalRuntimeEvent>) -> Self {
+    pub fn new(event_sender: SyncSender<TerminalRuntimeEvent>) -> Self {
         let (output_tx, output_rx) = mpsc::sync_channel(OUTPUT_CHANNEL_CAPACITY);
         let _coalescer = start_output_coalescer(output_rx, event_sender);
         Self {
@@ -142,6 +142,9 @@ impl TerminalService {
             owner_key: owner_key.clone(),
         });
 
+        let created_snapshot = handle.snapshot()?;
+        self.insert_session(session_id.clone(), owner_key.clone(), Arc::clone(&handle))?;
+
         spawn_output_reader(
             reader,
             Arc::clone(&handle.closed),
@@ -162,9 +165,7 @@ impl TerminalService {
             owner_key.clone(),
         );
 
-        let created_snapshot = handle.snapshot()?;
-        self.insert_session(session_id, owner_key, Arc::clone(&handle))?;
-        send_output(
+        send_output_deferred(
             &self.output_tx,
             TerminalOutputMessage::Created(NativeTerminalCreatedEvent {
                 session: created_snapshot.clone(),
@@ -503,7 +504,7 @@ impl TerminalService {
         remove_session_from_state(&self.state, &snapshot.session_id.0, &handle.owner_key)?;
         handle.closed.store(true, Ordering::Relaxed);
         handle.release_runtime_resources(true);
-        send_output(
+        send_output_deferred(
             &self.output_tx,
             TerminalOutputMessage::Closed(NativeTerminalClosedEvent {
                 window_id: snapshot.window_id,
@@ -587,7 +588,7 @@ fn resolve_terminal_cwd(requested_cwd: Option<&str>) -> Result<PathBuf, Terminal
         return Err(TerminalError::CwdNotDirectory);
     }
 
-    cwd.canonicalize().map_err(TerminalError::CwdIo)
+    Ok(cwd)
 }
 
 fn shell_display_name(program: &str) -> String {
@@ -597,6 +598,15 @@ fn shell_display_name(program: &str) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or(program)
         .to_string()
+}
+
+fn normalize_signal_code(signal: &str) -> String {
+    let trimmed = signal.trim();
+    let trailing_number = trimmed
+        .rsplit(|character: char| !character.is_ascii_digit())
+        .find(|part| !part.is_empty());
+
+    trailing_number.unwrap_or(trimmed).to_string()
 }
 
 fn spawn_output_reader(
@@ -720,7 +730,7 @@ fn spawn_exit_monitor(
                     };
                     snapshot_guard.status = NativeTerminalStatus::Exited;
                     snapshot_guard.exit_code = i32::try_from(exit_status.exit_code()).ok();
-                    snapshot_guard.signal_code = None;
+                    snapshot_guard.signal_code = exit_status.signal().map(normalize_signal_code);
                     snapshot_guard.clone()
                 };
 
@@ -836,6 +846,22 @@ fn send_output(sender: &SyncSender<TerminalOutputMessage>, message: TerminalOutp
     let _ = sender.send(message);
 }
 
+fn send_output_deferred(
+    sender: &SyncSender<TerminalOutputMessage>,
+    message: TerminalOutputMessage,
+) {
+    match sender.try_send(message) {
+        Ok(()) => {}
+        Err(mpsc::TrySendError::Full(message)) => {
+            let sender = sender.clone();
+            thread::spawn(move || {
+                let _ = sender.send(message);
+            });
+        }
+        Err(mpsc::TrySendError::Disconnected(_)) => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -861,9 +887,24 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn preserves_requested_cwd_path_after_validation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let real_dir = temp_dir.path().join("real");
+        std::fs::create_dir_all(&real_dir).expect("real dir");
+        let symlink_dir = temp_dir.path().join("linked");
+        std::os::unix::fs::symlink(&real_dir, &symlink_dir).expect("symlink");
+
+        let resolved =
+            resolve_terminal_cwd(Some(symlink_dir.to_string_lossy().as_ref())).expect("cwd");
+
+        assert_eq!(resolved, symlink_dir);
+    }
+
     #[test]
     fn reuses_terminal_id_only_inside_owner_window() {
-        let (event_tx, _event_rx) = mpsc::channel();
+        let (event_tx, _event_rx) = mpsc::sync_channel(64);
         let service = TerminalService::new(event_tx);
         let temp_dir = tempfile::tempdir().expect("temp dir");
 
@@ -899,7 +940,7 @@ mod tests {
 
     #[test]
     fn close_does_not_reinterpret_foreign_session_id_as_terminal_id() {
-        let (event_tx, _event_rx) = mpsc::channel();
+        let (event_tx, _event_rx) = mpsc::sync_channel(64);
         let service = TerminalService::new(event_tx);
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let foreign = service
@@ -946,7 +987,7 @@ mod tests {
 
     #[test]
     fn command_session_emits_output_before_exit() {
-        let (event_tx, event_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::sync_channel(64);
         let service = TerminalService::new(event_tx);
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let session = service
@@ -980,6 +1021,36 @@ mod tests {
 
         assert!(saw_data);
         assert!(saw_exit);
+    }
+
+    #[test]
+    fn foreground_lifecycle_send_does_not_block_when_pipeline_is_full() {
+        let (sender, receiver) = mpsc::sync_channel(0);
+
+        send_output_deferred(
+            &sender,
+            TerminalOutputMessage::Error(NativeTerminalErrorEvent {
+                window_id: WindowId("window_1".to_string()),
+                session_id: None,
+                terminal_id: None,
+                message: "Terminal lifecycle event queued.".to_string(),
+                retryable: false,
+            }),
+        );
+
+        assert!(matches!(
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("deferred lifecycle event"),
+            TerminalOutputMessage::Error(_)
+        ));
+    }
+
+    #[test]
+    fn normalizes_portable_pty_signal_text_to_numeric_string() {
+        assert_eq!(normalize_signal_code("Terminated: 15"), "15");
+        assert_eq!(normalize_signal_code("Signal 9"), "9");
+        assert_eq!(normalize_signal_code("SIGTERM"), "SIGTERM");
     }
 
     fn create_input(

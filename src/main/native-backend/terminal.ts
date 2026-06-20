@@ -142,9 +142,9 @@ export class NativeTerminalGateway implements TerminalGateway {
             });
     }
 
-    close(): void {
+    async close(): Promise<void> {
         this.#disposeEventListener();
-        void this.#closeAll().catch((error) => {
+        await this.#closeAll().catch((error) => {
             this.#reportDiagnostic(
                 `Native terminal shutdown cleanup failed: ${formatError(error)}`,
             );

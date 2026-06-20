@@ -10,6 +10,9 @@ pub mod protocol;
 use commands::NativeBackend;
 use protocol::{JsonlWriter, RpcOutput, error_response, parse_request_line};
 
+const BACKGROUND_CHANNEL_CAPACITY: usize = 256;
+const BACKGROUND_DRAIN_OUTPUT_LIMIT: usize = 64;
+
 enum InputMessage {
     Line(io::Result<String>),
     Eof,
@@ -23,7 +26,8 @@ where
     let mut writer = JsonlWriter::new(writer);
     let mut backend = NativeBackend::default();
     let (sender, receiver) = mpsc::channel::<InputMessage>();
-    let (background_sender, background_receiver) = mpsc::channel::<Vec<RpcOutput>>();
+    let (background_sender, background_receiver) =
+        mpsc::sync_channel::<Vec<RpcOutput>>(BACKGROUND_CHANNEL_CAPACITY);
 
     thread::spawn(move || {
         for line_result in reader.lines() {
@@ -38,7 +42,11 @@ where
         let message = match receiver.recv_timeout(Duration::from_millis(50)) {
             Ok(message) => message,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                write_background_outputs(&mut writer, &background_receiver)?;
+                write_background_outputs(
+                    &mut writer,
+                    &background_receiver,
+                    BACKGROUND_DRAIN_OUTPUT_LIMIT,
+                )?;
                 write_outputs(&mut writer, backend.drain_fs_events(false))?;
                 continue;
             }
@@ -48,7 +56,7 @@ where
         let line = match message {
             InputMessage::Line(line_result) => line_result?,
             InputMessage::Eof => {
-                write_background_outputs(&mut writer, &background_receiver)?;
+                write_background_outputs(&mut writer, &background_receiver, usize::MAX)?;
                 write_outputs(&mut writer, backend.drain_fs_events(true))?;
                 break;
             }
@@ -73,7 +81,11 @@ where
         };
 
         write_outputs(&mut writer, command_result.outputs)?;
-        write_background_outputs(&mut writer, &background_receiver)?;
+        write_background_outputs(
+            &mut writer,
+            &background_receiver,
+            BACKGROUND_DRAIN_OUTPUT_LIMIT,
+        )?;
 
         if command_result.should_shutdown {
             break;
@@ -86,11 +98,17 @@ where
 fn write_background_outputs<W>(
     writer: &mut JsonlWriter<W>,
     receiver: &mpsc::Receiver<Vec<RpcOutput>>,
+    max_outputs: usize,
 ) -> io::Result<()>
 where
     W: Write,
 {
+    let mut written = 0usize;
     for outputs in receiver.try_iter() {
+        if written >= max_outputs {
+            break;
+        }
+        written = written.saturating_add(outputs.len());
         write_outputs(writer, outputs)?;
     }
     Ok(())

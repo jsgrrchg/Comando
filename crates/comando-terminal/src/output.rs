@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -37,7 +37,7 @@ struct PendingOutput {
 
 pub fn start_output_coalescer(
     receiver: Receiver<TerminalOutputMessage>,
-    event_sender: Sender<TerminalRuntimeEvent>,
+    event_sender: SyncSender<TerminalRuntimeEvent>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut pending = HashMap::<String, PendingOutput>::new();
@@ -65,7 +65,7 @@ pub fn start_output_coalescer(
 
 fn handle_message(
     message: TerminalOutputMessage,
-    event_sender: &Sender<TerminalRuntimeEvent>,
+    event_sender: &SyncSender<TerminalRuntimeEvent>,
     pending: &mut HashMap<String, PendingOutput>,
     pending_bytes: &mut usize,
 ) {
@@ -106,7 +106,7 @@ fn handle_message(
 }
 
 fn flush_all(
-    event_sender: &Sender<TerminalRuntimeEvent>,
+    event_sender: &SyncSender<TerminalRuntimeEvent>,
     pending: &mut HashMap<String, PendingOutput>,
     pending_bytes: &mut usize,
 ) {
@@ -117,7 +117,7 @@ fn flush_all(
 }
 
 fn flush_session(
-    event_sender: &Sender<TerminalRuntimeEvent>,
+    event_sender: &SyncSender<TerminalRuntimeEvent>,
     pending: &mut HashMap<String, PendingOutput>,
     pending_bytes: &mut usize,
     session_id: &str,
@@ -162,7 +162,7 @@ fn split_at_byte_limit(value: &str, limit: usize) -> usize {
     if split_at == 0 { value.len() } else { split_at }
 }
 
-fn send_event(sender: &Sender<TerminalRuntimeEvent>, event: TerminalRuntimeEvent) {
+fn send_event(sender: &SyncSender<TerminalRuntimeEvent>, event: TerminalRuntimeEvent) {
     let _ = sender.send(event);
 }
 
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn coalesces_small_chunks() {
         let (input_tx, input_rx) = mpsc::channel();
-        let (event_tx, event_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::sync_channel(64);
         let _handle = start_output_coalescer(input_rx, event_tx);
 
         for chunk in ["a", "b", "c"] {
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn flushes_session_before_exit() {
         let (input_tx, input_rx) = mpsc::channel();
-        let (event_tx, event_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::sync_channel(64);
         let _handle = start_output_coalescer(input_rx, event_tx);
 
         input_tx
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn chunks_large_output_on_flush() {
         let (input_tx, input_rx) = mpsc::channel();
-        let (event_tx, event_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::sync_channel(64);
         let _handle = start_output_coalescer(input_rx, event_tx);
         let data = "x".repeat(OUTPUT_MAX_EVENT_BYTES + 5);
 

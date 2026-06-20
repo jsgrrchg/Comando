@@ -43,7 +43,7 @@ export interface TerminalGateway {
         id: string,
     ): Promise<void> | void;
     closeOwnedByWindow(ownerWindowId: string): void;
-    close(): void;
+    close(): Promise<void> | void;
 }
 
 interface TerminalServiceOptions {

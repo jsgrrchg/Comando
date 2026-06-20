@@ -409,13 +409,13 @@ async function shutdownApplication(): Promise<void> {
     mainProcessPerformance.stop();
 
     aiService?.close();
-    terminalService?.close();
 
     const aiWorkerClientToClose = aiWorkerClient;
     const dbWorkerClientToClose = dbWorkerClient;
     const gitServiceToClose = gitService;
     const nativeBackendClientToClose = nativeBackendClient;
     const projectServiceToClose = projectService;
+    const terminalServiceToClose = terminalService;
 
     aiService = null;
     aiWorkerClient = null;
@@ -433,7 +433,10 @@ async function shutdownApplication(): Promise<void> {
     const shutdownResults = await Promise.allSettled([
         aiWorkerClientToClose?.close(),
         gitServiceToClose?.close(),
-        nativeBackendClientToClose?.dispose(),
+        (async () => {
+            await terminalServiceToClose?.close();
+            await nativeBackendClientToClose?.dispose();
+        })(),
         projectServiceToClose?.close(),
         dbWorkerClientToClose?.close(),
     ]);

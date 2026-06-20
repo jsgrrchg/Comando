@@ -87,10 +87,12 @@ pub fn handle_request(request: RpcRequest) -> CommandResult {
 }
 
 impl NativeBackend {
+    const TERMINAL_EVENT_CHANNEL_CAPACITY: usize = 256;
+
     pub fn handle_request_background(
         &mut self,
         request: RpcRequest,
-        background_sender: mpsc::Sender<Vec<RpcOutput>>,
+        background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
     ) -> CommandResult {
         match request.command.as_str() {
             "project_search_entries" | "search_project_entries" => {
@@ -889,7 +891,7 @@ impl NativeBackend {
     fn spawn_search_project_entries(
         &mut self,
         request: RpcRequest,
-        background_sender: mpsc::Sender<Vec<RpcOutput>>,
+        background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
     ) -> CommandResult {
         if let Err(error) = self.sync_fs_registry_from_store().map(|_| ()) {
             return error_only(request.id, error);
@@ -986,7 +988,7 @@ impl NativeBackend {
     fn handle_terminal_request(
         &mut self,
         request: RpcRequest,
-        background_sender: mpsc::Sender<Vec<RpcOutput>>,
+        background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
     ) -> CommandResult {
         let command = request.command.clone();
         match command.as_str() {
@@ -1111,10 +1113,11 @@ impl NativeBackend {
 
     fn ensure_terminal_service(
         &mut self,
-        background_sender: mpsc::Sender<Vec<RpcOutput>>,
+        background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
     ) -> &TerminalService {
         self.terminal_service.get_or_insert_with(|| {
-            let (event_sender, event_receiver) = mpsc::channel::<TerminalRuntimeEvent>();
+            let (event_sender, event_receiver) =
+                mpsc::sync_channel::<TerminalRuntimeEvent>(Self::TERMINAL_EVENT_CHANNEL_CAPACITY);
             thread::spawn(move || {
                 for event in event_receiver {
                     let output = terminal_runtime_event_output(event);
@@ -2548,7 +2551,7 @@ mod tests {
         let (temp_dir, mut backend, project_id) = backend_with_registered_project();
         let project_path = temp_dir.path().join("project-native");
         fs::write(project_path.join("main.ts"), "console.log('hi');\n").expect("main");
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(16);
 
         let search_result = backend.handle_request_background(
             request(

@@ -27,4 +27,20 @@ describe("IPC channel coverage", () => {
             ).toBe(true);
         });
     }
+
+    it("returns terminal mutation promises to Electron", () => {
+        for (const method of [
+            "writeInput",
+            "resizeSession",
+            "closeSessionOrOwnedTerminal",
+        ]) {
+            const pattern = new RegExp(
+                `return\\s+options\\.terminalService\\.${method}\\(`,
+            );
+            expect(
+                pattern.test(source),
+                `Expected terminal IPC handler to return ${method}(...)`,
+            ).toBe(true);
+        }
+    });
 });
