@@ -108,6 +108,7 @@ Initial error codes:
 - `invalid_args`
 - `unsupported_protocol_version`
 - `unsupported_schema_version`
+- `not_supported`
 - `backend_not_ready`
 - `operation_cancelled`
 - `operation_timeout`

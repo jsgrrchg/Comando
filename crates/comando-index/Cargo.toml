@@ -1,0 +1,16 @@
+[package]
+name = "comando-index"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+comando-fs = { path = "../comando-fs" }
+comando-types.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
