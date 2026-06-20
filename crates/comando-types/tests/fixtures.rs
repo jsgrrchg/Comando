@@ -162,8 +162,7 @@ fn local_domain_fixtures_deserialize() {
     let workspace_ref: NativeWorkspaceSnapshotRef =
         fixture("persistence/workspace.snapshot_ref.json");
     assert_eq!(workspace_ref.storage_key, "workspace:workspace_1");
-    let storage_health: NativePersistenceStorageHealth =
-        fixture("persistence/storage.health.json");
+    let storage_health: NativePersistenceStorageHealth = fixture("persistence/storage.health.json");
     assert!(storage_health.schema_compatible);
 }
 
@@ -186,7 +185,5 @@ fn key_dtos_roundtrip_without_losing_required_fields() {
     assert_typed_roundtrip::<NativeTerminalDataEvent>("terminal/terminal.data_event.json");
     assert_typed_roundtrip::<NativeTerminalExitEvent>("terminal/terminal.exit_event.json");
     assert_typed_roundtrip::<NativeWorkspaceSnapshotRef>("persistence/workspace.snapshot_ref.json");
-    assert_typed_roundtrip::<NativePersistenceStorageHealth>(
-        "persistence/storage.health.json",
-    );
+    assert_typed_roundtrip::<NativePersistenceStorageHealth>("persistence/storage.health.json");
 }

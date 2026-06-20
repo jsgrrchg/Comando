@@ -1,0 +1,15 @@
+[package]
+name = "comando-persistence"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+comando-types.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
