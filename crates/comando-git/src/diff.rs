@@ -290,7 +290,7 @@ fn diff_run_options(scope: &str) -> GitRunOptions {
     }
 }
 
-fn validate_relative_path(path: &str) -> GitResult<String> {
+pub(crate) fn validate_relative_path(path: &str) -> GitResult<String> {
     let normalized = path.replace('\\', "/");
     let path_buf = PathBuf::from(&normalized);
 
