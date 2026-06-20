@@ -6,22 +6,32 @@ import type {
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 
 import {
+    createNativeHandshakeInput,
+    createNativeRequestMeta,
+    NATIVE_PROTOCOL_VERSION,
     type NativeBackendErrorPayload,
     type NativeBackendEvent,
+    type NativeBackendHandshakeInput,
+    type NativeBackendHandshakeOutput,
     type NativeBackendOutput,
     type NativeBackendRequestId,
+    type NativeCommandName,
+    parseNativeBackendCapabilitiesOutput,
+    parseNativeBackendHandshakeOutput,
     parseNativeBackendOutput,
-} from "./protocol";
+} from "@shared/native-backend";
 
 export class NativeBackendError extends Error {
     readonly code: string;
     readonly details: unknown | null;
+    readonly retryable: boolean;
 
     constructor(payload: NativeBackendErrorPayload) {
         super(payload.message);
         this.name = "NativeBackendError";
         this.code = payload.code;
         this.details = payload.details;
+        this.retryable = payload.retryable;
     }
 }
 
@@ -101,7 +111,32 @@ export class NativeBackendClient {
         });
     }
 
-    request(command: string, args: Record<string, unknown> = {}): Promise<unknown> {
+    async handshake(
+        input: Partial<NativeBackendHandshakeInput> = {},
+    ): Promise<NativeBackendHandshakeOutput> {
+        const result = await this.request("backend_handshake", {
+            ...createNativeHandshakeInput(input),
+        });
+        const handshake = parseNativeBackendHandshakeOutput(result);
+        if (handshake.protocolVersion !== NATIVE_PROTOCOL_VERSION) {
+            throw new NativeBackendError({
+                code: "unsupported_protocol_version",
+                message: `Native backend protocol ${handshake.protocolVersion} is not supported by this client.`,
+                details: {
+                    backendProtocolVersion: handshake.protocolVersion,
+                    clientProtocolVersion: NATIVE_PROTOCOL_VERSION,
+                },
+                retryable: false,
+            });
+        }
+
+        return handshake;
+    }
+
+    request<T = unknown>(
+        command: NativeCommandName,
+        args: Record<string, unknown> = {},
+    ): Promise<T> {
         return this.sendRequest(command, args, this.requestTimeoutMs);
     }
 
@@ -145,12 +180,12 @@ export class NativeBackendClient {
         );
     }
 
-    private sendRequest(
-        command: string,
+    private sendRequest<T = unknown>(
+        command: NativeCommandName,
         args: Record<string, unknown>,
         timeoutMs: number,
         allowDuringDispose = false,
-    ): Promise<unknown> {
+    ): Promise<T> {
         if (this.exited) {
             return Promise.reject(
                 new Error("Native backend process is not running."),
@@ -163,11 +198,16 @@ export class NativeBackendClient {
             );
         }
 
-        const id = this.nextRequestId;
+        const id = `req_${this.nextRequestId}`;
         this.nextRequestId += 1;
-        const request = `${JSON.stringify({ id, command, args })}\n`;
+        const request = `${JSON.stringify({
+            id,
+            command,
+            args,
+            meta: createNativeRequestMeta(),
+        })}\n`;
 
-        return new Promise((resolve, reject) => {
+        return new Promise<T>((resolve, reject) => {
             const timeout = setTimeout(() => {
                 this.pendingRequests.delete(requestKey(id));
                 reject(
@@ -179,7 +219,9 @@ export class NativeBackendClient {
 
             this.pendingRequests.set(requestKey(id), {
                 reject,
-                resolve,
+                resolve: (value) => {
+                    resolve(value as T);
+                },
                 timeout,
             });
 
@@ -340,3 +382,5 @@ function requestKey(id: NativeBackendRequestId | null): string {
 function formatError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
+
+export { parseNativeBackendCapabilitiesOutput };
