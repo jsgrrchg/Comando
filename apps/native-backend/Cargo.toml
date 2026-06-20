@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+comando-persistence = { path = "../../crates/comando-persistence" }
+comando-projects = { path = "../../crates/comando-projects" }
 comando-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+rusqlite.workspace = true
+tempfile = "3.27.0"
