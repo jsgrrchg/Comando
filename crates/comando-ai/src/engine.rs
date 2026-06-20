@@ -60,7 +60,7 @@ impl AiEngine {
         input: NativeAiGetRuntimeStatusInput,
     ) -> AiResult<NativeAiRuntimeStatus> {
         let runtime_id = input.runtime_id.0;
-        let launch_status = None;
+        let launch_status = input.launch.map(|launch| launch.status);
         self.registry.status_from_launch(&runtime_id, launch_status)
     }
 
@@ -83,7 +83,7 @@ impl AiEngine {
     pub fn send_prompt(
         &self,
         input: NativeAiSendPromptInput,
-    ) -> AiResult<NativeAiSendPromptOutput> {
+    ) -> AiResult<(NativeAiSendPromptOutput, NativeAiSessionSummary)> {
         if input.prompt.text.trim().is_empty() && input.prompt.attachments.is_empty() {
             return Err(AiError::PromptRejected {
                 session_id: input.session_id.0,
@@ -102,31 +102,34 @@ impl AiEngine {
         session.prompt_in_flight = true;
         session.active_message_id = Some(input.message_id.0);
         session.set_status(NativeAiSessionStatus::Streaming);
-        Ok(send_prompt_output(input.session_id))
+        let summary = session.session.summary();
+        Ok((send_prompt_output(input.session_id), summary))
     }
 
     pub fn cancel_session(
         &self,
         input: NativeAiSessionIdInput,
-    ) -> AiResult<NativeAiCancelSessionOutput> {
+    ) -> AiResult<(NativeAiCancelSessionOutput, NativeAiSessionSummary)> {
         let mut sessions = self.lock_sessions()?;
         let session = sessions.get_mut(&input.session_id)?;
         session.prompt_in_flight = false;
         session.active_message_id = None;
         session.set_status(NativeAiSessionStatus::Idle);
-        Ok(cancel_session_output(input.session_id))
+        let summary = session.session.summary();
+        Ok((cancel_session_output(input.session_id), summary))
     }
 
     pub fn close_session(
         &self,
         input: NativeAiSessionIdInput,
-    ) -> AiResult<NativeAiCloseSessionOutput> {
+    ) -> AiResult<(NativeAiCloseSessionOutput, NativeAiSessionSummary)> {
         let mut sessions = self.lock_sessions()?;
         let mut session = sessions.close(&input.session_id)?;
         session.prompt_in_flight = false;
         session.active_message_id = None;
         session.set_status(NativeAiSessionStatus::Closed);
-        Ok(close_session_output(input.session_id))
+        let summary = session.session.summary();
+        Ok((close_session_output(input.session_id), summary))
     }
 
     pub fn set_session_mode(&self, input: NativeAiSetSessionModeInput) -> AiResult<()> {
@@ -243,7 +246,7 @@ mod tests {
             },
         };
 
-        assert!(engine.send_prompt(input.clone()).unwrap().accepted);
+        assert!(engine.send_prompt(input.clone()).unwrap().0.accepted);
         assert!(matches!(
             engine.send_prompt(input.clone()),
             Err(AiError::SessionBusy { .. })
@@ -254,6 +257,6 @@ mod tests {
                 session_id: SessionId("s1".to_string()),
             })
             .unwrap();
-        assert!(engine.send_prompt(input).unwrap().accepted);
+        assert!(engine.send_prompt(input).unwrap().0.accepted);
     }
 }

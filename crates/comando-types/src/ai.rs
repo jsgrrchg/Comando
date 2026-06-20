@@ -95,9 +95,10 @@ pub struct NativeAiRuntimeStatus {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiGetRuntimeStatusInput {
     pub runtime_id: NativeAiRuntimeId,
+    pub launch: Option<NativeAiLaunchSpec>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiLaunchSpec {
     pub executable: String,

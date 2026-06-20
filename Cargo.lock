@@ -317,6 +317,7 @@ dependencies = [
 name = "comando-native-backend"
 version = "0.1.0"
 dependencies = [
+ "comando-ai",
  "comando-fs",
  "comando-git",
  "comando-index",

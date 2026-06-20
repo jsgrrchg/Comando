@@ -78,6 +78,7 @@ export type NativeAiRuntimeStatus = {
 
 export type NativeAiGetRuntimeStatusInput = {
     readonly runtimeId: NativeAiRuntimeId;
+    readonly launch?: NativeAiLaunchSpec | null;
 };
 
 export type NativeAiLaunchSpec = {
