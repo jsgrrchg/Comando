@@ -1725,6 +1725,7 @@ export interface SearchProjectEntriesInput {
     readonly limit?: number;
     readonly projectId: string;
     readonly query: string;
+    readonly searchContext?: string;
     readonly worktreeId?: string | null;
 }
 

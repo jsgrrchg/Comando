@@ -286,5 +286,6 @@ function requireString(value: unknown, fieldName: string): string {
 }
 
 function nativeSearchContextKey(input: ProjectRuntimeSearchInput): string {
-    return `${input.projectId}:${input.worktreeId ?? "primary"}:project-search`;
+    const searchContext = input.searchContext?.trim() || "project-search";
+    return `${input.projectId}:${input.worktreeId ?? "primary"}:${searchContext}`;
 }

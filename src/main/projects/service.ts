@@ -414,6 +414,7 @@ export class ProjectService {
             projectId: input.projectId,
             query: normalizedQuery,
             rootPath: project.rootPath,
+            searchContext: input.searchContext,
             worktreeId: project.worktreeId,
         };
         const search = async () => {

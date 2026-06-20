@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::sync::Arc;
 
 use comando_fs::ProjectRoot;
 use comando_fs::path::validate_untrusted_relative_path;
@@ -25,11 +26,26 @@ pub struct IndexEvent {
 
 #[derive(Debug, Clone)]
 struct ProjectIndex {
-    entries: Vec<IndexedProjectEntry>,
+    entries: Arc<[IndexedProjectEntry]>,
     generation: u64,
     root: ProjectRoot,
     stats: IndexBuildStats,
     status: IndexStatus,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSearchSnapshot {
+    pub entries: Arc<[IndexedProjectEntry]>,
+    pub generation: u64,
+    pub status: IndexStatus,
+    pub stats: IndexBuildStats,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSearchOperation {
+    operation_id: OperationId,
+    token: crate::cancellation::CancellationToken,
+    cancellations: CancellationRegistry,
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +107,7 @@ impl IndexService {
         } else {
             IndexStatus::Ready
         };
-        let entries = built.entries;
+        let entries = Arc::<[IndexedProjectEntry]>::from(built.entries);
         let tree_entries = entries
             .iter()
             .map(IndexedProjectEntry::to_project_tree_entry)
@@ -153,33 +169,36 @@ impl IndexService {
         }
 
         let events = self.ensure_ready(root)?;
+        let snapshot = self.search_snapshot_for_root(&events.0)?;
         let token = self.cancellations.start_operation(context_key);
         let operation_id = token.operation_id().clone();
-        let index = self.index_for_root(&events.0)?;
-        let matches = match search_entries_cancellable(&index.entries, query, limit, Some(&token)) {
-            Ok(matches) => matches,
-            Err(error) => {
-                self.cancellations.clear(&operation_id);
-                return Err(error);
-            }
-        };
-        if token.is_cancelled() {
-            self.cancellations.clear(&operation_id);
-            return Err(IndexError::Cancelled);
-        }
-
-        let entries = if include_ancestor_directories {
-            include_ancestor_directory_entries(&matches, &index.entries)
-        } else {
-            matches.iter().map(|match_| match_.entry.clone()).collect()
-        };
-        self.cancellations.clear(&operation_id);
+        let operation = self.search_operation_from_token(operation_id.clone(), token);
+        let (entries, matches) = search_project_entries_snapshot(
+            &snapshot,
+            query,
+            limit,
+            include_ancestor_directories,
+            operation,
+        )?;
 
         Ok((entries, matches, operation_id, events.1))
     }
 
     pub fn ensure_project_index(&mut self, root: ProjectRoot) -> IndexResult<Vec<IndexEvent>> {
         self.ensure_ready(root).map(|(_, events)| events)
+    }
+
+    pub fn search_snapshot_for_root(
+        &self,
+        root: &ProjectRoot,
+    ) -> IndexResult<ProjectSearchSnapshot> {
+        let index = self.index_for_root(root)?;
+        Ok(ProjectSearchSnapshot {
+            entries: Arc::clone(&index.entries),
+            generation: index.generation,
+            status: index.status,
+            stats: index.stats.clone(),
+        })
     }
 
     pub fn search_project_entries_with_operation(
@@ -190,28 +209,21 @@ impl IndexService {
         include_ancestor_directories: bool,
         operation_id: OperationId,
     ) -> IndexResult<(Vec<IndexedProjectEntry>, Vec<SearchMatch>)> {
-        let index = self.index_for_root(&root)?;
-        let token = self.cancellations.token_for_operation(operation_id.clone());
-        let matches = match search_entries_cancellable(&index.entries, query, limit, Some(&token)) {
-            Ok(matches) => matches,
+        let operation = self.search_operation(operation_id);
+        let snapshot = match self.search_snapshot_for_root(&root) {
+            Ok(snapshot) => snapshot,
             Err(error) => {
-                self.cancellations.clear(&operation_id);
+                operation.cancellations.clear(&operation.operation_id);
                 return Err(error);
             }
         };
-        if token.is_cancelled() {
-            self.cancellations.clear(&operation_id);
-            return Err(IndexError::Cancelled);
-        }
-
-        let entries = if include_ancestor_directories {
-            include_ancestor_directory_entries(&matches, &index.entries)
-        } else {
-            matches.iter().map(|match_| match_.entry.clone()).collect()
-        };
-        self.cancellations.clear(&operation_id);
-
-        Ok((entries, matches))
+        search_project_entries_snapshot(
+            &snapshot,
+            query,
+            limit,
+            include_ancestor_directories,
+            operation,
+        )
     }
 
     pub fn update_entries(
@@ -250,7 +262,7 @@ impl IndexService {
         }
 
         next_entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-        index.entries = refresh_has_children(next_entries);
+        index.entries = Arc::<[IndexedProjectEntry]>::from(refresh_has_children(next_entries));
         index.generation += 1;
         index.stats.entry_count = index.entries.len();
         index.stats.indexed_file_count = index
@@ -312,6 +324,25 @@ impl IndexService {
             .clone()
     }
 
+    pub fn search_operation(&self, operation_id: OperationId) -> ProjectSearchOperation {
+        self.search_operation_from_token(
+            operation_id.clone(),
+            self.cancellations.token_for_operation(operation_id),
+        )
+    }
+
+    fn search_operation_from_token(
+        &self,
+        operation_id: OperationId,
+        token: crate::cancellation::CancellationToken,
+    ) -> ProjectSearchOperation {
+        ProjectSearchOperation {
+            operation_id,
+            token,
+            cancellations: self.cancellations.clone(),
+        }
+    }
+
     fn ensure_ready(&mut self, root: ProjectRoot) -> IndexResult<(ProjectRoot, Vec<IndexEvent>)> {
         let scope_key = scope_key(&root.project_id, root.worktree_id.as_ref());
         if self.indexes.contains_key(&scope_key) {
@@ -346,6 +377,36 @@ impl IndexService {
             occurred_at: now_rfc3339(),
         }
     }
+}
+
+pub fn search_project_entries_snapshot(
+    snapshot: &ProjectSearchSnapshot,
+    query: &ProjectSearchQuery,
+    limit: usize,
+    include_ancestor_directories: bool,
+    operation: ProjectSearchOperation,
+) -> IndexResult<(Vec<IndexedProjectEntry>, Vec<SearchMatch>)> {
+    let matches =
+        match search_entries_cancellable(&snapshot.entries, query, limit, Some(&operation.token)) {
+            Ok(matches) => matches,
+            Err(error) => {
+                operation.cancellations.clear(&operation.operation_id);
+                return Err(error);
+            }
+        };
+    if operation.token.is_cancelled() {
+        operation.cancellations.clear(&operation.operation_id);
+        return Err(IndexError::Cancelled);
+    }
+
+    let entries = if include_ancestor_directories {
+        include_ancestor_directory_entries(&matches, &snapshot.entries)
+    } else {
+        matches.iter().map(|match_| match_.entry.clone()).collect()
+    };
+    operation.cancellations.clear(&operation.operation_id);
+
+    Ok((entries, matches))
 }
 
 fn include_ancestor_directory_entries(

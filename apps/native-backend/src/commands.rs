@@ -4,7 +4,7 @@ use std::thread;
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
 use comando_index::{
     IndexBuildOptions, IndexEvent, IndexPolicy, IndexService, IndexUpdate, IndexUpdateKind,
-    ProjectSearchQuery, SearchMatch,
+    ProjectSearchQuery, SearchMatch, search_project_entries_snapshot,
 };
 use comando_persistence::{NativeStorageConfig, SqlitePersistenceStore, closed_storage_health};
 use comando_projects::{ProjectRegistry, ProjectRegistryError};
@@ -834,40 +834,39 @@ impl NativeBackend {
             Ok(events) => events,
             Err(error) => return error_only(request.id, error.to_native_error()),
         };
+        let snapshot = match self.index_service.search_snapshot_for_root(&root) {
+            Ok(snapshot) => snapshot,
+            Err(error) => return error_only(request.id, error.to_native_error()),
+        };
         let operation_id = self
             .index_service
             .begin_search_operation(input.context_key.as_deref());
+        let operation = self.index_service.search_operation(operation_id.clone());
         let request_id = request.id;
-        let mut index_service = self.index_service.clone();
         let query = ProjectSearchQuery::new(&input.query);
         let limit = input.limit.max(1) as usize;
         let include_ancestor_directories = input.include_ancestor_directories;
-        let project_id = input.project_id;
-        let worktree_id = input.worktree_id;
 
         thread::spawn(move || {
-            let outputs = match index_service.search_project_entries_with_operation(
-                root,
+            let outputs = match search_project_entries_snapshot(
+                &snapshot,
                 &query,
                 limit,
                 include_ancestor_directories,
-                operation_id.clone(),
+                operation,
             ) {
-                Ok((entries, matches)) => {
-                    let status = index_service.get_status(&project_id, worktree_id.as_ref());
-                    vec![response_ok(
-                        request_id,
-                        serde_json::to_value(native_index::NativeProjectEntrySearchResult {
-                            operation_id,
-                            generation: status.generation,
-                            status: native_index_status_kind(status.status),
-                            entries: entries.into_iter().map(indexed_project_entry).collect(),
-                            matches: path_search_matches(matches),
-                            stats: native_index_stats(status.stats),
-                        })
-                        .expect("project entry search result serializes"),
-                    )]
-                }
+                Ok((entries, matches)) => vec![response_ok(
+                    request_id,
+                    serde_json::to_value(native_index::NativeProjectEntrySearchResult {
+                        operation_id,
+                        generation: snapshot.generation,
+                        status: native_index_status_kind(snapshot.status),
+                        entries: entries.into_iter().map(indexed_project_entry).collect(),
+                        matches: path_search_matches(matches),
+                        stats: native_index_stats(snapshot.stats),
+                    })
+                    .expect("project entry search result serializes"),
+                )],
                 Err(error) => vec![error_response(Some(request_id), error.to_native_error())],
             };
             let _ = background_sender.send(outputs);

@@ -120,6 +120,34 @@ describe("NativeSearchGateway", () => {
             }),
         ).rejects.toThrow("Native project index listing was truncated");
     });
+
+    it("scopes native search cancellation context by caller", async () => {
+        const requestMock = vi.fn(async () => ({
+            entries: [],
+            generation: 1,
+            matches: [],
+            operationId: "operation_1",
+            stats: nativeStats(),
+            status: "ready",
+        }));
+        const gateway = gatewayWith(requestMock);
+
+        await gateway.searchProjectEntries({
+            limit: 20,
+            projectId: "project-1",
+            query: "main",
+            rootPath: "/tmp/project",
+            searchContext: "quick-open",
+            worktreeId: "worktree-1",
+        });
+
+        expect(requestMock).toHaveBeenCalledWith(
+            "project_search_entries",
+            expect.objectContaining({
+                contextKey: "project-1:worktree-1:quick-open",
+            }),
+        );
+    });
 });
 
 function gatewayWith(
