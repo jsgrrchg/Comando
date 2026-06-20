@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+comando-fs = { path = "../../crates/comando-fs" }
 comando-persistence = { path = "../../crates/comando-persistence" }
 comando-projects = { path = "../../crates/comando-projects" }
 comando-types.workspace = true
@@ -11,5 +12,6 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+comando-fs = { path = "../../crates/comando-fs", features = ["test-hooks"] }
 rusqlite.workspace = true
 tempfile = "3.27.0"

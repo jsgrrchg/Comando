@@ -3,12 +3,15 @@
 Comando can optionally launch a Rust sidecar named `comando-native-backend`.
 The sidecar is disabled by default. The current native backend owns the
 versioned transport contract, bootstrap commands, capabilities, JSON fixtures,
-clean shutdown, and the first persistence/project registry domain.
+clean shutdown, persistence/project registry, and the native filesystem/project
+tree domain behind flags.
 
 Rust can open the current Comando SQLite store and own `project_list` /
 `project_add` only when the explicit native project registry write flag is set.
-Filesystem tree, watchers, search, git, terminal, AI, review, and renderer UI
-behavior remain owned by the existing TypeScript path.
+Rust can also own project tree, file read/write, filesystem mutations, copies,
+and watcher invalidations when native filesystem flags are enabled. Search,
+real git status/diff, terminal, AI, review, and renderer UI behavior remain
+owned by the existing TypeScript path.
 
 ## Flags
 
@@ -28,6 +31,19 @@ behavior remain owned by the existing TypeScript path.
 - `COMANDO_NATIVE_PROJECT_REGISTRY_MODE=write` routes project list/add through
   Rust. Other project operations still delegate to the legacy store and refresh
   the native-backed cache.
+- `COMANDO_NATIVE_FS=1` enables native filesystem routing. With no mode set, it
+  runs in `shadow`.
+- `COMANDO_NATIVE_FS_MODE=shadow` keeps the TypeScript filesystem path visible.
+- `COMANDO_NATIVE_FS_MODE=read` routes file reads through Rust. Project tree
+  child reads route through Rust only when `COMANDO_NATIVE_PROJECT_TREE=1` is
+  also set.
+- `COMANDO_NATIVE_FS_MODE=write` routes file writes and filesystem mutations
+  through Rust. Write operations do not silently fall back to TypeScript.
+- `COMANDO_NATIVE_PROJECT_TREE=1` enables native project tree child reads in
+  read or write mode. Complete project entry listing/search remains on the
+  legacy TypeScript index until the search/indexing migration.
+- `COMANDO_NATIVE_WATCHERS=1` enables native watcher registry sync and native
+  `project://tree-invalidated` events in read or write mode.
 
 With flags unset, Comando uses the existing TypeScript path. Write mode requires
 `COMANDO_NATIVE_BACKEND=1`, `COMANDO_NATIVE_PERSISTENCE=1`, and
@@ -130,10 +146,10 @@ Bootstrap commands implemented by the sidecar:
   "minimumClientProtocolVersion": 1,
   "minimumBackendProtocolVersion": 1,
   "capabilities": {
-    "domains": ["backend", "persistence", "projects", "fs", "index", "search", "git", "terminal", "settings", "secret", "ai", "review", "workspace"],
+    "domains": ["backend", "persistence", "projects", "project-tree", "fs", "index", "search", "git", "terminal", "settings", "secret", "ai", "review", "workspace"],
     "commands": ["backend_ping"],
     "events": ["backend://test-event"],
-    "features": ["bootstrap", "versioned-protocol", "json-fixtures", "native-persistence", "native-project-registry"]
+    "features": ["bootstrap", "versioned-protocol", "json-fixtures", "native-persistence", "native-project-registry", "native-fs", "native-watchers"]
   }
 }
 ```
@@ -186,8 +202,9 @@ Rust validates these existing tables before opening project registry routes:
 - `recent_projects`
 - `workspace_sessions`
 
-Rust does not modify AI, workspace layout, git, terminal, review, filesystem
-tree, watcher, or search tables in this PR.
+Rust does not modify AI, workspace layout, git, terminal, review, or search
+tables in this PR. Native filesystem writes are real user file writes, gated by
+`COMANDO_NATIVE_FS_MODE=write`.
 
 ### Commands
 
@@ -230,6 +247,74 @@ Write mode requires `COMANDO_NATIVE_PROJECT_REGISTRY_MODE=write`.
 - Unsupported project operations still use the existing legacy store and refresh
   the native-backed cache afterward when the operation is async.
 - The renderer, IPC channels, window flow, and UI text remain unchanged.
+
+## Native Filesystem And Project Tree
+
+PR 4 adds `crates/comando-fs`, used by the sidecar to resolve project/worktree
+roots from the native project registry and perform local filesystem operations
+inside those roots.
+
+Native commands:
+
+- `project_list_tree_children`
+- `project_list_entries` for bounded diagnostics/basic traversal. Electron
+  main does not use it for complete `ProjectService.listProjectEntries` results
+  while the TypeScript search index remains authoritative.
+- `fs_read_file`
+- `fs_write_file`
+- `fs_create_file`
+- `fs_create_directory`
+- `fs_rename_entry`
+- `fs_delete_entry`
+- `fs_copy_entries`
+- `fs_copy_external_entries`
+- `fs_record_external_mutation`
+- `fs_reveal_entry_info`
+- `fs_watch_start`
+- `fs_watch_stop`
+- `fs_watch_sync_registry`
+
+Native events:
+
+- `project://tree-invalidated`
+- `fs://entry-created`
+- `fs://entry-updated`
+- `fs://entry-deleted`
+- `fs://entry-renamed`
+- `fs://watch-started`
+- `fs://watch-stopped`
+- `fs://watch-error`
+- `fs://operation-error`
+- `fs://origin-tracked`
+
+Path safety rules:
+
+- Relative paths use `/`.
+- Empty path is allowed only for root-oriented operations.
+- Empty segments, `.`, `..`, backslashes, and Windows-like prefixes are invalid.
+- Reads/writes resolve against the project/worktree root from the native
+  registry.
+- New paths validate the nearest existing ancestor.
+- Existing symlink/reparse components are rejected for scoped reads and writes.
+- Delete rejects the project root.
+- Folder rename/copy rejects moving or copying a directory into itself.
+
+Tree visibility is editor-oriented. Dotfiles and config files are visible.
+Noisy directories such as `node_modules`, `dist`, `target`, `build`,
+`coverage`, and `out` are marked as noisy rather than hidden. `.git` is marked
+special and is not expanded by default.
+
+Rollback:
+
+```bash
+unset COMANDO_NATIVE_FS
+unset COMANDO_NATIVE_PROJECT_TREE
+unset COMANDO_NATIVE_WATCHERS
+unset COMANDO_NATIVE_FS_MODE
+```
+
+or leave `COMANDO_NATIVE_BACKEND` disabled. The TypeScript filesystem/runtime
+path remains the default with flags off.
 
 ## Paths
 

@@ -7,18 +7,29 @@ import type {
     AiSessionMessageEventKind,
     AiToolActivity,
     GitRepositoryInvalidation,
+    ProjectEntryMutationResult,
+    ProjectFileDocument,
     ProjectSummary,
+    ProjectTreeInvalidation,
+    ProjectTreeNode,
     TerminalDataEvent,
     TerminalExitEvent,
 } from "../ipc";
+import { resolveEditorLanguage } from "../editor-language";
 import type {
     NativeAiMessageDeltaPayload,
     NativeAiRuntimeStatus,
     NativeAiToolActivityPayload,
 } from "./ai";
+import type {
+    NativeFsEntryKind,
+    NativeFsEntryMutationResult,
+    NativeFsReadFileResult,
+    NativeProjectTreeInvalidation,
+} from "./fs";
 import type { NativeBackendEvent } from "./protocol";
 import type { NativeGitRepositoryInvalidation } from "./git";
-import type { NativeProjectSummary } from "./projects";
+import type { NativeProjectSummary, NativeProjectTreeEntry } from "./projects";
 import type {
     NativeTerminalDataEvent,
     NativeTerminalExitEvent,
@@ -73,6 +84,84 @@ export function nativeProjectSummaryToIpc(
         name: project.name,
         rootPath: project.rootPath,
         updatedAt: project.updatedAt,
+    };
+}
+
+export function nativeProjectTreeEntryToIpc(
+    entry: NativeProjectTreeEntry,
+): ProjectTreeNode {
+    return {
+        extension: entry.extension,
+        gitStatus: entry.gitStatus as ProjectTreeNode["gitStatus"],
+        hasChildren: entry.hasChildren,
+        id: entry.id,
+        isGitIgnored: entry.isGitIgnored,
+        kind: entry.kind === "directory" ? "directory" : "file",
+        name: entry.name,
+        parentRelativePath: entry.parentRelativePath,
+        relativePath: entry.relativePath,
+    };
+}
+
+export function nativeProjectTreeEntriesToIpc(
+    entries: readonly NativeProjectTreeEntry[],
+): ProjectTreeNode[] {
+    return entries.map(nativeProjectTreeEntryToIpc);
+}
+
+export function nativeFsReadFileToIpc(
+    file: NativeFsReadFileResult,
+): ProjectFileDocument {
+    const content = file.content ?? "";
+    const kind = parseNativeProjectFileKind(file.kind, file.isBinary);
+    const language = resolveEditorLanguage({
+        filePath: file.path,
+        probeContent: kind === "text" ? content.slice(0, 4096) : "",
+    });
+
+    return {
+        absolutePath: file.path,
+        content,
+        imageDataBase64: file.imageDataBase64 ?? null,
+        isBinary: file.isBinary,
+        isTooLarge: file.isTooLarge,
+        kind,
+        languageId: language.id,
+        languageLabel: language.label,
+        mimeType: file.mimeType ?? null,
+        modifiedAtMs: file.mtimeMs,
+        name: file.name ?? basename(file.path),
+        projectId: file.projectId,
+        relativePath: file.relativePath,
+        sizeBytes: file.sizeBytes,
+    };
+}
+
+export function nativeFsMutationToIpc(
+    mutation: NativeFsEntryMutationResult,
+): ProjectEntryMutationResult {
+    return {
+        kind: nativeEntryKindToProjectEntryKind(mutation.kind),
+        name: mutation.name,
+        parentRelativePath: mutation.parentRelativePath,
+        relativePath: mutation.relativePath,
+    };
+}
+
+export function nativeFsMutationsToIpc(
+    mutations: readonly NativeFsEntryMutationResult[],
+): ProjectEntryMutationResult[] {
+    return mutations.map(nativeFsMutationToIpc);
+}
+
+export function nativeProjectTreeInvalidationToIpc(
+    invalidation: NativeProjectTreeInvalidation,
+): ProjectTreeInvalidation {
+    return {
+        occurredAt: invalidation.occurredAt,
+        projectId: invalidation.projectId,
+        relativePaths: invalidation.relativePaths,
+        worktreeId: invalidation.worktreeId,
     };
 }
 
@@ -179,4 +268,26 @@ function requireRecord(value: unknown): Record<string, unknown> {
     }
 
     return value as Record<string, unknown>;
+}
+
+function parseNativeProjectFileKind(
+    kind: string | null | undefined,
+    isBinary: boolean,
+): ProjectFileDocument["kind"] {
+    if (kind === "image" || kind === "binary" || kind === "text") {
+        return kind;
+    }
+
+    return isBinary ? "binary" : "text";
+}
+
+function nativeEntryKindToProjectEntryKind(
+    kind: NativeFsEntryKind,
+): ProjectEntryMutationResult["kind"] {
+    return kind === "directory" ? "directory" : "file";
+}
+
+function basename(filePath: string): string {
+    const normalized = filePath.replaceAll("\\", "/");
+    return normalized.split("/").at(-1) ?? normalized;
 }
