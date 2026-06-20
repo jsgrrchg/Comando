@@ -53,6 +53,8 @@ pub fn session_created(summary: NativeAiSessionSummary) -> NativeAiSessionCreate
 pub fn session_updated(session: &NativeAiSessionSummary) -> NativeAiSessionUpdatedPayload {
     NativeAiSessionUpdatedPayload {
         session_id: session.session_id.clone(),
+        runtime_id: session.runtime_id.clone(),
+        runtime_session_id: session.runtime_session_id.clone(),
         status: session.status.clone(),
         title: Some(session.title.clone()),
         updated_at: session.updated_at.clone(),

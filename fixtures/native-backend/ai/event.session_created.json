@@ -1,0 +1,21 @@
+{
+  "type": "event",
+  "eventName": "ai://session-created",
+  "payload": {
+    "sessionId": "session_1",
+    "runtimeId": "opencode",
+    "runtimeSessionId": "runtime_session_1",
+    "projectId": "project_1",
+    "worktreeId": "worktree_1",
+    "title": "AI Session",
+    "status": "idle",
+    "updatedAt": "2026-06-20T00:00:00.000Z"
+  },
+  "meta": {
+    "protocolVersion": 1,
+    "emittedAt": "2026-06-20T00:00:00.000Z",
+    "projectId": "project_1",
+    "worktreeId": "worktree_1",
+    "windowId": "window_main"
+  }
+}

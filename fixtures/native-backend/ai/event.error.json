@@ -1,0 +1,11 @@
+{
+  "type": "event",
+  "eventName": "ai://error",
+  "payload": {
+    "sessionId": "session_1",
+    "runtimeId": "opencode",
+    "message": "Runtime process exited.",
+    "recoverable": false,
+    "updatedAt": "2026-06-20T00:00:01.700Z"
+  }
+}

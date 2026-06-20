@@ -207,6 +207,8 @@ export type NativeAiSessionCreatedPayload = NativeAiSessionSummary;
 
 export type NativeAiSessionUpdatedPayload = {
     readonly sessionId: NativeSessionId;
+    readonly runtimeId: NativeRuntimeId;
+    readonly runtimeSessionId: NativeRuntimeSessionId | null;
     readonly status: NativeAiSessionStatus;
     readonly title: string | null;
     readonly updatedAt: string;

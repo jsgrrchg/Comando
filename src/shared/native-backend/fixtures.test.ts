@@ -135,35 +135,60 @@ describe("native backend fixtures", () => {
     });
 
     it("accepts AI fixtures and adapts small event payloads", () => {
-        const messageEvent = parseNativeBackendOutput(
-            fixture("ai/event.message_delta.json"),
-        );
-        expect(messageEvent.type).toBe("event");
-        if (messageEvent.type !== "event") {
-            throw new Error("expected event");
-        }
-
-        expect(nativeAiEventToIpc(messageEvent)).toMatchObject({
+        expect(aiEvent("ai/event.session_created.json")).toMatchObject({
+            kind: "session-info",
+            projectId: "project_1",
+            title: "AI Session",
+        });
+        expect(aiEvent("ai/event.session_updated.json")).toMatchObject({
+            kind: "status",
+            status: "streaming",
+        });
+        expect(aiEvent("ai/event.message_started.json")).toMatchObject({
+            kind: "message-started",
+            message: { id: "message_1", kind: "assistant" },
+        });
+        expect(aiEvent("ai/event.message_delta.json")).toMatchObject({
             content: "Hello",
             kind: "message-delta",
             messageId: "message_1",
         });
-
-        const toolEvent = parseNativeBackendOutput(
-            fixture("ai/event.tool_activity.json"),
-        );
-        expect(toolEvent.type).toBe("event");
-        if (toolEvent.type !== "event") {
-            throw new Error("expected event");
-        }
-
-        expect(nativeAiEventToIpc(toolEvent)).toMatchObject({
+        expect(aiEvent("ai/event.message_completed.json")).toMatchObject({
+            kind: "message-completed",
+            messageId: "message_1",
+        });
+        expect(aiEvent("ai/event.thinking_delta.json")).toMatchObject({
+            kind: "thinking-delta",
+            messageId: "thinking_1",
+        });
+        expect(aiEvent("ai/event.tool_activity.json")).toMatchObject({
             activity: {
                 id: "tool_1",
                 status: "completed",
                 title: "Read file",
             },
             kind: "tool-activity",
+        });
+        expect(aiEvent("ai/event.plan_updated.json")).toMatchObject({
+            kind: "plan",
+            plan: { entries: [{ content: "Inspect files" }] },
+        });
+        expect(aiEvent("ai/event.permission_request.json")).toMatchObject({
+            kind: "permission-request",
+            request: { requestId: "permission_1" },
+        });
+        expect(aiEvent("ai/event.user_input_request.json")).toMatchObject({
+            kind: "user-input-request",
+            request: { requestId: "input_1" },
+        });
+        expect(aiEvent("ai/event.token_usage.json")).toMatchObject({
+            kind: "token-usage",
+            tokenUsage: { used: 42 },
+        });
+        expect(aiEvent("ai/event.error.json")).toMatchObject({
+            kind: "status",
+            lastError: "Runtime process exited.",
+            status: "error",
         });
     });
 
@@ -418,4 +443,14 @@ function fixture<T = unknown>(relativePath: string): T {
     return JSON.parse(
         readFileSync(path.join(fixtureRoot, relativePath), "utf8"),
     ) as T;
+}
+
+function aiEvent(relativePath: string) {
+    const event = parseNativeBackendOutput(fixture(relativePath));
+    expect(event.type).toBe("event");
+    if (event.type !== "event") {
+        throw new Error("expected event");
+    }
+
+    return nativeAiEventToIpc(event);
 }

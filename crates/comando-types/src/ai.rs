@@ -277,6 +277,8 @@ pub struct NativeAiSessionCreatedPayload {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSessionUpdatedPayload {
     pub session_id: SessionId,
+    pub runtime_id: RuntimeId,
+    pub runtime_session_id: Option<RuntimeSessionId>,
     pub status: NativeAiSessionStatus,
     pub title: Option<String>,
     pub updated_at: String,

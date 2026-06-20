@@ -1,0 +1,12 @@
+{
+  "type": "event",
+  "eventName": "ai://message-completed",
+  "payload": {
+    "sessionId": "session_1",
+    "runtimeId": "opencode",
+    "runtimeSessionId": "runtime_session_1",
+    "updatedAt": "2026-06-20T00:00:02.000Z",
+    "messageId": "message_1",
+    "messageKind": "assistant"
+  }
+}
