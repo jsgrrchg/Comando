@@ -81,6 +81,7 @@ let nativeBackendClient: NativeBackendClient | null = null;
 let workspaceService: WorkspaceGateway | null = null;
 let isQuitting = false;
 let isFinalizingQuit = false;
+let hasRequestedNativeBackendTestEvent = false;
 let pendingShutdown: Promise<void> | null = null;
 const aiSessionStreamPorts = new Map<string, MessagePortMain>();
 
@@ -437,7 +438,6 @@ async function startNativeBackendIfEnabled(): Promise<void> {
         console.info(
             `[native-backend] Started ${resolution.source} sidecar at ${resolution.binaryPath}. ${summarizeNativeBackendCapabilities(capabilities)}`,
         );
-        await client.request("backend_emit_test_event", { message: "hello" });
     } catch (error) {
         nativeBackendClient = null;
         await client.dispose();
@@ -478,6 +478,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function formatError(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+}
+
+async function requestNativeBackendTestEventOnce(): Promise<void> {
+    if (hasRequestedNativeBackendTestEvent || !nativeBackendClient) {
+        return;
+    }
+
+    hasRequestedNativeBackendTestEvent = true;
+    try {
+        await nativeBackendClient.request("backend_emit_test_event", {
+            message: "hello",
+        });
+    } catch (error) {
+        debugBenignError("nativeBackend.testEvent", error);
+    }
 }
 
 function restoreMainWindows(): void {
@@ -634,6 +649,7 @@ function createTrackedMainWindow(snapshot: PersistenceSnapshot): BrowserWindow {
 
     window.webContents.once("did-finish-load", () => {
         mainProcessPerformance.markFirstMainWindowReady();
+        void requestNativeBackendTestEventOnce();
     });
     window.webContents.on("did-finish-load", () => {
         attachAiSessionStream(window, context.windowId);

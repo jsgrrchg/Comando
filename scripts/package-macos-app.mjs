@@ -1015,8 +1015,50 @@ function stageCodexForMacArchitectures() {
 
 function stageNativeBackendPayload() {
     console.log("[package:mac] Building and staging native backend sidecar.");
-    run(pnpmCommand, ["run", "native:build"]);
-    run(pnpmCommand, ["run", "native:stage"]);
+    for (const target of macTargets) {
+        const rustTarget = resolveMacRustTarget(target.arch);
+        ensureMacRustTarget(rustTarget);
+        run(pnpmCommand, [
+            "run",
+            "native:build",
+            "--",
+            "--target",
+            rustTarget,
+        ]);
+        run(pnpmCommand, [
+            "run",
+            "native:stage",
+            "--",
+            "--platform",
+            "darwin",
+            "--arch",
+            target.arch,
+            "--binary",
+            path.join(
+                repoRoot,
+                "target",
+                rustTarget,
+                "release",
+                "comando-native-backend",
+            ),
+        ]);
+    }
+}
+
+function ensureMacRustTarget(rustTarget) {
+    run("rustup", ["target", "add", rustTarget]);
+}
+
+function resolveMacRustTarget(arch) {
+    if (arch === "arm64") {
+        return "aarch64-apple-darwin";
+    }
+
+    if (arch === "x64") {
+        return "x86_64-apple-darwin";
+    }
+
+    throw new Error(`Unsupported macOS native backend architecture: ${arch}`);
 }
 
 function resolvePrebuiltCodexBinary(arch) {

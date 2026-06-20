@@ -76,6 +76,10 @@ different target, pass an explicit binary:
 node scripts/native/stage-native-backend.mjs --platform linux --arch x64 --binary /path/to/comando-native-backend
 ```
 
+The macOS package workflow builds and stages both `darwin/arm64` and
+`darwin/x64` sidecars for the universal app. It installs the required Rust
+targets with `rustup target add` before building.
+
 ## Manual Smoke
 
 ```bash
