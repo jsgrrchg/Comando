@@ -20,6 +20,9 @@ describe("native backend flags", () => {
         expect(isNativeBackendEnabled({ [NATIVE_BACKEND_ENABLED_ENV]: "1" })).toBe(
             true,
         );
+        expect(isNativeBackendEnabled({ COMANDO_NATIVE_TERMINAL: "1" })).toBe(
+            true,
+        );
     });
 
     it("supports strict mode as a separate opt-in", () => {

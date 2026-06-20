@@ -271,7 +271,8 @@ function parseSignalCode(signalCode: string | null): number | null {
         return null;
     }
 
-    const numericSignal = Number.parseInt(signalCode, 10);
+    const signalMatch = signalCode.trim().match(/(\d+)\D*$/u);
+    const numericSignal = Number.parseInt(signalMatch?.[1] ?? signalCode, 10);
     return Number.isFinite(numericSignal) ? numericSignal : null;
 }
 

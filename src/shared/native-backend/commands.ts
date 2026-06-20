@@ -88,6 +88,7 @@ export const NATIVE_TERMINAL_COMMANDS = [
     "terminal_resize",
     "terminal_kill",
     "terminal_close",
+    "terminal_close_window",
     "terminal_list",
 ] as const;
 

@@ -6,6 +6,7 @@ members = [
     "crates/comando-fs",
     "crates/comando-persistence",
     "crates/comando-projects",
+    "crates/comando-terminal",
     "crates/comando-types",
 ]
 resolver = "3"
@@ -18,6 +19,7 @@ edition = "2024"
 comando-types = { path = "crates/comando-types" }
 base64 = "0.22.1"
 notify = "8.2.0"
+portable-pty = "0.9.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"

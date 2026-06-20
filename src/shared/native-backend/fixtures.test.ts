@@ -45,7 +45,21 @@ import type {
     NativeProjectSummary,
     NativeProjectTreeEntry,
 } from "./projects";
-import type { NativeTerminalDataEvent, NativeTerminalExitEvent } from "./terminal";
+import type {
+    NativeTerminalCloseInput,
+    NativeTerminalClosedEvent,
+    NativeTerminalCloseWindowInput,
+    NativeTerminalCreateInput,
+    NativeTerminalCreatedEvent,
+    NativeTerminalDataEvent,
+    NativeTerminalErrorEvent,
+    NativeTerminalExitEvent,
+    NativeTerminalKillInput,
+    NativeTerminalListInput,
+    NativeTerminalListResult,
+    NativeTerminalResizeInput,
+    NativeTerminalWriteInput,
+} from "./terminal";
 
 const fixtureRoot = path.join(process.cwd(), "fixtures", "native-backend");
 
@@ -294,6 +308,81 @@ describe("native backend fixtures", () => {
     });
 
     it("accepts terminal fixtures and adapters", () => {
+        expect(
+            fixture<NativeTerminalCreateInput>(
+                "terminal/terminal.create_input.json",
+            ),
+        ).toMatchObject({
+            launch: { kind: "shell" },
+            terminalId: "workspace-terminal-1",
+            windowId: "window_main",
+        });
+        expect(
+            fixture<NativeTerminalCreatedEvent>(
+                "terminal/terminal.created_event.json",
+            ).session,
+        ).toMatchObject({
+            launchedBy: "user",
+            program: "/bin/zsh",
+            purpose: "workspace",
+        });
+        expect(
+            fixture<NativeTerminalListResult>(
+                "terminal/terminal.list_result.json",
+            ).sessions,
+        ).toHaveLength(1);
+        expect(
+            fixture<NativeTerminalClosedEvent>(
+                "terminal/terminal.closed_event.json",
+            ),
+        ).toMatchObject({
+            reason: "user",
+            sessionId: "terminal_1",
+            windowId: "window_main",
+        });
+        expect(
+            fixture<NativeTerminalErrorEvent>(
+                "terminal/terminal.error_event.json",
+            ),
+        ).toMatchObject({
+            retryable: false,
+            terminalId: "workspace-terminal-1",
+        });
+        const closeInput: NativeTerminalCloseInput = {
+            id: "terminal_1",
+            reason: "user",
+            windowId: "window_main",
+        };
+        expect(closeInput.id).toBe("terminal_1");
+        expect(
+            fixture<NativeTerminalWriteInput>(
+                "terminal/terminal.write_input.json",
+            ),
+        ).toMatchObject({ data: "pwd\r", windowId: "window_main" });
+        expect(
+            fixture<NativeTerminalResizeInput>(
+                "terminal/terminal.resize_input.json",
+            ),
+        ).toMatchObject({ cols: 100, rows: 28 });
+        expect(
+            fixture<NativeTerminalKillInput>("terminal/terminal.kill_input.json"),
+        ).toMatchObject({ sessionId: "terminal_1" });
+        expect(
+            fixture<NativeTerminalCloseInput>(
+                "terminal/terminal.close_input.json",
+            ),
+        ).toMatchObject({ id: "terminal_1", reason: "user" });
+        expect(
+            fixture<NativeTerminalCloseWindowInput>(
+                "terminal/terminal.close_window_input.json",
+            ),
+        ).toMatchObject({ windowId: "window_main" });
+        expect(
+            fixture<NativeTerminalListInput>(
+                "terminal/terminal.list_input.json",
+            ),
+        ).toMatchObject({ windowId: "window_main" });
+
         const event = fixture<NativeTerminalDataEvent>(
             "terminal/terminal.data_event.json",
         );
@@ -310,6 +399,17 @@ describe("native backend fixtures", () => {
             exitCode: 0,
             sessionId: "terminal_1",
             signalCode: null,
+        });
+        expect(
+            nativeTerminalExitEventToIpc({
+                ...exitEvent,
+                exitCode: null,
+                signalCode: "Terminated: 15",
+            }),
+        ).toEqual({
+            exitCode: null,
+            sessionId: "terminal_1",
+            signalCode: 15,
         });
     });
 });

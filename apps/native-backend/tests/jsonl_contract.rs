@@ -179,7 +179,8 @@ fn reports_capabilities() {
             "native-git-history",
             "native-git-worktrees",
             "native-git-mutations",
-            "native-git-network"
+            "native-git-network",
+            "native-terminal"
         ])
     );
     assert_eq!(
@@ -221,6 +222,78 @@ fn handshakes_protocol_v1() {
 }
 
 #[test]
+fn terminal_create_streams_data_exit_and_closed_events() {
+    let mut backend = BackendProcess::spawn();
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+
+    backend.send(json!({
+        "id": "term-create",
+        "command": "terminal_create",
+        "args": {
+            "windowId": "window_main",
+            "terminalId": "terminal_tab_1",
+            "preferredSessionId": null,
+            "projectId": null,
+            "worktreeId": null,
+            "cwd": temp_dir.path().to_string_lossy(),
+            "cols": 120,
+            "rows": 32,
+            "extraEnv": {},
+            "shellPreference": {"windowsShell": "default"},
+            "purpose": "workspace",
+            "launchedBy": "user",
+            "launch": terminal_print_command(),
+        },
+    }));
+
+    let response = backend.read_json();
+    assert_eq!(response["type"], "response");
+    assert_eq!(response["id"], "term-create");
+    assert_eq!(response["ok"], true);
+    let session_id = response["result"]["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+
+    let mut saw_created = false;
+    let mut saw_data = false;
+    let mut saw_exit = false;
+    let mut saw_closed = false;
+    for _ in 0..8 {
+        let output = backend.read_json();
+        match output["eventName"].as_str() {
+            Some("terminal://created") => {
+                saw_created = output["payload"]["session"]["sessionId"] == session_id;
+            }
+            Some("terminal://data") => {
+                saw_data = output["payload"]["sessionId"] == session_id
+                    && output["payload"]["windowId"] == "window_main"
+                    && output["payload"]["data"]
+                        .as_str()
+                        .is_some_and(|data| data.contains("ready"));
+            }
+            Some("terminal://exit") => {
+                saw_exit = output["payload"]["sessionId"] == session_id
+                    && output["payload"]["exitCode"] == 0;
+            }
+            Some("terminal://closed") => {
+                saw_closed = output["payload"]["sessionId"] == session_id
+                    && output["payload"]["reason"] == "process_exit";
+            }
+            _ => {}
+        }
+
+        if saw_created && saw_data && saw_exit && saw_closed {
+            return;
+        }
+    }
+
+    panic!(
+        "missing terminal events created={saw_created} data={saw_data} exit={saw_exit} closed={saw_closed}"
+    );
+}
+
+#[test]
 fn rejects_incompatible_handshake_version() {
     let mut backend = BackendProcess::spawn();
 
@@ -241,6 +314,26 @@ fn rejects_incompatible_handshake_version() {
     assert_eq!(response["ok"], false);
     assert_eq!(response["error"]["code"], "unsupported_protocol_version");
     assert_eq!(response["error"]["retryable"], false);
+}
+
+#[cfg(unix)]
+fn terminal_print_command() -> Value {
+    json!({
+        "kind": "command",
+        "program": "/bin/sh",
+        "args": ["-lc", "printf ready"],
+        "displayName": "print",
+    })
+}
+
+#[cfg(windows)]
+fn terminal_print_command() -> Value {
+    json!({
+        "kind": "command",
+        "program": "cmd.exe",
+        "args": ["/C", "echo ready"],
+        "displayName": "print",
+    })
 }
 
 #[test]

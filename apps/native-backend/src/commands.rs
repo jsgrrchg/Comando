@@ -17,6 +17,7 @@ use comando_index::{
 };
 use comando_persistence::{NativeStorageConfig, SqlitePersistenceStore, closed_storage_health};
 use comando_projects::{ProjectRegistry, ProjectRegistryError};
+use comando_terminal::{TerminalRuntimeEvent, TerminalService};
 use comando_types::capabilities::{
     BACKEND_NAME, NativeBackendCapabilitiesOutput, NativeBackendHandshakeInput,
     NativeBackendHandshakeOutput, PROTOCOL_VERSION, RUST_VERSION, backend_capabilities,
@@ -36,6 +37,7 @@ use comando_types::persistence::{
 use comando_types::projects::{NativeProjectAddInput, NativeProjectState};
 use comando_types::{
     fs as native_fs, git as native_git, index as native_index, projects as native_projects,
+    terminal as native_terminal,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -54,6 +56,7 @@ pub struct NativeBackend {
     git_runner: GitRunner,
     index_service: IndexService,
     persistence_store: Option<SqlitePersistenceStore>,
+    terminal_service: Option<TerminalService>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -84,15 +87,24 @@ pub fn handle_request(request: RpcRequest) -> CommandResult {
 }
 
 impl NativeBackend {
+    const TERMINAL_EVENT_CHANNEL_CAPACITY: usize = 256;
+
     pub fn handle_request_background(
         &mut self,
         request: RpcRequest,
-        background_sender: mpsc::Sender<Vec<RpcOutput>>,
+        background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
     ) -> CommandResult {
         match request.command.as_str() {
             "project_search_entries" | "search_project_entries" => {
                 self.spawn_search_project_entries(request, background_sender)
             }
+            "terminal_create"
+            | "terminal_write"
+            | "terminal_resize"
+            | "terminal_kill"
+            | "terminal_close"
+            | "terminal_close_window"
+            | "terminal_list" => self.handle_terminal_request(request, background_sender),
             _ => self.handle_request(request),
         }
     }
@@ -879,7 +891,7 @@ impl NativeBackend {
     fn spawn_search_project_entries(
         &mut self,
         request: RpcRequest,
-        background_sender: mpsc::Sender<Vec<RpcOutput>>,
+        background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
     ) -> CommandResult {
         if let Err(error) = self.sync_fs_registry_from_store().map(|_| ()) {
             return error_only(request.id, error);
@@ -971,6 +983,152 @@ impl NativeBackend {
             outputs: index_event_outputs(events),
             should_shutdown: false,
         }
+    }
+
+    fn handle_terminal_request(
+        &mut self,
+        request: RpcRequest,
+        background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
+    ) -> CommandResult {
+        let command = request.command.clone();
+        match command.as_str() {
+            "terminal_create" => {
+                let input = match parse_args::<native_terminal::NativeTerminalCreateInput>(&request)
+                {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self
+                    .ensure_terminal_service(background_sender)
+                    .create_session(input)
+                {
+                    Ok(session) => response_only(
+                        request.id,
+                        serde_json::to_value(session).expect("terminal session serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "terminal_write" => {
+                let input = match parse_args::<native_terminal::NativeTerminalWriteInput>(&request)
+                {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self
+                    .ensure_terminal_service(background_sender)
+                    .write_input(input)
+                {
+                    Ok(()) => response_only(request.id, json!({"ok": true})),
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "terminal_resize" => {
+                let input = match parse_args::<native_terminal::NativeTerminalResizeInput>(&request)
+                {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self
+                    .ensure_terminal_service(background_sender)
+                    .resize_session(input)
+                {
+                    Ok(Some(session)) => response_only(
+                        request.id,
+                        serde_json::to_value(session).expect("terminal session serializes"),
+                    ),
+                    Ok(None) => response_only(request.id, json!({"ok": true})),
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "terminal_kill" => {
+                let input = match parse_args::<native_terminal::NativeTerminalKillInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self
+                    .ensure_terminal_service(background_sender)
+                    .kill_session(input)
+                {
+                    Ok(()) => response_only(request.id, json!({"ok": true})),
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "terminal_close" => {
+                let input = match parse_args::<native_terminal::NativeTerminalCloseInput>(&request)
+                {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self
+                    .ensure_terminal_service(background_sender)
+                    .close_session(input)
+                {
+                    Ok(()) => response_only(request.id, json!({"ok": true})),
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "terminal_close_window" => {
+                let input =
+                    match parse_args::<native_terminal::NativeTerminalCloseWindowInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self
+                    .ensure_terminal_service(background_sender)
+                    .close_window(input)
+                {
+                    Ok(()) => response_only(request.id, json!({"ok": true})),
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            "terminal_list" => {
+                let input = match parse_args::<native_terminal::NativeTerminalListInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self
+                    .ensure_terminal_service(background_sender)
+                    .list_sessions(input)
+                {
+                    Ok(result) => response_only(
+                        request.id,
+                        serde_json::to_value(result).expect("terminal list serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error.to_native_error()),
+                }
+            }
+            _ => CommandResult {
+                outputs: vec![error_response(
+                    Some(request.id),
+                    NativeError::new(
+                        NativeErrorCode::UnknownCommand,
+                        format!("Unknown command: {command}"),
+                    ),
+                )],
+                should_shutdown: false,
+            },
+        }
+    }
+
+    fn ensure_terminal_service(
+        &mut self,
+        background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
+    ) -> &TerminalService {
+        self.terminal_service.get_or_insert_with(|| {
+            let (event_sender, event_receiver) =
+                mpsc::sync_channel::<TerminalRuntimeEvent>(Self::TERMINAL_EVENT_CHANNEL_CAPACITY);
+            thread::spawn(move || {
+                for event in event_receiver {
+                    let output = terminal_runtime_event_output(event);
+                    if background_sender.send(vec![output]).is_err() {
+                        break;
+                    }
+                }
+            });
+
+            TerminalService::new(event_sender)
+        })
     }
 
     fn search_project_content(&mut self, request: RpcRequest) -> CommandResult {
@@ -1611,6 +1769,31 @@ fn git_response<T: Serialize>(
     match result {
         Ok(output) => response_only(id, serde_json::to_value(output).expect(serialize_message)),
         Err(error) => error_only(id, git_error(error)),
+    }
+}
+
+fn terminal_runtime_event_output(event_payload: TerminalRuntimeEvent) -> RpcOutput {
+    match event_payload {
+        TerminalRuntimeEvent::Created(payload) => event(
+            "terminal://created",
+            serde_json::to_value(payload).expect("terminal created event serializes"),
+        ),
+        TerminalRuntimeEvent::Data(payload) => event(
+            "terminal://data",
+            serde_json::to_value(payload).expect("terminal data event serializes"),
+        ),
+        TerminalRuntimeEvent::Exit(payload) => event(
+            "terminal://exit",
+            serde_json::to_value(payload).expect("terminal exit event serializes"),
+        ),
+        TerminalRuntimeEvent::Closed(payload) => event(
+            "terminal://closed",
+            serde_json::to_value(payload).expect("terminal closed event serializes"),
+        ),
+        TerminalRuntimeEvent::Error(payload) => event(
+            "terminal://error",
+            serde_json::to_value(payload).expect("terminal error event serializes"),
+        ),
     }
 }
 
@@ -2368,7 +2551,7 @@ mod tests {
         let (temp_dir, mut backend, project_id) = backend_with_registered_project();
         let project_path = temp_dir.path().join("project-native");
         fs::write(project_path.join("main.ts"), "console.log('hi');\n").expect("main");
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(16);
 
         let search_result = backend.handle_request_background(
             request(

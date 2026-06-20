@@ -97,6 +97,7 @@ pub fn backend_capabilities() -> NativeCapabilitySet {
             "native-git-worktrees".to_string(),
             "native-git-mutations".to_string(),
             "native-git-network".to_string(),
+            "native-terminal".to_string(),
         ],
     }
 }

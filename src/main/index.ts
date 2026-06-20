@@ -60,6 +60,10 @@ import { NativeFsGateway } from "./native-backend/fs";
 import { NativeGitGateway, NativeGitRoutingGateway } from "./native-backend/git";
 import { NativeSearchGateway } from "./native-backend/index-search";
 import {
+    NativeTerminalGateway,
+    shouldUseNativeTerminal,
+} from "./native-backend/terminal";
+import {
     createNativeProjectRegistryStore,
     resolveNativeProjectRegistryMode,
 } from "./native-backend/projects";
@@ -76,7 +80,7 @@ import {
     broadcastSettingsUpdated,
 } from "./settings/window-zoom";
 import { openSettingsWindow } from "./settings/window";
-import { TerminalService } from "./terminals/service";
+import { TerminalService, type TerminalGateway } from "./terminals/service";
 import { initializeAutoUpdates } from "./updater";
 import {
     createMainWindow,
@@ -96,7 +100,7 @@ let gitService: GitWorkerClient | null = null;
 let githubService: GitHubService | null = null;
 let secretStore: SecretStoreGateway | null = null;
 let settingsService: SettingsGateway | null = null;
-let terminalService: TerminalService | null = null;
+let terminalService: TerminalGateway | null = null;
 let nativeBackendClient: NativeBackendClient | null = null;
 let workspaceService: WorkspaceGateway | null = null;
 let isQuitting = false;
@@ -248,7 +252,8 @@ if (!hasSingleInstanceLock) {
                     error,
                 );
             }
-            terminalService = new TerminalService({
+            terminalService = createTerminalGateway({
+                nativeClient: nativeBackendClient,
                 onData: broadcastTerminalData,
                 onExit: broadcastTerminalExit,
                 projectService,
@@ -404,13 +409,13 @@ async function shutdownApplication(): Promise<void> {
     mainProcessPerformance.stop();
 
     aiService?.close();
-    terminalService?.close();
 
     const aiWorkerClientToClose = aiWorkerClient;
     const dbWorkerClientToClose = dbWorkerClient;
     const gitServiceToClose = gitService;
     const nativeBackendClientToClose = nativeBackendClient;
     const projectServiceToClose = projectService;
+    const terminalServiceToClose = terminalService;
 
     aiService = null;
     aiWorkerClient = null;
@@ -428,7 +433,10 @@ async function shutdownApplication(): Promise<void> {
     const shutdownResults = await Promise.allSettled([
         aiWorkerClientToClose?.close(),
         gitServiceToClose?.close(),
-        nativeBackendClientToClose?.dispose(),
+        (async () => {
+            await terminalServiceToClose?.close();
+            await nativeBackendClientToClose?.dispose();
+        })(),
         projectServiceToClose?.close(),
         dbWorkerClientToClose?.close(),
     ]);
@@ -447,6 +455,41 @@ function parseAiWorkerShardCount(value: string | undefined): number {
     }
 
     return Math.max(1, Math.min(8, parsed));
+}
+
+function createTerminalGateway(input: {
+    readonly nativeClient: NativeBackendClient | null;
+    readonly onData: (ownerWindowId: string, event: TerminalDataEvent) => void;
+    readonly onExit: (ownerWindowId: string, event: TerminalExitEvent) => void;
+    readonly projectService: ProjectService;
+    readonly settingsService: SettingsGateway;
+}): TerminalGateway {
+    if (shouldUseNativeTerminal()) {
+        if (input.nativeClient) {
+            console.info("[native-backend] Native terminal backend enabled.");
+            return new NativeTerminalGateway({
+                client: input.nativeClient,
+                onData: input.onData,
+                onDiagnostic: (message) => {
+                    console.warn(`[native-terminal] ${message}`);
+                },
+                onExit: input.onExit,
+                projectService: input.projectService,
+                settingsService: input.settingsService,
+            });
+        }
+
+        console.warn(
+            "[native-backend] Native terminal backend is enabled but the native backend sidecar is not running; using the legacy terminal backend.",
+        );
+    }
+
+    return new TerminalService({
+        onData: input.onData,
+        onExit: input.onExit,
+        projectService: input.projectService,
+        settingsService: input.settingsService,
+    });
 }
 
 async function startNativeBackendIfEnabled(): Promise<void> {

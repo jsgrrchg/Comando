@@ -189,7 +189,7 @@ import {
     broadcastSettingsUpdated,
 } from "@main/settings/window-zoom";
 import { openSettingsWindow } from "@main/settings/window";
-import type { TerminalService } from "@main/terminals/service";
+import type { TerminalGateway } from "@main/terminals/service";
 import {
     checkForAppUpdates,
     getAppUpdateState,
@@ -218,7 +218,7 @@ interface RegisterIpcHandlersOptions {
     readonly persistenceService: PersistenceGateway;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsGateway;
-    readonly terminalService: TerminalService;
+    readonly terminalService: TerminalGateway;
     readonly workspaceService: WorkspaceGateway;
 }
 
@@ -1672,7 +1672,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.writeTerminalInput,
         (event, input: WriteTerminalInput) => {
             const context = requireWindowContext(event.sender, "main");
-            options.terminalService.writeInput(
+            return options.terminalService.writeInput(
                 context.windowId,
                 input.sessionId,
                 input.data,
@@ -1683,7 +1683,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.resizeTerminalSession,
         (event, input: ResizeTerminalSessionInput) => {
             const context = requireWindowContext(event.sender, "main");
-            options.terminalService.resizeSession(
+            return options.terminalService.resizeSession(
                 context.windowId,
                 input.sessionId,
                 input.cols,
@@ -1695,7 +1695,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.closeTerminalSession,
         (event, sessionId: string) => {
             const context = requireWindowContext(event.sender, "main");
-            options.terminalService.closeSessionOrOwnedTerminal(
+            return options.terminalService.closeSessionOrOwnedTerminal(
                 context.windowId,
                 sessionId,
             );

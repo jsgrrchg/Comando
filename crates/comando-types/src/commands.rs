@@ -99,6 +99,7 @@ pub const TERMINAL_COMMANDS: &[&str] = &[
     "terminal_resize",
     "terminal_kill",
     "terminal_close",
+    "terminal_close_window",
     "terminal_list",
 ];
 

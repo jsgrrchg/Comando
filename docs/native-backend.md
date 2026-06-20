@@ -9,9 +9,11 @@ tree domain behind flags.
 Rust can open the current Comando SQLite store and own `project_list` /
 `project_add` only when the explicit native project registry write flag is set.
 Rust can also own project tree, file read/write, filesystem mutations, copies,
-and watcher invalidations when native filesystem flags are enabled. Search,
-real git status/diff, terminal, AI, review, and renderer UI behavior remain
-owned by the existing TypeScript path.
+and watcher invalidations when native filesystem flags are enabled. Search and
+real git status/diff also have native rollout flags. Integrated terminals can
+be owned by Rust under `COMANDO_NATIVE_TERMINAL=1`; with the flag off, the
+existing TypeScript `node-pty` path remains the owner. AI, review, and renderer
+UI behavior remain owned by the existing TypeScript path.
 
 ## Flags
 
@@ -58,10 +60,21 @@ owned by the existing TypeScript path.
   legacy TypeScript search/index path after a native search failure.
 - `COMANDO_NATIVE_CONTENT_SEARCH=0` is the default. Visible content search is
   not part of this rollout.
+- `COMANDO_NATIVE_TERMINAL=1` routes integrated terminal session lifecycle,
+  PTY IO, resize, close, exit, and cleanup through the Rust sidecar.
+- `COMANDO_NATIVE_TERMINAL_MODE=native` is the explicit native terminal mode.
+  If the mode is omitted, `COMANDO_NATIVE_TERMINAL=1` still means native.
+- `COMANDO_NATIVE_TERMINAL_DEBUG=1` is reserved for lifecycle diagnostics.
+  Terminal input, output, and env values must not be logged.
 
 With flags unset, Comando uses the existing TypeScript path. Write mode requires
 `COMANDO_NATIVE_BACKEND=1`, `COMANDO_NATIVE_PERSISTENCE=1`, and
 `COMANDO_NATIVE_PROJECT_REGISTRY=1`.
+
+Native terminal has no shadow mode. Running the same PTY twice would duplicate
+command side effects, credentials prompts, filesystem writes, and destructive
+commands. Rollback is simply leaving `COMANDO_NATIVE_TERMINAL` unset or setting
+it to `0`; `node-pty` remains installed as the legacy fallback.
 
 ## Protocol V1
 
