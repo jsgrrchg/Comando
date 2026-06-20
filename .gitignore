@@ -22,6 +22,7 @@ src/**/*.d.ts
 !src/main/env.d.ts
 !src/renderer/src/env.d.ts
 vendor/codex-acp/target/
+target/
 resources/ai/binaries/*
 !resources/ai/binaries/.gitkeep
 resources/ai/prebuilt/

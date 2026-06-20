@@ -37,6 +37,13 @@ import {
     registerFilePreviewSchemes,
 } from "./file-preview-protocol";
 import { installApplicationMenu } from "./menu";
+import { NativeBackendClient } from "./native-backend/client";
+import {
+    isNativeBackendEnabled,
+    isNativeBackendStrict,
+    resolveNativeBackendPath,
+} from "./native-backend/path";
+import type { NativeBackendEvent } from "./native-backend/protocol";
 import { debugBenignError } from "./observability/logging";
 import { mainProcessPerformance } from "./observability/performance";
 import type { PersistenceGateway } from "./persistence/service";
@@ -70,9 +77,11 @@ let githubService: GitHubService | null = null;
 let secretStore: SecretStoreGateway | null = null;
 let settingsService: SettingsGateway | null = null;
 let terminalService: TerminalService | null = null;
+let nativeBackendClient: NativeBackendClient | null = null;
 let workspaceService: WorkspaceGateway | null = null;
 let isQuitting = false;
 let isFinalizingQuit = false;
+let hasRequestedNativeBackendTestEvent = false;
 let pendingShutdown: Promise<void> | null = null;
 const aiSessionStreamPorts = new Map<string, MessagePortMain>();
 
@@ -196,6 +205,7 @@ if (!hasSingleInstanceLock) {
                 settingsService,
             });
             workspaceService = dbWorkerClient.workspace;
+            await startNativeBackendIfEnabled();
 
             bootstrapSnapshot = {
                 app: appIdentity,
@@ -350,6 +360,7 @@ async function shutdownApplication(): Promise<void> {
     const aiWorkerClientToClose = aiWorkerClient;
     const dbWorkerClientToClose = dbWorkerClient;
     const gitServiceToClose = gitService;
+    const nativeBackendClientToClose = nativeBackendClient;
     const projectServiceToClose = projectService;
 
     aiService = null;
@@ -357,6 +368,7 @@ async function shutdownApplication(): Promise<void> {
     dbWorkerClient = null;
     gitService = null;
     githubService = null;
+    nativeBackendClient = null;
     persistenceService = null;
     projectService = null;
     secretStore = null;
@@ -367,6 +379,7 @@ async function shutdownApplication(): Promise<void> {
     const shutdownResults = await Promise.allSettled([
         aiWorkerClientToClose?.close(),
         gitServiceToClose?.close(),
+        nativeBackendClientToClose?.dispose(),
         projectServiceToClose?.close(),
         dbWorkerClientToClose?.close(),
     ]);
@@ -385,6 +398,101 @@ function parseAiWorkerShardCount(value: string | undefined): number {
     }
 
     return Math.max(1, Math.min(8, parsed));
+}
+
+async function startNativeBackendIfEnabled(): Promise<void> {
+    if (!isNativeBackendEnabled()) {
+        return;
+    }
+
+    const resolution = resolveNativeBackendPath({
+        isPackaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+    });
+    if (!resolution.binaryPath) {
+        const message = [
+            "[native-backend] Native backend is enabled but no binary was found.",
+            `Attempted: ${resolution.attemptedPaths.join(", ")}`,
+        ].join(" ");
+
+        if (isNativeBackendStrict()) {
+            throw new Error(message);
+        }
+
+        console.warn(message);
+        return;
+    }
+
+    const client = new NativeBackendClient({
+        binaryPath: resolution.binaryPath,
+        onDiagnostic: (message) => {
+            console.warn(`[native-backend] ${message}`);
+        },
+    });
+    nativeBackendClient = client;
+    client.onEvent(broadcastNativeBackendEvent);
+
+    try {
+        await client.request("backend_ping");
+        const capabilities = await client.request("backend_capabilities");
+        console.info(
+            `[native-backend] Started ${resolution.source} sidecar at ${resolution.binaryPath}. ${summarizeNativeBackendCapabilities(capabilities)}`,
+        );
+    } catch (error) {
+        nativeBackendClient = null;
+        await client.dispose();
+
+        if (isNativeBackendStrict()) {
+            throw error;
+        }
+
+        console.warn(
+            `[native-backend] Native backend startup failed: ${formatError(error)}`,
+        );
+    }
+}
+
+function summarizeNativeBackendCapabilities(capabilities: unknown): string {
+    if (!isRecord(capabilities)) {
+        return "Capabilities unavailable.";
+    }
+
+    const protocolVersion =
+        typeof capabilities.protocolVersion === "number"
+            ? capabilities.protocolVersion
+            : "unknown";
+    const backendVersion =
+        typeof capabilities.backendVersion === "string"
+            ? capabilities.backendVersion
+            : "unknown";
+    const commands = Array.isArray(capabilities.commands)
+        ? capabilities.commands.length
+        : 0;
+
+    return `protocol=${protocolVersion} version=${backendVersion} commands=${commands}.`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function formatError(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+async function requestNativeBackendTestEventOnce(): Promise<void> {
+    if (hasRequestedNativeBackendTestEvent || !nativeBackendClient) {
+        return;
+    }
+
+    hasRequestedNativeBackendTestEvent = true;
+    try {
+        await nativeBackendClient.request("backend_emit_test_event", {
+            message: "hello",
+        });
+    } catch (error) {
+        debugBenignError("nativeBackend.testEvent", error);
+    }
 }
 
 function restoreMainWindows(): void {
@@ -541,6 +649,7 @@ function createTrackedMainWindow(snapshot: PersistenceSnapshot): BrowserWindow {
 
     window.webContents.once("did-finish-load", () => {
         mainProcessPerformance.markFirstMainWindowReady();
+        void requestNativeBackendTestEventOnce();
     });
     window.webContents.on("did-finish-load", () => {
         attachAiSessionStream(window, context.windowId);
@@ -794,6 +903,12 @@ export function broadcastGitWorktreesUpdated(
 ): void {
     forEachLiveWindow((window) => {
         window.webContents.send(IPC_EVENTS.gitWorktreesUpdated, payload);
+    });
+}
+
+function broadcastNativeBackendEvent(event: NativeBackendEvent): void {
+    forEachLiveWindow((window) => {
+        window.webContents.send(IPC_EVENTS.nativeBackendEvent, event);
     });
 }
 
