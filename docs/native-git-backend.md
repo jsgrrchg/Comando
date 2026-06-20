@@ -88,9 +88,10 @@ Mutation and network guardrails are separate:
 If `COMANDO_NATIVE_GIT=1` is set without a mode, the mode is `shadow`.
 
 The main-process router and the sidecar both enforce guardrails. Local mutation
-RPCs return `operation_disabled` unless `COMANDO_NATIVE_GIT_MUTATIONS=1`.
-Network RPCs return `network_disabled` unless both
-`COMANDO_NATIVE_GIT_MUTATIONS=1` and `COMANDO_NATIVE_GIT_NETWORK=1` are set.
+RPCs return `operation_disabled` unless `COMANDO_NATIVE_GIT=1`,
+`COMANDO_NATIVE_GIT_MODE=write`, and `COMANDO_NATIVE_GIT_MUTATIONS=1` are all
+set. Network RPCs return `network_disabled` unless those same write-mode flags
+and `COMANDO_NATIVE_GIT_NETWORK=1` are set.
 
 ## Rollout Invariants
 
@@ -108,6 +109,12 @@ Network RPCs return `network_disabled` unless both
 - Native invalidation events are small and never include diff contents.
 - Shadow diagnostics compare counts, refs, relative paths, hunk counts, and text
   lengths only. They do not log raw diff contents or blob text.
+- The native backend client timeout must remain longer than Rust Git command
+  timeouts so the UI does not time out before a mutation finishes.
+- `git init` is idempotent for existing ready repositories and must not rewrite
+  the current branch.
+- `discardPaths` discards worktree changes and untracked files; it preserves
+  already-staged changes to match the legacy Git service.
 
 ## Test Inventory
 
@@ -135,4 +142,5 @@ cargo test -p comando-git -p comando-native-backend
 pnpm exec eslint src/main/native-backend/git.ts src/main/native-backend/git.test.ts src/main/index.ts
 pnpm exec tsc --noEmit -p tsconfig.node.json --pretty false
 pnpm exec vitest run src/main/native-backend src/shared/native-backend src/main/git
+pnpm run native:check
 ```

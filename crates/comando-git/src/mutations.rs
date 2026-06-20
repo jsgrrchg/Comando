@@ -5,6 +5,7 @@ use std::time::Duration;
 use comando_types::git::{NativeGitOperationResult, NativeGitRepositoryScope};
 
 use crate::error::{GitError, GitResult};
+use crate::repository::resolve_repository;
 use crate::runner::{GitRunOptions, GitRunner};
 use crate::snapshot::get_repository_snapshot;
 use crate::status::get_status;
@@ -15,6 +16,17 @@ pub fn init_repository(
     runner: &GitRunner,
     scope: &NativeGitRepositoryScope,
 ) -> GitResult<NativeGitOperationResult> {
+    let resolution = resolve_repository(runner, &scope.root_path)?;
+    if resolution.state == "ready" {
+        return operation_result(runner, scope, None, None);
+    }
+
+    if resolution.state != "not_repo" {
+        return Err(GitError::InvalidOperation(
+            "The selected path cannot be initialized as a git repository.".to_string(),
+        ));
+    }
+
     runner.run(&scope.root_path, &["init"], mutation_options())?;
     runner.run(
         &scope.root_path,
@@ -63,12 +75,6 @@ pub fn discard_paths(
     }
 
     for relative_path in paths {
-        if is_untracked_path(runner, &scope.root_path, &relative_path)? {
-            remove_untracked_path(&scope.root_path, &relative_path)?;
-            continue;
-        }
-
-        unstage_path_for_discard(runner, &scope.root_path, &relative_path)?;
         if is_untracked_path(runner, &scope.root_path, &relative_path)? {
             remove_untracked_path(&scope.root_path, &relative_path)?;
             continue;
@@ -404,24 +410,6 @@ fn is_untracked_path(runner: &GitRunner, root_path: &str, relative_path: &str) -
         .is_some_and(|line| line.starts_with("??")))
 }
 
-fn unstage_path_for_discard(
-    runner: &GitRunner,
-    root_path: &str,
-    relative_path: &str,
-) -> GitResult<()> {
-    runner.run(
-        root_path,
-        &[
-            "restore".to_string(),
-            "--staged".to_string(),
-            "--".to_string(),
-            relative_path.to_string(),
-        ],
-        mutation_options().allow_exit_code(1),
-    )?;
-    Ok(())
-}
-
 fn restore_worktree_path(
     runner: &GitRunner,
     root_path: &str,
@@ -543,9 +531,14 @@ mod tests {
         .expect("stage");
         assert!(status(&temp).starts_with("A  scratch.txt\nM  tracked.txt"));
 
-        unstage_paths(&GitRunner::new(), &scope, &["tracked.txt".to_string()])
-            .expect("unstage tracked");
+        unstage_paths(
+            &GitRunner::new(),
+            &scope,
+            &["tracked.txt".to_string(), "scratch.txt".to_string()],
+        )
+        .expect("unstage paths");
         assert!(status(&temp).contains(" M tracked.txt"));
+        assert!(status(&temp).contains("?? scratch.txt"));
 
         discard_paths(
             &GitRunner::new(),
@@ -558,6 +551,24 @@ mod tests {
             "base\n"
         );
         assert!(!temp.path().join("scratch.txt").exists());
+    }
+
+    #[test]
+    fn discard_preserves_staged_changes() {
+        let temp = initialized_repo();
+        let scope = scope(temp.path());
+        fs::write(temp.path().join("tracked.txt"), "staged\n").expect("staged change");
+        stage_paths(&GitRunner::new(), &scope, &["tracked.txt".to_string()]).expect("stage");
+        fs::write(temp.path().join("tracked.txt"), "unstaged\n").expect("unstaged change");
+
+        discard_paths(&GitRunner::new(), &scope, &["tracked.txt".to_string()])
+            .expect("discard unstaged");
+
+        assert_eq!(
+            fs::read_to_string(temp.path().join("tracked.txt")).unwrap(),
+            "staged\n"
+        );
+        assert!(status(&temp).starts_with("M  tracked.txt"));
     }
 
     #[test]
@@ -746,6 +757,27 @@ mod tests {
 
         assert_eq!(result.snapshot.expect("snapshot").resolution.state, "ready");
         assert_eq!(current_branch(&temp), "main");
+    }
+
+    #[test]
+    fn init_repository_is_idempotent_for_ready_repositories() {
+        let temp = initialized_repo();
+        let scope = scope(temp.path());
+        create_branch(&GitRunner::new(), &scope, "feature/current", Some("main"))
+            .expect("create branch");
+        checkout_branch(
+            &GitRunner::new(),
+            &scope,
+            "feature/current",
+            false,
+            None,
+            None,
+        )
+        .expect("checkout feature");
+
+        init_repository(&GitRunner::new(), &scope).expect("init ready repo");
+
+        assert_eq!(current_branch(&temp), "feature/current");
     }
 
     fn initialized_repo() -> TempDir {

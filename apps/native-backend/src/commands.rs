@@ -1637,12 +1637,18 @@ fn disabled_git_network_operation(request: RpcRequest) -> CommandResult {
 }
 
 fn native_git_mutations_enabled() -> bool {
-    env::var("COMANDO_NATIVE_GIT_MUTATIONS").ok().as_deref() == Some("1")
+    native_git_write_mode_enabled()
+        && env::var("COMANDO_NATIVE_GIT_MUTATIONS").ok().as_deref() == Some("1")
 }
 
 fn native_git_network_enabled() -> bool {
     native_git_mutations_enabled()
         && env::var("COMANDO_NATIVE_GIT_NETWORK").ok().as_deref() == Some("1")
+}
+
+fn native_git_write_mode_enabled() -> bool {
+    env::var("COMANDO_NATIVE_GIT").ok().as_deref() == Some("1")
+        && env::var("COMANDO_NATIVE_GIT_MODE").ok().as_deref() == Some("write")
 }
 
 fn parse_args<T: DeserializeOwned>(request: &RpcRequest) -> Result<T, NativeError> {

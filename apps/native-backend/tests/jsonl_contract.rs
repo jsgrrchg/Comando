@@ -13,12 +13,20 @@ struct BackendProcess {
 
 impl BackendProcess {
     fn spawn() -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_comando-native-backend"))
+        Self::spawn_with_env([])
+    }
+
+    fn spawn_with_env<const N: usize>(env_values: [(&str, &str); N]) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_comando-native-backend"));
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("backend process should spawn");
+            .stderr(Stdio::piped());
+        for (key, value) in env_values {
+            command.env(key, value);
+        }
+
+        let mut child = command.spawn().expect("backend process should spawn");
         let stdin = child.stdin.take().expect("stdin should be piped");
         let stdout = child.stdout.take().expect("stdout should be piped");
 
@@ -73,6 +81,51 @@ impl Drop for BackendProcess {
             let _ = self.child.wait();
         }
     }
+}
+
+#[test]
+fn git_mutations_require_native_write_mode_guardrails() {
+    let mut backend = BackendProcess::spawn_with_env([
+        ("COMANDO_NATIVE_GIT", "1"),
+        ("COMANDO_NATIVE_GIT_MODE", "read"),
+        ("COMANDO_NATIVE_GIT_MUTATIONS", "1"),
+    ]);
+
+    backend.send(json!({
+        "id": "stage",
+        "command": "git_stage_paths",
+        "args": {},
+    }));
+    let response = backend.read_json();
+
+    assert_eq!(response["type"], "response");
+    assert_eq!(response["id"], "stage");
+    assert_eq!(response["ok"], false);
+    assert_eq!(
+        response["error"]["details"]["gitCode"],
+        "operation_disabled"
+    );
+}
+
+#[test]
+fn git_network_requires_the_network_guardrail() {
+    let mut backend = BackendProcess::spawn_with_env([
+        ("COMANDO_NATIVE_GIT", "1"),
+        ("COMANDO_NATIVE_GIT_MODE", "write"),
+        ("COMANDO_NATIVE_GIT_MUTATIONS", "1"),
+    ]);
+
+    backend.send(json!({
+        "id": "fetch",
+        "command": "git_fetch",
+        "args": {},
+    }));
+    let response = backend.read_json();
+
+    assert_eq!(response["type"], "response");
+    assert_eq!(response["id"], "fetch");
+    assert_eq!(response["ok"], false);
+    assert_eq!(response["error"]["details"]["gitCode"], "network_disabled");
 }
 
 #[test]

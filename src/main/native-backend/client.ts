@@ -24,7 +24,7 @@ import {
 
 export class NativeBackendError extends Error {
     readonly code: string;
-    readonly details: unknown | null;
+    readonly details: unknown;
     readonly retryable: boolean;
 
     constructor(payload: NativeBackendErrorPayload) {
@@ -59,7 +59,7 @@ type PendingRequest = {
     readonly timeout: NodeJS.Timeout;
 };
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 45_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1_500;
 
 export class NativeBackendClient {
@@ -81,7 +81,7 @@ export class NativeBackendClient {
             options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
         this.shutdownTimeoutMs =
             options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
-        const spawnProcess = options.spawnProcess ?? (spawn as NativeBackendSpawn);
+        const spawnProcess: NativeBackendSpawn = options.spawnProcess ?? spawn;
         this.child = spawnProcess(options.binaryPath, [], {
             stdio: "pipe",
             windowsHide: true,

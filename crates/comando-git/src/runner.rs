@@ -1,7 +1,7 @@
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -121,31 +121,32 @@ impl GitRunner {
             .envs(self.environment.command_values(options.optional_locks()));
 
         let mut child = command.spawn().map_err(map_spawn_error)?;
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let stderr = child.stderr.take().expect("stderr is piped");
+        let stdout_limit = options.max_stdout_bytes;
+        let stderr_limit = options.max_stderr_bytes;
+        let stdout_reader = thread::spawn(move || read_limited(stdout, stdout_limit));
+        let stderr_reader = thread::spawn(move || read_limited(stderr, stderr_limit));
         let started_at = Instant::now();
 
-        loop {
-            if child.try_wait()?.is_some() {
-                break;
+        let status = match wait_for_child(&mut child, started_at, options.timeout) {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = join_reader(stdout_reader);
+                let _ = join_reader(stderr_reader);
+                return Err(error);
             }
+        };
+        let stdout = join_reader(stdout_reader)?;
+        let stderr = join_reader(stderr_reader)?;
+        ensure_output_limit("stdout", stdout.total_bytes, options.max_stdout_bytes)?;
+        ensure_output_limit("stderr", stderr.total_bytes, options.max_stderr_bytes)?;
 
-            if started_at.elapsed() >= options.timeout {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(GitError::CommandTimedOut);
-            }
+        let stdout = String::from_utf8_lossy(&stdout.bytes).to_string();
+        let stderr = redact_git_stderr(&String::from_utf8_lossy(&stderr.bytes));
+        let status_code = status.code();
 
-            thread::sleep(POLL_INTERVAL);
-        }
-
-        let output = child.wait_with_output()?;
-        ensure_output_limit("stdout", output.stdout.len(), options.max_stdout_bytes)?;
-        ensure_output_limit("stderr", output.stderr.len(), options.max_stderr_bytes)?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = redact_git_stderr(&String::from_utf8_lossy(&output.stderr));
-        let status_code = output.status.code();
-
-        if !output.status.success()
+        if !status.success()
             && !status_code.is_some_and(|code| options.allowed_exit_codes.contains(&code))
         {
             return Err(GitError::CommandFailed {
@@ -191,6 +192,60 @@ fn ensure_output_limit(
     }
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct StreamRead {
+    bytes: Vec<u8>,
+    total_bytes: usize,
+}
+
+fn wait_for_child(
+    child: &mut std::process::Child,
+    started_at: Instant,
+    timeout: Duration,
+) -> GitResult<ExitStatus> {
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+
+        if started_at.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(GitError::CommandTimedOut);
+        }
+
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+fn read_limited(mut reader: impl Read, limit_bytes: usize) -> io::Result<StreamRead> {
+    let mut bytes = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut buffer = [0u8; 8192];
+
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+
+        total_bytes += read;
+        if bytes.len() < limit_bytes {
+            let remaining = limit_bytes - bytes.len();
+            bytes.extend_from_slice(&buffer[..read.min(remaining)]);
+        }
+    }
+
+    Ok(StreamRead { bytes, total_bytes })
+}
+
+fn join_reader(handle: thread::JoinHandle<io::Result<StreamRead>>) -> GitResult<StreamRead> {
+    handle
+        .join()
+        .map_err(|_| GitError::Io(io::Error::other("Git output reader panicked.")))?
+        .map_err(GitError::Io)
 }
 
 pub(crate) fn redact_git_stderr(stderr: &str) -> String {
@@ -290,6 +345,50 @@ mod tests {
         let error = GitRunner::with_executable("sh")
             .with_environment(GitEnvironment::empty().with_value("PATH", "/bin:/usr/bin"))
             .run(temp.path(), &["-c", "printf 'abcd'"], options)
+            .expect_err("too large");
+
+        assert!(matches!(
+            error,
+            GitError::OutputTooLarge {
+                stream: "stdout",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn drains_stdout_while_process_is_running() {
+        let temp = TempDir::new().expect("temp");
+        let options = GitRunOptions {
+            max_stdout_bytes: 256 * 1024,
+            ..GitRunOptions::read_only()
+        };
+        let output = GitRunner::with_executable("sh")
+            .with_environment(GitEnvironment::empty().with_value("PATH", "/bin:/usr/bin"))
+            .run(
+                temp.path(),
+                &["-c", "head -c 131072 /dev/zero | tr '\\0' x"],
+                options,
+            )
+            .expect("large stdout");
+
+        assert_eq!(output.stdout.len(), 131072);
+    }
+
+    #[test]
+    fn reports_large_stdout_after_draining_the_child() {
+        let temp = TempDir::new().expect("temp");
+        let options = GitRunOptions {
+            max_stdout_bytes: 64 * 1024,
+            ..GitRunOptions::read_only()
+        };
+        let error = GitRunner::with_executable("sh")
+            .with_environment(GitEnvironment::empty().with_value("PATH", "/bin:/usr/bin"))
+            .run(
+                temp.path(),
+                &["-c", "head -c 131072 /dev/zero | tr '\\0' x"],
+                options,
+            )
             .expect_err("too large");
 
         assert!(matches!(

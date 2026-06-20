@@ -12,6 +12,7 @@ import type {
     NativeGitOriginalFile,
     NativeGitRemoteSummary,
     NativeGitRepositorySnapshot,
+    NativeGitStatusSnapshot,
 } from "@shared/native-backend";
 
 import type { NativeBackendRequester } from "./persistence";
@@ -196,6 +197,44 @@ describe("NativeGitGateway", () => {
                 path: "src/main.ts",
                 previousPath: "src/old-main.ts",
                 staged: true,
+            }),
+        );
+    });
+
+    it("detects diff kind and scope when callers omit file diff options", async () => {
+        const requestMock = vi.fn((command: string) => {
+            if (command === "git_get_status") {
+                return {
+                    ...fixture<NativeGitStatusSnapshot>("status.snapshot.json"),
+                    entries: [
+                        {
+                            ...fixture<NativeGitStatusSnapshot>(
+                                "status.snapshot.json",
+                            ).entries[0],
+                            kind: "untracked",
+                            path: "src/new.ts",
+                            scopes: ["untracked"],
+                        },
+                    ],
+                } satisfies NativeGitStatusSnapshot;
+            }
+
+            return {
+                ...fixture<NativeGitFileDiff>("diff.file.json"),
+                path: "src/new.ts",
+            };
+        });
+        const gateway = gatewayWith(requestMock);
+
+        await gateway.getFileDiff("/tmp/comando-project", "src/new.ts");
+
+        expect(requestMock).toHaveBeenCalledWith(
+            "git_get_file_diff",
+            expect.objectContaining({
+                changeKind: "untracked",
+                diffScope: "untracked",
+                path: "src/new.ts",
+                staged: false,
             }),
         );
     });

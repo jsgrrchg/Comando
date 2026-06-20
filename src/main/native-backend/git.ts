@@ -133,11 +133,16 @@ export class NativeGitGateway implements GitGateway {
         relativePath: string,
         options: GitFileDiffOptions = {},
     ): Promise<GitFileDiff> {
+        const resolvedOptions = await this.#resolveFileDiffOptions(
+            inputPath,
+            relativePath,
+            options,
+        );
         return nativeFileDiffToMain(
             parseNativeFileDiff(
                 await this.#client.request(
                     "git_get_file_diff",
-                    nativeGitPathInput(inputPath, relativePath, options),
+                    nativeGitPathInput(inputPath, relativePath, resolvedOptions),
                 ),
             ),
         );
@@ -465,6 +470,38 @@ export class NativeGitGateway implements GitGateway {
             ),
         );
     }
+
+    async #resolveFileDiffOptions(
+        inputPath: string,
+        relativePath: string,
+        options: GitFileDiffOptions,
+    ): Promise<GitFileDiffOptions> {
+        if (
+            options.kind &&
+            options.previousPath !== undefined &&
+            options.scope &&
+            options.scope !== "auto"
+        ) {
+            return options;
+        }
+
+        const status = await this.getStatus(inputPath);
+        const entry = status.entries.find(
+            (candidate) =>
+                candidate.relativePath === normalizeGitRelativePath(relativePath),
+        );
+        if (!entry) {
+            return options;
+        }
+
+        const scope = resolveNativeDiffScope(options, entry);
+        return {
+            kind: options.kind ?? entry.kind,
+            previousPath: options.previousPath ?? entry.previousPath,
+            scope,
+            staged: options.staged ?? scope === "staged",
+        };
+    }
 }
 
 export type NativeGitDiagnostic = (message: string) => void;
@@ -597,7 +634,7 @@ export class NativeGitRoutingGateway implements ClosableGitGateway {
 
         const legacy = await this.#legacy.getFileDiff(inputPath, relativePath, options);
         this.#shadow(
-            `getFileDiff:${relativePath}`,
+            "getFileDiff",
             () => this.#native.getFileDiff(inputPath, relativePath, options),
             (native) => compareFileDiff(native, legacy),
         );
@@ -619,7 +656,7 @@ export class NativeGitRoutingGateway implements ClosableGitGateway {
             reference,
         );
         this.#shadow(
-            `getFileText:${relativePath}`,
+            "getFileText",
             () => this.#native.getFileText(inputPath, relativePath, reference),
             (native) => compareTextShape(native, legacy),
         );
@@ -936,8 +973,6 @@ function compareSyncStatus(
 
 function compareFileDiff(native: GitFileDiff, legacy: GitFileDiff): string | null {
     const nativeSignature = [
-        native.changedPath,
-        native.previousPath,
         native.staged,
         native.isBinary,
         native.summary.insertions,
@@ -945,8 +980,6 @@ function compareFileDiff(native: GitFileDiff, legacy: GitFileDiff): string | nul
         native.hunks.length,
     ].join("|");
     const legacySignature = [
-        legacy.changedPath,
-        legacy.previousPath,
         legacy.staged,
         legacy.isBinary,
         legacy.summary.insertions,
@@ -988,14 +1021,14 @@ function compareCommitDetail(
         native.changedFileCount,
         native.insertions,
         native.deletions,
-        native.files.map((file) => `${file.kind}:${file.path}`).join(","),
+        listFingerprint(native.files.map((file) => `${file.kind}:${file.path}`)),
     ].join("|");
     const legacySignature = [
         legacy.sha,
         legacy.changedFileCount,
         legacy.insertions,
         legacy.deletions,
-        legacy.files.map((file) => `${file.kind}:${file.path}`).join(","),
+        listFingerprint(legacy.files.map((file) => `${file.kind}:${file.path}`)),
     ].join("|");
 
     return compareSignatures(nativeSignature, legacySignature);
@@ -1005,11 +1038,24 @@ function compareStringLists(
     native: readonly string[],
     legacy: readonly string[],
 ): string | null {
-    return compareSignatures([...native].sort().join(","), [...legacy].sort().join(","));
+    return compareSignatures(listFingerprint(native), listFingerprint(legacy));
 }
 
 function compareSignatures(native: string, legacy: string): string | null {
     return native === legacy ? null : `native=${native || "<empty>"} legacy=${legacy || "<empty>"}`;
+}
+
+function listFingerprint(values: readonly string[]): string {
+    const sorted = [...values].sort();
+    return `count:${sorted.length}:hash:${stableHash(sorted.join("\u{1f}"))}`;
+}
+
+function stableHash(value: string): string {
+    let hash = 5381;
+    for (let index = 0; index < value.length; index += 1) {
+        hash = (hash * 33) ^ value.charCodeAt(index);
+    }
+    return (hash >>> 0).toString(16);
 }
 
 function statusCountSignature(status: GitStatusSnapshot): string {
@@ -1182,6 +1228,41 @@ function nativeGitPathInput(
         scope: nativeGitScope(inputPath),
         staged: options.staged ?? null,
     };
+}
+
+function resolveNativeDiffScope(
+    options: GitFileDiffOptions,
+    entry: GitStatusSnapshot["entries"][number],
+): GitChangeScope {
+    if (options.scope && options.scope !== "auto") {
+        return options.scope;
+    }
+
+    if ((options.kind ?? entry.kind) === "untracked") {
+        return "untracked";
+    }
+
+    if (options.staged === true) {
+        return "staged";
+    }
+
+    if (entry.scopes.includes("unstaged")) {
+        return "unstaged";
+    }
+
+    if (entry.scopes.includes("untracked")) {
+        return "untracked";
+    }
+
+    if (entry.scopes.includes("staged")) {
+        return "staged";
+    }
+
+    return "unstaged";
+}
+
+function normalizeGitRelativePath(relativePath: string): string {
+    return relativePath.split(path.sep).join("/");
 }
 
 function nativeRepositoryResolutionToMain(
