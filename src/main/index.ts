@@ -37,7 +37,10 @@ import {
     registerFilePreviewSchemes,
 } from "./file-preview-protocol";
 import { installApplicationMenu } from "./menu";
-import { NativeBackendClient } from "./native-backend/client";
+import {
+    NativeBackendClient,
+    parseNativeBackendCapabilitiesOutput,
+} from "./native-backend/client";
 import {
     isNativeBackendEnabled,
     isNativeBackendStrict,
@@ -433,8 +436,11 @@ async function startNativeBackendIfEnabled(): Promise<void> {
     client.onEvent(broadcastNativeBackendEvent);
 
     try {
+        await client.handshake({ clientVersion: app.getVersion() });
         await client.request("backend_ping");
-        const capabilities = await client.request("backend_capabilities");
+        const capabilities = parseNativeBackendCapabilitiesOutput(
+            await client.request("backend_capabilities"),
+        );
         console.info(
             `[native-backend] Started ${resolution.source} sidecar at ${resolution.binaryPath}. ${summarizeNativeBackendCapabilities(capabilities)}`,
         );
@@ -465,11 +471,17 @@ function summarizeNativeBackendCapabilities(capabilities: unknown): string {
         typeof capabilities.backendVersion === "string"
             ? capabilities.backendVersion
             : "unknown";
-    const commands = Array.isArray(capabilities.commands)
-        ? capabilities.commands.length
+    const nestedCapabilities = isRecord(capabilities.capabilities)
+        ? capabilities.capabilities
+        : null;
+    const commands = Array.isArray(nestedCapabilities?.commands)
+        ? nestedCapabilities.commands.length
+        : 0;
+    const events = Array.isArray(nestedCapabilities?.events)
+        ? nestedCapabilities.events.length
         : 0;
 
-    return `protocol=${protocolVersion} version=${backendVersion} commands=${commands}.`;
+    return `protocol=${protocolVersion} version=${backendVersion} commands=${commands} events=${events}.`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

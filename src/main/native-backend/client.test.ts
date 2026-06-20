@@ -20,6 +20,8 @@ describe("NativeBackendClient", () => {
 
         const requestPromise = client.request("backend_ping");
         const request = JSON.parse(await linePromise);
+        expect(request.id).toBe("req_1");
+        expect(request.meta).toMatchObject({ protocolVersion: 1 });
         child.stdout.write(
             `${JSON.stringify({
                 type: "response",
@@ -30,6 +32,112 @@ describe("NativeBackendClient", () => {
         );
 
         await expect(requestPromise).resolves.toEqual({ pong: true });
+    });
+
+    it("performs a versioned handshake", async () => {
+        const { child, client } = createClient();
+        const linePromise = readStdinLine(child);
+
+        const handshakePromise = client.handshake({ clientVersion: "0.1.0-test" });
+        const request = JSON.parse(await linePromise);
+        expect(request.command).toBe("backend_handshake");
+        expect(request.args).toEqual({
+            clientName: "comando-electron-main",
+            clientVersion: "0.1.0-test",
+            protocolVersion: 1,
+            supportedProtocolVersions: [1],
+        });
+        child.stdout.write(
+            `${JSON.stringify({
+                type: "response",
+                id: request.id,
+                ok: true,
+                result: {
+                    backendName: "comando-native-backend",
+                    backendVersion: "0.1.0",
+                    protocolVersion: 1,
+                    minimumClientProtocolVersion: 1,
+                    capabilities: {
+                        domains: ["backend"],
+                        commands: ["backend_ping", "backend_handshake"],
+                        events: ["backend://test-event"],
+                        features: ["bootstrap", "versioned-protocol"],
+                    },
+                },
+            })}\n`,
+        );
+
+        await expect(handshakePromise).resolves.toMatchObject({
+            backendName: "comando-native-backend",
+            protocolVersion: 1,
+        });
+    });
+
+    it("rejects unsupported handshake protocol versions clearly", async () => {
+        const { child, client } = createClient();
+        const linePromise = readStdinLine(child);
+
+        const handshakePromise = client.handshake();
+        const request = JSON.parse(await linePromise);
+        child.stdout.write(
+            `${JSON.stringify({
+                type: "response",
+                id: request.id,
+                ok: true,
+                result: {
+                    backendName: "comando-native-backend",
+                    backendVersion: "0.1.0",
+                    protocolVersion: 99,
+                    minimumClientProtocolVersion: 99,
+                    capabilities: {
+                        domains: ["backend"],
+                        commands: [],
+                        events: [],
+                        features: [],
+                    },
+                },
+            })}\n`,
+        );
+
+        await expect(handshakePromise).rejects.toMatchObject({
+            code: "unsupported_protocol_version",
+            name: "NativeBackendError",
+        });
+    });
+
+    it("rejects a backend that requires a newer client minimum", async () => {
+        const { child, client } = createClient();
+        const linePromise = readStdinLine(child);
+
+        const handshakePromise = client.handshake();
+        const request = JSON.parse(await linePromise);
+        child.stdout.write(
+            `${JSON.stringify({
+                type: "response",
+                id: request.id,
+                ok: true,
+                result: {
+                    backendName: "comando-native-backend",
+                    backendVersion: "0.1.0",
+                    protocolVersion: 1,
+                    minimumClientProtocolVersion: 2,
+                    capabilities: {
+                        domains: ["backend"],
+                        commands: [],
+                        events: [],
+                        features: [],
+                    },
+                },
+            })}\n`,
+        );
+
+        await expect(handshakePromise).rejects.toMatchObject({
+            code: "unsupported_protocol_version",
+            details: {
+                clientProtocolVersion: 1,
+                minimumClientProtocolVersion: 2,
+            },
+        });
     });
 
     it("handles out-of-order responses by id", async () => {
@@ -164,6 +272,7 @@ describe("NativeBackendClient", () => {
                     code: "unknown_command",
                     message: "Unknown command: backend_missing",
                     details: null,
+                    retryable: false,
                 },
             })}\n`,
         );

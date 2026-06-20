@@ -28,9 +28,19 @@ if (!isExecutableFile(stagedBinaryPath)) {
 }
 
 const requests = [
-    { id: 1, command: "backend_ping", args: {} },
-    { id: 2, command: "backend_capabilities", args: {} },
-    { id: 3, command: "backend_shutdown", args: {} },
+    {
+        id: "verify_handshake",
+        command: "backend_handshake",
+        args: {
+            clientName: "comando-native-verify",
+            clientVersion: "0.1.0",
+            protocolVersion: 1,
+            supportedProtocolVersions: [1],
+        },
+    },
+    { id: "verify_ping", command: "backend_ping", args: {} },
+    { id: "verify_capabilities", command: "backend_capabilities", args: {} },
+    { id: "verify_shutdown", command: "backend_shutdown", args: {} },
 ]
     .map((request) => JSON.stringify(request))
     .join("\n")
@@ -58,22 +68,31 @@ const outputs = result.stdout
     .filter(Boolean)
     .map((line) => JSON.parse(line));
 
-if (outputs.length !== 3) {
+if (outputs.length !== 4) {
     throw new Error(
-        `Expected 3 JSONL outputs from native backend, received ${outputs.length}.`,
+        `Expected 4 JSONL outputs from native backend, received ${outputs.length}.`,
     );
 }
 
-assertOkResponse(outputs[0], 1);
-assertOkResponse(outputs[1], 2);
-assertOkResponse(outputs[2], 3);
+assertOkResponse(outputs[0], "verify_handshake");
+assertOkResponse(outputs[1], "verify_ping");
+assertOkResponse(outputs[2], "verify_capabilities");
+assertOkResponse(outputs[3], "verify_shutdown");
 
-if (outputs[0].result?.backend !== "comando-native-backend") {
+if (outputs[0].result?.protocolVersion !== 1) {
+    throw new Error("Native backend handshake returned the wrong protocol.");
+}
+
+if (outputs[1].result?.backend !== "comando-native-backend") {
     throw new Error("Native backend ping returned the wrong backend name.");
 }
 
-if (outputs[1].result?.protocolVersion !== 1) {
+if (outputs[2].result?.protocolVersion !== 1) {
     throw new Error("Native backend capabilities returned the wrong protocol.");
+}
+
+if (!outputs[2].result?.capabilities?.commands?.includes("backend_handshake")) {
+    throw new Error("Native backend capabilities did not include backend_handshake.");
 }
 
 console.log(

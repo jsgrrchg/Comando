@@ -1,0 +1,12 @@
+{
+  "sessionId": "terminal_1",
+  "windowId": "window_main",
+  "projectId": "project_1",
+  "worktreeId": "worktree_1",
+  "cwd": "/tmp/comando-project",
+  "cols": 120,
+  "rows": 32,
+  "status": "running",
+  "exitCode": null,
+  "signalCode": null
+}

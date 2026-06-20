@@ -1,0 +1,30 @@
+{
+  "path": "src/main.ts",
+  "previousPath": null,
+  "kind": "update",
+  "isText": true,
+  "isTooLarge": false,
+  "oldText": "export const answer = 41;\n",
+  "newText": "export const answer = 42;\n",
+  "hunks": [
+    {
+      "id": "hunk_1",
+      "oldStart": 1,
+      "oldCount": 1,
+      "newStart": 1,
+      "newCount": 1,
+      "lines": [
+        {
+          "id": "line_1",
+          "type": "remove",
+          "text": "export const answer = 41;"
+        },
+        {
+          "id": "line_2",
+          "type": "add",
+          "text": "export const answer = 42;"
+        }
+      ]
+    }
+  ]
+}

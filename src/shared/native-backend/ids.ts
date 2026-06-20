@@ -1,0 +1,16 @@
+export type NativeBackendRequestId = number | string;
+export type NativeRequestId = NativeBackendRequestId;
+export type NativeWindowId = string;
+export type NativeWorkspaceId = string;
+export type NativeProjectId = string;
+export type NativeWorktreeId = string;
+export type NativeRuntimeId = string;
+export type NativeSessionId = string;
+export type NativeRuntimeSessionId = string;
+export type NativeMessageId = string;
+export type NativeToolCallId = string;
+export type NativeTerminalSessionId = string;
+export type NativeRepositoryId = string;
+export type NativeOperationId = string;
+export type NativeFilePath = string;
+export type NativeRelativePath = string;

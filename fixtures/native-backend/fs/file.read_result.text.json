@@ -1,0 +1,14 @@
+{
+  "projectId": "project_1",
+  "worktreeId": "worktree_1",
+  "path": "/tmp/comando-project/src/main.ts",
+  "relativePath": "src/main.ts",
+  "content": "export const answer = 42;\n",
+  "encoding": "utf-8",
+  "lineEnding": "\n",
+  "contentHash": "sha256:text-fixture",
+  "sizeBytes": 26,
+  "mtimeMs": 1781913600000,
+  "isBinary": false,
+  "isTooLarge": false
+}

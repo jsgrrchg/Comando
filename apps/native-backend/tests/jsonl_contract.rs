@@ -108,16 +108,69 @@ fn reports_capabilities() {
     assert_eq!(response["result"]["protocolVersion"], 1);
     assert_eq!(response["result"]["backendVersion"], "0.1.0");
     assert_eq!(response["result"]["rustVersion"], "1.96");
-    assert_eq!(response["result"]["features"], json!(["bootstrap"]));
     assert_eq!(
-        response["result"]["commands"],
-        json!([
-            "backend_ping",
-            "backend_capabilities",
-            "backend_shutdown",
-            "backend_emit_test_event",
-        ])
+        response["result"]["capabilities"]["features"],
+        json!(["bootstrap", "versioned-protocol", "json-fixtures"])
     );
+    assert_eq!(
+        response["result"]["capabilities"]["commands"][0],
+        json!("backend_ping")
+    );
+    assert_eq!(
+        response["result"]["capabilities"]["commands"][1],
+        json!("backend_handshake")
+    );
+}
+
+#[test]
+fn handshakes_protocol_v1() {
+    let mut backend = BackendProcess::spawn();
+
+    backend.send(json!({
+        "id": "hello",
+        "command": "backend_handshake",
+        "args": {
+            "clientName": "comando-electron-main",
+            "clientVersion": "0.1.0",
+            "protocolVersion": 1,
+            "supportedProtocolVersions": [1],
+        },
+    }));
+
+    let response = backend.read_json();
+
+    assert_eq!(response["type"], "response");
+    assert_eq!(response["id"], "hello");
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["result"]["backendName"], "comando-native-backend");
+    assert_eq!(response["result"]["protocolVersion"], 1);
+    assert_eq!(
+        response["result"]["capabilities"]["features"],
+        json!(["bootstrap", "versioned-protocol"])
+    );
+}
+
+#[test]
+fn rejects_incompatible_handshake_version() {
+    let mut backend = BackendProcess::spawn();
+
+    backend.send(json!({
+        "id": "bad-version",
+        "command": "backend_handshake",
+        "args": {
+            "clientName": "comando-electron-main",
+            "clientVersion": "0.1.0",
+            "protocolVersion": 99,
+            "supportedProtocolVersions": [99],
+        },
+    }));
+    let response = backend.read_json();
+
+    assert_eq!(response["type"], "response");
+    assert_eq!(response["id"], "bad-version");
+    assert_eq!(response["ok"], false);
+    assert_eq!(response["error"]["code"], "unsupported_protocol_version");
+    assert_eq!(response["error"]["retryable"], false);
 }
 
 #[test]
@@ -175,7 +228,7 @@ fn malformed_input_does_not_crash() {
     assert_eq!(malformed_response["type"], "response");
     assert_eq!(malformed_response["id"], 4);
     assert_eq!(malformed_response["ok"], false);
-    assert_eq!(malformed_response["error"]["code"], "malformed_json");
+    assert_eq!(malformed_response["error"]["code"], "invalid_json");
 
     backend.send(json!({"id": 5, "command": "backend_ping"}));
     assert_eq!(backend.read_json()["id"], 5);

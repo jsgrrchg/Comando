@@ -1,0 +1,10 @@
+{
+  "sessionId": "session_1",
+  "runtimeId": "codex",
+  "runtimeSessionId": "runtime_session_1",
+  "projectId": "project_1",
+  "worktreeId": "worktree_1",
+  "title": "Implement native protocol",
+  "status": "idle",
+  "updatedAt": "2026-06-20T00:00:00.000Z"
+}
