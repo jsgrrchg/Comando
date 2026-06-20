@@ -115,7 +115,9 @@ fn reports_capabilities() {
             "versioned-protocol",
             "json-fixtures",
             "native-persistence",
-            "native-project-registry"
+            "native-project-registry",
+            "native-fs",
+            "native-watchers"
         ])
     );
     assert_eq!(

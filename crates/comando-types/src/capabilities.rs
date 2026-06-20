@@ -66,6 +66,7 @@ pub fn backend_capabilities() -> NativeCapabilitySet {
             "backend".to_string(),
             "persistence".to_string(),
             "projects".to_string(),
+            "project-tree".to_string(),
             "fs".to_string(),
             "index".to_string(),
             "search".to_string(),
@@ -85,6 +86,8 @@ pub fn backend_capabilities() -> NativeCapabilitySet {
             "json-fixtures".to_string(),
             "native-persistence".to_string(),
             "native-project-registry".to_string(),
+            "native-fs".to_string(),
+            "native-watchers".to_string(),
         ],
     }
 }
