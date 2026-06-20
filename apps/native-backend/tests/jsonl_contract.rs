@@ -117,7 +117,10 @@ fn reports_capabilities() {
             "native-persistence",
             "native-project-registry",
             "native-fs",
-            "native-watchers"
+            "native-watchers",
+            "native-index",
+            "native-path-search",
+            "native-search-cancel"
         ])
     );
     assert_eq!(

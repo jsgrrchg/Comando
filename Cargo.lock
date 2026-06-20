@@ -80,6 +80,7 @@ name = "comando-native-backend"
 version = "0.1.0"
 dependencies = [
  "comando-fs",
+ "comando-index",
  "comando-persistence",
  "comando-projects",
  "comando-types",

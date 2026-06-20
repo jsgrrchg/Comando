@@ -1,4 +1,7 @@
-use comando_fs::{FsError, ProjectFsService};
+use comando_fs::{FsError, ProjectFsService, ProjectRoot};
+use comando_index::{
+    IndexEvent, IndexService, IndexUpdate, IndexUpdateKind, ProjectSearchQuery, SearchMatch,
+};
 use comando_persistence::{closed_storage_health, NativeStorageConfig, SqlitePersistenceStore};
 use comando_projects::{ProjectRegistry, ProjectRegistryError};
 use comando_types::capabilities::{
@@ -18,7 +21,7 @@ use comando_types::persistence::{
     NativePersistenceMode, NativePersistenceOpenStoreInput, NativePersistenceSnapshot,
 };
 use comando_types::projects::{NativeProjectAddInput, NativeProjectState};
-use comando_types::{fs as native_fs, projects as native_projects};
+use comando_types::{fs as native_fs, index as native_index, projects as native_projects};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
@@ -33,6 +36,7 @@ pub struct CommandResult {
 #[derive(Default)]
 pub struct NativeBackend {
     fs_service: ProjectFsService,
+    index_service: IndexService,
     persistence_store: Option<SqlitePersistenceStore>,
 }
 
@@ -59,6 +63,7 @@ impl NativeBackend {
             "project_open" | "project_refresh" => self.refresh_projects(request),
             "project_list_tree_children" => self.list_project_tree_children(request),
             "project_list_entries" => self.list_project_entries(request),
+            "project_search_entries" => self.search_project_entries(request),
             "fs_read_file" => self.read_file(request),
             "fs_write_file" => self.write_file(request),
             "fs_create_file" => self.create_file(request),
@@ -72,6 +77,13 @@ impl NativeBackend {
             "fs_watch_start" => self.watch_start(request),
             "fs_watch_stop" => self.watch_stop(request),
             "fs_watch_sync_registry" => self.watch_sync_registry(request),
+            "index_rebuild_project" => self.index_rebuild_project(request),
+            "index_update_entries" => self.index_update_entries(request),
+            "index_get_status" => self.index_get_status(request),
+            "index_drop_project" => self.index_drop_project(request),
+            "search_project_entries" => self.search_project_entries(request),
+            "search_project_content" => self.search_project_content(request),
+            "search_cancel" => self.search_cancel(request),
             #[cfg(test)]
             "backend_queue_test_fs_event" => self.queue_test_fs_event(request),
             command => CommandResult {
@@ -273,13 +285,35 @@ impl NativeBackend {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
         };
+        let root = match self
+            .fs_service
+            .resolve_root(&input.project_id, input.worktree_id.as_ref())
+        {
+            Ok(root) => root,
+            Err(error) => return error_only(request.id, fs_error(error)),
+        };
 
-        match self.fs_service.list_entries(&input) {
-            Ok(result) => response_only(
-                request.id,
-                serde_json::to_value(result).expect("project entries serializes"),
-            ),
-            Err(error) => error_only(request.id, fs_error(error)),
+        match self.index_service.list_project_entries(root) {
+            Ok((mut entries, events)) => {
+                let truncated = input.limit.is_some_and(|limit| entries.len() > limit);
+                if let Some(limit) = input.limit {
+                    entries.truncate(limit);
+                }
+                let mut outputs = vec![response_ok(
+                    request.id,
+                    serde_json::to_value(native_projects::NativeProjectListEntriesResult {
+                        entries,
+                        truncated,
+                    })
+                    .expect("project entries serializes"),
+                )];
+                outputs.extend(index_event_outputs(events));
+                CommandResult {
+                    outputs,
+                    should_shutdown: false,
+                }
+            }
+            Err(error) => error_only(request.id, error.to_native_error()),
         }
     }
 
@@ -605,6 +639,185 @@ impl NativeBackend {
         }
     }
 
+    fn index_rebuild_project(&mut self, request: RpcRequest) -> CommandResult {
+        if let Err(error) = self.sync_fs_registry_from_store().map(|_| ()) {
+            return error_only(request.id, error);
+        }
+        let input = match parse_args::<native_index::NativeIndexRebuildProjectInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let root = match self.resolve_index_root(&input.project_id, input.worktree_id.as_ref()) {
+            Ok(root) => root,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        match self.index_service.rebuild_project(root) {
+            Ok((entries, events)) => {
+                let status = self
+                    .index_service
+                    .get_status(&input.project_id, input.worktree_id.as_ref());
+                let mut outputs = vec![response_ok(
+                    request.id,
+                    serde_json::to_value(native_index::NativeIndexRebuildProjectResult {
+                        status: native_index_status(status),
+                        entries: entries.into_iter().map(Into::into).collect(),
+                    })
+                    .expect("index rebuild result serializes"),
+                )];
+                outputs.extend(index_event_outputs(events));
+                CommandResult {
+                    outputs,
+                    should_shutdown: false,
+                }
+            }
+            Err(error) => error_only(request.id, error.to_native_error()),
+        }
+    }
+
+    fn index_update_entries(&mut self, request: RpcRequest) -> CommandResult {
+        if let Err(error) = self.sync_fs_registry_from_store().map(|_| ()) {
+            return error_only(request.id, error);
+        }
+        let input = match parse_args::<native_index::NativeIndexUpdateEntriesInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let root = match self.resolve_index_root(&input.project_id, input.worktree_id.as_ref()) {
+            Ok(root) => root,
+            Err(error) => return error_only(request.id, error),
+        };
+        let update = native_index_update(input.kind, input.relative_paths.clone());
+
+        match self.index_service.update_entries(root, update) {
+            Ok(events) => {
+                let status = self
+                    .index_service
+                    .get_status(&input.project_id, input.worktree_id.as_ref());
+                let mut outputs = vec![response_ok(
+                    request.id,
+                    serde_json::to_value(native_index::NativeIndexUpdateEntriesResult {
+                        status: native_index_status(status),
+                    })
+                    .expect("index update result serializes"),
+                )];
+                outputs.extend(index_event_outputs(events));
+                CommandResult {
+                    outputs,
+                    should_shutdown: false,
+                }
+            }
+            Err(error) => error_only(request.id, error.to_native_error()),
+        }
+    }
+
+    fn index_get_status(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_index::NativeIndexStatusInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        response_only(
+            request.id,
+            serde_json::to_value(native_index_status(
+                self.index_service
+                    .get_status(&input.project_id, input.worktree_id.as_ref()),
+            ))
+            .expect("index status serializes"),
+        )
+    }
+
+    fn index_drop_project(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_index::NativeIndexDropProjectInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        response_only(
+            request.id,
+            serde_json::to_value(native_index::NativeIndexDropProjectResult {
+                dropped: self
+                    .index_service
+                    .drop_project(&input.project_id, input.worktree_id.as_ref()),
+            })
+            .expect("index drop result serializes"),
+        )
+    }
+
+    fn search_project_entries(&mut self, request: RpcRequest) -> CommandResult {
+        if let Err(error) = self.sync_fs_registry_from_store().map(|_| ()) {
+            return error_only(request.id, error);
+        }
+        let input = match parse_args::<native_index::NativeProjectEntrySearchInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let root = match self.resolve_index_root(&input.project_id, input.worktree_id.as_ref()) {
+            Ok(root) => root,
+            Err(error) => return error_only(request.id, error),
+        };
+        let query = ProjectSearchQuery::new(&input.query);
+        let limit = input.limit.max(1) as usize;
+
+        match self.index_service.search_project_entries(
+            root,
+            &query,
+            limit,
+            input.include_ancestor_directories,
+        ) {
+            Ok((entries, matches, operation_id, events)) => {
+                let status = self
+                    .index_service
+                    .get_status(&input.project_id, input.worktree_id.as_ref());
+                let mut outputs = vec![response_ok(
+                    request.id,
+                    serde_json::to_value(native_index::NativeProjectEntrySearchResult {
+                        operation_id,
+                        generation: status.generation,
+                        status: native_index_status_kind(status.status),
+                        entries: entries
+                            .into_iter()
+                            .map(indexed_project_entry)
+                            .collect(),
+                        matches: path_search_matches(matches),
+                        stats: native_index_stats(status.stats),
+                    })
+                    .expect("project entry search result serializes"),
+                )];
+                outputs.extend(index_event_outputs(events));
+                CommandResult {
+                    outputs,
+                    should_shutdown: false,
+                }
+            }
+            Err(error) => error_only(request.id, error.to_native_error()),
+        }
+    }
+
+    fn search_project_content(&mut self, request: RpcRequest) -> CommandResult {
+        match parse_args::<native_index::NativeContentSearchInput>(&request) {
+            Ok(_) => error_only(
+                request.id,
+                comando_index::IndexError::ContentSearchDisabled.to_native_error(),
+            ),
+            Err(error) => error_only(request.id, error),
+        }
+    }
+
+    fn search_cancel(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_index::NativeSearchCancelInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        response_only(
+            request.id,
+            serde_json::to_value(native_index::NativeSearchCancelled {
+                cancelled: self.index_service.cancel_search(&input.operation_id),
+                operation_id: input.operation_id,
+                cancelled_at: comando_persistence::store::now_rfc3339(),
+            })
+            .expect("search cancel result serializes"),
+        )
+    }
+
     fn sync_fs_registry_from_store(&mut self) -> Result<NativeProjectState, NativeError> {
         let state = self.load_project_state_from_store()?;
         self.fs_service.sync_state(state.clone());
@@ -628,10 +841,40 @@ impl NativeBackend {
             .map_err(project_error)
     }
 
+    fn resolve_index_root(
+        &self,
+        project_id: &comando_types::ids::ProjectId,
+        worktree_id: Option<&comando_types::ids::WorktreeId>,
+    ) -> Result<ProjectRoot, NativeError> {
+        self.fs_service
+            .resolve_root(project_id, worktree_id)
+            .map_err(fs_error)
+    }
+
     pub(crate) fn drain_fs_events(&mut self, force: bool) -> Vec<RpcOutput> {
         let drain = self.fs_service.drain_watchers(force);
         let mut outputs = Vec::new();
         for invalidation in drain.invalidations {
+            if let Ok(root) = self
+                .fs_service
+                .resolve_root(&invalidation.project_id, invalidation.worktree_id.as_ref())
+            {
+                let update = match invalidation.relative_paths.clone() {
+                    Some(paths) => IndexUpdate::paths(
+                        IndexUpdateKind::Updated,
+                        paths.into_iter().map(|path| path.0).collect(),
+                    ),
+                    None => IndexUpdate::invalidated(),
+                };
+                match self.index_service.update_entries(root, update) {
+                    Ok(events) => outputs.extend(index_event_outputs(events)),
+                    Err(error) => outputs.push(event(
+                        "index://error",
+                        serde_json::to_value(error.to_native_error())
+                            .expect("index error event serializes"),
+                    )),
+                }
+            }
             outputs.push(event(
                 "project://tree-invalidated",
                 serde_json::to_value(invalidation).expect("invalidation event serializes"),
@@ -761,6 +1004,96 @@ fn tree_invalidation_event(
         })
         .expect("tree invalidation serializes"),
     )
+}
+
+fn index_event_outputs(events: Vec<IndexEvent>) -> Vec<RpcOutput> {
+    events
+        .into_iter()
+        .map(|index_event| {
+            event(
+                index_event.event_name,
+                serde_json::to_value(native_index_status(index_event.snapshot))
+                    .expect("index event serializes"),
+            )
+        })
+        .collect()
+}
+
+fn native_index_update(
+    kind: native_index::NativeIndexUpdateKind,
+    relative_paths: Option<Vec<comando_types::ids::RelativePath>>,
+) -> IndexUpdate {
+    let paths = relative_paths.map(|paths| paths.into_iter().map(|path| path.0).collect());
+    match paths {
+        Some(paths) => IndexUpdate::paths(native_index_update_kind(kind), paths),
+        None => IndexUpdate::invalidated(),
+    }
+}
+
+fn native_index_update_kind(kind: native_index::NativeIndexUpdateKind) -> IndexUpdateKind {
+    match kind {
+        native_index::NativeIndexUpdateKind::Created => IndexUpdateKind::Created,
+        native_index::NativeIndexUpdateKind::Updated => IndexUpdateKind::Updated,
+        native_index::NativeIndexUpdateKind::Deleted => IndexUpdateKind::Deleted,
+        native_index::NativeIndexUpdateKind::Renamed => IndexUpdateKind::Renamed,
+        native_index::NativeIndexUpdateKind::Invalidated => IndexUpdateKind::Invalidated,
+    }
+}
+
+fn native_index_status(
+    snapshot: comando_index::IndexStatusSnapshot,
+) -> native_index::NativeIndexStatusResult {
+    native_index::NativeIndexStatusResult {
+        project_id: snapshot.project_id.into(),
+        worktree_id: snapshot.worktree_id.map(Into::into),
+        generation: snapshot.generation,
+        status: native_index_status_kind(snapshot.status),
+        stats: native_index_stats(snapshot.stats),
+        operation_id: snapshot.operation_id.map(Into::into),
+        occurred_at: snapshot.occurred_at,
+    }
+}
+
+fn native_index_status_kind(status: comando_index::IndexStatus) -> native_index::NativeIndexStatus {
+    match status {
+        comando_index::IndexStatus::Idle => native_index::NativeIndexStatus::Idle,
+        comando_index::IndexStatus::Building => native_index::NativeIndexStatus::Building,
+        comando_index::IndexStatus::Ready => native_index::NativeIndexStatus::Ready,
+        comando_index::IndexStatus::Stale => native_index::NativeIndexStatus::Stale,
+        comando_index::IndexStatus::Error => native_index::NativeIndexStatus::Error,
+    }
+}
+
+fn native_index_stats(stats: comando_index::IndexBuildStats) -> native_index::NativeIndexStats {
+    native_index::NativeIndexStats {
+        entry_count: saturating_u32(stats.entry_count),
+        indexed_file_count: saturating_u32(stats.indexed_file_count),
+        indexed_directory_count: saturating_u32(stats.indexed_directory_count),
+        skipped_count: saturating_u32(stats.skipped_count),
+        duration_ms: stats.duration_ms,
+        truncated: stats.truncated,
+        reason: stats.reason,
+    }
+}
+
+fn indexed_project_entry(
+    entry: comando_index::IndexedProjectEntry,
+) -> native_index::NativeIndexedProjectEntry {
+    entry.to_project_tree_entry().into()
+}
+
+fn path_search_matches(matches: Vec<SearchMatch>) -> Vec<native_index::NativePathSearchMatch> {
+    matches
+        .into_iter()
+        .map(|search_match| native_index::NativePathSearchMatch {
+            entry: indexed_project_entry(search_match.entry),
+            score: search_match.score,
+        })
+        .collect()
+}
+
+fn saturating_u32(value: usize) -> u32 {
+    value.try_into().unwrap_or(u32::MAX)
 }
 
 fn ping_payload() -> Value {
@@ -1239,6 +1572,131 @@ mod tests {
         ));
         assert!(only_response(&delete_result).ok);
         assert!(!project_path.join("src/renamed.ts").exists());
+    }
+
+    #[test]
+    fn handles_native_index_list_search_and_status_commands() {
+        let (temp_dir, mut backend, project_id) = backend_with_registered_project();
+        let project_path = temp_dir.path().join("project-native");
+        fs::create_dir_all(project_path.join("src")).expect("src");
+        fs::write(project_path.join("src/main.ts"), "console.log('hi');\n").expect("main");
+        fs::write(project_path.join(".env"), "APP=1\n").expect("env");
+
+        let list_result = backend.handle_request(request(
+            "project_list_entries",
+            json!({
+                "projectId": project_id,
+                "worktreeId": null,
+            }),
+        ));
+        let list_response = only_response(&list_result);
+        assert!(list_response.ok);
+        let entries = list_response.result.as_ref().unwrap()["entries"]
+            .as_array()
+            .unwrap();
+        assert!(entries.iter().any(|entry| entry["relativePath"] == ".env"));
+        assert!(list_result.outputs.iter().any(|output| {
+            matches!(output, RpcOutput::Event(event) if event.event_name == "index://ready")
+        }));
+
+        let search_result = backend.handle_request(request(
+            "project_search_entries",
+            json!({
+                "projectId": project_id,
+                "worktreeId": null,
+                "query": "main",
+                "includeAncestorDirectories": true,
+                "limit": 10,
+            }),
+        ));
+        let search_response = only_response(&search_result);
+        assert!(search_response.ok);
+        assert_eq!(
+            search_response.result.as_ref().unwrap()["entries"][0]["relativePath"],
+            "src"
+        );
+        assert_eq!(
+            search_response.result.as_ref().unwrap()["matches"][0]["entry"]["relativePath"],
+            "src/main.ts"
+        );
+
+        let status_result = backend.handle_request(request(
+            "index_get_status",
+            json!({
+                "projectId": project_id,
+                "worktreeId": null,
+            }),
+        ));
+        let status_response = only_response(&status_result);
+        assert!(status_response.ok);
+        assert_eq!(status_response.result.as_ref().unwrap()["status"], "ready");
+    }
+
+    #[test]
+    fn handles_native_index_update_drop_content_and_cancel_commands() {
+        let (temp_dir, mut backend, project_id) = backend_with_registered_project();
+        let project_path = temp_dir.path().join("project-native");
+        fs::write(project_path.join("old.ts"), "old").expect("old");
+        assert!(only_response(&backend.handle_request(request(
+            "project_list_entries",
+            json!({
+                "projectId": project_id,
+                "worktreeId": null,
+            }),
+        )))
+        .ok);
+
+        fs::write(project_path.join("new.ts"), "new").expect("new");
+        let update_result = backend.handle_request(request(
+            "index_update_entries",
+            json!({
+                "projectId": project_id,
+                "worktreeId": null,
+                "kind": "created",
+                "relativePaths": ["new.ts"],
+            }),
+        ));
+        assert!(only_response(&update_result).ok);
+        assert!(update_result.outputs.iter().any(|output| {
+            matches!(output, RpcOutput::Event(event) if event.event_name == "index://updated")
+        }));
+
+        let content_result = backend.handle_request(request(
+            "search_project_content",
+            json!({
+                "projectId": project_id,
+                "worktreeId": null,
+                "query": "new",
+                "limit": 10,
+            }),
+        ));
+        let content_response = only_response(&content_result);
+        assert!(!content_response.ok);
+        assert_eq!(
+            content_response.error.as_ref().map(|error| error.code.as_str()),
+            Some("not_supported")
+        );
+
+        let cancel_result = backend.handle_request(request(
+            "search_cancel",
+            json!({
+                "operationId": "operation_missing",
+            }),
+        ));
+        let cancel_response = only_response(&cancel_result);
+        assert!(cancel_response.ok);
+        assert_eq!(cancel_response.result.as_ref().unwrap()["cancelled"], false);
+
+        let drop_result = backend.handle_request(request(
+            "index_drop_project",
+            json!({
+                "projectId": project_id,
+                "worktreeId": null,
+            }),
+        ));
+        let drop_response = only_response(&drop_result);
+        assert!(drop_response.ok);
+        assert_eq!(drop_response.result.as_ref().unwrap()["dropped"], true);
     }
 
     fn only_response(result: &CommandResult) -> &comando_types::protocol::NativeRpcResponse {

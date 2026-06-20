@@ -25,6 +25,7 @@ impl CancellationToken {
 
 #[derive(Debug, Default, Clone)]
 pub struct CancellationRegistry {
+    active: Arc<Mutex<HashSet<String>>>,
     cancelled: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -34,13 +35,27 @@ impl CancellationRegistry {
     }
 
     pub fn start_operation(&self) -> CancellationToken {
+        let operation_id = OperationId(format!("operation_{}", Uuid::new_v4().simple()));
+        self.active
+            .lock()
+            .expect("cancel registry lock")
+            .insert(operation_id.0.clone());
         CancellationToken {
-            operation_id: OperationId(format!("operation_{}", Uuid::new_v4().simple())),
+            operation_id,
             cancelled: Arc::clone(&self.cancelled),
         }
     }
 
     pub fn cancel(&self, operation_id: &OperationId) -> bool {
+        if !self
+            .active
+            .lock()
+            .expect("cancel registry lock")
+            .contains(&operation_id.0)
+        {
+            return false;
+        }
+
         self.cancelled
             .lock()
             .expect("cancel registry lock")
@@ -48,6 +63,10 @@ impl CancellationRegistry {
     }
 
     pub fn clear(&self, operation_id: &OperationId) {
+        self.active
+            .lock()
+            .expect("cancel registry lock")
+            .remove(&operation_id.0);
         self.cancelled
             .lock()
             .expect("cancel registry lock")

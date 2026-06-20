@@ -1,14 +1,18 @@
 use std::collections::HashMap;
+use std::fs;
 
 use comando_fs::ProjectRoot;
+use comando_fs::path::validate_untrusted_relative_path;
 use comando_types::ids::{OperationId, ProjectId, WorktreeId};
 use comando_types::projects::NativeProjectTreeEntry;
 
 use crate::builder::{IndexBuildOptions, build_project_index};
 use crate::cancellation::CancellationRegistry;
-use crate::entry::IndexedProjectEntry;
+use crate::entry::{IndexEntryKind, IndexedProjectEntry};
 use crate::error::{IndexError, IndexResult};
-use crate::incremental::{IndexUpdate, remove_paths, should_rebuild_for_update};
+use crate::incremental::{
+    IndexUpdate, IndexUpdateKind, refresh_has_children, remove_paths, should_rebuild_for_update,
+};
 use crate::query::ProjectSearchQuery;
 use crate::ranking::{SearchMatch, search_entries};
 use crate::stats::{IndexBuildStats, IndexStatus, IndexStatusSnapshot};
@@ -126,12 +130,17 @@ impl IndexService {
         query: &ProjectSearchQuery,
         limit: usize,
         include_ancestor_directories: bool,
-    ) -> IndexResult<(Vec<NativeProjectTreeEntry>, OperationId, Vec<IndexEvent>)> {
+    ) -> IndexResult<(
+        Vec<IndexedProjectEntry>,
+        Vec<SearchMatch>,
+        OperationId,
+        Vec<IndexEvent>,
+    )> {
         if query.is_empty() {
             let token = self.cancellations.start_operation();
             let operation_id = token.operation_id().clone();
             self.cancellations.clear(&operation_id);
-            return Ok((Vec::new(), operation_id, Vec::new()));
+            return Ok((Vec::new(), Vec::new(), operation_id, Vec::new()));
         }
 
         let events = self.ensure_ready(root)?;
@@ -147,18 +156,11 @@ impl IndexService {
         let entries = if include_ancestor_directories {
             include_ancestor_directory_entries(&matches, &index.entries)
         } else {
-            matches.into_iter().map(|match_| match_.entry).collect()
+            matches.iter().map(|match_| match_.entry.clone()).collect()
         };
         self.cancellations.clear(&operation_id);
 
-        Ok((
-            entries
-                .iter()
-                .map(IndexedProjectEntry::to_project_tree_entry)
-                .collect(),
-            operation_id,
-            events.1,
-        ))
+        Ok((entries, matches, operation_id, events.1))
     }
 
     pub fn update_entries(
@@ -175,9 +177,38 @@ impl IndexService {
             return self.rebuild_project(root).map(|(_, events)| events);
         };
         let relative_paths = update.relative_paths.unwrap_or_default();
-        index.entries = remove_paths(&index.entries, &relative_paths);
+        let mut next_entries = remove_paths(&index.entries, &relative_paths);
+
+        if matches!(update.kind, IndexUpdateKind::Created | IndexUpdateKind::Updated) {
+            for relative_path in &relative_paths {
+                let Some(entry) =
+                    indexed_entry_for_relative_path(&root, relative_path, &self.options)?
+                else {
+                    continue;
+                };
+
+                if entry.kind.is_directory() {
+                    return self.rebuild_project(root).map(|(_, events)| events);
+                }
+
+                next_entries.push(entry);
+            }
+        }
+
+        next_entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        index.entries = refresh_has_children(next_entries);
         index.generation += 1;
         index.stats.entry_count = index.entries.len();
+        index.stats.indexed_file_count = index
+            .entries
+            .iter()
+            .filter(|entry| !entry.kind.is_directory())
+            .count();
+        index.stats.indexed_directory_count = index
+            .entries
+            .iter()
+            .filter(|entry| entry.kind.is_directory())
+            .count();
         index.status = IndexStatus::Ready;
 
         Ok(vec![IndexEvent {
@@ -317,12 +348,60 @@ fn status_snapshot(index: &ProjectIndex) -> IndexStatusSnapshot {
     }
 }
 
+fn indexed_entry_for_relative_path(
+    root: &ProjectRoot,
+    relative_path: &str,
+    options: &IndexBuildOptions,
+) -> IndexResult<Option<IndexedProjectEntry>> {
+    let validated = validate_untrusted_relative_path(relative_path, false)?;
+    let absolute_path = root.root_path.join(validated);
+    let metadata = match fs::symlink_metadata(&absolute_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let name = absolute_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| IndexError::Internal("Indexed path had no file name.".to_string()))?
+        .to_string();
+    let kind = if metadata.file_type().is_symlink() {
+        IndexEntryKind::Symlink
+    } else if metadata.is_dir() {
+        IndexEntryKind::Directory
+    } else if metadata.is_file() {
+        IndexEntryKind::File
+    } else {
+        IndexEntryKind::Other
+    };
+    if !options.policy.should_index_entry(&name, kind.is_directory()) {
+        return Ok(None);
+    }
+
+    Ok(Some(IndexedProjectEntry::new(
+        root.project_id.clone(),
+        root.worktree_id.clone(),
+        name.clone(),
+        relative_path.to_string(),
+        kind,
+        false,
+        options.policy.state_for_entry(&name, kind.is_directory()),
+    )))
+}
+
 fn scope_key(project_id: &ProjectId, worktree_id: Option<&WorktreeId>) -> String {
     format!(
         "{}:{}",
         project_id.0,
-        worktree_id.map(|id| id.0.as_str()).unwrap_or("primary")
+        normalized_scope_worktree_id(worktree_id).unwrap_or("primary")
     )
+}
+
+fn normalized_scope_worktree_id(worktree_id: Option<&WorktreeId>) -> Option<&str> {
+    worktree_id
+        .map(|id| id.0.as_str())
+        .filter(|id| !id.ends_with(":primary"))
 }
 
 fn now_rfc3339() -> String {
@@ -367,7 +446,7 @@ mod tests {
         fs::write(temp.path().join("src/shared/search.ts"), "search").expect("file");
         let mut service = IndexService::default();
 
-        let (entries, _, _) = service
+        let (entries, _, _, _) = service
             .search_project_entries(
                 project_root(temp.path()),
                 &ProjectSearchQuery::new("search"),
@@ -400,5 +479,24 @@ mod tests {
         let (entries, _) = service.list_project_entries(root).expect("list");
 
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn update_can_add_created_file_without_full_rebuild() {
+        let temp = TempDir::new().expect("temp");
+        let root = project_root(temp.path());
+        let mut service = IndexService::default();
+        service.list_project_entries(root.clone()).expect("build");
+        fs::write(temp.path().join("created.ts"), "created").expect("created");
+
+        service
+            .update_entries(
+                root.clone(),
+                IndexUpdate::paths(IndexUpdateKind::Created, vec!["created.ts".to_string()]),
+            )
+            .expect("update");
+        let (entries, _) = service.list_project_entries(root).expect("list");
+
+        assert!(entries.iter().any(|entry| entry.relative_path == "created.ts"));
     }
 }
