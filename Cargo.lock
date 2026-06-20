@@ -115,6 +115,7 @@ dependencies = [
  "comando-index",
  "comando-persistence",
  "comando-projects",
+ "comando-terminal",
  "comando-types",
  "rusqlite",
  "serde",

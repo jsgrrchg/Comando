@@ -57,6 +57,7 @@ pub struct NativeTerminalShellPreference {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NativeTerminalLaunch {
     Shell,
+    #[serde(rename_all = "camelCase")]
     Command {
         program: String,
         args: Vec<String>,
