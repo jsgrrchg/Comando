@@ -1,4 +1,5 @@
 import type { NativeProjectId, NativeWindowId, NativeWorktreeId } from "./ids";
+import type { NativeFsVisibilityPolicy } from "./fs";
 
 export type NativeWorktreeSummary = {
     readonly id: NativeWorktreeId;
@@ -68,4 +69,27 @@ export type NativeProjectTreeEntry = {
     readonly hasChildren: boolean;
     readonly isGitIgnored: boolean;
     readonly gitStatus: string | null;
+    readonly absolutePath?: string | null;
+    readonly visibility?: NativeFsVisibilityPolicy | null;
+};
+
+export type NativeProjectTreeChildrenInput = {
+    readonly projectId: NativeProjectId;
+    readonly worktreeId: NativeWorktreeId | null;
+    readonly parentRelativePath: string | null;
+};
+
+export type NativeProjectTreeChildrenResult = {
+    readonly entries: readonly NativeProjectTreeEntry[];
+};
+
+export type NativeProjectListEntriesInput = {
+    readonly projectId: NativeProjectId;
+    readonly worktreeId: NativeWorktreeId | null;
+    readonly limit?: number | null;
+};
+
+export type NativeProjectListEntriesResult = {
+    readonly entries: readonly NativeProjectTreeEntry[];
+    readonly truncated: boolean;
 };

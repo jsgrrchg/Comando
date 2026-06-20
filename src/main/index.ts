@@ -21,6 +21,10 @@ import {
     type TerminalExitEvent,
     type WindowContextSnapshot,
 } from "@shared/ipc";
+import {
+    nativeProjectTreeInvalidationToIpc,
+    type NativeProjectTreeInvalidation,
+} from "@shared/native-backend";
 
 import { appChannel, appIdentity, configureMainProcessApp } from "./app-runtime";
 import {
@@ -52,6 +56,7 @@ import {
     isNativePersistenceStrict,
     normalizeNativePersistenceMode,
 } from "./native-backend/persistence";
+import { NativeFsGateway } from "./native-backend/fs";
 import {
     createNativeProjectRegistryStore,
     resolveNativeProjectRegistryMode,
@@ -158,6 +163,11 @@ if (!hasSingleInstanceLock) {
                 },
             });
             projectService = new ProjectService({
+                env: process.env,
+                nativeFs:
+                    nativePersistenceReady && nativeBackendClient
+                        ? new NativeFsGateway(nativeBackendClient)
+                        : null,
                 onProjectTreeInvalidated: (payload) => {
                     broadcastProjectTreeInvalidation(payload);
                     broadcastProjectGitInvalidation(payload);
@@ -1002,6 +1012,17 @@ export function broadcastGitWorktreesUpdated(
 }
 
 function broadcastNativeBackendEvent(event: NativeBackendEvent): void {
+    if (event.eventName === "project://tree-invalidated") {
+        try {
+            const invalidation = nativeProjectTreeInvalidationToIpc(
+                event.payload as NativeProjectTreeInvalidation,
+            );
+            projectService?.handleProjectTreeInvalidation(invalidation);
+        } catch (error) {
+            debugBenignError("nativeBackend.projectTreeInvalidation", error);
+        }
+    }
+
     forEachLiveWindow((window) => {
         window.webContents.send(IPC_EVENTS.nativeBackendEvent, event);
     });

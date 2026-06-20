@@ -6,6 +6,7 @@ export type NativeDomain =
     | "git"
     | "index"
     | "persistence"
+    | "project-tree"
     | "projects"
     | "review"
     | "search"

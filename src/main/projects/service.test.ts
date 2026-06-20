@@ -8,6 +8,13 @@ import type { WorkspaceSnapshot } from "@shared/ipc";
 
 import { databaseMigrations } from "@main/db/migrations";
 import {
+    NativeFsGateway,
+    NATIVE_FS_ENABLED_ENV,
+    NATIVE_FS_MODE_ENV,
+    NATIVE_PROJECT_TREE_ENABLED_ENV,
+} from "@main/native-backend/fs";
+import type { NativeBackendRequester } from "@main/native-backend/persistence";
+import {
     applyMigrations,
     createSqliteCompatConnection,
 } from "@main/testing/sqlite-compat";
@@ -812,6 +819,162 @@ describe("ProjectService", () => {
         ).resolves.toHaveLength(1);
         expect(readdirSpy.mock.calls.length).toBeGreaterThan(cachedReadCount);
     });
+
+    it("routes tree and file reads through native filesystem in read mode", async () => {
+        const connection = createTestConnection();
+        const requestMock = vi.fn(async (command: string) => {
+            if (command === "project_list_tree_children") {
+                return {
+                    entries: [
+                        nativeTreeEntry({
+                            name: "src",
+                            relativePath: "src",
+                            kind: "directory",
+                            hasChildren: true,
+                        }),
+                    ],
+                };
+            }
+
+            if (command === "fs_read_file") {
+                return nativeReadFileResult({
+                    content: "export const nativeRead = true;\n",
+                    relativePath: "src/index.ts",
+                });
+            }
+
+            throw new Error(`Unexpected command ${command}`);
+        });
+        const projectService = createProjectService(connection, undefined, {
+            env: {
+                [NATIVE_FS_ENABLED_ENV]: "1",
+                [NATIVE_FS_MODE_ENV]: "read",
+                [NATIVE_PROJECT_TREE_ENABLED_ENV]: "1",
+            },
+            nativeFs: gatewayWith(requestMock),
+        });
+        const projectRoot = createTempProject(tempDirs, "native-read");
+        fs.mkdirSync(path.join(projectRoot, "src"), { recursive: true });
+        fs.writeFileSync(path.join(projectRoot, "src/index.ts"), "legacy\n");
+
+        const [project] = (
+            await projectService.addProjectPaths([projectRoot])
+        ).projects;
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+
+        await expect(
+            projectService.listProjectTreeChildren({
+                parentRelativePath: null,
+                projectId: project.id,
+                worktreeId: null,
+            }),
+        ).resolves.toEqual([
+            expect.objectContaining({
+                kind: "directory",
+                relativePath: "src",
+            }),
+        ]);
+        await expect(
+            projectService.openProjectFile({
+                projectId: project.id,
+                relativePath: "src/index.ts",
+                worktreeId: null,
+            }),
+        ).resolves.toMatchObject({
+            content: "export const nativeRead = true;\n",
+            languageId: "typescript",
+        });
+        expect(requestMock).toHaveBeenCalledWith(
+            "project_list_tree_children",
+            expect.any(Object),
+        );
+        expect(requestMock).toHaveBeenCalledWith("fs_read_file", {
+            projectId: project.id,
+            relativePath: "src/index.ts",
+            worktreeId: `${project.id}:primary`,
+        });
+    });
+
+    it("routes writes and mutations through native filesystem only in write mode", async () => {
+        const connection = createTestConnection();
+        const requestMock = vi.fn(async (command: string, args: unknown) => {
+            if (command === "fs_write_file") {
+                return {
+                    conflict: null,
+                    entry: nativeEntry("src/index.ts"),
+                    file: nativeReadFileResult({
+                        content: "export const nativeWrite = true;\n",
+                        relativePath: "src/index.ts",
+                    }),
+                };
+            }
+
+            if (command === "fs_create_file") {
+                return nativeMutationResult("src/new.ts");
+            }
+
+            throw new Error(`Unexpected command ${command} ${JSON.stringify(args)}`);
+        });
+        const projectService = createProjectService(connection, undefined, {
+            env: {
+                [NATIVE_FS_ENABLED_ENV]: "1",
+                [NATIVE_FS_MODE_ENV]: "write",
+            },
+            nativeFs: gatewayWith(requestMock),
+        });
+        const projectRoot = createTempProject(tempDirs, "native-write");
+        fs.mkdirSync(path.join(projectRoot, "src"), { recursive: true });
+        fs.writeFileSync(path.join(projectRoot, "src/index.ts"), "legacy\n");
+
+        const [project] = (
+            await projectService.addProjectPaths([projectRoot])
+        ).projects;
+        if (!project) {
+            throw new Error("Expected the project to be created.");
+        }
+
+        await expect(
+            projectService.saveProjectFile({
+                content: "export const nativeWrite = true;\n",
+                expectedModifiedAtMs: 100,
+                projectId: project.id,
+                relativePath: "src/index.ts",
+                worktreeId: null,
+            }),
+        ).resolves.toMatchObject({
+            content: "export const nativeWrite = true;\n",
+        });
+        await expect(
+            projectService.createProjectEntry({
+                kind: "file",
+                name: "new.ts",
+                parentRelativePath: "src",
+                projectId: project.id,
+                worktreeId: null,
+            }),
+        ).resolves.toEqual({
+            kind: "file",
+            name: "new.ts",
+            parentRelativePath: "src",
+            relativePath: "src/new.ts",
+        });
+        expect(requestMock).toHaveBeenCalledWith(
+            "fs_write_file",
+            expect.objectContaining({
+                expectedModifiedAtMs: 100,
+                origin: "user",
+            }),
+        );
+        expect(requestMock).toHaveBeenCalledWith(
+            "fs_create_file",
+            expect.objectContaining({
+                name: "new.ts",
+                origin: "user",
+            }),
+        );
+    });
 });
 
 function createTestConnection() {
@@ -825,11 +988,97 @@ function createProjectService(
     onProjectTreeInvalidated: ConstructorParameters<
         typeof ProjectService
     >[0]["onProjectTreeInvalidated"] = () => {},
+    options: Pick<
+        ConstructorParameters<typeof ProjectService>[0],
+        "env" | "nativeFs"
+    > = {},
 ) {
     return new ProjectService({
+        ...options,
         onProjectTreeInvalidated,
         store: new SqliteProjectStore(connection),
     });
+}
+
+function gatewayWith(
+    requestMock: (command: string, args?: Record<string, unknown>) => Promise<unknown>,
+): NativeFsGateway {
+    const request: NativeBackendRequester["request"] = async (...args) =>
+        (await requestMock(...args)) as never;
+    return new NativeFsGateway({ request });
+}
+
+function nativeTreeEntry(overrides: {
+    readonly hasChildren: boolean;
+    readonly kind: "directory" | "file";
+    readonly name: string;
+    readonly relativePath: string;
+}) {
+    return {
+        extension: overrides.kind === "file" ? "ts" : null,
+        gitStatus: null,
+        hasChildren: overrides.hasChildren,
+        id: `project-1:${overrides.relativePath}`,
+        isGitIgnored: false,
+        kind: overrides.kind,
+        name: overrides.name,
+        parentRelativePath: null,
+        projectId: "project-1",
+        relativePath: overrides.relativePath,
+        worktreeId: "project-1:primary",
+    };
+}
+
+function nativeReadFileResult(overrides: {
+    readonly content: string;
+    readonly relativePath: string;
+}) {
+    return {
+        content: overrides.content,
+        contentHash: "hash",
+        encoding: "utf8",
+        imageDataBase64: null,
+        isBinary: false,
+        isTooLarge: false,
+        kind: "text",
+        lineEnding: "\n",
+        mimeType: "text/plain",
+        mtimeMs: 100,
+        name: path.basename(overrides.relativePath),
+        path: `/tmp/project/${overrides.relativePath}`,
+        projectId: "project-1",
+        relativePath: overrides.relativePath,
+        sizeBytes: overrides.content.length,
+        worktreeId: "project-1:primary",
+    };
+}
+
+function nativeMutationResult(relativePath: string) {
+    return {
+        entry: nativeEntry(relativePath),
+        kind: "file",
+        name: path.basename(relativePath),
+        parentRelativePath: path.posix.dirname(relativePath),
+        relativePath,
+    };
+}
+
+function nativeEntry(relativePath: string) {
+    return {
+        contentHash: null,
+        isBinary: false,
+        isDirectory: false,
+        isSymlink: false,
+        isTooLarge: false,
+        kind: "file",
+        mtimeMs: 100,
+        path: `/tmp/project/${relativePath}`,
+        projectId: "project-1",
+        relativePath,
+        sizeBytes: 10,
+        status: "clean",
+        worktreeId: "project-1:primary",
+    };
 }
 
 function createTempProject(tempDirs: string[], name: string): string {
