@@ -33,7 +33,7 @@ impl Default for AiEngineConfig {
 
 #[derive(Clone)]
 pub struct AiEngine {
-    config: AiEngineConfig,
+    _config: AiEngineConfig,
     event_sender: Arc<Mutex<Option<mpsc::SyncSender<AiRuntimeEvent>>>>,
     registry: RuntimeRegistry,
     runtime: Arc<tokio::runtime::Runtime>,
@@ -49,7 +49,7 @@ impl Default for AiEngine {
 impl AiEngine {
     pub fn new(config: AiEngineConfig) -> Self {
         Self {
-            config,
+            _config: config,
             event_sender: Arc::new(Mutex::new(None)),
             registry: RuntimeRegistry::default(),
             runtime: Arc::new(
@@ -89,12 +89,7 @@ impl AiEngine {
         &self,
         input: NativeAiPrepareSessionInput,
     ) -> AiResult<NativeAiSessionSummary> {
-        self.registry.require_native(&input.runtime_id.0)?;
-        if input.runtime_id.0 != self.config.selected_native_runtime {
-            return Err(AiError::RuntimeNotNative {
-                runtime_id: input.runtime_id.0,
-            });
-        }
+        let definition = self.registry.require_native(&input.runtime_id.0)?;
 
         let launch = input.launch.clone();
         let session = NativeAiSession::from_prepare_input(input)?;
@@ -109,7 +104,7 @@ impl AiEngine {
             }
             let event_sender = self.event_sender()?;
             drop(sessions);
-            let spec = AcpProcessSpec::from_launch(&launch);
+            let spec = AcpProcessSpec::from_launch(definition, &launch)?;
             let (session, controller) = start_acp_session(
                 &self.runtime,
                 spec,
@@ -303,12 +298,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_native_runtime_before_session_creation() {
+    fn rejects_unknown_runtime_before_session_creation() {
         let engine = AiEngine::default();
 
         assert!(matches!(
-            engine.prepare_session(prepare_input("s1", "claude")),
-            Err(AiError::RuntimeNotNative { .. })
+            engine.prepare_session(prepare_input("s1", "gemini")),
+            Err(AiError::RuntimeMissing { .. })
         ));
     }
 

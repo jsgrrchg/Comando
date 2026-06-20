@@ -81,13 +81,36 @@ export type NativeAiGetRuntimeStatusInput = {
     readonly launch?: NativeAiLaunchSpec | null;
 };
 
+export type NativeAiAuthHandshakeSpec = {
+    readonly envMethodId: string;
+    readonly externalMethodId: string;
+    readonly meta: Readonly<Record<string, unknown>>;
+};
+
+export type NativeAiDesiredSelections = {
+    readonly modelId: string | null;
+    readonly modeId: string | null;
+    readonly configOptions: Readonly<Record<string, unknown>>;
+};
+
 export type NativeAiLaunchSpec = {
+    readonly runtimeId: NativeAiRuntimeId;
+    readonly ownerWindowId: string;
+    readonly projectId: NativeProjectId | null;
+    readonly worktreeId: NativeWorktreeId | null;
+    readonly projectRoot: string | null;
+    readonly additionalRoots: readonly string[];
     readonly executable: string;
     readonly args: readonly string[];
     readonly cwd: string;
     readonly env: Readonly<Record<string, string>>;
     readonly command: string;
     readonly status: NativeAiRuntimeStatus;
+    readonly authMethod: string | null;
+    readonly authCredentialSource: string | null;
+    readonly authHandshake: NativeAiAuthHandshakeSpec | null;
+    readonly persistedRuntimeSessionId: NativeRuntimeSessionId | null;
+    readonly desiredSelections: NativeAiDesiredSelections;
 };
 
 export type NativeAiPrepareSessionInput = {

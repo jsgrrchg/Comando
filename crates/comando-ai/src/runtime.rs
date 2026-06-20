@@ -121,19 +121,19 @@ fn default_runtime_definitions() -> [RuntimeDefinition; 5] {
             default_executable: "codex-acp",
             acp_args: NO_ARGS,
             protocol_flavor: AcpProtocolFlavor::Current14,
-            support_state: NativeAiRuntimeSupportState::NativeUnavailable,
+            support_state: NativeAiRuntimeSupportState::NativeReady,
             capabilities: RuntimeCapabilitiesPreset::codex().into(),
-            message: Some("Codex native ACP support stays on the legacy worker until PR 9."),
+            message: None,
         },
         RuntimeDefinition {
             id: "claude",
             display_name: "Claude",
-            default_executable: "claude",
+            default_executable: "claude-agent-acp",
             acp_args: NO_ARGS,
             protocol_flavor: AcpProtocolFlavor::Current14,
-            support_state: NativeAiRuntimeSupportState::NativeUnavailable,
+            support_state: NativeAiRuntimeSupportState::NativeReady,
             capabilities: RuntimeCapabilitiesPreset::claude().into(),
-            message: Some("Claude native ACP support stays on the legacy worker until PR 9."),
+            message: None,
         },
         RuntimeDefinition {
             id: "grok",
@@ -141,9 +141,9 @@ fn default_runtime_definitions() -> [RuntimeDefinition; 5] {
             default_executable: "grok",
             acp_args: GROK_ARGS,
             protocol_flavor: AcpProtocolFlavor::Legacy12,
-            support_state: NativeAiRuntimeSupportState::LegacyOnly,
+            support_state: NativeAiRuntimeSupportState::NativeReady,
             capabilities: RuntimeCapabilitiesPreset::grok().into(),
-            message: Some("Grok uses the legacy ACP path in this PR."),
+            message: None,
         },
         RuntimeDefinition {
             id: "kilo",
@@ -151,9 +151,9 @@ fn default_runtime_definitions() -> [RuntimeDefinition; 5] {
             default_executable: "kilo",
             acp_args: ACP_ARG,
             protocol_flavor: AcpProtocolFlavor::Current14,
-            support_state: NativeAiRuntimeSupportState::NativeUnavailable,
+            support_state: NativeAiRuntimeSupportState::NativeReady,
             capabilities: RuntimeCapabilitiesPreset::kilo().into(),
-            message: Some("Kilo native ACP support stays on the legacy worker until PR 9."),
+            message: None,
         },
         RuntimeDefinition {
             id: "opencode",
@@ -222,7 +222,7 @@ impl RuntimeCapabilitiesPreset {
             tools: true,
             plan_updates: false,
             permissions: true,
-            user_input: false,
+            user_input: true,
             subagents: false,
             resume_session: false,
             load_session: true,
@@ -251,10 +251,10 @@ impl RuntimeCapabilitiesPreset {
     const fn opencode() -> Self {
         Self {
             thinking: true,
-            tools: false,
+            tools: true,
             plan_updates: true,
-            permissions: false,
-            user_input: false,
+            permissions: true,
+            user_input: true,
             subagents: false,
             resume_session: false,
             load_session: true,
@@ -323,13 +323,11 @@ mod tests {
     }
 
     #[test]
-    fn only_opencode_is_native_ready_in_pr8() {
+    fn all_pr9_matrix_runtimes_are_native_ready() {
         let registry = RuntimeRegistry::default();
 
-        assert!(registry.require_native("opencode").is_ok());
-        assert!(matches!(
-            registry.require_native("claude"),
-            Err(AiError::RuntimeNotNative { .. })
-        ));
+        for runtime_id in ["claude", "codex", "grok", "kilo", "opencode"] {
+            assert!(registry.require_native(runtime_id).is_ok());
+        }
     }
 }

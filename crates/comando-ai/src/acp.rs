@@ -33,24 +33,41 @@ use crate::events::{
     now_iso8601, session_updated,
 };
 use crate::redaction::redact_env_key_value;
+use crate::runtime::{AcpProtocolFlavor, RuntimeDefinition};
 use crate::session::{NativeAiSession, SessionRegistry};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AcpProcessSpec {
+    pub runtime_id: String,
+    pub command: String,
     pub executable: String,
     pub args: Vec<String>,
     pub cwd: String,
     pub env: BTreeMap<String, String>,
+    pub protocol_flavor: AcpProtocolFlavor,
+    pub auth_method: Option<String>,
+    pub auth_credential_source: Option<String>,
+    pub auth_handshake: Option<comando_types::ai::NativeAiAuthHandshakeSpec>,
 }
 
 impl AcpProcessSpec {
-    pub fn from_launch(launch: &NativeAiLaunchSpec) -> Self {
-        Self {
+    pub fn from_launch(
+        definition: RuntimeDefinition,
+        launch: &NativeAiLaunchSpec,
+    ) -> AiResult<Self> {
+        validate_launch_context(definition, launch)?;
+        Ok(Self {
+            runtime_id: launch.runtime_id.0.clone(),
+            command: launch.command.clone(),
             executable: launch.executable.clone(),
             args: launch.args.clone(),
             cwd: launch.cwd.clone(),
             env: launch.env.clone(),
-        }
+            protocol_flavor: definition.protocol_flavor,
+            auth_method: launch.auth_method.clone(),
+            auth_credential_source: launch.auth_credential_source.clone(),
+            auth_handshake: launch.auth_handshake.clone(),
+        })
     }
 
     pub fn redacted_env(&self) -> BTreeMap<String, String> {
@@ -59,6 +76,85 @@ impl AcpProcessSpec {
             .map(|(key, value)| (key.clone(), redact_env_key_value(key, value)))
             .collect()
     }
+}
+
+fn validate_launch_context(
+    definition: RuntimeDefinition,
+    launch: &NativeAiLaunchSpec,
+) -> AiResult<()> {
+    let runtime_id = definition.id.to_string();
+    if launch.runtime_id.0 != definition.id {
+        return Err(AiError::RuntimeLaunchContextInvalid {
+            runtime_id,
+            message: format!(
+                "Launch context runtime `{}` does not match descriptor `{}`.",
+                launch.runtime_id.0, definition.id
+            ),
+        });
+    }
+
+    if launch.status.runtime_id != launch.runtime_id {
+        return Err(AiError::RuntimeLaunchContextInvalid {
+            runtime_id,
+            message: "Launch status belongs to a different runtime.".to_string(),
+        });
+    }
+
+    if launch.executable.trim().is_empty() {
+        return Err(AiError::RuntimeLaunchContextInvalid {
+            runtime_id,
+            message: "Launch executable is missing.".to_string(),
+        });
+    }
+
+    if launch.cwd.trim().is_empty() {
+        return Err(AiError::RuntimeLaunchContextInvalid {
+            runtime_id,
+            message: "Launch cwd is missing.".to_string(),
+        });
+    }
+
+    if launch.status.state != "ready" || launch.status.onboarding_required {
+        return Err(AiError::RuntimeNotReady {
+            runtime_id,
+            message: launch.status.message.clone().unwrap_or_else(|| {
+                "Native runtime launch status is not ready.".to_string()
+            }),
+        });
+    }
+
+    if definition.id != "claude" && launch.args != definition_args(definition) {
+        return Err(AiError::RuntimeLaunchContextInvalid {
+            runtime_id,
+            message: format!(
+                "Launch args do not match the native ACP contract for {}.",
+                definition.display_name
+            ),
+        });
+    }
+
+    if launch.auth_handshake.is_some()
+        && launch
+            .auth_method
+            .as_deref()
+            .is_none_or(|method| method.trim().is_empty())
+    {
+        return Err(AiError::RuntimeAuthMissing {
+            runtime_id,
+            message: "Launch context requested an auth handshake without an auth method."
+                .to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn definition_args(definition: RuntimeDefinition) -> Vec<String> {
+    definition
+        .acp_args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -724,38 +820,123 @@ impl<T> MaybeUndefinedExt<T> for agent_client_protocol::schema::MaybeUndefined<T
 #[cfg(test)]
 mod tests {
     use super::*;
-    use comando_types::ai::NativeAiRuntimeStatus;
+    use comando_types::ai::{NativeAiDesiredSelections, NativeAiRuntimeStatus};
+    use crate::runtime::RuntimeRegistry;
 
-    #[test]
-    fn redacts_launch_env() {
+    fn ready_status(runtime_id: &str, command: &str) -> NativeAiRuntimeStatus {
+        NativeAiRuntimeStatus {
+            runtime_id: RuntimeId(runtime_id.to_string()),
+            state: "ready".to_string(),
+            auth_method: None,
+            auth_methods: Vec::new(),
+            auth_ready: true,
+            checked_at: now_iso8601(),
+            command: Some(command.to_string()),
+            message: None,
+            onboarding_required: false,
+            source: Some("path".to_string()),
+            has_custom_binary_path: false,
+            has_gateway_config: false,
+            has_gateway_url: false,
+        }
+    }
+
+    fn launch_spec(runtime_id: &str, executable: &str, args: Vec<&str>) -> NativeAiLaunchSpec {
         let mut env = BTreeMap::new();
         env.insert("OPENAI_API_KEY".to_string(), "sk-secret".to_string());
         env.insert("PATH".to_string(), "/usr/bin".to_string());
-        let spec = AcpProcessSpec::from_launch(&NativeAiLaunchSpec {
-            executable: "opencode".to_string(),
-            args: vec!["acp".to_string()],
+        let args = args
+            .into_iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+
+        let command = std::iter::once(executable.to_string())
+            .chain(args.clone())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        NativeAiLaunchSpec {
+            runtime_id: RuntimeId(runtime_id.to_string()),
+            owner_window_id: "window_main".to_string(),
+            project_id: None,
+            worktree_id: None,
+            project_root: Some("/tmp".to_string()),
+            additional_roots: Vec::new(),
+            executable: executable.to_string(),
+            args: args.clone(),
             cwd: "/tmp".to_string(),
             env,
-            command: "opencode acp".to_string(),
-            status: NativeAiRuntimeStatus {
-                runtime_id: RuntimeId("opencode".to_string()),
-                state: "ready".to_string(),
-                auth_method: None,
-                auth_methods: Vec::new(),
-                auth_ready: true,
-                checked_at: now_iso8601(),
-                command: Some("opencode acp".to_string()),
-                message: None,
-                onboarding_required: false,
-                source: Some("path".to_string()),
-                has_custom_binary_path: false,
-                has_gateway_config: false,
-                has_gateway_url: false,
+            command: command.clone(),
+            status: ready_status(runtime_id, &command),
+            auth_method: None,
+            auth_credential_source: None,
+            auth_handshake: None,
+            persisted_runtime_session_id: None,
+            desired_selections: NativeAiDesiredSelections {
+                model_id: None,
+                mode_id: None,
+                config_options: BTreeMap::new(),
             },
-        });
+        }
+    }
+
+    #[test]
+    fn redacts_launch_env() {
+        let registry = RuntimeRegistry::default();
+        let definition = registry.get("opencode").unwrap();
+        let spec = AcpProcessSpec::from_launch(
+            definition,
+            &launch_spec("opencode", "opencode", vec!["acp"]),
+        )
+        .unwrap();
 
         assert_eq!(spec.redacted_env()["OPENAI_API_KEY"], "[redacted]");
         assert_eq!(spec.redacted_env()["PATH"], "/usr/bin");
+    }
+
+    #[test]
+    fn validates_process_args_for_pr9_runtime_matrix() {
+        let registry = RuntimeRegistry::default();
+        let cases = [
+            ("codex", "codex-acp", vec![]),
+            ("claude", "node", vec!["/vendor/claude-agent-acp.js"]),
+            ("opencode", "opencode", vec!["acp"]),
+            ("kilo", "kilo", vec!["acp"]),
+            ("grok", "grok", vec!["--no-auto-update", "agent", "stdio"]),
+        ];
+
+        for (runtime_id, executable, args) in cases {
+            let definition = registry.get(runtime_id).unwrap();
+            let spec =
+                AcpProcessSpec::from_launch(definition, &launch_spec(runtime_id, executable, args))
+                    .unwrap();
+            assert_eq!(spec.runtime_id, runtime_id);
+        }
+    }
+
+    #[test]
+    fn rejects_runtime_mismatch_before_spawn() {
+        let registry = RuntimeRegistry::default();
+        let definition = registry.get("kilo").unwrap();
+
+        assert!(matches!(
+            AcpProcessSpec::from_launch(
+                definition,
+                &launch_spec("opencode", "opencode", vec!["acp"]),
+            ),
+            Err(AiError::RuntimeLaunchContextInvalid { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_grok_without_no_auto_update_args() {
+        let registry = RuntimeRegistry::default();
+        let definition = registry.get("grok").unwrap();
+
+        assert!(matches!(
+            AcpProcessSpec::from_launch(definition, &launch_spec("grok", "grok", vec!["agent"])),
+            Err(AiError::RuntimeLaunchContextInvalid { .. })
+        ));
     }
 
     #[test]

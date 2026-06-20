@@ -18,6 +18,8 @@ export type NativeErrorCode =
     | "ai_runtime_missing"
     | "ai_runtime_not_native"
     | "ai_runtime_not_ready"
+    | "ai_runtime_launch_context_invalid"
+    | "ai_runtime_auth_missing"
     | "ai_session_not_found"
     | "ai_session_busy"
     | "ai_session_owner_mismatch"

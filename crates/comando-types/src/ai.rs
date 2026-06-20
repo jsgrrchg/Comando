@@ -91,22 +91,52 @@ pub struct NativeAiRuntimeStatus {
     pub has_gateway_url: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiGetRuntimeStatusInput {
     pub runtime_id: NativeAiRuntimeId,
     pub launch: Option<NativeAiLaunchSpec>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiAuthHandshakeSpec {
+    pub env_method_id: String,
+    pub external_method_id: String,
+    #[serde(default)]
+    pub meta: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiDesiredSelections {
+    pub model_id: Option<String>,
+    pub mode_id: Option<String>,
+    #[serde(default)]
+    pub config_options: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiLaunchSpec {
+    pub runtime_id: RuntimeId,
+    pub owner_window_id: String,
+    pub project_id: Option<ProjectId>,
+    pub worktree_id: Option<WorktreeId>,
+    pub project_root: Option<String>,
+    #[serde(default)]
+    pub additional_roots: Vec<String>,
     pub executable: String,
     pub args: Vec<String>,
     pub cwd: String,
     pub env: BTreeMap<String, String>,
     pub command: String,
     pub status: NativeAiRuntimeStatus,
+    pub auth_method: Option<String>,
+    pub auth_credential_source: Option<String>,
+    pub auth_handshake: Option<NativeAiAuthHandshakeSpec>,
+    pub persisted_runtime_session_id: Option<RuntimeSessionId>,
+    pub desired_selections: NativeAiDesiredSelections,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

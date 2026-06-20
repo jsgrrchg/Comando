@@ -48,7 +48,13 @@ export interface NativeAiGatewayOptions {
     ) => void;
 }
 
-const DEFAULT_NATIVE_AI_RUNTIME_IDS = new Set<AiRuntimeId>(["opencode"]);
+const DEFAULT_NATIVE_AI_RUNTIME_IDS = new Set<AiRuntimeId>([
+    "claude",
+    "codex",
+    "grok",
+    "kilo",
+    "opencode",
+]);
 
 export class NativeAiGateway implements NativeAiGatewayContract {
     readonly #client: NativeAiClient;
@@ -471,12 +477,36 @@ function nativeLaunchSpecFromRuntime(
     launch: NativeAiPrepareSessionRpcInput["launch"],
 ): NativeAiLaunchSpec {
     return {
+        additionalRoots: launch.additionalRoots,
         args: launch.resolvedRuntime.args,
+        authCredentialSource:
+            launch.resolvedRuntime.status.authCredentialSource ?? null,
+        authHandshake: launch.resolvedRuntime.authHandshake
+            ? {
+                  envMethodId: launch.resolvedRuntime.authHandshake.envMethodId,
+                  externalMethodId:
+                      launch.resolvedRuntime.authHandshake.externalMethodId,
+                  meta: launch.resolvedRuntime.authHandshake.meta ?? {},
+              }
+            : null,
+        authMethod: launch.resolvedRuntime.status.authMethod,
         command: launch.resolvedRuntime.command,
         cwd: launch.cwd,
+        desiredSelections: {
+            configOptions: nativeConfigOptionsFromLaunch(launch),
+            modeId: launch.desiredSelections.modeId,
+            modelId: launch.desiredSelections.modelId,
+        },
         env: sanitizeEnv(launch.resolvedRuntime.env),
         executable: launch.resolvedRuntime.executable,
+        ownerWindowId: launch.ownerWindowId,
+        persistedRuntimeSessionId:
+            launch.persistedSnapshot.runtimeSessionId ?? null,
+        projectId: launch.input.projectId,
+        projectRoot: launch.projectRoot,
+        runtimeId: launch.input.runtimeId,
         status: nativeRuntimeStatusFromIpc(launch.resolvedRuntime.status),
+        worktreeId: launch.input.worktreeId ?? null,
     };
 }
 

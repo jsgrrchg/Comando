@@ -20,7 +20,7 @@ import {
 } from "./ai";
 
 describe("native AI flags", () => {
-    it("requires explicit opt-in and limits the native rollout to supported runtimes", () => {
+    it("requires explicit opt-in and defaults to the full PR 9 runtime matrix", () => {
         expect(shouldUseNativeAi({})).toBe(false);
         expect(
             shouldUseNativeAi({ [NATIVE_AI_ENABLED_ENV]: "1" }),
@@ -34,7 +34,22 @@ describe("native AI flags", () => {
             shouldUseNativeAiRuntime("codex", {
                 [NATIVE_AI_ENABLED_ENV]: "1",
             }),
-        ).toBe(false);
+        ).toBe(true);
+        expect(
+            shouldUseNativeAiRuntime("claude", {
+                [NATIVE_AI_ENABLED_ENV]: "1",
+            }),
+        ).toBe(true);
+        expect(
+            shouldUseNativeAiRuntime("grok", {
+                [NATIVE_AI_ENABLED_ENV]: "1",
+            }),
+        ).toBe(true);
+        expect(
+            shouldUseNativeAiRuntime("kilo", {
+                [NATIVE_AI_ENABLED_ENV]: "1",
+            }),
+        ).toBe(true);
         expect(
             shouldUseNativeAiRuntime("opencode", {
                 [NATIVE_AI_ENABLED_ENV]: "1",
@@ -77,10 +92,25 @@ describe("NativeAiGateway", () => {
                 configOptions: { model: "gpt-5" },
                 cwd: "/workspace/project",
                 launch: expect.objectContaining({
+                    additionalRoots: ["/workspace/other"],
                     args: ["acp"],
+                    authCredentialSource: "external-runtime",
+                    authHandshake: null,
+                    authMethod: "opencode-login",
                     cwd: "/workspace/project",
+                    desiredSelections: {
+                        configOptions: { model: "gpt-5" },
+                        modeId: "build",
+                        modelId: "gpt-5",
+                    },
                     env: { PATH: "/bin", TOKEN: "secret" },
                     executable: "opencode",
+                    ownerWindowId: "window-1",
+                    persistedRuntimeSessionId: null,
+                    projectId: "project-1",
+                    projectRoot: "/workspace/project",
+                    runtimeId: "opencode",
+                    worktreeId: "worktree-1",
                 }),
                 modeId: "build",
                 modelId: "gpt-5",
@@ -267,6 +297,7 @@ function createLaunch(): AiWorkerSessionLaunchInput {
         authMethod: "opencode-login",
         authMethods: [],
         authReady: true,
+        authCredentialSource: "external-runtime",
         checkedAt: "2026-06-20T00:00:00.000Z",
         command: "opencode acp",
         hasCustomBinaryPath: false,
