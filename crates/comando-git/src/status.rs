@@ -85,6 +85,10 @@ pub fn build_status_snapshot(
     }
 }
 
+pub fn empty_status_snapshot(sync: Option<NativeGitSyncStatus>) -> NativeGitStatusSnapshot {
+    build_status_snapshot(Vec::new(), sync)
+}
+
 fn parse_branch_header(header: &str, sync: &mut NativeGitSyncStatus) {
     if let Some(value) = header.strip_prefix("branch.oid ") {
         sync.commit = (value != "(initial)").then(|| value.to_string());
