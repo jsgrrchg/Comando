@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/native-backend",
+    "crates/comando-git",
     "crates/comando-index",
     "crates/comando-fs",
     "crates/comando-persistence",

@@ -120,7 +120,13 @@ fn reports_capabilities() {
             "native-watchers",
             "native-index",
             "native-path-search",
-            "native-search-cancel"
+            "native-search-cancel",
+            "native-git",
+            "native-git-diff",
+            "native-git-history",
+            "native-git-worktrees",
+            "native-git-mutations",
+            "native-git-network"
         ])
     );
     assert_eq!(
