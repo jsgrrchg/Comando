@@ -4,6 +4,7 @@ export type NativeErrorCode =
     | "unknown_command"
     | "invalid_args"
     | "unsupported_protocol_version"
+    | "unsupported_schema_version"
     | "backend_not_ready"
     | "operation_cancelled"
     | "operation_timeout"

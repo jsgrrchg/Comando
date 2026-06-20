@@ -4,6 +4,8 @@
   "backend_capabilities",
   "backend_shutdown",
   "backend_emit_test_event",
+  "persistence_open_store",
+  "persistence_get_storage_health",
   "persistence_get_snapshot",
   "persistence_save_workspace",
   "persistence_load_workspace",

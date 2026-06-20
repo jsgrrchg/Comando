@@ -13,6 +13,8 @@ pub const BACKEND_COMMANDS: &[&str] = &[
 ];
 
 pub const PERSISTENCE_COMMANDS: &[&str] = &[
+    "persistence_open_store",
+    "persistence_get_storage_health",
     "persistence_get_snapshot",
     "persistence_save_workspace",
     "persistence_load_workspace",

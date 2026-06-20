@@ -7,6 +7,8 @@ export const NATIVE_BACKEND_EVENTS = [
 
 export const NATIVE_PROJECT_FS_INDEX_EVENTS = [
     "project://updated",
+    "project://registry-parity-mismatch",
+    "project://error",
     "project://tree-invalidated",
     "fs://entry-created",
     "fs://entry-updated",
@@ -57,6 +59,8 @@ export const NATIVE_AI_EVENTS = [
 ] as const;
 
 export const NATIVE_PERSISTENCE_SETTINGS_EVENTS = [
+    "persistence://storage-opened",
+    "persistence://storage-health",
     "persistence://snapshot-updated",
     "settings://updated",
     "settings://project-updated",

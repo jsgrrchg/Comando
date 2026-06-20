@@ -1,0 +1,24 @@
+{
+  "projects": [
+    {
+      "id": "project_1",
+      "name": "Comando Fixture",
+      "canonicalRootPath": "/tmp/comando-project",
+      "rootPath": "/tmp/comando-project",
+      "createdAt": "2026-06-20T00:00:00.000Z",
+      "updatedAt": "2026-06-20T00:00:00.000Z",
+      "lastOpenedAt": "2026-06-20T00:00:00.000Z"
+    }
+  ],
+  "worktrees": [
+    {
+      "id": "project_1:primary",
+      "projectId": "project_1",
+      "rootPath": "/tmp/comando-project",
+      "branchName": null,
+      "headSha": null,
+      "isPrimary": true,
+      "updatedAt": "2026-06-20T00:00:00.000Z"
+    }
+  ]
+}
