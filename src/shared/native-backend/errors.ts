@@ -15,6 +15,17 @@ export type NativeErrorCode =
     | "too_large"
     | "binary_file"
     | "external_change"
+    | "ai_runtime_missing"
+    | "ai_runtime_not_native"
+    | "ai_runtime_not_ready"
+    | "ai_session_not_found"
+    | "ai_session_busy"
+    | "ai_session_owner_mismatch"
+    | "ai_prompt_rejected"
+    | "ai_cancel_failed"
+    | "ai_permission_not_found"
+    | "ai_user_input_not_found"
+    | "ai_runtime_exited"
     | "internal_error";
 
 export type NativeError = {
