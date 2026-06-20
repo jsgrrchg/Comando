@@ -26,6 +26,7 @@ pub struct GitRunOptions {
     pub timeout: Duration,
     pub max_stdout_bytes: usize,
     pub max_stderr_bytes: usize,
+    pub allowed_exit_codes: Vec<i32>,
 }
 
 impl GitRunOptions {
@@ -35,6 +36,7 @@ impl GitRunOptions {
             timeout: Duration::from_millis(DEFAULT_TIMEOUT_MS),
             max_stdout_bytes: DEFAULT_STDOUT_LIMIT_BYTES,
             max_stderr_bytes: DEFAULT_STDERR_LIMIT_BYTES,
+            allowed_exit_codes: Vec::new(),
         }
     }
 
@@ -55,6 +57,11 @@ impl GitRunOptions {
 
     fn optional_locks(&self) -> bool {
         matches!(self.command_kind, GitCommandKind::ReadOnly)
+    }
+
+    pub fn allow_exit_code(mut self, code: i32) -> Self {
+        self.allowed_exit_codes.push(code);
+        self
     }
 }
 
@@ -138,7 +145,9 @@ impl GitRunner {
         let stderr = redact_git_stderr(&String::from_utf8_lossy(&output.stderr));
         let status_code = output.status.code();
 
-        if !output.status.success() {
+        if !output.status.success()
+            && !status_code.is_some_and(|code| options.allowed_exit_codes.contains(&code))
+        {
             return Err(GitError::CommandFailed {
                 code: status_code,
                 stderr,

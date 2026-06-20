@@ -1,4 +1,5 @@
 pub mod branches;
+pub mod diff;
 pub mod env;
 pub mod error;
 pub mod remotes;
@@ -12,6 +13,7 @@ pub mod worktrees;
 pub mod test_support;
 
 pub use branches::{GitBranchListScope, list_branches};
+pub use diff::{GitFileDiffRequest, get_diff_stats, get_file_diff, parse_unified_diff};
 pub use env::GitEnvironment;
 pub use error::{GitError, GitResult};
 pub use remotes::list_remotes;
