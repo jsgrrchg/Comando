@@ -462,6 +462,629 @@ export class NativeGitGateway implements GitGateway {
     }
 }
 
+export type NativeGitDiagnostic = (message: string) => void;
+
+export interface ClosableGitGateway extends GitGateway {
+    close(): Promise<void>;
+}
+
+export interface NativeGitRoutingGatewayOptions {
+    readonly env?: NodeJS.ProcessEnv;
+    readonly legacy: ClosableGitGateway;
+    readonly native: GitGateway;
+    readonly onDiagnostic?: NativeGitDiagnostic;
+}
+
+export class NativeGitRoutingGateway implements ClosableGitGateway {
+    readonly #env: NodeJS.ProcessEnv;
+    readonly #legacy: ClosableGitGateway;
+    readonly #native: GitGateway;
+    readonly #onDiagnostic?: NativeGitDiagnostic;
+
+    constructor(options: NativeGitRoutingGatewayOptions) {
+        this.#env = options.env ?? process.env;
+        this.#legacy = options.legacy;
+        this.#native = options.native;
+        this.#onDiagnostic = options.onDiagnostic;
+    }
+
+    async resolveRepository(
+        inputPath: string,
+    ): Promise<GitRepositoryResolution> {
+        if (shouldUseNativeGitReads(this.#env)) {
+            return await this.#native.resolveRepository(inputPath);
+        }
+
+        const legacy = await this.#legacy.resolveRepository(inputPath);
+        this.#shadow(
+            "resolveRepository",
+            () => this.#native.resolveRepository(inputPath),
+            (native) => compareRepositoryResolution(native, legacy),
+        );
+        return legacy;
+    }
+
+    async getRepositorySnapshot(
+        inputPath: string,
+    ): Promise<GitRepositorySnapshot> {
+        if (shouldUseNativeGitReads(this.#env)) {
+            return await this.#native.getRepositorySnapshot(inputPath);
+        }
+
+        const legacy = await this.#legacy.getRepositorySnapshot(inputPath);
+        this.#shadow(
+            "getRepositorySnapshot",
+            () => this.#native.getRepositorySnapshot(inputPath),
+            (native) => compareRepositorySnapshot(native, legacy),
+        );
+        return legacy;
+    }
+
+    async getStatus(inputPath: string): Promise<GitStatusSnapshot> {
+        if (shouldUseNativeGitReads(this.#env)) {
+            return await this.#native.getStatus(inputPath);
+        }
+
+        const legacy = await this.#legacy.getStatus(inputPath);
+        this.#shadow(
+            "getStatus",
+            () => this.#native.getStatus(inputPath),
+            (native) => compareStatusSnapshot(native, legacy),
+        );
+        return legacy;
+    }
+
+    async getSyncStatus(inputPath: string): Promise<GitSyncStatus | null> {
+        if (shouldUseNativeGitReads(this.#env)) {
+            return await this.#native.getSyncStatus(inputPath);
+        }
+
+        const legacy = await this.#legacy.getSyncStatus(inputPath);
+        this.#shadow(
+            "getSyncStatus",
+            () => this.#native.getSyncStatus(inputPath),
+            (native) => compareSyncStatus(native, legacy),
+        );
+        return legacy;
+    }
+
+    async listWorktrees(
+        inputPath: string,
+    ): Promise<readonly GitWorktreeSummary[]> {
+        if (shouldUseNativeGitReads(this.#env)) {
+            return await this.#native.listWorktrees(inputPath);
+        }
+
+        const legacy = await this.#legacy.listWorktrees(inputPath);
+        this.#shadow(
+            "listWorktrees",
+            () => this.#native.listWorktrees(inputPath),
+            (native) => compareStringLists(worktreeSignature(native), worktreeSignature(legacy)),
+        );
+        return legacy;
+    }
+
+    async listBranches(
+        inputPath: string,
+        options?: GitListBranchesOptions,
+    ): Promise<readonly GitBranchSummary[]> {
+        if (shouldUseNativeGitReads(this.#env)) {
+            return await this.#native.listBranches(inputPath, options);
+        }
+
+        const legacy = await this.#legacy.listBranches(inputPath, options);
+        this.#shadow(
+            "listBranches",
+            () => this.#native.listBranches(inputPath, options),
+            (native) => compareStringLists(branchSignature(native), branchSignature(legacy)),
+        );
+        return legacy;
+    }
+
+    async getFileDiff(
+        inputPath: string,
+        relativePath: string,
+        options?: GitFileDiffOptions,
+    ): Promise<GitFileDiff> {
+        if (shouldUseNativeGitReads(this.#env)) {
+            return await this.#native.getFileDiff(inputPath, relativePath, options);
+        }
+
+        const legacy = await this.#legacy.getFileDiff(inputPath, relativePath, options);
+        this.#shadow(
+            `getFileDiff:${relativePath}`,
+            () => this.#native.getFileDiff(inputPath, relativePath, options),
+            (native) => compareFileDiff(native, legacy),
+        );
+        return legacy;
+    }
+
+    async getFileText(
+        inputPath: string,
+        relativePath: string,
+        reference: GitFileTextReference,
+    ): Promise<string | null> {
+        if (shouldUseNativeGitReads(this.#env)) {
+            return await this.#native.getFileText(inputPath, relativePath, reference);
+        }
+
+        const legacy = await this.#legacy.getFileText(
+            inputPath,
+            relativePath,
+            reference,
+        );
+        this.#shadow(
+            `getFileText:${relativePath}`,
+            () => this.#native.getFileText(inputPath, relativePath, reference),
+            (native) => compareTextShape(native, legacy),
+        );
+        return legacy;
+    }
+
+    async listHistory(
+        inputPath: string,
+        options?: GitListHistoryOptions,
+    ): Promise<GitHistoryListResult> {
+        if (shouldUseNativeGitReads(this.#env)) {
+            return await this.#native.listHistory(inputPath, options);
+        }
+
+        const legacy = await this.#legacy.listHistory(inputPath, options);
+        this.#shadow(
+            "listHistory",
+            () => this.#native.listHistory(inputPath, options),
+            (native) => compareHistoryList(native, legacy),
+        );
+        return legacy;
+    }
+
+    async getCommitDetail(
+        inputPath: string,
+        commitSha: string,
+    ): Promise<GitCommitDetail> {
+        if (shouldUseNativeGitReads(this.#env)) {
+            return await this.#native.getCommitDetail(inputPath, commitSha);
+        }
+
+        const legacy = await this.#legacy.getCommitDetail(inputPath, commitSha);
+        this.#shadow(
+            `getCommitDetail:${commitSha.slice(0, 12)}`,
+            () => this.#native.getCommitDetail(inputPath, commitSha),
+            (native) => compareCommitDetail(native, legacy),
+        );
+        return legacy;
+    }
+
+    async initRepository(inputPath: string): Promise<GitRepositorySnapshot> {
+        return await this.#localMutation().initRepository(inputPath);
+    }
+
+    async stagePaths(
+        inputPath: string,
+        relativePaths: readonly string[],
+    ): Promise<GitRepositorySnapshot> {
+        return await this.#localMutation().stagePaths(inputPath, relativePaths);
+    }
+
+    async unstagePaths(
+        inputPath: string,
+        relativePaths: readonly string[],
+    ): Promise<GitRepositorySnapshot> {
+        return await this.#localMutation().unstagePaths(inputPath, relativePaths);
+    }
+
+    async discardPaths(
+        inputPath: string,
+        relativePaths: readonly string[],
+    ): Promise<GitRepositorySnapshot> {
+        return await this.#localMutation().discardPaths(inputPath, relativePaths);
+    }
+
+    async commit(
+        inputPath: string,
+        message: string,
+        options?: Parameters<GitGateway["commit"]>[2],
+    ): Promise<Awaited<ReturnType<GitGateway["commit"]>>> {
+        return await this.#localMutation().commit(inputPath, message, options);
+    }
+
+    async checkoutBranch(
+        inputPath: string,
+        options: Parameters<GitGateway["checkoutBranch"]>[1],
+    ): Promise<GitRepositorySnapshot> {
+        return await this.#localMutation().checkoutBranch(inputPath, options);
+    }
+
+    async createWorktree(
+        inputPath: string,
+        options: Parameters<GitGateway["createWorktree"]>[1],
+    ): Promise<GitRepositorySnapshot> {
+        return await this.#localMutation().createWorktree(inputPath, options);
+    }
+
+    async deleteLocalBranch(
+        inputPath: string,
+        options: Parameters<GitGateway["deleteLocalBranch"]>[1],
+    ): Promise<GitRepositorySnapshot> {
+        return await this.#localMutation().deleteLocalBranch(inputPath, options);
+    }
+
+    async deleteRemoteBranch(
+        inputPath: string,
+        options: Parameters<GitGateway["deleteRemoteBranch"]>[1],
+    ): Promise<GitRepositorySnapshot> {
+        return await this.#networkMutation().deleteRemoteBranch(
+            inputPath,
+            options,
+        );
+    }
+
+    async removeWorktree(
+        inputPath: string,
+        options: Parameters<GitGateway["removeWorktree"]>[1],
+    ): Promise<GitRepositorySnapshot> {
+        return await this.#localMutation().removeWorktree(inputPath, options);
+    }
+
+    async fetch(
+        inputPath: string,
+        options?: Parameters<GitGateway["fetch"]>[1],
+    ): Promise<GitRepositorySnapshot> {
+        return await this.#networkMutation().fetch(inputPath, options);
+    }
+
+    async pull(
+        inputPath: string,
+        options?: Parameters<GitGateway["pull"]>[1],
+    ): Promise<GitRepositorySnapshot> {
+        return await this.#networkMutation().pull(inputPath, options);
+    }
+
+    async push(
+        inputPath: string,
+        options?: Parameters<GitGateway["push"]>[1],
+    ): Promise<GitRepositorySnapshot> {
+        return await this.#networkMutation().push(inputPath, options);
+    }
+
+    async listRemotes(
+        inputPath: string,
+        trackingBranchName: string | null,
+        aheadBy: number,
+        behindBy: number,
+    ): Promise<readonly GitRemoteSummary[]> {
+        if (shouldUseNativeGitReads(this.#env)) {
+            return await this.#native.listRemotes(
+                inputPath,
+                trackingBranchName,
+                aheadBy,
+                behindBy,
+            );
+        }
+
+        const legacy = await this.#legacy.listRemotes(
+            inputPath,
+            trackingBranchName,
+            aheadBy,
+            behindBy,
+        );
+        this.#shadow(
+            "listRemotes",
+            () =>
+                this.#native.listRemotes(
+                    inputPath,
+                    trackingBranchName,
+                    aheadBy,
+                    behindBy,
+                ),
+            (native) => compareStringLists(remoteSignature(native), remoteSignature(legacy)),
+        );
+        return legacy;
+    }
+
+    async getDiffStats(
+        inputPath: string,
+    ): Promise<Awaited<ReturnType<GitGateway["getDiffStats"]>>> {
+        if (shouldUseNativeGitReads(this.#env)) {
+            return await this.#native.getDiffStats(inputPath);
+        }
+
+        const legacy = await this.#legacy.getDiffStats(inputPath);
+        this.#shadow(
+            "getDiffStats",
+            () => this.#native.getDiffStats(inputPath),
+            (native) => compareStringLists(diffStatSignature(native), diffStatSignature(legacy)),
+        );
+        return legacy;
+    }
+
+    invalidate(inputPath?: string): void {
+        this.#legacy.invalidate(inputPath);
+        this.#native.invalidate(inputPath);
+    }
+
+    clear(): void {
+        this.#legacy.clear();
+        this.#native.clear();
+    }
+
+    async close(): Promise<void> {
+        await this.#legacy.close();
+    }
+
+    #localMutation(): GitGateway {
+        return shouldUseNativeGitMutations(this.#env) ? this.#native : this.#legacy;
+    }
+
+    #networkMutation(): GitGateway {
+        return shouldUseNativeGitNetwork(this.#env) ? this.#native : this.#legacy;
+    }
+
+    #shadow<T>(
+        operation: string,
+        readNative: () => Promise<T>,
+        compare: (native: T) => string | null,
+    ): void {
+        if (!shouldUseNativeGitShadow(this.#env)) {
+            return;
+        }
+
+        void readNative()
+            .then((native) => {
+                const mismatch = compare(native);
+                if (mismatch) {
+                    this.#onDiagnostic?.(
+                        `[native-git] shadow mismatch ${operation}: ${mismatch}`,
+                    );
+                }
+            })
+            .catch((error: unknown) => {
+                this.#onDiagnostic?.(
+                    `[native-git] shadow ${operation} failed: ${formatNativeGitShadowError(error)}`,
+                );
+            });
+    }
+}
+
+function compareRepositoryResolution(
+    native: GitRepositoryResolution,
+    legacy: GitRepositoryResolution,
+): string | null {
+    const nativeSignature = [
+        native.state,
+        Boolean(native.canonicalRootPath),
+        native.isBare,
+        native.isWorkTree,
+    ].join("|");
+    const legacySignature = [
+        legacy.state,
+        Boolean(legacy.canonicalRootPath),
+        legacy.isBare,
+        legacy.isWorkTree,
+    ].join("|");
+
+    return compareSignatures(nativeSignature, legacySignature);
+}
+
+function compareRepositorySnapshot(
+    native: GitRepositorySnapshot,
+    legacy: GitRepositorySnapshot,
+): string | null {
+    return (
+        compareRepositoryResolution(native.resolution, legacy.resolution) ??
+        compareStatusSnapshot(native.status, legacy.status) ??
+        compareStringLists(
+            branchSignature(native.branches),
+            branchSignature(legacy.branches),
+        ) ??
+        compareStringLists(
+            worktreeSignature(native.worktrees),
+            worktreeSignature(legacy.worktrees),
+        )
+    );
+}
+
+function compareStatusSnapshot(
+    native: GitStatusSnapshot,
+    legacy: GitStatusSnapshot,
+): string | null {
+    return (
+        compareSignatures(
+            statusCountSignature(native),
+            statusCountSignature(legacy),
+        ) ??
+        compareSyncStatus(native.sync, legacy.sync) ??
+        compareStringLists(
+            changeEntrySignature(native.entries),
+            changeEntrySignature(legacy.entries),
+        )
+    );
+}
+
+function compareSyncStatus(
+    native: GitSyncStatus | null,
+    legacy: GitSyncStatus | null,
+): string | null {
+    const nativeSignature = native
+        ? [
+              native.branchName,
+              native.trackingBranchName,
+              native.ahead,
+              native.behind,
+              native.detached,
+              Boolean(native.commit),
+          ].join("|")
+        : "null";
+    const legacySignature = legacy
+        ? [
+              legacy.branchName,
+              legacy.trackingBranchName,
+              legacy.ahead,
+              legacy.behind,
+              legacy.detached,
+              Boolean(legacy.commit),
+          ].join("|")
+        : "null";
+
+    return compareSignatures(nativeSignature, legacySignature);
+}
+
+function compareFileDiff(native: GitFileDiff, legacy: GitFileDiff): string | null {
+    const nativeSignature = [
+        native.changedPath,
+        native.previousPath,
+        native.staged,
+        native.isBinary,
+        native.summary.insertions,
+        native.summary.deletions,
+        native.hunks.length,
+    ].join("|");
+    const legacySignature = [
+        legacy.changedPath,
+        legacy.previousPath,
+        legacy.staged,
+        legacy.isBinary,
+        legacy.summary.insertions,
+        legacy.summary.deletions,
+        legacy.hunks.length,
+    ].join("|");
+
+    return compareSignatures(nativeSignature, legacySignature);
+}
+
+function compareTextShape(native: string | null, legacy: string | null): string | null {
+    const nativeSignature = native === null ? "null" : `text:${native.length}`;
+    const legacySignature = legacy === null ? "null" : `text:${legacy.length}`;
+    return compareSignatures(nativeSignature, legacySignature);
+}
+
+function compareHistoryList(
+    native: GitHistoryListResult,
+    legacy: GitHistoryListResult,
+): string | null {
+    return (
+        compareSignatures(
+            `${native.totalCount}:${native.matchedCount}`,
+            `${legacy.totalCount}:${legacy.matchedCount}`,
+        ) ??
+        compareStringLists(
+            native.commits.map((commit) => commit.sha),
+            legacy.commits.map((commit) => commit.sha),
+        )
+    );
+}
+
+function compareCommitDetail(
+    native: GitCommitDetail,
+    legacy: GitCommitDetail,
+): string | null {
+    const nativeSignature = [
+        native.sha,
+        native.changedFileCount,
+        native.insertions,
+        native.deletions,
+        native.files.map((file) => `${file.kind}:${file.path}`).join(","),
+    ].join("|");
+    const legacySignature = [
+        legacy.sha,
+        legacy.changedFileCount,
+        legacy.insertions,
+        legacy.deletions,
+        legacy.files.map((file) => `${file.kind}:${file.path}`).join(","),
+    ].join("|");
+
+    return compareSignatures(nativeSignature, legacySignature);
+}
+
+function compareStringLists(
+    native: readonly string[],
+    legacy: readonly string[],
+): string | null {
+    return compareSignatures([...native].sort().join(","), [...legacy].sort().join(","));
+}
+
+function compareSignatures(native: string, legacy: string): string | null {
+    return native === legacy ? null : `native=${native || "<empty>"} legacy=${legacy || "<empty>"}`;
+}
+
+function statusCountSignature(status: GitStatusSnapshot): string {
+    return [
+        status.counts.conflicted,
+        status.counts.staged,
+        status.counts.unstaged,
+        status.counts.untracked,
+        status.hasConflicts,
+        status.hasStaged,
+        status.hasUnstaged,
+        status.hasUntracked,
+        status.isClean,
+    ].join("|");
+}
+
+function changeEntrySignature(entries: readonly GitStatusSnapshot["entries"][number][]): string[] {
+    return entries.map((entry) =>
+        [
+            entry.relativePath,
+            entry.previousPath,
+            entry.kind,
+            entry.scopes.join("+"),
+            entry.conflicted,
+            entry.isBinary,
+            entry.isRenamed,
+        ].join("|"),
+    );
+}
+
+function branchSignature(branches: readonly GitBranchSummary[]): string[] {
+    return branches.map((branch) =>
+        [
+            branch.name,
+            branch.current,
+            branch.isRemote,
+            Boolean(branch.commit),
+            branch.linkedWorkTree,
+        ].join("|"),
+    );
+}
+
+function worktreeSignature(worktrees: readonly GitWorktreeSummary[]): string[] {
+    return worktrees.map((worktree) =>
+        [
+            worktree.branchName,
+            Boolean(worktree.headCommit),
+            worktree.isCurrent,
+            worktree.isMain,
+            worktree.locked,
+            worktree.prunable,
+        ].join("|"),
+    );
+}
+
+function remoteSignature(remotes: readonly GitRemoteSummary[]): string[] {
+    return remotes.map((remote) =>
+        [
+            remote.name,
+            remote.isDefault,
+            remote.refName,
+            remote.aheadBy,
+            remote.behindBy,
+        ].join("|"),
+    );
+}
+
+function diffStatSignature(
+    stats: Awaited<ReturnType<GitGateway["getDiffStats"]>>,
+): string[] {
+    return stats.map((stat) => `${stat.key}:${stat.additions}:${stat.deletions}`);
+}
+
+function formatNativeGitShadowError(error: unknown): string {
+    if (error instanceof Error) {
+        return error.message;
+    }
+    return String(error);
+}
+
 export function resolveNativeGitMode(
     env: NodeJS.ProcessEnv = process.env,
 ): NativeGitMode | null {
