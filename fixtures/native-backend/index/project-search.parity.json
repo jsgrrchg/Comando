@@ -22,6 +22,16 @@
         },
         {
             "kind": "file",
+            "name": "Alpha.ts",
+            "relativePath": "src/Alpha.ts"
+        },
+        {
+            "kind": "file",
+            "name": "alpha.ts",
+            "relativePath": "src/alpha.ts"
+        },
+        {
+            "kind": "file",
             "name": "projectFileIndexStore.ts",
             "relativePath": "src/renderer/src/app/store/projectFileIndexStore.ts"
         },
@@ -78,6 +88,16 @@
             "expected": [
                 "src/shared/native-backend/search.ts",
                 "src/shared/project-search.ts"
+            ]
+        },
+        {
+            "name": "case-only tie follows runtime locale ordering",
+            "query": "alpha",
+            "limit": 5,
+            "includeAncestorDirectories": false,
+            "expected": [
+                "src/alpha.ts",
+                "src/Alpha.ts"
             ]
         },
         {

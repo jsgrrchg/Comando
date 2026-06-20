@@ -142,7 +142,38 @@ pub fn compare_search_matches(left: &SearchMatch, right: &SearchMatch) -> std::c
 fn locale_like_path_cmp(left: &str, right: &str) -> std::cmp::Ordering {
     left.to_lowercase()
         .cmp(&right.to_lowercase())
-        .then_with(|| left.cmp(right))
+        .then_with(|| locale_like_case_tie_cmp(left, right))
+}
+
+fn locale_like_case_tie_cmp(left: &str, right: &str) -> std::cmp::Ordering {
+    for (left_char, right_char) in left.chars().zip(right.chars()) {
+        if left_char == right_char {
+            continue;
+        }
+
+        let left_lower = left_char.to_lowercase().collect::<String>();
+        let right_lower = right_char.to_lowercase().collect::<String>();
+        if left_lower == right_lower {
+            let case_order = case_rank(left_char).cmp(&case_rank(right_char));
+            if !case_order.is_eq() {
+                return case_order;
+            }
+        }
+
+        return left_char.cmp(&right_char);
+    }
+
+    left.len().cmp(&right.len())
+}
+
+fn case_rank(character: char) -> u8 {
+    if character.is_lowercase() {
+        0
+    } else if character.is_uppercase() {
+        1
+    } else {
+        2
+    }
 }
 
 fn find_search_insert_index(entries: &[SearchMatch], candidate: &SearchMatch) -> usize {
@@ -250,5 +281,17 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(paths, vec!["src/Alfa.ts", "src/Beta.ts"]);
+    }
+
+    #[test]
+    fn stable_sort_matches_locale_case_ties() {
+        let entries = vec![entry("src/Alpha.ts"), entry("src/alpha.ts")];
+        let matches = search_entries(&entries, &ProjectSearchQuery::new("alpha"), 10);
+        let paths = matches
+            .iter()
+            .map(|entry| entry.entry.relative_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(paths, vec!["src/alpha.ts", "src/Alpha.ts"]);
     }
 }

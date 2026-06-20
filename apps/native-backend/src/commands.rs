@@ -830,6 +830,41 @@ impl NativeBackend {
             Ok(root) => root,
             Err(error) => return error_only(request.id, error),
         };
+        let query = ProjectSearchQuery::new(&input.query);
+        let limit = input.limit.max(1) as usize;
+        if query.is_empty() {
+            return match self.index_service.search_project_entries(
+                root,
+                &query,
+                limit,
+                input.include_ancestor_directories,
+                input.context_key.as_deref(),
+            ) {
+                Ok((entries, matches, operation_id, events)) => {
+                    let status = self
+                        .index_service
+                        .get_status(&input.project_id, input.worktree_id.as_ref());
+                    let mut outputs = vec![response_ok(
+                        request.id,
+                        serde_json::to_value(native_index::NativeProjectEntrySearchResult {
+                            operation_id,
+                            generation: status.generation,
+                            status: native_index_status_kind(status.status),
+                            entries: entries.into_iter().map(indexed_project_entry).collect(),
+                            matches: path_search_matches(matches),
+                            stats: native_index_stats(status.stats),
+                        })
+                        .expect("project entry search result serializes"),
+                    )];
+                    outputs.extend(index_event_outputs(events));
+                    CommandResult {
+                        outputs,
+                        should_shutdown: false,
+                    }
+                }
+                Err(error) => error_only(request.id, error.to_native_error()),
+            };
+        }
         let events = match self.index_service.ensure_project_index(root.clone()) {
             Ok(events) => events,
             Err(error) => return error_only(request.id, error.to_native_error()),
@@ -843,8 +878,6 @@ impl NativeBackend {
             .begin_search_operation(input.context_key.as_deref());
         let operation = self.index_service.search_operation(operation_id.clone());
         let request_id = request.id;
-        let query = ProjectSearchQuery::new(&input.query);
-        let limit = input.limit.max(1) as usize;
         let include_ancestor_directories = input.include_ancestor_directories;
 
         thread::spawn(move || {
@@ -1713,6 +1746,49 @@ mod tests {
         let status_response = only_response(&status_result);
         assert!(status_response.ok);
         assert_eq!(status_response.result.as_ref().unwrap()["status"], "ready");
+    }
+
+    #[test]
+    fn background_search_empty_query_does_not_build_index() {
+        let (temp_dir, mut backend, project_id) = backend_with_registered_project();
+        let project_path = temp_dir.path().join("project-native");
+        fs::write(project_path.join("main.ts"), "console.log('hi');\n").expect("main");
+        let (sender, receiver) = mpsc::channel();
+
+        let search_result = backend.handle_request_background(
+            request(
+                "project_search_entries",
+                json!({
+                    "projectId": project_id,
+                    "worktreeId": null,
+                    "query": "",
+                    "includeAncestorDirectories": true,
+                    "limit": 10,
+                    "contextKey": "test-empty",
+                }),
+            ),
+            sender,
+        );
+        let search_response = only_response(&search_result);
+
+        assert!(search_response.ok);
+        assert_eq!(
+            search_response.result.as_ref().unwrap()["entries"],
+            json!([])
+        );
+        assert_eq!(
+            search_response.result.as_ref().unwrap()["matches"],
+            json!([])
+        );
+        assert_eq!(search_response.result.as_ref().unwrap()["status"], "idle");
+        assert!(search_result.outputs.iter().all(|output| {
+            !matches!(
+                output,
+                RpcOutput::Event(event)
+                    if matches!(event.event_name.as_str(), "index://building" | "index://ready")
+            )
+        }));
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
