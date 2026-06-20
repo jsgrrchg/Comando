@@ -46,6 +46,16 @@ import {
     isNativeBackendStrict,
     resolveNativeBackendPath,
 } from "./native-backend/path";
+import {
+    NativePersistenceGateway,
+    isNativePersistenceEnabled,
+    isNativePersistenceStrict,
+    normalizeNativePersistenceMode,
+} from "./native-backend/persistence";
+import {
+    createNativeProjectRegistryStore,
+    resolveNativeProjectRegistryMode,
+} from "./native-backend/projects";
 import type { NativeBackendEvent } from "./native-backend/protocol";
 import { debugBenignError } from "./observability/logging";
 import { mainProcessPerformance } from "./observability/performance";
@@ -123,6 +133,9 @@ if (!hasSingleInstanceLock) {
                 appWindowTitle: appIdentity.windowTitle,
                 dataDir: app.getPath("userData"),
             });
+            await startNativeBackendIfEnabled();
+            const nativePersistenceReady =
+                await openNativePersistenceIfEnabled();
             persistenceService = dbWorkerClient.persistence;
             secretStore = dbWorkerClient.secretStore;
             githubService = new GitHubService({ secretStore });
@@ -134,6 +147,14 @@ if (!hasSingleInstanceLock) {
                 },
                 onWorkerRestarted: () => {
                     projectService?.handleProjectWorkerRestarted();
+                },
+            });
+            const projectStore = await createNativeProjectRegistryStore({
+                env: process.env,
+                legacyStore: dbWorkerClient.projectStore,
+                nativeClient: nativePersistenceReady ? nativeBackendClient : null,
+                onDiagnostic: (message) => {
+                    console.warn(message);
                 },
             });
             projectService = new ProjectService({
@@ -155,7 +176,7 @@ if (!hasSingleInstanceLock) {
                               }
                           }
                         : undefined,
-                store: dbWorkerClient.projectStore,
+                store: projectStore,
                 worker: projectWorker,
             });
             aiService = new AiService({
@@ -208,7 +229,6 @@ if (!hasSingleInstanceLock) {
                 settingsService,
             });
             workspaceService = dbWorkerClient.workspace;
-            await startNativeBackendIfEnabled();
 
             bootstrapSnapshot = {
                 app: appIdentity,
@@ -455,6 +475,69 @@ async function startNativeBackendIfEnabled(): Promise<void> {
         console.warn(
             `[native-backend] Native backend startup failed: ${formatError(error)}`,
         );
+    }
+}
+
+async function openNativePersistenceIfEnabled(): Promise<boolean> {
+    const projectRegistryMode = resolveNativeProjectRegistryMode();
+    const persistenceEnabled = isNativePersistenceEnabled();
+
+    if (!persistenceEnabled) {
+        if (projectRegistryMode === "write") {
+            throw new Error(
+                "Native project registry write mode requires COMANDO_NATIVE_PERSISTENCE=1.",
+            );
+        }
+
+        if (projectRegistryMode) {
+            console.warn(
+                "[native-backend] Native project registry is enabled but COMANDO_NATIVE_PERSISTENCE=1 is not set; using the legacy project store.",
+            );
+        }
+
+        return false;
+    }
+
+    if (!nativeBackendClient) {
+        const message =
+            "Native persistence is enabled but the native backend sidecar is not running.";
+
+        if (isNativePersistenceStrict() || projectRegistryMode === "write") {
+            throw new Error(message);
+        }
+
+        console.warn(`[native-backend] ${message}`);
+        return false;
+    }
+
+    if (!dbWorkerClient) {
+        throw new Error("The database worker must be ready before native persistence opens.");
+    }
+
+    const persistenceMode = normalizeNativePersistenceMode(projectRegistryMode);
+    const gateway = new NativePersistenceGateway(nativeBackendClient);
+
+    try {
+        const opened = await gateway.openStore({
+            appDataDir: app.getPath("userData"),
+            databasePath: dbWorkerClient.status.databaseFile,
+            mode: persistenceMode,
+        });
+        const health = await gateway.getStorageHealth();
+
+        console.info(
+            `[native-backend] Native persistence opened mode=${persistenceMode} schema=${opened.schemaVersion} projects=${health.projectCount} worktrees=${health.worktreeCount}.`,
+        );
+        return opened.opened && health.opened && health.schemaCompatible;
+    } catch (error) {
+        if (isNativePersistenceStrict() || projectRegistryMode === "write") {
+            throw error;
+        }
+
+        console.warn(
+            `[native-backend] Native persistence startup failed: ${formatError(error)}`,
+        );
+        return false;
     }
 }
 
