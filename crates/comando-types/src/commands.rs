@@ -32,6 +32,7 @@ pub const PROJECT_COMMANDS: &[&str] = &[
     "project_remove",
     "project_open",
     "project_refresh",
+    "project_list_tree_children",
     "project_list_entries",
     "project_search_entries",
 ];
@@ -43,9 +44,13 @@ pub const FS_COMMANDS: &[&str] = &[
     "fs_create_directory",
     "fs_rename_entry",
     "fs_delete_entry",
+    "fs_copy_entries",
+    "fs_copy_external_entries",
+    "fs_record_external_mutation",
     "fs_reveal_entry_info",
     "fs_watch_start",
     "fs_watch_stop",
+    "fs_watch_sync_registry",
 ];
 
 pub const INDEX_COMMANDS: &[&str] = &[

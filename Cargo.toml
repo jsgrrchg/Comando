@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/native-backend",
+    "crates/comando-fs",
     "crates/comando-persistence",
     "crates/comando-projects",
     "crates/comando-types",
@@ -13,9 +14,13 @@ edition = "2024"
 
 [workspace.dependencies]
 comando-types = { path = "crates/comando-types" }
+base64 = "0.22.1"
+notify = "8.2.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10.9"
 thiserror = "2"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 time = { version = "0.3.49", features = ["formatting"] }
 uuid = { version = "1.23.3", features = ["v4"] }
+walkdir = "2.5.0"

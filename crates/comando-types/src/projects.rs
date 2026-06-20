@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{ProjectId, WindowId, WorktreeId};
+use crate::fs::NativeFsVisibilityPolicy;
 
 pub type NativeProjectId = ProjectId;
 pub type NativeWorktreeId = WorktreeId;
@@ -91,4 +92,38 @@ pub struct NativeProjectTreeEntry {
     pub has_children: bool,
     pub is_git_ignored: bool,
     pub git_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absolute_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<NativeFsVisibilityPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectTreeChildrenInput {
+    pub project_id: NativeProjectId,
+    pub worktree_id: Option<NativeWorktreeId>,
+    pub parent_relative_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectTreeChildrenResult {
+    pub entries: Vec<NativeProjectTreeEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectListEntriesInput {
+    pub project_id: NativeProjectId,
+    pub worktree_id: Option<NativeWorktreeId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectListEntriesResult {
+    pub entries: Vec<NativeProjectTreeEntry>,
+    pub truncated: bool,
 }
