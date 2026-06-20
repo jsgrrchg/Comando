@@ -32,9 +32,11 @@ Renderer code continues to call the existing channels:
 - `git:pull`
 - `git:push`
 
-`GitGateway` in `src/main/git/service.ts` is the main-process seam. Native Git
-must implement that interface and return the same main-process Git types before
-`src/main/ipc/index.ts` adapts them to shared IPC DTOs.
+`GitGateway` in `src/main/git/service.ts` is the main-process seam.
+`NativeGitRoutingGateway` in `src/main/native-backend/git.ts` decides per method
+whether the UI is served by the legacy TypeScript worker or the Rust sidecar, and
+it always returns the same main-process Git types before `src/main/ipc/index.ts`
+adapts them to shared IPC DTOs.
 
 ## Native Command Matrix
 
@@ -85,6 +87,11 @@ Mutation and network guardrails are separate:
 
 If `COMANDO_NATIVE_GIT=1` is set without a mode, the mode is `shadow`.
 
+The main-process router and the sidecar both enforce guardrails. Local mutation
+RPCs return `operation_disabled` unless `COMANDO_NATIVE_GIT_MUTATIONS=1`.
+Network RPCs return `network_disabled` unless both
+`COMANDO_NATIVE_GIT_MUTATIONS=1` and `COMANDO_NATIVE_GIT_NETWORK=1` are set.
+
 ## Rollout Invariants
 
 - No renderer IPC channels, copy, layout, keyboard shortcuts, or visible UI
@@ -99,6 +106,8 @@ If `COMANDO_NATIVE_GIT=1` is set without a mode, the mode is `shadow`.
 - Mutations do not silently fall back to TypeScript once routed to Rust.
 - Network commands stay legacy unless `COMANDO_NATIVE_GIT_NETWORK=1`.
 - Native invalidation events are small and never include diff contents.
+- Shadow diagnostics compare counts, refs, relative paths, hunk counts, and text
+  lengths only. They do not log raw diff contents or blob text.
 
 ## Test Inventory
 
@@ -119,3 +128,11 @@ New Rust coverage should focus on:
 - branches, remotes, worktrees, snapshots, diffs, original file reads, history,
   commit detail, local mutations, network guardrails, and invalidation
 
+PR 6 verification commands:
+
+```sh
+cargo test -p comando-git -p comando-native-backend
+pnpm exec eslint src/main/native-backend/git.ts src/main/native-backend/git.test.ts src/main/index.ts
+pnpm exec tsc --noEmit -p tsconfig.node.json --pretty false
+pnpm exec vitest run src/main/native-backend src/shared/native-backend src/main/git
+```
