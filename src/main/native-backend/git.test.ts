@@ -259,12 +259,47 @@ describe("NativeGitGateway", () => {
                 resolution: { state: "ready" },
             },
         });
+        await gateway.checkoutBranch("/tmp/comando-project", {
+            branchName: "main",
+            newBranchName: "feature/current",
+        });
+        await gateway.createWorktree("/tmp/comando-project", {
+            branchName: "feature/worktree",
+            path: "/tmp/feature-worktree",
+        });
+        await gateway.createWorktree("/tmp/comando-project", {
+            branchName: "feature/existing",
+            path: "/tmp/existing-worktree",
+            startPoint: null,
+        });
 
         expect(requestMock).toHaveBeenCalledWith(
             "git_commit",
             expect.objectContaining({
                 message: "Native commit",
                 noVerify: true,
+            }),
+        );
+        expect(requestMock).toHaveBeenCalledWith(
+            "git_checkout_branch",
+            expect.objectContaining({
+                branchName: "main",
+                newBranchName: "feature/current",
+                startPoint: "main",
+            }),
+        );
+        expect(requestMock).toHaveBeenCalledWith(
+            "git_create_worktree",
+            expect.objectContaining({
+                branchName: "feature/worktree",
+                startPoint: "feature/worktree",
+            }),
+        );
+        expect(requestMock).toHaveBeenCalledWith(
+            "git_create_worktree",
+            expect.objectContaining({
+                branchName: "feature/existing",
+                startPoint: null,
             }),
         );
     });

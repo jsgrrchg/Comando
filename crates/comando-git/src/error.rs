@@ -23,6 +23,10 @@ pub enum GitError {
     InvalidPath,
     #[error("Git path escapes the repository root.")]
     PathEscape,
+    #[error("Resolve git conflicts before continuing.")]
+    Conflict,
+    #[error("{0}")]
+    InvalidOperation(String),
     #[error("Git operation is disabled by native Git guardrails.")]
     OperationDisabled,
     #[error("Git network operation is disabled by native Git guardrails.")]
@@ -46,6 +50,8 @@ impl GitError {
             Self::OutputTooLarge { .. } => "git_output_too_large",
             Self::InvalidPath => "invalid_path",
             Self::PathEscape => "path_escape",
+            Self::Conflict => "conflict",
+            Self::InvalidOperation(_) => "invalid_operation",
             Self::OperationDisabled => "operation_disabled",
             Self::NetworkDisabled => "network_disabled",
             Self::PermissionDenied => "permission_denied",
@@ -56,8 +62,11 @@ impl GitError {
     pub fn to_native_error(&self) -> NativeError {
         let code = match self {
             Self::GitNotFound | Self::NotRepository => NativeErrorCode::NotFound,
-            Self::BareRepository | Self::InvalidPath => NativeErrorCode::InvalidArgs,
+            Self::BareRepository | Self::InvalidPath | Self::InvalidOperation(_) => {
+                NativeErrorCode::InvalidArgs
+            }
             Self::PathEscape
+            | Self::Conflict
             | Self::OperationDisabled
             | Self::NetworkDisabled
             | Self::PermissionDenied => NativeErrorCode::PermissionDenied,

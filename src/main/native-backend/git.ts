@@ -262,7 +262,9 @@ export class NativeGitGateway implements GitGateway {
                     force: options.force ?? null,
                     newBranchName: options.newBranchName ?? null,
                     scope: nativeGitScope(inputPath),
-                    startPoint: options.startPoint ?? null,
+                    startPoint: options.newBranchName
+                        ? (options.startPoint ?? options.branchName)
+                        : null,
                 }),
             ),
         );
@@ -284,7 +286,10 @@ export class NativeGitGateway implements GitGateway {
                     force: options.force ?? null,
                     path: options.path,
                     scope: nativeGitScope(inputPath),
-                    startPoint: options.startPoint ?? null,
+                    startPoint:
+                        options.startPoint === undefined
+                            ? options.branchName
+                            : options.startPoint,
                 }),
             ),
         );

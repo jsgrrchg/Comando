@@ -1,11 +1,14 @@
+use std::env;
 use std::sync::mpsc;
 use std::thread;
 
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
 use comando_git::{
-    GitBranchListScope, GitFileDiffRequest, GitRunner, get_commit_detail, get_diff_stats,
-    get_file_diff, get_original_file, get_repository_snapshot, get_status, list_branches,
-    list_history, list_remotes, list_worktree_diff, list_worktrees, resolve_repository,
+    GitBranchListScope, GitError, GitFileDiffRequest, GitRunner, checkout_branch, commit,
+    create_branch, create_worktree, delete_local_branch, discard_paths, get_commit_detail,
+    get_diff_stats, get_file_diff, get_original_file, get_repository_snapshot, get_status,
+    init_repository, list_branches, list_history, list_remotes, list_worktree_diff, list_worktrees,
+    remove_worktree, resolve_repository, stage_paths, unstage_paths,
 };
 use comando_index::{
     IndexBuildOptions, IndexEvent, IndexPolicy, IndexService, IndexUpdate, IndexUpdateKind,
@@ -145,20 +148,19 @@ impl NativeBackend {
             "git_list_remotes" => self.git_list_remotes(request),
             "git_get_diff_stats" => self.git_get_diff_stats(request),
             "git_list_worktree_diff" => self.git_list_worktree_diff(request),
-            "git_init_repository"
-            | "git_stage_paths"
-            | "git_unstage_paths"
-            | "git_discard_paths"
-            | "git_commit"
-            | "git_checkout_branch"
-            | "git_create_branch"
-            | "git_delete_local_branch"
-            | "git_create_worktree"
-            | "git_remove_worktree"
-            | "git_fetch"
-            | "git_pull"
-            | "git_push"
-            | "git_delete_remote_branch" => disabled_git_operation(request),
+            "git_init_repository" => self.git_init_repository(request),
+            "git_stage_paths" => self.git_stage_paths(request),
+            "git_unstage_paths" => self.git_unstage_paths(request),
+            "git_discard_paths" => self.git_discard_paths(request),
+            "git_commit" => self.git_commit(request),
+            "git_checkout_branch" => self.git_checkout_branch(request),
+            "git_create_branch" => self.git_create_branch(request),
+            "git_delete_local_branch" => self.git_delete_local_branch(request),
+            "git_create_worktree" => self.git_create_worktree(request),
+            "git_remove_worktree" => self.git_remove_worktree(request),
+            "git_fetch" | "git_pull" | "git_push" | "git_delete_remote_branch" => {
+                disabled_git_network_operation(request)
+            }
             #[cfg(test)]
             "backend_queue_test_fs_event" => self.queue_test_fs_event(request),
             command => CommandResult {
@@ -1211,6 +1213,202 @@ impl NativeBackend {
         )
     }
 
+    fn git_init_repository(&mut self, request: RpcRequest) -> CommandResult {
+        if !native_git_mutations_enabled() {
+            return disabled_git_operation(request);
+        }
+        let scope = match parse_args::<native_git::NativeGitRepositoryScope>(&request) {
+            Ok(scope) => scope,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        git_response(
+            request.id,
+            init_repository(&self.git_runner, &scope),
+            "git init result serializes",
+        )
+    }
+
+    fn git_stage_paths(&mut self, request: RpcRequest) -> CommandResult {
+        self.git_paths_operation(request, stage_paths, "git stage result serializes")
+    }
+
+    fn git_unstage_paths(&mut self, request: RpcRequest) -> CommandResult {
+        self.git_paths_operation(request, unstage_paths, "git unstage result serializes")
+    }
+
+    fn git_discard_paths(&mut self, request: RpcRequest) -> CommandResult {
+        self.git_paths_operation(request, discard_paths, "git discard result serializes")
+    }
+
+    fn git_commit(&mut self, request: RpcRequest) -> CommandResult {
+        if !native_git_mutations_enabled() {
+            return disabled_git_operation(request);
+        }
+        let input = match parse_args::<native_git::NativeGitCommitInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        git_response(
+            request.id,
+            commit(
+                &self.git_runner,
+                &input.scope,
+                &input.message,
+                input.amend.unwrap_or(false),
+                input.no_verify.unwrap_or(false),
+            ),
+            "git commit result serializes",
+        )
+    }
+
+    fn git_checkout_branch(&mut self, request: RpcRequest) -> CommandResult {
+        if !native_git_mutations_enabled() {
+            return disabled_git_operation(request);
+        }
+        let input = match parse_args::<native_git::NativeGitCheckoutBranchInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        git_response(
+            request.id,
+            checkout_branch(
+                &self.git_runner,
+                &input.scope,
+                &input.branch_name,
+                input.force.unwrap_or(false),
+                input.new_branch_name.as_deref(),
+                input.start_point.as_deref(),
+            ),
+            "git checkout branch result serializes",
+        )
+    }
+
+    fn git_create_branch(&mut self, request: RpcRequest) -> CommandResult {
+        if !native_git_mutations_enabled() {
+            return disabled_git_operation(request);
+        }
+        let input = match parse_args::<native_git::NativeGitCheckoutBranchInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        git_response(
+            request.id,
+            create_branch(
+                &self.git_runner,
+                &input.scope,
+                input
+                    .new_branch_name
+                    .as_deref()
+                    .unwrap_or(input.branch_name.as_str()),
+                input.start_point.as_deref(),
+            ),
+            "git create branch result serializes",
+        )
+    }
+
+    fn git_delete_local_branch(&mut self, request: RpcRequest) -> CommandResult {
+        if !native_git_mutations_enabled() {
+            return disabled_git_operation(request);
+        }
+        let input = match parse_args::<native_git::NativeGitDeleteLocalBranchInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        git_response(
+            request.id,
+            delete_local_branch(
+                &self.git_runner,
+                &input.scope,
+                &input.branch_name,
+                input.force.unwrap_or(false),
+            ),
+            "git delete local branch result serializes",
+        )
+    }
+
+    fn git_create_worktree(&mut self, request: RpcRequest) -> CommandResult {
+        if !native_git_mutations_enabled() {
+            return disabled_git_operation(request);
+        }
+        let input = match parse_args::<native_git::NativeGitWorktreeMutationInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let Some(branch_name) = input.branch_name.as_deref() else {
+            return error_only(
+                request.id,
+                GitError::InvalidOperation(
+                    "A branch name is required to create a worktree.".to_string(),
+                )
+                .to_native_error(),
+            );
+        };
+
+        git_response(
+            request.id,
+            create_worktree(
+                &self.git_runner,
+                &input.scope,
+                branch_name,
+                input.force.unwrap_or(false),
+                &input.path,
+                input.start_point.as_deref(),
+            ),
+            "git create worktree result serializes",
+        )
+    }
+
+    fn git_remove_worktree(&mut self, request: RpcRequest) -> CommandResult {
+        if !native_git_mutations_enabled() {
+            return disabled_git_operation(request);
+        }
+        let input = match parse_args::<native_git::NativeGitWorktreeMutationInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        git_response(
+            request.id,
+            remove_worktree(
+                &self.git_runner,
+                &input.scope,
+                &input.path,
+                input.force.unwrap_or(false),
+            ),
+            "git remove worktree result serializes",
+        )
+    }
+
+    fn git_paths_operation(
+        &mut self,
+        request: RpcRequest,
+        operation: fn(
+            &GitRunner,
+            &native_git::NativeGitRepositoryScope,
+            &[String],
+        ) -> comando_git::GitResult<native_git::NativeGitOperationResult>,
+        serialize_message: &'static str,
+    ) -> CommandResult {
+        if !native_git_mutations_enabled() {
+            return disabled_git_operation(request);
+        }
+        let input = match parse_args::<native_git::NativeGitPathsInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        git_response(
+            request.id,
+            operation(&self.git_runner, &input.scope, &input.paths),
+            serialize_message,
+        )
+    }
+
     fn sync_fs_registry_from_store(&mut self) -> Result<NativeProjectState, NativeError> {
         let state = self.load_project_state_from_store()?;
         self.fs_service.sync_state(state.clone());
@@ -1334,6 +1532,21 @@ fn disabled_git_operation(request: RpcRequest) -> CommandResult {
         )
         .with_details(json!({ "gitCode": "operation_disabled" })),
     )
+}
+
+fn disabled_git_network_operation(request: RpcRequest) -> CommandResult {
+    error_only(
+        request.id,
+        NativeError::new(
+            NativeErrorCode::PermissionDenied,
+            "Native Git network operation is disabled by guardrails.",
+        )
+        .with_details(json!({ "gitCode": "network_disabled" })),
+    )
+}
+
+fn native_git_mutations_enabled() -> bool {
+    env::var("COMANDO_NATIVE_GIT_MUTATIONS").ok().as_deref() == Some("1")
 }
 
 fn parse_args<T: DeserializeOwned>(request: &RpcRequest) -> Result<T, NativeError> {
