@@ -12,8 +12,9 @@ Rust can also own project tree, file read/write, filesystem mutations, copies,
 and watcher invalidations when native filesystem flags are enabled. Search and
 real git status/diff also have native rollout flags. Integrated terminals can
 be owned by Rust under `COMANDO_NATIVE_TERMINAL=1`; with the flag off, the
-existing TypeScript `node-pty` path remains the owner. AI, review, and renderer
-UI behavior remain owned by the existing TypeScript path.
+existing TypeScript `node-pty` path remains the owner. AI sessions can be owned
+by Rust per runtime under `COMANDO_NATIVE_AI=1`; review and renderer UI behavior
+remain on the existing TypeScript/renderer path.
 
 ## Flags
 
@@ -66,6 +67,11 @@ UI behavior remain owned by the existing TypeScript path.
   If the mode is omitted, `COMANDO_NATIVE_TERMINAL=1` still means native.
 - `COMANDO_NATIVE_TERMINAL_DEBUG=1` is reserved for lifecycle diagnostics.
   Terminal input, output, and env values must not be logged.
+- `COMANDO_NATIVE_AI=1` enables native AI routing through the Rust sidecar.
+- `COMANDO_NATIVE_AI_RUNTIMES=codex,claude,opencode,kilo,grok` selects which
+  runtime ids may create native-owned AI sessions. Omit it to use the full PR 9
+  matrix, or remove a runtime id to roll that provider back to the TypeScript
+  worker.
 
 With flags unset, Comando uses the existing TypeScript path. Write mode requires
 `COMANDO_NATIVE_BACKEND=1`, `COMANDO_NATIVE_PERSISTENCE=1`, and
@@ -75,6 +81,12 @@ Native terminal has no shadow mode. Running the same PTY twice would duplicate
 command side effects, credentials prompts, filesystem writes, and destructive
 commands. Rollback is simply leaving `COMANDO_NATIVE_TERMINAL` unset or setting
 it to `0`; `node-pty` remains installed as the legacy fallback.
+
+Native AI rollback is controlled independently. Set `COMANDO_NATIVE_AI=0` to
+return all AI sessions to the TypeScript worker, or remove one runtime id from
+`COMANDO_NATIVE_AI_RUNTIMES` to roll that provider back while leaving the rest
+of the native matrix enabled. The runtime smoke checklist lives in
+[`docs/native-ai-runtime-smoke.md`](native-ai-runtime-smoke.md).
 
 ## Protocol V1
 

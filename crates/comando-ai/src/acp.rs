@@ -18,10 +18,11 @@ use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use comando_types::ai::{
     NativeAiErrorPayload, NativeAiLaunchSpec, NativeAiPermissionOptionPayload,
     NativeAiPermissionRequestPayload, NativeAiPermissionResponseInput, NativeAiPlanEntryPayload,
-    NativeAiPlanUpdatedPayload, NativeAiSessionStatus, NativeAiSessionSummary,
-    NativeAiTokenUsageCost, NativeAiTokenUsagePayload, NativeAiToolActivityPayload,
-    NativeAiUserInputQuestionOptionPayload, NativeAiUserInputQuestionPayload,
-    NativeAiUserInputRequestPayload, NativeAiUserInputResponseInput,
+    NativeAiPlanUpdatedPayload, NativeAiRuntimeConnectionPayload, NativeAiSessionStatus,
+    NativeAiSessionSummary, NativeAiTokenUsageCost, NativeAiTokenUsagePayload,
+    NativeAiToolActivityPayload, NativeAiUserInputQuestionOptionPayload,
+    NativeAiUserInputQuestionPayload, NativeAiUserInputRequestPayload,
+    NativeAiUserInputResponseInput,
 };
 use comando_types::ids::{
     MessageId, RuntimeId, RuntimeSessionId, SessionId, ToolCallId as NativeToolCallId,
@@ -35,10 +36,11 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use crate::error::{AiError, AiResult};
 use crate::events::{
     AI_ERROR_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT,
-    AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT, AI_SESSION_UPDATED_EVENT,
-    AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
-    AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, AI_USER_INPUT_REQUEST_EVENT, AiRuntimeEvent,
-    message_completed, message_delta, message_started, now_iso8601, session_updated,
+    AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT,
+    AI_SESSION_UPDATED_EVENT, AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT,
+    AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT,
+    AI_USER_INPUT_REQUEST_EVENT, AiRuntimeEvent, message_completed, message_delta, message_started,
+    now_iso8601, session_updated,
 };
 use crate::redaction::redact_env_key_value;
 use crate::runtime::{AcpProtocolFlavor, RuntimeDefinition};
@@ -504,6 +506,16 @@ async fn run_acp_session(
                 let runtime_session_id =
                     RuntimeSessionId(new_session_response.session_id.to_string());
                 notification_context.set_runtime_session_id(runtime_session_id.clone());
+                emit_event(
+                    event_sender.as_ref(),
+                    AI_RUNTIME_CONNECTION_EVENT,
+                    &NativeAiRuntimeConnectionPayload {
+                        runtime_id: session.runtime_id.clone(),
+                        status: "ready".to_string(),
+                        message: None,
+                        updated_at: now_iso8601(),
+                    },
+                );
                 send_start_result(&started_sender, Ok(runtime_session_id.clone()));
 
                 while let Some(command) = command_receiver.recv().await {

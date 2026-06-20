@@ -68,6 +68,59 @@ Baseline verification:
 cargo test -p comando-ai
 ```
 
+## PR 9 Scope
+
+PR 9 expands the native AI path from the initial OpenCode slice to the full
+runtime matrix:
+
+- `codex`
+- `claude`
+- `opencode`
+- `kilo`
+- `grok`
+
+Feature flags:
+
+- `COMANDO_NATIVE_AI=1` enables native AI routing.
+- `COMANDO_NATIVE_AI_RUNTIMES=codex,claude,opencode,kilo,grok` selects the
+  runtimes allowed to use Rust.
+- With `COMANDO_NATIVE_AI_RUNTIMES` omitted, the native gateway defaults to the
+  same five-runtime matrix.
+- Runtimes not listed remain owned by the legacy TypeScript worker.
+
+Native Rust owns the ACP process, session lifecycle, streaming, cancel/close,
+permission waiters, user-input waiters, and Grok auth handshake once a session
+is routed native. TypeScript still owns runtime setup, current settings,
+current secrets, terminal auth launchers, and legacy fallback.
+
+Runtime connection events are emitted as backend diagnostics when a native ACP
+session is initialized. They are intentionally not visible UI copy.
+
+Runtime launch contracts:
+
+- Codex: TS resolves `codex-acp`; Rust expects no ACP args.
+- Claude: TS may resolve a direct `claude-agent-acp` executable or `node` plus
+  vendor entry args; Rust accepts the launch context as provided.
+- OpenCode: Rust validates `opencode acp`.
+- Kilo: Rust validates `kilo acp`.
+- Grok: Rust validates `grok --no-auto-update agent stdio` and maps Grok auth
+  handshakes to `xai.api_key` or `cached_token` when advertised by the runtime.
+
+Rollback:
+
+```text
+COMANDO_NATIVE_AI=0
+```
+
+or remove a single runtime from the matrix:
+
+```text
+COMANDO_NATIVE_AI_RUNTIMES=codex,claude,opencode,kilo
+```
+
+Manual smoke and rollout verification are tracked in
+[`docs/native-ai-runtime-smoke.md`](native-ai-runtime-smoke.md).
+
 ## PR 8 Scope
 
 This slice moves the first real AI session owner into Rust under feature flags:
@@ -136,7 +189,7 @@ These areas intentionally remain in TypeScript for this PR:
 - Review canonical state and accept/reject flows.
 - Complete tracked-file diff ownership.
 - Runtime settings UI and secret storage.
-- Runtimes other than the selected native runtime.
+- Legacy fallback for runtimes not listed in `COMANDO_NATIVE_AI_RUNTIMES`.
 - Open file buffer bridge beyond basic compatibility no-ops.
 
 The central invariant is:
