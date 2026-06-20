@@ -62,6 +62,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "comando-git"
+version = "0.1.0"
+dependencies = [
+ "comando-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "time",
+]
+
+[[package]]
 name = "comando-index"
 version = "0.1.0"
 dependencies = [
@@ -80,6 +93,7 @@ name = "comando-native-backend"
 version = "0.1.0"
 dependencies = [
  "comando-fs",
+ "comando-git",
  "comando-index",
  "comando-persistence",
  "comando-projects",

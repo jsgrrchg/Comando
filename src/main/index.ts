@@ -57,6 +57,7 @@ import {
     normalizeNativePersistenceMode,
 } from "./native-backend/persistence";
 import { NativeFsGateway } from "./native-backend/fs";
+import { NativeGitGateway, NativeGitRoutingGateway } from "./native-backend/git";
 import { NativeSearchGateway } from "./native-backend/index-search";
 import {
     createNativeProjectRegistryStore,
@@ -146,7 +147,17 @@ if (!hasSingleInstanceLock) {
             secretStore = dbWorkerClient.secretStore;
             githubService = new GitHubService({ secretStore });
             settingsService = dbWorkerClient.settings;
-            gitService = await createGitWorkerClient();
+            const gitWorker = await createGitWorkerClient();
+            gitService = nativeBackendClient
+                ? new NativeGitRoutingGateway({
+                      env: process.env,
+                      legacy: gitWorker,
+                      native: new NativeGitGateway(nativeBackendClient),
+                      onDiagnostic: (message) => {
+                          console.warn(message);
+                      },
+                  })
+                : gitWorker;
             const projectWorker = await createProjectWorkerClient({
                 onProjectTreeInvalidated: (payload) => {
                     projectService?.handleProjectTreeInvalidation(payload);

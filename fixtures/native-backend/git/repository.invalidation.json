@@ -1,0 +1,7 @@
+{
+  "occurredAt": "2026-06-20T00:00:00.000Z",
+  "projectId": "project_1",
+  "worktreeId": "worktree_1",
+  "rootPath": "/tmp/comando-project",
+  "reason": "status"
+}

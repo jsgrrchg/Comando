@@ -53,18 +53,33 @@ export const NATIVE_INDEX_COMMANDS = [
 ] as const;
 
 export const NATIVE_GIT_COMMANDS = [
+    "git_resolve_repository",
+    "git_get_repository_snapshot",
     "git_get_status",
     "git_get_diff",
     "git_get_file_diff",
+    "git_get_original_file",
     "git_get_history",
+    "git_get_commit_detail",
     "git_list_branches",
-    "git_checkout_branch",
-    "git_create_branch",
     "git_list_worktrees",
-    "git_create_worktree",
-    "git_remove_worktree",
+    "git_list_remotes",
+    "git_get_diff_stats",
+    "git_list_worktree_diff",
+    "git_init_repository",
     "git_stage_paths",
     "git_unstage_paths",
+    "git_discard_paths",
+    "git_commit",
+    "git_checkout_branch",
+    "git_create_branch",
+    "git_delete_local_branch",
+    "git_create_worktree",
+    "git_remove_worktree",
+    "git_fetch",
+    "git_pull",
+    "git_push",
+    "git_delete_remote_branch",
 ] as const;
 
 export const NATIVE_TERMINAL_COMMANDS = [

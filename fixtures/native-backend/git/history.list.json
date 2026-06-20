@@ -1,0 +1,22 @@
+{
+  "commits": [
+    {
+      "sha": "1111111111111111111111111111111111111111",
+      "shortSha": "1111111",
+      "subject": "Initial commit",
+      "body": "",
+      "authorName": "Ada Lovelace",
+      "authorEmail": "ada@example.invalid",
+      "authoredAt": "2026-06-20T00:00:00.000Z",
+      "parentShas": [],
+      "refs": [
+        {
+          "kind": "head",
+          "label": "HEAD -> main"
+        }
+      ]
+    }
+  ],
+  "matchedCount": 1,
+  "totalCount": 1
+}

@@ -1,0 +1,8 @@
+{
+  "baseText": "export const answer = 41;\n",
+  "isText": true,
+  "kind": "modified",
+  "path": "src/main.ts",
+  "previousPath": null,
+  "scope": "unstaged"
+}

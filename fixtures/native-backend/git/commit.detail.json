@@ -1,0 +1,37 @@
+{
+  "sha": "1111111111111111111111111111111111111111",
+  "shortSha": "1111111",
+  "subject": "Initial commit",
+  "body": "",
+  "authorName": "Ada Lovelace",
+  "authorEmail": "ada@example.invalid",
+  "authoredAt": "2026-06-20T00:00:00.000Z",
+  "parentShas": [],
+  "refs": [
+    {
+      "kind": "head",
+      "label": "HEAD -> main"
+    }
+  ],
+  "changedFileCount": 1,
+  "committedAt": "2026-06-20T00:00:00.000Z",
+  "committerEmail": "ada@example.invalid",
+  "committerName": "Ada Lovelace",
+  "deletions": 0,
+  "files": [
+    {
+      "additions": 1,
+      "deletions": 0,
+      "hunks": [],
+      "isText": true,
+      "kind": "create",
+      "newText": null,
+      "oldText": null,
+      "path": "src/main.ts",
+      "previousPath": null,
+      "reversible": false,
+      "statusLabel": "added"
+    }
+  ],
+  "insertions": 1
+}

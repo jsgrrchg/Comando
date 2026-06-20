@@ -1,0 +1,24 @@
+{
+  "projectId": "project_1",
+  "worktreeId": "worktree_1",
+  "sections": [
+    {
+      "scope": "unstaged",
+      "files": [
+        {
+          "additions": 1,
+          "deletions": 0,
+          "diff": null,
+          "error": null,
+          "isBinary": false,
+          "isConflicted": false,
+          "kind": "modified",
+          "path": "src/main.ts",
+          "previousPath": null,
+          "scope": "unstaged"
+        }
+      ]
+    }
+  ],
+  "updatedAt": "2026-06-20T00:00:00.000Z"
+}
