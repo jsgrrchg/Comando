@@ -44,6 +44,20 @@ owned by the existing TypeScript path.
   legacy TypeScript index until the search/indexing migration.
 - `COMANDO_NATIVE_WATCHERS=1` enables native watcher registry sync and native
   `project://tree-invalidated` events in read or write mode.
+- `COMANDO_NATIVE_INDEX=1` enables the native project index domain. With
+  search enabled and no explicit search mode, the search rollout runs in
+  `shadow`.
+- `COMANDO_NATIVE_SEARCH=1` enables native path search routing eligibility.
+- `COMANDO_NATIVE_SEARCH_MODE=shadow` keeps TypeScript serving
+  `projects:list-entries` and `projects:search-entries` while Rust can run
+  bounded parity checks.
+- `COMANDO_NATIVE_SEARCH_MODE=read` routes complete project entry listing and
+  project entry search through Rust. TypeScript does not build the same search
+  index for that scope unless fallback is explicitly enabled.
+- `COMANDO_NATIVE_SEARCH_FALLBACK=1` allows read mode to fall back to the
+  legacy TypeScript search/index path after a native search failure.
+- `COMANDO_NATIVE_CONTENT_SEARCH=0` is the default. Visible content search is
+  not part of this rollout.
 
 With flags unset, Comando uses the existing TypeScript path. Write mode requires
 `COMANDO_NATIVE_BACKEND=1`, `COMANDO_NATIVE_PERSISTENCE=1`, and
