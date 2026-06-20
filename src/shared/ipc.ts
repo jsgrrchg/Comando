@@ -180,6 +180,7 @@ export const IPC_EVENTS = {
     aiSessionSnapshot: "ai:session-snapshot",
     aiSessionEvent: "ai:session-event",
     aiSessionStreamPort: "ai:session-stream-port",
+    nativeBackendEvent: "native-backend:event",
 } as const;
 
 export interface SystemTheme {
