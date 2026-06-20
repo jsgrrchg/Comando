@@ -7,13 +7,15 @@ use comando_types::capabilities::{
 };
 use comando_types::commands::{
     BACKEND_CAPABILITIES, BACKEND_EMIT_TEST_EVENT, BACKEND_HANDSHAKE, BACKEND_PING,
-    BACKEND_SHUTDOWN, PERSISTENCE_GET_STORAGE_HEALTH, PERSISTENCE_OPEN_STORE, PROJECT_ADD,
-    PROJECT_LIST,
+    BACKEND_SHUTDOWN, PERSISTENCE_GET_SNAPSHOT, PERSISTENCE_GET_STORAGE_HEALTH,
+    PERSISTENCE_OPEN_STORE, PROJECT_ADD, PROJECT_LIST,
 };
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::BACKEND_TEST_EVENT;
 use comando_types::ids::RequestId;
-use comando_types::persistence::NativePersistenceOpenStoreInput;
+use comando_types::persistence::{
+    NativePersistenceMode, NativePersistenceOpenStoreInput, NativePersistenceSnapshot,
+};
 use comando_types::projects::NativeProjectAddInput;
 use serde_json::{Value, json};
 
@@ -47,6 +49,7 @@ impl NativeBackend {
             BACKEND_EMIT_TEST_EVENT => emit_test_event(request),
             PERSISTENCE_OPEN_STORE => self.open_persistence_store(request),
             PERSISTENCE_GET_STORAGE_HEALTH => self.get_storage_health(request),
+            PERSISTENCE_GET_SNAPSHOT => self.get_snapshot(request),
             PROJECT_LIST => self.list_projects(request),
             PROJECT_ADD => self.add_projects(request),
             command => CommandResult {
@@ -124,6 +127,19 @@ impl NativeBackend {
         }
     }
 
+    fn get_snapshot(&mut self, request: RpcRequest) -> CommandResult {
+        response_only(
+            request.id,
+            serde_json::to_value(NativePersistenceSnapshot {
+                active_project_id: None,
+                active_worktree_id: None,
+                workspace: None,
+                updated_at: comando_persistence::store::now_rfc3339(),
+            })
+            .expect("snapshot output serializes"),
+        )
+    }
+
     fn list_projects(&mut self, request: RpcRequest) -> CommandResult {
         let Some(store) = self.persistence_store.as_mut() else {
             return backend_not_ready(request.id);
@@ -143,6 +159,15 @@ impl NativeBackend {
         let Some(store) = self.persistence_store.as_mut() else {
             return backend_not_ready(request.id);
         };
+        if !matches!(store.mode(), NativePersistenceMode::Write) {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::PermissionDenied,
+                    "Native project_add requires project registry write mode.",
+                ),
+            );
+        }
         let input = match serde_json::from_value::<NativeProjectAddInput>(request.args.clone()) {
             Ok(input) => input,
             Err(error) => {
@@ -158,27 +183,28 @@ impl NativeBackend {
 
         let mut registry = ProjectRegistry::new(store.connection_mut());
         match registry.add_project_paths(&input.project_paths) {
-            Ok(result) => CommandResult {
-                outputs: vec![
-                    response_ok(
-                        request.id,
-                        serde_json::to_value(&result).expect("project add output serializes"),
-                    ),
-                    event(
+            Ok(result) => {
+                let occurred_at = comando_persistence::store::now_rfc3339();
+                let mut outputs = vec![response_ok(
+                    request.id,
+                    serde_json::to_value(&result).expect("project add output serializes"),
+                )];
+                for project_id in &result.project_ids_to_open {
+                    outputs.push(event(
                         "project://updated",
                         json!({
-                            "projectIds": result
-                                .project_ids_to_open
-                                .iter()
-                                .map(|project_id| project_id.0.as_str())
-                                .collect::<Vec<_>>(),
+                            "projectId": project_id.0.as_str(),
+                            "worktreeId": format!("{}:primary", project_id.0.as_str()),
                             "reason": "project_add",
-                            "occurredAt": comando_persistence::store::now_rfc3339(),
+                            "occurredAt": occurred_at,
                         }),
-                    ),
-                ],
-                should_shutdown: false,
-            },
+                    ));
+                }
+                CommandResult {
+                    outputs,
+                    should_shutdown: false,
+                }
+            }
             Err(error) => error_only(request.id, project_error(error)),
         }
     }
@@ -306,7 +332,7 @@ mod tests {
     use std::fs;
 
     use rusqlite::Connection;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use tempfile::TempDir;
 
     use super::*;
@@ -406,6 +432,60 @@ mod tests {
     }
 
     #[test]
+    fn returns_versioned_snapshot_stub() {
+        let mut backend = NativeBackend::default();
+
+        let result = backend.handle_request(request("persistence_get_snapshot", json!({})));
+
+        let response = only_response(&result);
+        assert!(response.ok);
+        assert_eq!(
+            response.result.as_ref().unwrap()["activeProjectId"],
+            Value::Null
+        );
+        assert_eq!(
+            response.result.as_ref().unwrap()["activeWorktreeId"],
+            Value::Null
+        );
+        assert_eq!(response.result.as_ref().unwrap()["workspace"], Value::Null);
+    }
+
+    #[test]
+    fn project_add_requires_write_mode_and_does_not_write_in_shadow() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let database_path = temp_dir.path().join("comando.sqlite3");
+        let project_path = temp_dir.path().join("project-shadow");
+        fs::create_dir_all(&project_path).expect("project dir");
+        create_current_schema(&database_path);
+        let mut backend = NativeBackend::default();
+
+        let open_result = backend.handle_request(request(
+            "persistence_open_store",
+            json!({
+                "appDataDir": temp_dir.path(),
+                "databasePath": database_path,
+                "mode": "shadow",
+            }),
+        ));
+        assert!(only_response(&open_result).ok);
+
+        let add_result = backend.handle_request(request(
+            "project_add",
+            json!({
+                "projectPaths": [project_path],
+                "ownerWindowId": null,
+            }),
+        ));
+        let add_response = only_response(&add_result);
+        assert!(!add_response.ok);
+        assert_eq!(
+            add_response.error.as_ref().map(|error| error.code.as_str()),
+            Some("permission_denied")
+        );
+        assert_eq!(count_rows(&database_path, "projects"), 0);
+    }
+
+    #[test]
     fn opens_storage_and_handles_project_add_and_list() {
         let temp_dir = TempDir::new().expect("temp dir");
         let database_path = temp_dir.path().join("comando.sqlite3");
@@ -444,6 +524,19 @@ mod tests {
             1
         );
         assert_eq!(add_result.outputs.len(), 2);
+        let Some(RpcOutput::Event(updated_event)) = add_result.outputs.get(1) else {
+            panic!("expected project updated event");
+        };
+        assert_eq!(updated_event.event_name, "project://updated");
+        assert_eq!(updated_event.payload["reason"], "project_add");
+        assert_eq!(updated_event.payload["projectId"].as_str().is_some(), true);
+        assert_eq!(
+            updated_event.payload["worktreeId"].as_str().unwrap(),
+            format!(
+                "{}:primary",
+                updated_event.payload["projectId"].as_str().unwrap()
+            )
+        );
 
         let list_result = backend.handle_request(request("project_list", json!({})));
         let list_response = only_response(&list_result);
@@ -461,6 +554,50 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn project_errors_do_not_include_raw_paths() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let database_path = temp_dir.path().join("comando.sqlite3");
+        let missing_path = temp_dir.path().join("missing-project");
+        create_current_schema(&database_path);
+        let mut backend = NativeBackend::default();
+
+        let open_result = backend.handle_request(request(
+            "persistence_open_store",
+            json!({
+                "appDataDir": temp_dir.path(),
+                "databasePath": database_path,
+                "mode": "write",
+            }),
+        ));
+        assert!(only_response(&open_result).ok);
+
+        let add_result = backend.handle_request(request(
+            "project_add",
+            json!({
+                "projectPaths": [missing_path],
+                "ownerWindowId": null,
+            }),
+        ));
+        let response = only_response(&add_result);
+        let error = response.error.as_ref().expect("native error");
+
+        assert!(
+            !error
+                .message
+                .contains(temp_dir.path().to_string_lossy().as_ref())
+        );
+        assert!(!error.message.contains("missing-project"));
+        assert!(
+            error
+                .details
+                .as_ref()
+                .and_then(|details| details.get("path"))
+                .and_then(Value::as_str)
+                .is_some_and(|path| path.contains("<redacted>"))
         );
     }
 
@@ -514,5 +651,15 @@ mod tests {
                 ",
             )
             .expect("schema");
+    }
+
+    fn count_rows(database_path: &std::path::Path, table: &str) -> u64 {
+        let connection = Connection::open(database_path).expect("db");
+        let count: i64 = connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("count rows");
+        u64::try_from(count).unwrap_or(0)
     }
 }

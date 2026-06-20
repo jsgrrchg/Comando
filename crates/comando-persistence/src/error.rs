@@ -9,6 +9,9 @@ pub enum PersistenceError {
     #[error("The database path is empty.")]
     EmptyDatabasePath,
 
+    #[error("Native storage database does not exist.")]
+    DatabaseNotFound(PathBuf),
+
     #[error("The native storage schema is missing required table: {0}")]
     MissingRequiredTable(&'static str),
 
@@ -21,7 +24,7 @@ pub enum PersistenceError {
     #[error("The native storage schema version is not supported: {0}")]
     UnsupportedSchemaVersion(String),
 
-    #[error("Could not open native storage at {path}: {source}")]
+    #[error("Could not open native storage.")]
     OpenStorage {
         path: PathBuf,
         #[source]
@@ -39,6 +42,7 @@ impl PersistenceError {
     pub fn native_code(&self) -> NativeErrorCode {
         match self {
             Self::EmptyDatabasePath => NativeErrorCode::InvalidArgs,
+            Self::DatabaseNotFound(_) => NativeErrorCode::NotFound,
             Self::MissingRequiredTable(_)
             | Self::MissingRequiredColumn { .. }
             | Self::UnsupportedSchemaVersion(_) => NativeErrorCode::UnsupportedSchemaVersion,
@@ -50,10 +54,13 @@ impl PersistenceError {
 
     pub fn to_native_error(&self) -> NativeError {
         let mut error = NativeError::new(self.native_code(), self.to_string());
-        if let Self::OpenStorage { path, .. } = self {
-            error = error.with_details(json!({
-                "databasePath": crate::redaction::redact_path(path),
-            }));
+        match self {
+            Self::DatabaseNotFound(path) | Self::OpenStorage { path, .. } => {
+                error = error.with_details(json!({
+                    "databasePath": crate::redaction::redact_path(path),
+                }));
+            }
+            _ => {}
         }
         error
     }

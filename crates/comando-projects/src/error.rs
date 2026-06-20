@@ -12,8 +12,8 @@ pub enum ProjectRegistryError {
     #[error("Choose an existing folder for this project.")]
     DirectoryNotFound(PathBuf),
 
-    #[error("The project path could not be canonicalized: {path}")]
-    CanonicalizePath {
+    #[error("The project path could not be resolved.")]
+    ResolvePath {
         path: PathBuf,
         #[source]
         source: std::io::Error,
@@ -29,9 +29,9 @@ pub enum ProjectRegistryError {
 impl ProjectRegistryError {
     pub fn native_code(&self) -> NativeErrorCode {
         match self {
-            Self::EmptyProjectPaths
-            | Self::DirectoryNotFound(_)
-            | Self::CanonicalizePath { .. } => NativeErrorCode::InvalidArgs,
+            Self::EmptyProjectPaths | Self::DirectoryNotFound(_) | Self::ResolvePath { .. } => {
+                NativeErrorCode::InvalidArgs
+            }
             Self::Sqlite(_) | Self::Io(_) => NativeErrorCode::InternalError,
         }
     }
@@ -44,7 +44,7 @@ impl ProjectRegistryError {
                     "path": comando_persistence::redaction::redact_path(path),
                 }));
             }
-            Self::CanonicalizePath { path, .. } => {
+            Self::ResolvePath { path, .. } => {
                 error = error.with_details(json!({
                     "path": comando_persistence::redaction::redact_path(path),
                 }));

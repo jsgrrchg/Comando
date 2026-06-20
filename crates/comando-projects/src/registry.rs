@@ -201,8 +201,6 @@ fn ensure_primary_worktree(
         VALUES (?1, ?2, ?3, NULL, NULL, 1, ?4, ?5)
         ON CONFLICT(id) DO UPDATE SET
             root_path = excluded.root_path,
-            branch_name = excluded.branch_name,
-            head_sha = excluded.head_sha,
             is_primary = 1,
             updated_at = excluded.updated_at
         ",
@@ -439,6 +437,42 @@ mod tests {
         assert_eq!(first.project_ids_to_open, second.project_ids_to_open);
         assert_eq!(second.state.projects.len(), 1);
         assert_eq!(second.state.worktrees.len(), 1);
+    }
+
+    #[test]
+    fn readding_existing_project_preserves_primary_git_metadata() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let project_root = create_dir(temp_dir.path(), "git-metadata");
+        let mut connection = create_current_schema();
+
+        let first = ProjectRegistry::new(&mut connection)
+            .add_project_paths(std::slice::from_ref(&project_root))
+            .expect("first add");
+        let project_id = first.project_ids_to_open[0].0.clone();
+        connection
+            .execute(
+                "
+                UPDATE project_worktrees
+                SET branch_name = 'main',
+                    head_sha = 'abc123'
+                WHERE id = ?1
+                ",
+                [format!("{project_id}:primary")],
+            )
+            .expect("seed git metadata");
+
+        let second = ProjectRegistry::new(&mut connection)
+            .add_project_paths(std::slice::from_ref(&project_root))
+            .expect("second add");
+
+        let primary = second
+            .state
+            .worktrees
+            .iter()
+            .find(|worktree| worktree.id.0 == format!("{project_id}:primary"))
+            .expect("primary worktree");
+        assert_eq!(primary.branch_name.as_deref(), Some("main"));
+        assert_eq!(primary.head_sha.as_deref(), Some("abc123"));
     }
 
     #[test]

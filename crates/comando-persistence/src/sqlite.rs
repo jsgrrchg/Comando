@@ -71,6 +71,11 @@ impl SqlitePersistenceStore {
         if config.database_path.as_os_str().is_empty() {
             return Err(PersistenceError::EmptyDatabasePath);
         }
+        if !config.database_path.is_file() {
+            return Err(PersistenceError::DatabaseNotFound(
+                config.database_path.clone(),
+            ));
+        }
 
         let connection = Connection::open(&config.database_path).map_err(|source| {
             PersistenceError::OpenStorage {
@@ -242,6 +247,38 @@ mod tests {
         assert_eq!(
             error.native_code(),
             comando_types::error::NativeErrorCode::UnsupportedSchemaVersion
+        );
+    }
+
+    #[test]
+    fn rejects_missing_database_without_creating_file_or_leaking_path() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let database_path = temp_dir.path().join("missing.sqlite3");
+
+        let error = match SqlitePersistenceStore::open(NativeStorageConfig {
+            app_data_dir: temp_dir.path().to_path_buf(),
+            database_path: database_path.clone(),
+            mode: NativePersistenceMode::Shadow,
+        }) {
+            Ok(_) => panic!("missing database should fail"),
+            Err(error) => error,
+        };
+        let native_error = error.to_native_error();
+
+        assert!(!database_path.exists());
+        assert_eq!(native_error.code.as_str(), "not_found");
+        assert!(
+            !native_error
+                .message
+                .contains(temp_dir.path().to_string_lossy().as_ref())
+        );
+        assert!(
+            native_error
+                .details
+                .as_ref()
+                .and_then(|details| details.get("databasePath"))
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|path| path.contains("<redacted>"))
         );
     }
 
