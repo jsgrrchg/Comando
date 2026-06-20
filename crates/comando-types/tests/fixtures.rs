@@ -10,8 +10,8 @@ use comando_types::error::NativeErrorCode;
 use comando_types::events::all_events;
 use comando_types::fs::NativeFsReadFileResult;
 use comando_types::git::{NativeGitFileDiff, NativeGitRepositorySnapshot};
-use comando_types::persistence::NativeWorkspaceSnapshotRef;
-use comando_types::projects::{NativeProjectSummary, NativeProjectTreeEntry};
+use comando_types::persistence::{NativePersistenceStorageHealth, NativeWorkspaceSnapshotRef};
+use comando_types::projects::{NativeProjectState, NativeProjectSummary, NativeProjectTreeEntry};
 use comando_types::protocol::{NativeRpcOutput, NativeRpcRequest};
 use comando_types::terminal::{
     NativeTerminalDataEvent, NativeTerminalExitEvent, NativeTerminalSession,
@@ -136,6 +136,8 @@ fn ai_fixtures_deserialize() {
 fn local_domain_fixtures_deserialize() {
     let project: NativeProjectSummary = fixture("projects/project.summary.json");
     assert_eq!(project.id.0, "project_1");
+    let project_state: NativeProjectState = fixture("projects/project.state.json");
+    assert_eq!(project_state.worktrees[0].id.0, "project_1:primary");
     let tree_entry: NativeProjectTreeEntry = fixture("projects/project.tree_entry.json");
     assert_eq!(tree_entry.relative_path, "src/main.ts");
 
@@ -160,6 +162,8 @@ fn local_domain_fixtures_deserialize() {
     let workspace_ref: NativeWorkspaceSnapshotRef =
         fixture("persistence/workspace.snapshot_ref.json");
     assert_eq!(workspace_ref.storage_key, "workspace:workspace_1");
+    let storage_health: NativePersistenceStorageHealth = fixture("persistence/storage.health.json");
+    assert!(storage_health.schema_compatible);
 }
 
 #[test]
@@ -171,6 +175,7 @@ fn key_dtos_roundtrip_without_losing_required_fields() {
     assert_typed_roundtrip::<NativeBackendCapabilitiesOutput>("protocol/capabilities.v1.json");
     assert_typed_roundtrip::<NativeAiSessionSummary>("ai/session.summary.json");
     assert_typed_roundtrip::<NativeProjectSummary>("projects/project.summary.json");
+    assert_typed_roundtrip::<NativeProjectState>("projects/project.state.json");
     assert_typed_roundtrip::<NativeProjectTreeEntry>("projects/project.tree_entry.json");
     assert_typed_roundtrip::<NativeFsReadFileResult>("fs/file.read_result.text.json");
     assert_typed_roundtrip::<NativeFsReadFileResult>("fs/file.read_result.binary.json");
@@ -180,4 +185,5 @@ fn key_dtos_roundtrip_without_losing_required_fields() {
     assert_typed_roundtrip::<NativeTerminalDataEvent>("terminal/terminal.data_event.json");
     assert_typed_roundtrip::<NativeTerminalExitEvent>("terminal/terminal.exit_event.json");
     assert_typed_roundtrip::<NativeWorkspaceSnapshotRef>("persistence/workspace.snapshot_ref.json");
+    assert_typed_roundtrip::<NativePersistenceStorageHealth>("persistence/storage.health.json");
 }

@@ -7,6 +7,8 @@ export const NATIVE_BACKEND_COMMANDS = [
 ] as const;
 
 export const NATIVE_PERSISTENCE_COMMANDS = [
+    "persistence_open_store",
+    "persistence_get_storage_health",
     "persistence_get_snapshot",
     "persistence_save_workspace",
     "persistence_load_workspace",

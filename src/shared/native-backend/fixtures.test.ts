@@ -17,7 +17,12 @@ import {
 } from ".";
 import type { NativeAiRuntimeStatus } from "./ai";
 import type { NativeGitRepositorySnapshot } from "./git";
-import type { NativeProjectSummary, NativeProjectTreeEntry } from "./projects";
+import type { NativePersistenceStorageHealth } from "./persistence";
+import type {
+    NativeProjectState,
+    NativeProjectSummary,
+    NativeProjectTreeEntry,
+} from "./projects";
 import type { NativeTerminalDataEvent, NativeTerminalExitEvent } from "./terminal";
 
 const fixtureRoot = path.join(process.cwd(), "fixtures", "native-backend");
@@ -158,6 +163,14 @@ describe("native backend fixtures", () => {
             id: "project_1",
             rootPath: "/tmp/comando-project",
         });
+        const projectState = fixture<NativeProjectState>(
+            "projects/project.state.json",
+        );
+        expect(projectState.worktrees[0]).toMatchObject({
+            headSha: null,
+            id: "project_1:primary",
+            isPrimary: true,
+        });
 
         const treeEntry = fixture<NativeProjectTreeEntry>(
             "projects/project.tree_entry.json",
@@ -181,6 +194,14 @@ describe("native backend fixtures", () => {
                 worktreeId: "worktree_1",
             }),
         ).toMatchObject({ reason: "status", worktreeId: "worktree_1" });
+
+        const health = fixture<NativePersistenceStorageHealth>(
+            "persistence/storage.health.json",
+        );
+        expect(health).toMatchObject({
+            databaseReachable: true,
+            projectCount: 1,
+        });
     });
 
     it("accepts terminal fixtures and adapters", () => {

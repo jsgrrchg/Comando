@@ -12,6 +12,8 @@ pub const BACKEND_EVENTS: &[&str] = &[
 
 pub const PROJECT_FS_INDEX_EVENTS: &[&str] = &[
     "project://updated",
+    "project://registry-parity-mismatch",
+    "project://error",
     "project://tree-invalidated",
     "fs://entry-created",
     "fs://entry-updated",
@@ -62,6 +64,8 @@ pub const AI_EVENTS: &[&str] = &[
 ];
 
 pub const PERSISTENCE_SETTINGS_EVENTS: &[&str] = &[
+    "persistence://storage-opened",
+    "persistence://storage-health",
     "persistence://snapshot-updated",
     "settings://updated",
     "settings://project-updated",

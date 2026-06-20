@@ -83,6 +83,8 @@ pub fn backend_capabilities() -> NativeCapabilitySet {
             "bootstrap".to_string(),
             "versioned-protocol".to_string(),
             "json-fixtures".to_string(),
+            "native-persistence".to_string(),
+            "native-project-registry".to_string(),
         ],
     }
 }

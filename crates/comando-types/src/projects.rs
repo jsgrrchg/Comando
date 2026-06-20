@@ -24,6 +24,7 @@ pub struct NativeWorktreeSummary {
     pub project_id: NativeProjectId,
     pub root_path: String,
     pub branch_name: Option<String>,
+    pub head_sha: Option<String>,
     pub is_primary: bool,
     pub updated_at: String,
 }
@@ -40,14 +41,31 @@ pub struct NativeProjectOpenState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeProjectAddInput {
-    pub root_path: String,
+    pub project_paths: Vec<String>,
     pub owner_window_id: Option<WindowId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectState {
+    pub projects: Vec<NativeProjectSummary>,
+    pub worktrees: Vec<NativeWorktreeSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeProjectListResult {
     pub projects: Vec<NativeProjectSummary>,
+    pub worktrees: Vec<NativeWorktreeSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectAddResult {
+    pub project_ids_to_open: Vec<NativeProjectId>,
+    pub projects: Vec<NativeProjectSummary>,
+    pub state: NativeProjectState,
+    pub touched_root_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

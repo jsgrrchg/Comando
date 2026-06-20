@@ -3,11 +3,12 @@
 Comando can optionally launch a Rust sidecar named `comando-native-backend`.
 The sidecar is disabled by default. The current native backend owns the
 versioned transport contract, bootstrap commands, capabilities, JSON fixtures,
-and clean shutdown.
+clean shutdown, and the first persistence/project registry domain.
 
-This layer does not move AI, filesystem, git, terminal, persistence, or review
-behavior into Rust yet. TypeScript remains the functional owner until a later
-domain PR explicitly moves ownership behind a flag.
+Rust can open the current Comando SQLite store and own `project_list` /
+`project_add` only when the explicit native project registry write flag is set.
+Filesystem tree, watchers, search, git, terminal, AI, review, and renderer UI
+behavior remain owned by the existing TypeScript path.
 
 ## Flags
 
@@ -16,8 +17,21 @@ domain PR explicitly moves ownership behind a flag.
   resolution.
 - `COMANDO_NATIVE_BACKEND_STRICT=1` makes startup fail when the enabled sidecar
   cannot be found or started.
+- `COMANDO_NATIVE_PERSISTENCE=1` opens the current SQLite store from Rust after
+  the DB worker is ready.
+- `COMANDO_NATIVE_PERSISTENCE_STRICT=1` makes native persistence startup errors
+  fail app startup instead of falling back.
+- `COMANDO_NATIVE_PROJECT_REGISTRY=1` enables native project registry
+  integration. With no mode set, it runs in `shadow`.
+- `COMANDO_NATIVE_PROJECT_REGISTRY_MODE=shadow` compares native list output with
+  the legacy store and logs diagnostics without writing from Rust.
+- `COMANDO_NATIVE_PROJECT_REGISTRY_MODE=write` routes project list/add through
+  Rust. Other project operations still delegate to the legacy store and refresh
+  the native-backed cache.
 
-With `COMANDO_NATIVE_BACKEND` unset, Comando uses the existing TypeScript path.
+With flags unset, Comando uses the existing TypeScript path. Write mode requires
+`COMANDO_NATIVE_BACKEND=1`, `COMANDO_NATIVE_PERSISTENCE=1`, and
+`COMANDO_NATIVE_PROJECT_REGISTRY=1`.
 
 ## Protocol V1
 
@@ -77,6 +91,7 @@ Initial error codes:
 - `unknown_command`
 - `invalid_args`
 - `unsupported_protocol_version`
+- `unsupported_schema_version`
 - `backend_not_ready`
 - `operation_cancelled`
 - `operation_timeout`
@@ -118,7 +133,7 @@ Bootstrap commands implemented by the sidecar:
     "domains": ["backend", "persistence", "projects", "fs", "index", "search", "git", "terminal", "settings", "secret", "ai", "review", "workspace"],
     "commands": ["backend_ping"],
     "events": ["backend://test-event"],
-    "features": ["bootstrap", "versioned-protocol"]
+    "features": ["bootstrap", "versioned-protocol", "json-fixtures", "native-persistence", "native-project-registry"]
   }
 }
 ```
@@ -134,6 +149,87 @@ The actual command and event registries live in:
 
 When adding a command or event, update the Rust registry, TS registry, fixture,
 DTOs if needed, and fixture tests in the same change.
+
+## Native Persistence And Project Registry
+
+PR 3 adds two crates:
+
+- `crates/comando-persistence`: opens the existing SQLite database, configures
+  `busy_timeout`, validates the current schema, writes native metadata, and
+  reports storage health.
+- `crates/comando-projects`: reads visible projects/worktrees and implements
+  native `project_add` with canonical path handling, hidden-project revive,
+  recent-project touch, roots, and primary worktrees.
+
+The native metadata table is additive and idempotent:
+
+```sql
+CREATE TABLE IF NOT EXISTS native_backend_metadata (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+```
+
+Initial keys:
+
+- `native.schema_version`
+- `native.last_opened_at`
+- `native.storage_mode`
+- `native.protocol_version`
+
+Rust validates these existing tables before opening project registry routes:
+
+- `projects`
+- `project_roots`
+- `project_worktrees`
+- `recent_projects`
+- `workspace_sessions`
+
+Rust does not modify AI, workspace layout, git, terminal, review, filesystem
+tree, watcher, or search tables in this PR.
+
+### Commands
+
+`persistence_open_store` configures the sidecar with paths supplied by Electron
+main:
+
+```json
+{
+  "appDataDir": "/Users/example/Library/Application Support/Comando",
+  "databasePath": "/Users/example/Library/Application Support/Comando/comando.sqlite3",
+  "mode": "shadow"
+}
+```
+
+`persistence_get_storage_health` returns reachability, schema compatibility,
+metadata state, and visible project/worktree counts.
+
+`project_list` returns visible project summaries and worktrees from the current
+SQLite store. `project_add` validates existing directories, canonicalizes paths,
+reuses hidden project IDs, ensures roots and `${projectId}:primary`, touches
+`recent_projects`, and returns a project state snapshot for the TypeScript cache.
+
+### Shadow Mode
+
+Shadow mode is the default when `COMANDO_NATIVE_PROJECT_REGISTRY=1`.
+
+- TypeScript remains the user-visible writer.
+- Rust reads the same SQLite store.
+- Electron main compares native state with the legacy `ProjectStore` snapshot at
+  startup and after registry-changing legacy operations.
+- Diagnostics include counts and IDs, not full paths.
+
+### Write Mode
+
+Write mode requires `COMANDO_NATIVE_PROJECT_REGISTRY_MODE=write`.
+
+- `ProjectService.listProjects()` reads from a native-backed cache.
+- `ProjectService.addProjectPaths()` calls native `project_add`; legacy does not
+  write the same add operation in parallel.
+- Unsupported project operations still use the existing legacy store and refresh
+  the native-backed cache afterward when the operation is async.
+- The renderer, IPC channels, window flow, and UI text remain unchanged.
 
 ## Paths
 
@@ -189,6 +285,31 @@ Expected result:
 - `backend://test-event` is forwarded on `native-backend:event`
 - closing the app sends `backend_shutdown`
 
+Native project registry shadow smoke:
+
+```bash
+COMANDO_NATIVE_BACKEND=1 COMANDO_NATIVE_PERSISTENCE=1 COMANDO_NATIVE_PROJECT_REGISTRY=1 pnpm run dev
+```
+
+Expected result:
+
+- the app opens normally
+- native persistence health is logged
+- project registry parity diagnostics are logged
+- adding a project still uses the legacy writer
+
+Native project registry write smoke:
+
+```bash
+COMANDO_NATIVE_BACKEND=1 COMANDO_NATIVE_PERSISTENCE=1 COMANDO_NATIVE_PROJECT_REGISTRY=1 COMANDO_NATIVE_PROJECT_REGISTRY_MODE=write pnpm run dev
+```
+
+Expected result:
+
+- list/add project flows work through the existing UI
+- Rust writes project list/add records
+- tree, watcher, git, AI, terminal, and review behavior remain on legacy paths
+
 ## Fixtures
 
 Fixtures under `fixtures/native-backend` are the compatibility contract for PRs
@@ -199,21 +320,27 @@ that follow. They must use stable ISO timestamps, fake paths such as
 
 ## Rollback
 
-Unset `COMANDO_NATIVE_BACKEND`. The existing TypeScript implementation remains
-the default path.
+Unset `COMANDO_NATIVE_BACKEND`, `COMANDO_NATIVE_PERSISTENCE`, and
+`COMANDO_NATIVE_PROJECT_REGISTRY`. The existing TypeScript implementation
+remains the default path. To leave the sidecar on but disable Rust project
+writes, use `COMANDO_NATIVE_PROJECT_REGISTRY_MODE=shadow` or unset
+`COMANDO_NATIVE_PROJECT_REGISTRY`.
 
 ## Architecture Reference
 
 The sidecar shape was checked against NeverWrite, specifically:
 
 - `/Users/jfg/Documents/DEVELOPMENT/NeverWrite/apps/desktop/native-backend/src/main.rs`
-- `/Users/jfg/Documents/DEVELOPMENT/NeverWrite/apps/desktop/native-backend/src/ai.rs`
-- `/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/ai/src/events.rs`
-- `/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/ai/src/domain.rs`
-- `/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/diff/Cargo.toml`
-- `/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/index/Cargo.toml`
-- `/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/vault/Cargo.toml`
+- `/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/types/src/domain.rs`
+- `/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/types/src/dto.rs`
+- `/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/vault/src/vault.rs`
+- `/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/vault/src/error.rs`
+- `/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/vault/tests/integration.rs`
 
-Only the sidecar transport pattern was copied: JSONL over stdin/stdout, response
-and event envelopes, a single stdout writer, diagnostics on stderr, and tests
-that treat events as backend outputs.
+Copied patterns: JSONL over stdin/stdout, response/event envelopes, state owned
+by the sidecar, serializable errors across the RPC boundary, path normalization
+before persistence, and temp-directory integration tests.
+
+Not copied: vault assumptions, note filtering, `.neverwrite` storage, vault
+watchers/indexing, or file visibility rules. Comando project registry models
+developer folders and repos, not note vaults.

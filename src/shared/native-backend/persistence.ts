@@ -1,5 +1,30 @@
 import type { NativeProjectId, NativeWorkspaceId, NativeWorktreeId } from "./ids";
 
+export type NativePersistenceMode = "shadow" | "write";
+
+export type NativePersistenceOpenStoreInput = {
+    readonly appDataDir: string;
+    readonly databasePath: string;
+    readonly mode: NativePersistenceMode;
+};
+
+export type NativePersistenceOpenStoreOutput = {
+    readonly opened: boolean;
+    readonly schemaVersion: string;
+    readonly storageMode: string;
+    readonly metadataReady: boolean;
+};
+
+export type NativePersistenceStorageHealth = {
+    readonly opened: boolean;
+    readonly databaseReachable: boolean;
+    readonly schemaCompatible: boolean;
+    readonly metadataReady: boolean;
+    readonly projectCount: number;
+    readonly worktreeCount: number;
+    readonly checkedAt: string;
+};
+
 export type NativeWorkspaceSnapshotRef = {
     readonly workspaceId: NativeWorkspaceId | null;
     readonly projectId: NativeProjectId | null;

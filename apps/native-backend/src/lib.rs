@@ -4,7 +4,7 @@ pub mod commands;
 pub mod logging;
 pub mod protocol;
 
-use commands::handle_request;
+use commands::NativeBackend;
 use protocol::{JsonlWriter, RpcOutput, error_response, parse_request_line};
 
 pub fn run_stdio<R, W>(reader: R, writer: W) -> io::Result<()>
@@ -13,6 +13,7 @@ where
     W: Write,
 {
     let mut writer = JsonlWriter::new(writer);
+    let mut backend = NativeBackend::default();
 
     for line_result in reader.lines() {
         let line = line_result?;
@@ -21,7 +22,7 @@ where
         }
 
         let command_result = match parse_request_line(&line) {
-            Ok(request) => handle_request(request),
+            Ok(request) => backend.handle_request(request),
             Err(error) => {
                 logging::diagnostic(format!(
                     "Rejected malformed request: {}",

@@ -53,6 +53,7 @@
         "native:build": "node scripts/native/build-native-backend.mjs",
         "native:test": "cargo test --workspace",
         "native:stage": "node scripts/native/stage-native-backend.mjs",
+        "native:persistence:check": "cargo test -p comando-persistence -p comando-projects && pnpm exec vitest run src/main/native-backend src/shared/native-backend",
         "native:protocol:check": "cargo test -p comando-types && pnpm exec vitest run src/shared/native-backend src/main/native-backend",
         "native:check": "pnpm run native:build && pnpm run native:test && pnpm run native:stage && node scripts/native/verify-native-backend.mjs && pnpm run native:protocol:check && pnpm run typecheck",
         "test": "vitest run",

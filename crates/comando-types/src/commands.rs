@@ -3,6 +3,11 @@ pub const BACKEND_HANDSHAKE: &str = "backend_handshake";
 pub const BACKEND_CAPABILITIES: &str = "backend_capabilities";
 pub const BACKEND_SHUTDOWN: &str = "backend_shutdown";
 pub const BACKEND_EMIT_TEST_EVENT: &str = "backend_emit_test_event";
+pub const PERSISTENCE_OPEN_STORE: &str = "persistence_open_store";
+pub const PERSISTENCE_GET_STORAGE_HEALTH: &str = "persistence_get_storage_health";
+pub const PERSISTENCE_GET_SNAPSHOT: &str = "persistence_get_snapshot";
+pub const PROJECT_LIST: &str = "project_list";
+pub const PROJECT_ADD: &str = "project_add";
 
 pub const BACKEND_COMMANDS: &[&str] = &[
     BACKEND_PING,
@@ -13,15 +18,17 @@ pub const BACKEND_COMMANDS: &[&str] = &[
 ];
 
 pub const PERSISTENCE_COMMANDS: &[&str] = &[
-    "persistence_get_snapshot",
+    PERSISTENCE_OPEN_STORE,
+    PERSISTENCE_GET_STORAGE_HEALTH,
+    PERSISTENCE_GET_SNAPSHOT,
     "persistence_save_workspace",
     "persistence_load_workspace",
     "persistence_list_projects",
 ];
 
 pub const PROJECT_COMMANDS: &[&str] = &[
-    "project_list",
-    "project_add",
+    PROJECT_LIST,
+    PROJECT_ADD,
     "project_remove",
     "project_open",
     "project_refresh",

@@ -27,6 +27,8 @@
       "backend_capabilities",
       "backend_shutdown",
       "backend_emit_test_event",
+      "persistence_open_store",
+      "persistence_get_storage_health",
       "persistence_get_snapshot",
       "persistence_save_workspace",
       "persistence_load_workspace",
@@ -119,6 +121,8 @@
       "backend://error",
       "backend://performance-sample",
       "project://updated",
+      "project://registry-parity-mismatch",
+      "project://error",
       "project://tree-invalidated",
       "fs://entry-created",
       "fs://entry-updated",
@@ -157,6 +161,8 @@
       "ai://tracked-file-updated",
       "ai://runtime-connection",
       "ai://error",
+      "persistence://storage-opened",
+      "persistence://storage-health",
       "persistence://snapshot-updated",
       "settings://updated",
       "settings://project-updated",
@@ -165,7 +171,9 @@
     "features": [
       "bootstrap",
       "versioned-protocol",
-      "json-fixtures"
+      "json-fixtures",
+      "native-persistence",
+      "native-project-registry"
     ]
   }
 }

@@ -5,6 +5,7 @@ export type NativeWorktreeSummary = {
     readonly projectId: NativeProjectId;
     readonly rootPath: string;
     readonly branchName: string | null;
+    readonly headSha: string | null;
     readonly isPrimary: boolean;
     readonly updatedAt: string;
 };
@@ -27,12 +28,25 @@ export type NativeProjectOpenState = {
 };
 
 export type NativeProjectAddInput = {
-    readonly rootPath: string;
+    readonly projectPaths: readonly string[];
     readonly ownerWindowId: NativeWindowId | null;
+};
+
+export type NativeProjectState = {
+    readonly projects: readonly NativeProjectSummary[];
+    readonly worktrees: readonly NativeWorktreeSummary[];
 };
 
 export type NativeProjectListResult = {
     readonly projects: readonly NativeProjectSummary[];
+    readonly worktrees: readonly NativeWorktreeSummary[];
+};
+
+export type NativeProjectAddResult = {
+    readonly projectIdsToOpen: readonly NativeProjectId[];
+    readonly projects: readonly NativeProjectSummary[];
+    readonly state: NativeProjectState;
+    readonly touchedRootPaths: readonly string[];
 };
 
 export type NativeProjectUpdatedEvent = {

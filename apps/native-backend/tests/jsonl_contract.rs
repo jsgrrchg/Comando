@@ -110,7 +110,13 @@ fn reports_capabilities() {
     assert_eq!(response["result"]["rustVersion"], "1.96");
     assert_eq!(
         response["result"]["capabilities"]["features"],
-        json!(["bootstrap", "versioned-protocol", "json-fixtures"])
+        json!([
+            "bootstrap",
+            "versioned-protocol",
+            "json-fixtures",
+            "native-persistence",
+            "native-project-registry"
+        ])
     );
     assert_eq!(
         response["result"]["capabilities"]["commands"][0],
