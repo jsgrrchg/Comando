@@ -2,10 +2,11 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use comando_types::ai::{
     NativeAiCancelSessionOutput, NativeAiCloseSessionOutput, NativeAiGetRuntimeStatusInput,
-    NativeAiListRuntimesOutput, NativeAiPrepareSessionInput, NativeAiRuntimeStatus,
-    NativeAiSendPromptInput, NativeAiSendPromptOutput, NativeAiSessionIdInput,
-    NativeAiSessionStatus, NativeAiSessionSummary, NativeAiSetSessionConfigOptionInput,
-    NativeAiSetSessionModeInput, NativeAiSetSessionModelInput,
+    NativeAiListRuntimesOutput, NativeAiPermissionResponseInput, NativeAiPrepareSessionInput,
+    NativeAiRuntimeStatus, NativeAiSendPromptInput, NativeAiSendPromptOutput,
+    NativeAiSessionIdInput, NativeAiSessionStatus, NativeAiSessionSummary,
+    NativeAiSetSessionConfigOptionInput, NativeAiSetSessionModeInput, NativeAiSetSessionModelInput,
+    NativeAiUserInputResponseInput,
 };
 
 use crate::acp::{AcpProcessSpec, start_acp_session};
@@ -173,6 +174,7 @@ impl AiEngine {
             session.acp_controller.clone(),
             session.session.runtime_session_id.clone(),
         ) {
+            controller.cancel_pending_requests();
             controller.cancel(runtime_session_id)?;
         }
         session.set_status(NativeAiSessionStatus::Idle);
@@ -218,6 +220,34 @@ impl AiEngine {
         Err(AiError::Unsupported(
             "Native config changes are not implemented for this runtime yet.".to_string(),
         ))
+    }
+
+    pub fn respond_permission(&self, input: NativeAiPermissionResponseInput) -> AiResult<()> {
+        let controller = self
+            .lock_sessions()?
+            .get(&input.session_id)?
+            .acp_controller
+            .clone()
+            .ok_or_else(|| {
+                AiError::Unsupported(
+                    "Native permission responses require an ACP-backed session.".to_string(),
+                )
+            })?;
+        controller.respond_permission(input)
+    }
+
+    pub fn respond_user_input(&self, input: NativeAiUserInputResponseInput) -> AiResult<()> {
+        let controller = self
+            .lock_sessions()?
+            .get(&input.session_id)?
+            .acp_controller
+            .clone()
+            .ok_or_else(|| {
+                AiError::Unsupported(
+                    "Native user input responses require an ACP-backed session.".to_string(),
+                )
+            })?;
+        controller.respond_user_input(input)
     }
 
     pub fn close_owned_by_window(

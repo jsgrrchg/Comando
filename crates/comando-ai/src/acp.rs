@@ -1,19 +1,27 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 
 use agent_client_protocol::schema::{
-    CancelNotification, ContentBlock, ContentChunk, InitializeRequest, NewSessionRequest,
-    PromptRequest, ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
-    StopReason, TextContent, ToolCall, ToolCallUpdate,
+    AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
+    CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
+    ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
+    ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, InitializeRequest,
+    InitializeResponse, MultiSelectItems, NewSessionRequest, PermissionOption, PromptRequest,
+    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionNotification, SessionUpdate, StopReason, TextContent,
+    ToolCall, ToolCallUpdate,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use comando_types::ai::{
-    NativeAiErrorPayload, NativeAiLaunchSpec, NativeAiPlanEntryPayload, NativeAiPlanUpdatedPayload,
-    NativeAiSessionStatus, NativeAiSessionSummary, NativeAiTokenUsageCost,
-    NativeAiTokenUsagePayload, NativeAiToolActivityPayload,
+    NativeAiErrorPayload, NativeAiLaunchSpec, NativeAiPermissionOptionPayload,
+    NativeAiPermissionRequestPayload, NativeAiPermissionResponseInput, NativeAiPlanEntryPayload,
+    NativeAiPlanUpdatedPayload, NativeAiSessionStatus, NativeAiSessionSummary,
+    NativeAiTokenUsageCost, NativeAiTokenUsagePayload, NativeAiToolActivityPayload,
+    NativeAiUserInputQuestionOptionPayload, NativeAiUserInputQuestionPayload,
+    NativeAiUserInputRequestPayload, NativeAiUserInputResponseInput,
 };
 use comando_types::ids::{
     MessageId, RuntimeId, RuntimeSessionId, SessionId, ToolCallId as NativeToolCallId,
@@ -27,14 +35,19 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use crate::error::{AiError, AiResult};
 use crate::events::{
     AI_ERROR_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT,
-    AI_PLAN_UPDATED_EVENT, AI_SESSION_UPDATED_EVENT, AI_THINKING_COMPLETED_EVENT,
-    AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
-    AI_TOOL_ACTIVITY_EVENT, AiRuntimeEvent, message_completed, message_delta, message_started,
-    now_iso8601, session_updated,
+    AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT, AI_SESSION_UPDATED_EVENT,
+    AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
+    AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, AI_USER_INPUT_REQUEST_EVENT, AiRuntimeEvent,
+    message_completed, message_delta, message_started, now_iso8601, session_updated,
 };
 use crate::redaction::redact_env_key_value;
 use crate::runtime::{AcpProtocolFlavor, RuntimeDefinition};
 use crate::session::{NativeAiSession, SessionRegistry};
+
+static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+type PermissionWaiterMap = Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>;
+type UserInputWaiterMap = Arc<Mutex<HashMap<String, oneshot::Sender<CreateElicitationResponse>>>>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AcpProcessSpec {
@@ -117,9 +130,11 @@ fn validate_launch_context(
     if launch.status.state != "ready" || launch.status.onboarding_required {
         return Err(AiError::RuntimeNotReady {
             runtime_id,
-            message: launch.status.message.clone().unwrap_or_else(|| {
-                "Native runtime launch status is not ready.".to_string()
-            }),
+            message: launch
+                .status
+                .message
+                .clone()
+                .unwrap_or_else(|| "Native runtime launch status is not ready.".to_string()),
         });
     }
 
@@ -149,6 +164,11 @@ fn validate_launch_context(
     Ok(())
 }
 
+fn acp_client_capabilities() -> ClientCapabilities {
+    ClientCapabilities::new()
+        .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()))
+}
+
 fn definition_args(definition: RuntimeDefinition) -> Vec<String> {
     definition
         .acp_args
@@ -157,9 +177,80 @@ fn definition_args(definition: RuntimeDefinition) -> Vec<String> {
         .collect()
 }
 
+async fn run_acp_auth_handshake(
+    connection: &ConnectionTo<Agent>,
+    spec: &AcpProcessSpec,
+    initialize_response: &InitializeResponse,
+) -> Result<(), agent_client_protocol::Error> {
+    let Some(request) = acp_auth_handshake_request(spec, initialize_response)
+        .map_err(|message| agent_client_protocol::Error::internal_error().data(message))?
+    else {
+        return Ok(());
+    };
+
+    let mut authenticate = AuthenticateRequest::new(request.method_id);
+    if let Some(meta) = request.meta {
+        authenticate = authenticate.meta(meta);
+    }
+    connection.send_request(authenticate).block_task().await?;
+    Ok(())
+}
+
+#[derive(Debug)]
+struct AcpAuthHandshakeRequest {
+    method_id: String,
+    meta: Option<agent_client_protocol::schema::Meta>,
+}
+
+fn acp_auth_handshake_request(
+    spec: &AcpProcessSpec,
+    initialize_response: &InitializeResponse,
+) -> Result<Option<AcpAuthHandshakeRequest>, String> {
+    let Some(handshake) = spec.auth_handshake.as_ref() else {
+        return Ok(None);
+    };
+    let method_id = match spec.auth_credential_source.as_deref() {
+        Some("environment" | "comando-secret") => handshake.env_method_id.clone(),
+        Some("external-runtime") => handshake.external_method_id.clone(),
+        _ => match spec.auth_method.as_deref() {
+            Some("xai-api-key") => handshake.env_method_id.clone(),
+            Some("grok-login") => handshake.external_method_id.clone(),
+            Some(method) => {
+                return Err(format!(
+                    "{} auth method `{method}` cannot be used for the native ACP auth handshake.",
+                    spec.runtime_id
+                ));
+            }
+            None => return Ok(None),
+        },
+    };
+
+    if !initialize_response
+        .auth_methods
+        .iter()
+        .any(|method| method.id().0.as_ref() == method_id)
+    {
+        return Err(format!(
+            "{} ACP runtime did not advertise required auth method `{method_id}`.",
+            spec.runtime_id
+        ));
+    }
+
+    let meta = (!handshake.meta.is_empty()).then(|| {
+        handshake
+            .meta
+            .clone()
+            .into_iter()
+            .collect::<agent_client_protocol::schema::Meta>()
+    });
+    Ok(Some(AcpAuthHandshakeRequest { method_id, meta }))
+}
+
 #[derive(Debug, Clone)]
 pub struct AcpSessionController {
+    permission_waiters: PermissionWaiterMap,
     sender: tokio_mpsc::UnboundedSender<AcpSessionCommand>,
+    user_input_waiters: UserInputWaiterMap,
 }
 
 impl AcpSessionController {
@@ -180,7 +271,61 @@ impl AcpSessionController {
     }
 
     pub fn close(&self) {
+        self.cancel_pending_requests();
         let _ = self.sender.send(AcpSessionCommand::Close);
+    }
+
+    pub fn respond_permission(&self, input: NativeAiPermissionResponseInput) -> AiResult<()> {
+        let waiter = self
+            .permission_waiters
+            .lock()
+            .map_err(|error| {
+                AiError::Internal(format!("AI permission waiter lock failed: {error}"))
+            })?
+            .remove(&input.request_id)
+            .ok_or_else(|| AiError::PermissionNotFound {
+                request_id: input.request_id.clone(),
+            })?;
+        let outcome = input
+            .option_id
+            .filter(|option_id| !option_id.trim().is_empty())
+            .map(|option_id| {
+                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id))
+            })
+            .unwrap_or(RequestPermissionOutcome::Cancelled);
+        waiter.send(outcome).map_err(|_| AiError::RuntimeExited {
+            message: "The ACP permission request is no longer waiting.".to_string(),
+        })
+    }
+
+    pub fn respond_user_input(&self, input: NativeAiUserInputResponseInput) -> AiResult<()> {
+        let waiter = self
+            .user_input_waiters
+            .lock()
+            .map_err(|error| {
+                AiError::Internal(format!("AI user input waiter lock failed: {error}"))
+            })?
+            .remove(&input.request_id)
+            .ok_or_else(|| AiError::UserInputNotFound {
+                request_id: input.request_id.clone(),
+            })?;
+        let response = create_elicitation_response_from_input(input);
+        waiter.send(response).map_err(|_| AiError::RuntimeExited {
+            message: "The ACP user input request is no longer waiting.".to_string(),
+        })
+    }
+
+    pub fn cancel_pending_requests(&self) {
+        if let Ok(mut waiters) = self.permission_waiters.lock() {
+            for (_, waiter) in waiters.drain() {
+                let _ = waiter.send(RequestPermissionOutcome::Cancelled);
+            }
+        }
+        if let Ok(mut waiters) = self.user_input_waiters.lock() {
+            for (_, waiter) in waiters.drain() {
+                let _ = waiter.send(CreateElicitationResponse::new(ElicitationAction::Cancel));
+            }
+        }
     }
 }
 
@@ -204,8 +349,12 @@ pub fn start_acp_session(
     event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
 ) -> AiResult<(NativeAiSession, AcpSessionController)> {
     let (command_sender, command_receiver) = tokio_mpsc::unbounded_channel();
+    let permission_waiters = Arc::new(Mutex::new(HashMap::new()));
+    let user_input_waiters = Arc::new(Mutex::new(HashMap::new()));
     let controller = AcpSessionController {
+        permission_waiters: Arc::clone(&permission_waiters),
         sender: command_sender,
+        user_input_waiters: Arc::clone(&user_input_waiters),
     };
     let (started_sender, started_receiver) = oneshot::channel::<Result<RuntimeSessionId, String>>();
     let started_sender = Arc::new(Mutex::new(Some(started_sender)));
@@ -221,6 +370,8 @@ pub fn start_acp_session(
             event_sender,
             command_receiver,
             Arc::clone(&task_started_sender),
+            permission_waiters,
+            user_input_waiters,
         )
         .await;
         if let Err(error) = result {
@@ -246,6 +397,8 @@ async fn run_acp_session(
     event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
     mut command_receiver: tokio_mpsc::UnboundedReceiver<AcpSessionCommand>,
     started_sender: Arc<Mutex<Option<oneshot::Sender<Result<RuntimeSessionId, String>>>>>,
+    permission_waiters: PermissionWaiterMap,
+    user_input_waiters: UserInputWaiterMap,
 ) -> Result<(), String> {
     let mut command = Command::new(&spec.executable);
     command
@@ -277,6 +430,12 @@ async fn run_acp_session(
     let notification_context_for_handler = notification_context.clone();
     let permission_event_sender = event_sender.clone();
     let permission_session = session.clone();
+    let permission_sessions = Arc::clone(&sessions);
+    let permission_waiters_for_handler = Arc::clone(&permission_waiters);
+    let user_input_event_sender = event_sender.clone();
+    let user_input_session = session.clone();
+    let user_input_sessions = Arc::clone(&sessions);
+    let user_input_waiters_for_handler = Arc::clone(&user_input_waiters);
     let connect_result = Client
         .builder()
         .on_receive_notification(
@@ -288,38 +447,29 @@ async fn run_acp_session(
         )
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, _connection| {
-                if let Some(sender) = &permission_event_sender {
-                    let _ = sender.send(AiRuntimeEvent::new(
-                        AI_ERROR_EVENT,
-                        &NativeAiErrorPayload {
-                            session_id: Some(permission_session.session_id.clone()),
-                            runtime_id: Some(permission_session.runtime_id.clone()),
-                            message: "Native AI permission prompts are not supported in this rollout yet.".to_string(),
-                            recoverable: true,
-                            updated_at: now_iso8601(),
-                        },
-                    ));
-                }
-                let selected_reject = request
-                    .options
-                    .iter()
-                    .find(|option| {
-                        serde_json::to_value(&option.kind)
-                            .ok()
-                            .as_ref()
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|kind| kind.starts_with("reject"))
-                    })
-                    .map(|option| option.option_id.clone());
-                let response = selected_reject
-                    .map(|option_id| {
-                        RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
-                            SelectedPermissionOutcome::new(option_id),
-                        ))
-                    })
-                    .unwrap_or_else(|| {
-                        RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
-                    });
+                let outcome = handle_permission_request(
+                    request,
+                    &permission_session,
+                    &permission_sessions,
+                    permission_event_sender.as_ref(),
+                    &permission_waiters_for_handler,
+                )
+                .await;
+                let response = RequestPermissionResponse::new(outcome);
+                responder.respond(response)
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: CreateElicitationRequest, responder, _connection| {
+                let response = handle_user_input_request(
+                    request,
+                    &user_input_session,
+                    &user_input_sessions,
+                    user_input_event_sender.as_ref(),
+                    &user_input_waiters_for_handler,
+                )
+                .await;
                 responder.respond(response)
             },
             agent_client_protocol::on_receive_request!(),
@@ -331,10 +481,14 @@ async fn run_acp_session(
             let notification_context = notification_context.clone();
             let started_sender = Arc::clone(&started_sender);
             async move {
-                connection
-                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                let initialize_response = connection
+                    .send_request(
+                        InitializeRequest::new(ProtocolVersion::V1)
+                            .client_capabilities(acp_client_capabilities()),
+                    )
                     .block_task()
                     .await?;
+                run_acp_auth_handshake(&connection, &spec, &initialize_response).await?;
 
                 let new_session = NewSessionRequest::new(PathBuf::from(&session.scope.cwd))
                     .additional_directories(
@@ -461,6 +615,141 @@ async fn run_prompt(
     }
 }
 
+async fn handle_permission_request(
+    request: RequestPermissionRequest,
+    session: &NativeAiSession,
+    sessions: &Arc<Mutex<SessionRegistry>>,
+    event_sender: Option<&std_mpsc::SyncSender<AiRuntimeEvent>>,
+    waiters: &PermissionWaiterMap,
+) -> RequestPermissionOutcome {
+    let request_id = next_request_id("permission");
+    let runtime_session_id = RuntimeSessionId(request.session_id.to_string());
+    let title = request
+        .tool_call
+        .fields
+        .title
+        .clone()
+        .unwrap_or_else(|| "Permission required".to_string());
+    let tool_call_id = NativeToolCallId(request.tool_call.tool_call_id.to_string());
+    let options = request
+        .options
+        .iter()
+        .map(permission_option_payload)
+        .collect::<Vec<_>>();
+    let (sender, receiver) = oneshot::channel();
+    if waiters
+        .lock()
+        .map(|mut waiters| waiters.insert(request_id.clone(), sender))
+        .is_err()
+    {
+        emit_ai_error(
+            event_sender,
+            session,
+            "Native AI permission state is unavailable.",
+        );
+        return RequestPermissionOutcome::Cancelled;
+    }
+
+    emit_session_status(
+        sessions,
+        event_sender,
+        &session.session_id,
+        NativeAiSessionStatus::WaitingPermission,
+    );
+    emit_event(
+        event_sender,
+        AI_PERMISSION_REQUEST_EVENT,
+        &NativeAiPermissionRequestPayload {
+            base: crate::events::event_base(
+                &session.session_id,
+                &session.runtime_id,
+                Some(runtime_session_id.clone()),
+                now_iso8601(),
+            ),
+            request_id: request_id.clone(),
+            tool_call_id,
+            title,
+            description: None,
+            options,
+        },
+    );
+
+    let outcome = receiver
+        .await
+        .unwrap_or(RequestPermissionOutcome::Cancelled);
+    emit_session_status(
+        sessions,
+        event_sender,
+        &session.session_id,
+        NativeAiSessionStatus::Streaming,
+    );
+    outcome
+}
+
+async fn handle_user_input_request(
+    request: CreateElicitationRequest,
+    session: &NativeAiSession,
+    sessions: &Arc<Mutex<SessionRegistry>>,
+    event_sender: Option<&std_mpsc::SyncSender<AiRuntimeEvent>>,
+    waiters: &UserInputWaiterMap,
+) -> CreateElicitationResponse {
+    let ElicitationMode::Form(form) = &request.mode else {
+        return CreateElicitationResponse::new(ElicitationAction::Cancel);
+    };
+    let request_id = next_request_id("user-input");
+    let runtime_session_id = runtime_session_id_from_elicitation(&request)
+        .or_else(|| session.runtime_session_id.clone());
+    let questions = elicitation_questions(form);
+    let (sender, receiver) = oneshot::channel();
+    if waiters
+        .lock()
+        .map(|mut waiters| waiters.insert(request_id.clone(), sender))
+        .is_err()
+    {
+        emit_ai_error(
+            event_sender,
+            session,
+            "Native AI user input state is unavailable.",
+        );
+        return CreateElicitationResponse::new(ElicitationAction::Cancel);
+    }
+
+    emit_session_status(
+        sessions,
+        event_sender,
+        &session.session_id,
+        NativeAiSessionStatus::WaitingUserInput,
+    );
+    emit_event(
+        event_sender,
+        AI_USER_INPUT_REQUEST_EVENT,
+        &NativeAiUserInputRequestPayload {
+            base: crate::events::event_base(
+                &session.session_id,
+                &session.runtime_id,
+                runtime_session_id.clone(),
+                now_iso8601(),
+            ),
+            request_id: request_id.clone(),
+            title: request.message,
+            tool_call_id: NativeToolCallId(format!("elicitation:{request_id}")),
+            turn_id: None,
+            questions,
+        },
+    );
+
+    let response = receiver
+        .await
+        .unwrap_or_else(|_| CreateElicitationResponse::new(ElicitationAction::Cancel));
+    emit_session_status(
+        sessions,
+        event_sender,
+        &session.session_id,
+        NativeAiSessionStatus::Streaming,
+    );
+    response
+}
+
 async fn drain_stderr(stderr: tokio::process::ChildStderr) {
     let mut lines = BufReader::new(stderr).lines();
     while lines.next_line().await.ok().flatten().is_some() {}
@@ -470,23 +759,31 @@ fn mark_session_idle(
     sessions: &Arc<Mutex<SessionRegistry>>,
     session_id: &SessionId,
 ) -> Option<NativeAiSessionSummary> {
-    let mut sessions = sessions.lock().ok()?;
-    let session = sessions.get_mut(session_id).ok()?;
-    session.prompt_in_flight = false;
-    session.active_message_id = None;
-    session.set_status(NativeAiSessionStatus::Idle);
-    Some(session.session.summary())
+    mark_session_status(sessions, session_id, NativeAiSessionStatus::Idle)
 }
 
 fn mark_session_error(
     sessions: &Arc<Mutex<SessionRegistry>>,
     session_id: &SessionId,
 ) -> Option<NativeAiSessionSummary> {
+    mark_session_status(sessions, session_id, NativeAiSessionStatus::Error)
+}
+
+fn mark_session_status(
+    sessions: &Arc<Mutex<SessionRegistry>>,
+    session_id: &SessionId,
+    status: NativeAiSessionStatus,
+) -> Option<NativeAiSessionSummary> {
     let mut sessions = sessions.lock().ok()?;
     let session = sessions.get_mut(session_id).ok()?;
-    session.prompt_in_flight = false;
-    session.active_message_id = None;
-    session.set_status(NativeAiSessionStatus::Error);
+    if matches!(
+        status,
+        NativeAiSessionStatus::Idle | NativeAiSessionStatus::Error | NativeAiSessionStatus::Closed
+    ) {
+        session.prompt_in_flight = false;
+        session.active_message_id = None;
+    }
+    session.set_status(status);
     Some(session.session.summary())
 }
 
@@ -509,6 +806,278 @@ fn emit_event<T: serde::Serialize>(
     if let Some(sender) = sender {
         let _ = sender.send(AiRuntimeEvent::new(event_name, payload));
     }
+}
+
+fn emit_session_status(
+    sessions: &Arc<Mutex<SessionRegistry>>,
+    sender: Option<&std_mpsc::SyncSender<AiRuntimeEvent>>,
+    session_id: &SessionId,
+    status: NativeAiSessionStatus,
+) {
+    let summary = mark_session_status(sessions, session_id, status);
+    if let Some(summary) = summary.as_ref() {
+        emit_event(sender, AI_SESSION_UPDATED_EVENT, &session_updated(summary));
+    }
+}
+
+fn emit_ai_error(
+    sender: Option<&std_mpsc::SyncSender<AiRuntimeEvent>>,
+    session: &NativeAiSession,
+    message: impl Into<String>,
+) {
+    emit_event(
+        sender,
+        AI_ERROR_EVENT,
+        &NativeAiErrorPayload {
+            session_id: Some(session.session_id.clone()),
+            runtime_id: Some(session.runtime_id.clone()),
+            message: message.into(),
+            recoverable: true,
+            updated_at: now_iso8601(),
+        },
+    );
+}
+
+fn next_request_id(prefix: &str) -> String {
+    format!(
+        "{prefix}-{}",
+        REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn permission_option_payload(option: &PermissionOption) -> NativeAiPermissionOptionPayload {
+    NativeAiPermissionOptionPayload {
+        option_id: option.option_id.to_string(),
+        name: option.name.clone(),
+        kind: serde_label(&option.kind),
+    }
+}
+
+fn runtime_session_id_from_elicitation(
+    request: &CreateElicitationRequest,
+) -> Option<RuntimeSessionId> {
+    match request.mode.scope() {
+        agent_client_protocol::schema::ElicitationScope::Session(scope) => {
+            Some(RuntimeSessionId(scope.session_id.to_string()))
+        }
+        _ => None,
+    }
+}
+
+fn elicitation_questions(
+    form: &agent_client_protocol::schema::ElicitationFormMode,
+) -> Vec<NativeAiUserInputQuestionPayload> {
+    let questions = form
+        .requested_schema
+        .properties
+        .iter()
+        .map(|(id, property)| elicitation_question(id, property))
+        .collect::<Vec<_>>();
+
+    if questions.is_empty() {
+        return vec![NativeAiUserInputQuestionPayload {
+            id: "input".to_string(),
+            header: form
+                .requested_schema
+                .title
+                .clone()
+                .unwrap_or_else(|| "Input".to_string()),
+            question: form
+                .requested_schema
+                .description
+                .clone()
+                .unwrap_or_else(|| "Provide the requested input.".to_string()),
+            is_other: false,
+            is_secret: false,
+            options: Vec::new(),
+        }];
+    }
+
+    questions
+}
+
+fn elicitation_question(
+    id: &str,
+    property: &ElicitationPropertySchema,
+) -> NativeAiUserInputQuestionPayload {
+    let metadata = elicitation_property_metadata(id, property);
+    NativeAiUserInputQuestionPayload {
+        id: id.to_string(),
+        header: metadata.header,
+        question: metadata.question,
+        is_other: false,
+        is_secret: metadata.is_secret,
+        options: metadata.options,
+    }
+}
+
+struct ElicitationQuestionMetadata {
+    header: String,
+    question: String,
+    is_secret: bool,
+    options: Vec<NativeAiUserInputQuestionOptionPayload>,
+}
+
+fn elicitation_property_metadata(
+    id: &str,
+    property: &ElicitationPropertySchema,
+) -> ElicitationQuestionMetadata {
+    match property {
+        ElicitationPropertySchema::String(schema) => ElicitationQuestionMetadata {
+            header: schema.title.clone().unwrap_or_else(|| id.to_string()),
+            question: schema
+                .description
+                .clone()
+                .or_else(|| schema.title.clone())
+                .unwrap_or_else(|| id.to_string()),
+            is_secret: schema
+                .format
+                .as_ref()
+                .is_some_and(|format| serde_label(format).contains("password")),
+            options: string_property_options(schema),
+        },
+        ElicitationPropertySchema::Number(schema) => ElicitationQuestionMetadata {
+            header: schema.title.clone().unwrap_or_else(|| id.to_string()),
+            question: schema
+                .description
+                .clone()
+                .or_else(|| schema.title.clone())
+                .unwrap_or_else(|| id.to_string()),
+            is_secret: false,
+            options: Vec::new(),
+        },
+        ElicitationPropertySchema::Integer(schema) => ElicitationQuestionMetadata {
+            header: schema.title.clone().unwrap_or_else(|| id.to_string()),
+            question: schema
+                .description
+                .clone()
+                .or_else(|| schema.title.clone())
+                .unwrap_or_else(|| id.to_string()),
+            is_secret: false,
+            options: Vec::new(),
+        },
+        ElicitationPropertySchema::Boolean(schema) => ElicitationQuestionMetadata {
+            header: schema.title.clone().unwrap_or_else(|| id.to_string()),
+            question: schema
+                .description
+                .clone()
+                .or_else(|| schema.title.clone())
+                .unwrap_or_else(|| id.to_string()),
+            is_secret: false,
+            options: vec![
+                NativeAiUserInputQuestionOptionPayload {
+                    label: "true".to_string(),
+                    description: None,
+                },
+                NativeAiUserInputQuestionOptionPayload {
+                    label: "false".to_string(),
+                    description: None,
+                },
+            ],
+        },
+        ElicitationPropertySchema::Array(schema) => ElicitationQuestionMetadata {
+            header: schema.title.clone().unwrap_or_else(|| id.to_string()),
+            question: schema
+                .description
+                .clone()
+                .or_else(|| schema.title.clone())
+                .unwrap_or_else(|| id.to_string()),
+            is_secret: false,
+            options: multi_select_options(&schema.items),
+        },
+        _ => ElicitationQuestionMetadata {
+            header: id.to_string(),
+            question: id.to_string(),
+            is_secret: false,
+            options: Vec::new(),
+        },
+    }
+}
+
+fn string_property_options(
+    schema: &agent_client_protocol::schema::StringPropertySchema,
+) -> Vec<NativeAiUserInputQuestionOptionPayload> {
+    if let Some(options) = &schema.one_of {
+        return options
+            .iter()
+            .map(|option| NativeAiUserInputQuestionOptionPayload {
+                label: option.value.clone(),
+                description: Some(option.title.clone()),
+            })
+            .collect();
+    }
+
+    schema
+        .enum_values
+        .as_ref()
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| NativeAiUserInputQuestionOptionPayload {
+                    label: value.clone(),
+                    description: None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn multi_select_options(items: &MultiSelectItems) -> Vec<NativeAiUserInputQuestionOptionPayload> {
+    match items {
+        MultiSelectItems::Untitled(items) => items
+            .values
+            .iter()
+            .map(|value| NativeAiUserInputQuestionOptionPayload {
+                label: value.clone(),
+                description: None,
+            })
+            .collect(),
+        MultiSelectItems::Titled(items) => items
+            .options
+            .iter()
+            .map(|option| NativeAiUserInputQuestionOptionPayload {
+                label: option.value.clone(),
+                description: Some(option.title.clone()),
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn create_elicitation_response_from_input(
+    input: NativeAiUserInputResponseInput,
+) -> CreateElicitationResponse {
+    let mut content = BTreeMap::new();
+    for answer in input.answers {
+        let values = answer
+            .answers
+            .into_iter()
+            .filter(|value| !value.trim().is_empty())
+            .collect::<Vec<_>>();
+        match values.as_slice() {
+            [] => {}
+            [value] => {
+                content.insert(
+                    answer.question_id,
+                    ElicitationContentValue::String(value.clone()),
+                );
+            }
+            _ => {
+                content.insert(
+                    answer.question_id,
+                    ElicitationContentValue::StringArray(values),
+                );
+            }
+        }
+    }
+
+    if content.is_empty() {
+        return CreateElicitationResponse::new(ElicitationAction::Cancel);
+    }
+
+    CreateElicitationResponse::new(ElicitationAction::Accept(
+        ElicitationAcceptAction::new().content(content),
+    ))
 }
 
 fn stop_reason_label(reason: StopReason) -> &'static str {
@@ -820,8 +1389,22 @@ impl<T> MaybeUndefinedExt<T> for agent_client_protocol::schema::MaybeUndefined<T
 #[cfg(test)]
 mod tests {
     use super::*;
-    use comando_types::ai::{NativeAiDesiredSelections, NativeAiRuntimeStatus};
     use crate::runtime::RuntimeRegistry;
+    use comando_types::ai::{
+        NativeAiAuthHandshakeSpec, NativeAiDesiredSelections, NativeAiRuntimeStatus,
+        NativeAiUserInputAnswer,
+    };
+
+    fn initialize_response_with_auth(method_id: &str) -> InitializeResponse {
+        InitializeResponse::new(ProtocolVersion::V1).auth_methods(vec![
+            agent_client_protocol::schema::AuthMethod::Agent(
+                agent_client_protocol::schema::AuthMethodAgent::new(
+                    method_id.to_string(),
+                    method_id.to_string(),
+                ),
+            ),
+        ])
+    }
 
     fn ready_status(runtime_id: &str, command: &str) -> NativeAiRuntimeStatus {
         NativeAiRuntimeStatus {
@@ -937,6 +1520,113 @@ mod tests {
             AcpProcessSpec::from_launch(definition, &launch_spec("grok", "grok", vec!["agent"])),
             Err(AiError::RuntimeLaunchContextInvalid { .. })
         ));
+    }
+
+    #[test]
+    fn maps_user_input_answers_to_elicitation_accept_content() {
+        let response = create_elicitation_response_from_input(NativeAiUserInputResponseInput {
+            session_id: SessionId("s1".to_string()),
+            request_id: "user-input-1".to_string(),
+            answers: vec![
+                NativeAiUserInputAnswer {
+                    question_id: "branch".to_string(),
+                    answers: vec!["main".to_string()],
+                },
+                NativeAiUserInputAnswer {
+                    question_id: "checks".to_string(),
+                    answers: vec!["lint".to_string(), "test".to_string()],
+                },
+            ],
+        });
+
+        let ElicitationAction::Accept(action) = response.action else {
+            panic!("expected accepted elicitation response");
+        };
+        let content = action.content.unwrap();
+        assert_eq!(
+            content.get("branch"),
+            Some(&ElicitationContentValue::String("main".to_string()))
+        );
+        assert_eq!(
+            content.get("checks"),
+            Some(&ElicitationContentValue::StringArray(vec![
+                "lint".to_string(),
+                "test".to_string()
+            ]))
+        );
+    }
+
+    #[test]
+    fn maps_empty_user_input_to_elicitation_cancel() {
+        let response = create_elicitation_response_from_input(NativeAiUserInputResponseInput {
+            session_id: SessionId("s1".to_string()),
+            request_id: "user-input-1".to_string(),
+            answers: Vec::new(),
+        });
+
+        assert!(matches!(response.action, ElicitationAction::Cancel));
+    }
+
+    #[test]
+    fn grok_api_key_auth_uses_xai_api_key_handshake() {
+        let registry = RuntimeRegistry::default();
+        let definition = registry.get("grok").unwrap();
+        let mut launch = launch_spec("grok", "grok", vec!["--no-auto-update", "agent", "stdio"]);
+        launch.auth_method = Some("xai-api-key".to_string());
+        launch.auth_credential_source = Some("comando-secret".to_string());
+        launch.auth_handshake = Some(NativeAiAuthHandshakeSpec {
+            env_method_id: "xai.api_key".to_string(),
+            external_method_id: "cached_token".to_string(),
+            meta: BTreeMap::new(),
+        });
+        let spec = AcpProcessSpec::from_launch(definition, &launch).unwrap();
+        let request =
+            acp_auth_handshake_request(&spec, &initialize_response_with_auth("xai.api_key"))
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(request.method_id, "xai.api_key");
+    }
+
+    #[test]
+    fn grok_login_auth_uses_cached_token_handshake() {
+        let registry = RuntimeRegistry::default();
+        let definition = registry.get("grok").unwrap();
+        let mut launch = launch_spec("grok", "grok", vec!["--no-auto-update", "agent", "stdio"]);
+        launch.auth_method = Some("grok-login".to_string());
+        launch.auth_credential_source = Some("external-runtime".to_string());
+        launch.auth_handshake = Some(NativeAiAuthHandshakeSpec {
+            env_method_id: "xai.api_key".to_string(),
+            external_method_id: "cached_token".to_string(),
+            meta: BTreeMap::new(),
+        });
+        let spec = AcpProcessSpec::from_launch(definition, &launch).unwrap();
+        let request =
+            acp_auth_handshake_request(&spec, &initialize_response_with_auth("cached_token"))
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(request.method_id, "cached_token");
+    }
+
+    #[test]
+    fn auth_handshake_requires_advertised_method() {
+        let registry = RuntimeRegistry::default();
+        let definition = registry.get("grok").unwrap();
+        let mut launch = launch_spec("grok", "grok", vec!["--no-auto-update", "agent", "stdio"]);
+        launch.auth_method = Some("xai-api-key".to_string());
+        launch.auth_credential_source = Some("comando-secret".to_string());
+        launch.auth_handshake = Some(NativeAiAuthHandshakeSpec {
+            env_method_id: "xai.api_key".to_string(),
+            external_method_id: "cached_token".to_string(),
+            meta: BTreeMap::new(),
+        });
+        let spec = AcpProcessSpec::from_launch(definition, &launch).unwrap();
+        let error =
+            acp_auth_handshake_request(&spec, &initialize_response_with_auth("cached_token"))
+                .unwrap_err();
+
+        assert!(error.contains("xai.api_key"));
     }
 
     #[test]

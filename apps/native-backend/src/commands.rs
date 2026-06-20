@@ -1308,27 +1308,25 @@ impl NativeBackend {
                 }
             }
             "ai_respond_permission" => {
-                match parse_args::<native_ai::NativeAiPermissionResponseInput>(&request) {
-                    Ok(_input) => error_only(
-                        request.id,
-                        NativeError::new(
-                            NativeErrorCode::NotSupported,
-                            "Native permission responses are not implemented for this runtime yet.",
-                        ),
-                    ),
-                    Err(error) => error_only(request.id, error),
+                let input = match parse_args::<native_ai::NativeAiPermissionResponseInput>(&request)
+                {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_engine.respond_permission(input) {
+                    Ok(()) => response_only(request.id, json!({"ok": true})),
+                    Err(error) => error_only(request.id, error.to_native_error()),
                 }
             }
             "ai_respond_user_input" => {
-                match parse_args::<native_ai::NativeAiUserInputResponseInput>(&request) {
-                    Ok(_input) => error_only(
-                        request.id,
-                        NativeError::new(
-                            NativeErrorCode::NotSupported,
-                            "Native user input responses are not implemented for this runtime yet.",
-                        ),
-                    ),
-                    Err(error) => error_only(request.id, error),
+                let input = match parse_args::<native_ai::NativeAiUserInputResponseInput>(&request)
+                {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_engine.respond_user_input(input) {
+                    Ok(()) => response_only(request.id, json!({"ok": true})),
+                    Err(error) => error_only(request.id, error.to_native_error()),
                 }
             }
             command => CommandResult {
