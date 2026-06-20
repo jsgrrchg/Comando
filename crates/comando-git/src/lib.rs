@@ -8,6 +8,7 @@ pub mod repository;
 pub mod runner;
 pub mod snapshot;
 pub mod status;
+pub mod worktree_diff;
 pub mod worktrees;
 
 #[cfg(test)]
@@ -23,4 +24,5 @@ pub use repository::{GitRepositoryContext, resolve_repository};
 pub use runner::{GitCommandKind, GitOutput, GitRunOptions, GitRunner};
 pub use snapshot::get_repository_snapshot;
 pub use status::{get_status, parse_status_porcelain};
+pub use worktree_diff::list_worktree_diff;
 pub use worktrees::{list_worktrees, parse_worktree_porcelain};
