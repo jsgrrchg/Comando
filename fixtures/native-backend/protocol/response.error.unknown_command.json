@@ -1,0 +1,15 @@
+{
+  "type": "response",
+  "id": "req_missing",
+  "ok": false,
+  "error": {
+    "code": "unknown_command",
+    "message": "Unknown command: missing",
+    "details": null,
+    "retryable": false
+  },
+  "meta": {
+    "protocolVersion": 1,
+    "handledAt": "2026-06-20T00:00:00.010Z"
+  }
+}

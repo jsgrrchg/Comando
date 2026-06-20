@@ -41,3 +41,17 @@ export type NativeProjectUpdatedEvent = {
     readonly reason: string;
     readonly occurredAt: string;
 };
+
+export type NativeProjectTreeEntry = {
+    readonly id: string;
+    readonly projectId: NativeProjectId;
+    readonly worktreeId: NativeWorktreeId | null;
+    readonly name: string;
+    readonly relativePath: string;
+    readonly parentRelativePath: string | null;
+    readonly kind: string;
+    readonly extension: string | null;
+    readonly hasChildren: boolean;
+    readonly isGitIgnored: boolean;
+    readonly gitStatus: string | null;
+};

@@ -1,0 +1,14 @@
+{
+  "type": "event",
+  "eventName": "backend://test-event",
+  "payload": {
+    "message": "hello"
+  },
+  "meta": {
+    "protocolVersion": 1,
+    "emittedAt": "2026-06-20T00:00:00.010Z",
+    "projectId": null,
+    "worktreeId": null,
+    "windowId": null
+  }
+}

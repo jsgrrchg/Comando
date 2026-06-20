@@ -58,3 +58,19 @@ pub struct NativeProjectUpdatedEvent {
     pub reason: String,
     pub occurred_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectTreeEntry {
+    pub id: String,
+    pub project_id: NativeProjectId,
+    pub worktree_id: Option<NativeWorktreeId>,
+    pub name: String,
+    pub relative_path: String,
+    pub parent_relative_path: Option<String>,
+    pub kind: String,
+    pub extension: Option<String>,
+    pub has_children: bool,
+    pub is_git_ignored: bool,
+    pub git_status: Option<String>,
+}

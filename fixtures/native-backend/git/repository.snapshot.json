@@ -1,0 +1,57 @@
+{
+  "repositoryId": "repo_1",
+  "projectId": "project_1",
+  "currentWorktreeId": "worktree_1",
+  "repositoryState": "ready",
+  "rootPath": "/tmp/comando-project",
+  "canonicalRootPath": "/tmp/comando-project",
+  "branch": {
+    "name": "main",
+    "isCurrent": true,
+    "isRemote": false,
+    "isDetached": false,
+    "upstreamName": "origin/main",
+    "commitSha": "1111111111111111111111111111111111111111"
+  },
+  "remotes": [
+    {
+      "name": "origin",
+      "fetchUrl": "https://example.invalid/comando.git",
+      "pushUrl": "https://example.invalid/comando.git",
+      "isDefault": true
+    }
+  ],
+  "changes": [
+    {
+      "path": "src/main.ts",
+      "previousPath": null,
+      "scope": "unstaged",
+      "kind": "modified",
+      "isBinary": false,
+      "isConflicted": false,
+      "additions": 1,
+      "deletions": 0,
+      "worktreeId": "worktree_1"
+    }
+  ],
+  "status": {
+    "changedCount": 1,
+    "stagedCount": 0,
+    "unstagedCount": 1,
+    "untrackedCount": 0,
+    "conflictedCount": 0
+  },
+  "worktrees": [
+    {
+      "id": "worktree_1",
+      "projectId": "project_1",
+      "rootPath": "/tmp/comando-project",
+      "branchName": "main",
+      "commitSha": "1111111111111111111111111111111111111111",
+      "isPrimary": true,
+      "isCurrent": true,
+      "updatedAt": "2026-06-20T00:00:00.000Z"
+    }
+  ],
+  "updatedAt": "2026-06-20T00:00:00.000Z"
+}

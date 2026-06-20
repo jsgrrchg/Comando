@@ -1,0 +1,13 @@
+{
+  "type": "response",
+  "id": "req_1",
+  "ok": true,
+  "result": {
+    "pong": true,
+    "backend": "comando-native-backend"
+  },
+  "meta": {
+    "protocolVersion": 1,
+    "handledAt": "2026-06-20T00:00:00.010Z"
+  }
+}

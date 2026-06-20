@@ -1,0 +1,148 @@
+use std::fs;
+use std::path::PathBuf;
+
+use comando_types::ai::{
+    NativeAiMessageDeltaPayload, NativeAiSessionSummary, NativeAiToolActivityPayload,
+};
+use comando_types::capabilities::NativeBackendCapabilitiesOutput;
+use comando_types::commands::all_commands;
+use comando_types::error::NativeErrorCode;
+use comando_types::events::all_events;
+use comando_types::fs::NativeFsReadFileResult;
+use comando_types::git::{NativeGitFileDiff, NativeGitRepositorySnapshot};
+use comando_types::persistence::NativeWorkspaceSnapshotRef;
+use comando_types::projects::{NativeProjectSummary, NativeProjectTreeEntry};
+use comando_types::protocol::{NativeRpcOutput, NativeRpcRequest};
+use comando_types::terminal::{NativeTerminalDataEvent, NativeTerminalSession};
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+
+fn fixture_path(relative_path: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("fixtures/native-backend")
+        .join(relative_path)
+}
+
+fn fixture<T: DeserializeOwned>(relative_path: &str) -> T {
+    let path = fixture_path(relative_path);
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+    serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("failed to deserialize {}: {error}", path.display()))
+}
+
+#[test]
+fn protocol_envelope_fixtures_deserialize() {
+    let request: NativeRpcRequest = fixture("protocol/request.backend_ping.json");
+    assert_eq!(request.command, "backend_ping");
+    assert_eq!(
+        request.meta.as_ref().map(|meta| meta.protocol_version),
+        Some(1)
+    );
+
+    let response: NativeRpcOutput = fixture("protocol/response.backend_ping.json");
+    let NativeRpcOutput::Response(response) = response else {
+        panic!("expected response fixture");
+    };
+    assert!(response.ok);
+    assert_eq!(
+        response.meta.as_ref().map(|meta| meta.protocol_version),
+        Some(1)
+    );
+
+    let error: NativeRpcOutput = fixture("protocol/response.error.unknown_command.json");
+    let NativeRpcOutput::Response(error_response) = error else {
+        panic!("expected error response fixture");
+    };
+    assert_eq!(
+        error_response.error.map(|error| error.code),
+        Some(NativeErrorCode::UnknownCommand)
+    );
+
+    let event: NativeRpcOutput = fixture("protocol/event.backend_test.json");
+    let NativeRpcOutput::Event(event) = event else {
+        panic!("expected event fixture");
+    };
+    assert_eq!(event.event_name, "backend://test-event");
+}
+
+#[test]
+fn capability_and_registry_fixtures_match_rust_registries() {
+    let capabilities: NativeBackendCapabilitiesOutput = fixture("protocol/capabilities.v1.json");
+    let commands: Vec<String> = fixture("protocol/registry.commands.json");
+    let events: Vec<String> = fixture("protocol/registry.events.json");
+    let rust_commands: Vec<String> = all_commands().into_iter().map(str::to_string).collect();
+    let rust_events: Vec<String> = all_events().into_iter().map(str::to_string).collect();
+
+    assert_eq!(commands, rust_commands);
+    assert_eq!(events, rust_events);
+    assert_eq!(capabilities.capabilities.commands, commands);
+    assert_eq!(capabilities.capabilities.events, events);
+}
+
+#[test]
+fn ai_fixtures_deserialize() {
+    let message_delta: NativeRpcOutput = fixture("ai/event.message_delta.json");
+    let NativeRpcOutput::Event(message_delta) = message_delta else {
+        panic!("expected AI event fixture");
+    };
+    assert_eq!(message_delta.event_name, "ai://message-delta");
+    let payload: NativeAiMessageDeltaPayload =
+        serde_json::from_value(message_delta.payload).expect("payload should deserialize");
+    assert_eq!(payload.delta, "Hello");
+
+    let tool_activity: NativeRpcOutput = fixture("ai/event.tool_activity.json");
+    let NativeRpcOutput::Event(tool_activity) = tool_activity else {
+        panic!("expected AI tool event fixture");
+    };
+    let payload: NativeAiToolActivityPayload =
+        serde_json::from_value(tool_activity.payload).expect("payload should deserialize");
+    assert_eq!(payload.tool_call_id.0, "tool_1");
+
+    let summary: NativeAiSessionSummary = fixture("ai/session.summary.json");
+    assert_eq!(summary.session_id.0, "session_1");
+}
+
+#[test]
+fn local_domain_fixtures_deserialize() {
+    let project: NativeProjectSummary = fixture("projects/project.summary.json");
+    assert_eq!(project.id.0, "project_1");
+    let tree_entry: NativeProjectTreeEntry = fixture("projects/project.tree_entry.json");
+    assert_eq!(tree_entry.relative_path, "src/main.ts");
+
+    let text_file: NativeFsReadFileResult = fixture("fs/file.read_result.text.json");
+    assert!(!text_file.is_binary);
+    let binary_file: NativeFsReadFileResult = fixture("fs/file.read_result.binary.json");
+    assert!(binary_file.is_binary);
+    assert!(binary_file.is_too_large);
+
+    let git_snapshot: NativeGitRepositorySnapshot = fixture("git/repository.snapshot.json");
+    assert_eq!(git_snapshot.status.changed_count, 1);
+    let git_diff: NativeGitFileDiff = fixture("git/diff.file.json");
+    assert_eq!(git_diff.hunks.len(), 1);
+
+    let terminal: NativeTerminalSession = fixture("terminal/terminal.session.json");
+    assert_eq!(terminal.cols, 120);
+    let terminal_event: NativeTerminalDataEvent = fixture("terminal/terminal.data_event.json");
+    assert_eq!(terminal_event.data, "ready\n");
+
+    let workspace_ref: NativeWorkspaceSnapshotRef =
+        fixture("persistence/workspace.snapshot_ref.json");
+    assert_eq!(workspace_ref.storage_key, "workspace:workspace_1");
+}
+
+#[test]
+fn key_dtos_roundtrip_without_losing_required_fields() {
+    for relative_path in [
+        "projects/project.summary.json",
+        "fs/file.read_result.text.json",
+        "git/repository.snapshot.json",
+        "terminal/terminal.session.json",
+        "persistence/workspace.snapshot_ref.json",
+    ] {
+        let value: Value = fixture(relative_path);
+        let serialized = serde_json::to_value(&value).expect("fixture should serialize");
+        assert_eq!(serialized, value);
+    }
+}
