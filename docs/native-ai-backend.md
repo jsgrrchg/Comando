@@ -14,6 +14,60 @@ The relevant patterns are the native backend owning an AI session, a provider-ne
 
 Comando must not copy NeverWrite names, storage assumptions, vault filesystem policy, UI behavior, or complete review/history ownership in this slice.
 
+## PR 9 Baseline Audit
+
+The PR 9 audit rechecked the same local reference before expanding the runtime
+matrix:
+
+```text
+/Users/jfg/Documents/DEVELOPMENT/NeverWrite/apps/desktop/native-backend/src/ai.rs
+/Users/jfg/Documents/DEVELOPMENT/NeverWrite/apps/desktop/native-backend/src/main.rs
+/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/ai/src/domain.rs
+/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/ai/src/events.rs
+```
+
+Reusable reference patterns:
+
+- `RuntimeDefinition` stays declarative: runtime id, display name, binary/env
+  defaults, ACP args, protocol flavor, and capability metadata are data, not
+  branches inside the engine.
+- The ACP process spec is the boundary between TypeScript runtime setup/secrets
+  and Rust process/session ownership.
+- Permission and user-input requests are handled by Rust waiters once a session
+  is native-owned.
+- Grok keeps its provider-specific auth handshake and legacy ACP compatibility
+  behind runtime-specific launch/auth metadata.
+
+Current Comando baseline before PR 9:
+
+- `crates/comando-ai` is provider-neutral and already owns real OpenCode ACP
+  sessions through Rust.
+- The registry lists `codex`, `claude`, `opencode`, `kilo`, and `grok`, but
+  only `opencode` is marked `native_ready`.
+- `AiService` already records session ownership with `sessionId -> native |
+  legacy`; it must keep that invariant while expanding the matrix.
+- The native event adapter already maps the core stream/status/tool/plan/token
+  events used by the renderer.
+
+PR 9 gaps to close:
+
+- Enable the full runtime matrix under `COMANDO_NATIVE_AI_RUNTIMES` instead of
+  hardcoding OpenCode as the only accepted native runtime.
+- Formalize the native launch context so Rust can validate runtime id, command,
+  args, cwd, env, desired selections, persisted runtime session id, and auth
+  handshake hints before spawning.
+- Build `AcpProcessSpec` from that context and keep env diagnostics redacted.
+- Route permission/user-input responses to the native session owner instead of
+  returning `not_supported`.
+- Document smoke/rollback instructions for enabling or disabling individual
+  native runtimes.
+
+Baseline verification:
+
+```text
+cargo test -p comando-ai
+```
+
 ## PR 8 Scope
 
 This slice moves the first real AI session owner into Rust under feature flags:
