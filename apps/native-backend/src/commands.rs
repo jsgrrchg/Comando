@@ -1,17 +1,18 @@
+use comando_types::capabilities::{
+    BACKEND_NAME, NativeBackendCapabilitiesOutput, NativeBackendHandshakeInput,
+    NativeBackendHandshakeOutput, PROTOCOL_VERSION, RUST_VERSION, backend_capabilities,
+    bootstrap_capabilities, is_protocol_supported,
+};
+use comando_types::commands::{
+    BACKEND_CAPABILITIES, BACKEND_EMIT_TEST_EVENT, BACKEND_HANDSHAKE, BACKEND_PING,
+    BACKEND_SHUTDOWN,
+};
+use comando_types::error::{NativeError, NativeErrorCode};
+use comando_types::events::BACKEND_TEST_EVENT;
+use comando_types::ids::RequestId;
 use serde_json::{Value, json};
 
-use crate::protocol::{RpcOutput, RpcRequest, error_response, event, response_ok, rpc_error};
-
-pub const BACKEND_NAME: &str = "comando-native-backend";
-pub const PROTOCOL_VERSION: u32 = 1;
-pub const RUST_VERSION: &str = "1.96";
-pub const TEST_EVENT_NAME: &str = "backend://test-event";
-pub const COMMANDS: &[&str] = &[
-    "backend_ping",
-    "backend_capabilities",
-    "backend_shutdown",
-    "backend_emit_test_event",
-];
+use crate::protocol::{RpcOutput, RpcRequest, error_response, event, response_ok};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandResult {
@@ -21,20 +22,20 @@ pub struct CommandResult {
 
 pub fn handle_request(request: RpcRequest) -> CommandResult {
     match request.command.as_str() {
-        "backend_ping" => response_only(request.id, ping_payload()),
-        "backend_capabilities" => response_only(request.id, capabilities_payload()),
-        "backend_shutdown" => CommandResult {
+        BACKEND_PING => response_only(request.id, ping_payload()),
+        BACKEND_HANDSHAKE => handle_handshake(request),
+        BACKEND_CAPABILITIES => response_only(request.id, capabilities_payload()),
+        BACKEND_SHUTDOWN => CommandResult {
             outputs: vec![response_ok(request.id, json!({"accepted": true}))],
             should_shutdown: true,
         },
-        "backend_emit_test_event" => emit_test_event(request),
+        BACKEND_EMIT_TEST_EVENT => emit_test_event(request),
         command => CommandResult {
             outputs: vec![error_response(
-                request.id,
-                rpc_error(
-                    "unknown_command",
+                Some(request.id),
+                NativeError::new(
+                    NativeErrorCode::UnknownCommand,
                     format!("Unknown command: {command}"),
-                    None,
                 ),
             )],
             should_shutdown: false,
@@ -42,7 +43,7 @@ pub fn handle_request(request: RpcRequest) -> CommandResult {
     }
 }
 
-fn response_only(id: Value, payload: Value) -> CommandResult {
+fn response_only(id: RequestId, payload: Value) -> CommandResult {
     CommandResult {
         outputs: vec![response_ok(id, payload)],
         should_shutdown: false,
@@ -57,13 +58,71 @@ fn ping_payload() -> Value {
 }
 
 fn capabilities_payload() -> Value {
-    json!({
-        "protocolVersion": PROTOCOL_VERSION,
-        "backendVersion": env!("CARGO_PKG_VERSION"),
-        "rustVersion": RUST_VERSION,
-        "commands": COMMANDS,
-        "features": ["bootstrap"],
+    serde_json::to_value(NativeBackendCapabilitiesOutput {
+        backend_name: BACKEND_NAME.to_string(),
+        backend_version: env!("CARGO_PKG_VERSION").to_string(),
+        rust_version: RUST_VERSION.to_string(),
+        protocol_version: PROTOCOL_VERSION,
+        minimum_client_protocol_version: comando_types::MINIMUM_CLIENT_PROTOCOL_VERSION,
+        minimum_backend_protocol_version: comando_types::MINIMUM_BACKEND_PROTOCOL_VERSION,
+        capabilities: backend_capabilities(),
     })
+    .expect("capabilities should serialize")
+}
+
+fn handle_handshake(request: RpcRequest) -> CommandResult {
+    let input = match serde_json::from_value::<NativeBackendHandshakeInput>(request.args.clone()) {
+        Ok(input) => input,
+        Err(error) => {
+            return CommandResult {
+                outputs: vec![error_response(
+                    Some(request.id),
+                    NativeError::new(
+                        NativeErrorCode::InvalidArgs,
+                        format!("Invalid backend_handshake args: {error}"),
+                    ),
+                )],
+                should_shutdown: false,
+            };
+        }
+    };
+
+    if !is_protocol_supported(input.protocol_version)
+        || !input
+            .supported_protocol_versions
+            .contains(&PROTOCOL_VERSION)
+    {
+        return CommandResult {
+            outputs: vec![error_response(
+                Some(request.id),
+                NativeError::new(
+                    NativeErrorCode::UnsupportedProtocolVersion,
+                    format!(
+                        "Unsupported protocol version: client={} backend={}",
+                        input.protocol_version, PROTOCOL_VERSION
+                    ),
+                )
+                .with_details(json!({
+                    "clientProtocolVersion": input.protocol_version,
+                    "supportedProtocolVersions": input.supported_protocol_versions,
+                    "backendProtocolVersion": PROTOCOL_VERSION,
+                })),
+            )],
+            should_shutdown: false,
+        };
+    }
+
+    response_only(
+        request.id,
+        serde_json::to_value(NativeBackendHandshakeOutput {
+            backend_name: BACKEND_NAME.to_string(),
+            backend_version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: PROTOCOL_VERSION,
+            minimum_client_protocol_version: comando_types::MINIMUM_CLIENT_PROTOCOL_VERSION,
+            capabilities: bootstrap_capabilities(),
+        })
+        .expect("handshake should serialize"),
+    )
 }
 
 fn emit_test_event(request: RpcRequest) -> CommandResult {
@@ -76,7 +135,7 @@ fn emit_test_event(request: RpcRequest) -> CommandResult {
     CommandResult {
         outputs: vec![
             response_ok(request.id, json!({"emitted": true})),
-            event(TEST_EVENT_NAME, json!({"message": message})),
+            event(BACKEND_TEST_EVENT, json!({"message": message})),
         ],
         should_shutdown: false,
     }
@@ -87,13 +146,16 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use comando_types::ids::RequestId;
+
     use crate::protocol::{RpcOutput, RpcRequest};
 
     fn request(command: &str, args: Value) -> RpcRequest {
         RpcRequest {
-            id: json!(1),
+            id: RequestId::Number(1),
             command: command.to_string(),
             args,
+            meta: None,
         }
     }
 
@@ -104,7 +166,7 @@ mod tests {
         assert_eq!(
             result.outputs,
             vec![response_ok(
-                json!(1),
+                RequestId::Number(1),
                 json!({"pong": true, "backend": BACKEND_NAME})
             )]
         );
@@ -117,16 +179,7 @@ mod tests {
 
         assert_eq!(
             result.outputs,
-            vec![response_ok(
-                json!(1),
-                json!({
-                    "protocolVersion": 1,
-                    "backendVersion": "0.1.0",
-                    "rustVersion": "1.96",
-                    "commands": COMMANDS,
-                    "features": ["bootstrap"],
-                })
-            )]
+            vec![response_ok(RequestId::Number(1), capabilities_payload())]
         );
     }
 
@@ -140,11 +193,8 @@ mod tests {
         assert_eq!(
             result.outputs,
             vec![
-                response_ok(json!(1), json!({"emitted": true})),
-                RpcOutput::Event {
-                    event_name: TEST_EVENT_NAME.to_string(),
-                    payload: json!({"message": "hola"}),
-                },
+                response_ok(RequestId::Number(1), json!({"emitted": true})),
+                event(BACKEND_TEST_EVENT, json!({"message": "hola"})),
             ]
         );
     }
@@ -155,7 +205,7 @@ mod tests {
 
         assert_eq!(
             result.outputs,
-            vec![response_ok(json!(1), json!({"accepted": true}))]
+            vec![response_ok(RequestId::Number(1), json!({"accepted": true}))]
         );
         assert!(result.should_shutdown);
     }
@@ -163,19 +213,14 @@ mod tests {
     #[test]
     fn rejects_unknown_command() {
         let result = handle_request(request("backend_missing", json!({})));
-        let [
-            RpcOutput::Response {
-                ok, error, result, ..
-            },
-        ] = result.outputs.as_slice()
-        else {
+        let [RpcOutput::Response(response)] = result.outputs.as_slice() else {
             panic!("expected one response");
         };
 
-        assert!(!ok);
-        assert!(result.is_none());
+        assert!(!response.ok);
+        assert!(response.result.is_none());
         assert_eq!(
-            error.as_ref().map(|error| error.code.as_str()),
+            response.error.as_ref().map(|error| error.code.as_str()),
             Some("unknown_command")
         );
     }
