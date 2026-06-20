@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 comando-fs = { path = "../../crates/comando-fs" }
+comando-git = { path = "../../crates/comando-git" }
 comando-index = { path = "../../crates/comando-index" }
 comando-persistence = { path = "../../crates/comando-persistence" }
 comando-projects = { path = "../../crates/comando-projects" }
