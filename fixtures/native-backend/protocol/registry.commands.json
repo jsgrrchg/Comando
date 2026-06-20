@@ -70,6 +70,7 @@
   "terminal_resize",
   "terminal_kill",
   "terminal_close",
+  "terminal_close_window",
   "terminal_list",
   "settings_get_snapshot",
   "settings_save_snapshot",

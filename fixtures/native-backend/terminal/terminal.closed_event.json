@@ -1,5 +1,6 @@
 {
   "windowId": "window_main",
   "sessionId": "terminal_1",
-  "data": "ready\n"
+  "terminalId": "workspace-terminal-1",
+  "reason": "user"
 }

@@ -45,7 +45,16 @@ import type {
     NativeProjectSummary,
     NativeProjectTreeEntry,
 } from "./projects";
-import type { NativeTerminalDataEvent, NativeTerminalExitEvent } from "./terminal";
+import type {
+    NativeTerminalCloseInput,
+    NativeTerminalClosedEvent,
+    NativeTerminalCreateInput,
+    NativeTerminalCreatedEvent,
+    NativeTerminalDataEvent,
+    NativeTerminalErrorEvent,
+    NativeTerminalExitEvent,
+    NativeTerminalListResult,
+} from "./terminal";
 
 const fixtureRoot = path.join(process.cwd(), "fixtures", "native-backend");
 
@@ -294,6 +303,53 @@ describe("native backend fixtures", () => {
     });
 
     it("accepts terminal fixtures and adapters", () => {
+        expect(
+            fixture<NativeTerminalCreateInput>(
+                "terminal/terminal.create_input.json",
+            ),
+        ).toMatchObject({
+            launch: { kind: "shell" },
+            terminalId: "workspace-terminal-1",
+            windowId: "window_main",
+        });
+        expect(
+            fixture<NativeTerminalCreatedEvent>(
+                "terminal/terminal.created_event.json",
+            ).session,
+        ).toMatchObject({
+            launchedBy: "user",
+            program: "/bin/zsh",
+            purpose: "workspace",
+        });
+        expect(
+            fixture<NativeTerminalListResult>(
+                "terminal/terminal.list_result.json",
+            ).sessions,
+        ).toHaveLength(1);
+        expect(
+            fixture<NativeTerminalClosedEvent>(
+                "terminal/terminal.closed_event.json",
+            ),
+        ).toMatchObject({
+            reason: "user",
+            sessionId: "terminal_1",
+            windowId: "window_main",
+        });
+        expect(
+            fixture<NativeTerminalErrorEvent>(
+                "terminal/terminal.error_event.json",
+            ),
+        ).toMatchObject({
+            retryable: false,
+            terminalId: "workspace-terminal-1",
+        });
+        const closeInput: NativeTerminalCloseInput = {
+            id: "terminal_1",
+            reason: "user",
+            windowId: "window_main",
+        };
+        expect(closeInput.id).toBe("terminal_1");
+
         const event = fixture<NativeTerminalDataEvent>(
             "terminal/terminal.data_event.json",
         );
