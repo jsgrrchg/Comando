@@ -1,5 +1,6 @@
 import path from "node:path";
-import { spawn } from "node:child_process";
+import fs from "node:fs";
+import { execFile, spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 
 import {
@@ -29,6 +30,7 @@ import type {
     AiSessionSnapshot,
     AiToolActivity,
     AiSessionTranscriptPage,
+    AiTrackedFile,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiUserInputResponseInput,
@@ -207,6 +209,20 @@ type LiveSessionContext = {
     readonly sessionId: string;
     readonly worktreeId: string | null;
 };
+
+interface NativeReviewBaseline {
+    readonly cwd: string;
+    readonly files: ReadonlyMap<string, string | null>;
+}
+
+interface NativeGitStatusEntry {
+    readonly code: string;
+    readonly path: string;
+    readonly previousPath: string | null;
+}
+
+const NATIVE_REVIEW_MAX_FILE_BYTES = 5 * 1024 * 1024;
+const NATIVE_REVIEW_GIT_MAX_BUFFER = 16 * 1024 * 1024;
 
 const DEFAULT_AI_SCHEDULER_CONFIG: AiSchedulerConfig = {
     maxColdStartsGlobal: 3,
@@ -425,6 +441,8 @@ export class AiService {
         }
     >();
     #nativeAi: NativeAiGateway | null;
+    readonly #nativeReviewBaselines = new Map<string, NativeReviewBaseline>();
+    readonly #nativeReviewReconciliations = new Set<string>();
     readonly #nativeSessionIds = new Set<string>();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly #onSessionEvent: (
@@ -476,7 +494,11 @@ export class AiService {
 
     close(): void {
         this.#clearSessionRetentionTimer();
-        this.#nativeAi?.close();
+        void Promise.resolve(this.#nativeAi?.close()).catch((error: unknown) => {
+            debugBenignError("ai.service.close.native", error);
+        });
+        this.#nativeReviewBaselines.clear();
+        this.#nativeReviewReconciliations.clear();
         this.#nativeSessionIds.clear();
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
@@ -585,6 +607,18 @@ export class AiService {
                     nextSnapshot.runtimeId,
                     nextSnapshot.lastError,
                 );
+            }
+            if (
+                event.kind === "status" &&
+                (event.status === "idle" || event.status === "error") &&
+                this.#isNativeAiSession(event.sessionId)
+            ) {
+                void this.#reconcileNativeReviewFiles(
+                    event.sessionId,
+                    ownerWindowId,
+                ).catch((error: unknown) => {
+                    debugBenignError("ai.service.nativeReviewReconcile", error);
+                });
             }
         }
 
@@ -1057,6 +1091,10 @@ export class AiService {
                                 ownerWindowId,
                             );
                         }
+                        await this.#captureNativeReviewBaseline(
+                            input.sessionId,
+                            launch,
+                        );
                         return await nativeAi.sendPrompt({
                             input,
                             launch,
@@ -1066,6 +1104,7 @@ export class AiService {
                 void this.#enforceSessionRetention();
                 return result;
             } catch (error) {
+                this.#nativeReviewBaselines.delete(input.sessionId);
                 this.#nativeSessionIds.delete(input.sessionId);
                 this.#discardPreparedSessionContextOnFailure(
                     input.sessionId,
@@ -1779,6 +1818,8 @@ export class AiService {
         this.#liveSessionContexts.delete(sessionId);
         this.#liveSessionTouches.delete(sessionId);
         this.#freezingSessionIds.delete(sessionId);
+        this.#nativeReviewBaselines.delete(sessionId);
+        this.#nativeReviewReconciliations.delete(sessionId);
         this.#nativeSessionIds.delete(sessionId);
         this.#scheduleSessionRetentionTimer();
     }
@@ -2220,6 +2261,97 @@ export class AiService {
         }
 
         return base;
+    }
+
+    async #captureNativeReviewBaseline(
+        sessionId: string,
+        launch: AiWorkerSessionLaunchInput,
+    ): Promise<void> {
+        try {
+            const statusEntries = await listNativeGitStatusEntries(launch.cwd);
+            const files = new Map<string, string | null>();
+            for (const entry of statusEntries) {
+                if (!files.has(entry.path)) {
+                    files.set(
+                        entry.path,
+                        await readNativeReviewWorkingTreeText(
+                            launch.cwd,
+                            entry.path,
+                        ),
+                    );
+                }
+                if (entry.previousPath && !files.has(entry.previousPath)) {
+                    files.set(
+                        entry.previousPath,
+                        await readNativeReviewWorkingTreeText(
+                            launch.cwd,
+                            entry.previousPath,
+                        ),
+                    );
+                }
+            }
+
+            this.#nativeReviewBaselines.set(sessionId, {
+                cwd: launch.cwd,
+                files,
+            });
+        } catch (error) {
+            this.#nativeReviewBaselines.delete(sessionId);
+            debugBenignError("ai.service.nativeReviewBaseline", error);
+        }
+    }
+
+    async #reconcileNativeReviewFiles(
+        sessionId: string,
+        ownerWindowId: string,
+    ): Promise<void> {
+        const baseline = this.#nativeReviewBaselines.get(sessionId);
+        if (!baseline || this.#nativeReviewReconciliations.has(sessionId)) {
+            return;
+        }
+
+        this.#nativeReviewBaselines.delete(sessionId);
+        this.#nativeReviewReconciliations.add(sessionId);
+        try {
+            const snapshot = this.#liveSnapshots.get(sessionId);
+            if (!snapshot) {
+                return;
+            }
+
+            const trackedFiles = await buildNativeReviewTrackedFiles(
+                snapshot.sessionId,
+                baseline,
+            );
+            if (trackedFiles.length === 0) {
+                return;
+            }
+
+            let nextTrackedFiles = snapshot.trackedFiles;
+            for (const trackedFile of trackedFiles) {
+                nextTrackedFiles = upsertTrackedFile(
+                    nextTrackedFiles,
+                    trackedFile,
+                );
+            }
+            if (nextTrackedFiles === snapshot.trackedFiles) {
+                return;
+            }
+
+            const nextSnapshot = {
+                ...snapshot,
+                trackedFiles: nextTrackedFiles,
+                updatedAt: new Date().toISOString(),
+            };
+            this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+            this.#persistence.saveSessionSnapshot(nextSnapshot);
+            this.#onSessionSnapshot(
+                ownerWindowId,
+                buildAiSessionUpdate(snapshot, nextSnapshot),
+            );
+            void this.#enforceSessionRetention();
+        } finally {
+            this.#nativeReviewReconciliations.delete(sessionId);
+        }
     }
 
     async #reconcilePersistedTrackedFiles(
@@ -3211,6 +3343,270 @@ export class AiService {
             );
         }
     }
+}
+
+async function buildNativeReviewTrackedFiles(
+    sessionId: string,
+    baseline: NativeReviewBaseline,
+): Promise<readonly AiTrackedFile[]> {
+    const statusEntries = await listNativeGitStatusEntries(baseline.cwd);
+    const trackedFiles: AiTrackedFile[] = [];
+    const updatedAt = new Date().toISOString();
+
+    for (const entry of statusEntries) {
+        const deleted = isNativeGitDeleted(entry);
+        const currentText = deleted
+            ? null
+            : await readNativeReviewWorkingTreeText(
+                  baseline.cwd,
+                  entry.path,
+              );
+        if (!deleted && currentText === null) {
+            continue;
+        }
+
+        const baselineText = getNativeReviewBaselineText(baseline, entry);
+        const oldText = baselineText.known
+            ? baselineText.text
+            : await readNativeReviewHeadText(
+                  baseline.cwd,
+                  entry.previousPath ?? entry.path,
+              );
+        const previousPath =
+            entry.previousPath && entry.previousPath !== entry.path
+                ? entry.previousPath
+                : null;
+        if (
+            oldText === null &&
+            currentText === null &&
+            previousPath === null
+        ) {
+            continue;
+        }
+        if (
+            previousPath === null &&
+            oldText !== null &&
+            currentText !== null &&
+            oldText === currentText
+        ) {
+            continue;
+        }
+
+        const diffBase = oldText ?? "";
+        const currentReviewText = currentText ?? "";
+        const kind = inferNativeTrackedFileKind(
+            previousPath,
+            oldText,
+            currentText,
+        );
+
+        trackedFiles.push({
+            currentText: currentReviewText,
+            diffBase,
+            hunks: computeDiffHunks(diffBase, currentReviewText, entry.path),
+            identityKey: `native:${sessionId}:${previousPath ?? ""}:${entry.path}`,
+            isText: true,
+            kind,
+            newText: currentText,
+            oldText,
+            path: entry.path,
+            previousPath,
+            reviewState: "pending",
+            reversible: kind === "create" || oldText !== null,
+            sessionId,
+            toolCallId: null,
+            updatedAt,
+            version: 1,
+        });
+    }
+
+    return trackedFiles;
+}
+
+function getNativeReviewBaselineText(
+    baseline: NativeReviewBaseline,
+    entry: NativeGitStatusEntry,
+): {
+    readonly known: boolean;
+    readonly text: string | null;
+} {
+    if (baseline.files.has(entry.path)) {
+        return {
+            known: true,
+            text: baseline.files.get(entry.path) ?? null,
+        };
+    }
+
+    if (entry.previousPath && baseline.files.has(entry.previousPath)) {
+        return {
+            known: true,
+            text: baseline.files.get(entry.previousPath) ?? null,
+        };
+    }
+
+    return {
+        known: false,
+        text: null,
+    };
+}
+
+async function listNativeGitStatusEntries(
+    cwd: string,
+): Promise<readonly NativeGitStatusEntry[]> {
+    const output = await execNativeGit(cwd, [
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+    ]);
+
+    return parseNativeGitStatusOutput(output);
+}
+
+function parseNativeGitStatusOutput(
+    output: string,
+): readonly NativeGitStatusEntry[] {
+    const entries: NativeGitStatusEntry[] = [];
+    const tokens = output.split("\0");
+
+    for (let index = 0; index < tokens.length; index += 1) {
+        const token = tokens[index];
+        if (!token || token.length < 4 || token[2] !== " ") {
+            continue;
+        }
+
+        const code = token.slice(0, 2);
+        if (code === "!!") {
+            continue;
+        }
+
+        let entryPath = token.slice(3);
+        let previousPath: string | null = null;
+        if (code.includes("R") || code.includes("C")) {
+            const secondaryPath = tokens[index + 1];
+            if (secondaryPath) {
+                previousPath = secondaryPath;
+                index += 1;
+            } else {
+                const arrowIndex = entryPath.indexOf(" -> ");
+                if (arrowIndex >= 0) {
+                    previousPath = entryPath.slice(0, arrowIndex);
+                    entryPath = entryPath.slice(arrowIndex + 4);
+                }
+            }
+        }
+
+        if (entryPath.length === 0) {
+            continue;
+        }
+
+        entries.push({
+            code,
+            path: entryPath,
+            previousPath,
+        });
+    }
+
+    return entries;
+}
+
+async function readNativeReviewWorkingTreeText(
+    cwd: string,
+    relativePath: string,
+): Promise<string | null> {
+    const resolvedPath = resolveSessionScopedPath(cwd, relativePath);
+    if (!resolvedPath.insideRoot) {
+        return null;
+    }
+
+    const openBufferText = readOpenFileBuffer(resolvedPath.absolutePath);
+    if (openBufferText !== null) {
+        return isNativeReviewText(openBufferText) ? openBufferText : null;
+    }
+
+    try {
+        const stat = await fs.promises.stat(resolvedPath.absolutePath);
+        if (!stat.isFile() || stat.size > NATIVE_REVIEW_MAX_FILE_BYTES) {
+            return null;
+        }
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            return null;
+        }
+        throw error;
+    }
+
+    const text = await readTextIfExists(resolvedPath.absolutePath);
+    return text !== null && isNativeReviewText(text) ? text : null;
+}
+
+async function readNativeReviewHeadText(
+    cwd: string,
+    relativePath: string,
+): Promise<string | null> {
+    try {
+        const text = await execNativeGit(cwd, ["show", `HEAD:${relativePath}`]);
+        return isNativeReviewText(text) ? text : null;
+    } catch {
+        return null;
+    }
+}
+
+function execNativeGit(cwd: string, args: readonly string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+        execFile(
+            "git",
+            ["-C", cwd, ...args],
+            {
+                encoding: "utf8",
+                maxBuffer: NATIVE_REVIEW_GIT_MAX_BUFFER,
+            },
+            (error, stdout, stderr) => {
+                if (error) {
+                    reject(
+                        new Error(
+                            String(stderr || error.message || "git failed"),
+                            { cause: error },
+                        ),
+                    );
+                    return;
+                }
+
+                resolve(String(stdout));
+            },
+        );
+    });
+}
+
+function isNativeGitDeleted(entry: NativeGitStatusEntry): boolean {
+    return entry.code[0] === "D" || entry.code[1] === "D";
+}
+
+function inferNativeTrackedFileKind(
+    previousPath: string | null,
+    oldText: string | null,
+    newText: string | null,
+): AiTrackedFile["kind"] {
+    if (previousPath) {
+        return "move";
+    }
+
+    if (oldText === null) {
+        return "create";
+    }
+
+    if (newText === null) {
+        return "delete";
+    }
+
+    return "update";
+}
+
+function isNativeReviewText(text: string): boolean {
+    return (
+        text.length <= NATIVE_REVIEW_MAX_FILE_BYTES &&
+        !text.includes("\u0000")
+    );
 }
 
 function normalizeOptionalText(value: string | null): string | null {
