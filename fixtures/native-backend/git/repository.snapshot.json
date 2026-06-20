@@ -5,51 +5,170 @@
   "repositoryState": "ready",
   "rootPath": "/tmp/comando-project",
   "canonicalRootPath": "/tmp/comando-project",
+  "resolution": {
+    "inputPath": "/tmp/comando-project",
+    "canonicalRootPath": "/tmp/comando-project",
+    "gitDirPath": "/tmp/comando-project/.git",
+    "isBare": false,
+    "isWorkTree": true,
+    "message": null,
+    "state": "ready"
+  },
   "branch": {
     "name": "main",
+    "label": "main",
     "isCurrent": true,
     "isRemote": false,
     "isDetached": false,
+    "linkedWorkTree": false,
     "upstreamName": "origin/main",
-    "commitSha": "1111111111111111111111111111111111111111"
+    "commitSha": "1111111111111111111111111111111111111111",
+    "aheadBy": 1,
+    "behindBy": 0,
+    "worktreePath": null
   },
+  "branches": [
+    {
+      "name": "main",
+      "label": "main",
+      "isCurrent": true,
+      "isRemote": false,
+      "isDetached": false,
+      "linkedWorkTree": false,
+      "upstreamName": "origin/main",
+      "commitSha": "1111111111111111111111111111111111111111",
+      "aheadBy": 1,
+      "behindBy": 0,
+      "worktreePath": null
+    }
+  ],
   "remotes": [
     {
       "name": "origin",
       "fetchUrl": "https://example.invalid/comando.git",
       "pushUrl": "https://example.invalid/comando.git",
-      "isDefault": true
+      "isDefault": true,
+      "refName": "origin/main",
+      "aheadBy": 1,
+      "behindBy": 0
     }
   ],
   "changes": [
     {
+      "id": "git-change:src/main.ts",
       "path": "src/main.ts",
+      "name": "main.ts",
+      "parentRelativePath": "src",
       "previousPath": null,
+      "scopes": ["unstaged"],
       "scope": "unstaged",
       "kind": "modified",
+      "statusIndex": " ",
+      "statusWorkingDir": "M",
       "isBinary": false,
       "isConflicted": false,
+      "isRenamed": false,
       "additions": 1,
       "deletions": 0,
       "worktreeId": "worktree_1"
     }
   ],
   "status": {
-    "changedCount": 1,
-    "stagedCount": 0,
-    "unstagedCount": 1,
-    "untrackedCount": 0,
-    "conflictedCount": 0
+    "counts": {
+      "conflicted": 0,
+      "staged": 0,
+      "untracked": 0,
+      "unstaged": 1
+    },
+    "entries": [
+      {
+        "id": "git-change:src/main.ts",
+        "path": "src/main.ts",
+        "name": "main.ts",
+        "parentRelativePath": "src",
+        "previousPath": null,
+        "scopes": ["unstaged"],
+        "scope": "unstaged",
+        "kind": "modified",
+        "statusIndex": " ",
+        "statusWorkingDir": "M",
+        "isBinary": false,
+        "isConflicted": false,
+        "isRenamed": false,
+        "additions": 1,
+        "deletions": 0,
+        "worktreeId": "worktree_1"
+      }
+    ],
+    "hasConflicts": false,
+    "hasStaged": false,
+    "hasUnstaged": true,
+    "hasUntracked": false,
+    "isClean": false,
+    "summary": {
+      "changedCount": 1,
+      "stagedCount": 0,
+      "unstagedCount": 1,
+      "untrackedCount": 0,
+      "conflictedCount": 0
+    },
+    "sync": {
+      "ahead": 1,
+      "behind": 0,
+      "branchName": "main",
+      "commit": "1111111111111111111111111111111111111111",
+      "detached": false,
+      "trackingBranchName": "origin/main"
+    },
+    "tree": [
+      {
+        "id": "git-tree:src",
+        "changeEntryId": null,
+        "children": [
+          {
+            "id": "git-tree:src/main.ts",
+            "changeEntryId": "git-change:src/main.ts",
+            "children": [],
+            "counts": {
+              "conflicted": 0,
+              "staged": 0,
+              "untracked": 0,
+              "unstaged": 1
+            },
+            "kind": "file",
+            "name": "main.ts",
+            "parentRelativePath": "src",
+            "relativePath": "src/main.ts"
+          }
+        ],
+        "counts": {
+          "conflicted": 0,
+          "staged": 0,
+          "untracked": 0,
+          "unstaged": 1
+        },
+        "kind": "directory",
+        "name": "src",
+        "parentRelativePath": null,
+        "relativePath": "src"
+      }
+    ]
   },
   "worktrees": [
     {
       "id": "worktree_1",
       "projectId": "project_1",
       "rootPath": "/tmp/comando-project",
+      "canonicalPath": "/tmp/comando-project",
       "branchName": "main",
+      "branchRef": "refs/heads/main",
       "commitSha": "1111111111111111111111111111111111111111",
+      "detached": false,
       "isPrimary": true,
       "isCurrent": true,
+      "locked": false,
+      "lockReason": null,
+      "prunable": false,
       "updatedAt": "2026-06-20T00:00:00.000Z"
     }
   ],

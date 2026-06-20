@@ -1,0 +1,49 @@
+{
+  "counts": {
+    "conflicted": 0,
+    "staged": 0,
+    "untracked": 0,
+    "unstaged": 1
+  },
+  "entries": [
+    {
+      "id": "git-change:src/main.ts",
+      "path": "src/main.ts",
+      "name": "main.ts",
+      "parentRelativePath": "src",
+      "previousPath": null,
+      "scopes": ["unstaged"],
+      "scope": "unstaged",
+      "kind": "modified",
+      "statusIndex": " ",
+      "statusWorkingDir": "M",
+      "isBinary": false,
+      "isConflicted": false,
+      "isRenamed": false,
+      "additions": 1,
+      "deletions": 0,
+      "worktreeId": "worktree_1"
+    }
+  ],
+  "hasConflicts": false,
+  "hasStaged": false,
+  "hasUnstaged": true,
+  "hasUntracked": false,
+  "isClean": false,
+  "summary": {
+    "changedCount": 1,
+    "stagedCount": 0,
+    "unstagedCount": 1,
+    "untrackedCount": 0,
+    "conflictedCount": 0
+  },
+  "sync": {
+    "ahead": 1,
+    "behind": 0,
+    "branchName": "main",
+    "commit": "1111111111111111111111111111111111111111",
+    "detached": false,
+    "trackingBranchName": "origin/main"
+  },
+  "tree": []
+}

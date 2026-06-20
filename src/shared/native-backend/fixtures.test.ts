@@ -16,7 +16,23 @@ import {
     parseNativeBackendOutput,
 } from ".";
 import type { NativeAiRuntimeStatus } from "./ai";
-import type { NativeGitRepositorySnapshot } from "./git";
+import type {
+    NativeGitBranchSummary,
+    NativeGitChangeEntry,
+    NativeGitCommitDetail,
+    NativeGitDiffStatRecord,
+    NativeGitFileDiff,
+    NativeGitHistoryListResult,
+    NativeGitOperationResult,
+    NativeGitOriginalFile,
+    NativeGitRemoteSummary,
+    NativeGitRepositoryInvalidation,
+    NativeGitRepositoryResolution,
+    NativeGitRepositorySnapshot,
+    NativeGitStatusSnapshot,
+    NativeGitWorktreeDiffResult,
+    NativeGitWorktreeSummary,
+} from "./git";
 import type {
     NativeIndexedProjectEntry,
     NativeIndexStatusResult,
@@ -189,7 +205,57 @@ describe("native backend fixtures", () => {
         const snapshot = fixture<NativeGitRepositorySnapshot>(
             "git/repository.snapshot.json",
         );
-        expect(snapshot.status.changedCount).toBe(1);
+        expect(snapshot.status.summary.changedCount).toBe(1);
+        expect(
+            fixture<NativeGitRepositoryResolution>(
+                "git/repository.resolution.json",
+            ).state,
+        ).toBe("ready");
+        expect(
+            fixture<NativeGitStatusSnapshot>("git/status.snapshot.json").entries,
+        ).toHaveLength(1);
+        expect(
+            fixture<NativeGitChangeEntry>("git/change.entry.json").path,
+        ).toBe("src/main.ts");
+        expect(
+            fixture<NativeGitBranchSummary>("git/branch.summary.json").isCurrent,
+        ).toBe(true);
+        expect(
+            fixture<NativeGitRemoteSummary>("git/remote.summary.json").isDefault,
+        ).toBe(true);
+        expect(
+            fixture<NativeGitWorktreeSummary>("git/worktree.summary.json")
+                .isPrimary,
+        ).toBe(true);
+        expect(fixture<NativeGitDiffStatRecord>("git/diff.stat.json").key).toBe(
+            "unstaged:src/main.ts",
+        );
+        expect(
+            fixture<NativeGitFileDiff>("git/diff.file.json").summary.insertions,
+        ).toBe(1);
+        expect(
+            fixture<NativeGitOriginalFile>("git/original_file.json").isText,
+        ).toBe(true);
+        expect(
+            fixture<NativeGitHistoryListResult>("git/history.list.json")
+                .totalCount,
+        ).toBe(1);
+        expect(
+            fixture<NativeGitCommitDetail>("git/commit.detail.json")
+                .changedFileCount,
+        ).toBe(1);
+        expect(
+            fixture<NativeGitWorktreeDiffResult>("git/worktree.diff.json")
+                .sections,
+        ).toHaveLength(1);
+        expect(
+            fixture<NativeGitRepositoryInvalidation>(
+                "git/repository.invalidation.json",
+            ).reason,
+        ).toBe("status");
+        expect(
+            fixture<NativeGitOperationResult>("git/operation.result.json").ok,
+        ).toBe(true);
 
         const indexStatus = fixture<NativeIndexStatusResult>(
             "index/index.status.json",

@@ -91,6 +91,12 @@ pub fn backend_capabilities() -> NativeCapabilitySet {
             "native-index".to_string(),
             "native-path-search".to_string(),
             "native-search-cancel".to_string(),
+            "native-git".to_string(),
+            "native-git-diff".to_string(),
+            "native-git-history".to_string(),
+            "native-git-worktrees".to_string(),
+            "native-git-mutations".to_string(),
+            "native-git-network".to_string(),
         ],
     }
 }

@@ -9,7 +9,13 @@ use comando_types::commands::all_commands;
 use comando_types::error::NativeErrorCode;
 use comando_types::events::all_events;
 use comando_types::fs::NativeFsReadFileResult;
-use comando_types::git::{NativeGitFileDiff, NativeGitRepositorySnapshot};
+use comando_types::git::{
+    NativeGitBranchSummary, NativeGitChangeEntry, NativeGitCommitDetail, NativeGitDiffStatRecord,
+    NativeGitFileDiff, NativeGitHistoryListResult, NativeGitOperationResult, NativeGitOriginalFile,
+    NativeGitRemoteSummary, NativeGitRepositoryInvalidation, NativeGitRepositoryResolution,
+    NativeGitRepositorySnapshot, NativeGitStatusSnapshot, NativeGitWorktreeDiffResult,
+    NativeGitWorktreeSummary,
+};
 use comando_types::index::{
     NativeIndexStatusResult, NativeIndexedProjectEntry, NativeProjectEntrySearchResult,
     NativeSearchCancelled,
@@ -151,17 +157,42 @@ fn local_domain_fixtures_deserialize() {
     assert!(binary_file.is_binary);
     assert!(binary_file.is_too_large);
 
+    let git_resolution: NativeGitRepositoryResolution = fixture("git/repository.resolution.json");
+    assert_eq!(git_resolution.state, "ready");
     let git_snapshot: NativeGitRepositorySnapshot = fixture("git/repository.snapshot.json");
-    assert_eq!(git_snapshot.status.changed_count, 1);
+    assert_eq!(git_snapshot.status.summary.changed_count, 1);
+    let git_status: NativeGitStatusSnapshot = fixture("git/status.snapshot.json");
+    assert_eq!(git_status.entries.len(), 1);
+    let git_change: NativeGitChangeEntry = fixture("git/change.entry.json");
+    assert_eq!(git_change.path, "src/main.ts");
+    let git_branch: NativeGitBranchSummary = fixture("git/branch.summary.json");
+    assert!(git_branch.is_current);
+    let git_remote: NativeGitRemoteSummary = fixture("git/remote.summary.json");
+    assert!(git_remote.is_default);
+    let git_worktree: NativeGitWorktreeSummary = fixture("git/worktree.summary.json");
+    assert!(git_worktree.is_primary);
+    let git_stat: NativeGitDiffStatRecord = fixture("git/diff.stat.json");
+    assert_eq!(git_stat.key, "unstaged:src/main.ts");
     let git_diff: NativeGitFileDiff = fixture("git/diff.file.json");
     assert_eq!(git_diff.hunks.len(), 1);
+    let original_file: NativeGitOriginalFile = fixture("git/original_file.json");
+    assert!(original_file.is_text);
+    let history: NativeGitHistoryListResult = fixture("git/history.list.json");
+    assert_eq!(history.total_count, 1);
+    let commit_detail: NativeGitCommitDetail = fixture("git/commit.detail.json");
+    assert_eq!(commit_detail.changed_file_count, 1);
+    let worktree_diff: NativeGitWorktreeDiffResult = fixture("git/worktree.diff.json");
+    assert_eq!(worktree_diff.sections.len(), 1);
+    let invalidation: NativeGitRepositoryInvalidation = fixture("git/repository.invalidation.json");
+    assert_eq!(invalidation.reason, "status");
+    let operation: NativeGitOperationResult = fixture("git/operation.result.json");
+    assert!(operation.ok);
 
     let index_status: NativeIndexStatusResult = fixture("index/index.status.json");
     assert_eq!(index_status.generation, 3);
     let indexed_entry: NativeIndexedProjectEntry = fixture("index/indexed.entry.json");
     assert_eq!(indexed_entry.relative_path.0, "src/main.ts");
-    let search_result: NativeProjectEntrySearchResult =
-        fixture("index/search.entries_result.json");
+    let search_result: NativeProjectEntrySearchResult = fixture("index/search.entries_result.json");
     assert_eq!(search_result.entries.len(), 1);
     let cancelled: NativeSearchCancelled = fixture("index/search.cancelled.json");
     assert!(cancelled.cancelled);
@@ -193,8 +224,21 @@ fn key_dtos_roundtrip_without_losing_required_fields() {
     assert_typed_roundtrip::<NativeProjectTreeEntry>("projects/project.tree_entry.json");
     assert_typed_roundtrip::<NativeFsReadFileResult>("fs/file.read_result.text.json");
     assert_typed_roundtrip::<NativeFsReadFileResult>("fs/file.read_result.binary.json");
+    assert_typed_roundtrip::<NativeGitRepositoryResolution>("git/repository.resolution.json");
     assert_typed_roundtrip::<NativeGitRepositorySnapshot>("git/repository.snapshot.json");
+    assert_typed_roundtrip::<NativeGitStatusSnapshot>("git/status.snapshot.json");
+    assert_typed_roundtrip::<NativeGitChangeEntry>("git/change.entry.json");
+    assert_typed_roundtrip::<NativeGitBranchSummary>("git/branch.summary.json");
+    assert_typed_roundtrip::<NativeGitRemoteSummary>("git/remote.summary.json");
+    assert_typed_roundtrip::<NativeGitWorktreeSummary>("git/worktree.summary.json");
+    assert_typed_roundtrip::<NativeGitDiffStatRecord>("git/diff.stat.json");
     assert_typed_roundtrip::<NativeGitFileDiff>("git/diff.file.json");
+    assert_typed_roundtrip::<NativeGitOriginalFile>("git/original_file.json");
+    assert_typed_roundtrip::<NativeGitHistoryListResult>("git/history.list.json");
+    assert_typed_roundtrip::<NativeGitCommitDetail>("git/commit.detail.json");
+    assert_typed_roundtrip::<NativeGitWorktreeDiffResult>("git/worktree.diff.json");
+    assert_typed_roundtrip::<NativeGitRepositoryInvalidation>("git/repository.invalidation.json");
+    assert_typed_roundtrip::<NativeGitOperationResult>("git/operation.result.json");
     assert_typed_roundtrip::<NativeIndexStatusResult>("index/index.status.json");
     assert_typed_roundtrip::<NativeIndexedProjectEntry>("index/indexed.entry.json");
     assert_typed_roundtrip::<NativeProjectEntrySearchResult>("index/search.entries_result.json");
