@@ -167,6 +167,22 @@ describe("NativeFsGateway", () => {
             name: "ProjectFileConflictError",
         });
     });
+
+    it("rejects truncated native project entry listings", async () => {
+        const requestMock = vi.fn(async () => ({
+            entries: [],
+            truncated: true,
+        }));
+        const gateway = gatewayWith(requestMock);
+
+        await expect(
+            gateway.listProjectEntries({
+                projectId: "project-1",
+                rootPath: "/tmp/project",
+                worktreeId: null,
+            }),
+        ).rejects.toThrow("Native project entry listing was truncated");
+    });
 });
 
 function gatewayWith(

@@ -126,16 +126,16 @@ impl ProjectFsService {
         }
     }
 
-    pub fn sync_state(&mut self, state: NativeProjectState) -> Result<(), FsError> {
+    pub fn sync_state(&mut self, state: NativeProjectState) {
         self.registry.sync_state(state);
-        self.watcher.sync_roots(self.registry.roots())?;
-        Ok(())
     }
 
-    pub fn sync_list_result(&mut self, state: NativeProjectListResult) -> Result<(), FsError> {
+    pub fn sync_list_result(&mut self, state: NativeProjectListResult) {
         self.registry.sync_list_result(state);
-        self.watcher.sync_roots(self.registry.roots())?;
-        Ok(())
+    }
+
+    pub fn sync_watchers_from_registry(&mut self) -> Result<(), FsError> {
+        self.watcher.sync_roots(self.registry.roots())
     }
 
     pub fn resolve_root(
@@ -156,6 +156,17 @@ impl ProjectFsService {
 
     pub fn drain_watchers(&mut self, force: bool) -> WatcherDrain {
         self.watcher.drain(force)
+    }
+
+    #[cfg(feature = "test-hooks")]
+    pub fn queue_test_invalidation_after_delay(
+        &self,
+        root: ProjectRoot,
+        relative_path: String,
+        delay: std::time::Duration,
+    ) {
+        self.watcher
+            .queue_test_invalidation_after_delay(root, relative_path, delay);
     }
 }
 

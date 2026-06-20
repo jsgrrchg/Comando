@@ -106,7 +106,9 @@ impl WatcherRegistry {
         let mut pending = self.pending.lock().expect("watch pending lock");
         let ready_keys = pending
             .iter()
-            .filter(|(_, pending)| force || now.duration_since(pending.last_event_at) >= WATCH_DEBOUNCE)
+            .filter(|(_, pending)| {
+                force || now.duration_since(pending.last_event_at) >= WATCH_DEBOUNCE
+            })
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
 
@@ -145,26 +147,42 @@ impl WatcherRegistry {
         let root_for_callback = root.clone();
         let key_for_callback = key.clone();
 
-        let mut watcher = notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
-            let Ok(event) = result else {
-                return;
-            };
+        let mut watcher =
+            notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
+                let Ok(event) = result else {
+                    return;
+                };
 
-            handle_notify_event(
-                &key_for_callback,
-                &root_for_callback,
-                &watch_root,
-                &write_tracker,
-                &pending,
-                &fs_events,
-                event,
-            );
-        })?;
+                handle_notify_event(
+                    &key_for_callback,
+                    &root_for_callback,
+                    &watch_root,
+                    &write_tracker,
+                    &pending,
+                    &fs_events,
+                    event,
+                );
+            })?;
         watcher.watch(&root.root_path, RecursiveMode::Recursive)?;
 
         self.roots.insert(key.clone(), root);
         self.watchers.insert(key, watcher);
         Ok(())
+    }
+
+    #[cfg(feature = "test-hooks")]
+    pub fn queue_test_invalidation_after_delay(
+        &self,
+        root: ProjectRoot,
+        relative_path: String,
+        delay: Duration,
+    ) {
+        let pending = Arc::clone(&self.pending);
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            let key = watch_key(&root);
+            record_pending_invalidation(&key, &root, &relative_path, &pending);
+        });
     }
 }
 
@@ -204,7 +222,9 @@ fn handle_notify_event(
             continue;
         }
 
-        let current_hash = std::fs::read(&absolute_path).ok().map(|bytes| hash_bytes(&bytes));
+        let current_hash = std::fs::read(&absolute_path)
+            .ok()
+            .map(|bytes| hash_bytes(&bytes));
         if write_tracker.has_recent_match(&absolute_path, current_hash) {
             continue;
         }
@@ -259,9 +279,9 @@ fn event_name_for_kind(kind: &EventKind) -> &'static str {
     match kind {
         EventKind::Create(_) => "fs://entry-created",
         EventKind::Remove(_) => "fs://entry-deleted",
-        EventKind::Modify(ModifyKind::Name(RenameMode::Both | RenameMode::From | RenameMode::To)) => {
-            "fs://entry-renamed"
-        }
+        EventKind::Modify(ModifyKind::Name(
+            RenameMode::Both | RenameMode::From | RenameMode::To,
+        )) => "fs://entry-renamed",
         EventKind::Modify(_) => "fs://entry-updated",
         _ => "fs://entry-updated",
     }
@@ -305,20 +325,28 @@ mod tests {
         let root = project_root(temp.path());
         let mut watchers = WatcherRegistry::new();
 
-        record_pending_invalidation("project_1:project_1:primary", &root, "a.txt", &watchers.pending);
-        record_pending_invalidation("project_1:project_1:primary", &root, "b.txt", &watchers.pending);
+        record_pending_invalidation(
+            "project_1:project_1:primary",
+            &root,
+            "a.txt",
+            &watchers.pending,
+        );
+        record_pending_invalidation(
+            "project_1:project_1:primary",
+            &root,
+            "b.txt",
+            &watchers.pending,
+        );
         thread::sleep(Duration::from_millis(160));
 
         let drain = watchers.drain(false);
-        assert!(
-            drain
-                .invalidations
-                .iter()
-                .any(|invalidation| invalidation.relative_paths.as_ref().is_some_and(|paths| {
-                    let values = paths.iter().map(|path| path.0.as_str()).collect::<Vec<_>>();
-                    values.contains(&"a.txt") || values.contains(&"b.txt")
-                }))
-        );
+        assert!(drain.invalidations.iter().any(|invalidation| invalidation
+            .relative_paths
+            .as_ref()
+            .is_some_and(|paths| {
+                let values = paths.iter().map(|path| path.0.as_str()).collect::<Vec<_>>();
+                values.contains(&"a.txt") || values.contains(&"b.txt")
+            })));
     }
 
     #[test]
@@ -339,5 +367,4 @@ mod tests {
         let drain = watchers.drain(true);
         assert!(drain.invalidations.is_empty());
     }
-
 }

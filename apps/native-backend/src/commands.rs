@@ -1,10 +1,10 @@
 use comando_fs::{FsError, ProjectFsService};
-use comando_persistence::{NativeStorageConfig, SqlitePersistenceStore, closed_storage_health};
+use comando_persistence::{closed_storage_health, NativeStorageConfig, SqlitePersistenceStore};
 use comando_projects::{ProjectRegistry, ProjectRegistryError};
 use comando_types::capabilities::{
-    BACKEND_NAME, NativeBackendCapabilitiesOutput, NativeBackendHandshakeInput,
-    NativeBackendHandshakeOutput, PROTOCOL_VERSION, RUST_VERSION, backend_capabilities,
-    bootstrap_capabilities, negotiate_protocol_version,
+    backend_capabilities, bootstrap_capabilities, negotiate_protocol_version,
+    NativeBackendCapabilitiesOutput, NativeBackendHandshakeInput, NativeBackendHandshakeOutput,
+    BACKEND_NAME, PROTOCOL_VERSION, RUST_VERSION,
 };
 use comando_types::commands::{
     BACKEND_CAPABILITIES, BACKEND_EMIT_TEST_EVENT, BACKEND_HANDSHAKE, BACKEND_PING,
@@ -20,9 +20,9 @@ use comando_types::persistence::{
 use comando_types::projects::{NativeProjectAddInput, NativeProjectState};
 use comando_types::{fs as native_fs, projects as native_projects};
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use crate::protocol::{RpcOutput, RpcRequest, error_response, event, response_ok};
+use crate::protocol::{error_response, event, response_ok, RpcOutput, RpcRequest};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandResult {
@@ -72,6 +72,8 @@ impl NativeBackend {
             "fs_watch_start" => self.watch_start(request),
             "fs_watch_stop" => self.watch_stop(request),
             "fs_watch_sync_registry" => self.watch_sync_registry(request),
+            #[cfg(test)]
+            "backend_queue_test_fs_event" => self.queue_test_fs_event(request),
             command => CommandResult {
                 outputs: vec![error_response(
                     Some(request.id),
@@ -209,7 +211,7 @@ impl NativeBackend {
         let mut registry = ProjectRegistry::new(store.connection_mut());
         match registry.add_project_paths(&input.project_paths) {
             Ok(result) => {
-                let _ = self.fs_service.sync_state(result.state.clone());
+                self.fs_service.sync_state(result.state.clone());
                 let occurred_at = comando_persistence::store::now_rfc3339();
                 let mut outputs = vec![response_ok(
                     request.id,
@@ -317,7 +319,11 @@ impl NativeBackend {
                     request.id,
                     serde_json::to_value(result).expect("write file serializes"),
                 )];
-                outputs.push(tree_invalidation_event(project_id, worktree_id, vec![relative_path]));
+                outputs.push(tree_invalidation_event(
+                    project_id,
+                    worktree_id,
+                    vec![relative_path],
+                ));
                 CommandResult {
                     outputs,
                     should_shutdown: false,
@@ -418,7 +424,9 @@ impl NativeBackend {
         };
 
         match self.fs_service.copy_entries(&input) {
-            Ok(result) => mutation_list_response(request.id, input.project_id, input.worktree_id, result),
+            Ok(result) => {
+                mutation_list_response(request.id, input.project_id, input.worktree_id, result)
+            }
             Err(error) => error_only(request.id, fs_error(error)),
         }
     }
@@ -433,7 +441,9 @@ impl NativeBackend {
         };
 
         match self.fs_service.copy_external_entries(&input) {
-            Ok(result) => mutation_list_response(request.id, input.project_id, input.worktree_id, result),
+            Ok(result) => {
+                mutation_list_response(request.id, input.project_id, input.worktree_id, result)
+            }
             Err(error) => error_only(request.id, fs_error(error)),
         }
     }
@@ -569,7 +579,11 @@ impl NativeBackend {
     }
 
     fn watch_sync_registry(&mut self, request: RpcRequest) -> CommandResult {
-        let state = if request.args.as_object().is_some_and(|args| args.contains_key("projects")) {
+        let state = if request
+            .args
+            .as_object()
+            .is_some_and(|args| args.contains_key("projects"))
+        {
             match parse_args::<native_fs::NativeFsWatchSyncRegistryInput>(&request) {
                 Ok(input) => NativeProjectState {
                     projects: input.projects,
@@ -584,7 +598,8 @@ impl NativeBackend {
             }
         };
 
-        match self.fs_service.sync_state(state) {
+        self.fs_service.sync_state(state);
+        match self.fs_service.sync_watchers_from_registry() {
             Ok(()) => response_only(request.id, json!({"synced": true})),
             Err(error) => error_only(request.id, fs_error(error)),
         }
@@ -592,20 +607,16 @@ impl NativeBackend {
 
     fn sync_fs_registry_from_store(&mut self) -> Result<NativeProjectState, NativeError> {
         let state = self.load_project_state_from_store()?;
-        self.fs_service
-            .sync_state(state.clone())
-            .map_err(|error| fs_error(error))?;
+        self.fs_service.sync_state(state.clone());
         Ok(state)
     }
 
     fn load_project_state_from_store(&mut self) -> Result<NativeProjectState, NativeError> {
         let Some(store) = self.persistence_store.as_mut() else {
-            return Err(
-                NativeError::new(
-                    NativeErrorCode::BackendNotReady,
-                    "Native persistence store has not been opened.",
-                ),
-            );
+            return Err(NativeError::new(
+                NativeErrorCode::BackendNotReady,
+                "Native persistence store has not been opened.",
+            ));
         };
         let mut registry = ProjectRegistry::new(store.connection_mut());
         registry
@@ -617,7 +628,7 @@ impl NativeBackend {
             .map_err(project_error)
     }
 
-    fn drain_fs_events(&mut self, force: bool) -> Vec<RpcOutput> {
+    pub(crate) fn drain_fs_events(&mut self, force: bool) -> Vec<RpcOutput> {
         let drain = self.fs_service.drain_watchers(force);
         let mut outputs = Vec::new();
         for invalidation in drain.invalidations {
@@ -633,6 +644,21 @@ impl NativeBackend {
             ));
         }
         outputs
+    }
+
+    #[cfg(test)]
+    fn queue_test_fs_event(&mut self, request: RpcRequest) -> CommandResult {
+        self.fs_service.queue_test_invalidation_after_delay(
+            comando_fs::ProjectRoot {
+                project_id: "project_test".into(),
+                worktree_id: Some("project_test:primary".into()),
+                root_path: "/tmp/project-test".into(),
+            },
+            "src/idle.txt".to_string(),
+            std::time::Duration::from_millis(200),
+        );
+
+        response_only(request.id, json!({"queued": true}))
     }
 }
 
@@ -831,7 +857,7 @@ mod tests {
     use std::fs;
 
     use rusqlite::Connection;
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
     use tempfile::TempDir;
 
     use super::*;
@@ -1084,20 +1110,16 @@ mod tests {
         let response = only_response(&add_result);
         let error = response.error.as_ref().expect("native error");
 
-        assert!(
-            !error
-                .message
-                .contains(temp_dir.path().to_string_lossy().as_ref())
-        );
+        assert!(!error
+            .message
+            .contains(temp_dir.path().to_string_lossy().as_ref()));
         assert!(!error.message.contains("missing-project"));
-        assert!(
-            error
-                .details
-                .as_ref()
-                .and_then(|details| details.get("path"))
-                .and_then(Value::as_str)
-                .is_some_and(|path| path.contains("<redacted>"))
-        );
+        assert!(error
+            .details
+            .as_ref()
+            .and_then(|details| details.get("path"))
+            .and_then(Value::as_str)
+            .is_some_and(|path| path.contains("<redacted>")));
     }
 
     #[test]

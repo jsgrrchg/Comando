@@ -975,6 +975,20 @@ describe("ProjectService", () => {
             }),
         );
     });
+
+    it("fails explicitly when filesystem write mode has no native sidecar", () => {
+        const connection = createTestConnection();
+
+        expect(() => {
+            createProjectService(connection, undefined, {
+                env: {
+                    [NATIVE_FS_ENABLED_ENV]: "1",
+                    [NATIVE_FS_MODE_ENV]: "write",
+                },
+                nativeFs: null,
+            });
+        }).toThrow("Native filesystem write mode requires");
+    });
 });
 
 function createTestConnection() {

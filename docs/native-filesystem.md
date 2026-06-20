@@ -6,9 +6,9 @@ selected by feature flags.
 
 ## Scope
 
-- Native Rust owns project tree listing, file reads, writes, create, rename,
-  delete, copy, external copy, basic entry listing, watcher lifecycle, write
-  tracking, and coalesced invalidations.
+- Native Rust owns project tree child listing, file reads, writes, create,
+  rename, delete, copy, external copy, bounded diagnostic entry listing,
+  watcher lifecycle, write tracking, and coalesced invalidations.
 - Advanced search/indexing, real git status/diff, terminal, AI, and review
   workflows stay on the existing TypeScript paths.
 - With all native filesystem flags off, the existing TypeScript runtime remains
@@ -18,8 +18,9 @@ selected by feature flags.
 
 - `COMANDO_NATIVE_FS_MODE=shadow`: TypeScript serves the UI. Native may observe
   or run diagnostics, but does not write and does not replace visible UX.
-- `COMANDO_NATIVE_FS_MODE=read`: Native serves tree/file reads and basic entry
-  listing. Mutations remain on the legacy TypeScript path.
+- `COMANDO_NATIVE_FS_MODE=read`: Native serves tree/file reads. Complete entry
+  listing and search remain on the legacy TypeScript path until the indexing
+  migration.
 - `COMANDO_NATIVE_FS_MODE=write`: Native serves tree/file reads and filesystem
   mutations routed through `ProjectService`. Writes must not fall back silently.
 
@@ -30,6 +31,7 @@ If `COMANDO_NATIVE_FS=1` is set without an explicit mode, the mode is `shadow`.
 | Current TypeScript behavior | Native PR 4 behavior |
 | --- | --- |
 | `ProjectRuntime.listProjectTreeChildren` | `project_list_tree_children`, adapted to `ProjectTreeNode` |
+| `ProjectRuntime.listProjectEntries` | Legacy TypeScript until the native index/search migration; `project_list_entries` is bounded and diagnostic only |
 | `ProjectRuntime.openProjectFile` | `fs_read_file`, adapted to `ProjectFileDocument` |
 | `ProjectRuntime.saveProjectFile` | `fs_write_file` in write mode only |
 | `ProjectRuntime.createProjectEntry` | `fs_create_file` / `fs_create_directory` in write mode only |

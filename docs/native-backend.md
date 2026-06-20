@@ -34,13 +34,14 @@ owned by the existing TypeScript path.
 - `COMANDO_NATIVE_FS=1` enables native filesystem routing. With no mode set, it
   runs in `shadow`.
 - `COMANDO_NATIVE_FS_MODE=shadow` keeps the TypeScript filesystem path visible.
-- `COMANDO_NATIVE_FS_MODE=read` routes file reads through Rust. Project tree and
-  basic entry listing route through Rust only when
-  `COMANDO_NATIVE_PROJECT_TREE=1` is also set.
+- `COMANDO_NATIVE_FS_MODE=read` routes file reads through Rust. Project tree
+  child reads route through Rust only when `COMANDO_NATIVE_PROJECT_TREE=1` is
+  also set.
 - `COMANDO_NATIVE_FS_MODE=write` routes file writes and filesystem mutations
   through Rust. Write operations do not silently fall back to TypeScript.
-- `COMANDO_NATIVE_PROJECT_TREE=1` enables native project tree/list entries in
-  read or write mode.
+- `COMANDO_NATIVE_PROJECT_TREE=1` enables native project tree child reads in
+  read or write mode. Complete project entry listing/search remains on the
+  legacy TypeScript index until the search/indexing migration.
 - `COMANDO_NATIVE_WATCHERS=1` enables native watcher registry sync and native
   `project://tree-invalidated` events in read or write mode.
 
@@ -256,7 +257,9 @@ inside those roots.
 Native commands:
 
 - `project_list_tree_children`
-- `project_list_entries`
+- `project_list_entries` for bounded diagnostics/basic traversal. Electron
+  main does not use it for complete `ProjectService.listProjectEntries` results
+  while the TypeScript search index remains authoritative.
 - `fs_read_file`
 - `fs_write_file`
 - `fs_create_file`

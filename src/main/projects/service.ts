@@ -28,6 +28,7 @@ import { mainProcessPerformance } from "../observability/performance";
 import { debugBenignError } from "../observability/logging";
 import {
     NativeFsGateway,
+    resolveNativeFsMode,
     shouldUseNativeFsReads,
     shouldUseNativeFsWrites,
     shouldUseNativeProjectTree,
@@ -89,6 +90,12 @@ export class ProjectService {
     constructor(options: ProjectServiceOptions) {
         const env = options.env ?? process.env;
         this.#nativeFs = options.nativeFs ?? null;
+        const nativeFsMode = resolveNativeFsMode(env);
+        if (nativeFsMode === "write" && this.#nativeFs === null) {
+            throw new Error(
+                "Native filesystem write mode requires the native backend sidecar.",
+            );
+        }
         this.#nativeFsReadsEnabled =
             this.#nativeFs !== null && shouldUseNativeFsReads(env);
         this.#nativeFsWritesEnabled =
@@ -273,19 +280,6 @@ export class ProjectService {
             input.projectId,
             input.worktreeId ?? null,
         );
-        if (this.#nativeProjectTreeEnabled && this.#nativeFs) {
-            const nodes = await this.#trackFilesystemAccess(
-                project.rootPath,
-                async () =>
-                    await this.#nativeFs!.listProjectEntries({
-                        projectId: input.projectId,
-                        rootPath: project.rootPath,
-                        worktreeId: project.worktreeId,
-                    }),
-            );
-            this.#indexedRoots.add(normalizeRootPathKey(project.rootPath));
-            return [...nodes];
-        }
 
         await this.#ensureWorkerRegistry();
         const rootPathKey = normalizeRootPathKey(project.rootPath);

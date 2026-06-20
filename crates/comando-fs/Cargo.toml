@@ -3,6 +3,9 @@ name = "comando-fs"
 version.workspace = true
 edition.workspace = true
 
+[features]
+test-hooks = []
+
 [dependencies]
 base64.workspace = true
 comando-types.workspace = true

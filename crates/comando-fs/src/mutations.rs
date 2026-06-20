@@ -1,10 +1,6 @@
 use std::fs;
 use std::path::Path;
 
-use comando_types::fs::{
-    NativeFsCreateEntryInput, NativeFsDeleteEntryInput, NativeFsEntryKind,
-    NativeFsEntryMutationResult, NativeFsRenameEntryInput,
-};
 use crate::error::FsError;
 use crate::origin::WriteTracker;
 use crate::path::{
@@ -13,6 +9,10 @@ use crate::path::{
 };
 use crate::registry::ProjectRoot;
 use crate::tree::fs_entry_for_path;
+use comando_types::fs::{
+    NativeFsCreateEntryInput, NativeFsDeleteEntryInput, NativeFsEntryKind,
+    NativeFsEntryMutationResult, NativeFsRenameEntryInput,
+};
 
 pub fn create_file(
     root: &ProjectRoot,
@@ -53,7 +53,9 @@ pub fn rename_entry(
 
     if current_metadata.is_dir() {
         if let Some(parent) = next_parent_relative_path.as_deref() {
-            if parent == current_relative_path || parent.starts_with(&format!("{current_relative_path}/")) {
+            if parent == current_relative_path
+                || parent.starts_with(&format!("{current_relative_path}/"))
+            {
                 return Err(FsError::DirectoryIntoItself);
             }
         }
@@ -82,9 +84,8 @@ pub fn rename_entry(
         ScopedPathIntent::CreateTarget,
     )?;
 
-    if current_relative_path != next_relative_path
-        && current_relative_path.to_lowercase() != next_relative_path.to_lowercase()
-        && next_absolute_path.exists()
+    if current.absolute_path != next_absolute_path
+        && destination_exists_as_different_entry(&current.absolute_path, &next_absolute_path)
     {
         return Err(FsError::AlreadyExists);
     }
@@ -141,7 +142,8 @@ pub fn mutation_result_for_path(
         .and_then(|name| name.to_str())
         .ok_or(FsError::InvalidPath)?
         .to_string();
-    let parent = explicit_parent_relative_path.unwrap_or_else(|| parent_relative_path(&relative_path));
+    let parent =
+        explicit_parent_relative_path.unwrap_or_else(|| parent_relative_path(&relative_path));
     let kind = if metadata.is_dir() {
         NativeFsEntryKind::Directory
     } else {
@@ -166,7 +168,10 @@ fn create_entry(
     let name = validate_entry_name(&input.name)?;
     let parent = resolve_scoped_path(
         &root.root_path,
-        input.parent_relative_path.as_ref().map(|path| path.0.as_str()),
+        input
+            .parent_relative_path
+            .as_ref()
+            .map(|path| path.0.as_str()),
         true,
         ScopedPathIntent::ReadExisting,
     )?;
@@ -206,15 +211,34 @@ fn create_entry(
     mutation_result_for_path(
         root,
         &absolute_path,
-        Some(input.parent_relative_path.as_ref().map(|path| path.0.clone())),
+        Some(
+            input
+                .parent_relative_path
+                .as_ref()
+                .map(|path| path.0.clone()),
+        ),
     )
+}
+
+fn destination_exists_as_different_entry(current_path: &Path, next_path: &Path) -> bool {
+    if !next_path.exists() {
+        return false;
+    }
+
+    match (fs::canonicalize(current_path), fs::canonicalize(next_path)) {
+        (Ok(current), Ok(next)) => current != next,
+        _ => current_path != next_path,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use comando_types::fs::{NativeFsCreateEntryInput, NativeFsDeleteEntryInput, NativeFsEntryKind, NativeFsMutationOrigin, NativeFsRenameEntryInput};
+    use comando_types::fs::{
+        NativeFsCreateEntryInput, NativeFsDeleteEntryInput, NativeFsEntryKind,
+        NativeFsMutationOrigin, NativeFsRenameEntryInput,
+    };
     use tempfile::TempDir;
 
     use super::*;
@@ -310,5 +334,31 @@ mod tests {
         );
 
         assert!(matches!(result, Err(FsError::InvalidPath)));
+    }
+
+    #[test]
+    fn rejects_case_only_rename_over_distinct_existing_file() {
+        let temp = TempDir::new().expect("temp");
+        fs::write(temp.path().join("foo.ts"), "foo").expect("foo");
+        fs::write(temp.path().join("Foo.ts"), "capital").expect("capital");
+        if fs::read_to_string(temp.path().join("foo.ts")).expect("foo content") != "foo" {
+            return;
+        }
+        let root = project_root(temp.path());
+
+        let result = rename_entry(
+            &root,
+            &NativeFsRenameEntryInput {
+                project_id: root.project_id.clone(),
+                worktree_id: root.worktree_id.clone(),
+                relative_path: "foo.ts".into(),
+                next_name: "Foo.ts".to_string(),
+                next_parent_relative_path: None,
+                origin: NativeFsMutationOrigin::User,
+            },
+            &WriteTracker::new(),
+        );
+
+        assert!(matches!(result, Err(FsError::AlreadyExists)));
     }
 }

@@ -67,6 +67,11 @@ export class NativeFsGateway {
                 worktreeId: input.worktreeId ?? null,
             }),
         );
+        if (result.truncated) {
+            throw new Error(
+                "Native project entry listing was truncated; use the legacy search index for complete project file lists.",
+            );
+        }
         return nativeProjectTreeEntriesToIpc(result.entries);
     }
 
