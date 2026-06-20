@@ -30,6 +30,7 @@ import type {
 import type { NativeBackendEvent } from "./protocol";
 import type { NativeGitRepositoryInvalidation } from "./git";
 import type { NativeProjectSummary, NativeProjectTreeEntry } from "./projects";
+import type { NativeIndexedProjectEntry } from "./search";
 import type {
     NativeTerminalDataEvent,
     NativeTerminalExitEvent,
@@ -107,6 +108,18 @@ export function nativeProjectTreeEntriesToIpc(
     entries: readonly NativeProjectTreeEntry[],
 ): ProjectTreeNode[] {
     return entries.map(nativeProjectTreeEntryToIpc);
+}
+
+export function nativeIndexedProjectEntryToIpc(
+    entry: NativeIndexedProjectEntry,
+): ProjectTreeNode {
+    return nativeProjectTreeEntryToIpc(entry);
+}
+
+export function nativeIndexedProjectEntriesToIpc(
+    entries: readonly NativeIndexedProjectEntry[],
+): ProjectTreeNode[] {
+    return entries.map(nativeIndexedProjectEntryToIpc);
 }
 
 export function nativeFsReadFileToIpc(
