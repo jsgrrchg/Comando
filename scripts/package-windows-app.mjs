@@ -89,6 +89,7 @@ function main() {
     console.log(`[package:win] Staging Windows AI payload for ${targetArch}.`);
     stageWindowsAiPayload(targetArch);
     verifyWindowsAiPayload();
+    stageWindowsNativeBackendPayload(targetArch, preflight);
 
     console.log(
         `[package:win] Packaging Windows app with ${electronBuilderArgs.join(" ")}.`,
@@ -296,6 +297,22 @@ function stageWindowsAiPayload(targetArch) {
     stageCodexBinary(targetArch);
     stageEmbeddedNodeBinary(targetArch);
     stageClaudeRuntime(targetArch);
+}
+
+function stageWindowsNativeBackendPayload(targetArch, preflight) {
+    console.log(
+        `[package:win] Building and staging native backend sidecar for ${targetArch}.`,
+    );
+    run(preflight.pnpmCommand, ["run", "native:build"]);
+    run(preflight.pnpmCommand, [
+        "run",
+        "native:stage",
+        "--",
+        "--platform",
+        "win32",
+        "--arch",
+        targetArch,
+    ]);
 }
 
 function resolveAiSourceRoot(targetArch) {

@@ -126,6 +126,7 @@ function main() {
     stageClaudeRuntime();
     stageCodexForMacArchitectures();
     stageEmbeddedNodeForMacArchitectures();
+    stageNativeBackendPayload();
 
     console.log("[package:mac] Building Electron production bundles.");
     run(pnpmCommand, ["exec", "electron-vite", "build"], {
@@ -727,6 +728,11 @@ function writeStandaloneProjectPackageJson(copiedPackages) {
                     to: "ai",
                     filter: ["**/*"],
                 },
+                {
+                    from: "package-resources/native",
+                    to: "native",
+                    filter: ["**/*"],
+                },
             ],
         },
     };
@@ -1005,6 +1011,12 @@ function stageCodexForMacArchitectures() {
             `[package:mac] Staged Codex ACP (${target.arch}) from ${relativeToRepo(sourceBinary)}.`,
         );
     }
+}
+
+function stageNativeBackendPayload() {
+    console.log("[package:mac] Building and staging native backend sidecar.");
+    run(pnpmCommand, ["run", "native:build"]);
+    run(pnpmCommand, ["run", "native:stage"]);
 }
 
 function resolvePrebuiltCodexBinary(arch) {

@@ -36,6 +36,20 @@ function stageLinuxPackageResources() {
     copyAiPayload("README.md");
 }
 
+function stageLinuxNativeBackendPayload(pnpmCommand) {
+    console.log("[package:linux] Building and staging native backend sidecar.");
+    run(pnpmCommand, ["run", "native:build"]);
+    run(pnpmCommand, [
+        "run",
+        "native:stage",
+        "--",
+        "--platform",
+        "linux",
+        "--arch",
+        process.arch,
+    ]);
+}
+
 function copyAiPayload(relativePath) {
     const fromPath = path.join(sourceAiRoot, relativePath);
     if (!fs.existsSync(fromPath)) {
@@ -69,6 +83,7 @@ function main() {
         },
     });
     stageLinuxPackageResources();
+    stageLinuxNativeBackendPayload(pnpmCommand);
     run("electron-builder", ["--linux", ...packageArgs]);
 }
 
