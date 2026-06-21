@@ -1145,8 +1145,18 @@ export class AiService {
         if (nativeAi) {
             const nativeSendState = {
                 capturedReviewBaseline: false,
-                preparedSession: false,
+                preparedSessionContext: null as {
+                    readonly ownerWindowId: string;
+                    readonly runtimeId: AiRuntimeId;
+                    readonly sessionId: string;
+                } | null,
             };
+            const nativePrepareLaunch =
+                await this.#buildNativePrepareLaunchForPrompt(
+                    input,
+                    ownerWindowId,
+                    launch,
+                );
             try {
                 const result = await this.#scheduleWorkerSessionStartup(
                     launch,
@@ -1157,13 +1167,28 @@ export class AiService {
                             ownerWindowId,
                             input.runtimeId,
                         );
-                        if (!this.#nativeSessionIds.has(input.sessionId)) {
+                        if (
+                            !this.#nativeSessionIds.has(
+                                nativePrepareLaunch.input.sessionId,
+                            )
+                        ) {
+                            this.#rememberLiveSessionContext(
+                                nativePrepareLaunch.input,
+                                ownerWindowId,
+                                nativePrepareLaunch.launch.additionalRoots,
+                                nativePrepareLaunch.launch.persistedSnapshot
+                                    .parentSessionId ?? null,
+                            );
                             const snapshot = await nativeAi.prepareSession({
-                                input,
-                                launch,
+                                input: nativePrepareLaunch.input,
+                                launch: nativePrepareLaunch.launch,
                             });
                             this.#nativeSessionIds.add(snapshot.sessionId);
-                            nativeSendState.preparedSession = true;
+                            nativeSendState.preparedSessionContext = {
+                                ownerWindowId,
+                                runtimeId: nativePrepareLaunch.input.runtimeId,
+                                sessionId: snapshot.sessionId,
+                            };
                             this.#acceptPreparedLiveSnapshot(
                                 snapshot,
                                 ownerWindowId,
@@ -1191,12 +1216,14 @@ export class AiService {
                 if (nativeSendState.capturedReviewBaseline) {
                     this.#nativeReviewBaselines.delete(input.sessionId);
                 }
-                if (nativeSendState.preparedSession) {
-                    this.#nativeSessionIds.delete(input.sessionId);
+                if (nativeSendState.preparedSessionContext) {
+                    this.#nativeSessionIds.delete(
+                        nativeSendState.preparedSessionContext.sessionId,
+                    );
                     this.#discardPreparedSessionContextOnFailure(
-                        input.sessionId,
-                        ownerWindowId,
-                        input.runtimeId,
+                        nativeSendState.preparedSessionContext.sessionId,
+                        nativeSendState.preparedSessionContext.ownerWindowId,
+                        nativeSendState.preparedSessionContext.runtimeId,
                     );
                 }
                 throw error;
@@ -2631,6 +2658,47 @@ export class AiService {
             ...update.patch.changes,
             runtimeId: update.patch.runtimeId,
             sessionId: update.patch.sessionId,
+        };
+    }
+
+    async #buildNativePrepareLaunchForPrompt(
+        input: SendAiPromptInput,
+        ownerWindowId: string,
+        launch: AiWorkerSessionLaunchInput,
+    ): Promise<{
+        readonly input: SessionDescriptor;
+        readonly launch: AiWorkerSessionLaunchInput;
+    }> {
+        const parentSessionId = launch.persistedSnapshot.parentSessionId ?? null;
+        if (!parentSessionId) {
+            return { input, launch };
+        }
+
+        const parentSnapshot =
+            this.#liveSnapshots.get(parentSessionId) ??
+            (await this.#persistence.loadSessionSnapshot(parentSessionId));
+        if (!parentSnapshot) {
+            throw new Error(
+                "The parent session could not be loaded for this subagent.",
+            );
+        }
+
+        const parentInput: SessionDescriptor = {
+            additionalRoots: input.additionalRoots,
+            projectId: parentSnapshot.projectId,
+            runtimeId: parentSnapshot.runtimeId,
+            sessionId: parentSessionId,
+            title: parentSnapshot.title,
+            worktreeId: parentSnapshot.worktreeId ?? null,
+        };
+
+        return {
+            input: parentInput,
+            launch: await this.#buildWorkerSessionLaunchInput(
+                parentInput,
+                ownerWindowId,
+                parentSnapshot,
+            ),
         };
     }
 
