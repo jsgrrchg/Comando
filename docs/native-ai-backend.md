@@ -109,9 +109,10 @@ Runtime launch contracts:
   transport is not advertised as ready.
 
 Runtime capabilities are intentionally conservative. A runtime is marked
-`native_ready` only for the lifecycle it can execute through Rust. Provider
-metadata that is not projected yet, such as Codex subagent sessions, remains on
-the legacy worker path until a dedicated mapper lands.
+`native_ready` only for the lifecycle it can execute through Rust. Native ACP
+runtimes project runtime catalog updates, provider-specific subagent sessions,
+and breadcrumb metadata through the Rust-backed event stream. Runtimes outside
+the native matrix remain on the legacy worker path.
 
 Rollback:
 
