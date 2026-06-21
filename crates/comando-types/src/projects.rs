@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ProjectId, WindowId, WorktreeId};
 use crate::fs::NativeFsVisibilityPolicy;
+use crate::ids::{ProjectId, WindowId, WorktreeId};
 
 pub type NativeProjectId = ProjectId;
 pub type NativeWorktreeId = WorktreeId;

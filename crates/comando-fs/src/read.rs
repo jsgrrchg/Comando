@@ -8,7 +8,7 @@ use comando_types::fs::NativeFsReadFileResult;
 use sha2::{Digest, Sha256};
 
 use crate::error::FsError;
-use crate::path::{resolve_scoped_path, ScopedPathIntent};
+use crate::path::{ScopedPathIntent, resolve_scoped_path};
 use crate::registry::ProjectRoot;
 use crate::system_time_to_millis;
 
@@ -111,7 +111,11 @@ pub fn read_file(
         line_ending,
         content_hash,
         size_bytes,
-        mtime_ms: metadata.modified().ok().map(system_time_to_millis).unwrap_or(0),
+        mtime_ms: metadata
+            .modified()
+            .ok()
+            .map(system_time_to_millis)
+            .unwrap_or(0),
         mime_type,
         kind: Some(kind),
         image_data_base64,
@@ -142,8 +146,8 @@ pub fn resolve_mime_type(path: &Path) -> Option<String> {
         "png" => "image/png",
         "svg" => "image/svg+xml",
         "webp" => "image/webp",
-        "css" | "csv" | "env" | "gitignore" | "html" | "js" | "json" | "jsx" | "md"
-        | "rs" | "toml" | "ts" | "tsx" | "txt" | "xml" | "yaml" | "yml" => "text/plain",
+        "css" | "csv" | "env" | "gitignore" | "html" | "js" | "json" | "jsx" | "md" | "rs"
+        | "toml" | "ts" | "tsx" | "txt" | "xml" | "yaml" | "yml" => "text/plain",
         _ => {
             let file_name = path
                 .file_name()
@@ -172,7 +176,10 @@ fn read_probe_buffer(path: &Path, byte_length: usize) -> Result<Vec<u8>, FsError
 }
 
 fn buffer_looks_binary(buffer: &[u8]) -> bool {
-    buffer.iter().take(BINARY_PROBE_BYTES).any(|byte| *byte == 0)
+    buffer
+        .iter()
+        .take(BINARY_PROBE_BYTES)
+        .any(|byte| *byte == 0)
 }
 
 fn detect_line_ending(bytes: &[u8]) -> Option<String> {

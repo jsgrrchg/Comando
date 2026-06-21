@@ -7,7 +7,7 @@ use comando_types::projects::{NativeProjectListEntriesResult, NativeProjectTreeE
 
 use crate::error::FsError;
 use crate::path::{
-    normalize_relative_path, parent_relative_path, resolve_scoped_path, ScopedPathIntent,
+    ScopedPathIntent, normalize_relative_path, parent_relative_path, resolve_scoped_path,
 };
 use crate::policy::{
     is_special_no_expand_directory, should_expand_directory_by_default, tree_visibility_for_entry,
@@ -58,7 +58,8 @@ pub fn list_entries(
     limit: Option<usize>,
 ) -> Result<NativeProjectListEntriesResult, FsError> {
     let limit = limit.unwrap_or(DEFAULT_LIST_ENTRIES_LIMIT).max(1);
-    let resolved = resolve_scoped_path(&root.root_path, None, true, ScopedPathIntent::ReadExisting)?;
+    let resolved =
+        resolve_scoped_path(&root.root_path, None, true, ScopedPathIntent::ReadExisting)?;
     let mut queue = VecDeque::from([resolved.absolute_path]);
     let mut entries = Vec::new();
     let mut truncated = false;
@@ -91,7 +92,10 @@ pub fn list_entries(
     Ok(NativeProjectListEntriesResult { entries, truncated })
 }
 
-pub fn fs_entry_for_path(root: &ProjectRoot, absolute_path: &Path) -> Result<NativeFsEntry, FsError> {
+pub fn fs_entry_for_path(
+    root: &ProjectRoot,
+    absolute_path: &Path,
+) -> Result<NativeFsEntry, FsError> {
     let metadata = fs::symlink_metadata(absolute_path)?;
     let relative_path = normalize_relative_path(
         absolute_path
@@ -121,7 +125,10 @@ pub fn fs_entry_for_path(root: &ProjectRoot, absolute_path: &Path) -> Result<Nat
     })
 }
 
-fn read_directory_entries(root_path: &Path, directory: &Path) -> Result<Vec<DirectoryEntry>, FsError> {
+fn read_directory_entries(
+    root_path: &Path,
+    directory: &Path,
+) -> Result<Vec<DirectoryEntry>, FsError> {
     let read_dir = fs::read_dir(directory).map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => FsError::NotFound,
         std::io::ErrorKind::NotADirectory => FsError::NotDirectory,
@@ -152,7 +159,10 @@ fn read_directory_entries(root_path: &Path, directory: &Path) -> Result<Vec<Dire
     Ok(entries)
 }
 
-fn tree_entry_from_directory_entry(root: &ProjectRoot, entry: DirectoryEntry) -> NativeProjectTreeEntry {
+fn tree_entry_from_directory_entry(
+    root: &ProjectRoot,
+    entry: DirectoryEntry,
+) -> NativeProjectTreeEntry {
     let is_directory = entry.file_type.is_dir();
     let visibility = tree_visibility_for_entry(&entry.name, is_directory);
     let has_children = is_directory
@@ -193,13 +203,13 @@ fn directory_has_children(directory: &Path) -> bool {
 }
 
 fn sort_directory_entries(entries: &mut [DirectoryEntry]) {
-    entries.sort_by(|left, right| {
-        match (left.file_type.is_dir(), right.file_type.is_dir()) {
+    entries.sort_by(
+        |left, right| match (left.file_type.is_dir(), right.file_type.is_dir()) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
             _ => left.name.to_lowercase().cmp(&right.name.to_lowercase()),
-        }
-    });
+        },
+    );
 }
 
 fn fs_entry_kind(metadata: &fs::Metadata) -> NativeFsEntryKind {
@@ -232,7 +242,10 @@ mod tests {
         let root = project_root(temp.path());
 
         let entries = list_tree_children(&root, None).expect("entries");
-        let names = entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>();
+        let names = entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
 
         assert_eq!(names, vec!["src", ".env", "README.md"]);
         assert!(entries.iter().any(|entry| entry.name == ".env"));

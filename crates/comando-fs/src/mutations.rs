@@ -4,8 +4,8 @@ use std::path::Path;
 use crate::error::FsError;
 use crate::origin::WriteTracker;
 use crate::path::{
-    normalize_relative_path, parent_relative_path, resolve_scoped_path, validate_entry_name,
-    ScopedPathIntent,
+    ScopedPathIntent, normalize_relative_path, parent_relative_path, resolve_scoped_path,
+    validate_entry_name,
 };
 use crate::registry::ProjectRoot;
 use crate::tree::fs_entry_for_path;

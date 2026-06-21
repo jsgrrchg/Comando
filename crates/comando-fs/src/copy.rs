@@ -11,8 +11,8 @@ use crate::error::FsError;
 use crate::mutations::mutation_result_for_path;
 use crate::origin::WriteTracker;
 use crate::path::{
-    is_child_path, is_same_or_child_path, normalize_relative_path, resolve_scoped_path,
-    validate_entry_name, ScopedPathIntent,
+    ScopedPathIntent, is_child_path, is_same_or_child_path, normalize_relative_path,
+    resolve_scoped_path, validate_entry_name,
 };
 use crate::registry::ProjectRoot;
 
@@ -54,7 +54,8 @@ pub fn copy_entries(
             return Err(FsError::DirectoryIntoItself);
         }
 
-        let destination_name = resolve_copy_destination_name(&source.name, source.kind, &mut reserved_names);
+        let destination_name =
+            resolve_copy_destination_name(&source.name, source.kind, &mut reserved_names);
         let destination_path = destination_parent.join(destination_name);
         copy_source_to_destination(&source.absolute_path, &destination_path, source.kind)?;
         write_tracker.track_any(destination_path.clone());
@@ -76,7 +77,8 @@ pub fn copy_external_entries(
             .as_ref()
             .map(|path| path.0.as_str()),
     )?;
-    let source_entries = compact_sources_by_absolute_ancestor(resolve_external_copy_sources(input)?);
+    let source_entries =
+        compact_sources_by_absolute_ancestor(resolve_external_copy_sources(input)?);
     let mut reserved_names = reserved_child_names(&destination_parent)?;
     let mut copied = Vec::new();
 
@@ -87,7 +89,8 @@ pub fn copy_external_entries(
             return Err(FsError::DirectoryIntoItself);
         }
 
-        let destination_name = resolve_copy_destination_name(&source.name, source.kind, &mut reserved_names);
+        let destination_name =
+            resolve_copy_destination_name(&source.name, source.kind, &mut reserved_names);
         let destination_path = destination_parent.join(destination_name);
         copy_source_to_destination(&source.absolute_path, &destination_path, source.kind)?;
         write_tracker.track_any(destination_path.clone());
@@ -97,7 +100,10 @@ pub fn copy_external_entries(
     Ok(copied)
 }
 
-fn resolve_destination_parent(root: &ProjectRoot, relative_path: Option<&str>) -> Result<PathBuf, FsError> {
+fn resolve_destination_parent(
+    root: &ProjectRoot,
+    relative_path: Option<&str>,
+) -> Result<PathBuf, FsError> {
     let resolved = resolve_scoped_path(
         &root.root_path,
         relative_path,
@@ -158,11 +164,12 @@ fn resolve_external_copy_sources(
 
     for source_path in &input.source_paths {
         let absolute_path = PathBuf::from(source_path);
-        let absolute_path = fs::canonicalize(&absolute_path).map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => FsError::NotFound,
-            std::io::ErrorKind::PermissionDenied => FsError::PermissionDenied,
-            _ => FsError::Io(error),
-        })?;
+        let absolute_path =
+            fs::canonicalize(&absolute_path).map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => FsError::NotFound,
+                std::io::ErrorKind::PermissionDenied => FsError::PermissionDenied,
+                _ => FsError::Io(error),
+            })?;
         let normalized = normalize_relative_path(&absolute_path);
         if !seen.insert(normalized.clone()) {
             continue;
@@ -349,7 +356,10 @@ mod tests {
         .expect("copy");
 
         assert_eq!(copied[0].relative_path.0, "a copy.txt");
-        assert_eq!(fs::read_to_string(temp.path().join("a copy.txt")).unwrap(), "a");
+        assert_eq!(
+            fs::read_to_string(temp.path().join("a copy.txt")).unwrap(),
+            "a"
+        );
     }
 
     #[test]
@@ -374,7 +384,10 @@ mod tests {
         .expect("copy");
 
         assert_eq!(copied[0].relative_path.0, "pkg");
-        assert_eq!(fs::read_to_string(temp.path().join("pkg/lib.rs")).unwrap(), "lib");
+        assert_eq!(
+            fs::read_to_string(temp.path().join("pkg/lib.rs")).unwrap(),
+            "lib"
+        );
     }
 
     #[test]

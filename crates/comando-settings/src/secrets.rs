@@ -57,13 +57,19 @@ impl RuntimeSecretStoreMode {
 }
 
 pub fn default_runtime_secret_store() -> std::sync::Arc<dyn RuntimeSecretStore> {
-    match RuntimeSecretStoreMode::from_env_value(std::env::var(NATIVE_SECRET_STORE_ENV).ok().as_deref()) {
+    match RuntimeSecretStoreMode::from_env_value(
+        std::env::var(NATIVE_SECRET_STORE_ENV).ok().as_deref(),
+    ) {
         RuntimeSecretStoreMode::Keyring => std::sync::Arc::new(KeyringRuntimeSecretStore),
-        RuntimeSecretStoreMode::Memory => std::sync::Arc::new(InMemoryRuntimeSecretStore::default()),
-        RuntimeSecretStoreMode::ElectronBridge => std::sync::Arc::new(UnsupportedRuntimeSecretStore {
-            backend: "electron-bridge",
-            message: "Electron bridge secret storage is not available inside the native backend yet.",
-        }),
+        RuntimeSecretStoreMode::Memory => {
+            std::sync::Arc::new(InMemoryRuntimeSecretStore::default())
+        }
+        RuntimeSecretStoreMode::ElectronBridge => {
+            std::sync::Arc::new(UnsupportedRuntimeSecretStore {
+                backend: "electron-bridge",
+                message: "Electron bridge secret storage is not available inside the native backend yet.",
+            })
+        }
     }
 }
 
@@ -73,8 +79,11 @@ pub struct KeyringRuntimeSecretStore;
 impl KeyringRuntimeSecretStore {
     fn entry(runtime_id: &str, env_key: &str) -> Result<keyring::Entry, SecretStoreError> {
         validate_secret_env_key(runtime_id, env_key)?;
-        keyring::Entry::new(SECRET_SERVICE_NAME, &runtime_secret_account(runtime_id, env_key))
-            .map_err(|error| SecretStoreError::Unavailable(error.to_string()))
+        keyring::Entry::new(
+            SECRET_SERVICE_NAME,
+            &runtime_secret_account(runtime_id, env_key),
+        )
+        .map_err(|error| SecretStoreError::Unavailable(error.to_string()))
     }
 }
 
@@ -168,7 +177,10 @@ impl RuntimeSecretStore for InMemoryRuntimeSecretStore {
         self.values
             .lock()
             .map_err(|error| SecretStoreError::LockFailed(error.to_string()))?
-            .insert((runtime_id.to_string(), env_key.to_string()), value.to_string());
+            .insert(
+                (runtime_id.to_string(), env_key.to_string()),
+                value.to_string(),
+            );
         Ok(())
     }
 
@@ -186,7 +198,9 @@ impl RuntimeSecretStore for InMemoryRuntimeSecretStore {
             backend: "memory".to_string(),
             available: true,
             weak: true,
-            message: Some("In-memory secret storage is for tests and development only.".to_string()),
+            message: Some(
+                "In-memory secret storage is for tests and development only.".to_string(),
+            ),
             platform: std::env::consts::OS.to_string(),
         }
     }
@@ -263,7 +277,10 @@ pub fn validate_secret_env_key(runtime_id: &str, env_key: &str) -> Result<(), Se
 }
 
 pub fn is_known_runtime_id(runtime_id: &str) -> bool {
-    matches!(runtime_id, "claude" | "codex" | "grok" | "kilo" | "opencode")
+    matches!(
+        runtime_id,
+        "claude" | "codex" | "grok" | "kilo" | "opencode"
+    )
 }
 
 fn runtime_secret_account(runtime_id: &str, env_key: &str) -> String {
@@ -311,7 +328,9 @@ mod tests {
         store
             .set_secret("kilo", "KILO_API_KEY", "kilo-secret")
             .expect("set");
-        store.set_secret("kilo", "KILO_API_KEY", " ").expect("clear");
+        store
+            .set_secret("kilo", "KILO_API_KEY", " ")
+            .expect("clear");
 
         assert_eq!(store.get_secret("kilo", "KILO_API_KEY").expect("get"), None);
     }

@@ -4,7 +4,7 @@ use comando_types::fs::{NativeFsConflict, NativeFsWriteFileInput, NativeFsWriteF
 
 use crate::error::FsError;
 use crate::origin::WriteTracker;
-use crate::path::{resolve_scoped_path, ScopedPathIntent};
+use crate::path::{ScopedPathIntent, resolve_scoped_path};
 use crate::read::{hash_content_bytes, read_file};
 use crate::registry::ProjectRoot;
 use crate::system_time_to_millis;
@@ -171,6 +171,9 @@ mod tests {
             result.conflict.map(|conflict| conflict.reason),
             Some("content_hash_mismatch".to_string())
         );
-        assert_eq!(fs::read_to_string(temp.path().join("main.rs")).unwrap(), "external\n");
+        assert_eq!(
+            fs::read_to_string(temp.path().join("main.rs")).unwrap(),
+            "external\n"
+        );
     }
 }

@@ -332,7 +332,10 @@ mod tests {
     #[test]
     fn rejects_delete_or_read_root_when_root_not_allowed() {
         let temp = TempDir::new().expect("temp");
-        assert!(resolve_scoped_path(temp.path(), Some(""), false, ScopedPathIntent::ReadExisting).is_err());
+        assert!(
+            resolve_scoped_path(temp.path(), Some(""), false, ScopedPathIntent::ReadExisting)
+                .is_err()
+        );
     }
 
     #[cfg(unix)]
@@ -343,8 +346,11 @@ mod tests {
         let temp = TempDir::new().expect("temp");
         let outside = TempDir::new().expect("outside");
         fs::write(outside.path().join("secret.txt"), "secret").expect("secret");
-        symlink(outside.path().join("secret.txt"), temp.path().join("linked.txt"))
-            .expect("symlink");
+        symlink(
+            outside.path().join("secret.txt"),
+            temp.path().join("linked.txt"),
+        )
+        .expect("symlink");
 
         let result = resolve_scoped_path(
             temp.path(),

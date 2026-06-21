@@ -8,13 +8,13 @@ use comando_types::fs::{
 };
 use comando_types::ids::RelativePath;
 use notify::{
-    event::{ModifyKind, RenameMode},
     Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
+    event::{ModifyKind, RenameMode},
 };
 
 use crate::error::FsError;
 use crate::now_rfc3339;
-use crate::origin::{hash_bytes, WriteTracker};
+use crate::origin::{WriteTracker, hash_bytes};
 use crate::path::normalize_relative_path;
 use crate::policy::should_ignore_watch_path;
 use crate::registry::ProjectRoot;
@@ -340,13 +340,12 @@ mod tests {
         thread::sleep(Duration::from_millis(160));
 
         let drain = watchers.drain(false);
-        assert!(drain.invalidations.iter().any(|invalidation| invalidation
-            .relative_paths
-            .as_ref()
-            .is_some_and(|paths| {
+        assert!(drain.invalidations.iter().any(|invalidation| {
+            invalidation.relative_paths.as_ref().is_some_and(|paths| {
                 let values = paths.iter().map(|path| path.0.as_str()).collect::<Vec<_>>();
                 values.contains(&"a.txt") || values.contains(&"b.txt")
-            })));
+            })
+        }));
     }
 
     #[test]

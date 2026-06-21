@@ -17,7 +17,10 @@ pub fn tree_visibility_for_entry(name: &str, is_directory: bool) -> NativeFsVisi
     NativeFsVisibilityPolicy::Visible
 }
 
-pub fn should_expand_directory_by_default(name: &str, visibility: NativeFsVisibilityPolicy) -> bool {
+pub fn should_expand_directory_by_default(
+    name: &str,
+    visibility: NativeFsVisibilityPolicy,
+) -> bool {
     !matches!(
         visibility,
         NativeFsVisibilityPolicy::Special | NativeFsVisibilityPolicy::TooLargeToExpand
