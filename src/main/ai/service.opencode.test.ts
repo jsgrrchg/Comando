@@ -607,8 +607,10 @@ describe("AiService OpenCode branch", () => {
                     stopReason: "accepted",
                 }),
             );
+            const cancelSession = vi.fn<NativeAiGateway["cancelSession"]>();
+            const saveSessionSnapshot = vi.fn();
             const nativeAi: NativeAiGateway = {
-                cancelSession: vi.fn(),
+                cancelSession,
                 close: vi.fn(),
                 closeOwnedByWindow: vi.fn(),
                 closeSession: vi.fn(),
@@ -645,6 +647,7 @@ describe("AiService OpenCode branch", () => {
                         }
                         return null;
                     }),
+                    saveSessionSnapshot,
                 },
                 settingsService: createSettingsService({
                     loadOpenCodeRuntimeSettings: vi.fn(() =>
@@ -683,6 +686,29 @@ describe("AiService OpenCode branch", () => {
                 sendPrompt.mock.calls[0]?.[0].launch.persistedSnapshot
                     .parentSessionId,
             ).toBe("session-parent");
+
+            service.handleNativeSessionEvent("window-1", {
+                activeTurnStartedAt: "2026-06-20T00:00:01.000Z",
+                kind: "status",
+                lastError: null,
+                origin: "live",
+                parentSessionId: "session-parent",
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-child",
+                sessionId: "session-child",
+                status: "streaming",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            });
+            expect(
+                saveSessionSnapshot.mock.calls.at(-1)?.[0],
+            ).toMatchObject({
+                runtimeSessionId: "runtime-child",
+                sessionId: "session-child",
+                status: "streaming",
+            });
+
+            await service.cancelSession("session-child");
+            expect(cancelSession).toHaveBeenCalledWith("session-child");
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }

@@ -1194,6 +1194,10 @@ export class AiService {
                                 ownerWindowId,
                             );
                         }
+                        this.#adoptNativeSubagentSnapshot(
+                            launch.persistedSnapshot,
+                            ownerWindowId,
+                        );
                         if (
                             !this.#nativeReviewBaselines.has(input.sessionId)
                         ) {
@@ -2700,6 +2704,25 @@ export class AiService {
                 parentSnapshot,
             ),
         };
+    }
+
+    #adoptNativeSubagentSnapshot(
+        snapshot: AiSessionSnapshot,
+        ownerWindowId: string,
+    ): void {
+        const parentSessionId = snapshot.parentSessionId ?? null;
+        if (!parentSessionId) {
+            return;
+        }
+
+        this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
+        this.#persistence.saveSessionSnapshot(snapshot);
+        this.#nativeSessionIds.add(snapshot.sessionId);
+        this.#nativeChildParentSessionIds.set(snapshot.sessionId, parentSessionId);
+        this.#onSessionSnapshot(ownerWindowId, {
+            kind: "snapshot",
+            snapshot,
+        });
     }
 
     async #buildWorkerSessionLaunchInput(
