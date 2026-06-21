@@ -10,6 +10,7 @@ use comando_types::ai::{
     NativeAiSessionTranscriptPage,
 };
 use comando_types::ids::{ProjectId, RuntimeId, RuntimeSessionId, SessionId, WorktreeId};
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -795,6 +796,518 @@ impl AiHistoryStore {
     }
 }
 
+pub struct LegacyAiHistoryReader<'a> {
+    connection: &'a Connection,
+}
+
+#[derive(Debug, Clone)]
+struct LegacyHistoryRow {
+    session_id: String,
+    parent_session_id: Option<String>,
+    project_id: Option<String>,
+    worktree_id: Option<String>,
+    title: String,
+    runtime_id: String,
+    runtime_session_id: Option<String>,
+    status: String,
+    created_at: String,
+    updated_at: String,
+    pinned_at: Option<String>,
+    message_count: usize,
+    preview: Option<String>,
+    state_json: Option<String>,
+}
+
+impl<'a> LegacyAiHistoryReader<'a> {
+    pub fn new(connection: &'a Connection) -> Self {
+        Self { connection }
+    }
+
+    pub fn list_session_history(
+        &self,
+        input: NativeAiListSessionHistoryInput,
+    ) -> AiResult<Vec<NativeAiHistorySessionSummary>> {
+        if !self.table_exists("chat_sessions")? {
+            return Ok(Vec::new());
+        }
+
+        let rows = self.query_history_rows(input.project_id, input.worktree_id, input.limit)?;
+        Ok(rows
+            .into_iter()
+            .filter(|row| row.message_count > 0 || row.parent_session_id.is_some())
+            .map(summary_from_legacy_row)
+            .collect())
+    }
+
+    pub fn load_transcript_page(
+        &self,
+        input: NativeAiLoadSessionTranscriptPageInput,
+    ) -> AiResult<Option<NativeAiSessionTranscriptPage>> {
+        if !self.has_session(&input.session_id)? {
+            return Ok(None);
+        }
+        let messages = self.load_all_messages(&input.session_id)?;
+        let offset = input.offset.min(messages.len());
+        let limit = normalize_page_limit(input.limit);
+        let end = offset.saturating_add(limit).min(messages.len());
+
+        Ok(Some(NativeAiSessionTranscriptPage {
+            session_id: input.session_id,
+            offset,
+            total_messages: messages.len(),
+            messages: messages[offset..end].to_vec(),
+        }))
+    }
+
+    pub fn load_session_snapshot(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<Option<NativeAiSessionSnapshot>> {
+        let Some(row) = self.query_history_row(session_id)? else {
+            return Ok(None);
+        };
+        let state = row
+            .state_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .unwrap_or_else(|| json!({}));
+        let messages = self.load_all_messages(session_id)?;
+
+        Ok(Some(NativeAiSessionSnapshot {
+            session_id: SessionId(row.session_id),
+            parent_session_id: row.parent_session_id.map(SessionId),
+            runtime_id: RuntimeId(
+                state
+                    .get("runtimeId")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&row.runtime_id)
+                    .to_string(),
+            ),
+            runtime_session_id: row.runtime_session_id.map(RuntimeSessionId),
+            project_id: row.project_id.map(ProjectId),
+            worktree_id: row.worktree_id.map(WorktreeId),
+            title: state
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or(&row.title)
+                .to_string(),
+            status: native_status_from_legacy(
+                state
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&row.status),
+            ),
+            updated_at: state
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .unwrap_or(&row.updated_at)
+                .to_string(),
+            active_turn_started_at: string_field(&state, "activeTurnStartedAt"),
+            closed_at: string_field(&state, "closedAt"),
+            last_error: string_field(&state, "lastError"),
+            mode_id: string_field(&state, "modeId"),
+            model_id: string_field(&state, "modelId"),
+            pending_permission: state
+                .get("pendingPermission")
+                .cloned()
+                .filter(|v| !v.is_null()),
+            pending_user_input: state
+                .get("pendingUserInput")
+                .cloned()
+                .filter(|v| !v.is_null()),
+            plan: state.get("plan").cloned().filter(|v| !v.is_null()),
+            token_usage: state.get("tokenUsage").cloned().filter(|v| !v.is_null()),
+            available_commands: array_field(&state, "availableCommands"),
+            config_options: array_field(&state, "configOptions"),
+            messages,
+            modes: array_field(&state, "modes"),
+            models: array_field(&state, "models"),
+            tool_activity: array_field(&state, "toolActivity"),
+            tracked_files: Vec::new(),
+        }))
+    }
+
+    fn load_all_messages(&self, session_id: &SessionId) -> AiResult<Vec<Value>> {
+        let shadow = self.load_shadow_messages(session_id)?;
+        if !shadow.is_empty() {
+            return Ok(shadow);
+        }
+        if let Some(messages) = self.load_runtime_state_messages(session_id)? {
+            return Ok(messages);
+        }
+        Ok(self
+            .load_transcript_json_messages(session_id)?
+            .unwrap_or_default())
+    }
+
+    fn load_shadow_messages(&self, session_id: &SessionId) -> AiResult<Vec<Value>> {
+        if !self.table_exists("chat_transcript_messages")? {
+            return Ok(Vec::new());
+        }
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT payload_json
+                FROM chat_transcript_messages
+                WHERE session_id = ?1
+                ORDER BY message_index ASC
+                ",
+            )
+            .map_err(|error| history_sql("prepare legacy shadow message query", error))?;
+        let rows = statement
+            .query_map([&session_id.0], |row| row.get::<_, String>(0))
+            .map_err(|error| history_sql("query legacy shadow messages", error))?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            let payload_json =
+                row.map_err(|error| history_sql("read legacy shadow message", error))?;
+            if let Ok(value) = serde_json::from_str::<Value>(&payload_json) {
+                if value.is_object() {
+                    messages.push(value);
+                }
+            }
+        }
+        Ok(messages)
+    }
+
+    fn load_runtime_state_messages(&self, session_id: &SessionId) -> AiResult<Option<Vec<Value>>> {
+        if !self.table_exists("chat_session_runtime_state")? {
+            return Ok(None);
+        }
+        let state_json = self
+            .connection
+            .query_row(
+                "
+                SELECT state_json
+                FROM chat_session_runtime_state
+                WHERE session_id = ?1
+                ",
+                [&session_id.0],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| history_sql("query legacy runtime state", error))?;
+
+        Ok(state_json
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .and_then(|state| object_array_field(&state, "messages")))
+    }
+
+    fn load_transcript_json_messages(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<Option<Vec<Value>>> {
+        if !self.table_exists("chat_transcripts")? {
+            return Ok(None);
+        }
+        let transcript_json = self
+            .connection
+            .query_row(
+                "
+                SELECT transcript_json
+                FROM chat_transcripts
+                WHERE session_id = ?1
+                ",
+                [&session_id.0],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| history_sql("query legacy transcript", error))?;
+
+        Ok(transcript_json
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .and_then(|transcript| object_array_field(&transcript, "messages")))
+    }
+
+    fn query_history_rows(
+        &self,
+        project_id: Option<ProjectId>,
+        worktree_id: Option<WorktreeId>,
+        limit: Option<usize>,
+    ) -> AiResult<Vec<LegacyHistoryRow>> {
+        let mut sql = legacy_history_select_sql();
+        sql.push_str(
+            "
+            WHERE ",
+        );
+        let mut args: Vec<Option<String>> = Vec::new();
+        if let Some(project_id) = project_id {
+            sql.push_str("chat_sessions.project_id = ? ");
+            args.push(Some(project_id.0));
+        } else {
+            sql.push_str("chat_sessions.project_id IS NULL ");
+        }
+        sql.push_str("AND ");
+        if let Some(worktree_id) = worktree_id {
+            sql.push_str("chat_sessions.worktree_id = ? ");
+            args.push(Some(worktree_id.0));
+        } else {
+            sql.push_str("chat_sessions.worktree_id IS NULL ");
+        }
+        sql.push_str(
+            "
+            ORDER BY chat_sessions.pinned_at IS NULL ASC, chat_sessions.updated_at DESC
+            ",
+        );
+        if let Some(limit) = limit {
+            sql.push_str("LIMIT ? ");
+            args.push(Some(limit.to_string()));
+        }
+
+        let mut statement = self
+            .connection
+            .prepare(&sql)
+            .map_err(|error| history_sql("prepare legacy history query", error))?;
+        let mapped = statement
+            .query_map(rusqlite::params_from_iter(args.iter()), legacy_row_from_sql)
+            .map_err(|error| history_sql("query legacy history", error))?;
+
+        let mut rows = Vec::new();
+        for row in mapped {
+            rows.push(row.map_err(|error| history_sql("read legacy history row", error))?);
+        }
+        Ok(rows)
+    }
+
+    fn query_history_row(&self, session_id: &SessionId) -> AiResult<Option<LegacyHistoryRow>> {
+        if !self.has_session(session_id)? {
+            return Ok(None);
+        }
+        let mut sql = legacy_history_select_sql();
+        sql.push_str("WHERE chat_sessions.id = ?1 LIMIT 1");
+        self.connection
+            .query_row(&sql, [&session_id.0], legacy_row_from_sql)
+            .optional()
+            .map_err(|error| history_sql("query legacy history row", error))
+    }
+
+    fn list_all_session_ids(&self) -> AiResult<Vec<SessionId>> {
+        if !self.table_exists("chat_sessions")? {
+            return Ok(Vec::new());
+        }
+        let mut statement = self
+            .connection
+            .prepare("SELECT id FROM chat_sessions ORDER BY updated_at ASC")
+            .map_err(|error| history_sql("prepare legacy session id query", error))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| history_sql("query legacy session ids", error))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(SessionId(
+                row.map_err(|error| history_sql("read legacy session id", error))?,
+            ));
+        }
+        Ok(ids)
+    }
+
+    fn has_session(&self, session_id: &SessionId) -> AiResult<bool> {
+        if !self.table_exists("chat_sessions")? {
+            return Ok(false);
+        }
+        let found = self
+            .connection
+            .query_row(
+                "SELECT id FROM chat_sessions WHERE id = ?1 LIMIT 1",
+                [&session_id.0],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| history_sql("query legacy session existence", error))?;
+        Ok(found.is_some())
+    }
+
+    fn table_exists(&self, table: &str) -> AiResult<bool> {
+        let found = self
+            .connection
+            .query_row(
+                "
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table'
+                  AND name = ?1
+                ",
+                [table],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| history_sql("query legacy schema", error))?;
+        Ok(found.is_some())
+    }
+}
+
+pub struct AiHistoryMigrator<'a> {
+    store: &'a AiHistoryStore,
+    legacy: LegacyAiHistoryReader<'a>,
+    source_database_path: Option<String>,
+}
+
+impl<'a> AiHistoryMigrator<'a> {
+    pub fn new(
+        store: &'a AiHistoryStore,
+        connection: &'a Connection,
+        source_database_path: Option<String>,
+    ) -> Self {
+        Self {
+            store,
+            legacy: LegacyAiHistoryReader::new(connection),
+            source_database_path,
+        }
+    }
+
+    pub fn copy_legacy_history(
+        &self,
+    ) -> AiResult<comando_types::ai::NativeAiMigrateSessionHistoryOutput> {
+        let started_at = now_iso8601();
+        let mut manifest = AiHistoryMigrationManifest {
+            version: HISTORY_FORMAT_VERSION,
+            source_database_path: self.source_database_path.clone(),
+            started_at: started_at.clone(),
+            updated_at: started_at.clone(),
+            completed_at: None,
+            sessions: Vec::new(),
+        };
+        let mut migrated_sessions = 0;
+        let mut skipped_sessions = 0;
+        let mut failed_sessions = 0;
+        let mut errors = Vec::new();
+
+        for session_id in self.legacy.list_all_session_ids()? {
+            if self.store.has_session(&session_id) {
+                skipped_sessions += 1;
+                manifest.sessions.push(AiHistoryMigrationSessionRecord {
+                    session_id: session_id.clone(),
+                    storage_key: AiHistoryStore::storage_key(&session_id.0),
+                    status: "skipped".to_string(),
+                    source_message_count: 0,
+                    target_message_count: 0,
+                    error: None,
+                });
+                continue;
+            }
+
+            match self.copy_session(&session_id) {
+                Ok(count) => {
+                    migrated_sessions += 1;
+                    manifest.sessions.push(AiHistoryMigrationSessionRecord {
+                        session_id: session_id.clone(),
+                        storage_key: AiHistoryStore::storage_key(&session_id.0),
+                        status: "migrated".to_string(),
+                        source_message_count: count,
+                        target_message_count: count,
+                        error: None,
+                    });
+                }
+                Err(error) => {
+                    failed_sessions += 1;
+                    let message = redact_history_error(&error);
+                    manifest.sessions.push(AiHistoryMigrationSessionRecord {
+                        session_id: session_id.clone(),
+                        storage_key: AiHistoryStore::storage_key(&session_id.0),
+                        status: "failed".to_string(),
+                        source_message_count: 0,
+                        target_message_count: 0,
+                        error: Some(message.clone()),
+                    });
+                    errors.push(comando_types::ai::NativeAiHistoryMigrationError {
+                        session_id: Some(session_id),
+                        message,
+                    });
+                }
+            }
+        }
+
+        let completed_at = now_iso8601();
+        manifest.updated_at = completed_at.clone();
+        manifest.completed_at = Some(completed_at.clone());
+        self.save_manifest(&manifest)?;
+
+        Ok(comando_types::ai::NativeAiMigrateSessionHistoryOutput {
+            started_at,
+            updated_at: completed_at.clone(),
+            completed_at: Some(completed_at),
+            migrated_sessions,
+            skipped_sessions,
+            failed_sessions,
+            errors,
+        })
+    }
+
+    fn copy_session(&self, session_id: &SessionId) -> AiResult<usize> {
+        let snapshot = self
+            .legacy
+            .load_session_snapshot(session_id)?
+            .ok_or_else(|| AiError::SessionNotFound {
+                session_id: session_id.0.clone(),
+            })?;
+        let mut metadata = AiHistorySessionMetadata::new_native(AiHistorySessionMetadataInput {
+            session_id: snapshot.session_id.clone(),
+            runtime_id: snapshot.runtime_id.clone(),
+            runtime_session_id: snapshot.runtime_session_id.clone(),
+            parent_session_id: snapshot.parent_session_id.clone(),
+            project_id: snapshot.project_id.clone(),
+            worktree_id: snapshot.worktree_id.clone(),
+            title: snapshot.title.clone(),
+            status: snapshot.status.clone(),
+            model_id: snapshot.model_id.clone(),
+            mode_id: snapshot.mode_id.clone(),
+            config_values: BTreeMap::new(),
+            cwd: String::new(),
+            additional_roots: Vec::new(),
+        });
+        metadata.owner_kind = AiHistoryOwnerKind::MigratedLegacy;
+        metadata.created_at = self
+            .legacy
+            .query_history_row(session_id)?
+            .map(|row| row.created_at)
+            .unwrap_or_else(now_iso8601);
+        metadata.updated_at = snapshot.updated_at;
+        metadata.models = snapshot.models;
+        metadata.modes = snapshot.modes;
+        metadata.config_options = snapshot.config_options;
+        metadata.available_commands = snapshot.available_commands;
+        metadata.message_count = snapshot.messages.len();
+        metadata.preview = derive_session_preview(snapshot.messages.iter());
+        self.store.create_session(metadata.clone())?;
+        self.store
+            .save_transcript_window(&metadata.session_id, snapshot.messages)?;
+        Ok(metadata.message_count)
+    }
+
+    fn save_manifest(&self, manifest: &AiHistoryMigrationManifest) -> AiResult<()> {
+        let path = self
+            .store
+            .history_root()
+            .join("migrations")
+            .join("sqlite-history-v1.json");
+        atomic_write_json(&path, manifest)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct AiHistoryMigrationManifest {
+    version: u32,
+    source_database_path: Option<String>,
+    started_at: String,
+    updated_at: String,
+    completed_at: Option<String>,
+    sessions: Vec<AiHistoryMigrationSessionRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct AiHistoryMigrationSessionRecord {
+    session_id: SessionId,
+    storage_key: String,
+    status: String,
+    source_message_count: usize,
+    target_message_count: usize,
+    error: Option<String>,
+}
+
 impl AiTranscriptRecord {
     fn from_payload(payload: Value) -> AiResult<Self> {
         let Some(object) = payload.as_object() else {
@@ -847,6 +1360,106 @@ fn summary_from_metadata(metadata: AiHistorySessionMetadata) -> NativeAiHistoryS
         pinned_at: metadata.pinned_at,
         message_count: metadata.message_count,
     }
+}
+
+fn summary_from_legacy_row(row: LegacyHistoryRow) -> NativeAiHistorySessionSummary {
+    NativeAiHistorySessionSummary {
+        session_id: SessionId(row.session_id),
+        parent_session_id: row.parent_session_id.map(SessionId),
+        runtime_id: RuntimeId(row.runtime_id),
+        runtime_session_id: row.runtime_session_id.map(RuntimeSessionId),
+        project_id: row.project_id.map(ProjectId),
+        worktree_id: row.worktree_id.map(WorktreeId),
+        title: row.title,
+        preview: row.preview,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        pinned_at: row.pinned_at,
+        message_count: row.message_count,
+    }
+}
+
+fn legacy_history_select_sql() -> String {
+    "
+    SELECT
+        chat_sessions.id AS session_id,
+        COALESCE(chat_sessions.parent_session_id, runtime_links.parent_app_session_id) AS parent_session_id,
+        chat_sessions.project_id,
+        chat_sessions.worktree_id,
+        chat_sessions.title,
+        chat_sessions.runtime,
+        runtime_links.runtime_session_id,
+        chat_sessions.status,
+        chat_sessions.created_at,
+        chat_sessions.updated_at,
+        chat_sessions.pinned_at,
+        COALESCE(chat_transcripts.message_count, 0) AS message_count,
+        chat_transcripts.preview,
+        runtime_state.state_json
+    FROM chat_sessions
+    LEFT JOIN chat_transcripts
+        ON chat_transcripts.session_id = chat_sessions.id
+    LEFT JOIN chat_session_runtime_links AS runtime_links
+        ON runtime_links.app_session_id = chat_sessions.id
+    LEFT JOIN chat_session_runtime_state AS runtime_state
+        ON runtime_state.session_id = chat_sessions.id
+    "
+    .to_string()
+}
+
+fn legacy_row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<LegacyHistoryRow> {
+    Ok(LegacyHistoryRow {
+        session_id: row.get("session_id")?,
+        parent_session_id: row.get("parent_session_id")?,
+        project_id: row.get("project_id")?,
+        worktree_id: row.get("worktree_id")?,
+        title: row.get("title")?,
+        runtime_id: row.get("runtime")?,
+        runtime_session_id: row.get("runtime_session_id")?,
+        status: row.get("status")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+        pinned_at: row.get("pinned_at")?,
+        message_count: row.get::<_, i64>("message_count")?.max(0) as usize,
+        preview: row.get("preview")?,
+        state_json: row.get("state_json")?,
+    })
+}
+
+fn native_status_from_legacy(status: &str) -> NativeAiSessionStatus {
+    match status {
+        "streaming" => NativeAiSessionStatus::Streaming,
+        "waiting_permission" => NativeAiSessionStatus::WaitingPermission,
+        "waiting_user_input" => NativeAiSessionStatus::WaitingUserInput,
+        "review_required" => NativeAiSessionStatus::ReviewRequired,
+        "error" => NativeAiSessionStatus::Error,
+        "closed" => NativeAiSessionStatus::Closed,
+        _ => NativeAiSessionStatus::Idle,
+    }
+}
+
+fn string_field(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn array_field(value: &Value, key: &str) -> Vec<Value> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn object_array_field(value: &Value, key: &str) -> Option<Vec<Value>> {
+    Some(
+        value
+            .get(key)?
+            .as_array()?
+            .iter()
+            .filter(|entry| entry.is_object())
+            .cloned()
+            .collect(),
+    )
 }
 
 fn compare_history_summaries(
@@ -1031,13 +1644,26 @@ fn history_json(action: &str, error: serde_json::Error) -> AiError {
     AiError::Internal(format!("{action} failed: {error}"))
 }
 
+fn history_sql(action: &str, error: rusqlite::Error) -> AiError {
+    AiError::Internal(format!("{action} failed: {error}"))
+}
+
 fn history_error(message: impl Into<String>) -> AiError {
     AiError::Internal(message.into())
+}
+
+fn redact_history_error(error: &AiError) -> String {
+    match error {
+        AiError::InvalidInput(_) => "Invalid legacy AI history row.".to_string(),
+        AiError::SessionNotFound { .. } => "Legacy AI session was not found.".to_string(),
+        _ => "Failed to migrate legacy AI session.".to_string(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
 
     fn store() -> (tempfile::TempDir, AiHistoryStore) {
         let temp = tempfile::tempdir().unwrap();
@@ -1072,6 +1698,136 @@ mod tests {
             "kind": "assistant",
             "status": "completed"
         })
+    }
+
+    fn legacy_connection() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT,
+                    worktree_id TEXT,
+                    parent_session_id TEXT,
+                    title TEXT NOT NULL,
+                    runtime TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    draft TEXT NOT NULL DEFAULT '',
+                    pinned_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_opened_at TEXT NOT NULL
+                );
+
+                CREATE TABLE chat_transcripts (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL UNIQUE,
+                    transcript_json TEXT NOT NULL,
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    preview TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE chat_transcript_messages (
+                    session_id TEXT NOT NULL,
+                    message_index INTEGER NOT NULL,
+                    message_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    role TEXT,
+                    payload_json TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, message_id),
+                    UNIQUE(session_id, message_index)
+                );
+
+                CREATE TABLE chat_session_runtime_state (
+                    session_id TEXT PRIMARY KEY,
+                    state_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE chat_session_runtime_links (
+                    runtime_session_id TEXT PRIMARY KEY,
+                    app_session_id TEXT NOT NULL UNIQUE,
+                    parent_runtime_session_id TEXT,
+                    parent_app_session_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                ",
+            )
+            .unwrap();
+        connection
+    }
+
+    fn insert_legacy_session(connection: &Connection, session_id: &str, messages: Vec<Value>) {
+        let now = "2026-06-20T12:00:00.000Z";
+        let message_count = messages.len() as i64;
+        connection
+            .execute(
+                "
+                INSERT INTO chat_sessions (
+                    id,
+                    project_id,
+                    worktree_id,
+                    parent_session_id,
+                    title,
+                    runtime,
+                    status,
+                    pinned_at,
+                    created_at,
+                    updated_at,
+                    last_opened_at
+                )
+                VALUES (?1, 'project_1', 'worktree_1', NULL, 'Legacy Session', 'codex', 'idle', NULL, ?2, ?2, ?2)
+                ",
+                (session_id, now),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "
+                INSERT INTO chat_transcripts (
+                    id,
+                    session_id,
+                    transcript_json,
+                    message_count,
+                    preview,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, 'legacy preview', ?5, ?5)
+                ",
+                (
+                    format!("transcript:{session_id}"),
+                    session_id,
+                    serde_json::to_string(&json!({ "messages": messages })).unwrap(),
+                    message_count,
+                    now,
+                ),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "
+                INSERT INTO chat_session_runtime_links (
+                    runtime_session_id,
+                    app_session_id,
+                    parent_runtime_session_id,
+                    parent_app_session_id,
+                    created_at,
+                    updated_at
+                )
+                VALUES ('runtime_legacy_1', ?1, NULL, NULL, ?2, ?2)
+                ",
+                (session_id, now),
+            )
+            .unwrap();
     }
 
     #[test]
@@ -1275,5 +2031,97 @@ mod tests {
         store.load_metadata(&metadata.session_id).unwrap();
 
         assert!(!store.compaction_marker_path(&metadata.session_id).exists());
+    }
+
+    #[test]
+    fn legacy_reader_prefers_shadow_messages() {
+        let connection = legacy_connection();
+        let transcript_message = message("message_transcript", "from transcript");
+        insert_legacy_session(&connection, "legacy_1", vec![transcript_message]);
+        let shadow_message = message("message_shadow", "from shadow");
+        connection
+            .execute(
+                "
+                INSERT INTO chat_transcript_messages (
+                    session_id,
+                    message_index,
+                    message_id,
+                    kind,
+                    role,
+                    payload_json,
+                    content_hash,
+                    created_at,
+                    updated_at
+                )
+                VALUES ('legacy_1', 0, 'message_shadow', 'message', 'assistant', ?1, 'hash', ?2, ?2)
+                ",
+                (
+                    serde_json::to_string(&shadow_message).unwrap(),
+                    "2026-06-20T12:00:00.000Z",
+                ),
+            )
+            .unwrap();
+
+        let reader = LegacyAiHistoryReader::new(&connection);
+        let page = reader
+            .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                session_id: SessionId("legacy_1".to_string()),
+                offset: 0,
+                limit: 10,
+            })
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(page.messages, vec![shadow_message]);
+    }
+
+    #[test]
+    fn legacy_reader_lists_scoped_history() {
+        let connection = legacy_connection();
+        insert_legacy_session(&connection, "legacy_1", vec![message("message_1", "hello")]);
+        let reader = LegacyAiHistoryReader::new(&connection);
+
+        let history = reader
+            .list_session_history(NativeAiListSessionHistoryInput {
+                project_id: Some(ProjectId("project_1".to_string())),
+                worktree_id: Some(WorktreeId("worktree_1".to_string())),
+                limit: None,
+            })
+            .unwrap();
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(
+            history[0].runtime_session_id.as_ref().unwrap().0,
+            "runtime_legacy_1"
+        );
+    }
+
+    #[test]
+    fn migrator_copies_legacy_sessions_idempotently() {
+        let connection = legacy_connection();
+        insert_legacy_session(&connection, "legacy_1", vec![message("message_1", "hello")]);
+        let (_temp, store) = store();
+        let migrator =
+            AiHistoryMigrator::new(&store, &connection, Some("/tmp/comando.sqlite".to_string()));
+
+        let first = migrator.copy_legacy_history().unwrap();
+        let second = migrator.copy_legacy_history().unwrap();
+
+        assert_eq!(first.migrated_sessions, 1);
+        assert_eq!(first.failed_sessions, 0);
+        assert_eq!(second.migrated_sessions, 0);
+        assert_eq!(second.skipped_sessions, 1);
+        let snapshot = store
+            .load_session_snapshot(&SessionId("legacy_1".to_string()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.messages, vec![message("message_1", "hello")]);
+        assert!(
+            store
+                .history_root()
+                .join("migrations")
+                .join("sqlite-history-v1.json")
+                .exists()
+        );
     }
 }

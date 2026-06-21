@@ -261,6 +261,7 @@ version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "comando-types",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
