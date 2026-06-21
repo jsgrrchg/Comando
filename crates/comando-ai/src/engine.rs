@@ -197,25 +197,35 @@ impl AiEngine {
             .target_session_id
             .clone()
             .unwrap_or_else(|| root_session_id.clone());
+        let target_is_root = target_session_id == root_session_id;
         let mut sessions = self.lock_sessions()?;
         let session = sessions.get_mut(&root_session_id)?;
-        session.prompt_in_flight = false;
-        session.active_message_id = None;
-        if let (Some(controller), Some(runtime_session_id)) = (
-            session.acp_controller.clone(),
-            input
-                .runtime_session_id
-                .clone()
-                .or_else(|| session.session.runtime_session_id.clone()),
-        ) {
-            controller.cancel_pending_requests();
+        if target_is_root {
+            session.prompt_in_flight = false;
+            session.active_message_id = None;
+        }
+        let runtime_session_id = input
+            .runtime_session_id
+            .clone()
+            .or_else(|| session.session.runtime_session_id.clone());
+        if let (Some(controller), Some(runtime_session_id)) =
+            (session.acp_controller.clone(), runtime_session_id.clone())
+        {
+            if target_is_root {
+                controller.cancel_pending_requests();
+            } else {
+                controller
+                    .cancel_pending_requests_for_target(&runtime_session_id, &target_session_id);
+            }
             controller.cancel(runtime_session_id)?;
         }
-        session.set_status(NativeAiSessionStatus::Idle);
+        if target_is_root {
+            session.set_status(NativeAiSessionStatus::Idle);
+        }
         let mut summary = session.session.summary();
-        if target_session_id != root_session_id {
+        if !target_is_root {
             summary.session_id = target_session_id.clone();
-            summary.runtime_session_id = input.runtime_session_id;
+            summary.runtime_session_id = runtime_session_id;
             summary.status = NativeAiSessionStatus::Idle;
         }
         Ok((cancel_session_output(target_session_id), summary))

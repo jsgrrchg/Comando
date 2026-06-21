@@ -112,6 +112,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             request.input.sessionId,
         );
         this.#rememberOwner(request.input.sessionId, request.launch);
+        this.#rememberPersistedSubagentMappings(request.launch);
 
         try {
             const summary = await this.#client.request<NativeAiSessionSummary>(
@@ -149,8 +150,13 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             );
         }
 
+        this.#rememberPersistedSubagentMappings(request.launch);
         const target = this.#resolveSessionTarget(request.input.sessionId);
-        this.#rememberOwner(target.backendSessionId, request.launch);
+        if (target.targetSessionId) {
+            this.#rememberOwnerIdentity(target.backendSessionId, request.launch);
+        } else {
+            this.#rememberOwner(request.input.sessionId, request.launch);
+        }
 
         const result = await this.#client.request<NativeAiSendPromptOutput>(
             "ai_send_prompt",
@@ -446,12 +452,73 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         sessionId: string,
         launch: NativeAiPrepareSessionRpcInput["launch"],
     ): void {
-        this.#sessionOwners.set(sessionId, launch.ownerWindowId);
-        this.#sessionRuntimeIds.set(sessionId, launch.input.runtimeId);
+        this.#rememberOwnerIdentity(sessionId, launch);
         this.#runtimeSessionIds.set(
             sessionId,
             launch.persistedSnapshot.runtimeSessionId ?? null,
         );
+    }
+
+    #rememberOwnerIdentity(
+        sessionId: string,
+        launch: NativeAiPrepareSessionRpcInput["launch"],
+    ): void {
+        this.#sessionOwners.set(sessionId, launch.ownerWindowId);
+        this.#sessionRuntimeIds.set(sessionId, launch.input.runtimeId);
+    }
+
+    #rememberPersistedSubagentMappings(
+        launch: NativeAiPrepareSessionRpcInput["launch"],
+    ): void {
+        const snapshotParentSessionId =
+            launch.persistedSnapshot.parentSessionId ?? null;
+        if (snapshotParentSessionId) {
+            this.#rememberOwnerIdentity(snapshotParentSessionId, launch);
+            this.#sessionOwners.set(
+                launch.persistedSnapshot.sessionId,
+                launch.ownerWindowId,
+            );
+            this.#sessionRuntimeIds.set(
+                launch.persistedSnapshot.sessionId,
+                launch.input.runtimeId,
+            );
+            this.#runtimeSessionIds.set(
+                launch.persistedSnapshot.sessionId,
+                launch.persistedSnapshot.runtimeSessionId ?? null,
+            );
+            this.#subagentParentSessionIds.set(
+                launch.persistedSnapshot.sessionId,
+                snapshotParentSessionId,
+            );
+        }
+
+        for (const mapping of launch.persistedSubagentSessionMappings ?? []) {
+            this.#sessionOwners.set(mapping.appSessionId, launch.ownerWindowId);
+            this.#sessionRuntimeIds.set(
+                mapping.appSessionId,
+                launch.input.runtimeId,
+            );
+            this.#runtimeSessionIds.set(
+                mapping.appSessionId,
+                mapping.runtimeSessionId,
+            );
+            if (mapping.parentAppSessionId) {
+                this.#rememberOwnerIdentity(mapping.parentAppSessionId, launch);
+                this.#subagentParentSessionIds.set(
+                    mapping.appSessionId,
+                    mapping.parentAppSessionId,
+                );
+                if (
+                    mapping.parentRuntimeSessionId &&
+                    !this.#runtimeSessionIds.has(mapping.parentAppSessionId)
+                ) {
+                    this.#runtimeSessionIds.set(
+                        mapping.parentAppSessionId,
+                        mapping.parentRuntimeSessionId,
+                    );
+                }
+            }
+        }
     }
 
     #rememberSummary(

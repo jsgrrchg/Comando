@@ -62,13 +62,22 @@ const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
 const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
 
-type PermissionWaiterMap = Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>;
+type PermissionWaiterMap = Arc<Mutex<HashMap<String, PendingPermissionRequest>>>;
 type UserInputWaiterMap = Arc<Mutex<HashMap<String, PendingUserInputRequest>>>;
 
 #[derive(Debug)]
+struct PendingPermissionRequest {
+    runtime_session_id: RuntimeSessionId,
+    sender: oneshot::Sender<RequestPermissionOutcome>,
+    target_session_id: SessionId,
+}
+
+#[derive(Debug)]
 struct PendingUserInputRequest {
+    runtime_session_id: Option<RuntimeSessionId>,
     schema: BTreeMap<String, ElicitationAnswerKind>,
     sender: oneshot::Sender<CreateElicitationResponse>,
+    target_session_id: SessionId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,9 +385,12 @@ impl AcpSessionController {
                 RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id))
             })
             .unwrap_or(RequestPermissionOutcome::Cancelled);
-        waiter.send(outcome).map_err(|_| AiError::RuntimeExited {
-            message: "The ACP permission request is no longer waiting.".to_string(),
-        })
+        waiter
+            .sender
+            .send(outcome)
+            .map_err(|_| AiError::RuntimeExited {
+                message: "The ACP permission request is no longer waiting.".to_string(),
+            })
     }
 
     pub fn respond_user_input(&self, input: NativeAiUserInputResponseInput) -> AiResult<()> {
@@ -404,7 +416,7 @@ impl AcpSessionController {
     pub fn cancel_pending_requests(&self) {
         if let Ok(mut waiters) = self.permission_waiters.lock() {
             for (_, waiter) in waiters.drain() {
-                let _ = waiter.send(RequestPermissionOutcome::Cancelled);
+                let _ = waiter.sender.send(RequestPermissionOutcome::Cancelled);
             }
         }
         if let Ok(mut waiters) = self.user_input_waiters.lock() {
@@ -412,6 +424,45 @@ impl AcpSessionController {
                 let _ = waiter
                     .sender
                     .send(CreateElicitationResponse::new(ElicitationAction::Cancel));
+            }
+        }
+    }
+
+    pub fn cancel_pending_requests_for_target(
+        &self,
+        runtime_session_id: &RuntimeSessionId,
+        target_session_id: &SessionId,
+    ) {
+        if let Ok(mut waiters) = self.permission_waiters.lock() {
+            let request_ids = waiters
+                .iter()
+                .filter(|(_, waiter)| {
+                    waiter.runtime_session_id == *runtime_session_id
+                        && waiter.target_session_id == *target_session_id
+                })
+                .map(|(request_id, _)| request_id.clone())
+                .collect::<Vec<_>>();
+            for request_id in request_ids {
+                if let Some(waiter) = waiters.remove(&request_id) {
+                    let _ = waiter.sender.send(RequestPermissionOutcome::Cancelled);
+                }
+            }
+        }
+        if let Ok(mut waiters) = self.user_input_waiters.lock() {
+            let request_ids = waiters
+                .iter()
+                .filter(|(_, waiter)| {
+                    waiter.runtime_session_id.as_ref() == Some(runtime_session_id)
+                        && waiter.target_session_id == *target_session_id
+                })
+                .map(|(request_id, _)| request_id.clone())
+                .collect::<Vec<_>>();
+            for request_id in request_ids {
+                if let Some(waiter) = waiters.remove(&request_id) {
+                    let _ = waiter
+                        .sender
+                        .send(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                }
             }
         }
     }
@@ -639,19 +690,27 @@ async fn run_acp_session(
                             runtime_session_id,
                             target_session_id,
                         } => {
-                            run_prompt(
-                                &connection,
-                                &session.session_id,
-                                &target_session_id,
-                                &session.runtime_id,
-                                &runtime_session_id,
-                                message_id,
-                                prompt,
-                                &sessions,
-                                event_sender.as_ref(),
-                                &notification_context,
-                            )
-                            .await;
+                            let connection = connection.clone();
+                            let event_sender = event_sender.clone();
+                            let notification_context = notification_context.clone();
+                            let runtime_id = session.runtime_id.clone();
+                            let root_session_id = session.session_id.clone();
+                            let sessions = Arc::clone(&sessions);
+                            tokio::spawn(async move {
+                                run_prompt(
+                                    &connection,
+                                    &root_session_id,
+                                    &target_session_id,
+                                    &runtime_id,
+                                    &runtime_session_id,
+                                    message_id,
+                                    prompt,
+                                    &sessions,
+                                    event_sender.as_ref(),
+                                    &notification_context,
+                                )
+                                .await;
+                            });
                         }
                         AcpSessionCommand::Cancel { runtime_session_id } => {
                             connection.send_notification(CancelNotification::new(
@@ -814,7 +873,16 @@ async fn handle_permission_request(
     let (sender, receiver) = oneshot::channel();
     if waiters
         .lock()
-        .map(|mut waiters| waiters.insert(request_id.clone(), sender))
+        .map(|mut waiters| {
+            waiters.insert(
+                request_id.clone(),
+                PendingPermissionRequest {
+                    runtime_session_id: runtime_session_id.clone(),
+                    sender,
+                    target_session_id: target_summary.session_id.clone(),
+                },
+            )
+        })
         .is_err()
     {
         emit_ai_error(
@@ -862,6 +930,7 @@ async fn handle_permission_request(
     let outcome = receiver
         .await
         .unwrap_or(RequestPermissionOutcome::Cancelled);
+    let cancelled = matches!(outcome, RequestPermissionOutcome::Cancelled);
     if target_summary.session_id == session.session_id {
         emit_session_status_if_current(
             sessions,
@@ -872,7 +941,11 @@ async fn handle_permission_request(
         );
     } else {
         let mut summary = target_summary;
-        summary.status = NativeAiSessionStatus::Streaming;
+        summary.status = if cancelled {
+            NativeAiSessionStatus::Idle
+        } else {
+            NativeAiSessionStatus::Streaming
+        };
         emit_event(
             event_sender,
             AI_SESSION_UPDATED_EVENT,
@@ -914,7 +987,12 @@ async fn handle_user_input_request(
         .map(|mut waiters| {
             waiters.insert(
                 request_id.clone(),
-                PendingUserInputRequest { schema, sender },
+                PendingUserInputRequest {
+                    runtime_session_id: runtime_session_id.clone(),
+                    schema,
+                    sender,
+                    target_session_id: target_summary.session_id.clone(),
+                },
             )
         })
         .is_err()
@@ -964,6 +1042,7 @@ async fn handle_user_input_request(
     let response = receiver
         .await
         .unwrap_or_else(|_| CreateElicitationResponse::new(ElicitationAction::Cancel));
+    let cancelled = matches!(&response.action, ElicitationAction::Cancel);
     if target_summary.session_id == session.session_id {
         emit_session_status_if_current(
             sessions,
@@ -974,7 +1053,11 @@ async fn handle_user_input_request(
         );
     } else {
         let mut summary = target_summary;
-        summary.status = NativeAiSessionStatus::Streaming;
+        summary.status = if cancelled {
+            NativeAiSessionStatus::Idle
+        } else {
+            NativeAiSessionStatus::Streaming
+        };
         emit_event(
             event_sender,
             AI_SESSION_UPDATED_EVENT,

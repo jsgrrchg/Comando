@@ -331,6 +331,92 @@ describe("NativeAiGateway", () => {
         expect(client.request).not.toHaveBeenCalled();
     });
 
+    it("hydrates persisted subagent mappings before child events arrive", async () => {
+        const client = createClient();
+        const onSessionEvent = vi.fn();
+        const gateway = createGateway(client, { onSessionEvent });
+        const childSessionId = "session-1:subagent:runtime-child-1";
+        const launch = {
+            ...createLaunch(),
+            persistedSubagentSessionMappings: [
+                {
+                    appSessionId: childSessionId,
+                    parentAppSessionId: "session-1",
+                    parentRuntimeSessionId: "runtime-session-1",
+                    runtimeSessionId: "runtime-child-1",
+                },
+            ],
+        };
+
+        await gateway.prepareSession({
+            input: createPrepareInput(),
+            launch,
+        });
+        client.emit({
+            eventName: "ai://message-delta",
+            payload: {
+                content: "Persisted child output",
+                delta: "Persisted child output",
+                messageId: "assistant-child-1",
+                messageKind: "assistant",
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-child-1",
+                sessionId: childSessionId,
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            },
+            type: "event",
+        });
+
+        expect(onSessionEvent).toHaveBeenCalledWith(
+            "window-1",
+            expect.objectContaining({
+                content: "Persisted child output",
+                kind: "message-delta",
+                sessionId: childSessionId,
+            }),
+        );
+
+        const childLaunch = {
+            ...createLaunch(),
+            input: {
+                ...createLaunch().input,
+                sessionId: childSessionId,
+                title: "Galileo",
+            },
+            persistedSnapshot: {
+                ...createEmptyAiSessionSnapshot({
+                    projectId: "project-1",
+                    runtimeId: "opencode",
+                    sessionId: childSessionId,
+                    title: "Galileo",
+                    worktreeId: "worktree-1",
+                }),
+                parentSessionId: "session-1",
+                runtimeSessionId: "runtime-child-1",
+            },
+        };
+
+        client.request.mockClear();
+        await gateway.sendPrompt({
+            input: {
+                ...createPromptInput(),
+                messageId: "user-message-child-1",
+                sessionId: childSessionId,
+            },
+            launch: childLaunch,
+        });
+        expect(client.request).toHaveBeenCalledWith("ai_send_prompt", {
+            messageId: "user-message-child-1",
+            prompt: {
+                attachments: [],
+                text: "Implement the feature.",
+            },
+            runtimeSessionId: "runtime-child-1",
+            sessionId: "session-1",
+            targetSessionId: childSessionId,
+        });
+    });
+
     it("reports runtime connection events as diagnostics", () => {
         const client = createClient();
         const onDiagnostic = vi.fn();
