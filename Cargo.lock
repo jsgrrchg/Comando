@@ -371,6 +371,7 @@ version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "comando-diff",
+ "comando-settings",
  "comando-types",
  "rusqlite",
  "serde",
@@ -449,6 +450,7 @@ dependencies = [
  "comando-index",
  "comando-persistence",
  "comando-projects",
+ "comando-settings",
  "comando-terminal",
  "comando-types",
  "rusqlite",

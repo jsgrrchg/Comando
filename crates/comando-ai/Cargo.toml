@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 agent-client-protocol.workspace = true
 comando-diff.workspace = true
+comando-settings.workspace = true
 comando-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -26,6 +26,7 @@ use comando_index::{
 };
 use comando_persistence::{NativeStorageConfig, SqlitePersistenceStore, closed_storage_health};
 use comando_projects::{ProjectRegistry, ProjectRegistryError};
+use comando_settings::{RuntimeSetupState, RuntimeSetupStore, secret_env_keys_for_runtime};
 use comando_terminal::{TerminalRuntimeEvent, TerminalService};
 use comando_types::capabilities::{
     BACKEND_NAME, NativeBackendCapabilitiesOutput, NativeBackendHandshakeInput,
@@ -72,6 +73,7 @@ pub struct NativeBackend {
     index_service: IndexService,
     persistence_store: Option<SqlitePersistenceStore>,
     review_service: NativeReviewService,
+    runtime_setup_store: Option<RuntimeSetupStore>,
     terminal_service: Option<TerminalService>,
 }
 
@@ -124,6 +126,10 @@ impl NativeBackend {
             | "terminal_list" => self.handle_terminal_request(request, background_sender),
             "ai_list_runtimes"
             | "ai_get_runtime_status"
+            | "ai_save_runtime_settings"
+            | "ai_launch_runtime_auth"
+            | "ai_disconnect_runtime_auth"
+            | "ai_logout_runtime_auth"
             | "ai_prepare_session"
             | "ai_send_prompt"
             | "ai_cancel_session"
@@ -153,10 +159,14 @@ impl NativeBackend {
             | "ai_keep_all_tracked_files"
             | "ai_reject_all_tracked_files"
             | "ai_notify_file_buffer" => {
-                if let Err(error) = self.ensure_ai_event_bridge(background_sender) {
+                if let Err(error) = self.ensure_ai_event_bridge(background_sender.clone()) {
                     return error_only(request.id, error);
                 }
-                self.handle_ai_request(request)
+                if request.command == "ai_launch_runtime_auth" {
+                    self.handle_ai_auth_terminal_request(request, background_sender)
+                } else {
+                    self.handle_ai_request(request)
+                }
             }
             _ => self.handle_request(request),
         }
@@ -230,6 +240,9 @@ impl NativeBackend {
             "git_delete_remote_branch" => self.git_delete_remote_branch(request),
             "ai_list_runtimes"
             | "ai_get_runtime_status"
+            | "ai_save_runtime_settings"
+            | "ai_disconnect_runtime_auth"
+            | "ai_logout_runtime_auth"
             | "ai_prepare_session"
             | "ai_send_prompt"
             | "ai_cancel_session"
@@ -259,6 +272,10 @@ impl NativeBackend {
             | "ai_keep_all_tracked_files"
             | "ai_reject_all_tracked_files"
             | "ai_notify_file_buffer" => self.handle_ai_request(request),
+            "secret_status" => self.secret_status(request),
+            "secret_get" => self.secret_get(request),
+            "secret_set" => self.secret_set(request),
+            "secret_delete" => self.secret_delete(request),
             #[cfg(test)]
             "backend_queue_test_fs_event" => self.queue_test_fs_event(request),
             command => CommandResult {
@@ -308,8 +325,17 @@ impl NativeBackend {
                 if let Err(error) = self.ai_engine.set_history_store(history_store) {
                     return error_only(request.id, error.to_native_error());
                 }
+                let runtime_setup_store =
+                    RuntimeSetupStore::new(store.app_data_dir().join("ai").join("runtime-setup.json"));
+                if let Err(error) = self
+                    .ai_engine
+                    .set_runtime_setup_store(Some(runtime_setup_store.clone()))
+                {
+                    return error_only(request.id, error.to_native_error());
+                }
                 self.review_service
                     .set_app_data_dir(store.app_data_dir().to_path_buf());
+                self.runtime_setup_store = Some(runtime_setup_store);
                 self.persistence_store = Some(store);
                 CommandResult {
                     outputs: vec![
@@ -361,6 +387,246 @@ impl NativeBackend {
             })
             .expect("snapshot output serializes"),
         )
+    }
+
+    fn secret_status(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.runtime_setup_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        response_only(
+            request.id,
+            serde_json::to_value(store.secrets().status()).expect("secret status serializes"),
+        )
+    }
+
+    fn secret_get(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.runtime_setup_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<native_ai::NativeSecretGetInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        match store
+            .secrets()
+            .get_secret(&input.runtime_id.0, &input.env_key)
+        {
+            Ok(value) => response_only(
+                request.id,
+                serde_json::to_value(native_ai::NativeSecretValueOutput {
+                    runtime_id: input.runtime_id,
+                    env_key: input.env_key,
+                    value,
+                })
+                .expect("secret get output serializes"),
+            ),
+            Err(error) => error_only(request.id, runtime_setup_native_error(error.to_string())),
+        }
+    }
+
+    fn secret_set(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.runtime_setup_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<native_ai::NativeSecretSetInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let present = !input.value.trim().is_empty();
+        let result = if present {
+            store.set_secret(&input.runtime_id.0, &input.env_key, &input.value)
+        } else {
+            store.delete_secret(&input.runtime_id.0, &input.env_key)
+        };
+        match result {
+            Ok(()) => response_only(
+                request.id,
+                serde_json::to_value(native_ai::NativeSecretMutationOutput {
+                    runtime_id: input.runtime_id,
+                    env_key: input.env_key,
+                    present,
+                })
+                .expect("secret set output serializes"),
+            ),
+            Err(error) => error_only(request.id, runtime_setup_native_error(error.to_string())),
+        }
+    }
+
+    fn secret_delete(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.runtime_setup_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<native_ai::NativeSecretDeleteInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        match store.delete_secret(&input.runtime_id.0, &input.env_key) {
+            Ok(()) => response_only(
+                request.id,
+                serde_json::to_value(native_ai::NativeSecretMutationOutput {
+                    runtime_id: input.runtime_id,
+                    env_key: input.env_key,
+                    present: false,
+                })
+                .expect("secret delete output serializes"),
+            ),
+            Err(error) => error_only(request.id, runtime_setup_native_error(error.to_string())),
+        }
+    }
+
+    fn ai_save_runtime_settings(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.runtime_setup_store.clone() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<native_ai::NativeAiSaveRuntimeSettingsInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let runtime_id = input.runtime_id.0.clone();
+        let result = apply_runtime_settings(&store, input)
+            .and_then(|_| self.runtime_status_output(&runtime_id));
+        match result {
+            Ok(status) => runtime_status_response(request.id, status),
+            Err(error) => error_only(request.id, error),
+        }
+    }
+
+    fn ai_disconnect_runtime_auth(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.runtime_setup_store.clone() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<native_ai::NativeAiRuntimeAuthInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let runtime_id = input.runtime_id.0.clone();
+        let result = disconnect_runtime_auth(&store, &runtime_id)
+            .and_then(|_| self.runtime_status_output(&runtime_id));
+        match result {
+            Ok(status) => runtime_status_response(request.id, status),
+            Err(error) => error_only(request.id, error),
+        }
+    }
+
+    fn ai_logout_runtime_auth(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_ai::NativeAiRuntimeAuthInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        if input.runtime_id.0 != "codex" {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::NotSupported,
+                    "This runtime does not support native logout yet.",
+                ),
+            );
+        }
+        self.ai_disconnect_runtime_auth(RpcRequest {
+            id: request.id,
+            command: "ai_disconnect_runtime_auth".to_string(),
+            args: serde_json::to_value(input).expect("runtime auth input serializes"),
+            meta: None,
+        })
+    }
+
+    fn handle_ai_auth_terminal_request(
+        &mut self,
+        request: RpcRequest,
+        background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
+    ) -> CommandResult {
+        let Some(store) = self.runtime_setup_store.clone() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<native_ai::NativeAiLaunchRuntimeAuthInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let runtime_id = input.runtime_id.0.clone();
+        let method_id = input.method_id.clone();
+        let (program, args) = match auth_terminal_command(&store, &runtime_id, &method_id) {
+            Ok(command) => command,
+            Err(error) => return error_only(request.id, error),
+        };
+        if let Err(error) = store.update_runtime(&runtime_id, |state| {
+            state.auth_method = Some(method_id.clone());
+            state.auth_invalidated_at_ms = Some(now_ms());
+        }) {
+            return error_only(request.id, runtime_setup_native_error(error.to_string()));
+        }
+        let cwd = input
+            .cwd
+            .clone()
+            .or_else(|| self.resolve_auth_terminal_cwd(input.project_id.as_ref(), input.worktree_id.as_ref()));
+        let terminal_input = native_terminal::NativeTerminalCreateInput {
+            window_id: input.window_id.clone(),
+            terminal_id: None,
+            preferred_session_id: None,
+            project_id: input.project_id.clone(),
+            worktree_id: input.worktree_id.clone(),
+            cwd,
+            cols: input.cols,
+            rows: input.rows,
+            extra_env: std::collections::HashMap::new(),
+            shell_preference: None,
+            purpose: native_terminal::NativeTerminalPurpose::Auth,
+            launched_by: native_terminal::NativeTerminalLaunchedBy::System,
+            launch: native_terminal::NativeTerminalLaunch::Command {
+                program,
+                args,
+                display_name: Some(format!("{runtime_id} auth")),
+            },
+        };
+        let session = match self
+            .ensure_terminal_service(background_sender)
+            .create_session(terminal_input)
+        {
+            Ok(session) => session,
+            Err(error) => return error_only(request.id, error.to_native_error()),
+        };
+        let status = match self.runtime_status_output(&runtime_id) {
+            Ok(status) => status,
+            Err(error) => return error_only(request.id, error),
+        };
+        CommandResult {
+            outputs: vec![
+                response_ok(
+                    request.id,
+                    serde_json::to_value(native_ai::NativeAiLaunchRuntimeAuthOutput {
+                        runtime_id: input.runtime_id,
+                        method_id: input.method_id,
+                        terminal_session_id: Some(session.session_id.clone()),
+                        status: status.clone(),
+                    })
+                    .expect("ai auth launch output serializes"),
+                ),
+                event(
+                    AI_RUNTIME_STATUS_EVENT,
+                    serde_json::to_value(&status).expect("ai runtime status event serializes"),
+                ),
+                event(
+                    "ai://auth-terminal-started",
+                    json!({
+                        "runtimeId": runtime_id,
+                        "methodId": method_id,
+                        "terminalSessionId": session.session_id.0,
+                    }),
+                ),
+            ],
+            should_shutdown: false,
+        }
+    }
+
+    fn runtime_status_output(
+        &self,
+        runtime_id: &str,
+    ) -> Result<native_ai::NativeAiRuntimeStatus, NativeError> {
+        self.ai_engine
+            .get_runtime_status(native_ai::NativeAiGetRuntimeStatusInput {
+                runtime_id: comando_types::ids::RuntimeId(runtime_id.to_string()),
+                launch: None,
+            })
+            .map_err(|error| error.to_native_error())
     }
 
     fn list_projects(&mut self, request: RpcRequest) -> CommandResult {
@@ -1235,6 +1501,9 @@ impl NativeBackend {
                     Err(error) => error_only(request.id, error.to_native_error()),
                 }
             }
+            "ai_save_runtime_settings" => self.ai_save_runtime_settings(request),
+            "ai_disconnect_runtime_auth" => self.ai_disconnect_runtime_auth(request),
+            "ai_logout_runtime_auth" => self.ai_logout_runtime_auth(request),
             "ai_prepare_session" => {
                 let input = match parse_args::<native_ai::NativeAiPrepareSessionInput>(&request) {
                     Ok(input) => input,
@@ -2491,6 +2760,19 @@ impl NativeBackend {
             .map_err(fs_error)
     }
 
+    fn resolve_auth_terminal_cwd(
+        &mut self,
+        project_id: Option<&comando_types::ids::ProjectId>,
+        worktree_id: Option<&comando_types::ids::WorktreeId>,
+    ) -> Option<String> {
+        let project_id = project_id?;
+        let _ = self.sync_fs_registry_from_store();
+        self.fs_service
+            .resolve_root(project_id, worktree_id)
+            .ok()
+            .map(|root| root.root_path.display().to_string())
+    }
+
     pub(crate) fn drain_fs_events(&mut self, force: bool) -> Vec<RpcOutput> {
         let drain = self.fs_service.drain_watchers(force);
         let mut outputs = Vec::new();
@@ -2523,6 +2805,245 @@ impl NativeBackend {
 
         response_only(request.id, json!({"queued": true}))
     }
+}
+
+fn apply_runtime_settings(
+    store: &RuntimeSetupStore,
+    input: native_ai::NativeAiSaveRuntimeSettingsInput,
+) -> Result<(), NativeError> {
+    let runtime_id = input.runtime_id.0.clone();
+    let mut state = store
+        .load_runtime(&runtime_id)
+        .map_err(|error| runtime_setup_native_error(error.to_string()))?;
+    state.binary_path = normalize_optional_text(input.settings.binary_path);
+    state.auth_method = normalize_optional_text(input.settings.auth_method);
+    state.auth_invalidated_at_ms = input.settings.auth_invalidated_at_ms;
+    state.gateway_base_url = normalize_optional_text(input.settings.gateway_base_url);
+    state.bedrock_gateway_base_url =
+        normalize_optional_text(input.settings.bedrock_gateway_base_url);
+    state.non_secret_env = input
+        .settings
+        .non_secret_env
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let value = value.trim();
+            (!value.is_empty()).then(|| (key, value.to_string()))
+        })
+        .collect();
+
+    for patch in input.secret_patches {
+        match patch.action {
+            native_ai::NativeSecretPatchAction::Set => {
+                let value = patch.value.unwrap_or_default();
+                if value.trim().is_empty() {
+                    store
+                        .secrets()
+                        .delete_secret(&runtime_id, &patch.env_key)
+                        .map_err(|error| runtime_setup_native_error(error.to_string()))?;
+                    state.secret_env_keys.remove(&patch.env_key);
+                } else {
+                    store
+                        .secrets()
+                        .set_secret(&runtime_id, &patch.env_key, &value)
+                        .map_err(|error| runtime_setup_native_error(error.to_string()))?;
+                    state.secret_env_keys.insert(patch.env_key.clone());
+                    clear_mutually_exclusive_secret(
+                        store,
+                        &runtime_id,
+                        &patch.env_key,
+                        &mut state,
+                    )?;
+                }
+            }
+            native_ai::NativeSecretPatchAction::Delete => {
+                store
+                    .secrets()
+                    .delete_secret(&runtime_id, &patch.env_key)
+                    .map_err(|error| runtime_setup_native_error(error.to_string()))?;
+                state.secret_env_keys.remove(&patch.env_key);
+            }
+        }
+    }
+
+    store
+        .save_runtime(&runtime_id, state)
+        .map_err(|error| runtime_setup_native_error(error.to_string()))
+}
+
+fn clear_mutually_exclusive_secret(
+    store: &RuntimeSetupStore,
+    runtime_id: &str,
+    env_key: &str,
+    state: &mut RuntimeSetupState,
+) -> Result<(), NativeError> {
+    let opposite = match (runtime_id, env_key) {
+        ("codex", "CODEX_API_KEY") => Some("OPENAI_API_KEY"),
+        ("codex", "OPENAI_API_KEY") => Some("CODEX_API_KEY"),
+        _ => None,
+    };
+    if let Some(opposite) = opposite {
+        store
+            .secrets()
+            .delete_secret(runtime_id, opposite)
+            .map_err(|error| runtime_setup_native_error(error.to_string()))?;
+        state.secret_env_keys.remove(opposite);
+    }
+    Ok(())
+}
+
+fn disconnect_runtime_auth(store: &RuntimeSetupStore, runtime_id: &str) -> Result<(), NativeError> {
+    let mut state = store
+        .load_runtime(runtime_id)
+        .map_err(|error| runtime_setup_native_error(error.to_string()))?;
+    for env_key in secret_env_keys_for_runtime(runtime_id) {
+        store
+            .secrets()
+            .delete_secret(runtime_id, env_key)
+            .map_err(|error| runtime_setup_native_error(error.to_string()))?;
+    }
+    if matches!(
+        state.auth_method.as_deref(),
+        Some(
+            "claude-login"
+                | "claude-ai-login"
+                | "console-login"
+                | "opencode-login"
+                | "grok-login"
+                | "kilo-login"
+        )
+    ) {
+        state.auth_invalidated_at_ms = Some(now_ms());
+    }
+    state.auth_method = None;
+    state.secret_env_keys.clear();
+    store
+        .save_runtime(runtime_id, state)
+        .map_err(|error| runtime_setup_native_error(error.to_string()))
+}
+
+fn auth_terminal_command(
+    store: &RuntimeSetupStore,
+    runtime_id: &str,
+    method_id: &str,
+) -> Result<(String, Vec<String>), NativeError> {
+    let args = match (runtime_id, method_id) {
+        ("claude", "claude-login") => vec!["--cli".to_string()],
+        ("claude", "claude-ai-login") => vec![
+            "--cli".to_string(),
+            "auth".to_string(),
+            "login".to_string(),
+            "--claudeai".to_string(),
+        ],
+        ("claude", "console-login") => vec![
+            "--cli".to_string(),
+            "auth".to_string(),
+            "login".to_string(),
+            "--console".to_string(),
+        ],
+        ("grok", "grok-login") => vec!["login".to_string()],
+        ("kilo", "kilo-login") => vec!["auth".to_string(), "login".to_string()],
+        ("opencode", "opencode-login") => vec!["auth".to_string(), "login".to_string()],
+        ("codex", "chatgpt") => {
+            return Err(NativeError::new(
+                NativeErrorCode::NotSupported,
+                "Codex ChatGPT login is handled by the runtime authentication handshake, not an auth terminal.",
+            ));
+        }
+        (_, method)
+            if method.ends_with("api-key") || method == "gateway" || method == "gateway-bedrock" =>
+        {
+            return Err(NativeError::new(
+                NativeErrorCode::InvalidArgs,
+                "This authentication method does not use a login terminal.",
+            ));
+        }
+        _ => {
+            return Err(NativeError::new(
+                NativeErrorCode::InvalidArgs,
+                format!(
+                    "Unsupported auth terminal method `{method_id}` for runtime `{runtime_id}`."
+                ),
+            ));
+        }
+    };
+    let state = store
+        .load_runtime(runtime_id)
+        .map_err(|error| runtime_setup_native_error(error.to_string()))?;
+    let program = runtime_binary_override(runtime_id)
+        .or(state.binary_path)
+        .unwrap_or_else(|| default_runtime_executable(runtime_id).to_string());
+    Ok((program, args))
+}
+
+fn runtime_binary_override(runtime_id: &str) -> Option<String> {
+    let key = match runtime_id {
+        "codex" => "COMANDO_CODEX_ACP_BIN",
+        "claude" => "COMANDO_CLAUDE_ACP_BIN",
+        "grok" => "COMANDO_GROK_ACP_BIN",
+        "kilo" => "COMANDO_KILO_ACP_BIN",
+        "opencode" => "COMANDO_OPENCODE_ACP_BIN",
+        _ => return None,
+    };
+    std::env::var(key)
+        .ok()
+        .and_then(|value| normalize_optional_text(Some(value)))
+}
+
+fn default_runtime_executable(runtime_id: &str) -> &'static str {
+    match runtime_id {
+        "codex" => "codex-acp",
+        "claude" => "claude-agent-acp",
+        "grok" => "grok",
+        "kilo" => "kilo",
+        "opencode" => "opencode",
+        _ => "unknown-runtime",
+    }
+}
+
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    })
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
+fn runtime_status_response(
+    id: RequestId,
+    status: native_ai::NativeAiRuntimeStatus,
+) -> CommandResult {
+    CommandResult {
+        outputs: vec![
+            response_ok(
+                id,
+                serde_json::to_value(&status).expect("runtime status serializes"),
+            ),
+            event(
+                AI_RUNTIME_STATUS_EVENT,
+                serde_json::to_value(status).expect("runtime status event serializes"),
+            ),
+        ],
+        should_shutdown: false,
+    }
+}
+
+fn runtime_setup_native_error(message: String) -> NativeError {
+    let code = if message.starts_with("Invalid") {
+        NativeErrorCode::InvalidArgs
+    } else {
+        NativeErrorCode::InternalError
+    };
+    NativeError::new(code, message)
 }
 
 fn response_only(id: RequestId, payload: Value) -> CommandResult {
