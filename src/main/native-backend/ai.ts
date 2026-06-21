@@ -14,7 +14,11 @@ import type {
     AiSessionSnapshot,
     AiSessionStatus,
     AiSessionTranscriptPage,
+    AiTrackedFile,
+    AiTrackedFileHunkMutationInput,
+    AiTrackedFileMutationInput,
     AiUserInputResponseInput,
+    FileBufferNotificationInput,
     GetAiSessionTranscriptPageInput,
     ListAiSessionHistoryInput,
 } from "@shared/ipc";
@@ -22,11 +26,14 @@ import {
     nativeAiCatalogPatchToIpc,
     nativeAiEventToIpc,
     nativeAiRuntimeStatusToIpc,
+    nativeReviewTrackedFileToIpc,
     type NativeAiCatalogPatch,
     type NativeAiCancelSessionOutput,
     type NativeAiCloseSessionOutput,
     type NativeAiHistorySessionSummary,
     type NativeAiLaunchSpec,
+    type NativeAiReviewCaptureOutput,
+    type NativeAiReviewCommandOutput,
     type NativeAiRuntimeSessionMapping,
     type NativeAiSessionSnapshot,
     type NativeAiSessionTranscriptPage,
@@ -39,6 +46,8 @@ import {
 } from "@shared/native-backend";
 
 import type {
+    AiWorkerReviewMutationResult,
+    AiWorkerReviewSessionRpcInput,
     AiWorkerRuntimeSessionMapping,
     NativeAiGateway as NativeAiGatewayContract,
     NativeAiPrepareSessionRpcInput,
@@ -49,10 +58,19 @@ import type { NativeBackendRequester } from "./persistence";
 export const NATIVE_AI_ENABLED_ENV = "COMANDO_NATIVE_AI";
 export const NATIVE_AI_HISTORY_ENABLED_ENV = "COMANDO_NATIVE_AI_HISTORY";
 export const NATIVE_AI_RUNTIMES_ENV = "COMANDO_NATIVE_AI_RUNTIMES";
+export const NATIVE_AI_REVIEW_ENABLED_ENV = "COMANDO_NATIVE_REVIEW";
 
 type NativeAiClient = NativeBackendRequester & {
     onEvent(listener: (event: NativeBackendEvent) => void): () => void;
 };
+
+type NativeReviewMutationCommand =
+    | "ai_keep_all_tracked_files"
+    | "ai_keep_tracked_file"
+    | "ai_keep_tracked_file_hunks"
+    | "ai_reject_all_tracked_files"
+    | "ai_reject_tracked_file"
+    | "ai_reject_tracked_file_hunks";
 
 export interface NativeAiGatewayOptions {
     readonly client: NativeAiClient;
@@ -96,6 +114,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         patch: NativeAiCatalogPatch,
         updatedAt: string,
     ) => void;
+    readonly #reviewEnabled: boolean;
     readonly #runtimeSessionIds = new Map<string, string | null>();
     readonly #sessionOwners = new Map<string, string>();
     readonly #sessionRuntimeIds = new Map<string, AiRuntimeId>();
@@ -107,6 +126,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             options.env ?? process.env,
         );
         this.#historyEnabled = shouldUseNativeAiHistory(options.env ?? process.env);
+        this.#reviewEnabled = shouldUseNativeAiReview(options.env ?? process.env);
         this.#onDiagnostic = options.onDiagnostic;
         this.#onRuntimeStatus = options.onRuntimeStatus;
         this.#onSessionEvent = options.onSessionEvent;
@@ -122,6 +142,117 @@ export class NativeAiGateway implements NativeAiGatewayContract {
 
     shouldHandleHistory(): boolean {
         return this.#historyEnabled;
+    }
+
+    shouldHandleReview(): boolean {
+        return this.#reviewEnabled;
+    }
+
+    async notifyFileBuffer(input: FileBufferNotificationInput): Promise<void> {
+        if (!this.#reviewEnabled) {
+            return;
+        }
+        await this.#client.request("ai_notify_file_buffer", {
+            absolutePath: input.absolutePath,
+            content: input.content,
+        });
+    }
+
+    async captureReviewBaseline(sessionId: string): Promise<boolean> {
+        if (!this.#reviewEnabled) {
+            return false;
+        }
+        const output = await this.#client.request<NativeAiReviewCaptureOutput>(
+            "ai_capture_review_baseline",
+            { sessionId },
+        );
+        return output.captured === true;
+    }
+
+    async reconcileTrackedFiles(sessionId: string): Promise<readonly AiTrackedFile[]> {
+        if (!this.#reviewEnabled) {
+            return [];
+        }
+        const output = await this.#client.request<NativeAiReviewCommandOutput>(
+            "ai_reconcile_tracked_files",
+            { sessionId },
+        );
+        return nativeReviewCommandTrackedFiles(output);
+    }
+
+    async keepTrackedFile(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult> {
+        return await this.#runReviewMutation(input, "ai_keep_tracked_file", {
+            path: input.input.path,
+            ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
+        });
+    }
+
+    async rejectTrackedFile(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult> {
+        return await this.#runReviewMutation(input, "ai_reject_tracked_file", {
+            path: input.input.path,
+            ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
+        });
+    }
+
+    async keepTrackedFileHunks(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult> {
+        return await this.#runReviewMutation(input, "ai_keep_tracked_file_hunks", {
+            hunkIds: input.input.hunkIds,
+            path: input.input.path,
+            ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
+        });
+    }
+
+    async rejectTrackedFileHunks(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult> {
+        return await this.#runReviewMutation(input, "ai_reject_tracked_file_hunks", {
+            hunkIds: input.input.hunkIds,
+            path: input.input.path,
+            ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
+        });
+    }
+
+    async keepAllTrackedFiles(
+        input: AiWorkerReviewSessionRpcInput<string>,
+    ): Promise<AiWorkerReviewMutationResult> {
+        return await this.#runReviewMutation(input, "ai_keep_all_tracked_files", {});
+    }
+
+    async rejectAllTrackedFiles(
+        input: AiWorkerReviewSessionRpcInput<string>,
+    ): Promise<AiWorkerReviewMutationResult> {
+        return await this.#runReviewMutation(input, "ai_reject_all_tracked_files", {});
+    }
+
+    async #runReviewMutation<TInput>(
+        input: AiWorkerReviewSessionRpcInput<TInput>,
+        command: NativeReviewMutationCommand,
+        args: Record<string, unknown>,
+    ): Promise<AiWorkerReviewMutationResult> {
+        if (!this.#reviewEnabled) {
+            throw new Error("Native AI review is not enabled.");
+        }
+        const output = await this.#client.request<NativeAiReviewCommandOutput>(
+            command,
+            {
+                ...args,
+                sessionId: input.context.snapshot.sessionId,
+            },
+        );
+        return {
+            ownerWindowId: input.context.ownerWindowId,
+            snapshot: {
+                ...input.context.snapshot,
+                trackedFiles: nativeReviewCommandTrackedFiles(output),
+                updatedAt: output.updatedAt,
+            },
+        };
     }
 
     async listSessionHistory(
@@ -735,6 +866,12 @@ export function shouldUseNativeAiHistory(
     return shouldUseNativeAi(env) && env[NATIVE_AI_HISTORY_ENABLED_ENV] === "1";
 }
 
+export function shouldUseNativeAiReview(
+    env: NodeJS.ProcessEnv = process.env,
+): boolean {
+    return shouldUseNativeAi(env) && env[NATIVE_AI_REVIEW_ENABLED_ENV] === "1";
+}
+
 export function shouldUseNativeAiRuntime(
     runtimeId: AiRuntimeId,
     env: NodeJS.ProcessEnv = process.env,
@@ -767,6 +904,27 @@ function parseNativeAiRuntimeIds(
     }
 
     return new Set(normalized.filter(isNativeAiRuntimeId));
+}
+
+function nativeReviewCommandTrackedFiles(
+    output: NativeAiReviewCommandOutput,
+): readonly AiTrackedFile[] {
+    return output.trackedFiles.map(nativeReviewTrackedFileToIpc);
+}
+
+function nativeExpectedReviewVersion(
+    snapshot: AiSessionSnapshot,
+    reviewPath: string,
+): { readonly expectedVersion?: number } {
+    const trackedFile = snapshot.trackedFiles.find(
+        (file) =>
+            file.path === reviewPath ||
+            file.previousPath === reviewPath ||
+            file.identityKey === reviewPath,
+    );
+    return typeof trackedFile?.version === "number"
+        ? { expectedVersion: trackedFile.version }
+        : {};
 }
 
 function nativeSummaryToSnapshot(

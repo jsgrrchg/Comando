@@ -8,6 +8,7 @@ import type {
     AiSessionStatus,
     AiSessionDomainEvent,
     AiSessionMessageEventKind,
+    AiTrackedFile,
     AiPermissionOption,
     AiToolActivity,
     AiUserInputQuestion,
@@ -29,6 +30,7 @@ import type {
     NativeAiMessageStartedPayload,
     NativeAiPermissionRequestPayload,
     NativeAiPlanUpdatedPayload,
+    NativeAiReviewUpdatedPayload,
     NativeAiRuntimeStatus,
     NativeAiSessionCatalogUpdatedPayload,
     NativeAiSessionCreatedPayload,
@@ -174,6 +176,12 @@ export function nativeAiEventToIpc(
     if (event.eventName === "ai://token-usage") {
         return nativeAiTokenUsageToIpc(
             requireRecord(event.payload) as unknown as NativeAiTokenUsagePayload,
+        );
+    }
+
+    if (event.eventName === "ai://review-updated") {
+        return nativeAiReviewUpdatedToIpc(
+            requireRecord(event.payload) as unknown as NativeAiReviewUpdatedPayload,
         );
     }
 
@@ -655,6 +663,55 @@ function nativeAiTokenUsageToIpc(
     };
 }
 
+function nativeAiReviewUpdatedToIpc(
+    payload: NativeAiReviewUpdatedPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        kind: "review",
+        trackedFiles: payload.trackedFiles.map(nativeReviewTrackedFileToIpc),
+    };
+}
+
+export function nativeReviewTrackedFileToIpc(value: unknown): AiTrackedFile {
+    const record = requireRecord(value);
+    const reviewState = readString(record, "reviewState", "pending");
+    const version =
+        typeof record.version === "number" && Number.isFinite(record.version)
+            ? Math.max(1, Math.trunc(record.version))
+            : null;
+    return {
+        ...(typeof record.diffBase === "string"
+            ? { diffBase: record.diffBase }
+            : {}),
+        ...(typeof record.currentText === "string"
+            ? { currentText: record.currentText }
+            : {}),
+        ...(record.hunksAreAnchored === true
+            ? { hunksAreAnchored: true }
+            : {}),
+        identityKey: readString(record, "identityKey", readString(record, "path", "")),
+        hunks: Array.isArray(record.hunks)
+            ? (record.hunks as AiTrackedFile["hunks"])
+            : [],
+        isText: record.isText !== false,
+        kind: readTrackedFileKind(record.kind),
+        newText: readNullableString(record, "newText"),
+        oldText: readNullableString(record, "oldText"),
+        path: readString(record, "path", ""),
+        previousPath: readNullableString(record, "previousPath"),
+        reviewState:
+            reviewState === "kept" || reviewState === "rejected"
+                ? reviewState
+                : "pending",
+        reversible: record.reversible !== false,
+        sessionId: readString(record, "sessionId", ""),
+        toolCallId: readNullableString(record, "toolCallId"),
+        updatedAt: readString(record, "updatedAt", new Date(0).toISOString()),
+        ...(version !== null ? { version } : {}),
+    };
+}
+
 function nativeAiErrorToIpc(payload: NativeAiErrorPayload): AiSessionDomainEvent | null {
     if (!payload.sessionId || !payload.runtimeId) {
         return null;
@@ -731,6 +788,32 @@ function requireRecord(value: unknown): Record<string, unknown> {
     }
 
     return value as Record<string, unknown>;
+}
+
+function readString(
+    record: Record<string, unknown>,
+    key: string,
+    fallback: string,
+): string {
+    const value = record[key];
+    return typeof value === "string" ? value : fallback;
+}
+
+function readNullableString(
+    record: Record<string, unknown>,
+    key: string,
+): string | null {
+    const value = record[key];
+    return typeof value === "string" ? value : null;
+}
+
+function readTrackedFileKind(value: unknown): AiTrackedFile["kind"] {
+    return value === "create" ||
+        value === "delete" ||
+        value === "move" ||
+        value === "update"
+        ? value
+        : "update";
 }
 
 function parseNativeProjectFileKind(

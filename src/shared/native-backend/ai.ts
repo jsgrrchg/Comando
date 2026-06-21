@@ -531,6 +531,35 @@ export type NativeAiTrackedFileSummary = {
     readonly updatedAt: string;
 };
 
+export type NativeAiReviewUpdatedPayload = NativeAiEventBase & {
+    readonly projectId: NativeProjectId | null;
+    readonly worktreeId: NativeWorktreeId | null;
+    readonly trackedFiles: readonly unknown[];
+    readonly pendingCount: number;
+    readonly conflictCount: number;
+};
+
+export type NativeAiTrackedFileUpdatedPayload = {
+    readonly sessionId: NativeSessionId;
+    readonly trackedFile: unknown;
+    readonly mutation: string;
+    readonly updatedAt: string;
+};
+
+export type NativeAiReviewCaptureOutput = {
+    readonly captured: boolean;
+    readonly sessionId: NativeSessionId;
+    readonly updatedAt: string;
+};
+
+export type NativeAiReviewCommandOutput = {
+    readonly sessionId: NativeSessionId;
+    readonly trackedFiles: readonly unknown[];
+    readonly changedFiles: readonly string[];
+    readonly conflicts: readonly unknown[];
+    readonly updatedAt: string;
+};
+
 export type NativeAiErrorPayload = {
     readonly sessionId: NativeSessionId | null;
     readonly runtimeId: NativeRuntimeId | null;

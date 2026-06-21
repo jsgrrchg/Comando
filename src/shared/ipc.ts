@@ -2464,6 +2464,7 @@ export interface AiSessionDomainEventBase {
         | "message-started"
         | "permission-request"
         | "plan"
+        | "review"
         | "session-info"
         | "status"
         | "subagent-breadcrumb"
@@ -2564,6 +2565,11 @@ export interface AiSessionTokenUsageEvent extends AiSessionDomainEventBase {
     readonly tokenUsage: AiTokenUsage | null;
 }
 
+export interface AiSessionReviewEvent extends AiSessionDomainEventBase {
+    readonly kind: "review";
+    readonly trackedFiles: readonly AiTrackedFile[];
+}
+
 export interface AiSessionInfoEvent extends AiSessionDomainEventBase {
     readonly kind: "session-info";
     readonly projectId: string | null;
@@ -2595,6 +2601,7 @@ export type AiSessionDomainEvent =
     | AiSessionMessageStartedEvent
     | AiSessionPermissionRequestEvent
     | AiSessionPlanEvent
+    | AiSessionReviewEvent
     | AiSessionStatusEvent
     | AiSessionSubagentBreadcrumbEvent
     | AiSessionSubagentCreatedEvent
