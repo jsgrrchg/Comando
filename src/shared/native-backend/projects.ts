@@ -33,6 +33,15 @@ export type NativeProjectAddInput = {
     readonly ownerWindowId: NativeWindowId | null;
 };
 
+export type NativeProjectIdInput = {
+    readonly projectId: NativeProjectId;
+};
+
+export type NativeProjectRelocateInput = {
+    readonly projectId: NativeProjectId;
+    readonly projectPath: string;
+};
+
 export type NativeProjectSyncWorktree = {
     readonly rootPath: string;
     readonly branchName: string | null;
@@ -59,6 +68,30 @@ export type NativeProjectAddResult = {
     readonly projects: readonly NativeProjectSummary[];
     readonly state: NativeProjectState;
     readonly touchedRootPaths: readonly string[];
+};
+
+export type NativeProjectMutationResult = {
+    readonly state: NativeProjectState;
+};
+
+export type NativeProjectRelocateResult = {
+    readonly project: NativeProjectSummary;
+    readonly state: NativeProjectState;
+    readonly touchedRootPaths: readonly string[];
+};
+
+export type NativeProjectAppDataSummary = {
+    readonly chatSessionCount: number;
+    readonly projectSettingsCount: number;
+    readonly recentProjectCount: number;
+    readonly workspaceLayoutCount: number;
+    readonly workspaceSessionCount: number;
+    readonly workspaceTabCount: number;
+};
+
+export type NativeProjectClearAppDataResult = {
+    readonly cleared: NativeProjectAppDataSummary;
+    readonly state: NativeProjectState;
 };
 
 export type NativeProjectUpdatedEvent = {

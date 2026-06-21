@@ -7,19 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceSnapshot } from "@shared/ipc";
 
 import { databaseMigrations } from "@main/db/migrations";
-import {
-    NativeFsGateway,
-    NATIVE_FS_ENABLED_ENV,
-    NATIVE_FS_MODE_ENV,
-    NATIVE_PROJECT_TREE_ENABLED_ENV,
-} from "@main/native-backend/fs";
-import {
-    NativeSearchGateway,
-    NATIVE_INDEX_ENABLED_ENV,
-    NATIVE_SEARCH_ENABLED_ENV,
-    NATIVE_SEARCH_FALLBACK_ENV,
-    NATIVE_SEARCH_MODE_ENV,
-} from "@main/native-backend/index-search";
+import { NativeFsGateway } from "@main/native-backend/fs";
+import { NativeSearchGateway } from "@main/native-backend/index-search";
 import type { NativeBackendRequester } from "@main/native-backend/persistence";
 import {
     applyMigrations,
@@ -623,8 +612,6 @@ describe("ProjectService", () => {
             throw new Error("Expected the project to be created.");
         }
 
-        const readdirSpy = vi.spyOn(fs, "readdirSync");
-
         await expect(
             projectService.searchProjectEntries({
                 limit: 10,
@@ -638,8 +625,6 @@ describe("ProjectService", () => {
             }),
         ]);
 
-        const initialDirectoryReads = readdirSpy.mock.calls.length;
-
         await expect(
             projectService.searchProjectEntries({
                 limit: 10,
@@ -652,7 +637,6 @@ describe("ProjectService", () => {
                 relativePath: "src/helpers.ts",
             }),
         ]);
-        expect(readdirSpy.mock.calls.length).toBe(initialDirectoryReads);
 
         await expect(
             projectService.listProjectEntries({
@@ -670,7 +654,6 @@ describe("ProjectService", () => {
                 }),
             ]),
         );
-        expect(readdirSpy.mock.calls.length).toBe(initialDirectoryReads);
 
         fs.writeFileSync(
             path.join(projectRoot, "src", "workspace", "workspace-hints.ts"),
@@ -714,9 +697,6 @@ describe("ProjectService", () => {
                     relativePath: "src/workspace/workspace-hints.ts",
                 }),
             ]),
-        );
-        expect(readdirSpy.mock.calls.length).toBeGreaterThan(
-            initialDirectoryReads,
         );
     });
 
@@ -769,65 +749,7 @@ describe("ProjectService", () => {
         ]);
     });
 
-    it("rebuilds worker registry and search caches after a worker restart", async () => {
-        const connection = createTestConnection();
-        const projectService = createProjectService(connection);
-        const projectRoot = createTempProject(tempDirs, "restart-cache");
-
-        fs.mkdirSync(path.join(projectRoot, "src"), {
-            recursive: true,
-        });
-        fs.writeFileSync(
-            path.join(projectRoot, "src", "RestartSignal.ts"),
-            "export const RestartSignal = true;\n",
-        );
-
-        const addResult = await projectService.addProjectPaths([projectRoot]);
-        const [project] = addResult.projects;
-        expect(project).toBeDefined();
-        if (!project) {
-            throw new Error("Expected the project to be created.");
-        }
-
-        const readdirSpy = vi.spyOn(fs, "readdirSync");
-
-        await expect(
-            projectService.searchProjectEntries({
-                limit: 10,
-                projectId: project.id,
-                query: "restartsignal",
-            }),
-        ).resolves.toEqual([
-            expect.objectContaining({
-                kind: "file",
-                relativePath: "src/RestartSignal.ts",
-            }),
-        ]);
-
-        const cachedReadCount = readdirSpy.mock.calls.length;
-
-        await expect(
-            projectService.searchProjectEntries({
-                limit: 10,
-                projectId: project.id,
-                query: "restartsignal",
-            }),
-        ).resolves.toHaveLength(1);
-        expect(readdirSpy.mock.calls.length).toBe(cachedReadCount);
-
-        projectService.handleProjectWorkerRestarted();
-
-        await expect(
-            projectService.searchProjectEntries({
-                limit: 10,
-                projectId: project.id,
-                query: "restartsignal",
-            }),
-        ).resolves.toHaveLength(1);
-        expect(readdirSpy.mock.calls.length).toBeGreaterThan(cachedReadCount);
-    });
-
-    it("routes tree and file reads through native filesystem in read mode", async () => {
+    it("routes tree and file reads through native filesystem", async () => {
         const connection = createTestConnection();
         const requestMock = vi.fn((command: string) => {
             if (command === "project_list_tree_children") {
@@ -853,11 +775,6 @@ describe("ProjectService", () => {
             return Promise.reject(new Error(`Unexpected command ${command}`));
         });
         const projectService = createProjectService(connection, undefined, {
-            env: {
-                [NATIVE_FS_ENABLED_ENV]: "1",
-                [NATIVE_FS_MODE_ENV]: "read",
-                [NATIVE_PROJECT_TREE_ENABLED_ENV]: "1",
-            },
             nativeFs: gatewayWith(requestMock),
         });
         const projectRoot = createTempProject(tempDirs, "native-read");
@@ -904,7 +821,7 @@ describe("ProjectService", () => {
         });
     });
 
-    it("routes project list and search through native index in read mode", async () => {
+    it("routes project list and search through native index", async () => {
         const connection = createTestConnection();
         const requestMock = vi.fn((command: string) => {
             if (command === "project_list_entries") {
@@ -940,11 +857,6 @@ describe("ProjectService", () => {
             return Promise.reject(new Error(`Unexpected command ${command}`));
         });
         const projectService = createProjectService(connection, undefined, {
-            env: {
-                [NATIVE_INDEX_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_MODE_ENV]: "read",
-            },
             nativeSearch: searchGatewayWith(requestMock),
         });
         const projectRoot = createTempProject(tempDirs, "native-search-read");
@@ -989,86 +901,16 @@ describe("ProjectService", () => {
         );
     });
 
-    it("falls back from native search only when explicitly enabled", async () => {
+    it("propagates native search failures without falling back", async () => {
         const connection = createTestConnection();
-        const projectRoot = createTempProject(tempDirs, "native-search-fallback");
-        fs.writeFileSync(path.join(projectRoot, "fallback.ts"), "fallback\n");
+        const projectRoot = createTempProject(tempDirs, "native-search-failure");
+        fs.writeFileSync(path.join(projectRoot, "failure.ts"), "failure\n");
         const failingSearch = searchGatewayWith(
             vi.fn(() => Promise.reject(new Error("native unavailable"))),
         );
-        const strictService = createProjectService(connection, undefined, {
-            env: {
-                [NATIVE_INDEX_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_MODE_ENV]: "read",
-            },
-            nativeSearch: failingSearch,
-        });
-        const [project] = (
-            await strictService.addProjectPaths([projectRoot])
-        ).projects;
-        if (!project) {
-            throw new Error("Expected the project to be created.");
-        }
-
-        await expect(
-            strictService.listProjectEntries({
-                projectId: project.id,
-                worktreeId: null,
-            }),
-        ).rejects.toThrow("native unavailable");
-
-        const fallbackService = createProjectService(connection, undefined, {
-            env: {
-                [NATIVE_INDEX_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_FALLBACK_ENV]: "1",
-                [NATIVE_SEARCH_MODE_ENV]: "read",
-            },
-            nativeSearch: failingSearch,
-        });
-
-        await expect(
-            fallbackService.listProjectEntries({
-                projectId: project.id,
-                worktreeId: null,
-            }),
-        ).resolves.toEqual([
-            expect.objectContaining({ relativePath: "fallback.ts" }),
-        ]);
-    });
-
-    it("runs native search shadow parity without changing visible results", async () => {
-        const connection = createTestConnection();
-        const requestMock = vi.fn((command: string) => {
-            if (command === "project_search_entries") {
-                return Promise.resolve({
-                    entries: [nativeIndexedEntry("shadow.ts")],
-                    generation: 1,
-                    matches: [
-                        {
-                            entry: nativeIndexedEntry("shadow.ts"),
-                            score: 400,
-                        },
-                    ],
-                    operationId: "operation_1",
-                    stats: nativeIndexStats(),
-                    status: "ready",
-                });
-            }
-
-            return Promise.reject(new Error(`Unexpected command ${command}`));
-        });
         const projectService = createProjectService(connection, undefined, {
-            env: {
-                [NATIVE_INDEX_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_MODE_ENV]: "shadow",
-            },
-            nativeSearch: searchGatewayWith(requestMock),
+            nativeSearch: failingSearch,
         });
-        const projectRoot = createTempProject(tempDirs, "native-search-shadow");
-        fs.writeFileSync(path.join(projectRoot, "shadow.ts"), "shadow\n");
         const [project] = (
             await projectService.addProjectPaths([projectRoot])
         ).projects;
@@ -1077,24 +919,14 @@ describe("ProjectService", () => {
         }
 
         await expect(
-            projectService.searchProjectEntries({
-                limit: 20,
+            projectService.listProjectEntries({
                 projectId: project.id,
-                query: "shadow",
                 worktreeId: null,
             }),
-        ).resolves.toEqual([
-            expect.objectContaining({ relativePath: "shadow.ts" }),
-        ]);
-        await vi.waitFor(() => {
-            expect(requestMock).toHaveBeenCalledWith(
-                "project_search_entries",
-                expect.objectContaining({ query: "shadow" }),
-            );
-        });
+        ).rejects.toThrow("native unavailable");
     });
 
-    it("routes writes and mutations through native filesystem only in write mode", async () => {
+    it("routes writes and mutations through native filesystem", async () => {
         const connection = createTestConnection();
         const requestMock = vi.fn((command: string, args: unknown) => {
             if (command === "fs_write_file") {
@@ -1117,10 +949,6 @@ describe("ProjectService", () => {
             );
         });
         const projectService = createProjectService(connection, undefined, {
-            env: {
-                [NATIVE_FS_ENABLED_ENV]: "1",
-                [NATIVE_FS_MODE_ENV]: "write",
-            },
             nativeFs: gatewayWith(requestMock),
         });
         const projectRoot = createTempProject(tempDirs, "native-write");
@@ -1175,19 +1003,6 @@ describe("ProjectService", () => {
         );
     });
 
-    it("fails explicitly when filesystem write mode has no native sidecar", () => {
-        const connection = createTestConnection();
-
-        expect(() => {
-            createProjectService(connection, undefined, {
-                env: {
-                    [NATIVE_FS_ENABLED_ENV]: "1",
-                    [NATIVE_FS_MODE_ENV]: "write",
-                },
-                nativeFs: null,
-            });
-        }).toThrow("Native filesystem write mode requires");
-    });
 });
 
 function createTestConnection() {
@@ -1201,23 +1016,501 @@ function createProjectService(
     onProjectTreeInvalidated: ConstructorParameters<
         typeof ProjectService
     >[0]["onProjectTreeInvalidated"] = () => {},
-    options: Pick<
-        ConstructorParameters<typeof ProjectService>[0],
-        "env" | "nativeFs" | "nativeSearch"
+    options: Partial<
+        Pick<
+            ConstructorParameters<typeof ProjectService>[0],
+            "nativeFs" | "nativeSearch"
+        >
     > = {},
 ) {
+    const store = new SqliteProjectStore(connection);
+    const nativeBackend = createNativeTestBackend(store);
     return new ProjectService({
+        nativeFs: options.nativeFs ?? new NativeFsGateway(nativeBackend),
+        nativeSearch:
+            options.nativeSearch ?? new NativeSearchGateway(nativeBackend),
         ...options,
         onProjectTreeInvalidated,
-        store: new SqliteProjectStore(connection),
+        store,
     });
+}
+
+function createNativeTestBackend(store: SqliteProjectStore): NativeBackendRequester {
+    const indexedEntriesByScope = new Map<
+        string,
+        ReturnType<typeof nativeTestTreeEntry>[]
+    >();
+
+    const request: NativeBackendRequester["request"] = async (
+        command,
+        args = {},
+    ) => {
+        const input = args as Record<string, unknown>;
+        if (
+            command === "fs_watch_sync_registry" ||
+            command === "fs_watch_start" ||
+            command === "fs_watch_stop"
+        ) {
+            return null as never;
+        }
+
+        if (command === "index_update_entries") {
+            const scope = resolveNativeTestScope(store, input);
+            const relativePaths = input.relativePaths;
+            if (relativePaths === null) {
+                indexedEntriesByScope.delete(scope.key);
+            } else if (Array.isArray(relativePaths)) {
+                const entries = ensureIndexedEntries(indexedEntriesByScope, scope);
+                for (const relativePath of relativePaths) {
+                    if (typeof relativePath === "string") {
+                        upsertIndexedEntry(entries, scope, relativePath);
+                    }
+                }
+            }
+            return {
+                status: nativeTestIndexStatus(
+                    scope,
+                    indexedEntriesByScope.get(scope.key)?.length ?? 0,
+                ),
+            } as never;
+        }
+
+        if (command === "project_list_tree_children") {
+            const scope = resolveNativeTestScope(store, input);
+            return {
+                entries: listNativeTestTreeChildren(
+                    scope,
+                    requireNullableString(input.parentRelativePath),
+                ),
+            } as never;
+        }
+
+        if (command === "project_list_entries") {
+            const scope = resolveNativeTestScope(store, input);
+            return {
+                entries: ensureIndexedEntries(indexedEntriesByScope, scope),
+                truncated: false,
+            } as never;
+        }
+
+        if (command === "project_search_entries") {
+            const scope = resolveNativeTestScope(store, input);
+            const query = String(input.query ?? "").toLowerCase();
+            const limit =
+                typeof input.limit === "number" && input.limit > 0
+                    ? input.limit
+                    : 20;
+            const matches = ensureIndexedEntries(indexedEntriesByScope, scope)
+                .map((entry) => ({
+                    entry: {
+                        ...entry,
+                        policyState: "indexed",
+                    },
+                    score: scoreNativeTestSearchEntry(entry.relativePath, query),
+                }))
+                .filter((match) => match.score > 0)
+                .sort(
+                    (left, right) =>
+                        right.score - left.score ||
+                        left.entry.relativePath.localeCompare(
+                            right.entry.relativePath,
+                        ),
+                )
+                .slice(0, limit);
+            return {
+                entries: matches.map((match) => match.entry),
+                generation: 1,
+                matches,
+                operationId: "test-search",
+                stats: nativeTestIndexStats(
+                    indexedEntriesByScope.get(scope.key)?.length ?? 0,
+                ),
+                status: "ready",
+            } as never;
+        }
+
+        if (command === "fs_read_file") {
+            const scope = resolveNativeTestScope(store, input);
+            return nativeTestReadFileResult(
+                scope,
+                requireString(input.relativePath),
+            ) as never;
+        }
+
+        if (command === "fs_write_file") {
+            const scope = resolveNativeTestScope(store, input);
+            const relativePath = requireString(input.relativePath);
+            const absolutePath = resolveNativeTestPath(scope.rootPath, relativePath);
+            fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+            fs.writeFileSync(absolutePath, String(input.content ?? ""));
+            upsertIndexedEntry(
+                ensureIndexedEntries(indexedEntriesByScope, scope),
+                scope,
+                relativePath,
+            );
+            return {
+                conflict: null,
+                entry: nativeTestFsEntry(scope, relativePath),
+                file: nativeTestReadFileResult(scope, relativePath),
+            } as never;
+        }
+
+        if (command === "fs_create_file" || command === "fs_create_directory") {
+            const scope = resolveNativeTestScope(store, input);
+            const parentRelativePath = requireNullableString(
+                input.parentRelativePath,
+            );
+            const name = requireString(input.name);
+            const relativePath = joinNativeRelativePath(parentRelativePath, name);
+            const absolutePath = resolveNativeTestPath(scope.rootPath, relativePath);
+            if (command === "fs_create_directory") {
+                fs.mkdirSync(absolutePath, { recursive: true });
+            } else {
+                fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+                fs.writeFileSync(absolutePath, "");
+            }
+            upsertIndexedEntry(
+                ensureIndexedEntries(indexedEntriesByScope, scope),
+                scope,
+                relativePath,
+            );
+            return nativeTestMutationResult(scope, relativePath) as never;
+        }
+
+        throw new Error(`Unexpected native test command ${command}`);
+    };
+
+    return { request };
+}
+
+function resolveNativeTestScope(
+    store: SqliteProjectStore,
+    input: Record<string, unknown>,
+) {
+    const projectId = requireString(input.projectId);
+    const worktreeId = requireNullableString(input.worktreeId);
+    if (worktreeId) {
+        const worktree = store.getProjectWorktree(worktreeId);
+        if (!worktree) {
+            throw new Error(`Unknown native test worktree ${worktreeId}`);
+        }
+        return {
+            key: `${projectId}:${worktreeId}`,
+            projectId,
+            rootPath: worktree.rootPath,
+            worktreeId,
+        };
+    }
+
+    const project = store.getProject(projectId);
+    if (!project) {
+        throw new Error(`Unknown native test project ${projectId}`);
+    }
+    return {
+        key: `${projectId}:primary`,
+        projectId,
+        rootPath: project.rootPath,
+        worktreeId,
+    };
+}
+
+function ensureIndexedEntries(
+    entriesByScope: Map<string, ReturnType<typeof nativeTestTreeEntry>[]>,
+    scope: ReturnType<typeof resolveNativeTestScope>,
+): ReturnType<typeof nativeTestTreeEntry>[] {
+    const existing = entriesByScope.get(scope.key);
+    if (existing) {
+        return existing;
+    }
+
+    const entries = listNativeTestEntries(scope);
+    entriesByScope.set(scope.key, entries);
+    return entries;
+}
+
+function listNativeTestTreeChildren(
+    scope: ReturnType<typeof resolveNativeTestScope>,
+    parentRelativePath: string | null,
+): ReturnType<typeof nativeTestTreeEntry>[] {
+    const parentPath = resolveNativeTestPath(scope.rootPath, parentRelativePath);
+    return fs
+        .readdirSync(parentPath, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() || entry.isFile())
+        .map((entry) =>
+            nativeTestTreeEntry(
+                scope,
+                joinNativeRelativePath(parentRelativePath, entry.name),
+            ),
+        )
+        .sort(compareNativeTestEntries);
+}
+
+function listNativeTestEntries(
+    scope: ReturnType<typeof resolveNativeTestScope>,
+): ReturnType<typeof nativeTestTreeEntry>[] {
+    const entries: ReturnType<typeof nativeTestTreeEntry>[] = [];
+    const visit = (directoryPath: string) => {
+        for (const child of fs.readdirSync(directoryPath, { withFileTypes: true })) {
+            if (!child.isDirectory() && !child.isFile()) {
+                continue;
+            }
+            const absolutePath = path.join(directoryPath, child.name);
+            const relativePath = toNativeRelativePath(scope.rootPath, absolutePath);
+            entries.push(nativeTestTreeEntry(scope, relativePath));
+            if (child.isDirectory()) {
+                visit(absolutePath);
+            }
+        }
+    };
+    visit(scope.rootPath);
+    return entries.sort(compareNativeTestEntries);
+}
+
+function upsertIndexedEntry(
+    entries: ReturnType<typeof nativeTestTreeEntry>[],
+    scope: ReturnType<typeof resolveNativeTestScope>,
+    relativePath: string,
+): void {
+    const nextEntry = nativeTestTreeEntry(scope, relativePath);
+    const index = entries.findIndex(
+        (entry) => entry.relativePath === nextEntry.relativePath,
+    );
+    if (index >= 0) {
+        entries[index] = nextEntry;
+    } else {
+        entries.push(nextEntry);
+    }
+    entries.sort(compareNativeTestEntries);
+}
+
+function nativeTestTreeEntry(
+    scope: ReturnType<typeof resolveNativeTestScope>,
+    relativePath: string,
+) {
+    const absolutePath = resolveNativeTestPath(scope.rootPath, relativePath);
+    const stat = fs.statSync(absolutePath);
+    const name = path.basename(relativePath);
+    const parentRelativePath = path.posix.dirname(relativePath);
+    const isDirectory = stat.isDirectory();
+    return {
+        absolutePath,
+        extension: isDirectory ? null : resolveExtension(name),
+        gitStatus: null,
+        hasChildren: isDirectory && hasNativeTestChildren(absolutePath),
+        id: `${scope.projectId}:${relativePath}`,
+        isGitIgnored: false,
+        kind: isDirectory ? "directory" : "file",
+        name,
+        parentRelativePath:
+            parentRelativePath === "." ? null : parentRelativePath,
+        projectId: scope.projectId,
+        relativePath,
+        worktreeId: scope.worktreeId,
+    };
+}
+
+function nativeTestReadFileResult(
+    scope: ReturnType<typeof resolveNativeTestScope>,
+    relativePath: string,
+) {
+    const absolutePath = resolveNativeTestPath(scope.rootPath, relativePath);
+    const content = fs.readFileSync(absolutePath, "utf8");
+    const stat = fs.statSync(absolutePath);
+    return {
+        content,
+        contentHash: "test-content",
+        encoding: "utf8",
+        imageDataBase64: null,
+        isBinary: false,
+        isTooLarge: false,
+        kind: "text",
+        lineEnding: content.includes("\r\n") ? "\r\n" : "\n",
+        mimeType: "text/plain",
+        mtimeMs: stat.mtimeMs,
+        name: path.basename(relativePath),
+        path: absolutePath,
+        projectId: scope.projectId,
+        relativePath,
+        sizeBytes: Buffer.byteLength(content),
+        worktreeId: scope.worktreeId,
+    };
+}
+
+function nativeTestFsEntry(
+    scope: ReturnType<typeof resolveNativeTestScope>,
+    relativePath: string,
+) {
+    const absolutePath = resolveNativeTestPath(scope.rootPath, relativePath);
+    const stat = fs.statSync(absolutePath);
+    return {
+        contentHash: null,
+        isBinary: false,
+        isDirectory: stat.isDirectory(),
+        isSymlink: false,
+        isTooLarge: false,
+        kind: stat.isDirectory() ? "directory" : "file",
+        mtimeMs: stat.mtimeMs,
+        path: absolutePath,
+        projectId: scope.projectId,
+        relativePath,
+        sizeBytes: stat.isFile() ? stat.size : null,
+        status: "clean",
+        worktreeId: scope.worktreeId,
+    };
+}
+
+function nativeTestMutationResult(
+    scope: ReturnType<typeof resolveNativeTestScope>,
+    relativePath: string,
+) {
+    const entry = nativeTestFsEntry(scope, relativePath);
+    const parentRelativePath = path.posix.dirname(relativePath);
+    return {
+        entry,
+        kind: entry.kind,
+        name: path.basename(relativePath),
+        parentRelativePath:
+            parentRelativePath === "." ? null : parentRelativePath,
+        relativePath,
+    };
+}
+
+function nativeTestIndexStatus(
+    scope: ReturnType<typeof resolveNativeTestScope>,
+    entryCount: number,
+) {
+    return {
+        generation: 1,
+        occurredAt: "2026-06-20T00:00:00.000Z",
+        projectId: scope.projectId,
+        stats: nativeTestIndexStats(entryCount),
+        status: "ready",
+        worktreeId: scope.worktreeId,
+    };
+}
+
+function nativeTestIndexStats(entryCount: number) {
+    return {
+        durationMs: 1,
+        entryCount,
+        indexedDirectoryCount: 0,
+        indexedFileCount: entryCount,
+        reason: null,
+        skippedCount: 0,
+        truncated: false,
+    };
+}
+
+function scoreNativeTestSearchEntry(relativePath: string, query: string): number {
+    const lowerPath = relativePath.toLowerCase();
+    const lowerName = path.posix.basename(lowerPath);
+    const depthPenalty = lowerPath.split("/").length - 1;
+    if (lowerName === query) {
+        return 10_000 - depthPenalty;
+    }
+    if (lowerName.startsWith(query)) {
+        return 9_000 - depthPenalty;
+    }
+    if (lowerName.includes(query)) {
+        return 8_000 - depthPenalty;
+    }
+    if (lowerPath.includes(query)) {
+        return 7_000 - depthPenalty;
+    }
+    if (isSubsequence(query, lowerName)) {
+        return 6_000 - depthPenalty;
+    }
+    if (isSubsequence(query, lowerPath)) {
+        return 5_000 - depthPenalty;
+    }
+    return 0;
+}
+
+function isSubsequence(query: string, value: string): boolean {
+    let cursor = 0;
+    for (const character of value) {
+        if (character === query[cursor]) {
+            cursor += 1;
+        }
+        if (cursor === query.length) {
+            return true;
+        }
+    }
+    return query.length === 0;
+}
+
+function hasNativeTestChildren(absolutePath: string): boolean {
+    return fs
+        .readdirSync(absolutePath, { withFileTypes: true })
+        .some((entry) => entry.isDirectory() || entry.isFile());
+}
+
+function compareNativeTestEntries(
+    left: ReturnType<typeof nativeTestTreeEntry>,
+    right: ReturnType<typeof nativeTestTreeEntry>,
+): number {
+    return (
+        Number(left.kind !== "directory") - Number(right.kind !== "directory") ||
+        left.name.localeCompare(right.name, undefined, {
+            sensitivity: "base",
+        }) ||
+        left.relativePath.localeCompare(right.relativePath)
+    );
+}
+
+function resolveNativeTestPath(
+    rootPath: string,
+    relativePath: string | null,
+): string {
+    return relativePath
+        ? path.join(rootPath, ...relativePath.split("/"))
+        : rootPath;
+}
+
+function toNativeRelativePath(rootPath: string, absolutePath: string): string {
+    return path.relative(rootPath, absolutePath).split(path.sep).join("/");
+}
+
+function joinNativeRelativePath(
+    parentRelativePath: string | null,
+    name: string,
+): string {
+    return parentRelativePath ? `${parentRelativePath}/${name}` : name;
+}
+
+function resolveExtension(name: string): string | null {
+    const extension = path.extname(name).slice(1);
+    return extension || null;
+}
+
+function requireString(value: unknown): string {
+    if (typeof value !== "string") {
+        throw new Error("Expected native test value to be a string.");
+    }
+    return value;
+}
+
+function requireNullableString(value: unknown): string | null {
+    if (value === null || value === undefined) {
+        return null;
+    }
+    return requireString(value);
 }
 
 function gatewayWith(
     requestMock: (command: string, args?: Record<string, unknown>) => Promise<unknown>,
 ): NativeFsGateway {
-    const request: NativeBackendRequester["request"] = async (...args) =>
-        (await requestMock(...args)) as never;
+    const request: NativeBackendRequester["request"] = async (...args) => {
+        const [command] = args;
+        if (
+            command === "fs_watch_sync_registry" ||
+            command === "fs_watch_start" ||
+            command === "fs_watch_stop"
+        ) {
+            return null as never;
+        }
+        return (await requestMock(...args)) as never;
+    };
     return new NativeFsGateway({ request });
 }
 

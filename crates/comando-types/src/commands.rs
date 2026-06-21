@@ -9,6 +9,11 @@ pub const PERSISTENCE_GET_SNAPSHOT: &str = "persistence_get_snapshot";
 pub const PROJECT_LIST: &str = "project_list";
 pub const PROJECT_ADD: &str = "project_add";
 pub const PROJECT_SYNC_WORKTREES: &str = "project_sync_worktrees";
+pub const PROJECT_REMOVE: &str = "project_remove";
+pub const PROJECT_TOUCH: &str = "project_touch";
+pub const PROJECT_RELOCATE: &str = "project_relocate";
+pub const PROJECT_GET_APP_DATA_SUMMARY: &str = "project_get_app_data_summary";
+pub const PROJECT_CLEAR_APP_DATA: &str = "project_clear_app_data";
 
 pub const BACKEND_COMMANDS: &[&str] = &[
     BACKEND_PING,
@@ -31,7 +36,11 @@ pub const PROJECT_COMMANDS: &[&str] = &[
     PROJECT_LIST,
     PROJECT_ADD,
     PROJECT_SYNC_WORKTREES,
-    "project_remove",
+    PROJECT_REMOVE,
+    PROJECT_TOUCH,
+    PROJECT_RELOCATE,
+    PROJECT_GET_APP_DATA_SUMMARY,
+    PROJECT_CLEAR_APP_DATA,
     "project_open",
     "project_refresh",
     "project_list_tree_children",

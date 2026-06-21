@@ -1,57 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { NativeBackendRequester } from "./persistence";
-import {
-    NativeSearchGateway,
-    NATIVE_INDEX_ENABLED_ENV,
-    NATIVE_SEARCH_ENABLED_ENV,
-    NATIVE_SEARCH_FALLBACK_ENV,
-    NATIVE_SEARCH_MODE_ENV,
-    resolveNativeSearchMode,
-    shouldFallbackFromNativeSearch,
-    shouldUseNativeSearchReads,
-    shouldUseNativeSearchShadow,
-} from "./index-search";
-
-describe("native search flags", () => {
-    it("defaults off and defaults enabled search to shadow", () => {
-        expect(resolveNativeSearchMode({})).toBeNull();
-        expect(
-            resolveNativeSearchMode({
-                [NATIVE_INDEX_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_ENABLED_ENV]: "1",
-            }),
-        ).toBe("shadow");
-        expect(
-            resolveNativeSearchMode({
-                [NATIVE_INDEX_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_MODE_ENV]: "read",
-            }),
-        ).toBe("read");
-    });
-
-    it("exposes read, shadow, and explicit fallback checks", () => {
-        expect(
-            shouldUseNativeSearchReads({
-                [NATIVE_INDEX_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_MODE_ENV]: "read",
-            }),
-        ).toBe(true);
-        expect(
-            shouldUseNativeSearchShadow({
-                [NATIVE_INDEX_ENABLED_ENV]: "1",
-                [NATIVE_SEARCH_ENABLED_ENV]: "1",
-            }),
-        ).toBe(true);
-        expect(
-            shouldFallbackFromNativeSearch({
-                [NATIVE_SEARCH_FALLBACK_ENV]: "1",
-            }),
-        ).toBe(true);
-    });
-});
+import { NativeSearchGateway } from "./index-search";
 
 describe("NativeSearchGateway", () => {
     it("adapts native list and search results to project tree nodes", async () => {

@@ -20,13 +20,6 @@ import type {
 } from "../projects/runtime";
 import type { NativeBackendRequester } from "./persistence";
 
-export const NATIVE_INDEX_ENABLED_ENV = "COMANDO_NATIVE_INDEX";
-export const NATIVE_SEARCH_ENABLED_ENV = "COMANDO_NATIVE_SEARCH";
-export const NATIVE_SEARCH_MODE_ENV = "COMANDO_NATIVE_SEARCH_MODE";
-export const NATIVE_SEARCH_FALLBACK_ENV = "COMANDO_NATIVE_SEARCH_FALLBACK";
-
-export type NativeSearchMode = "read" | "shadow";
-
 export class NativeSearchGateway {
     readonly #client: NativeBackendRequester;
 
@@ -98,7 +91,7 @@ export class NativeSearchGateway {
         );
         if (result.truncated) {
             throw new Error(
-                "Native project index listing was truncated; falling back requires an explicit native search fallback flag.",
+                "Native project index listing was truncated before returning the complete project file list.",
             );
         }
         return nativeProjectTreeEntriesToIpc(result.entries);
@@ -141,37 +134,6 @@ export class NativeSearchGateway {
             }),
         );
     }
-}
-
-export function resolveNativeSearchMode(
-    env: NodeJS.ProcessEnv = process.env,
-): NativeSearchMode | null {
-    if (
-        env[NATIVE_INDEX_ENABLED_ENV] !== "1" ||
-        env[NATIVE_SEARCH_ENABLED_ENV] !== "1"
-    ) {
-        return null;
-    }
-
-    return env[NATIVE_SEARCH_MODE_ENV] === "read" ? "read" : "shadow";
-}
-
-export function shouldUseNativeSearchReads(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return resolveNativeSearchMode(env) === "read";
-}
-
-export function shouldUseNativeSearchShadow(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return resolveNativeSearchMode(env) === "shadow";
-}
-
-export function shouldFallbackFromNativeSearch(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return env[NATIVE_SEARCH_FALLBACK_ENV] === "1";
 }
 
 function parseNativeIndexRebuildProjectResult(

@@ -67,7 +67,6 @@ import type { NativeBackendEvent } from "./native-backend/protocol";
 import { debugBenignError } from "./observability/logging";
 import { mainProcessPerformance } from "./observability/performance";
 import type { PersistenceGateway } from "./persistence/service";
-import { createProjectWorkerClient } from "./projects/client";
 import { ProjectService } from "./projects/service";
 import { registerIpcHandlers } from "./ipc";
 import type { SettingsGateway } from "./settings/service";
@@ -142,6 +141,12 @@ if (!hasSingleInstanceLock) {
             });
             await startNativeBackendRequired();
             await openNativePersistenceRequired();
+            if (!nativeBackendClient) {
+                throw new Error(
+                    "Native backend client was not available after startup.",
+                );
+            }
+            const nativeClient = nativeBackendClient;
             persistenceService = dbWorkerClient.persistence;
             secretStore = dbWorkerClient.secretStore;
             githubService = new GitHubService({ secretStore });
@@ -157,32 +162,15 @@ if (!hasSingleInstanceLock) {
                       },
                   })
                 : gitWorker;
-            const projectWorker = await createProjectWorkerClient({
-                onProjectTreeInvalidated: (payload) => {
-                    projectService?.handleProjectTreeInvalidation(payload);
-                },
-                onWorkerRestarted: () => {
-                    projectService?.handleProjectWorkerRestarted();
-                },
-            });
             const projectStore = await createNativeProjectRegistryStore({
-                env: process.env,
-                legacyStore: dbWorkerClient.projectStore,
-                nativeClient: nativeBackendClient,
+                nativeClient,
                 onDiagnostic: (message) => {
                     console.warn(message);
                 },
             });
             projectService = new ProjectService({
-                env: process.env,
-                nativeFs:
-                    nativeBackendClient
-                        ? new NativeFsGateway(nativeBackendClient)
-                        : null,
-                nativeSearch:
-                    nativeBackendClient
-                        ? new NativeSearchGateway(nativeBackendClient)
-                        : null,
+                nativeFs: new NativeFsGateway(nativeClient),
+                nativeSearch: new NativeSearchGateway(nativeClient),
                 onProjectTreeInvalidated: (payload) => {
                     broadcastProjectTreeInvalidation(payload);
                     broadcastProjectGitInvalidation(payload);
@@ -202,7 +190,6 @@ if (!hasSingleInstanceLock) {
                           }
                         : undefined,
                 store: projectStore,
-                worker: projectWorker,
             });
             aiService = new AiService({
                 nativeAi: createNativeAiGateway({

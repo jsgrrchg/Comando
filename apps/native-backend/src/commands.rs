@@ -38,7 +38,8 @@ use comando_types::capabilities::{
 use comando_types::commands::{
     BACKEND_CAPABILITIES, BACKEND_EMIT_TEST_EVENT, BACKEND_HANDSHAKE, BACKEND_PING,
     BACKEND_SHUTDOWN, PERSISTENCE_GET_SNAPSHOT, PERSISTENCE_GET_STORAGE_HEALTH,
-    PERSISTENCE_OPEN_STORE, PROJECT_ADD, PROJECT_LIST, PROJECT_SYNC_WORKTREES,
+    PERSISTENCE_OPEN_STORE, PROJECT_ADD, PROJECT_CLEAR_APP_DATA, PROJECT_GET_APP_DATA_SUMMARY,
+    PROJECT_LIST, PROJECT_RELOCATE, PROJECT_REMOVE, PROJECT_SYNC_WORKTREES, PROJECT_TOUCH,
 };
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::BACKEND_TEST_EVENT;
@@ -197,6 +198,11 @@ impl NativeBackend {
             PERSISTENCE_GET_SNAPSHOT => self.get_snapshot(request),
             PROJECT_LIST => self.list_projects(request),
             PROJECT_ADD => self.add_projects(request),
+            PROJECT_REMOVE => self.remove_project(request),
+            PROJECT_TOUCH => self.touch_project(request),
+            PROJECT_RELOCATE => self.relocate_project(request),
+            PROJECT_GET_APP_DATA_SUMMARY => self.get_project_app_data_summary(request),
+            PROJECT_CLEAR_APP_DATA => self.clear_project_app_data(request),
             PROJECT_SYNC_WORKTREES => self.sync_project_worktrees(request),
             "project_open" | "project_refresh" => self.refresh_projects(request),
             "project_list_tree_children" => self.list_project_tree_children(request),
@@ -687,6 +693,197 @@ impl NativeBackend {
                 }
                 CommandResult {
                     outputs,
+                    should_shutdown: false,
+                }
+            }
+            Err(error) => error_only(request.id, project_error(error)),
+        }
+    }
+
+    fn remove_project(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        if !matches!(store.mode(), NativePersistenceMode::Write) {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::PermissionDenied,
+                    "Native project_remove requires project registry write mode.",
+                ),
+            );
+        }
+        let input = match parse_args::<native_projects::NativeProjectIdInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        let mut registry = ProjectRegistry::new(store.connection_mut());
+        match registry.remove_project(&input.project_id) {
+            Ok(state) => {
+                self.fs_service.sync_state(state.clone());
+                CommandResult {
+                    outputs: vec![
+                        response_ok(
+                            request.id,
+                            serde_json::to_value(native_projects::NativeProjectMutationResult {
+                                state,
+                            })
+                            .expect("project remove output serializes"),
+                        ),
+                        event(
+                            "project://updated",
+                            json!({
+                                "projectId": input.project_id.0.as_str(),
+                                "worktreeId": Value::Null,
+                                "reason": "project_remove",
+                                "occurredAt": comando_persistence::store::now_rfc3339(),
+                            }),
+                        ),
+                    ],
+                    should_shutdown: false,
+                }
+            }
+            Err(error) => error_only(request.id, project_error(error)),
+        }
+    }
+
+    fn touch_project(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        if !matches!(store.mode(), NativePersistenceMode::Write) {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::PermissionDenied,
+                    "Native project_touch requires project registry write mode.",
+                ),
+            );
+        }
+        let input = match parse_args::<native_projects::NativeProjectIdInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        let mut registry = ProjectRegistry::new(store.connection_mut());
+        match registry.touch_project(&input.project_id) {
+            Ok(state) => {
+                self.fs_service.sync_state(state.clone());
+                response_only(
+                    request.id,
+                    serde_json::to_value(native_projects::NativeProjectMutationResult { state })
+                        .expect("project touch output serializes"),
+                )
+            }
+            Err(error) => error_only(request.id, project_error(error)),
+        }
+    }
+
+    fn relocate_project(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        if !matches!(store.mode(), NativePersistenceMode::Write) {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::PermissionDenied,
+                    "Native project_relocate requires project registry write mode.",
+                ),
+            );
+        }
+        let input = match parse_args::<native_projects::NativeProjectRelocateInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        let mut registry = ProjectRegistry::new(store.connection_mut());
+        match registry.relocate_project(&input.project_id, &input.project_path) {
+            Ok(result) => {
+                self.fs_service.sync_state(result.state.clone());
+                CommandResult {
+                    outputs: vec![
+                        response_ok(
+                            request.id,
+                            serde_json::to_value(&result)
+                                .expect("project relocate output serializes"),
+                        ),
+                        event(
+                            "project://updated",
+                            json!({
+                                "projectId": input.project_id.0.as_str(),
+                                "worktreeId": format!("{}:primary", input.project_id.0.as_str()),
+                                "reason": "project_relocate",
+                                "occurredAt": comando_persistence::store::now_rfc3339(),
+                            }),
+                        ),
+                    ],
+                    should_shutdown: false,
+                }
+            }
+            Err(error) => error_only(request.id, project_error(error)),
+        }
+    }
+
+    fn get_project_app_data_summary(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<native_projects::NativeProjectIdInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        let mut registry = ProjectRegistry::new(store.connection_mut());
+        match registry.get_project_app_data_summary(&input.project_id) {
+            Ok(summary) => response_only(
+                request.id,
+                serde_json::to_value(summary).expect("project app data summary serializes"),
+            ),
+            Err(error) => error_only(request.id, project_error(error)),
+        }
+    }
+
+    fn clear_project_app_data(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        if !matches!(store.mode(), NativePersistenceMode::Write) {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::PermissionDenied,
+                    "Native project_clear_app_data requires project registry write mode.",
+                ),
+            );
+        }
+        let input = match parse_args::<native_projects::NativeProjectIdInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        let mut registry = ProjectRegistry::new(store.connection_mut());
+        match registry.clear_project_app_data(&input.project_id) {
+            Ok(result) => {
+                self.fs_service.sync_state(result.state.clone());
+                CommandResult {
+                    outputs: vec![
+                        response_ok(
+                            request.id,
+                            serde_json::to_value(&result)
+                                .expect("project clear app data output serializes"),
+                        ),
+                        event(
+                            "project://updated",
+                            json!({
+                                "projectId": input.project_id.0.as_str(),
+                                "worktreeId": Value::Null,
+                                "reason": "project_clear_app_data",
+                                "occurredAt": comando_persistence::store::now_rfc3339(),
+                            }),
+                        ),
+                    ],
                     should_shutdown: false,
                 }
             }

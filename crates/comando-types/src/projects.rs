@@ -48,6 +48,19 @@ pub struct NativeProjectAddInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeProjectIdInput {
+    pub project_id: NativeProjectId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectRelocateInput {
+    pub project_id: NativeProjectId,
+    pub project_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeProjectSyncWorktree {
     pub root_path: String,
     pub branch_name: Option<String>,
@@ -82,6 +95,38 @@ pub struct NativeProjectAddResult {
     pub projects: Vec<NativeProjectSummary>,
     pub state: NativeProjectState,
     pub touched_root_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectMutationResult {
+    pub state: NativeProjectState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectRelocateResult {
+    pub project: NativeProjectSummary,
+    pub state: NativeProjectState,
+    pub touched_root_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectAppDataSummary {
+    pub chat_session_count: u64,
+    pub project_settings_count: u64,
+    pub recent_project_count: u64,
+    pub workspace_layout_count: u64,
+    pub workspace_session_count: u64,
+    pub workspace_tab_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectClearAppDataResult {
+    pub cleared: NativeProjectAppDataSummary,
+    pub state: NativeProjectState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

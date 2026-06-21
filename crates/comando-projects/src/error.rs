@@ -15,6 +15,12 @@ pub enum ProjectRegistryError {
     #[error("The requested project does not exist anymore.")]
     ProjectNotFound,
 
+    #[error("This folder is already registered as \"{name}\".")]
+    ProjectPathAlreadyRegistered { name: String },
+
+    #[error("This folder is already used by another project.")]
+    WorktreePathAlreadyRegistered,
+
     #[error("The project path could not be resolved.")]
     ResolvePath {
         path: PathBuf,
@@ -36,6 +42,9 @@ impl ProjectRegistryError {
                 NativeErrorCode::InvalidArgs
             }
             Self::ProjectNotFound => NativeErrorCode::NotFound,
+            Self::ProjectPathAlreadyRegistered { .. } | Self::WorktreePathAlreadyRegistered => {
+                NativeErrorCode::Conflict
+            }
             Self::Sqlite(_) | Self::Io(_) => NativeErrorCode::InternalError,
         }
     }

@@ -72,7 +72,7 @@ export interface ProjectStore {
     listProjectWorktrees(
         projectId: string,
     ): readonly ProjectStoreWorktreeRecord[];
-    removeProject(projectId: string): void;
+    removeProject(projectId: string): Awaitable<void>;
     relocateProject(
         projectId: string,
         projectPath: string,
