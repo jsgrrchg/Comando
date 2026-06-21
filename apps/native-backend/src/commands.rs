@@ -38,7 +38,7 @@ use comando_types::capabilities::{
 use comando_types::commands::{
     BACKEND_CAPABILITIES, BACKEND_EMIT_TEST_EVENT, BACKEND_HANDSHAKE, BACKEND_PING,
     BACKEND_SHUTDOWN, PERSISTENCE_GET_SNAPSHOT, PERSISTENCE_GET_STORAGE_HEALTH,
-    PERSISTENCE_OPEN_STORE, PROJECT_ADD, PROJECT_LIST,
+    PERSISTENCE_OPEN_STORE, PROJECT_ADD, PROJECT_LIST, PROJECT_SYNC_WORKTREES,
 };
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::BACKEND_TEST_EVENT;
@@ -197,6 +197,7 @@ impl NativeBackend {
             PERSISTENCE_GET_SNAPSHOT => self.get_snapshot(request),
             PROJECT_LIST => self.list_projects(request),
             PROJECT_ADD => self.add_projects(request),
+            PROJECT_SYNC_WORKTREES => self.sync_project_worktrees(request),
             "project_open" | "project_refresh" => self.refresh_projects(request),
             "project_list_tree_children" => self.list_project_tree_children(request),
             "project_list_entries" => self.list_project_entries(request),
@@ -688,6 +689,52 @@ impl NativeBackend {
                     outputs,
                     should_shutdown: false,
                 }
+            }
+            Err(error) => error_only(request.id, project_error(error)),
+        }
+    }
+
+    fn sync_project_worktrees(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        if !matches!(store.mode(), NativePersistenceMode::Write) {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::PermissionDenied,
+                    "Native project_sync_worktrees requires project registry write mode.",
+                ),
+            );
+        }
+        let input = match serde_json::from_value::<native_projects::NativeProjectSyncWorktreesInput>(
+            request.args.clone(),
+        ) {
+            Ok(input) => input,
+            Err(error) => {
+                return error_only(
+                    request.id,
+                    NativeError::new(
+                        NativeErrorCode::InvalidArgs,
+                        format!("Invalid project_sync_worktrees args: {error}"),
+                    ),
+                );
+            }
+        };
+
+        let mut registry = ProjectRegistry::new(store.connection_mut());
+        match registry.sync_project_worktrees(&input.project_id, &input.worktrees) {
+            Ok(worktrees) => {
+                if let Ok(state) = registry.list_projects() {
+                    self.fs_service.sync_state(NativeProjectState {
+                        projects: state.projects,
+                        worktrees: state.worktrees,
+                    });
+                }
+                response_only(
+                    request.id,
+                    serde_json::to_value(worktrees).expect("project worktrees serialize"),
+                )
             }
             Err(error) => error_only(request.id, project_error(error)),
         }

@@ -33,6 +33,17 @@ export type NativeProjectAddInput = {
     readonly ownerWindowId: NativeWindowId | null;
 };
 
+export type NativeProjectSyncWorktree = {
+    readonly rootPath: string;
+    readonly branchName: string | null;
+    readonly headSha: string | null;
+};
+
+export type NativeProjectSyncWorktreesInput = {
+    readonly projectId: NativeProjectId;
+    readonly worktrees: readonly NativeProjectSyncWorktree[];
+};
+
 export type NativeProjectState = {
     readonly projects: readonly NativeProjectSummary[];
     readonly worktrees: readonly NativeWorktreeSummary[];

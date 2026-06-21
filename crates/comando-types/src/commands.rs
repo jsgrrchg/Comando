@@ -8,6 +8,7 @@ pub const PERSISTENCE_GET_STORAGE_HEALTH: &str = "persistence_get_storage_health
 pub const PERSISTENCE_GET_SNAPSHOT: &str = "persistence_get_snapshot";
 pub const PROJECT_LIST: &str = "project_list";
 pub const PROJECT_ADD: &str = "project_add";
+pub const PROJECT_SYNC_WORKTREES: &str = "project_sync_worktrees";
 
 pub const BACKEND_COMMANDS: &[&str] = &[
     BACKEND_PING,
@@ -29,6 +30,7 @@ pub const PERSISTENCE_COMMANDS: &[&str] = &[
 pub const PROJECT_COMMANDS: &[&str] = &[
     PROJECT_LIST,
     PROJECT_ADD,
+    PROJECT_SYNC_WORKTREES,
     "project_remove",
     "project_open",
     "project_refresh",

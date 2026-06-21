@@ -48,6 +48,21 @@ pub struct NativeProjectAddInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeProjectSyncWorktree {
+    pub root_path: String,
+    pub branch_name: Option<String>,
+    pub head_sha: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeProjectSyncWorktreesInput {
+    pub project_id: NativeProjectId,
+    pub worktrees: Vec<NativeProjectSyncWorktree>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeProjectState {
     pub projects: Vec<NativeProjectSummary>,
     pub worktrees: Vec<NativeWorktreeSummary>,

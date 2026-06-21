@@ -63,6 +63,7 @@ impl WatcherRegistry {
     pub fn sync_roots(&mut self, roots: Vec<ProjectRoot>) -> Result<(), FsError> {
         let desired = roots
             .into_iter()
+            .filter(|root| root.root_path.is_dir())
             .map(|root| (watch_key(&root), root))
             .collect::<HashMap<_, _>>();
 
@@ -365,5 +366,19 @@ mod tests {
 
         let drain = watchers.drain(true);
         assert!(drain.invalidations.is_empty());
+    }
+
+    #[test]
+    fn sync_roots_ignores_missing_directories() {
+        let temp = TempDir::new().expect("temp");
+        let missing = temp.path().join("missing");
+        let mut watchers = WatcherRegistry::new();
+
+        watchers
+            .sync_roots(vec![project_root(&missing)])
+            .expect("missing roots should not fail registry sync");
+
+        assert!(watchers.watchers.is_empty());
+        assert!(watchers.roots.is_empty());
     }
 }

@@ -18,6 +18,7 @@ export const NATIVE_PERSISTENCE_COMMANDS = [
 export const NATIVE_PROJECT_COMMANDS = [
     "project_list",
     "project_add",
+    "project_sync_worktrees",
     "project_remove",
     "project_open",
     "project_refresh",

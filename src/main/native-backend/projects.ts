@@ -4,6 +4,7 @@ import type {
     NativeProjectListResult,
     NativeProjectState,
     NativeProjectSummary,
+    NativeProjectSyncWorktree,
     NativeWorktreeSummary,
 } from "@shared/native-backend";
 
@@ -46,6 +47,19 @@ export class NativeProjectRegistryGateway {
                 ownerWindowId: null,
                 projectPaths: [...projectPaths],
             }),
+        );
+    }
+
+    async syncProjectWorktrees(
+        projectId: string,
+        worktrees: readonly NativeProjectSyncWorktree[],
+    ): Promise<readonly NativeWorktreeSummary[]> {
+        return parseWorktreeArray(
+            await this.#client.request("project_sync_worktrees", {
+                projectId,
+                worktrees: [...worktrees],
+            }),
+            "project_sync_worktrees",
         );
     }
 }
@@ -399,10 +413,11 @@ class NativeWriteProjectStore implements ProjectStore {
             readonly rootPath: string;
         }[],
     ): Promise<readonly ProjectStoreWorktreeRecord[]> {
-        const synced = await this.#legacy.syncProjectWorktrees(
+        const nativeWorktrees = await this.#gateway.syncProjectWorktrees(
             projectId,
             worktrees,
         );
+        const synced = nativeWorktrees.map(nativeWorktreeSummaryToStoreWorktree);
         await this.#refresh();
         return synced;
     }

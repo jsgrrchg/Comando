@@ -1,12 +1,18 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
+
 use comando_types::projects::{
     NativeProjectAddResult, NativeProjectListResult, NativeProjectState, NativeProjectSummary,
-    NativeWorktreeSummary,
+    NativeProjectSyncWorktree, NativeWorktreeSummary,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use uuid::Uuid;
 
 use crate::error::ProjectRegistryError;
-use crate::paths::{ProjectPathMetadata, resolve_project_path_metadata};
+use crate::paths::{
+    ProjectPathMetadata, normalize_lexical_path, path_to_storage_string,
+    resolve_project_path_metadata,
+};
 
 struct ProjectRow {
     id: String,
@@ -76,6 +82,125 @@ impl<'a> ProjectRegistry<'a> {
             touched_root_paths,
         })
     }
+
+    pub fn sync_project_worktrees(
+        &mut self,
+        project_id: &comando_types::ids::ProjectId,
+        worktrees: &[NativeProjectSyncWorktree],
+    ) -> Result<Vec<NativeWorktreeSummary>, ProjectRegistryError> {
+        let project = load_project_record(self.connection, &project_id.0)?
+            .ok_or(ProjectRegistryError::ProjectNotFound)?;
+        let project_root_path = normalize_storage_path(&project.canonical_root_path);
+        let project_root_key = normalize_worktree_key(&project_root_path);
+        let mut desired_worktrees = worktrees
+            .iter()
+            .map(|worktree| {
+                let root_path = normalize_storage_path(&worktree.root_path);
+                (
+                    normalize_worktree_key(&root_path),
+                    DesiredWorktree {
+                        root_path,
+                        branch_name: worktree.branch_name.clone(),
+                        head_sha: worktree.head_sha.clone(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        desired_worktrees
+            .entry(project_root_key.clone())
+            .or_insert_with(|| DesiredWorktree {
+                root_path: project_root_path.clone(),
+                branch_name: None,
+                head_sha: None,
+            });
+
+        let existing_rows = list_project_worktree_rows(self.connection, &project_id.0)?;
+        let existing_by_path = preferred_existing_worktrees(
+            &existing_rows,
+            &desired_worktrees,
+            &project_id.0,
+            &project_root_key,
+        );
+        let retained_existing_ids = existing_by_path
+            .iter()
+            .filter(|(root_key, _)| desired_worktrees.contains_key(*root_key))
+            .map(|(_, row)| row.id.clone())
+            .collect::<BTreeSet<_>>();
+        let now = comando_persistence::store::now_rfc3339();
+        let transaction = self.connection.transaction()?;
+
+        for existing in &existing_rows {
+            let existing_root_key = normalize_worktree_key(&existing.root_path);
+            if retained_existing_ids.contains(&existing.id) {
+                continue;
+            }
+            if existing.is_primary == 1 && !desired_worktrees.contains_key(&existing_root_key) {
+                continue;
+            }
+            transaction.execute(
+                "DELETE FROM project_worktrees WHERE id = ?1",
+                [&existing.id],
+            )?;
+        }
+
+        for (root_key, desired) in desired_worktrees {
+            let existing = existing_by_path.get(&root_key);
+            let is_primary = root_key == project_root_key;
+            let worktree_id = existing.map(|row| row.id.clone()).unwrap_or_else(|| {
+                if is_primary {
+                    format!("{}:primary", project_id.0)
+                } else {
+                    Uuid::new_v4().to_string()
+                }
+            });
+            let created_at = existing
+                .map(|row| row.updated_at.as_str())
+                .unwrap_or(now.as_str());
+
+            transaction.execute(
+                "
+                INSERT INTO project_worktrees (
+                    id,
+                    project_id,
+                    root_path,
+                    branch_name,
+                    head_sha,
+                    is_primary,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ON CONFLICT(id) DO UPDATE SET
+                    root_path = excluded.root_path,
+                    branch_name = excluded.branch_name,
+                    head_sha = excluded.head_sha,
+                    is_primary = excluded.is_primary,
+                    updated_at = excluded.updated_at
+                ",
+                params![
+                    worktree_id,
+                    project_id.0,
+                    desired.root_path,
+                    desired.branch_name,
+                    desired.head_sha,
+                    if is_primary { 1 } else { 0 },
+                    created_at,
+                    now
+                ],
+            )?;
+        }
+
+        transaction.commit()?;
+        list_project_worktrees(self.connection, &project_id.0)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DesiredWorktree {
+    root_path: String,
+    branch_name: Option<String>,
+    head_sha: Option<String>,
 }
 
 pub fn load_project_state(
@@ -271,6 +396,42 @@ fn touch_recent_project(
     Ok(())
 }
 
+fn load_project_record(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<Option<ProjectRow>, ProjectRegistryError> {
+    connection
+        .query_row(
+            "
+            SELECT
+                projects.id,
+                projects.name,
+                projects.canonical_root_path,
+                projects.created_at,
+                projects.updated_at,
+                recent_projects.last_opened_at
+            FROM projects
+            LEFT JOIN recent_projects
+                ON recent_projects.project_id = projects.id
+            WHERE projects.id = ?1
+              AND projects.is_hidden = 0
+            ",
+            [project_id],
+            |row| {
+                Ok(ProjectRow {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    canonical_root_path: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                    last_opened_at: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(ProjectRegistryError::from)
+}
+
 fn list_project_records(
     connection: &Connection,
 ) -> Result<Vec<NativeProjectSummary>, ProjectRegistryError> {
@@ -306,6 +467,78 @@ fn list_project_records(
     })?;
 
     rows.map(|row| row.map(map_project_row))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ProjectRegistryError::from)
+}
+
+fn list_project_worktree_rows(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<Vec<WorktreeRow>, ProjectRegistryError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT
+            id,
+            project_id,
+            root_path,
+            branch_name,
+            head_sha,
+            is_primary,
+            updated_at
+        FROM project_worktrees
+        WHERE project_id = ?1
+        ",
+    )?;
+
+    let rows = statement.query_map([project_id], |row| {
+        Ok(WorktreeRow {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            root_path: row.get(2)?,
+            branch_name: row.get(3)?,
+            head_sha: row.get(4)?,
+            is_primary: row.get(5)?,
+            updated_at: row.get(6)?,
+        })
+    })?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(ProjectRegistryError::from)
+}
+
+fn list_project_worktrees(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<Vec<NativeWorktreeSummary>, ProjectRegistryError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT
+            id,
+            project_id,
+            root_path,
+            branch_name,
+            head_sha,
+            is_primary,
+            updated_at
+        FROM project_worktrees
+        WHERE project_id = ?1
+        ORDER BY is_primary DESC, root_path COLLATE NOCASE ASC
+        ",
+    )?;
+
+    let rows = statement.query_map([project_id], |row| {
+        Ok(WorktreeRow {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            root_path: row.get(2)?,
+            branch_name: row.get(3)?,
+            head_sha: row.get(4)?,
+            is_primary: row.get(5)?,
+            updated_at: row.get(6)?,
+        })
+    })?;
+
+    rows.map(|row| row.map(map_worktree_row))
         .collect::<Result<Vec<_>, _>>()
         .map_err(ProjectRegistryError::from)
 }
@@ -372,6 +605,71 @@ fn map_worktree_row(row: WorktreeRow) -> NativeWorktreeSummary {
         head_sha: row.head_sha,
         is_primary: row.is_primary == 1,
         updated_at: row.updated_at,
+    }
+}
+
+fn preferred_existing_worktrees<'a>(
+    existing_rows: &'a [WorktreeRow],
+    desired_worktrees: &BTreeMap<String, DesiredWorktree>,
+    project_id: &str,
+    project_root_key: &str,
+) -> BTreeMap<String, &'a WorktreeRow> {
+    let primary_id = format!("{project_id}:primary");
+    let mut selected = BTreeMap::<String, &WorktreeRow>::new();
+
+    for row in existing_rows {
+        let root_key = normalize_worktree_key(&row.root_path);
+        let replace = selected.get(&root_key).is_none_or(|current| {
+            preferred_worktree_score(
+                row,
+                desired_worktrees.contains_key(&root_key),
+                &primary_id,
+                project_root_key,
+            ) > preferred_worktree_score(
+                current,
+                desired_worktrees.contains_key(&root_key),
+                &primary_id,
+                project_root_key,
+            )
+        });
+        if replace {
+            selected.insert(root_key, row);
+        }
+    }
+
+    selected
+}
+
+fn preferred_worktree_score(
+    row: &WorktreeRow,
+    is_desired: bool,
+    primary_id: &str,
+    project_root_key: &str,
+) -> u8 {
+    let row_key = normalize_worktree_key(&row.root_path);
+    let mut score = 0;
+    if row_key == project_root_key && row.id == primary_id {
+        score += 100;
+    }
+    if row_key == project_root_key && row.is_primary == 1 {
+        score += 50;
+    }
+    if is_desired {
+        score += 10;
+    }
+    score
+}
+
+fn normalize_storage_path(path: &str) -> String {
+    path_to_storage_string(normalize_lexical_path(PathBuf::from(path)))
+}
+
+fn normalize_worktree_key(path: &str) -> String {
+    let normalized = normalize_storage_path(path);
+    if cfg!(windows) {
+        normalized.to_lowercase()
+    } else {
+        normalized
     }
 }
 
@@ -473,6 +771,39 @@ mod tests {
             .expect("primary worktree");
         assert_eq!(primary.branch_name.as_deref(), Some("main"));
         assert_eq!(primary.head_sha.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn sync_project_worktrees_updates_git_metadata() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let project_root = create_dir(temp_dir.path(), "sync-git-metadata");
+        let mut connection = create_current_schema();
+        let added = ProjectRegistry::new(&mut connection)
+            .add_project_paths(std::slice::from_ref(&project_root))
+            .expect("add project");
+        let project_id = added.project_ids_to_open[0].clone();
+
+        let worktrees = ProjectRegistry::new(&mut connection)
+            .sync_project_worktrees(
+                &project_id,
+                &[NativeProjectSyncWorktree {
+                    root_path: project_root.clone(),
+                    branch_name: Some("main".to_string()),
+                    head_sha: Some("abc123".to_string()),
+                }],
+            )
+            .expect("sync worktrees");
+
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(worktrees[0].id.0, format!("{}:primary", project_id.0));
+        assert_eq!(worktrees[0].branch_name.as_deref(), Some("main"));
+        assert_eq!(worktrees[0].head_sha.as_deref(), Some("abc123"));
+
+        let listed = ProjectRegistry::new(&mut connection)
+            .list_projects()
+            .expect("list projects");
+        assert_eq!(listed.worktrees[0].branch_name.as_deref(), Some("main"));
+        assert_eq!(listed.worktrees[0].head_sha.as_deref(), Some("abc123"));
     }
 
     #[test]

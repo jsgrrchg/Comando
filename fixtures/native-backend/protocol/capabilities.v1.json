@@ -36,6 +36,7 @@
       "persistence_list_projects",
       "project_list",
       "project_add",
+      "project_sync_worktrees",
       "project_remove",
       "project_open",
       "project_refresh",

@@ -65,7 +65,7 @@ fn resolve_lexical_path(path: impl AsRef<Path>) -> Result<PathBuf, ProjectRegist
     Ok(normalize_lexical_path(absolute))
 }
 
-fn normalize_lexical_path(path: impl AsRef<Path>) -> PathBuf {
+pub(crate) fn normalize_lexical_path(path: impl AsRef<Path>) -> PathBuf {
     let mut normalized = PathBuf::new();
 
     for component in path.as_ref().components() {
@@ -103,7 +103,7 @@ fn git_path(cwd: &Path, args: &[&str]) -> Option<PathBuf> {
     Some(normalize_lexical_path(PathBuf::from(trimmed)))
 }
 
-fn path_to_storage_string(path: PathBuf) -> String {
+pub(crate) fn path_to_storage_string(path: PathBuf) -> String {
     strip_windows_verbatim_prefix(&path.to_string_lossy())
 }
 

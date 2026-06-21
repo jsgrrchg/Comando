@@ -12,6 +12,9 @@ pub enum ProjectRegistryError {
     #[error("Choose an existing folder for this project.")]
     DirectoryNotFound(PathBuf),
 
+    #[error("The requested project does not exist anymore.")]
+    ProjectNotFound,
+
     #[error("The project path could not be resolved.")]
     ResolvePath {
         path: PathBuf,
@@ -32,6 +35,7 @@ impl ProjectRegistryError {
             Self::EmptyProjectPaths | Self::DirectoryNotFound(_) | Self::ResolvePath { .. } => {
                 NativeErrorCode::InvalidArgs
             }
+            Self::ProjectNotFound => NativeErrorCode::NotFound,
             Self::Sqlite(_) | Self::Io(_) => NativeErrorCode::InternalError,
         }
     }
