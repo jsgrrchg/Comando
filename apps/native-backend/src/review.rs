@@ -1,0 +1,1201 @@
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use comando_ai::history::AiHistoryStore;
+use comando_ai::session::NativeAiSession;
+use comando_diff::{
+    ReviewDecision, ReviewTrackedFile, ReviewTrackedFileKind, ReviewTrackedFileStatus,
+    compute_tracked_file_patch, resolve_tracked_file_hunks, tracked_current_text,
+};
+use comando_fs::WriteTracker;
+use comando_fs::path::{ScopedPathIntent, resolve_scoped_path};
+use comando_fs::read::hash_content_bytes;
+use comando_types::error::{NativeError, NativeErrorCode};
+use comando_types::ids::SessionId;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+const REVIEW_STATE_FILE: &str = "review-state.json";
+const REVIEW_SCHEMA_VERSION: u32 = 1;
+const MAX_REVIEW_TEXT_BYTES: u64 = 5 * 1024 * 1024;
+
+#[derive(Debug, Default)]
+pub struct NativeReviewService {
+    app_data_dir: Option<PathBuf>,
+    baselines: HashMap<String, NativeReviewBaseline>,
+    open_buffers: HashMap<PathBuf, String>,
+    states: HashMap<String, NativeReviewSessionState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewSessionInput {
+    pub session_id: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewFileMutationInput {
+    pub session_id: SessionId,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracked_file_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_version: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewHunkMutationInput {
+    pub session_id: SessionId,
+    pub path: String,
+    pub hunk_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracked_file_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_version: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewFileBufferInput {
+    pub absolute_path: String,
+    pub content: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewCaptureOutput {
+    pub captured: bool,
+    pub session_id: SessionId,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewCommandOutput {
+    pub session_id: SessionId,
+    pub tracked_files: Vec<ReviewTrackedFile>,
+    pub changed_files: Vec<String>,
+    pub conflicts: Vec<NativeReviewConflict>,
+    pub updated_at: String,
+    #[serde(skip)]
+    pub tracked_file_events: Vec<NativeTrackedFileUpdatedPayload>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewUpdatedPayload {
+    pub session_id: SessionId,
+    pub runtime_id: comando_types::ids::RuntimeId,
+    pub runtime_session_id: Option<comando_types::ids::RuntimeSessionId>,
+    pub project_id: Option<comando_types::ids::ProjectId>,
+    pub worktree_id: Option<comando_types::ids::WorktreeId>,
+    pub tracked_files: Vec<ReviewTrackedFile>,
+    pub pending_count: usize,
+    pub conflict_count: usize,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeTrackedFileUpdatedPayload {
+    pub session_id: SessionId,
+    pub tracked_file: ReviewTrackedFile,
+    pub mutation: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewConflict {
+    pub path: String,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_change_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewSessionState {
+    pub version: u32,
+    pub schema_version: u32,
+    pub session_id: SessionId,
+    pub project_id: Option<comando_types::ids::ProjectId>,
+    pub worktree_id: Option<comando_types::ids::WorktreeId>,
+    pub runtime_id: comando_types::ids::RuntimeId,
+    pub runtime_session_id: Option<comando_types::ids::RuntimeSessionId>,
+    pub updated_at: String,
+    pub tracked_files: Vec<ReviewTrackedFile>,
+    pub conflicts: Vec<NativeReviewConflict>,
+    pub action_log: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone)]
+struct NativeReviewBaseline {
+    cwd: PathBuf,
+    files: HashMap<String, Option<String>>,
+}
+
+#[derive(Debug, Clone)]
+struct NativeGitStatusEntry {
+    code: String,
+    path: String,
+    previous_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RollbackBackup {
+    path: PathBuf,
+    content: Option<Vec<u8>>,
+}
+
+impl NativeReviewService {
+    pub fn set_app_data_dir(&mut self, app_data_dir: impl Into<PathBuf>) {
+        self.app_data_dir = Some(app_data_dir.into());
+    }
+
+    pub fn notify_file_buffer(&mut self, input: NativeReviewFileBufferInput) {
+        let path = PathBuf::from(input.absolute_path);
+        if let Some(content) = input.content {
+            self.open_buffers.insert(path, content);
+        } else {
+            self.open_buffers.remove(&path);
+        }
+    }
+
+    pub fn capture_baseline(
+        &mut self,
+        session: &NativeAiSession,
+    ) -> Result<NativeReviewCaptureOutput, NativeError> {
+        let updated_at = now();
+        let entries = match list_git_status_entries(Path::new(&session.scope.cwd)) {
+            Ok(entries) => entries,
+            Err(_) => {
+                self.baselines.remove(&session.session_id.0);
+                return Ok(NativeReviewCaptureOutput {
+                    captured: false,
+                    session_id: session.session_id.clone(),
+                    updated_at,
+                });
+            }
+        };
+        let mut files = HashMap::new();
+        for entry in entries {
+            if !files.contains_key(&entry.path) {
+                files.insert(
+                    entry.path.clone(),
+                    self.read_working_tree_text(&session.scope.cwd, &entry.path)?,
+                );
+            }
+            if let Some(previous_path) = entry.previous_path
+                && !files.contains_key(&previous_path)
+            {
+                files.insert(
+                    previous_path.clone(),
+                    self.read_working_tree_text(&session.scope.cwd, &previous_path)?,
+                );
+            }
+        }
+        self.baselines.insert(
+            session.session_id.0.clone(),
+            NativeReviewBaseline {
+                cwd: PathBuf::from(&session.scope.cwd),
+                files,
+            },
+        );
+        Ok(NativeReviewCaptureOutput {
+            captured: true,
+            session_id: session.session_id.clone(),
+            updated_at,
+        })
+    }
+
+    pub fn reconcile_tracked_files(
+        &mut self,
+        session: &NativeAiSession,
+    ) -> Result<NativeReviewCommandOutput, NativeError> {
+        let Some(baseline) = self.baselines.remove(&session.session_id.0) else {
+            let state = self.load_or_empty_state(session)?;
+            return Ok(command_output(
+                session.session_id.clone(),
+                state.tracked_files,
+                Vec::new(),
+                state.conflicts,
+                now(),
+                Vec::new(),
+            ));
+        };
+
+        let status_entries = list_git_status_entries(&baseline.cwd)?;
+        let status_entries = merge_candidate_entries(status_entries, &baseline);
+        let updated_at = now();
+        let mut tracked_files = self
+            .states
+            .get(&session.session_id.0)
+            .map(|state| state.tracked_files.clone())
+            .unwrap_or_default();
+        let mut tracked_file_events = Vec::new();
+
+        for entry in status_entries {
+            let baseline_text = baseline_text_for_entry(&baseline, &entry);
+            let deleted = is_git_deleted(&entry);
+            let current_text = if deleted {
+                None
+            } else {
+                self.read_working_tree_text(&session.scope.cwd, &entry.path)?
+            };
+            if !deleted && current_text.is_none() && !baseline_text.known {
+                continue;
+            }
+
+            let old_text = if baseline_text.known {
+                baseline_text.text
+            } else {
+                read_head_text(&session.scope.cwd, entry.previous_path.as_deref().unwrap_or(&entry.path))
+                    .unwrap_or(None)
+            };
+            let previous_path = entry
+                .previous_path
+                .filter(|previous_path| previous_path != &entry.path);
+
+            if old_text.is_none() && current_text.is_none() && previous_path.is_none() {
+                continue;
+            }
+            if previous_path.is_none()
+                && old_text.is_some()
+                && current_text.is_some()
+                && old_text == current_text
+            {
+                continue;
+            }
+
+            let Some(mut tracked_file) = compute_tracked_file_patch(
+                &session.session_id.0,
+                &entry.path,
+                previous_path,
+                old_text,
+                current_text.clone(),
+                updated_at.clone(),
+            ) else {
+                continue;
+            };
+            tracked_file.current_content_hash = current_text
+                .as_ref()
+                .map(|text| hash_content_bytes(text.as_bytes()));
+            tracked_file.expected_disk_hash = tracked_file.current_content_hash.clone();
+
+            upsert_tracked_file(&mut tracked_files, tracked_file.clone());
+            tracked_file_events.push(NativeTrackedFileUpdatedPayload {
+                session_id: session.session_id.clone(),
+                tracked_file,
+                mutation: "updated".to_string(),
+                updated_at: updated_at.clone(),
+            });
+        }
+
+        let state = self.replace_state(session, tracked_files, Vec::new(), updated_at.clone())?;
+        Ok(command_output(
+            session.session_id.clone(),
+            state.tracked_files,
+            Vec::new(),
+            state.conflicts,
+            updated_at,
+            tracked_file_events,
+        ))
+    }
+
+    pub fn list_tracked_files(
+        &mut self,
+        session: &NativeAiSession,
+    ) -> Result<NativeReviewCommandOutput, NativeError> {
+        let state = self.load_or_empty_state(session)?;
+        Ok(command_output(
+            session.session_id.clone(),
+            state.tracked_files,
+            Vec::new(),
+            state.conflicts,
+            state.updated_at,
+            Vec::new(),
+        ))
+    }
+
+    pub fn keep_file(
+        &mut self,
+        session: &NativeAiSession,
+        input: NativeReviewFileMutationInput,
+    ) -> Result<NativeReviewCommandOutput, NativeError> {
+        let mut state = self.load_or_empty_state(session)?;
+        let index = find_tracked_file_index(&state.tracked_files, &input.path)
+            .ok_or_else(|| review_not_found(&input.path))?;
+        validate_version(&state.tracked_files[index], input.expected_version)?;
+        self.assert_current_matches(session, &state.tracked_files[index])?;
+        let mut tracked_file = state.tracked_files.remove(index);
+        tracked_file.review_state = ReviewTrackedFileStatus::Kept;
+        tracked_file.updated_at = now();
+        let updated_at = tracked_file.updated_at.clone();
+        let event_payload = NativeTrackedFileUpdatedPayload {
+            session_id: session.session_id.clone(),
+            tracked_file,
+            mutation: "kept".to_string(),
+            updated_at: updated_at.clone(),
+        };
+        self.save_replaced_state(session, &mut state, updated_at.clone())?;
+        Ok(command_output(
+            session.session_id.clone(),
+            state.tracked_files,
+            Vec::new(),
+            state.conflicts,
+            updated_at,
+            vec![event_payload],
+        ))
+    }
+
+    pub fn reject_file(
+        &mut self,
+        session: &NativeAiSession,
+        input: NativeReviewFileMutationInput,
+        write_tracker: &WriteTracker,
+    ) -> Result<NativeReviewCommandOutput, NativeError> {
+        let mut state = self.load_or_empty_state(session)?;
+        let index = find_tracked_file_index(&state.tracked_files, &input.path)
+            .ok_or_else(|| review_not_found(&input.path))?;
+        validate_version(&state.tracked_files[index], input.expected_version)?;
+        let tracked_file = state.tracked_files.remove(index);
+        let changed_files = self.revert_tracked_file(session, &tracked_file, write_tracker)?;
+        let updated_at = now();
+        let mut event_file = tracked_file;
+        event_file.review_state = ReviewTrackedFileStatus::Rejected;
+        event_file.updated_at = updated_at.clone();
+        let event_payload = NativeTrackedFileUpdatedPayload {
+            session_id: session.session_id.clone(),
+            tracked_file: event_file,
+            mutation: "rejected".to_string(),
+            updated_at: updated_at.clone(),
+        };
+        self.save_replaced_state(session, &mut state, updated_at.clone())?;
+        Ok(command_output(
+            session.session_id.clone(),
+            state.tracked_files,
+            changed_files,
+            state.conflicts,
+            updated_at,
+            vec![event_payload],
+        ))
+    }
+
+    pub fn keep_hunks(
+        &mut self,
+        session: &NativeAiSession,
+        input: NativeReviewHunkMutationInput,
+    ) -> Result<NativeReviewCommandOutput, NativeError> {
+        self.resolve_hunks(session, input, ReviewDecision::Keep, None)
+    }
+
+    pub fn reject_hunks(
+        &mut self,
+        session: &NativeAiSession,
+        input: NativeReviewHunkMutationInput,
+        write_tracker: &WriteTracker,
+    ) -> Result<NativeReviewCommandOutput, NativeError> {
+        self.resolve_hunks(session, input, ReviewDecision::Reject, Some(write_tracker))
+    }
+
+    pub fn keep_all(
+        &mut self,
+        session: &NativeAiSession,
+    ) -> Result<NativeReviewCommandOutput, NativeError> {
+        let mut state = self.load_or_empty_state(session)?;
+        for tracked_file in &state.tracked_files {
+            self.assert_current_matches(session, tracked_file)?;
+        }
+        let updated_at = now();
+        let events = state
+            .tracked_files
+            .iter()
+            .cloned()
+            .map(|mut tracked_file| {
+                tracked_file.review_state = ReviewTrackedFileStatus::Kept;
+                tracked_file.updated_at = updated_at.clone();
+                NativeTrackedFileUpdatedPayload {
+                    session_id: session.session_id.clone(),
+                    tracked_file,
+                    mutation: "kept".to_string(),
+                    updated_at: updated_at.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+        state.tracked_files.clear();
+        self.save_replaced_state(session, &mut state, updated_at.clone())?;
+        Ok(command_output(
+            session.session_id.clone(),
+            state.tracked_files,
+            Vec::new(),
+            state.conflicts,
+            updated_at,
+            events,
+        ))
+    }
+
+    pub fn reject_all(
+        &mut self,
+        session: &NativeAiSession,
+        write_tracker: &WriteTracker,
+    ) -> Result<NativeReviewCommandOutput, NativeError> {
+        let mut state = self.load_or_empty_state(session)?;
+        for tracked_file in &state.tracked_files {
+            self.assert_current_matches(session, tracked_file)?;
+            self.assert_move_previous_path_available(session, tracked_file)?;
+        }
+        let backups = self.create_rollback_backups(session, &state.tracked_files)?;
+        let tracked_files = state.tracked_files.clone();
+        let mut changed_files = Vec::new();
+        if let Err(error) = tracked_files.iter().try_for_each(|tracked_file| {
+            self.revert_tracked_file(session, tracked_file, write_tracker)
+                .map(|paths| changed_files.extend(paths))
+        }) {
+            let _ = restore_backups(backups);
+            return Err(error);
+        }
+        let updated_at = now();
+        let events = tracked_files
+            .into_iter()
+            .map(|mut tracked_file| {
+                tracked_file.review_state = ReviewTrackedFileStatus::Rejected;
+                tracked_file.updated_at = updated_at.clone();
+                NativeTrackedFileUpdatedPayload {
+                    session_id: session.session_id.clone(),
+                    tracked_file,
+                    mutation: "rejected".to_string(),
+                    updated_at: updated_at.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+        state.tracked_files.clear();
+        self.save_replaced_state(session, &mut state, updated_at.clone())?;
+        Ok(command_output(
+            session.session_id.clone(),
+            state.tracked_files,
+            changed_files,
+            state.conflicts,
+            updated_at,
+            events,
+        ))
+    }
+
+    pub fn review_updated_payload(
+        &self,
+        session: &NativeAiSession,
+        output: &NativeReviewCommandOutput,
+    ) -> NativeReviewUpdatedPayload {
+        NativeReviewUpdatedPayload {
+            session_id: session.session_id.clone(),
+            runtime_id: session.runtime_id.clone(),
+            runtime_session_id: session.runtime_session_id.clone(),
+            project_id: session.scope.project_id.clone(),
+            worktree_id: session.scope.worktree_id.clone(),
+            pending_count: output
+                .tracked_files
+                .iter()
+                .filter(|file| file.review_state == ReviewTrackedFileStatus::Pending)
+                .count(),
+            conflict_count: output.conflicts.len()
+                + output
+                    .tracked_files
+                    .iter()
+                    .filter(|file| file.review_state == ReviewTrackedFileStatus::Conflict)
+                    .count(),
+            tracked_files: output.tracked_files.clone(),
+            updated_at: output.updated_at.clone(),
+        }
+    }
+
+    fn resolve_hunks(
+        &mut self,
+        session: &NativeAiSession,
+        input: NativeReviewHunkMutationInput,
+        decision: ReviewDecision,
+        write_tracker: Option<&WriteTracker>,
+    ) -> Result<NativeReviewCommandOutput, NativeError> {
+        let mut state = self.load_or_empty_state(session)?;
+        let index = find_tracked_file_index(&state.tracked_files, &input.path)
+            .ok_or_else(|| review_not_found(&input.path))?;
+        validate_version(&state.tracked_files[index], input.expected_version)?;
+        let tracked_file = state.tracked_files[index].clone();
+        self.assert_current_matches(session, &tracked_file)?;
+        let updated_at = now();
+        let next =
+            resolve_tracked_file_hunks(&tracked_file, &input.hunk_ids, decision.clone(), updated_at.clone());
+        let mut changed_files = Vec::new();
+        match decision {
+            ReviewDecision::Keep => {
+                replace_or_remove_tracked_file(&mut state.tracked_files, index, next.clone());
+            }
+            ReviewDecision::Reject => {
+                let write_tracker = write_tracker.expect("reject hunks provides write tracker");
+                if let Some(next_file) = next.clone() {
+                    let current = tracked_current_text(&tracked_file);
+                    let next_text = tracked_current_text(&next_file);
+                    if current != next_text {
+                        self.write_review_text(session, &next_file.path, &next_text, write_tracker)?;
+                        changed_files.push(next_file.path.clone());
+                    }
+                    replace_or_remove_tracked_file(&mut state.tracked_files, index, Some(next_file));
+                } else {
+                    changed_files.extend(self.revert_tracked_file(session, &tracked_file, write_tracker)?);
+                    state.tracked_files.remove(index);
+                }
+            }
+        }
+        let event_payload = NativeTrackedFileUpdatedPayload {
+            session_id: session.session_id.clone(),
+            tracked_file: next.unwrap_or_else(|| tracked_file.clone()),
+            mutation: match decision {
+                ReviewDecision::Keep => "kept".to_string(),
+                ReviewDecision::Reject => "rejected".to_string(),
+            },
+            updated_at: updated_at.clone(),
+        };
+        self.save_replaced_state(session, &mut state, updated_at.clone())?;
+        Ok(command_output(
+            session.session_id.clone(),
+            state.tracked_files,
+            changed_files,
+            state.conflicts,
+            updated_at,
+            vec![event_payload],
+        ))
+    }
+
+    fn load_or_empty_state(
+        &mut self,
+        session: &NativeAiSession,
+    ) -> Result<NativeReviewSessionState, NativeError> {
+        if let Some(state) = self.states.get(&session.session_id.0) {
+            return Ok(state.clone());
+        }
+        if let Some(path) = self.review_state_path(&session.session_id)
+            && path.exists()
+        {
+            let bytes = fs::read(&path).map_err(|error| review_io("read review state", &path, error))?;
+            let state = serde_json::from_slice::<NativeReviewSessionState>(&bytes).map_err(|error| {
+                NativeError::new(
+                    NativeErrorCode::InvalidJson,
+                    format!("Native review state is invalid: {error}"),
+                )
+            })?;
+            self.states.insert(session.session_id.0.clone(), state.clone());
+            return Ok(state);
+        }
+        Ok(empty_state(session, now()))
+    }
+
+    fn replace_state(
+        &mut self,
+        session: &NativeAiSession,
+        tracked_files: Vec<ReviewTrackedFile>,
+        conflicts: Vec<NativeReviewConflict>,
+        updated_at: String,
+    ) -> Result<NativeReviewSessionState, NativeError> {
+        let mut state = empty_state(session, updated_at.clone());
+        state.tracked_files = tracked_files;
+        state.conflicts = conflicts;
+        self.save_state(&state)?;
+        self.states.insert(session.session_id.0.clone(), state.clone());
+        Ok(state)
+    }
+
+    fn save_replaced_state(
+        &mut self,
+        session: &NativeAiSession,
+        state: &mut NativeReviewSessionState,
+        updated_at: String,
+    ) -> Result<(), NativeError> {
+        state.updated_at = updated_at;
+        state.version = state.version.saturating_add(1);
+        self.save_state(state)?;
+        self.states.insert(session.session_id.0.clone(), state.clone());
+        Ok(())
+    }
+
+    fn save_state(&self, state: &NativeReviewSessionState) -> Result<(), NativeError> {
+        let Some(path) = self.review_state_path(&state.session_id) else {
+            return Ok(());
+        };
+        atomic_write_json(&path, state)
+    }
+
+    fn review_state_path(&self, session_id: &SessionId) -> Option<PathBuf> {
+        self.app_data_dir.as_ref().map(|app_data_dir| {
+            app_data_dir
+                .join("ai")
+                .join("sessions")
+                .join(AiHistoryStore::storage_key(&session_id.0))
+                .join(REVIEW_STATE_FILE)
+        })
+    }
+
+    fn read_working_tree_text(
+        &self,
+        cwd: &str,
+        relative_path: &str,
+    ) -> Result<Option<String>, NativeError> {
+        let resolved = match resolve_review_path(cwd, relative_path, ScopedPathIntent::ReadExisting) {
+            Ok(path) => path,
+            Err(error) if error.code == NativeErrorCode::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if let Some(buffer) = self.open_buffers.get(&resolved) {
+            return ensure_review_text(buffer.clone(), relative_path);
+        }
+        read_text_file_for_review(&resolved, relative_path)
+    }
+
+    fn assert_current_matches(
+        &self,
+        session: &NativeAiSession,
+        tracked_file: &ReviewTrackedFile,
+    ) -> Result<(), NativeError> {
+        let expected = match tracked_file.kind {
+            ReviewTrackedFileKind::Delete => None,
+            _ => Some(tracked_current_text(tracked_file)),
+        };
+        let current = self.read_working_tree_text(&session.scope.cwd, &tracked_file.path)?;
+        match (expected, current) {
+            (None, None) => Ok(()),
+            (Some(expected), Some(current)) if expected == current => Ok(()),
+            (Some(_), Some(current)) => Err(review_conflict(
+                &tracked_file.path,
+                "content_hash_mismatch",
+                Some(hash_content_bytes(current.as_bytes())),
+            )),
+            (Some(_), None) => Err(review_conflict(&tracked_file.path, "missing_file", None)),
+            (None, Some(current)) => Err(review_conflict(
+                &tracked_file.path,
+                "path_exists",
+                Some(hash_content_bytes(current.as_bytes())),
+            )),
+        }
+    }
+
+    fn assert_move_previous_path_available(
+        &self,
+        session: &NativeAiSession,
+        tracked_file: &ReviewTrackedFile,
+    ) -> Result<(), NativeError> {
+        if tracked_file.kind != ReviewTrackedFileKind::Move {
+            return Ok(());
+        }
+        let Some(previous_path) = tracked_file.previous_path.as_deref() else {
+            return Ok(());
+        };
+        if self
+            .read_working_tree_text(&session.scope.cwd, previous_path)?
+            .is_some()
+        {
+            return Err(review_conflict(previous_path, "path_exists", None));
+        }
+        Ok(())
+    }
+
+    fn revert_tracked_file(
+        &mut self,
+        session: &NativeAiSession,
+        tracked_file: &ReviewTrackedFile,
+        write_tracker: &WriteTracker,
+    ) -> Result<Vec<String>, NativeError> {
+        self.assert_current_matches(session, tracked_file)?;
+        self.assert_move_previous_path_available(session, tracked_file)?;
+        let mut changed = Vec::new();
+        match tracked_file.kind {
+            ReviewTrackedFileKind::Create => {
+                self.remove_review_file(session, &tracked_file.path, write_tracker)?;
+                changed.push(tracked_file.path.clone());
+            }
+            ReviewTrackedFileKind::Delete | ReviewTrackedFileKind::Update => {
+                let old_text = tracked_file.old_text.as_deref().ok_or_else(|| {
+                    review_conflict(&tracked_file.path, "not_reversible", None)
+                })?;
+                self.write_review_text(session, &tracked_file.path, old_text, write_tracker)?;
+                changed.push(tracked_file.path.clone());
+            }
+            ReviewTrackedFileKind::Move => {
+                let old_text = tracked_file.old_text.as_deref().ok_or_else(|| {
+                    review_conflict(&tracked_file.path, "not_reversible", None)
+                })?;
+                let previous_path = tracked_file.previous_path.as_deref().ok_or_else(|| {
+                    review_conflict(&tracked_file.path, "not_reversible", None)
+                })?;
+                self.remove_review_file(session, &tracked_file.path, write_tracker)?;
+                self.write_review_text(session, previous_path, old_text, write_tracker)?;
+                changed.push(tracked_file.path.clone());
+                changed.push(previous_path.to_string());
+            }
+        }
+        Ok(changed)
+    }
+
+    fn write_review_text(
+        &mut self,
+        session: &NativeAiSession,
+        relative_path: &str,
+        text: &str,
+        write_tracker: &WriteTracker,
+    ) -> Result<(), NativeError> {
+        let resolved = resolve_review_path(&session.scope.cwd, relative_path, ScopedPathIntent::CreateTarget)?;
+        if let Some(parent) = resolved.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| review_io("create review parent directory", parent, error))?;
+        }
+        fs::write(&resolved, text)
+            .map_err(|error| review_io("write review file", &resolved, error))?;
+        write_tracker.track_content(resolved.clone(), text);
+        if let Some(buffer) = self.open_buffers.get_mut(&resolved) {
+            *buffer = text.to_string();
+        }
+        Ok(())
+    }
+
+    fn remove_review_file(
+        &mut self,
+        session: &NativeAiSession,
+        relative_path: &str,
+        write_tracker: &WriteTracker,
+    ) -> Result<(), NativeError> {
+        let resolved = resolve_review_path(&session.scope.cwd, relative_path, ScopedPathIntent::ReadExisting)?;
+        match fs::remove_file(&resolved) {
+            Ok(()) => {
+                write_tracker.track_any(resolved.clone());
+                self.open_buffers.remove(&resolved);
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(review_io("remove review file", &resolved, error)),
+        }
+    }
+
+    fn create_rollback_backups(
+        &self,
+        session: &NativeAiSession,
+        tracked_files: &[ReviewTrackedFile],
+    ) -> Result<Vec<RollbackBackup>, NativeError> {
+        let mut paths = HashSet::new();
+        let mut backups = Vec::new();
+        for tracked_file in tracked_files {
+            for relative_path in revert_paths(tracked_file) {
+                let resolved = resolve_review_path(&session.scope.cwd, &relative_path, ScopedPathIntent::CreateTarget)?;
+                if !paths.insert(resolved.clone()) {
+                    continue;
+                }
+                let content = match fs::read(&resolved) {
+                    Ok(content) => Some(content),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(review_io("backup review file", &resolved, error)),
+                };
+                backups.push(RollbackBackup { path: resolved, content });
+            }
+        }
+        Ok(backups)
+    }
+}
+
+fn empty_state(session: &NativeAiSession, updated_at: String) -> NativeReviewSessionState {
+    NativeReviewSessionState {
+        version: 1,
+        schema_version: REVIEW_SCHEMA_VERSION,
+        session_id: session.session_id.clone(),
+        project_id: session.scope.project_id.clone(),
+        worktree_id: session.scope.worktree_id.clone(),
+        runtime_id: session.runtime_id.clone(),
+        runtime_session_id: session.runtime_session_id.clone(),
+        updated_at,
+        tracked_files: Vec::new(),
+        conflicts: Vec::new(),
+        action_log: Vec::new(),
+    }
+}
+
+fn command_output(
+    session_id: SessionId,
+    tracked_files: Vec<ReviewTrackedFile>,
+    changed_files: Vec<String>,
+    conflicts: Vec<NativeReviewConflict>,
+    updated_at: String,
+    tracked_file_events: Vec<NativeTrackedFileUpdatedPayload>,
+) -> NativeReviewCommandOutput {
+    NativeReviewCommandOutput {
+        session_id,
+        tracked_files,
+        changed_files,
+        conflicts,
+        updated_at,
+        tracked_file_events,
+    }
+}
+
+fn merge_candidate_entries(
+    status_entries: Vec<NativeGitStatusEntry>,
+    baseline: &NativeReviewBaseline,
+) -> Vec<NativeGitStatusEntry> {
+    let mut covered_paths = HashSet::new();
+    for entry in &status_entries {
+        covered_paths.insert(entry.path.clone());
+        if let Some(previous_path) = &entry.previous_path {
+            covered_paths.insert(previous_path.clone());
+        }
+    }
+    let mut entries = status_entries;
+    for baseline_path in baseline.files.keys() {
+        if !covered_paths.contains(baseline_path) {
+            entries.push(NativeGitStatusEntry {
+                code: "  ".to_string(),
+                path: baseline_path.clone(),
+                previous_path: None,
+            });
+        }
+    }
+    entries
+}
+
+struct BaselineText {
+    known: bool,
+    text: Option<String>,
+}
+
+fn baseline_text_for_entry(
+    baseline: &NativeReviewBaseline,
+    entry: &NativeGitStatusEntry,
+) -> BaselineText {
+    if let Some(text) = baseline.files.get(&entry.path) {
+        return BaselineText {
+            known: true,
+            text: text.clone(),
+        };
+    }
+    if let Some(previous_path) = &entry.previous_path
+        && let Some(text) = baseline.files.get(previous_path)
+    {
+        return BaselineText {
+            known: true,
+            text: text.clone(),
+        };
+    }
+    BaselineText {
+        known: false,
+        text: None,
+    }
+}
+
+fn list_git_status_entries(cwd: &Path) -> Result<Vec<NativeGitStatusEntry>, NativeError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .arg("status")
+        .arg("--porcelain=v1")
+        .arg("-z")
+        .arg("--untracked-files=all")
+        .output()
+        .map_err(|error| review_io("run git status", cwd, error))?;
+    if !output.status.success() {
+        return Err(NativeError::new(
+            NativeErrorCode::NotSupported,
+            "Native review requires a Git working tree for reconciliation.",
+        ));
+    }
+    Ok(parse_git_status_output(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_git_status_output(output: &str) -> Vec<NativeGitStatusEntry> {
+    let tokens = output.split('\0').collect::<Vec<_>>();
+    let mut entries = Vec::new();
+    let mut index = 0;
+    while index < tokens.len() {
+        let token = tokens[index];
+        index += 1;
+        if token.len() < 4 || token.as_bytes().get(2) != Some(&b' ') {
+            continue;
+        }
+        let code = token[..2].to_string();
+        if code == "!!" {
+            continue;
+        }
+        let mut path = token[3..].to_string();
+        let mut previous_path = None;
+        if code.contains('R') || code.contains('C') {
+            if let Some(next) = tokens.get(index).filter(|value| !value.is_empty()) {
+                previous_path = Some((*next).to_string());
+                index += 1;
+            } else if let Some(arrow_index) = path.find(" -> ") {
+                previous_path = Some(path[..arrow_index].to_string());
+                path = path[arrow_index + 4..].to_string();
+            }
+        }
+        if !path.is_empty() {
+            entries.push(NativeGitStatusEntry {
+                code,
+                path,
+                previous_path,
+            });
+        }
+    }
+    entries
+}
+
+fn read_head_text(cwd: &str, relative_path: &str) -> Result<Option<String>, NativeError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .arg("show")
+        .arg(format!("HEAD:{relative_path}"))
+        .output()
+        .map_err(|error| review_io("run git show", Path::new(cwd), error))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    ensure_review_text(String::from_utf8_lossy(&output.stdout).to_string(), relative_path)
+}
+
+fn read_text_file_for_review(path: &Path, display_path: &str) -> Result<Option<String>, NativeError> {
+    let metadata = fs::metadata(path).map_err(|error| review_io("read review file metadata", path, error))?;
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+    if metadata.len() > MAX_REVIEW_TEXT_BYTES {
+        return Err(NativeError::new(
+            NativeErrorCode::TooLarge,
+            "Cannot review this file because it is too large.",
+        )
+        .with_details(json!({ "path": display_path })));
+    }
+    let bytes = fs::read(path).map_err(|error| review_io("read review file", path, error))?;
+    if bytes.contains(&0) {
+        return Err(NativeError::new(
+            NativeErrorCode::BinaryFile,
+            "Cannot review binary files as text.",
+        )
+        .with_details(json!({ "path": display_path })));
+    }
+    let text = String::from_utf8(bytes).map_err(|_| {
+        NativeError::new(
+            NativeErrorCode::NotSupported,
+            "Cannot review this file because its encoding is unsupported.",
+        )
+        .with_details(json!({ "path": display_path }))
+    })?;
+    ensure_review_text(text, display_path)
+}
+
+fn ensure_review_text(text: String, display_path: &str) -> Result<Option<String>, NativeError> {
+    if text.len() as u64 > MAX_REVIEW_TEXT_BYTES {
+        return Err(NativeError::new(
+            NativeErrorCode::TooLarge,
+            "Cannot review this file because it is too large.",
+        )
+        .with_details(json!({ "path": display_path })));
+    }
+    if text.contains('\0') {
+        return Err(NativeError::new(
+            NativeErrorCode::BinaryFile,
+            "Cannot review binary files as text.",
+        )
+        .with_details(json!({ "path": display_path })));
+    }
+    Ok(Some(text))
+}
+
+fn is_git_deleted(entry: &NativeGitStatusEntry) -> bool {
+    entry.code.as_bytes().first() == Some(&b'D') || entry.code.as_bytes().get(1) == Some(&b'D')
+}
+
+fn find_tracked_file_index(files: &[ReviewTrackedFile], path: &str) -> Option<usize> {
+    files.iter().position(|file| {
+        file.path == path
+            || file.previous_path.as_deref() == Some(path)
+            || file.identity_key == path
+    })
+}
+
+fn upsert_tracked_file(files: &mut Vec<ReviewTrackedFile>, file: ReviewTrackedFile) {
+    if let Some(index) = find_tracked_file_index(files, &file.path) {
+        let mut next = file;
+        next.version = Some(files[index].version.unwrap_or(1).saturating_add(1));
+        files[index] = next;
+    } else {
+        files.push(file);
+    }
+}
+
+fn replace_or_remove_tracked_file(
+    files: &mut Vec<ReviewTrackedFile>,
+    index: usize,
+    next: Option<ReviewTrackedFile>,
+) {
+    if let Some(next) = next {
+        files[index] = next;
+    } else {
+        files.remove(index);
+    }
+}
+
+fn validate_version(
+    tracked_file: &ReviewTrackedFile,
+    expected_version: Option<u32>,
+) -> Result<(), NativeError> {
+    if let Some(expected_version) = expected_version
+        && tracked_file.version.unwrap_or(1) != expected_version
+    {
+        return Err(review_conflict(
+            &tracked_file.path,
+            "stale_review_version",
+            None,
+        ));
+    }
+    Ok(())
+}
+
+fn revert_paths(tracked_file: &ReviewTrackedFile) -> Vec<String> {
+    let mut paths = vec![tracked_file.path.clone()];
+    if tracked_file.kind == ReviewTrackedFileKind::Move
+        && let Some(previous_path) = &tracked_file.previous_path
+    {
+        paths.push(previous_path.clone());
+    }
+    paths
+}
+
+fn restore_backups(backups: Vec<RollbackBackup>) -> Result<(), NativeError> {
+    for backup in backups.into_iter().rev() {
+        if let Some(content) = backup.content {
+            if let Some(parent) = backup.path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|error| review_io("restore review parent directory", parent, error))?;
+            }
+            fs::write(&backup.path, content)
+                .map_err(|error| review_io("restore review file", &backup.path, error))?;
+        } else if let Err(error) = fs::remove_file(&backup.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(review_io("remove restored review file", &backup.path, error));
+        }
+    }
+    Ok(())
+}
+
+fn resolve_review_path(
+    cwd: &str,
+    relative_path: &str,
+    intent: ScopedPathIntent,
+) -> Result<PathBuf, NativeError> {
+    resolve_scoped_path(Path::new(cwd), Some(relative_path), false, intent)
+        .map(|resolved| resolved.absolute_path)
+        .map_err(|error| match error {
+            comando_fs::FsError::NotFound => NativeError::new(NativeErrorCode::NotFound, "Review file was not found."),
+            comando_fs::FsError::PathEscape => NativeError::new(
+                NativeErrorCode::PermissionDenied,
+                "Cannot safely apply this review change because the path is outside the project.",
+            ),
+            comando_fs::FsError::InvalidPath => NativeError::new(
+                NativeErrorCode::InvalidArgs,
+                "Cannot safely apply this review change because the path is invalid.",
+            ),
+            _ => error.to_native_error(),
+        })
+}
+
+fn review_not_found(path: &str) -> NativeError {
+    NativeError::new(NativeErrorCode::NotFound, "The file to review was not found.")
+        .with_details(json!({ "path": path }))
+}
+
+fn review_conflict(path: &str, reason: &str, external_change_hash: Option<String>) -> NativeError {
+    NativeError::new(
+        NativeErrorCode::Conflict,
+        "Cannot safely apply this review change because the file no longer matches the reviewed content.",
+    )
+    .with_details(json!({
+        "conflict": {
+            "externalChangeHash": external_change_hash,
+            "path": path,
+            "reason": reason
+        }
+    }))
+}
+
+fn review_io(action: &str, path: &Path, error: std::io::Error) -> NativeError {
+    let code = match error.kind() {
+        std::io::ErrorKind::NotFound => NativeErrorCode::NotFound,
+        std::io::ErrorKind::PermissionDenied => NativeErrorCode::PermissionDenied,
+        _ => NativeErrorCode::InternalError,
+    };
+    NativeError::new(code, format!("Native review failed to {action}: {error}"))
+        .with_details(json!({ "path": path.to_string_lossy() }))
+}
+
+fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), NativeError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| review_io("create review state directory", parent, error))?;
+    }
+    let temp_path = path.with_extension("json.tmp");
+    let json = serde_json::to_vec_pretty(value).map_err(|error| {
+        NativeError::new(
+            NativeErrorCode::InternalError,
+            format!("Native review state serialization failed: {error}"),
+        )
+    })?;
+    let mut file = fs::File::create(&temp_path)
+        .map_err(|error| review_io("create review state temp file", &temp_path, error))?;
+    file.write_all(&json)
+        .and_then(|_| file.write_all(b"\n"))
+        .and_then(|_| file.sync_all())
+        .map_err(|error| review_io("write review state temp file", &temp_path, error))?;
+    fs::rename(&temp_path, path).map_err(|error| review_io("replace review state", path, error))
+}
+
+fn now() -> String {
+    comando_persistence::store::now_rfc3339()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_renamed_git_status_entries() {
+        let entries = parse_git_status_output("R  old.txt\0new.txt\0 M src/main.rs\0");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, "old.txt");
+        assert_eq!(entries[0].previous_path.as_deref(), Some("new.txt"));
+    }
+
+    #[test]
+    fn upserts_by_path() {
+        let mut files = Vec::new();
+        let first = compute_tracked_file_patch(
+            "s",
+            "a.txt",
+            None,
+            Some("a\n".to_string()),
+            Some("b\n".to_string()),
+            now(),
+        )
+        .expect("first");
+        let second = compute_tracked_file_patch(
+            "s",
+            "a.txt",
+            None,
+            Some("a\n".to_string()),
+            Some("c\n".to_string()),
+            now(),
+        )
+        .expect("second");
+        upsert_tracked_file(&mut files, first);
+        upsert_tracked_file(&mut files, second);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].version, Some(2));
+    }
+}
+

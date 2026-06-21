@@ -435,6 +435,13 @@ impl AiEngine {
             .collect())
     }
 
+    pub fn session_for_review(
+        &self,
+        session_id: &comando_types::ids::SessionId,
+    ) -> AiResult<crate::session::NativeAiSession> {
+        Ok(self.lock_sessions()?.get(session_id)?.session.clone())
+    }
+
     fn set_session_config_value(
         &self,
         session_id: &comando_types::ids::SessionId,

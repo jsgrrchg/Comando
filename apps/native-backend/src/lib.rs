@@ -6,6 +6,7 @@ use std::time::Duration;
 pub mod commands;
 pub mod logging;
 pub mod protocol;
+pub mod review;
 
 use commands::NativeBackend;
 use protocol::{JsonlWriter, RpcOutput, error_response, parse_request_line};

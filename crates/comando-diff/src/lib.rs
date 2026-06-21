@@ -21,4 +21,5 @@ pub use hunks::{
 pub use review::{
     ReviewDecision, ReviewTrackedFile, ReviewTrackedFileKind, ReviewTrackedFileStatus,
     compute_tracked_file_patch, resolve_tracked_file_hunks, sync_tracked_file,
+    tracked_current_text,
 };
