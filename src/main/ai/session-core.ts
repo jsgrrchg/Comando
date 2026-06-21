@@ -14,6 +14,7 @@ import type {
     SessionModelState,
 } from "@agentclientprotocol/sdk";
 import type {
+    AiAvailableCommand,
     AiImageAttachment,
     AiRuntimeId,
     AiSessionConfigOption,
@@ -178,6 +179,46 @@ export function applySessionCatalogToSnapshot(
     return {
         ...snapshot,
         configOptions,
+        modeId,
+        modes,
+        modelId,
+        models,
+    };
+}
+
+export interface NormalizedSessionCatalogPayload {
+    readonly availableCommands?: readonly AiAvailableCommand[];
+    readonly configOptions?: readonly AiSessionConfigOption[];
+}
+
+export function applyNormalizedSessionCatalogToSnapshot(
+    snapshot: AiSessionSnapshot,
+    payload: NormalizedSessionCatalogPayload,
+): AiSessionSnapshot {
+    const configOptions = payload.configOptions ?? snapshot.configOptions;
+    const modes =
+        payload.configOptions !== undefined
+            ? buildModesFromConfigOptions(configOptions)
+            : snapshot.modes;
+    const models =
+        payload.configOptions !== undefined
+            ? buildModelsFromConfigOptions(configOptions)
+            : snapshot.models;
+    const modeId =
+        payload.configOptions !== undefined
+            ? deriveModeId(null, configOptions, snapshot.modeId)
+            : snapshot.modeId;
+    const modelId =
+        payload.configOptions !== undefined
+            ? deriveModelId(null, configOptions, snapshot.modelId)
+            : snapshot.modelId;
+
+    return {
+        ...snapshot,
+        ...(payload.availableCommands !== undefined
+            ? { availableCommands: payload.availableCommands }
+            : {}),
+        configOptions: syncSelectedModelOption(configOptions, modelId),
         modeId,
         modes,
         modelId,

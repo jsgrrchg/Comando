@@ -2,7 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use comando_types::ai::{
-    NativeAiMessageDeltaPayload, NativeAiSessionSummary, NativeAiToolActivityPayload,
+    NativeAiMessageDeltaPayload, NativeAiSessionCatalogUpdatedPayload, NativeAiSessionSummary,
+    NativeAiSubagentBreadcrumbPayload, NativeAiSubagentCreatedPayload, NativeAiToolActivityPayload,
 };
 use comando_types::capabilities::NativeBackendCapabilitiesOutput;
 use comando_types::commands::all_commands;
@@ -136,6 +137,30 @@ fn ai_fixtures_deserialize() {
     };
     let payload: NativeAiToolActivityPayload =
         serde_json::from_value(tool_activity.payload).expect("payload should deserialize");
+    assert_eq!(payload.tool_call_id.0, "tool_1");
+
+    let catalog: NativeRpcOutput = fixture("ai/event.session_catalog_updated.json");
+    let NativeRpcOutput::Event(catalog) = catalog else {
+        panic!("expected AI catalog event fixture");
+    };
+    let payload: NativeAiSessionCatalogUpdatedPayload =
+        serde_json::from_value(catalog.payload).expect("payload should deserialize");
+    assert_eq!(payload.config_options.expect("config options").len(), 2);
+
+    let subagent_created: NativeRpcOutput = fixture("ai/event.subagent_created.json");
+    let NativeRpcOutput::Event(subagent_created) = subagent_created else {
+        panic!("expected AI subagent event fixture");
+    };
+    let payload: NativeAiSubagentCreatedPayload =
+        serde_json::from_value(subagent_created.payload).expect("payload should deserialize");
+    assert_eq!(payload.title, "Aristotle");
+
+    let subagent_breadcrumb: NativeRpcOutput = fixture("ai/event.subagent_breadcrumb.json");
+    let NativeRpcOutput::Event(subagent_breadcrumb) = subagent_breadcrumb else {
+        panic!("expected AI subagent breadcrumb fixture");
+    };
+    let payload: NativeAiSubagentBreadcrumbPayload =
+        serde_json::from_value(subagent_breadcrumb.payload).expect("payload should deserialize");
     assert_eq!(payload.tool_call_id.0, "tool_1");
 
     let summary: NativeAiSessionSummary = fixture("ai/session.summary.json");

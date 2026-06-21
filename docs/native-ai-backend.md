@@ -14,6 +14,121 @@ The relevant patterns are the native backend owning an AI session, a provider-ne
 
 Comando must not copy NeverWrite names, storage assumptions, vault filesystem policy, UI behavior, or complete review/history ownership in this slice.
 
+## PR 9 Baseline Audit
+
+The PR 9 audit rechecked the same local reference before expanding the runtime
+matrix:
+
+```text
+/Users/jfg/Documents/DEVELOPMENT/NeverWrite/apps/desktop/native-backend/src/ai.rs
+/Users/jfg/Documents/DEVELOPMENT/NeverWrite/apps/desktop/native-backend/src/main.rs
+/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/ai/src/domain.rs
+/Users/jfg/Documents/DEVELOPMENT/NeverWrite/crates/ai/src/events.rs
+```
+
+Reusable reference patterns:
+
+- `RuntimeDefinition` stays declarative: runtime id, display name, binary/env
+  defaults, ACP args, protocol flavor, and capability metadata are data, not
+  branches inside the engine.
+- The ACP process spec is the boundary between TypeScript runtime setup/secrets
+  and Rust process/session ownership.
+- Permission and user-input requests are handled by Rust waiters once a session
+  is native-owned.
+- Grok keeps its provider-specific auth handshake and legacy ACP compatibility
+  behind runtime-specific launch/auth metadata.
+
+Current Comando baseline before PR 9:
+
+- `crates/comando-ai` is provider-neutral and already owns real OpenCode ACP
+  sessions through Rust.
+- The registry lists `codex`, `claude`, `opencode`, `kilo`, and `grok`, but
+  only `opencode` is marked `native_ready`.
+- `AiService` already records session ownership with `sessionId -> native |
+  legacy`; it must keep that invariant while expanding the matrix.
+- The native event adapter already maps the core stream/status/tool/plan/token
+  events used by the renderer.
+
+PR 9 gaps to close:
+
+- Enable the full runtime matrix under `COMANDO_NATIVE_AI_RUNTIMES` instead of
+  hardcoding OpenCode as the only accepted native runtime.
+- Formalize the native launch context so Rust can validate runtime id, command,
+  args, cwd, env, desired selections, persisted runtime session id, and auth
+  handshake hints before spawning.
+- Build `AcpProcessSpec` from that context and keep env diagnostics redacted.
+- Route permission/user-input responses to the native session owner instead of
+  returning `not_supported`.
+- Document smoke/rollback instructions for enabling or disabling individual
+  native runtimes.
+
+Baseline verification:
+
+```text
+cargo test -p comando-ai
+```
+
+## PR 9 Scope
+
+PR 9 expands the native AI path from the initial OpenCode slice to the full
+runtime matrix:
+
+- `codex`
+- `claude`
+- `opencode`
+- `kilo`
+- `grok`
+
+Feature flags:
+
+- `COMANDO_NATIVE_AI=1` enables native AI routing.
+- `COMANDO_NATIVE_AI_RUNTIMES=codex,claude,opencode,kilo,grok` selects the
+  runtimes allowed to use Rust.
+- With `COMANDO_NATIVE_AI_RUNTIMES` omitted, the native gateway defaults to the
+  same five-runtime matrix.
+- Runtimes not listed remain owned by the legacy TypeScript worker.
+
+Native Rust owns the ACP process, session lifecycle, streaming, cancel/close,
+permission waiters, user-input waiters, and Grok auth handshake once a session
+is routed native. TypeScript still owns runtime setup, current settings,
+current secrets, terminal auth launchers, and legacy fallback.
+
+Runtime connection events are emitted as backend diagnostics when a native ACP
+session is initialized. They are intentionally not visible UI copy.
+
+Runtime launch contracts:
+
+- Codex: TS resolves `codex-acp`; Rust expects no ACP args.
+- Claude: TS may resolve a direct `claude-agent-acp` executable or `node` plus
+  vendor entry args; Rust accepts the launch context as provided.
+- OpenCode: Rust validates `opencode acp`.
+- Kilo: Rust validates `kilo acp`.
+- Grok: Rust validates `grok --no-auto-update agent stdio` and maps Grok auth
+  handshakes to `xai.api_key` or `cached_token` when advertised by the runtime.
+  The PR 9 implementation uses the current ACP crate; a separate legacy ACP
+  transport is not advertised as ready.
+
+Runtime capabilities are intentionally conservative. A runtime is marked
+`native_ready` only for the lifecycle it can execute through Rust. Native ACP
+runtimes project runtime catalog updates, provider-specific subagent sessions,
+and breadcrumb metadata through the Rust-backed event stream. Runtimes outside
+the native matrix remain on the legacy worker path.
+
+Rollback:
+
+```text
+COMANDO_NATIVE_AI=0
+```
+
+or remove a single runtime from the matrix:
+
+```text
+COMANDO_NATIVE_AI_RUNTIMES=codex,claude,opencode,kilo
+```
+
+Manual smoke and rollout verification are tracked in
+[`docs/native-ai-runtime-smoke.md`](native-ai-runtime-smoke.md).
+
 ## PR 8 Scope
 
 This slice moves the first real AI session owner into Rust under feature flags:
@@ -47,7 +162,9 @@ The native side implements the initial lifecycle subset:
 - `ai_set_session_mode`
 - `ai_set_session_config_option`
 
-Unsupported native mutations return typed native AI errors instead of falling through to the TypeScript worker.
+Mode, model, and config mutations are sent to the ACP session with runtime ack.
+Other unsupported native mutations return typed native AI errors instead of
+falling through to the TypeScript worker.
 
 ## Implemented Events
 
@@ -58,6 +175,9 @@ Native AI streams small semantic events:
 - `ai://session-created`
 - `ai://session-updated`
 - `ai://session-closed`
+- `ai://session-catalog-updated`
+- `ai://subagent-created`
+- `ai://subagent-breadcrumb`
 - `ai://message-started`
 - `ai://message-delta`
 - `ai://message-completed`
@@ -82,7 +202,7 @@ These areas intentionally remain in TypeScript for this PR:
 - Review canonical state and accept/reject flows.
 - Complete tracked-file diff ownership.
 - Runtime settings UI and secret storage.
-- Runtimes other than the selected native runtime.
+- Legacy fallback for runtimes not listed in `COMANDO_NATIVE_AI_RUNTIMES`.
 - Open file buffer bridge beyond basic compatibility no-ops.
 
 The central invariant is:

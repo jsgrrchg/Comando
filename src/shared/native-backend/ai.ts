@@ -81,13 +81,44 @@ export type NativeAiGetRuntimeStatusInput = {
     readonly launch?: NativeAiLaunchSpec | null;
 };
 
+export type NativeAiAuthHandshakeSpec = {
+    readonly envMethodId: string;
+    readonly externalMethodId: string;
+    readonly meta: Readonly<Record<string, unknown>>;
+};
+
+export type NativeAiDesiredSelections = {
+    readonly modelId: string | null;
+    readonly modeId: string | null;
+    readonly configOptions: Readonly<Record<string, unknown>>;
+};
+
+export type NativeAiRuntimeSessionMapping = {
+    readonly appSessionId: NativeSessionId;
+    readonly parentAppSessionId: NativeSessionId | null;
+    readonly parentRuntimeSessionId: NativeRuntimeSessionId | null;
+    readonly runtimeSessionId: NativeRuntimeSessionId;
+};
+
 export type NativeAiLaunchSpec = {
+    readonly runtimeId: NativeAiRuntimeId;
+    readonly ownerWindowId: string;
+    readonly projectId: NativeProjectId | null;
+    readonly worktreeId: NativeWorktreeId | null;
+    readonly projectRoot: string | null;
+    readonly additionalRoots: readonly string[];
     readonly executable: string;
     readonly args: readonly string[];
     readonly cwd: string;
     readonly env: Readonly<Record<string, string>>;
     readonly command: string;
     readonly status: NativeAiRuntimeStatus;
+    readonly authMethod: string | null;
+    readonly authCredentialSource: string | null;
+    readonly authHandshake: NativeAiAuthHandshakeSpec | null;
+    readonly persistedRuntimeSessionId: NativeRuntimeSessionId | null;
+    readonly persistedSubagentSessionMappings: readonly NativeAiRuntimeSessionMapping[];
+    readonly desiredSelections: NativeAiDesiredSelections;
 };
 
 export type NativeAiPrepareSessionInput = {
@@ -112,6 +143,8 @@ export type NativeAiPromptInput = {
 
 export type NativeAiSendPromptInput = {
     readonly sessionId: NativeSessionId;
+    readonly targetSessionId: NativeSessionId | null;
+    readonly runtimeSessionId: NativeRuntimeSessionId | null;
     readonly messageId: NativeMessageId;
     readonly prompt: NativeAiPromptInput;
 };
@@ -123,6 +156,8 @@ export type NativeAiSendPromptOutput = {
 
 export type NativeAiSessionIdInput = {
     readonly sessionId: NativeSessionId;
+    readonly targetSessionId: NativeSessionId | null;
+    readonly runtimeSessionId: NativeRuntimeSessionId | null;
 };
 
 export type NativeAiCancelSessionOutput = {
@@ -137,6 +172,7 @@ export type NativeAiCloseSessionOutput = {
 
 export type NativeAiPermissionResponseInput = {
     readonly sessionId: NativeSessionId;
+    readonly targetSessionId: NativeSessionId | null;
     readonly requestId: string;
     readonly optionId: string | null;
 };
@@ -148,22 +184,26 @@ export type NativeAiUserInputAnswer = {
 
 export type NativeAiUserInputResponseInput = {
     readonly sessionId: NativeSessionId;
+    readonly targetSessionId: NativeSessionId | null;
     readonly requestId: string;
     readonly answers: readonly NativeAiUserInputAnswer[];
 };
 
 export type NativeAiSetSessionModeInput = {
     readonly sessionId: NativeSessionId;
+    readonly runtimeSessionId: NativeRuntimeSessionId | null;
     readonly modeId: string;
 };
 
 export type NativeAiSetSessionModelInput = {
     readonly sessionId: NativeSessionId;
+    readonly runtimeSessionId: NativeRuntimeSessionId | null;
     readonly modelId: string;
 };
 
 export type NativeAiSetSessionConfigOptionInput = {
     readonly sessionId: NativeSessionId;
+    readonly runtimeSessionId: NativeRuntimeSessionId | null;
     readonly optionId: string;
     readonly value: unknown;
 };
@@ -212,6 +252,57 @@ export type NativeAiSessionUpdatedPayload = {
     readonly status: NativeAiSessionStatus;
     readonly title: string | null;
     readonly updatedAt: string;
+};
+
+export type NativeAiSubagentCreatedPayload = NativeAiEventBase & {
+    readonly childSessionId: NativeSessionId;
+    readonly childRuntimeSessionId: NativeRuntimeSessionId;
+    readonly parentSessionId: NativeSessionId;
+    readonly parentRuntimeSessionId: NativeRuntimeSessionId | null;
+    readonly title: string;
+};
+
+export type NativeAiSubagentBreadcrumbPayload = NativeAiEventBase & {
+    readonly childSessionId: NativeSessionId;
+    readonly childRuntimeSessionId: NativeRuntimeSessionId;
+    readonly toolCallId: NativeToolCallId;
+};
+
+export type NativeAiSessionCatalogUpdatedPayload = NativeAiEventBase & {
+    readonly availableCommands: readonly NativeAiAvailableCommandPayload[] | null;
+    readonly configOptions: readonly NativeAiSessionConfigOptionPayload[] | null;
+};
+
+export type NativeAiAvailableCommandPayload = {
+    readonly description: string;
+    readonly name: string;
+};
+
+export type NativeAiSessionConfigOptionPayload =
+    | {
+          readonly category: string | null;
+          readonly currentValue: boolean;
+          readonly description: string | null;
+          readonly id: string;
+          readonly name: string;
+          readonly options: null;
+          readonly type: "boolean";
+      }
+    | {
+          readonly category: string | null;
+          readonly currentValue: string;
+          readonly description: string | null;
+          readonly id: string;
+          readonly name: string;
+          readonly options: readonly NativeAiSessionConfigSelectEntryPayload[];
+          readonly type: "select";
+      };
+
+export type NativeAiSessionConfigSelectEntryPayload = {
+    readonly description: string | null;
+    readonly groupLabel: string | null;
+    readonly name: string;
+    readonly value: string;
 };
 
 export type NativeAiSessionClosedPayload = {

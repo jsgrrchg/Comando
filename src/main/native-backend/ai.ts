@@ -12,13 +12,17 @@ import type {
     AiUserInputResponseInput,
 } from "@shared/ipc";
 import {
+    nativeAiCatalogPatchToIpc,
     nativeAiEventToIpc,
     nativeAiRuntimeStatusToIpc,
+    type NativeAiCatalogPatch,
     type NativeAiCancelSessionOutput,
     type NativeAiCloseSessionOutput,
     type NativeAiLaunchSpec,
+    type NativeAiRuntimeConnectionPayload,
     type NativeAiRuntimeStatus,
     type NativeAiSendPromptOutput,
+    type NativeAiSessionCatalogUpdatedPayload,
     type NativeAiSessionSummary,
     type NativeBackendEvent,
 } from "@shared/native-backend";
@@ -46,9 +50,21 @@ export interface NativeAiGatewayOptions {
         ownerWindowId: string,
         event: AiSessionDomainEvent,
     ) => void;
+    readonly onSessionCatalogPatch?: (
+        ownerWindowId: string,
+        sessionId: string,
+        patch: NativeAiCatalogPatch,
+        updatedAt: string,
+    ) => void;
 }
 
-const DEFAULT_NATIVE_AI_RUNTIME_IDS = new Set<AiRuntimeId>(["opencode"]);
+const DEFAULT_NATIVE_AI_RUNTIME_IDS = new Set<AiRuntimeId>([
+    "claude",
+    "codex",
+    "grok",
+    "kilo",
+    "opencode",
+]);
 
 export class NativeAiGateway implements NativeAiGatewayContract {
     readonly #client: NativeAiClient;
@@ -60,9 +76,16 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         ownerWindowId: string,
         event: AiSessionDomainEvent,
     ) => void;
+    readonly #onSessionCatalogPatch?: (
+        ownerWindowId: string,
+        sessionId: string,
+        patch: NativeAiCatalogPatch,
+        updatedAt: string,
+    ) => void;
     readonly #runtimeSessionIds = new Map<string, string | null>();
     readonly #sessionOwners = new Map<string, string>();
     readonly #sessionRuntimeIds = new Map<string, AiRuntimeId>();
+    readonly #subagentParentSessionIds = new Map<string, string>();
 
     constructor(options: NativeAiGatewayOptions) {
         this.#client = options.client;
@@ -72,6 +95,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         this.#onDiagnostic = options.onDiagnostic;
         this.#onRuntimeStatus = options.onRuntimeStatus;
         this.#onSessionEvent = options.onSessionEvent;
+        this.#onSessionCatalogPatch = options.onSessionCatalogPatch;
         this.#disposeEventListener = this.#client.onEvent((event) => {
             this.#handleNativeEvent(event);
         });
@@ -88,6 +112,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             request.input.sessionId,
         );
         this.#rememberOwner(request.input.sessionId, request.launch);
+        this.#rememberPersistedSubagentMappings(request.launch);
 
         try {
             const summary = await this.#client.request<NativeAiSessionSummary>(
@@ -125,7 +150,13 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             );
         }
 
-        this.#rememberOwner(request.input.sessionId, request.launch);
+        this.#rememberPersistedSubagentMappings(request.launch);
+        const target = this.#resolveSessionTarget(request.input.sessionId);
+        if (target.targetSessionId) {
+            this.#rememberOwnerIdentity(target.backendSessionId, request.launch);
+        } else {
+            this.#rememberOwner(request.input.sessionId, request.launch);
+        }
 
         const result = await this.#client.request<NativeAiSendPromptOutput>(
             "ai_send_prompt",
@@ -135,7 +166,9 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                     attachments: request.input.attachments,
                     text: request.input.prompt,
                 },
-                sessionId: request.input.sessionId,
+                runtimeSessionId: target.runtimeSessionId,
+                sessionId: target.backendSessionId,
+                targetSessionId: target.targetSessionId,
             },
         );
 
@@ -150,13 +183,31 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     async cancelSession(sessionId: string): Promise<void> {
+        if (!this.#sessionOwners.has(sessionId)) {
+            return;
+        }
+
+        const target = this.#resolveSessionTarget(sessionId);
         await this.#client.request<NativeAiCancelSessionOutput>(
             "ai_cancel_session",
-            { sessionId },
+            {
+                runtimeSessionId: target.runtimeSessionId,
+                sessionId: target.backendSessionId,
+                targetSessionId: target.targetSessionId,
+            },
         );
     }
 
     async closeSession(sessionId: string): Promise<void> {
+        if (!this.#sessionOwners.has(sessionId)) {
+            return;
+        }
+
+        if (this.#subagentParentSessionIds.has(sessionId)) {
+            this.#forgetSession(sessionId);
+            return;
+        }
+
         try {
             await this.#client.request<NativeAiCloseSessionOutput>(
                 "ai_close_session",
@@ -181,41 +232,51 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     async respondPermission(input: AiPermissionResponseInput): Promise<void> {
+        const target = this.#resolveSessionTarget(input.sessionId);
         await this.#client.request("ai_respond_permission", {
             optionId: input.optionId,
             requestId: input.requestId,
-            sessionId: input.sessionId,
+            sessionId: target.backendSessionId,
+            targetSessionId: target.targetSessionId,
         });
     }
 
     async respondUserInput(input: AiUserInputResponseInput): Promise<void> {
+        const target = this.#resolveSessionTarget(input.sessionId);
         await this.#client.request("ai_respond_user_input", {
             answers: input.answers,
             requestId: input.requestId,
-            sessionId: input.sessionId,
+            sessionId: target.backendSessionId,
+            targetSessionId: target.targetSessionId,
         });
     }
 
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
+        const target = this.#resolveSessionTarget(input.sessionId);
         await this.#client.request("ai_set_session_mode", {
             modeId: input.modeId,
-            sessionId: input.sessionId,
+            runtimeSessionId: target.runtimeSessionId,
+            sessionId: target.backendSessionId,
         });
     }
 
     async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
+        const target = this.#resolveSessionTarget(input.sessionId);
         await this.#client.request("ai_set_session_model", {
             modelId: input.modelId,
-            sessionId: input.sessionId,
+            runtimeSessionId: target.runtimeSessionId,
+            sessionId: target.backendSessionId,
         });
     }
 
     async setSessionConfigOption(
         input: AiSessionConfigOptionMutationInput,
     ): Promise<void> {
+        const target = this.#resolveSessionTarget(input.sessionId);
         await this.#client.request("ai_set_session_config_option", {
             optionId: input.optionId,
-            sessionId: input.sessionId,
+            runtimeSessionId: target.runtimeSessionId,
+            sessionId: target.backendSessionId,
             value: input.value,
         });
     }
@@ -250,6 +311,25 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             return;
         }
 
+        if (event.eventName === "ai://runtime-connection") {
+            try {
+                const payload = requireRecord(
+                    event.payload,
+                    "Native AI runtime connection",
+                ) as unknown as NativeAiRuntimeConnectionPayload;
+                this.#reportDiagnostic(
+                    `Native AI ${payload.runtimeId} connection: ${payload.status}${
+                        payload.message ? ` (${payload.message})` : ""
+                    }`,
+                );
+            } catch (error) {
+                this.#reportDiagnostic(
+                    `Native AI runtime connection event failed: ${formatError(error)}`,
+                );
+            }
+            return;
+        }
+
         if (!event.eventName.startsWith("ai://")) {
             return;
         }
@@ -260,8 +340,34 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 return;
             }
 
-            const ownerWindowId = this.#sessionOwners.get(sessionId);
+            let ownerWindowId = this.#sessionOwners.get(sessionId);
+            if (!ownerWindowId && event.eventName === "ai://subagent-created") {
+                const parentSessionId = getPayloadString(
+                    event.payload,
+                    "parentSessionId",
+                );
+                ownerWindowId = parentSessionId
+                    ? this.#sessionOwners.get(parentSessionId)
+                    : undefined;
+                if (ownerWindowId) {
+                    this.#sessionOwners.set(sessionId, ownerWindowId);
+                }
+            }
             if (!ownerWindowId) {
+                return;
+            }
+
+            if (event.eventName === "ai://session-catalog-updated") {
+                const payload = requireRecord(
+                    event.payload,
+                    "Native AI catalog update",
+                ) as unknown as NativeAiSessionCatalogUpdatedPayload;
+                this.#onSessionCatalogPatch?.(
+                    ownerWindowId,
+                    payload.sessionId,
+                    nativeAiCatalogPatchToIpc(payload),
+                    payload.updatedAt,
+                );
                 return;
             }
 
@@ -271,6 +377,21 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             }
 
             this.#rememberRuntimeSession(converted);
+            if (converted.kind === "subagent-created") {
+                this.#sessionOwners.set(converted.childSessionId, ownerWindowId);
+                this.#sessionRuntimeIds.set(
+                    converted.childSessionId,
+                    converted.runtimeId,
+                );
+                this.#runtimeSessionIds.set(
+                    converted.childSessionId,
+                    converted.childRuntimeSessionId ?? converted.runtimeSessionId,
+                );
+                this.#subagentParentSessionIds.set(
+                    converted.childSessionId,
+                    converted.parentSessionId,
+                );
+            }
             this.#onSessionEvent(ownerWindowId, converted);
         } catch (error) {
             this.#reportDiagnostic(
@@ -331,12 +452,73 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         sessionId: string,
         launch: NativeAiPrepareSessionRpcInput["launch"],
     ): void {
-        this.#sessionOwners.set(sessionId, launch.ownerWindowId);
-        this.#sessionRuntimeIds.set(sessionId, launch.input.runtimeId);
+        this.#rememberOwnerIdentity(sessionId, launch);
         this.#runtimeSessionIds.set(
             sessionId,
             launch.persistedSnapshot.runtimeSessionId ?? null,
         );
+    }
+
+    #rememberOwnerIdentity(
+        sessionId: string,
+        launch: NativeAiPrepareSessionRpcInput["launch"],
+    ): void {
+        this.#sessionOwners.set(sessionId, launch.ownerWindowId);
+        this.#sessionRuntimeIds.set(sessionId, launch.input.runtimeId);
+    }
+
+    #rememberPersistedSubagentMappings(
+        launch: NativeAiPrepareSessionRpcInput["launch"],
+    ): void {
+        const snapshotParentSessionId =
+            launch.persistedSnapshot.parentSessionId ?? null;
+        if (snapshotParentSessionId) {
+            this.#rememberOwnerIdentity(snapshotParentSessionId, launch);
+            this.#sessionOwners.set(
+                launch.persistedSnapshot.sessionId,
+                launch.ownerWindowId,
+            );
+            this.#sessionRuntimeIds.set(
+                launch.persistedSnapshot.sessionId,
+                launch.input.runtimeId,
+            );
+            this.#runtimeSessionIds.set(
+                launch.persistedSnapshot.sessionId,
+                launch.persistedSnapshot.runtimeSessionId ?? null,
+            );
+            this.#subagentParentSessionIds.set(
+                launch.persistedSnapshot.sessionId,
+                snapshotParentSessionId,
+            );
+        }
+
+        for (const mapping of launch.persistedSubagentSessionMappings ?? []) {
+            this.#sessionOwners.set(mapping.appSessionId, launch.ownerWindowId);
+            this.#sessionRuntimeIds.set(
+                mapping.appSessionId,
+                launch.input.runtimeId,
+            );
+            this.#runtimeSessionIds.set(
+                mapping.appSessionId,
+                mapping.runtimeSessionId,
+            );
+            if (mapping.parentAppSessionId) {
+                this.#rememberOwnerIdentity(mapping.parentAppSessionId, launch);
+                this.#subagentParentSessionIds.set(
+                    mapping.appSessionId,
+                    mapping.parentAppSessionId,
+                );
+                if (
+                    mapping.parentRuntimeSessionId &&
+                    !this.#runtimeSessionIds.has(mapping.parentAppSessionId)
+                ) {
+                    this.#runtimeSessionIds.set(
+                        mapping.parentAppSessionId,
+                        mapping.parentRuntimeSessionId,
+                    );
+                }
+            }
+        }
     }
 
     #rememberSummary(
@@ -375,9 +557,37 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     #forgetSession(sessionId: string): void {
+        const childSessionIds = [...this.#subagentParentSessionIds.entries()]
+            .filter(([, parentSessionId]) => parentSessionId === sessionId)
+            .map(([childSessionId]) => childSessionId);
+        for (const childSessionId of childSessionIds) {
+            this.#forgetSession(childSessionId);
+        }
+        this.#subagentParentSessionIds.delete(sessionId);
         this.#runtimeSessionIds.delete(sessionId);
         this.#sessionOwners.delete(sessionId);
         this.#sessionRuntimeIds.delete(sessionId);
+    }
+
+    #resolveSessionTarget(sessionId: string): {
+        readonly backendSessionId: string;
+        readonly runtimeSessionId: string | null;
+        readonly targetSessionId: string | null;
+    } {
+        const parentSessionId = this.#subagentParentSessionIds.get(sessionId);
+        if (!parentSessionId) {
+            return {
+                backendSessionId: sessionId,
+                runtimeSessionId: null,
+                targetSessionId: null,
+            };
+        }
+
+        return {
+            backendSessionId: parentSessionId,
+            runtimeSessionId: this.#runtimeSessionIds.get(sessionId) ?? null,
+            targetSessionId: sessionId,
+        };
     }
 
     #reportDiagnostic(message: string): void {
@@ -422,9 +632,7 @@ function parseNativeAiRuntimeIds(
         return DEFAULT_NATIVE_AI_RUNTIME_IDS;
     }
 
-    return new Set(
-        normalized.filter(isNativeAiRuntimeId),
-    ) as ReadonlySet<AiRuntimeId>;
+    return new Set(normalized.filter(isNativeAiRuntimeId));
 }
 
 function nativeSummaryToSnapshot(
@@ -471,12 +679,38 @@ function nativeLaunchSpecFromRuntime(
     launch: NativeAiPrepareSessionRpcInput["launch"],
 ): NativeAiLaunchSpec {
     return {
+        additionalRoots: launch.additionalRoots,
         args: launch.resolvedRuntime.args,
+        authCredentialSource:
+            launch.resolvedRuntime.status.authCredentialSource ?? null,
+        authHandshake: launch.resolvedRuntime.authHandshake
+            ? {
+                  envMethodId: launch.resolvedRuntime.authHandshake.envMethodId,
+                  externalMethodId:
+                      launch.resolvedRuntime.authHandshake.externalMethodId,
+                  meta: launch.resolvedRuntime.authHandshake.meta ?? {},
+              }
+            : null,
+        authMethod: launch.resolvedRuntime.status.authMethod,
         command: launch.resolvedRuntime.command,
         cwd: launch.cwd,
+        desiredSelections: {
+            configOptions: nativeConfigOptionsFromLaunch(launch),
+            modeId: launch.desiredSelections.modeId,
+            modelId: launch.desiredSelections.modelId,
+        },
         env: sanitizeEnv(launch.resolvedRuntime.env),
         executable: launch.resolvedRuntime.executable,
+        ownerWindowId: launch.ownerWindowId,
+        persistedRuntimeSessionId:
+            launch.persistedSnapshot.runtimeSessionId ?? null,
+        persistedSubagentSessionMappings:
+            launch.persistedSubagentSessionMappings ?? [],
+        projectId: launch.input.projectId,
+        projectRoot: launch.projectRoot,
+        runtimeId: launch.input.runtimeId,
         status: nativeRuntimeStatusFromIpc(launch.resolvedRuntime.status),
+        worktreeId: launch.input.worktreeId ?? null,
     };
 }
 
@@ -530,6 +764,12 @@ function getPayloadSessionId(payload: unknown): string | null {
     return typeof sessionId === "string" && sessionId.trim()
         ? sessionId
         : null;
+}
+
+function getPayloadString(payload: unknown, key: string): string | null {
+    const record = requireRecord(payload, "Native AI event payload");
+    const value = record[key];
+    return typeof value === "string" && value.trim() ? value : null;
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {

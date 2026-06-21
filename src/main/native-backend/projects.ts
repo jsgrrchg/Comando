@@ -717,10 +717,17 @@ function intersection(left: readonly string[], right: readonly string[]): string
 }
 
 function parseStringArray(value: unknown, fieldName: string): readonly string[] {
-    if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    if (!Array.isArray(value)) {
         throw new Error(`Native project field ${fieldName} must be string[].`);
     }
-    return value;
+
+    return value.map((item: unknown) => {
+        if (typeof item !== "string") {
+            throw new Error(`Native project field ${fieldName} must be string[].`);
+        }
+
+        return item;
+    });
 }
 
 function requireRecord(

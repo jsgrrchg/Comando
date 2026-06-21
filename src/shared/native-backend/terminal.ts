@@ -92,7 +92,7 @@ export type NativeTerminalKillInput = {
 
 export type NativeTerminalCloseInput = {
     readonly windowId: NativeWindowId;
-    readonly id: NativeTerminalSessionId | string;
+    readonly id: NativeTerminalSessionId;
     readonly reason: NativeTerminalCloseReason;
 };
 

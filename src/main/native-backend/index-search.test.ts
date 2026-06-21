@@ -55,22 +55,22 @@ describe("native search flags", () => {
 
 describe("NativeSearchGateway", () => {
     it("adapts native list and search results to project tree nodes", async () => {
-        const requestMock = vi.fn(async (command: string) => {
+        const requestMock = vi.fn((command: string) => {
             if (command === "project_list_entries") {
-                return {
+                return Promise.resolve({
                     entries: [nativeEntry("src/main.ts")],
                     truncated: false,
-                };
+                });
             }
 
-            return {
+            return Promise.resolve({
                 entries: [nativeEntry("src/main.ts")],
                 generation: 1,
                 matches: [{ entry: nativeEntry("src/main.ts"), score: 400 }],
                 operationId: "operation_1",
                 stats: nativeStats(),
                 status: "ready",
-            };
+            });
         });
         const gateway = gatewayWith(requestMock);
 
@@ -106,7 +106,7 @@ describe("NativeSearchGateway", () => {
 
     it("rejects truncated native index listings", async () => {
         const gateway = gatewayWith(
-            vi.fn(async () => ({
+            vi.fn(() => Promise.resolve({
                 entries: [],
                 truncated: true,
             })),
@@ -122,7 +122,7 @@ describe("NativeSearchGateway", () => {
     });
 
     it("scopes native search cancellation context by caller", async () => {
-        const requestMock = vi.fn(async () => ({
+        const requestMock = vi.fn(() => Promise.resolve({
             entries: [],
             generation: 1,
             matches: [],

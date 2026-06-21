@@ -91,22 +91,63 @@ pub struct NativeAiRuntimeStatus {
     pub has_gateway_url: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiGetRuntimeStatusInput {
     pub runtime_id: NativeAiRuntimeId,
     pub launch: Option<NativeAiLaunchSpec>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiAuthHandshakeSpec {
+    pub env_method_id: String,
+    pub external_method_id: String,
+    #[serde(default)]
+    pub meta: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiDesiredSelections {
+    pub model_id: Option<String>,
+    pub mode_id: Option<String>,
+    #[serde(default)]
+    pub config_options: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiLaunchSpec {
+    pub runtime_id: RuntimeId,
+    pub owner_window_id: String,
+    pub project_id: Option<ProjectId>,
+    pub worktree_id: Option<WorktreeId>,
+    pub project_root: Option<String>,
+    #[serde(default)]
+    pub additional_roots: Vec<String>,
     pub executable: String,
     pub args: Vec<String>,
     pub cwd: String,
     pub env: BTreeMap<String, String>,
     pub command: String,
     pub status: NativeAiRuntimeStatus,
+    pub auth_method: Option<String>,
+    pub auth_credential_source: Option<String>,
+    pub auth_handshake: Option<NativeAiAuthHandshakeSpec>,
+    pub persisted_runtime_session_id: Option<RuntimeSessionId>,
+    #[serde(default)]
+    pub persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
+    pub desired_selections: NativeAiDesiredSelections,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiRuntimeSessionMapping {
+    pub app_session_id: SessionId,
+    pub parent_app_session_id: Option<SessionId>,
+    pub parent_runtime_session_id: Option<RuntimeSessionId>,
+    pub runtime_session_id: RuntimeSessionId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -140,6 +181,10 @@ pub struct NativeAiPromptInput {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSendPromptInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub target_session_id: Option<SessionId>,
+    #[serde(default)]
+    pub runtime_session_id: Option<RuntimeSessionId>,
     pub message_id: MessageId,
     pub prompt: NativeAiPromptInput,
 }
@@ -155,6 +200,10 @@ pub struct NativeAiSendPromptOutput {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSessionIdInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub target_session_id: Option<SessionId>,
+    #[serde(default)]
+    pub runtime_session_id: Option<RuntimeSessionId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -175,6 +224,8 @@ pub struct NativeAiCloseSessionOutput {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiPermissionResponseInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub target_session_id: Option<SessionId>,
     pub request_id: String,
     pub option_id: Option<String>,
 }
@@ -190,6 +241,8 @@ pub struct NativeAiUserInputAnswer {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiUserInputResponseInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub target_session_id: Option<SessionId>,
     pub request_id: String,
     pub answers: Vec<NativeAiUserInputAnswer>,
 }
@@ -198,6 +251,8 @@ pub struct NativeAiUserInputResponseInput {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSetSessionModeInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub runtime_session_id: Option<RuntimeSessionId>,
     pub mode_id: String,
 }
 
@@ -205,6 +260,8 @@ pub struct NativeAiSetSessionModeInput {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSetSessionModelInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub runtime_session_id: Option<RuntimeSessionId>,
     pub model_id: String,
 }
 
@@ -212,6 +269,8 @@ pub struct NativeAiSetSessionModelInput {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSetSessionConfigOptionInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub runtime_session_id: Option<RuntimeSessionId>,
     pub option_id: String,
     pub value: serde_json::Value,
 }
@@ -282,6 +341,66 @@ pub struct NativeAiSessionUpdatedPayload {
     pub status: NativeAiSessionStatus,
     pub title: Option<String>,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSubagentCreatedPayload {
+    #[serde(flatten)]
+    pub base: NativeAiEventBase,
+    pub child_session_id: SessionId,
+    pub child_runtime_session_id: RuntimeSessionId,
+    pub parent_session_id: SessionId,
+    pub parent_runtime_session_id: Option<RuntimeSessionId>,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSubagentBreadcrumbPayload {
+    #[serde(flatten)]
+    pub base: NativeAiEventBase,
+    pub child_session_id: SessionId,
+    pub child_runtime_session_id: RuntimeSessionId,
+    pub tool_call_id: ToolCallId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSessionCatalogUpdatedPayload {
+    #[serde(flatten)]
+    pub base: NativeAiEventBase,
+    pub available_commands: Option<Vec<NativeAiAvailableCommandPayload>>,
+    pub config_options: Option<Vec<NativeAiSessionConfigOptionPayload>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiAvailableCommandPayload {
+    pub description: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSessionConfigOptionPayload {
+    pub category: Option<String>,
+    pub description: Option<String>,
+    pub id: String,
+    pub name: String,
+    pub current_value: serde_json::Value,
+    pub options: Option<Vec<NativeAiSessionConfigSelectEntryPayload>>,
+    #[serde(rename = "type")]
+    pub option_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSessionConfigSelectEntryPayload {
+    pub description: Option<String>,
+    pub group_label: Option<String>,
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

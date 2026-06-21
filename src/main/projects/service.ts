@@ -267,7 +267,7 @@ export class ProjectService {
                         ),
                         async () =>
                             useNative
-                                ? await this.#nativeFs!.listProjectTreeChildren({
+                                ? await this.#nativeFs.listProjectTreeChildren({
                                       parentRelativePath:
                                           input.parentRelativePath,
                                       projectId: input.projectId,
@@ -310,7 +310,7 @@ export class ProjectService {
             try {
                 return useNativeSearch
                     ? {
-                          nodes: await this.#nativeSearch!.listProjectEntries({
+                          nodes: await this.#nativeSearch.listProjectEntries({
                               projectId: input.projectId,
                               rootPath: project.rootPath,
                               worktreeId: project.worktreeId,
@@ -421,7 +421,7 @@ export class ProjectService {
             try {
                 if (useNativeSearch) {
                     return {
-                        nodes: await this.#nativeSearch!.searchProjectEntries(
+                        nodes: await this.#nativeSearch.searchProjectEntries(
                             workerSearchInput,
                         ),
                         searchIndexCacheState: "hit" as const,
@@ -849,7 +849,7 @@ export class ProjectService {
                     ),
                 );
             })
-            .catch((error) => {
+            .catch((error: unknown) => {
                 debugBenignError("projects.nativeSearch.shadow", error);
             });
     }
@@ -869,7 +869,7 @@ export class ProjectService {
                 relativePaths: payload.relativePaths ?? null,
                 worktreeId: payload.worktreeId ?? null,
             })
-            .catch((error) => {
+            .catch((error: unknown) => {
                 debugBenignError("projects.nativeSearch.invalidate", error);
             });
     }

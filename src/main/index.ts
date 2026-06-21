@@ -33,6 +33,7 @@ import {
 } from "./ai/client";
 import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
+import type { NormalizedSessionCatalogPayload } from "./ai/session-core";
 import { createDbWorkerClient, type DbWorkerClient } from "./db/client";
 import { createGitWorkerClient, type GitWorkerClient } from "./git";
 import { GitHubService } from "./github/service";
@@ -214,6 +215,19 @@ if (!hasSingleInstanceLock) {
                 nativeAi: createNativeAiGateway({
                     nativeClient: nativeBackendClient,
                     onRuntimeStatus: broadcastAiRuntimeStatus,
+                    onSessionCatalogPatch: (
+                        ownerWindowId,
+                        sessionId,
+                        patch,
+                        updatedAt,
+                    ) => {
+                        aiService?.handleNativeSessionCatalogPatch(
+                            ownerWindowId,
+                            sessionId,
+                            patch,
+                            updatedAt,
+                        );
+                    },
                     onSessionEvent: (ownerWindowId, event) => {
                         aiService?.handleNativeSessionEvent(
                             ownerWindowId,
@@ -471,6 +485,12 @@ function parseAiWorkerShardCount(value: string | undefined): number {
 function createNativeAiGateway(input: {
     readonly nativeClient: NativeBackendClient | null;
     readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
+    readonly onSessionCatalogPatch: (
+        ownerWindowId: string,
+        sessionId: string,
+        patch: NormalizedSessionCatalogPayload,
+        updatedAt: string,
+    ) => void;
     readonly onSessionEvent: (
         ownerWindowId: string,
         event: AiSessionDomainEvent,
@@ -488,6 +508,7 @@ function createNativeAiGateway(input: {
                 console.warn(`[native-ai] ${message}`);
             },
             onRuntimeStatus: input.onRuntimeStatus,
+            onSessionCatalogPatch: input.onSessionCatalogPatch,
             onSessionEvent: input.onSessionEvent,
         });
     }

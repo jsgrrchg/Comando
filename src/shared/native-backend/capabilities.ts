@@ -114,11 +114,17 @@ export function isNativeProtocolCompatible(input: {
 }
 
 function parseStringArray(value: unknown, fieldName: string): readonly string[] {
-    if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    if (!Array.isArray(value)) {
         throw new Error(`Native capabilities ${fieldName} must be string[].`);
     }
 
-    return value;
+    return value.map((item: unknown) => {
+        if (typeof item !== "string") {
+            throw new Error(`Native capabilities ${fieldName} must be string[].`);
+        }
+
+        return item;
+    });
 }
 
 function requireRecord(

@@ -19,7 +19,7 @@ describe("NativeBackendClient", () => {
         const linePromise = readStdinLine(child);
 
         const requestPromise = client.request("backend_ping");
-        const request = JSON.parse(await linePromise);
+        const request = parseRequestLine(await linePromise);
         expect(request.id).toBe("req_1");
         expect(request.meta).toMatchObject({ protocolVersion: 1 });
         child.stdout.write(
@@ -39,7 +39,7 @@ describe("NativeBackendClient", () => {
         const linePromise = readStdinLine(child);
 
         const handshakePromise = client.handshake({ clientVersion: "0.1.0-test" });
-        const request = JSON.parse(await linePromise);
+        const request = parseRequestLine(await linePromise);
         expect(request.command).toBe("backend_handshake");
         expect(request.args).toEqual({
             clientName: "comando-electron-main",
@@ -78,7 +78,7 @@ describe("NativeBackendClient", () => {
         const linePromise = readStdinLine(child);
 
         const handshakePromise = client.handshake();
-        const request = JSON.parse(await linePromise);
+        const request = parseRequestLine(await linePromise);
         child.stdout.write(
             `${JSON.stringify({
                 type: "response",
@@ -110,7 +110,7 @@ describe("NativeBackendClient", () => {
         const linePromise = readStdinLine(child);
 
         const handshakePromise = client.handshake();
-        const request = JSON.parse(await linePromise);
+        const request = parseRequestLine(await linePromise);
         child.stdout.write(
             `${JSON.stringify({
                 type: "response",
@@ -146,9 +146,12 @@ describe("NativeBackendClient", () => {
 
         const first = client.request("backend_ping");
         const second = client.request("backend_capabilities");
-        const [firstRequest, secondRequest] = (await linesPromise).map((line) =>
-            JSON.parse(line),
-        );
+        const requests = (await linesPromise).map(parseRequestLine);
+        const firstRequest = requests[0];
+        const secondRequest = requests[1];
+        if (!firstRequest || !secondRequest) {
+            throw new Error("Expected two native backend requests.");
+        }
 
         child.stdout.write(
             `${JSON.stringify({
@@ -198,7 +201,7 @@ describe("NativeBackendClient", () => {
         const linePromise = readStdinLine(child);
 
         const requestPromise = client.request("backend_ping");
-        const request = JSON.parse(await linePromise);
+        const request = parseRequestLine(await linePromise);
         child.stderr.write("warmup warning\n");
         child.stdout.write(
             `${JSON.stringify({
@@ -262,7 +265,7 @@ describe("NativeBackendClient", () => {
         const linePromise = readStdinLine(child);
 
         const requestPromise = client.request("backend_missing");
-        const request = JSON.parse(await linePromise);
+        const request = parseRequestLine(await linePromise);
         child.stdout.write(
             `${JSON.stringify({
                 type: "response",
@@ -289,7 +292,7 @@ describe("NativeBackendClient", () => {
 
         const firstDispose = client.dispose();
         const secondDispose = client.dispose();
-        const request = JSON.parse(await linePromise);
+        const request = parseRequestLine(await linePromise);
         child.stdout.write(
             `${JSON.stringify({
                 type: "response",
@@ -367,6 +370,31 @@ function createMockChildProcess() {
 }
 
 type MockChildProcess = ReturnType<typeof createMockChildProcess>;
+
+type ParsedRequestLine = {
+    readonly id: string;
+    readonly args?: unknown;
+    readonly command?: string;
+    readonly meta?: unknown;
+};
+
+function parseRequestLine(line: string): ParsedRequestLine {
+    const parsed = JSON.parse(line) as unknown;
+    if (!isRecord(parsed) || typeof parsed.id !== "string") {
+        throw new Error("Expected native backend request line with an id.");
+    }
+
+    return {
+        args: parsed.args,
+        command: typeof parsed.command === "string" ? parsed.command : undefined,
+        id: parsed.id,
+        meta: parsed.meta,
+    };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 function readStdinLine(child: MockChildProcess): Promise<string> {
     return readStdinLines(child, 1).then(([line]) => line ?? "");

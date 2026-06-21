@@ -570,6 +570,257 @@ describe("AiService OpenCode branch", () => {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
     });
+
+    it("prepares the native parent before sending to a persisted child", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-native-child-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            const parentSnapshot: AiSessionSnapshot = {
+                ...createSessionSnapshot(),
+                runtimeSessionId: "runtime-parent",
+                sessionId: "session-parent",
+                title: "Parent",
+            };
+            const childSnapshot: AiSessionSnapshot = {
+                ...createSessionSnapshot(),
+                parentSessionId: "session-parent",
+                runtimeSessionId: "runtime-child",
+                sessionId: "session-child",
+                title: "Child",
+            };
+            const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+                ({ launch }) =>
+                    Promise.resolve({
+                        ...launch.persistedSnapshot,
+                        runtimeSessionId: "runtime-parent",
+                        status: "idle",
+                        updatedAt: "2026-06-20T00:00:00.000Z",
+                    }),
+            );
+            const sendPrompt = vi.fn<NativeAiGateway["sendPrompt"]>(() =>
+                Promise.resolve({
+                    sessionId: "session-child",
+                    stopReason: "accepted",
+                }),
+            );
+            const cancelSession = vi.fn<NativeAiGateway["cancelSession"]>();
+            const saveSessionSnapshot = vi.fn();
+            const nativeAi: NativeAiGateway = {
+                cancelSession,
+                close: vi.fn(),
+                closeOwnedByWindow: vi.fn(),
+                closeSession: vi.fn(),
+                prepareSession,
+                respondPermission: vi.fn(),
+                respondUserInput: vi.fn(),
+                sendPrompt,
+                setSessionConfigOption: vi.fn(),
+                setSessionMode: vi.fn(),
+                setSessionModel: vi.fn(),
+                shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "opencode"),
+            };
+            const service = createService({
+                nativeAi,
+                persistence: {
+                    listSessionRuntimeMappingsForParent: vi.fn((sessionId) =>
+                        sessionId === "session-parent"
+                            ? [
+                                  {
+                                      appSessionId: "session-child",
+                                      parentAppSessionId: "session-parent",
+                                      parentRuntimeSessionId: "runtime-parent",
+                                      runtimeSessionId: "runtime-child",
+                                  },
+                              ]
+                            : [],
+                    ),
+                    loadSessionSnapshot: vi.fn((sessionId) => {
+                        if (sessionId === "session-parent") {
+                            return parentSnapshot;
+                        }
+                        if (sessionId === "session-child") {
+                            return childSnapshot;
+                        }
+                        return null;
+                    }),
+                    saveSessionSnapshot,
+                },
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+
+            await service.sendPrompt(
+                {
+                    additionalRoots: [],
+                    attachments: [],
+                    messageId: "user-message-1",
+                    projectId: null,
+                    prompt: "Continue the child task.",
+                    runtimeId: "opencode",
+                    sessionId: "session-child",
+                    title: "Child",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+
+            expect(prepareSession).toHaveBeenCalledTimes(1);
+            expect(prepareSession.mock.calls[0]?.[0].input.sessionId).toBe(
+                "session-parent",
+            );
+            expect(sendPrompt).toHaveBeenCalledTimes(1);
+            expect(sendPrompt.mock.calls[0]?.[0].input.sessionId).toBe(
+                "session-child",
+            );
+            expect(
+                sendPrompt.mock.calls[0]?.[0].launch.persistedSnapshot
+                    .parentSessionId,
+            ).toBe("session-parent");
+
+            service.handleNativeSessionEvent("window-1", {
+                activeTurnStartedAt: "2026-06-20T00:00:01.000Z",
+                kind: "status",
+                lastError: null,
+                origin: "live",
+                parentSessionId: "session-parent",
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-child",
+                sessionId: "session-child",
+                status: "streaming",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            });
+            expect(
+                saveSessionSnapshot.mock.calls.at(-1)?.[0],
+            ).toMatchObject({
+                runtimeSessionId: "runtime-child",
+                sessionId: "session-child",
+                status: "streaming",
+            });
+
+            await service.cancelSession("session-child");
+            expect(cancelSession).toHaveBeenCalledWith("session-child");
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("prepares the native parent when opening a persisted child", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-native-child-open-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            const parentSnapshot: AiSessionSnapshot = {
+                ...createSessionSnapshot(),
+                runtimeSessionId: "runtime-parent",
+                sessionId: "session-parent",
+                title: "Parent",
+            };
+            const childSnapshot: AiSessionSnapshot = {
+                ...createSessionSnapshot(),
+                parentSessionId: "session-parent",
+                runtimeSessionId: "runtime-child",
+                sessionId: "session-child",
+                title: "Child",
+            };
+            const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+                ({ launch }) =>
+                    Promise.resolve({
+                        ...launch.persistedSnapshot,
+                        runtimeSessionId: "runtime-parent",
+                        status: "idle",
+                        updatedAt: "2026-06-20T00:00:00.000Z",
+                    }),
+            );
+            const closeSession = vi.fn<NativeAiGateway["closeSession"]>();
+            const nativeAi: NativeAiGateway = {
+                cancelSession: vi.fn(),
+                close: vi.fn(),
+                closeOwnedByWindow: vi.fn(),
+                closeSession,
+                prepareSession,
+                respondPermission: vi.fn(),
+                respondUserInput: vi.fn(),
+                sendPrompt: vi.fn(),
+                setSessionConfigOption: vi.fn(),
+                setSessionMode: vi.fn(),
+                setSessionModel: vi.fn(),
+                shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "opencode"),
+            };
+            const service = createService({
+                nativeAi,
+                persistence: {
+                    listSessionRuntimeMappingsForParent: vi.fn((sessionId) =>
+                        sessionId === "session-parent"
+                            ? [
+                                  {
+                                      appSessionId: "session-child",
+                                      parentAppSessionId: "session-parent",
+                                      parentRuntimeSessionId: "runtime-parent",
+                                      runtimeSessionId: "runtime-child",
+                                  },
+                              ]
+                            : [],
+                    ),
+                    loadSessionSnapshot: vi.fn((sessionId) => {
+                        if (sessionId === "session-parent") {
+                            return parentSnapshot;
+                        }
+                        if (sessionId === "session-child") {
+                            return childSnapshot;
+                        }
+                        return null;
+                    }),
+                },
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+
+            await expect(
+                service.prepareSession(
+                    {
+                        projectId: null,
+                        runtimeId: "opencode",
+                        sessionId: "session-child",
+                        title: "Child",
+                        worktreeId: null,
+                    },
+                    "window-1",
+                ),
+            ).resolves.toMatchObject({
+                parentSessionId: "session-parent",
+                sessionId: "session-child",
+            });
+
+            expect(prepareSession).toHaveBeenCalledTimes(1);
+            expect(prepareSession.mock.calls[0]?.[0].input.sessionId).toBe(
+                "session-parent",
+            );
+
+            await service.closeSession("session-child");
+            expect(closeSession).toHaveBeenCalledWith("session-child");
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
 });
 
 function createService(overrides: {

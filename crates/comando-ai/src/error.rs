@@ -12,6 +12,10 @@ pub enum AiError {
     RuntimeNotNative { runtime_id: String },
     #[error("AI runtime `{runtime_id}` is not ready: {message}")]
     RuntimeNotReady { runtime_id: String, message: String },
+    #[error("AI runtime `{runtime_id}` launch context is invalid: {message}")]
+    RuntimeLaunchContextInvalid { runtime_id: String, message: String },
+    #[error("AI runtime `{runtime_id}` authentication is missing: {message}")]
+    RuntimeAuthMissing { runtime_id: String, message: String },
     #[error("AI session `{session_id}` was not found.")]
     SessionNotFound { session_id: String },
     #[error("AI session `{session_id}` is busy.")]
@@ -46,6 +50,10 @@ impl AiError {
             Self::RuntimeMissing { .. } => NativeErrorCode::AiRuntimeMissing,
             Self::RuntimeNotNative { .. } => NativeErrorCode::AiRuntimeNotNative,
             Self::RuntimeNotReady { .. } => NativeErrorCode::AiRuntimeNotReady,
+            Self::RuntimeLaunchContextInvalid { .. } => {
+                NativeErrorCode::AiRuntimeLaunchContextInvalid
+            }
+            Self::RuntimeAuthMissing { .. } => NativeErrorCode::AiRuntimeAuthMissing,
             Self::SessionNotFound { .. } => NativeErrorCode::AiSessionNotFound,
             Self::SessionBusy { .. } => NativeErrorCode::AiSessionBusy,
             Self::SessionOwnerMismatch { .. } => NativeErrorCode::AiSessionOwnerMismatch,
@@ -63,7 +71,9 @@ impl AiError {
         match self {
             Self::RuntimeMissing { runtime_id }
             | Self::RuntimeNotNative { runtime_id }
-            | Self::RuntimeNotReady { runtime_id, .. } => {
+            | Self::RuntimeNotReady { runtime_id, .. }
+            | Self::RuntimeLaunchContextInvalid { runtime_id, .. }
+            | Self::RuntimeAuthMissing { runtime_id, .. } => {
                 native = native.with_details(json!({ "runtimeId": runtime_id }));
             }
             Self::SessionNotFound { session_id }
