@@ -1466,11 +1466,12 @@ impl<'a> AiHistoryMigrator<'a> {
             additional_roots: Vec::new(),
         });
         metadata.owner_kind = AiHistoryOwnerKind::MigratedLegacy;
-        metadata.created_at = self
-            .legacy
-            .query_history_row(session_id)?
-            .map(|row| row.created_at)
+        let legacy_row = self.legacy.query_history_row(session_id)?;
+        metadata.created_at = legacy_row
+            .as_ref()
+            .map(|row| row.created_at.clone())
             .unwrap_or_else(now_iso8601);
+        metadata.pinned_at = legacy_row.and_then(|row| row.pinned_at);
         metadata.updated_at = snapshot.updated_at;
         metadata.models = snapshot.models;
         metadata.modes = snapshot.modes;
@@ -2416,6 +2417,12 @@ mod tests {
     fn migrator_copies_legacy_sessions_idempotently() {
         let connection = legacy_connection();
         insert_legacy_session(&connection, "legacy_1", vec![message("message_1", "hello")]);
+        connection
+            .execute(
+                "UPDATE chat_sessions SET pinned_at = ?1 WHERE id = 'legacy_1'",
+                ["2026-06-20T12:30:00.000Z"],
+            )
+            .unwrap();
         let (_temp, store) = store();
         let migrator =
             AiHistoryMigrator::new(&store, &connection, Some("/tmp/comando.sqlite".to_string()));
@@ -2432,6 +2439,14 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(snapshot.messages, vec![message("message_1", "hello")]);
+        assert_eq!(
+            store
+                .load_metadata(&SessionId("legacy_1".to_string()))
+                .unwrap()
+                .pinned_at
+                .as_deref(),
+            Some("2026-06-20T12:30:00.000Z")
+        );
         assert!(
             store
                 .history_root()
