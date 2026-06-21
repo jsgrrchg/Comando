@@ -1,6 +1,8 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use comando_types::fs::{NativeFsEntry, NativeFsEntryKind, NativeFsEntryStatus};
 use comando_types::projects::{NativeProjectListEntriesResult, NativeProjectTreeEntry};
@@ -16,6 +18,7 @@ use crate::registry::ProjectRoot;
 use crate::system_time_to_millis;
 
 const DEFAULT_LIST_ENTRIES_LIMIT: usize = 5_000;
+const GIT_CHECK_IGNORE_CHUNK_SIZE: usize = 256;
 
 #[derive(Debug, Clone)]
 struct DirectoryEntry {
@@ -46,10 +49,18 @@ pub fn list_tree_children(
         Err(error) => return Err(error),
     };
     sort_directory_entries(&mut entries);
+    let ignored_paths = check_git_ignored_paths(
+        &root.root_path,
+        entries
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect::<Vec<_>>()
+            .as_slice(),
+    );
 
     Ok(entries
         .into_iter()
-        .map(|entry| tree_entry_from_directory_entry(root, entry))
+        .map(|entry| tree_entry_from_directory_entry(root, entry, &ignored_paths))
         .collect())
 }
 
@@ -81,7 +92,7 @@ pub fn list_entries(
                 queue.push_back(child.absolute_path.clone());
             }
 
-            entries.push(tree_entry_from_directory_entry(root, child));
+            entries.push(child);
         }
 
         if truncated {
@@ -89,7 +100,22 @@ pub fn list_entries(
         }
     }
 
-    Ok(NativeProjectListEntriesResult { entries, truncated })
+    let ignored_paths = check_git_ignored_paths(
+        &root.root_path,
+        entries
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect::<Vec<_>>()
+            .as_slice(),
+    );
+
+    Ok(NativeProjectListEntriesResult {
+        entries: entries
+            .into_iter()
+            .map(|entry| tree_entry_from_directory_entry(root, entry, &ignored_paths))
+            .collect(),
+        truncated,
+    })
 }
 
 pub fn fs_entry_for_path(
@@ -162,6 +188,7 @@ fn read_directory_entries(
 fn tree_entry_from_directory_entry(
     root: &ProjectRoot,
     entry: DirectoryEntry,
+    ignored_paths: &HashSet<String>,
 ) -> NativeProjectTreeEntry {
     let is_directory = entry.file_type.is_dir();
     let visibility = tree_visibility_for_entry(&entry.name, is_directory);
@@ -177,6 +204,7 @@ fn tree_entry_from_directory_entry(
             .map(str::to_string)
             .filter(|extension| !extension.is_empty())
     };
+    let is_git_ignored = ignored_paths.contains(&git_ignore_match_key(&entry.relative_path));
 
     NativeProjectTreeEntry {
         id: format!("{}:{}", root.project_id.0, entry.relative_path),
@@ -188,11 +216,67 @@ fn tree_entry_from_directory_entry(
         kind: if is_directory { "directory" } else { "file" }.to_string(),
         extension,
         has_children,
-        is_git_ignored: false,
+        is_git_ignored,
         git_status: None,
         absolute_path: Some(entry.absolute_path.to_string_lossy().to_string()),
         visibility: Some(visibility),
     }
+}
+
+fn check_git_ignored_paths(root_path: &Path, relative_paths: &[&str]) -> HashSet<String> {
+    let mut ignored_paths = HashSet::new();
+
+    for chunk in relative_paths.chunks(GIT_CHECK_IGNORE_CHUNK_SIZE) {
+        if chunk.is_empty() {
+            continue;
+        }
+
+        let mut child = match Command::new("git")
+            .current_dir(root_path)
+            .args([
+                "-c",
+                "core.quotePath=false",
+                "check-ignore",
+                "-z",
+                "--stdin",
+            ])
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(_) => continue,
+        };
+
+        if let Some(stdin) = child.stdin.as_mut() {
+            for relative_path in chunk {
+                let _ = stdin.write_all(relative_path.as_bytes());
+                let _ = stdin.write_all(&[0]);
+            }
+        }
+        drop(child.stdin.take());
+
+        let output = match child.wait_with_output() {
+            Ok(output) if output.status.success() => output,
+            _ => continue,
+        };
+
+        for path in output.stdout.split(|byte| *byte == 0) {
+            if path.is_empty() {
+                continue;
+            }
+            let relative_path = String::from_utf8_lossy(path).to_string();
+            ignored_paths.insert(git_ignore_match_key(&relative_path));
+        }
+    }
+
+    ignored_paths
+}
+
+fn git_ignore_match_key(relative_path: &str) -> String {
+    relative_path.replace('\\', "/")
 }
 
 fn directory_has_children(directory: &Path) -> bool {
@@ -274,5 +358,47 @@ mod tests {
                 .and_then(|entry| entry.visibility),
             Some(comando_types::fs::NativeFsVisibilityPolicy::Special)
         );
+    }
+
+    #[test]
+    fn marks_git_ignored_entries() {
+        let temp = TempDir::new().expect("temp");
+        run_git(temp.path(), &["init"]);
+        fs::write(temp.path().join(".gitignore"), "local.env\nlogs/\n").expect("gitignore");
+        fs::write(temp.path().join("local.env"), "SECRET=1").expect("ignored file");
+        fs::write(temp.path().join("tracked.env"), "PUBLIC=1").expect("tracked file");
+        fs::create_dir(temp.path().join("logs")).expect("logs");
+        fs::write(temp.path().join("logs/app.log"), "log").expect("log file");
+        let root = project_root(temp.path());
+
+        let entries = list_tree_children(&root, None).expect("entries");
+        assert_eq!(find_entry(&entries, "local.env").is_git_ignored, true);
+        assert_eq!(find_entry(&entries, "logs").is_git_ignored, true);
+        assert_eq!(find_entry(&entries, "tracked.env").is_git_ignored, false);
+
+        let all_entries = list_entries(&root, None).expect("all entries").entries;
+        assert_eq!(
+            find_entry(&all_entries, "logs/app.log").is_git_ignored,
+            true
+        );
+    }
+
+    fn find_entry<'a>(
+        entries: &'a [NativeProjectTreeEntry],
+        relative_path: &str,
+    ) -> &'a NativeProjectTreeEntry {
+        entries
+            .iter()
+            .find(|entry| entry.relative_path == relative_path)
+            .expect("entry")
+    }
+
+    fn run_git(root: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .status()
+            .expect("git command should start");
+        assert!(status.success(), "git command failed: {args:?}");
     }
 }
