@@ -478,9 +478,9 @@ describe("NativeAiGateway", () => {
     it("requests and adapts native history payloads when history is enabled", async () => {
         const client = createClient();
         client.request.mockImplementation(
-            async <T = unknown>(command: string): Promise<T> => {
+            <T = unknown>(command: string): Promise<T> => {
                 if (command === "ai_list_session_history") {
-                    return [
+                    return Promise.resolve([
                         {
                             createdAt: "2026-06-20T00:00:00.000Z",
                             messageCount: 1,
@@ -495,10 +495,10 @@ describe("NativeAiGateway", () => {
                             updatedAt: "2026-06-20T00:00:01.000Z",
                             worktreeId: "worktree-1",
                         },
-                    ] as T;
+                    ] as T);
                 }
                 if (command === "ai_load_session_transcript_page") {
-                    return {
+                    return Promise.resolve({
                         messages: [
                             {
                                 attachments: [],
@@ -512,10 +512,10 @@ describe("NativeAiGateway", () => {
                         offset: 0,
                         sessionId: "session-1",
                         totalMessages: 1,
-                    } as T;
+                    } as T);
                 }
                 if (command === "ai_load_session_snapshot") {
-                    return {
+                    return Promise.resolve({
                         activeTurnStartedAt: null,
                         availableCommands: [],
                         closedAt: null,
@@ -541,10 +541,10 @@ describe("NativeAiGateway", () => {
                         trackedFiles: [],
                         updatedAt: "2026-06-20T00:00:01.000Z",
                         worktreeId: "worktree-1",
-                    } as T;
+                    } as T);
                 }
                 if (command === "ai_load_review_state") {
-                    return {
+                    return Promise.resolve({
                         changedFiles: [],
                         conflicts: [],
                         sessionId: "session-1",
@@ -569,19 +569,19 @@ describe("NativeAiGateway", () => {
                             },
                         ],
                         updatedAt: "2026-06-20T00:00:02.000Z",
-                    } as T;
+                    } as T);
                 }
                 if (command === "ai_list_session_runtime_mappings") {
-                    return [
+                    return Promise.resolve([
                         {
                             appSessionId: "session-child",
                             parentAppSessionId: "session-1",
                             parentRuntimeSessionId: "runtime-session-1",
                             runtimeSessionId: "runtime-child",
                         },
-                    ] as T;
+                    ] as T);
                 }
-                return { ok: true } as T;
+                return Promise.resolve({ ok: true } as T);
             },
         );
         const gateway = createGateway(client, {

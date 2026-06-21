@@ -243,7 +243,9 @@ describe("AiService OpenCode branch", () => {
             const binaryPath = writeExecutable(tempDir, "opencode");
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const saveSessionSnapshot = vi.fn();
-            const onSessionSnapshot = vi.fn();
+            const onSessionSnapshot = vi.fn<
+                (ownerWindowId: string, update: AiSessionUpdate) => void
+            >();
             const nativeAi: NativeAiGateway = {
                 cancelSession: vi.fn(),
                 close: vi.fn(),
@@ -332,23 +334,19 @@ describe("AiService OpenCode branch", () => {
             });
 
             expect(saveSessionSnapshot).not.toHaveBeenCalled();
-            expect(onSessionSnapshot).toHaveBeenCalledWith(
-                "window-1",
-                expect.objectContaining({
-                    kind: "patch",
-                    patch: expect.objectContaining({
-                        changes: expect.objectContaining({
-                            messages: [
-                                expect.objectContaining({
-                                    content: "Hello",
-                                    id: "assistant-1",
-                                    status: "streaming",
-                                }),
-                            ],
-                        }),
-                    }),
-                }),
-            );
+            const snapshotCall = onSessionSnapshot.mock.calls.at(-1);
+            expect(snapshotCall?.[0]).toBe("window-1");
+            const update = snapshotCall?.[1];
+            expect(update?.kind).toBe("patch");
+            if (update?.kind !== "patch") {
+                throw new Error("Expected a patch update.");
+            }
+            const message = update.patch.changes.messages?.[0];
+            expect(message).toMatchObject({
+                content: "Hello",
+                id: "assistant-1",
+                status: "streaming",
+            });
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -399,7 +397,9 @@ describe("AiService OpenCode branch", () => {
             const binaryPath = writeExecutable(tempDir, "opencode");
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const saveSessionSnapshot = vi.fn();
-            const onSessionSnapshot = vi.fn();
+            const onSessionSnapshot = vi.fn<
+                (ownerWindowId: string, update: AiSessionUpdate) => void
+            >();
             let promptCallCount = 0;
             const serviceRef: { current: AiService | null } = {
                 current: null,
@@ -545,7 +545,7 @@ describe("AiService OpenCode branch", () => {
 
             await waitForAssertion(() => {
                 const snapshots = onSessionSnapshot.mock.calls.map(
-                    ([, update]) => update as AiSessionUpdate,
+                    ([, update]) => update,
                 );
                 const latestSnapshot = snapshots
                     .map((update) =>
@@ -638,7 +638,9 @@ describe("AiService OpenCode branch", () => {
             );
             const cancelSession = vi.fn<NativeAiGateway["cancelSession"]>();
             const saveSessionSnapshot = vi.fn();
-            const onSessionSnapshot = vi.fn();
+            const onSessionSnapshot = vi.fn<
+                (ownerWindowId: string, update: AiSessionUpdate) => void
+            >();
             const nativeAi: NativeAiGateway = {
                 cancelSession,
                 close: vi.fn(),
@@ -740,18 +742,15 @@ describe("AiService OpenCode branch", () => {
             expect(saveSessionSnapshot).not.toHaveBeenCalledWith(
                 expect.objectContaining({ sessionId: "session-child" }),
             );
-            expect(onSessionSnapshot).toHaveBeenCalledWith(
-                "window-1",
-                expect.objectContaining({
-                    kind: "patch",
-                    patch: expect.objectContaining({
-                        changes: expect.objectContaining({
-                            status: "streaming",
-                        }),
-                        sessionId: "session-child",
-                    }),
-                }),
-            );
+            const snapshotCall = onSessionSnapshot.mock.calls.at(-1);
+            expect(snapshotCall?.[0]).toBe("window-1");
+            const update = snapshotCall?.[1];
+            expect(update?.kind).toBe("patch");
+            if (update?.kind !== "patch") {
+                throw new Error("Expected a patch update.");
+            }
+            expect(update.patch.sessionId).toBe("session-child");
+            expect(update.patch.changes.status).toBe("streaming");
 
             await service.cancelSession("session-child");
             expect(cancelSession).toHaveBeenCalledWith("session-child");

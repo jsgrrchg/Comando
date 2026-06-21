@@ -145,8 +145,11 @@ describe("AiService history", () => {
                 worktreeId: "worktree-a",
             },
         ];
+        const nativeListSessionHistory = vi.fn(() =>
+            Promise.resolve(expectedHistory),
+        );
         const nativeAi = createNativeAiGateway({
-            listSessionHistory: vi.fn(() => Promise.resolve(expectedHistory)),
+            listSessionHistory: nativeListSessionHistory,
         });
         const persistenceList = vi.fn(() => []);
         const service = createService({
@@ -159,15 +162,18 @@ describe("AiService history", () => {
             worktreeId: "worktree-a",
         });
 
-        expect(nativeAi.listSessionHistory).toHaveBeenCalled();
+        expect(nativeListSessionHistory).toHaveBeenCalled();
         expect(persistenceList).not.toHaveBeenCalled();
         expect(history).toEqual(expectedHistory);
     });
 
     it("falls back to persistence when native pinning cannot find a legacy session", async () => {
         const setSessionPinned = vi.fn();
+        const nativeSetSessionPinned = vi.fn(() =>
+            Promise.reject(new Error("missing")),
+        );
         const nativeAi = createNativeAiGateway({
-            setSessionPinned: vi.fn(() => Promise.reject(new Error("missing"))),
+            setSessionPinned: nativeSetSessionPinned,
         });
         const service = createService({
             nativeAi,
@@ -179,7 +185,7 @@ describe("AiService history", () => {
             sessionId: "session-legacy",
         });
 
-        expect(nativeAi.setSessionPinned).toHaveBeenCalled();
+        expect(nativeSetSessionPinned).toHaveBeenCalled();
         expect(setSessionPinned).toHaveBeenCalledWith("session-legacy", true);
     });
 });
