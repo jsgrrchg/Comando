@@ -2,6 +2,7 @@
 members = [
     "apps/native-backend",
     "crates/comando-ai",
+    "crates/comando-diff",
     "crates/comando-git",
     "crates/comando-index",
     "crates/comando-fs",
@@ -18,8 +19,10 @@ edition = "2024"
 
 [workspace.dependencies]
 comando-types = { path = "crates/comando-types" }
+comando-diff = { path = "crates/comando-diff" }
 agent-client-protocol = { version = "=0.14.0", features = ["unstable"] }
 base64 = "0.22.1"
+imara-diff = "0.2"
 notify = "8.2.0"
 portable-pty = "0.9.0"
 serde = { version = "1", features = ["derive"] }
@@ -32,3 +35,4 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 time = { version = "0.3.49", features = ["formatting"] }
 uuid = { version = "1.23.3", features = ["v4"] }
 walkdir = "2.5.0"
+wasm-bindgen = "0.2.114"
