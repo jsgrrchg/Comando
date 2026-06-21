@@ -255,8 +255,11 @@ impl NativeReviewService {
             let old_text = if baseline_text.known {
                 baseline_text.text
             } else {
-                read_head_text(&session.scope.cwd, entry.previous_path.as_deref().unwrap_or(&entry.path))
-                    .unwrap_or(None)
+                read_head_text(
+                    &session.scope.cwd,
+                    entry.previous_path.as_deref().unwrap_or(&entry.path),
+                )
+                .unwrap_or(None)
             };
             let previous_path = entry
                 .previous_path
@@ -527,8 +530,12 @@ impl NativeReviewService {
         let tracked_file = state.tracked_files[index].clone();
         self.assert_current_matches(session, &tracked_file)?;
         let updated_at = now();
-        let next =
-            resolve_tracked_file_hunks(&tracked_file, &input.hunk_ids, decision.clone(), updated_at.clone());
+        let next = resolve_tracked_file_hunks(
+            &tracked_file,
+            &input.hunk_ids,
+            decision.clone(),
+            updated_at.clone(),
+        );
         let mut changed_files = Vec::new();
         match decision {
             ReviewDecision::Keep => {
@@ -540,12 +547,25 @@ impl NativeReviewService {
                     let current = tracked_current_text(&tracked_file);
                     let next_text = tracked_current_text(&next_file);
                     if current != next_text {
-                        self.write_review_text(session, &next_file.path, &next_text, write_tracker)?;
+                        self.write_review_text(
+                            session,
+                            &next_file.path,
+                            &next_text,
+                            write_tracker,
+                        )?;
                         changed_files.push(next_file.path.clone());
                     }
-                    replace_or_remove_tracked_file(&mut state.tracked_files, index, Some(next_file));
+                    replace_or_remove_tracked_file(
+                        &mut state.tracked_files,
+                        index,
+                        Some(next_file),
+                    );
                 } else {
-                    changed_files.extend(self.revert_tracked_file(session, &tracked_file, write_tracker)?);
+                    changed_files.extend(self.revert_tracked_file(
+                        session,
+                        &tracked_file,
+                        write_tracker,
+                    )?);
                     state.tracked_files.remove(index);
                 }
             }
@@ -580,14 +600,17 @@ impl NativeReviewService {
         if let Some(path) = self.review_state_path(&session.session_id)
             && path.exists()
         {
-            let bytes = fs::read(&path).map_err(|error| review_io("read review state", &path, error))?;
-            let state = serde_json::from_slice::<NativeReviewSessionState>(&bytes).map_err(|error| {
-                NativeError::new(
-                    NativeErrorCode::InvalidJson,
-                    format!("Native review state is invalid: {error}"),
-                )
-            })?;
-            self.states.insert(session.session_id.0.clone(), state.clone());
+            let bytes =
+                fs::read(&path).map_err(|error| review_io("read review state", &path, error))?;
+            let state =
+                serde_json::from_slice::<NativeReviewSessionState>(&bytes).map_err(|error| {
+                    NativeError::new(
+                        NativeErrorCode::InvalidJson,
+                        format!("Native review state is invalid: {error}"),
+                    )
+                })?;
+            self.states
+                .insert(session.session_id.0.clone(), state.clone());
             return Ok(state);
         }
         Ok(empty_state(session, now()))
@@ -604,7 +627,8 @@ impl NativeReviewService {
         state.tracked_files = tracked_files;
         state.conflicts = conflicts;
         self.save_state(&state)?;
-        self.states.insert(session.session_id.0.clone(), state.clone());
+        self.states
+            .insert(session.session_id.0.clone(), state.clone());
         Ok(state)
     }
 
@@ -617,7 +641,8 @@ impl NativeReviewService {
         state.updated_at = updated_at;
         state.version = state.version.saturating_add(1);
         self.save_state(state)?;
-        self.states.insert(session.session_id.0.clone(), state.clone());
+        self.states
+            .insert(session.session_id.0.clone(), state.clone());
         Ok(())
     }
 
@@ -643,7 +668,8 @@ impl NativeReviewService {
         cwd: &str,
         relative_path: &str,
     ) -> Result<Option<String>, NativeError> {
-        let resolved = match resolve_review_path(cwd, relative_path, ScopedPathIntent::ReadExisting) {
+        let resolved = match resolve_review_path(cwd, relative_path, ScopedPathIntent::ReadExisting)
+        {
             Ok(path) => path,
             Err(error) if error.code == NativeErrorCode::NotFound => return Ok(None),
             Err(error) => return Err(error),
@@ -716,19 +742,22 @@ impl NativeReviewService {
                 changed.push(tracked_file.path.clone());
             }
             ReviewTrackedFileKind::Delete | ReviewTrackedFileKind::Update => {
-                let old_text = tracked_file.old_text.as_deref().ok_or_else(|| {
-                    review_conflict(&tracked_file.path, "not_reversible", None)
-                })?;
+                let old_text = tracked_file
+                    .old_text
+                    .as_deref()
+                    .ok_or_else(|| review_conflict(&tracked_file.path, "not_reversible", None))?;
                 self.write_review_text(session, &tracked_file.path, old_text, write_tracker)?;
                 changed.push(tracked_file.path.clone());
             }
             ReviewTrackedFileKind::Move => {
-                let old_text = tracked_file.old_text.as_deref().ok_or_else(|| {
-                    review_conflict(&tracked_file.path, "not_reversible", None)
-                })?;
-                let previous_path = tracked_file.previous_path.as_deref().ok_or_else(|| {
-                    review_conflict(&tracked_file.path, "not_reversible", None)
-                })?;
+                let old_text = tracked_file
+                    .old_text
+                    .as_deref()
+                    .ok_or_else(|| review_conflict(&tracked_file.path, "not_reversible", None))?;
+                let previous_path = tracked_file
+                    .previous_path
+                    .as_deref()
+                    .ok_or_else(|| review_conflict(&tracked_file.path, "not_reversible", None))?;
                 self.remove_review_file(session, &tracked_file.path, write_tracker)?;
                 self.write_review_text(session, previous_path, old_text, write_tracker)?;
                 changed.push(tracked_file.path.clone());
@@ -745,7 +774,11 @@ impl NativeReviewService {
         text: &str,
         write_tracker: &WriteTracker,
     ) -> Result<(), NativeError> {
-        let resolved = resolve_review_path(&session.scope.cwd, relative_path, ScopedPathIntent::CreateTarget)?;
+        let resolved = resolve_review_path(
+            &session.scope.cwd,
+            relative_path,
+            ScopedPathIntent::CreateTarget,
+        )?;
         if let Some(parent) = resolved.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| review_io("create review parent directory", parent, error))?;
@@ -765,7 +798,11 @@ impl NativeReviewService {
         relative_path: &str,
         write_tracker: &WriteTracker,
     ) -> Result<(), NativeError> {
-        let resolved = resolve_review_path(&session.scope.cwd, relative_path, ScopedPathIntent::ReadExisting)?;
+        let resolved = resolve_review_path(
+            &session.scope.cwd,
+            relative_path,
+            ScopedPathIntent::ReadExisting,
+        )?;
         match fs::remove_file(&resolved) {
             Ok(()) => {
                 write_tracker.track_any(resolved.clone());
@@ -786,7 +823,11 @@ impl NativeReviewService {
         let mut backups = Vec::new();
         for tracked_file in tracked_files {
             for relative_path in revert_paths(tracked_file) {
-                let resolved = resolve_review_path(&session.scope.cwd, &relative_path, ScopedPathIntent::CreateTarget)?;
+                let resolved = resolve_review_path(
+                    &session.scope.cwd,
+                    &relative_path,
+                    ScopedPathIntent::CreateTarget,
+                )?;
                 if !paths.insert(resolved.clone()) {
                     continue;
                 }
@@ -795,7 +836,10 @@ impl NativeReviewService {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                     Err(error) => return Err(review_io("backup review file", &resolved, error)),
                 };
-                backups.push(RollbackBackup { path: resolved, content });
+                backups.push(RollbackBackup {
+                    path: resolved,
+                    content,
+                });
             }
         }
         Ok(backups)
@@ -905,7 +949,9 @@ fn list_git_status_entries(cwd: &Path) -> Result<Vec<NativeGitStatusEntry>, Nati
             "Native review requires a Git working tree for reconciliation.",
         ));
     }
-    Ok(parse_git_status_output(&String::from_utf8_lossy(&output.stdout)))
+    Ok(parse_git_status_output(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
 }
 
 fn parse_git_status_output(output: &str) -> Vec<NativeGitStatusEntry> {
@@ -955,11 +1001,18 @@ fn read_head_text(cwd: &str, relative_path: &str) -> Result<Option<String>, Nati
     if !output.status.success() {
         return Ok(None);
     }
-    ensure_review_text(String::from_utf8_lossy(&output.stdout).to_string(), relative_path)
+    ensure_review_text(
+        String::from_utf8_lossy(&output.stdout).to_string(),
+        relative_path,
+    )
 }
 
-fn read_text_file_for_review(path: &Path, display_path: &str) -> Result<Option<String>, NativeError> {
-    let metadata = fs::metadata(path).map_err(|error| review_io("read review file metadata", path, error))?;
+fn read_text_file_for_review(
+    path: &Path,
+    display_path: &str,
+) -> Result<Option<String>, NativeError> {
+    let metadata =
+        fs::metadata(path).map_err(|error| review_io("read review file metadata", path, error))?;
     if !metadata.is_file() {
         return Ok(None);
     }
@@ -1078,7 +1131,11 @@ fn restore_backups(backups: Vec<RollbackBackup>) -> Result<(), NativeError> {
         } else if let Err(error) = fs::remove_file(&backup.path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
-            return Err(review_io("remove restored review file", &backup.path, error));
+            return Err(review_io(
+                "remove restored review file",
+                &backup.path,
+                error,
+            ));
         }
     }
     Ok(())
@@ -1092,7 +1149,9 @@ fn resolve_review_path(
     resolve_scoped_path(Path::new(cwd), Some(relative_path), false, intent)
         .map(|resolved| resolved.absolute_path)
         .map_err(|error| match error {
-            comando_fs::FsError::NotFound => NativeError::new(NativeErrorCode::NotFound, "Review file was not found."),
+            comando_fs::FsError::NotFound => {
+                NativeError::new(NativeErrorCode::NotFound, "Review file was not found.")
+            }
             comando_fs::FsError::PathEscape => NativeError::new(
                 NativeErrorCode::PermissionDenied,
                 "Cannot safely apply this review change because the path is outside the project.",
@@ -1106,8 +1165,11 @@ fn resolve_review_path(
 }
 
 fn review_not_found(path: &str) -> NativeError {
-    NativeError::new(NativeErrorCode::NotFound, "The file to review was not found.")
-        .with_details(json!({ "path": path }))
+    NativeError::new(
+        NativeErrorCode::NotFound,
+        "The file to review was not found.",
+    )
+    .with_details(json!({ "path": path }))
 }
 
 fn review_conflict(path: &str, reason: &str, external_change_hash: Option<String>) -> NativeError {
@@ -1198,4 +1260,3 @@ mod tests {
         assert_eq!(files[0].version, Some(2));
     }
 }
-
