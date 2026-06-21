@@ -105,6 +105,13 @@ Runtime launch contracts:
 - Kilo: Rust validates `kilo acp`.
 - Grok: Rust validates `grok --no-auto-update agent stdio` and maps Grok auth
   handshakes to `xai.api_key` or `cached_token` when advertised by the runtime.
+  The PR 9 implementation uses the current ACP crate; a separate legacy ACP
+  transport is not advertised as ready.
+
+Runtime capabilities are intentionally conservative. A runtime is marked
+`native_ready` only for the lifecycle it can execute through Rust. Provider
+metadata that is not projected yet, such as Codex subagent sessions, remains on
+the legacy worker path until a dedicated mapper lands.
 
 Rollback:
 

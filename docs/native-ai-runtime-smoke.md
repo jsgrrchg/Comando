@@ -61,7 +61,9 @@ Run this for each runtime: Codex, Claude, OpenCode, Kilo, and Grok.
 
 ## Runtime Specific Checks
 
-- Codex: confirm subagent metadata does not break normal streaming if emitted.
+- Codex: confirm normal streaming still works if provider metadata is emitted.
+  Dedicated subagent projection remains on the legacy path until Rust maps the
+  provider-specific child-session metadata.
 - Claude: confirm both direct executable and node wrapper launch contexts are
   accepted when locally available.
 - OpenCode: confirm `opencode acp` starts without requiring Rust to verify every
@@ -70,7 +72,8 @@ Run this for each runtime: Codex, Claude, OpenCode, Kilo, and Grok.
   require Rust auth-store probing.
 - Grok: confirm the launch uses `--no-auto-update agent stdio`; API-key auth
   should map to `xai.api_key`, and external login should map to `cached_token`
-  when advertised by the runtime.
+  when advertised by the runtime. This rollout uses the current ACP crate and
+  does not claim a separate legacy transport.
 
 ## Mixed Native And Legacy
 

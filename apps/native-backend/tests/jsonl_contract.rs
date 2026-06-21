@@ -415,7 +415,7 @@ fn handles_multiple_requests() {
 }
 
 #[test]
-fn native_ai_lifecycle_over_jsonl() {
+fn native_ai_prepare_requires_launch_context_over_jsonl() {
     let mut backend = BackendProcess::spawn();
 
     backend.send(json!({
@@ -453,54 +453,12 @@ fn native_ai_lifecycle_over_jsonl() {
         },
     }));
     let prepare_response = backend.read_json();
-    let created_event = backend.read_json();
-    let updated_event = backend.read_json();
     assert_eq!(prepare_response["type"], "response");
-    assert_eq!(prepare_response["ok"], true);
-    assert_eq!(prepare_response["result"]["sessionId"], "session_1");
-    assert_eq!(created_event["type"], "event");
-    assert_eq!(created_event["eventName"], "ai://session-created");
-    assert_eq!(updated_event["eventName"], "ai://session-updated");
-
-    backend.send(json!({
-        "id": "send-ai",
-        "command": "ai_send_prompt",
-        "args": {
-            "sessionId": "session_1",
-            "messageId": "message_1",
-            "prompt": {
-                "text": "hello",
-                "attachments": []
-            }
-        },
-    }));
-    let send_response = backend.read_json();
-    let streaming_event = backend.read_json();
-    assert_eq!(send_response["type"], "response");
-    assert_eq!(send_response["result"]["accepted"], true);
-    assert_eq!(streaming_event["eventName"], "ai://session-updated");
-    assert_eq!(streaming_event["payload"]["status"], "streaming");
-
-    backend.send(json!({
-        "id": "cancel-ai",
-        "command": "ai_cancel_session",
-        "args": { "sessionId": "session_1" },
-    }));
-    let cancel_response = backend.read_json();
-    let idle_event = backend.read_json();
-    assert_eq!(cancel_response["result"]["cancelled"], true);
-    assert_eq!(idle_event["payload"]["status"], "idle");
-
-    backend.send(json!({
-        "id": "close-ai",
-        "command": "ai_close_session",
-        "args": { "sessionId": "session_1" },
-    }));
-    let close_response = backend.read_json();
-    let closed_event = backend.read_json();
-    assert_eq!(close_response["result"]["closed"], true);
-    assert_eq!(closed_event["eventName"], "ai://session-closed");
-    assert_eq!(closed_event["payload"]["sessionId"], "session_1");
+    assert_eq!(prepare_response["ok"], false);
+    assert_eq!(
+        prepare_response["error"]["code"],
+        "ai_runtime_launch_context_invalid"
+    );
 }
 
 #[test]

@@ -17,6 +17,7 @@ import {
     type NativeAiCancelSessionOutput,
     type NativeAiCloseSessionOutput,
     type NativeAiLaunchSpec,
+    type NativeAiRuntimeConnectionPayload,
     type NativeAiRuntimeStatus,
     type NativeAiSendPromptOutput,
     type NativeAiSessionSummary,
@@ -251,6 +252,25 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             } catch (error) {
                 this.#reportDiagnostic(
                     `Native AI runtime event failed: ${formatError(error)}`,
+                );
+            }
+            return;
+        }
+
+        if (event.eventName === "ai://runtime-connection") {
+            try {
+                const payload = requireRecord(
+                    event.payload,
+                    "Native AI runtime connection",
+                ) as unknown as NativeAiRuntimeConnectionPayload;
+                this.#reportDiagnostic(
+                    `Native AI ${payload.runtimeId} connection: ${payload.status}${
+                        payload.message ? ` (${payload.message})` : ""
+                    }`,
+                );
+            } catch (error) {
+                this.#reportDiagnostic(
+                    `Native AI runtime connection event failed: ${formatError(error)}`,
                 );
             }
             return;

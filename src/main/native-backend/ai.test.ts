@@ -160,6 +160,27 @@ describe("NativeAiGateway", () => {
         );
     });
 
+    it("reports runtime connection events as diagnostics", () => {
+        const client = createClient();
+        const onDiagnostic = vi.fn();
+        createGateway(client, { onDiagnostic });
+
+        client.emit({
+            eventName: "ai://runtime-connection",
+            payload: {
+                message: null,
+                runtimeId: "opencode",
+                status: "ready",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            },
+            type: "event",
+        });
+
+        expect(onDiagnostic).toHaveBeenCalledWith(
+            "Native AI opencode connection: ready",
+        );
+    });
+
     it("emits the local user message and sends prompts to the native backend", async () => {
         const client = createClient();
         const onSessionEvent = vi.fn();
@@ -218,12 +239,16 @@ describe("NativeAiGateway", () => {
 function createGateway(
     client: ReturnType<typeof createClient>,
     options: Partial<
-        Pick<NativeAiGatewayOptions, "onRuntimeStatus" | "onSessionEvent">
+        Pick<
+            NativeAiGatewayOptions,
+            "onDiagnostic" | "onRuntimeStatus" | "onSessionEvent"
+        >
     > = {},
 ) {
     return new NativeAiGateway({
         client,
         env: { [NATIVE_AI_ENABLED_ENV]: "1" },
+        onDiagnostic: options.onDiagnostic,
         onRuntimeStatus: options.onRuntimeStatus ?? vi.fn(),
         onSessionEvent: options.onSessionEvent ?? vi.fn(),
     });

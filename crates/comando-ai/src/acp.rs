@@ -9,9 +9,10 @@ use agent_client_protocol::schema::{
     CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
     ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
     ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, InitializeRequest,
-    InitializeResponse, MultiSelectItems, NewSessionRequest, PermissionOption, PromptRequest,
-    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, StopReason, TextContent,
+    InitializeResponse, LoadSessionRequest, MultiSelectItems, NewSessionRequest, PermissionOption,
+    PromptRequest, ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigOptionValue,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent,
     ToolCall, ToolCallUpdate,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
@@ -49,7 +50,28 @@ use crate::session::{NativeAiSession, SessionRegistry};
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 type PermissionWaiterMap = Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>;
-type UserInputWaiterMap = Arc<Mutex<HashMap<String, oneshot::Sender<CreateElicitationResponse>>>>;
+type UserInputWaiterMap = Arc<Mutex<HashMap<String, PendingUserInputRequest>>>;
+
+#[derive(Debug)]
+struct PendingUserInputRequest {
+    schema: BTreeMap<String, ElicitationAnswerKind>,
+    sender: oneshot::Sender<CreateElicitationResponse>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ElicitationAnswerKind {
+    Array,
+    Boolean,
+    Integer,
+    Number,
+    String,
+}
+
+#[derive(Debug, Clone)]
+pub enum NativeAiConfigValue {
+    Boolean(bool),
+    ValueId(String),
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AcpProcessSpec {
@@ -63,6 +85,7 @@ pub struct AcpProcessSpec {
     pub auth_method: Option<String>,
     pub auth_credential_source: Option<String>,
     pub auth_handshake: Option<comando_types::ai::NativeAiAuthHandshakeSpec>,
+    pub persisted_runtime_session_id: Option<RuntimeSessionId>,
 }
 
 impl AcpProcessSpec {
@@ -82,6 +105,7 @@ impl AcpProcessSpec {
             auth_method: launch.auth_method.clone(),
             auth_credential_source: launch.auth_credential_source.clone(),
             auth_handshake: launch.auth_handshake.clone(),
+            persisted_runtime_session_id: launch.persisted_runtime_session_id.clone(),
         })
     }
 
@@ -169,6 +193,12 @@ fn validate_launch_context(
 fn acp_client_capabilities() -> ClientCapabilities {
     ClientCapabilities::new()
         .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()))
+}
+
+fn protocol_version_for_flavor(flavor: AcpProtocolFlavor) -> ProtocolVersion {
+    match flavor {
+        AcpProtocolFlavor::Current14 | AcpProtocolFlavor::Legacy12 => ProtocolVersion::V1,
+    }
 }
 
 fn definition_args(definition: RuntimeDefinition) -> Vec<String> {
@@ -272,6 +302,31 @@ impl AcpSessionController {
             })
     }
 
+    pub fn set_config_option(
+        &self,
+        runtime_session_id: RuntimeSessionId,
+        config_id: String,
+        value: NativeAiConfigValue,
+    ) -> AiResult<()> {
+        let (result_sender, result_receiver) = std_mpsc::sync_channel(1);
+        self.sender
+            .send(AcpSessionCommand::SetConfigOption {
+                config_id,
+                result_sender,
+                runtime_session_id,
+                value,
+            })
+            .map_err(|_| AiError::RuntimeExited {
+                message: "The ACP runtime session is no longer running.".to_string(),
+            })?;
+        result_receiver
+            .recv()
+            .map_err(|_| AiError::RuntimeExited {
+                message: "The ACP runtime session is no longer running.".to_string(),
+            })?
+            .map_err(|message| AiError::RuntimeExited { message })
+    }
+
     pub fn close(&self) {
         self.cancel_pending_requests();
         let _ = self.sender.send(AcpSessionCommand::Close);
@@ -311,10 +366,13 @@ impl AcpSessionController {
             .ok_or_else(|| AiError::UserInputNotFound {
                 request_id: input.request_id.clone(),
             })?;
-        let response = create_elicitation_response_from_input(input);
-        waiter.send(response).map_err(|_| AiError::RuntimeExited {
-            message: "The ACP user input request is no longer waiting.".to_string(),
-        })
+        let response = create_elicitation_response_from_input(input, &waiter.schema);
+        waiter
+            .sender
+            .send(response)
+            .map_err(|_| AiError::RuntimeExited {
+                message: "The ACP user input request is no longer waiting.".to_string(),
+            })
     }
 
     pub fn cancel_pending_requests(&self) {
@@ -325,7 +383,9 @@ impl AcpSessionController {
         }
         if let Ok(mut waiters) = self.user_input_waiters.lock() {
             for (_, waiter) in waiters.drain() {
-                let _ = waiter.send(CreateElicitationResponse::new(ElicitationAction::Cancel));
+                let _ = waiter
+                    .sender
+                    .send(CreateElicitationResponse::new(ElicitationAction::Cancel));
             }
         }
     }
@@ -339,6 +399,12 @@ enum AcpSessionCommand {
     },
     Cancel {
         runtime_session_id: RuntimeSessionId,
+    },
+    SetConfigOption {
+        config_id: String,
+        result_sender: std_mpsc::SyncSender<Result<(), String>>,
+        runtime_session_id: RuntimeSessionId,
+        value: NativeAiConfigValue,
     },
     Close,
 }
@@ -485,26 +551,37 @@ async fn run_acp_session(
             async move {
                 let initialize_response = connection
                     .send_request(
-                        InitializeRequest::new(ProtocolVersion::V1)
+                        InitializeRequest::new(protocol_version_for_flavor(spec.protocol_flavor))
                             .client_capabilities(acp_client_capabilities()),
                     )
                     .block_task()
                     .await?;
                 run_acp_auth_handshake(&connection, &spec, &initialize_response).await?;
 
-                let new_session = NewSessionRequest::new(PathBuf::from(&session.scope.cwd))
-                    .additional_directories(
-                        session
-                            .scope
-                            .additional_roots
-                            .iter()
-                            .map(PathBuf::from)
-                            .collect(),
-                    );
-                let new_session_response =
-                    connection.send_request(new_session).block_task().await?;
+                let additional_directories = session
+                    .scope
+                    .additional_roots
+                    .iter()
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>();
                 let runtime_session_id =
-                    RuntimeSessionId(new_session_response.session_id.to_string());
+                    if let Some(runtime_session_id) = spec.persisted_runtime_session_id.clone() {
+                        let load_session = LoadSessionRequest::new(
+                            agent_client_protocol::schema::SessionId::from(
+                                runtime_session_id.0.clone(),
+                            ),
+                            PathBuf::from(&session.scope.cwd),
+                        )
+                        .additional_directories(additional_directories);
+                        connection.send_request(load_session).block_task().await?;
+                        runtime_session_id
+                    } else {
+                        let new_session = NewSessionRequest::new(PathBuf::from(&session.scope.cwd))
+                            .additional_directories(additional_directories);
+                        let new_session_response =
+                            connection.send_request(new_session).block_task().await?;
+                        RuntimeSessionId(new_session_response.session_id.to_string())
+                    };
                 notification_context.set_runtime_session_id(runtime_session_id.clone());
                 emit_event(
                     event_sender.as_ref(),
@@ -540,6 +617,27 @@ async fn run_acp_session(
                                     runtime_session_id.0.clone(),
                                 ),
                             ))?;
+                        }
+                        AcpSessionCommand::SetConfigOption {
+                            config_id,
+                            result_sender,
+                            runtime_session_id,
+                            value,
+                        } => {
+                            let request = SetSessionConfigOptionRequest::new(
+                                agent_client_protocol::schema::SessionId::from(
+                                    runtime_session_id.0,
+                                ),
+                                config_id,
+                                acp_config_value(value),
+                            );
+                            let result = connection
+                                .send_request(request)
+                                .block_task()
+                                .await
+                                .map(|_| ())
+                                .map_err(|error| error.to_string());
+                            let _ = result_sender.send(result);
                         }
                         AcpSessionCommand::Close => break,
                     }
@@ -689,10 +787,11 @@ async fn handle_permission_request(
     let outcome = receiver
         .await
         .unwrap_or(RequestPermissionOutcome::Cancelled);
-    emit_session_status(
+    emit_session_status_if_current(
         sessions,
         event_sender,
         &session.session_id,
+        NativeAiSessionStatus::WaitingPermission,
         NativeAiSessionStatus::Streaming,
     );
     outcome
@@ -712,10 +811,16 @@ async fn handle_user_input_request(
     let runtime_session_id = runtime_session_id_from_elicitation(&request)
         .or_else(|| session.runtime_session_id.clone());
     let questions = elicitation_questions(form);
+    let schema = elicitation_answer_schema(form);
     let (sender, receiver) = oneshot::channel();
     if waiters
         .lock()
-        .map(|mut waiters| waiters.insert(request_id.clone(), sender))
+        .map(|mut waiters| {
+            waiters.insert(
+                request_id.clone(),
+                PendingUserInputRequest { schema, sender },
+            )
+        })
         .is_err()
     {
         emit_ai_error(
@@ -753,10 +858,11 @@ async fn handle_user_input_request(
     let response = receiver
         .await
         .unwrap_or_else(|_| CreateElicitationResponse::new(ElicitationAction::Cancel));
-    emit_session_status(
+    emit_session_status_if_current(
         sessions,
         event_sender,
         &session.session_id,
+        NativeAiSessionStatus::WaitingUserInput,
         NativeAiSessionStatus::Streaming,
     );
     response
@@ -832,6 +938,31 @@ fn emit_session_status(
     }
 }
 
+fn emit_session_status_if_current(
+    sessions: &Arc<Mutex<SessionRegistry>>,
+    sender: Option<&std_mpsc::SyncSender<AiRuntimeEvent>>,
+    session_id: &SessionId,
+    expected: NativeAiSessionStatus,
+    status: NativeAiSessionStatus,
+) {
+    let summary = {
+        let mut sessions = match sessions.lock() {
+            Ok(sessions) => sessions,
+            Err(_) => return,
+        };
+        let session = match sessions.get_mut(session_id) {
+            Ok(session) => session,
+            Err(_) => return,
+        };
+        if session.session.status != expected {
+            return;
+        }
+        session.set_status(status);
+        session.session.summary()
+    };
+    emit_event(sender, AI_SESSION_UPDATED_EVENT, &session_updated(&summary));
+}
+
 fn emit_ai_error(
     sender: Option<&std_mpsc::SyncSender<AiRuntimeEvent>>,
     session: &NativeAiSession,
@@ -862,6 +993,13 @@ fn permission_option_payload(option: &PermissionOption) -> NativeAiPermissionOpt
         option_id: option.option_id.to_string(),
         name: option.name.clone(),
         kind: serde_label(&option.kind),
+    }
+}
+
+fn acp_config_value(value: NativeAiConfigValue) -> SessionConfigOptionValue {
+    match value {
+        NativeAiConfigValue::Boolean(value) => SessionConfigOptionValue::boolean(value),
+        NativeAiConfigValue::ValueId(value) => SessionConfigOptionValue::value_id(value),
     }
 }
 
@@ -906,6 +1044,26 @@ fn elicitation_questions(
     }
 
     questions
+}
+
+fn elicitation_answer_schema(
+    form: &agent_client_protocol::schema::ElicitationFormMode,
+) -> BTreeMap<String, ElicitationAnswerKind> {
+    form.requested_schema
+        .properties
+        .iter()
+        .map(|(id, property)| (id.clone(), elicitation_answer_kind(property)))
+        .collect()
+}
+
+fn elicitation_answer_kind(property: &ElicitationPropertySchema) -> ElicitationAnswerKind {
+    match property {
+        ElicitationPropertySchema::Array(_) => ElicitationAnswerKind::Array,
+        ElicitationPropertySchema::Boolean(_) => ElicitationAnswerKind::Boolean,
+        ElicitationPropertySchema::Integer(_) => ElicitationAnswerKind::Integer,
+        ElicitationPropertySchema::Number(_) => ElicitationAnswerKind::Number,
+        _ => ElicitationAnswerKind::String,
+    }
 }
 
 fn elicitation_question(
@@ -1058,6 +1216,7 @@ fn multi_select_options(items: &MultiSelectItems) -> Vec<NativeAiUserInputQuesti
 
 fn create_elicitation_response_from_input(
     input: NativeAiUserInputResponseInput,
+    schema: &BTreeMap<String, ElicitationAnswerKind>,
 ) -> CreateElicitationResponse {
     let mut content = BTreeMap::new();
     for answer in input.answers {
@@ -1066,20 +1225,15 @@ fn create_elicitation_response_from_input(
             .into_iter()
             .filter(|value| !value.trim().is_empty())
             .collect::<Vec<_>>();
-        match values.as_slice() {
-            [] => {}
-            [value] => {
-                content.insert(
-                    answer.question_id,
-                    ElicitationContentValue::String(value.clone()),
-                );
-            }
-            _ => {
-                content.insert(
-                    answer.question_id,
-                    ElicitationContentValue::StringArray(values),
-                );
-            }
+        if values.is_empty() {
+            continue;
+        }
+        let kind = schema
+            .get(&answer.question_id)
+            .copied()
+            .unwrap_or(ElicitationAnswerKind::String);
+        if let Some(value) = elicitation_content_value(kind, values) {
+            content.insert(answer.question_id, value);
         }
     }
 
@@ -1090,6 +1244,35 @@ fn create_elicitation_response_from_input(
     CreateElicitationResponse::new(ElicitationAction::Accept(
         ElicitationAcceptAction::new().content(content),
     ))
+}
+
+fn elicitation_content_value(
+    kind: ElicitationAnswerKind,
+    values: Vec<String>,
+) -> Option<ElicitationContentValue> {
+    match kind {
+        ElicitationAnswerKind::Array => Some(ElicitationContentValue::StringArray(values)),
+        ElicitationAnswerKind::Boolean => values
+            .first()
+            .and_then(|value| match value.trim().to_ascii_lowercase().as_str() {
+                "true" | "1" | "yes" => Some(true),
+                "false" | "0" | "no" => Some(false),
+                _ => None,
+            })
+            .map(ElicitationContentValue::Boolean),
+        ElicitationAnswerKind::Integer => values
+            .first()
+            .and_then(|value| value.trim().parse::<i64>().ok())
+            .map(ElicitationContentValue::Integer),
+        ElicitationAnswerKind::Number => values
+            .first()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .map(ElicitationContentValue::Number),
+        ElicitationAnswerKind::String => match values.as_slice() {
+            [value] => Some(ElicitationContentValue::String(value.clone())),
+            _ => Some(ElicitationContentValue::StringArray(values)),
+        },
+    }
 }
 
 fn stop_reason_label(reason: StopReason) -> &'static str {
@@ -1536,20 +1719,42 @@ mod tests {
 
     #[test]
     fn maps_user_input_answers_to_elicitation_accept_content() {
-        let response = create_elicitation_response_from_input(NativeAiUserInputResponseInput {
-            session_id: SessionId("s1".to_string()),
-            request_id: "user-input-1".to_string(),
-            answers: vec![
-                NativeAiUserInputAnswer {
-                    question_id: "branch".to_string(),
-                    answers: vec!["main".to_string()],
-                },
-                NativeAiUserInputAnswer {
-                    question_id: "checks".to_string(),
-                    answers: vec!["lint".to_string(), "test".to_string()],
-                },
-            ],
-        });
+        let schema = BTreeMap::from([
+            ("branch".to_string(), ElicitationAnswerKind::String),
+            ("checks".to_string(), ElicitationAnswerKind::Array),
+            ("confirmed".to_string(), ElicitationAnswerKind::Boolean),
+            ("retries".to_string(), ElicitationAnswerKind::Integer),
+            ("threshold".to_string(), ElicitationAnswerKind::Number),
+        ]);
+        let response = create_elicitation_response_from_input(
+            NativeAiUserInputResponseInput {
+                session_id: SessionId("s1".to_string()),
+                request_id: "user-input-1".to_string(),
+                answers: vec![
+                    NativeAiUserInputAnswer {
+                        question_id: "branch".to_string(),
+                        answers: vec!["main".to_string()],
+                    },
+                    NativeAiUserInputAnswer {
+                        question_id: "checks".to_string(),
+                        answers: vec!["lint".to_string(), "test".to_string()],
+                    },
+                    NativeAiUserInputAnswer {
+                        question_id: "confirmed".to_string(),
+                        answers: vec!["true".to_string()],
+                    },
+                    NativeAiUserInputAnswer {
+                        question_id: "retries".to_string(),
+                        answers: vec!["3".to_string()],
+                    },
+                    NativeAiUserInputAnswer {
+                        question_id: "threshold".to_string(),
+                        answers: vec!["0.75".to_string()],
+                    },
+                ],
+            },
+            &schema,
+        );
 
         let ElicitationAction::Accept(action) = response.action else {
             panic!("expected accepted elicitation response");
@@ -1566,15 +1771,30 @@ mod tests {
                 "test".to_string()
             ]))
         );
+        assert_eq!(
+            content.get("confirmed"),
+            Some(&ElicitationContentValue::Boolean(true))
+        );
+        assert_eq!(
+            content.get("retries"),
+            Some(&ElicitationContentValue::Integer(3))
+        );
+        assert_eq!(
+            content.get("threshold"),
+            Some(&ElicitationContentValue::Number(0.75))
+        );
     }
 
     #[test]
     fn maps_empty_user_input_to_elicitation_cancel() {
-        let response = create_elicitation_response_from_input(NativeAiUserInputResponseInput {
-            session_id: SessionId("s1".to_string()),
-            request_id: "user-input-1".to_string(),
-            answers: Vec::new(),
-        });
+        let response = create_elicitation_response_from_input(
+            NativeAiUserInputResponseInput {
+                session_id: SessionId("s1".to_string()),
+                request_id: "user-input-1".to_string(),
+                answers: Vec::new(),
+            },
+            &BTreeMap::new(),
+        );
 
         assert!(matches!(response.action, ElicitationAction::Cancel));
     }
