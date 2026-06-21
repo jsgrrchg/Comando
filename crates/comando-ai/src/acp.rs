@@ -5,23 +5,27 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 
 use agent_client_protocol::schema::{
-    AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
-    CreateElicitationRequest, CreateElicitationResponse, ElicitationAcceptAction,
-    ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
-    ElicitationFormCapabilities, ElicitationMode, ElicitationPropertySchema, InitializeRequest,
-    InitializeResponse, LoadSessionRequest, MultiSelectItems, NewSessionRequest, PermissionOption,
-    PromptRequest, ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigOptionValue,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent,
-    ToolCall, ToolCallUpdate,
+    AuthenticateRequest, AvailableCommand, AvailableCommandsUpdate, CancelNotification,
+    ClientCapabilities, ConfigOptionUpdate, ContentBlock, ContentChunk, CreateElicitationRequest,
+    CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities,
+    ElicitationContentValue, ElicitationFormCapabilities, ElicitationMode,
+    ElicitationPropertySchema, InitializeRequest, InitializeResponse, LoadSessionRequest, Meta,
+    MultiSelectItems, NewSessionRequest, PermissionOption, PromptRequest, ProtocolVersion,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigOptionValue, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall, ToolCallUpdate,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use comando_types::ai::{
-    NativeAiErrorPayload, NativeAiLaunchSpec, NativeAiPermissionOptionPayload,
-    NativeAiPermissionRequestPayload, NativeAiPermissionResponseInput, NativeAiPlanEntryPayload,
-    NativeAiPlanUpdatedPayload, NativeAiRuntimeConnectionPayload, NativeAiSessionStatus,
-    NativeAiSessionSummary, NativeAiTokenUsageCost, NativeAiTokenUsagePayload,
-    NativeAiToolActivityPayload, NativeAiUserInputQuestionOptionPayload,
+    NativeAiAvailableCommandPayload, NativeAiErrorPayload, NativeAiLaunchSpec,
+    NativeAiPermissionOptionPayload, NativeAiPermissionRequestPayload,
+    NativeAiPermissionResponseInput, NativeAiPlanEntryPayload, NativeAiPlanUpdatedPayload,
+    NativeAiRuntimeConnectionPayload, NativeAiRuntimeSessionMapping,
+    NativeAiSessionCatalogUpdatedPayload, NativeAiSessionConfigOptionPayload,
+    NativeAiSessionConfigSelectEntryPayload, NativeAiSessionStatus, NativeAiSessionSummary,
+    NativeAiSubagentBreadcrumbPayload, NativeAiSubagentCreatedPayload, NativeAiTokenUsageCost,
+    NativeAiTokenUsagePayload, NativeAiToolActivityPayload, NativeAiUserInputQuestionOptionPayload,
     NativeAiUserInputQuestionPayload, NativeAiUserInputRequestPayload,
     NativeAiUserInputResponseInput,
 };
@@ -38,7 +42,8 @@ use crate::error::{AiError, AiResult};
 use crate::events::{
     AI_ERROR_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT,
     AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT,
-    AI_SESSION_UPDATED_EVENT, AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT,
+    AI_SESSION_CATALOG_UPDATED_EVENT, AI_SESSION_UPDATED_EVENT, AI_SUBAGENT_BREADCRUMB_EVENT,
+    AI_SUBAGENT_CREATED_EVENT, AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT,
     AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT,
     AI_USER_INPUT_REQUEST_EVENT, AiRuntimeEvent, message_completed, message_delta, message_started,
     now_iso8601, session_updated,
@@ -48,6 +53,14 @@ use crate::runtime::{AcpProtocolFlavor, RuntimeDefinition};
 use crate::session::{NativeAiSession, SessionRegistry};
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+const MESSAGE_DELTA_COALESCE_CHARS: usize = 512;
+const MESSAGE_DELTA_COALESCE_CHUNKS: usize = 8;
+const CODEX_ACP_STATUS_EVENT_TYPE_KEY: &str = "codexAcpEventType";
+const CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE: &str = "subagent_session_created";
+const CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE: &str = "subagent_breadcrumb";
+const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
+const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
+const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
 
 type PermissionWaiterMap = Arc<Mutex<HashMap<String, oneshot::Sender<RequestPermissionOutcome>>>>;
 type UserInputWaiterMap = Arc<Mutex<HashMap<String, PendingUserInputRequest>>>;
@@ -86,6 +99,7 @@ pub struct AcpProcessSpec {
     pub auth_credential_source: Option<String>,
     pub auth_handshake: Option<comando_types::ai::NativeAiAuthHandshakeSpec>,
     pub persisted_runtime_session_id: Option<RuntimeSessionId>,
+    pub persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
 }
 
 impl AcpProcessSpec {
@@ -106,6 +120,7 @@ impl AcpProcessSpec {
             auth_credential_source: launch.auth_credential_source.clone(),
             auth_handshake: launch.auth_handshake.clone(),
             persisted_runtime_session_id: launch.persisted_runtime_session_id.clone(),
+            persisted_subagent_session_mappings: launch.persisted_subagent_session_mappings.clone(),
         })
     }
 
@@ -494,7 +509,11 @@ async fn run_acp_session(
         .ok_or_else(|| "ACP runtime stdout was not available.".to_string())?;
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
 
-    let notification_context = NotificationContext::new(session.clone(), event_sender.clone());
+    let notification_context = NotificationContext::new(
+        session.clone(),
+        event_sender.clone(),
+        spec.persisted_subagent_session_mappings.clone(),
+    );
     let notification_context_for_handler = notification_context.clone();
     let permission_event_sender = event_sender.clone();
     let permission_session = session.clone();
@@ -1295,20 +1314,21 @@ impl NotificationContext {
     fn new(
         session: NativeAiSession,
         event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
+        persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
     ) -> Self {
+        let inner = NotificationContextInner::new(
+            session,
+            event_sender,
+            persisted_subagent_session_mappings,
+        );
         Self {
-            inner: Arc::new(Mutex::new(NotificationContextInner {
-                event_sender,
-                open_messages: HashMap::new(),
-                runtime_session_id: session.runtime_session_id.clone(),
-                session,
-            })),
+            inner: Arc::new(Mutex::new(inner)),
         }
     }
 
     fn set_runtime_session_id(&self, runtime_session_id: RuntimeSessionId) {
         if let Ok(mut inner) = self.inner.lock() {
-            inner.runtime_session_id = Some(runtime_session_id);
+            inner.set_root_runtime_session_id(runtime_session_id);
         }
     }
 
@@ -1326,34 +1346,99 @@ impl NotificationContext {
 }
 
 struct NotificationContextInner {
+    app_session_id_by_runtime_session_id: HashMap<String, SessionId>,
     event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
     open_messages: HashMap<String, StreamedMessage>,
     runtime_session_id: Option<RuntimeSessionId>,
     session: NativeAiSession,
+    subagents_by_runtime_session_id: HashMap<String, SubagentRuntimeSession>,
+}
+
+#[derive(Clone)]
+struct SubagentRuntimeSession {
+    parent_session_id: SessionId,
+    runtime_session_id: RuntimeSessionId,
+    session_id: SessionId,
+    title: String,
 }
 
 impl NotificationContextInner {
+    fn new(
+        session: NativeAiSession,
+        event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
+        persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
+    ) -> Self {
+        let mut app_session_id_by_runtime_session_id = HashMap::new();
+        let mut subagents_by_runtime_session_id = HashMap::new();
+
+        for mapping in persisted_subagent_session_mappings {
+            app_session_id_by_runtime_session_id.insert(
+                mapping.runtime_session_id.0.clone(),
+                mapping.app_session_id.clone(),
+            );
+            if mapping
+                .parent_app_session_id
+                .as_ref()
+                .is_some_and(|parent_session_id| parent_session_id == &session.session_id)
+            {
+                subagents_by_runtime_session_id.insert(
+                    mapping.runtime_session_id.0.clone(),
+                    SubagentRuntimeSession {
+                        parent_session_id: session.session_id.clone(),
+                        runtime_session_id: mapping.runtime_session_id.clone(),
+                        session_id: mapping.app_session_id,
+                        title: "Subagent".to_string(),
+                    },
+                );
+            }
+        }
+
+        if let Some(runtime_session_id) = session.runtime_session_id.clone() {
+            app_session_id_by_runtime_session_id
+                .insert(runtime_session_id.0.clone(), session.session_id.clone());
+        }
+
+        Self {
+            app_session_id_by_runtime_session_id,
+            event_sender,
+            open_messages: HashMap::new(),
+            runtime_session_id: session.runtime_session_id.clone(),
+            session,
+            subagents_by_runtime_session_id,
+        }
+    }
+
+    fn set_root_runtime_session_id(&mut self, runtime_session_id: RuntimeSessionId) {
+        self.runtime_session_id = Some(runtime_session_id.clone());
+        self.app_session_id_by_runtime_session_id.insert(
+            runtime_session_id.0.clone(),
+            self.session.session_id.clone(),
+        );
+    }
+
     fn handle(&mut self, notification: SessionNotification) {
         let runtime_session_id = RuntimeSessionId(notification.session_id.to_string());
-        self.runtime_session_id = Some(runtime_session_id);
+        let notification_meta = notification.meta;
         match notification.update {
             SessionUpdate::AgentMessageChunk(chunk) => {
-                self.handle_content_chunk("assistant", chunk);
+                self.handle_content_chunk(&runtime_session_id, "assistant", chunk);
             }
             SessionUpdate::AgentThoughtChunk(chunk) => {
-                self.handle_content_chunk("thinking", chunk);
+                self.handle_content_chunk(&runtime_session_id, "thinking", chunk);
             }
             SessionUpdate::ToolCall(tool_call) => {
-                self.handle_tool_call(tool_call);
+                let meta = merged_meta(notification_meta.as_ref(), tool_call.meta.as_ref());
+                self.handle_tool_call(&runtime_session_id, tool_call, &meta);
             }
             SessionUpdate::ToolCallUpdate(tool_call_update) => {
-                self.handle_tool_call_update(tool_call_update);
+                let meta = merged_meta(notification_meta.as_ref(), tool_call_update.meta.as_ref());
+                self.handle_tool_call_update(&runtime_session_id, tool_call_update, &meta);
             }
             SessionUpdate::Plan(plan) => {
                 self.emit(
                     AI_PLAN_UPDATED_EVENT,
                     &NativeAiPlanUpdatedPayload {
-                        base: self.event_base(),
+                        base: self.event_base_for_runtime_session(&runtime_session_id),
                         title: None,
                         entries: plan
                             .entries
@@ -1371,7 +1456,7 @@ impl NotificationContextInner {
                 self.emit(
                     AI_TOKEN_USAGE_EVENT,
                     &NativeAiTokenUsagePayload {
-                        base: self.event_base(),
+                        base: self.event_base_for_runtime_session(&runtime_session_id),
                         cost: usage.cost.map(|cost| NativeAiTokenUsageCost {
                             amount: cost.amount,
                             currency: cost.currency,
@@ -1382,21 +1467,26 @@ impl NotificationContextInner {
                 );
             }
             SessionUpdate::SessionInfoUpdate(info) => {
-                if let Some(title) = info.title.into_option() {
-                    self.session.title = title;
-                    let summary = self.session.summary();
-                    self.emit(AI_SESSION_UPDATED_EVENT, &session_updated(&summary));
-                }
+                let meta = merged_meta(notification_meta.as_ref(), info.meta.as_ref());
+                self.handle_session_info_update(&runtime_session_id, info, &meta);
             }
-            SessionUpdate::UserMessageChunk(_)
-            | SessionUpdate::AvailableCommandsUpdate(_)
-            | SessionUpdate::CurrentModeUpdate(_)
-            | SessionUpdate::ConfigOptionUpdate(_) => {}
+            SessionUpdate::AvailableCommandsUpdate(update) => {
+                self.handle_available_commands_update(&runtime_session_id, update);
+            }
+            SessionUpdate::ConfigOptionUpdate(update) => {
+                self.handle_config_option_update(&runtime_session_id, update);
+            }
+            SessionUpdate::UserMessageChunk(_) | SessionUpdate::CurrentModeUpdate(_) => {}
             _ => {}
         }
     }
 
-    fn handle_content_chunk(&mut self, message_kind: &'static str, chunk: ContentChunk) {
+    fn handle_content_chunk(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        message_kind: &'static str,
+        chunk: ContentChunk,
+    ) {
         let delta = content_block_text(&chunk.content);
         if delta.is_empty() {
             return;
@@ -1406,78 +1496,80 @@ impl NotificationContextInner {
             .message_id
             .map(|id| id.to_string())
             .unwrap_or_else(|| format!("acp:{message_kind}:{}", self.open_messages.len() + 1));
-        let is_new = !self.open_messages.contains_key(&message_id);
+        let stream_key = stream_message_key(runtime_session_id, &message_id);
+        let is_new = !self.open_messages.contains_key(&stream_key);
         if is_new {
+            let summary = self.summary_for_runtime_session(runtime_session_id);
             let payload = if message_kind == "thinking" {
                 AiRuntimeEvent::new(
                     AI_THINKING_STARTED_EVENT,
-                    &message_started(&self.summary(), MessageId(message_id.clone()), message_kind),
+                    &message_started(&summary, MessageId(message_id.clone()), message_kind),
                 )
             } else {
                 AiRuntimeEvent::new(
                     AI_MESSAGE_STARTED_EVENT,
-                    &message_started(&self.summary(), MessageId(message_id.clone()), message_kind),
+                    &message_started(&summary, MessageId(message_id.clone()), message_kind),
                 )
             };
             self.send(payload);
         }
 
-        let content = {
+        let should_flush = {
             let message = self
                 .open_messages
-                .entry(message_id.clone())
+                .entry(stream_key)
                 .or_insert_with(|| StreamedMessage {
                     content: String::new(),
+                    pending_chunks: 0,
+                    pending_delta: String::new(),
                     kind: message_kind,
+                    message_id: message_id.clone(),
+                    runtime_session_id: runtime_session_id.clone(),
                 });
             message.content.push_str(&delta);
-            message.content.clone()
+            message.pending_delta.push_str(&delta);
+            message.pending_chunks += 1;
+            message.pending_delta.len() >= MESSAGE_DELTA_COALESCE_CHARS
+                || message.pending_chunks >= MESSAGE_DELTA_COALESCE_CHUNKS
         };
-        let summary = self.summary();
-        if message_kind == "thinking" {
-            self.emit(
-                AI_THINKING_DELTA_EVENT,
-                &message_delta(
-                    &summary,
-                    MessageId(message_id),
-                    message_kind,
-                    delta,
-                    content,
-                ),
-            );
-        } else {
-            self.emit(
-                AI_MESSAGE_DELTA_EVENT,
-                &message_delta(
-                    &summary,
-                    MessageId(message_id),
-                    message_kind,
-                    delta,
-                    content,
-                ),
-            );
+
+        if should_flush {
+            self.flush_message_delta(runtime_session_id, &message_id);
         }
     }
 
-    fn handle_tool_call(&mut self, tool_call: ToolCall) {
+    fn handle_tool_call(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        tool_call: ToolCall,
+        meta: &Meta,
+    ) {
+        let tool_call_id = NativeToolCallId(tool_call.tool_call_id.to_string());
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
             &NativeAiToolActivityPayload {
-                base: self.event_base(),
+                base: self.event_base_for_runtime_session(runtime_session_id),
                 kind: serde_label(&tool_call.kind),
                 status: serde_label(&tool_call.status),
                 summary: None,
                 title: tool_call.title,
-                tool_call_id: NativeToolCallId(tool_call.tool_call_id.to_string()),
+                tool_call_id: tool_call_id.clone(),
             },
         );
+        self.emit_subagent_breadcrumb(runtime_session_id, tool_call_id, meta);
     }
 
-    fn handle_tool_call_update(&mut self, tool_call_update: ToolCallUpdate) {
+    fn handle_tool_call_update(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        tool_call_update: ToolCallUpdate,
+        meta: &Meta,
+    ) {
+        let tool_call_id = NativeToolCallId(tool_call_update.tool_call_id.to_string());
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
             &NativeAiToolActivityPayload {
-                base: self.event_base(),
+                base: self.event_base_for_runtime_session(runtime_session_id),
                 kind: tool_call_update
                     .fields
                     .kind
@@ -1499,40 +1591,283 @@ impl NotificationContextInner {
                     .fields
                     .title
                     .unwrap_or_else(|| "Tool activity".to_string()),
-                tool_call_id: NativeToolCallId(tool_call_update.tool_call_id.to_string()),
+                tool_call_id: tool_call_id.clone(),
             },
         );
+        self.emit_subagent_breadcrumb(runtime_session_id, tool_call_id, meta);
     }
 
     fn complete_open_messages(&mut self) {
         let messages = std::mem::take(&mut self.open_messages);
-        let summary = self.summary();
-        for (message_id, message) in messages {
+        for (_stream_key, mut message) in messages {
+            self.emit_pending_message_delta(&mut message);
+            let summary = self.summary_for_runtime_session(&message.runtime_session_id);
             if message.kind == "thinking" {
                 self.emit(
                     AI_THINKING_COMPLETED_EVENT,
-                    &message_completed(&summary, MessageId(message_id), message.kind),
+                    &message_completed(&summary, MessageId(message.message_id), message.kind),
                 );
             } else {
                 self.emit(
                     AI_MESSAGE_COMPLETED_EVENT,
-                    &message_completed(&summary, MessageId(message_id), message.kind),
+                    &message_completed(&summary, MessageId(message.message_id), message.kind),
                 );
             }
         }
     }
 
-    fn summary(&self) -> NativeAiSessionSummary {
+    fn handle_session_info_update(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        info: agent_client_protocol::schema::SessionInfoUpdate,
+        meta: &Meta,
+    ) {
+        let title = info.title.into_option();
+        if meta_string(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY).as_deref()
+            == Some(CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE)
+        {
+            self.ensure_subagent_runtime_session(runtime_session_id, meta, title.as_deref());
+            return;
+        }
+
+        if let Some(subagent) = self
+            .subagents_by_runtime_session_id
+            .get_mut(&runtime_session_id.0)
+        {
+            if let Some(title) = title {
+                subagent.title = title;
+                let summary = self.summary_for_runtime_session(runtime_session_id);
+                self.emit(AI_SESSION_UPDATED_EVENT, &session_updated(&summary));
+            }
+            return;
+        }
+
+        if let Some(title) = title {
+            self.session.title = title;
+            let summary = self.summary_for_runtime_session(runtime_session_id);
+            self.emit(AI_SESSION_UPDATED_EVENT, &session_updated(&summary));
+        }
+    }
+
+    fn handle_available_commands_update(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        update: AvailableCommandsUpdate,
+    ) {
+        self.emit(
+            AI_SESSION_CATALOG_UPDATED_EVENT,
+            &NativeAiSessionCatalogUpdatedPayload {
+                base: self.event_base_for_runtime_session(runtime_session_id),
+                available_commands: Some(
+                    update
+                        .available_commands
+                        .into_iter()
+                        .map(available_command_payload)
+                        .collect(),
+                ),
+                config_options: None,
+            },
+        );
+    }
+
+    fn handle_config_option_update(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        update: ConfigOptionUpdate,
+    ) {
+        self.emit(
+            AI_SESSION_CATALOG_UPDATED_EVENT,
+            &NativeAiSessionCatalogUpdatedPayload {
+                base: self.event_base_for_runtime_session(runtime_session_id),
+                available_commands: None,
+                config_options: Some(
+                    update
+                        .config_options
+                        .into_iter()
+                        .map(session_config_option_payload)
+                        .collect(),
+                ),
+            },
+        );
+    }
+
+    fn ensure_subagent_runtime_session(
+        &mut self,
+        notification_runtime_session_id: &RuntimeSessionId,
+        meta: &Meta,
+        fallback_title: Option<&str>,
+    ) -> Option<SubagentRuntimeSession> {
+        let child_runtime_session_id = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY)
+            .map(RuntimeSessionId)
+            .unwrap_or_else(|| notification_runtime_session_id.clone());
+        let parent_runtime_session_id =
+            meta_string(meta, CODEX_ACP_PARENT_SESSION_ID_KEY).map(RuntimeSessionId);
+        let parent_session_id = parent_runtime_session_id
+            .as_ref()
+            .and_then(|runtime_session_id| {
+                self.app_session_id_by_runtime_session_id
+                    .get(&runtime_session_id.0)
+                    .cloned()
+            })
+            .unwrap_or_else(|| self.session.session_id.clone());
+        if parent_session_id != self.session.session_id {
+            return None;
+        }
+
+        let title = meta_string(meta, CODEX_ACP_AGENT_NICKNAME_KEY)
+            .or_else(|| fallback_title.map(ToOwned::to_owned))
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "Subagent".to_string());
+        let session_id = self
+            .app_session_id_by_runtime_session_id
+            .get(&child_runtime_session_id.0)
+            .cloned()
+            .unwrap_or_else(|| {
+                SessionId(format!(
+                    "{}:subagent:{}",
+                    self.session.session_id.0, child_runtime_session_id.0
+                ))
+            });
+        let subagent = SubagentRuntimeSession {
+            parent_session_id,
+            runtime_session_id: child_runtime_session_id.clone(),
+            session_id: session_id.clone(),
+            title,
+        };
+        self.app_session_id_by_runtime_session_id
+            .insert(child_runtime_session_id.0.clone(), session_id.clone());
+        self.subagents_by_runtime_session_id
+            .insert(child_runtime_session_id.0.clone(), subagent.clone());
+        self.emit(
+            AI_SUBAGENT_CREATED_EVENT,
+            &NativeAiSubagentCreatedPayload {
+                base: self.event_base_for_subagent(&subagent),
+                child_runtime_session_id,
+                child_session_id: session_id,
+                parent_runtime_session_id,
+                parent_session_id: subagent.parent_session_id.clone(),
+                title: subagent.title.clone(),
+            },
+        );
+        Some(subagent)
+    }
+
+    fn emit_subagent_breadcrumb(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        tool_call_id: NativeToolCallId,
+        meta: &Meta,
+    ) {
+        if meta_string(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY).as_deref()
+            != Some(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE)
+        {
+            return;
+        }
+
+        let Some(child_runtime_session_id) =
+            meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY).map(RuntimeSessionId)
+        else {
+            return;
+        };
+        let subagent = self
+            .subagents_by_runtime_session_id
+            .get(&child_runtime_session_id.0)
+            .cloned()
+            .or_else(|| self.ensure_subagent_runtime_session(runtime_session_id, meta, None));
+        let Some(subagent) = subagent else {
+            return;
+        };
+
+        self.emit(
+            AI_SUBAGENT_BREADCRUMB_EVENT,
+            &NativeAiSubagentBreadcrumbPayload {
+                base: self.event_base_for_runtime_session(runtime_session_id),
+                child_runtime_session_id,
+                child_session_id: subagent.session_id,
+                tool_call_id,
+            },
+        );
+    }
+
+    fn flush_message_delta(&mut self, runtime_session_id: &RuntimeSessionId, message_id: &str) {
+        let stream_key = stream_message_key(runtime_session_id, message_id);
+        let mut message = match self.open_messages.remove(&stream_key) {
+            Some(message) => message,
+            None => return,
+        };
+        self.emit_pending_message_delta(&mut message);
+        self.open_messages.insert(stream_key, message);
+    }
+
+    fn emit_pending_message_delta(&self, message: &mut StreamedMessage) {
+        if message.pending_delta.is_empty() {
+            return;
+        }
+
+        let summary = self.summary_for_runtime_session(&message.runtime_session_id);
+        let pending_delta = std::mem::take(&mut message.pending_delta);
+        message.pending_chunks = 0;
+        let payload = message_delta(
+            &summary,
+            MessageId(message.message_id.clone()),
+            message.kind,
+            pending_delta,
+            message.content.clone(),
+        );
+        if message.kind == "thinking" {
+            self.emit(AI_THINKING_DELTA_EVENT, &payload);
+        } else {
+            self.emit(AI_MESSAGE_DELTA_EVENT, &payload);
+        }
+    }
+
+    fn summary_for_runtime_session(
+        &self,
+        runtime_session_id: &RuntimeSessionId,
+    ) -> NativeAiSessionSummary {
+        if let Some(subagent) = self
+            .subagents_by_runtime_session_id
+            .get(&runtime_session_id.0)
+        {
+            let mut summary = self.session.summary();
+            summary.session_id = subagent.session_id.clone();
+            summary.runtime_session_id = Some(subagent.runtime_session_id.clone());
+            summary.title = subagent.title.clone();
+            return summary;
+        }
+
         let mut session = self.session.clone();
-        session.runtime_session_id = self.runtime_session_id.clone();
+        session.runtime_session_id = Some(runtime_session_id.clone());
         session.summary()
     }
 
-    fn event_base(&self) -> comando_types::ai::NativeAiEventBase {
+    fn event_base_for_runtime_session(
+        &self,
+        runtime_session_id: &RuntimeSessionId,
+    ) -> comando_types::ai::NativeAiEventBase {
+        if let Some(subagent) = self
+            .subagents_by_runtime_session_id
+            .get(&runtime_session_id.0)
+        {
+            return self.event_base_for_subagent(subagent);
+        }
+
         crate::events::event_base(
             &self.session.session_id,
             &self.session.runtime_id,
-            self.runtime_session_id.clone(),
+            Some(runtime_session_id.clone()),
+            now_iso8601(),
+        )
+    }
+
+    fn event_base_for_subagent(
+        &self,
+        subagent: &SubagentRuntimeSession,
+    ) -> comando_types::ai::NativeAiEventBase {
+        crate::events::event_base(
+            &subagent.session_id,
+            &self.session.runtime_id,
+            Some(subagent.runtime_session_id.clone()),
             now_iso8601(),
         )
     }
@@ -1551,6 +1886,114 @@ impl NotificationContextInner {
 struct StreamedMessage {
     content: String,
     kind: &'static str,
+    message_id: String,
+    pending_chunks: usize,
+    pending_delta: String,
+    runtime_session_id: RuntimeSessionId,
+}
+
+fn stream_message_key(runtime_session_id: &RuntimeSessionId, message_id: &str) -> String {
+    format!("{}\u{1f}{message_id}", runtime_session_id.0)
+}
+
+fn available_command_payload(command: AvailableCommand) -> NativeAiAvailableCommandPayload {
+    NativeAiAvailableCommandPayload {
+        description: command.description,
+        name: command.name,
+    }
+}
+
+fn session_config_option_payload(
+    option: SessionConfigOption,
+) -> NativeAiSessionConfigOptionPayload {
+    let category = option.category.as_ref().map(config_option_category_label);
+    match option.kind {
+        SessionConfigKind::Select(select) => NativeAiSessionConfigOptionPayload {
+            category,
+            current_value: serde_json::Value::String(select.current_value.to_string()),
+            description: option.description,
+            id: option.id.to_string(),
+            name: option.name,
+            option_type: "select".to_string(),
+            options: Some(select_options_payload(select.options)),
+        },
+        #[allow(unreachable_patterns)]
+        SessionConfigKind::Boolean(boolean) => NativeAiSessionConfigOptionPayload {
+            category,
+            current_value: serde_json::Value::Bool(boolean.current_value),
+            description: option.description,
+            id: option.id.to_string(),
+            name: option.name,
+            option_type: "boolean".to_string(),
+            options: None,
+        },
+        _ => NativeAiSessionConfigOptionPayload {
+            category,
+            current_value: serde_json::Value::Null,
+            description: option.description,
+            id: option.id.to_string(),
+            name: option.name,
+            option_type: "select".to_string(),
+            options: Some(Vec::new()),
+        },
+    }
+}
+
+fn select_options_payload(
+    options: SessionConfigSelectOptions,
+) -> Vec<NativeAiSessionConfigSelectEntryPayload> {
+    match options {
+        SessionConfigSelectOptions::Ungrouped(options) => options
+            .into_iter()
+            .map(|option| NativeAiSessionConfigSelectEntryPayload {
+                description: option.description,
+                group_label: None,
+                name: option.name,
+                value: option.value.to_string(),
+            })
+            .collect(),
+        SessionConfigSelectOptions::Grouped(groups) => groups
+            .into_iter()
+            .flat_map(|group| {
+                let group_label = group.name;
+                group.options.into_iter().map(move |option| {
+                    NativeAiSessionConfigSelectEntryPayload {
+                        description: option.description,
+                        group_label: Some(group_label.clone()),
+                        name: option.name,
+                        value: option.value.to_string(),
+                    }
+                })
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn config_option_category_label(category: &SessionConfigOptionCategory) -> String {
+    match category {
+        SessionConfigOptionCategory::Mode => "mode".to_string(),
+        SessionConfigOptionCategory::Model => "model".to_string(),
+        SessionConfigOptionCategory::ThoughtLevel => "thought_level".to_string(),
+        SessionConfigOptionCategory::Other(value) => value.clone(),
+        _ => "other".to_string(),
+    }
+}
+
+fn merged_meta(notification_meta: Option<&Meta>, update_meta: Option<&Meta>) -> Meta {
+    let mut meta = notification_meta.cloned().unwrap_or_default();
+    if let Some(update_meta) = update_meta {
+        meta.extend(update_meta.clone());
+    }
+    meta
+}
+
+fn meta_string(meta: &Meta, key: &str) -> Option<String> {
+    meta.get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn content_block_text(content: &ContentBlock) -> String {
@@ -1586,8 +2029,8 @@ mod tests {
     use super::*;
     use crate::runtime::RuntimeRegistry;
     use comando_types::ai::{
-        NativeAiAuthHandshakeSpec, NativeAiDesiredSelections, NativeAiRuntimeStatus,
-        NativeAiUserInputAnswer,
+        NativeAiAuthHandshakeSpec, NativeAiDesiredSelections, NativeAiPrepareSessionInput,
+        NativeAiRuntimeStatus, NativeAiUserInputAnswer,
     };
 
     fn initialize_response_with_auth(method_id: &str) -> InitializeResponse {
@@ -1650,12 +2093,156 @@ mod tests {
             auth_credential_source: None,
             auth_handshake: None,
             persisted_runtime_session_id: None,
+            persisted_subagent_session_mappings: Vec::new(),
             desired_selections: NativeAiDesiredSelections {
                 model_id: None,
                 mode_id: None,
                 config_options: BTreeMap::new(),
             },
         }
+    }
+
+    fn native_test_session() -> NativeAiSession {
+        NativeAiSession::from_prepare_input(NativeAiPrepareSessionInput {
+            window_id: "window-1".to_string(),
+            session_id: SessionId("session-1".to_string()),
+            runtime_id: RuntimeId("codex".to_string()),
+            project_id: None,
+            worktree_id: None,
+            cwd: "/tmp".to_string(),
+            title: "Parent".to_string(),
+            model_id: None,
+            mode_id: None,
+            config_options: BTreeMap::new(),
+            additional_roots: Vec::new(),
+            launch: None,
+        })
+        .unwrap()
+    }
+
+    fn test_meta(entries: &[(&str, &str)]) -> Meta {
+        let mut meta = Meta::new();
+        for (key, value) in entries {
+            meta.insert(
+                (*key).to_string(),
+                serde_json::Value::String((*value).to_string()),
+            );
+        }
+        meta
+    }
+
+    #[test]
+    fn notification_context_projects_catalog_updates() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+                AvailableCommand::new("plan", "Create a plan"),
+            ])),
+        ));
+        let commands_event = receiver.recv().unwrap();
+        assert_eq!(commands_event.event_name, AI_SESSION_CATALOG_UPDATED_EVENT);
+        assert_eq!(
+            commands_event.payload["availableCommands"][0]["name"],
+            "plan"
+        );
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(vec![
+                SessionConfigOption::select(
+                    "model",
+                    "Model",
+                    "gpt-5",
+                    vec![
+                        agent_client_protocol::schema::SessionConfigSelectOption::new(
+                            "gpt-5", "GPT-5",
+                        )
+                        .description("Fast model"),
+                    ],
+                )
+                .category(SessionConfigOptionCategory::Model),
+            ])),
+        ));
+        let config_event = receiver.recv().unwrap();
+        assert_eq!(config_event.event_name, AI_SESSION_CATALOG_UPDATED_EVENT);
+        assert_eq!(config_event.payload["configOptions"][0]["id"], "model");
+        assert_eq!(
+            config_event.payload["configOptions"][0]["options"][0]["groupLabel"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn notification_context_projects_subagent_sessions_and_breadcrumbs() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let created_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-1"),
+            (CODEX_ACP_AGENT_NICKNAME_KEY, "Galileo"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-1",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .title("Fallback".to_string())
+                        .meta(created_meta.clone()),
+                ),
+            )
+            .meta(created_meta),
+        );
+        let created_event = receiver.recv().unwrap();
+        assert_eq!(created_event.event_name, AI_SUBAGENT_CREATED_EVENT);
+        assert_eq!(
+            created_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-1"
+        );
+        assert_eq!(created_event.payload["parentSessionId"], "session-1");
+        assert_eq!(created_event.payload["title"], "Galileo");
+
+        let breadcrumb_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-1"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCall(
+                    ToolCall::new("codex-acp:subagent:interaction-1", "Contacting subagent")
+                        .meta(breadcrumb_meta.clone()),
+                ),
+            )
+            .meta(breadcrumb_meta),
+        );
+
+        let tool_event = receiver.recv().unwrap();
+        assert_eq!(tool_event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        let breadcrumb_event = receiver.recv().unwrap();
+        assert_eq!(breadcrumb_event.event_name, AI_SUBAGENT_BREADCRUMB_EVENT);
+        assert_eq!(breadcrumb_event.payload["sessionId"], "session-1");
+        assert_eq!(
+            breadcrumb_event.payload["childSessionId"],
+            "session-1:subagent:runtime-child-1"
+        );
+        assert_eq!(
+            breadcrumb_event.payload["toolCallId"],
+            "codex-acp:subagent:interaction-1"
+        );
     }
 
     #[test]

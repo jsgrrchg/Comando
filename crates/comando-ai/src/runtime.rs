@@ -191,7 +191,7 @@ impl RuntimeCapabilitiesPreset {
             plan_updates: true,
             permissions: true,
             user_input: true,
-            subagents: false,
+            subagents: true,
             resume_session: false,
             load_session: true,
             auth_terminal: false,

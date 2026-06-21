@@ -4,6 +4,7 @@ import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 import type { AiSessionSnapshot } from "@shared/ipc";
 
 import {
+    applyNormalizedSessionCatalogToSnapshot,
     applySessionCatalogToSnapshot,
     isPathInsideRoot,
     isSamePath,
@@ -69,6 +70,73 @@ describe("session-core model reconciliation", () => {
                     (option) => option.value === "gpt-5.5",
                 ),
         ).toBe(true);
+    });
+
+    it("derives runtime catalog from normalized native config options", () => {
+        const snapshot = createSnapshot({ sessionId: "session-native" });
+
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(snapshot, {
+            availableCommands: [
+                {
+                    description: "Create a plan",
+                    id: "plan",
+                    insertText: "/plan ",
+                    label: "/plan",
+                },
+            ],
+            configOptions: [
+                {
+                    category: "mode",
+                    description: null,
+                    id: "mode",
+                    label: "Mode",
+                    options: [
+                        {
+                            description: "Implementation mode",
+                            groupLabel: null,
+                            label: "Build",
+                            value: "build",
+                        },
+                    ],
+                    type: "select",
+                    value: "build",
+                },
+                {
+                    category: "model",
+                    description: null,
+                    id: "model",
+                    label: "Model",
+                    options: [
+                        {
+                            description: "Fast model",
+                            groupLabel: "OpenAI",
+                            label: "GPT-5",
+                            value: "gpt-5",
+                        },
+                    ],
+                    type: "select",
+                    value: "gpt-5",
+                },
+            ],
+        });
+
+        expect(nextSnapshot.availableCommands).toHaveLength(1);
+        expect(nextSnapshot.modeId).toBe("build");
+        expect(nextSnapshot.modes).toEqual([
+            {
+                description: "Implementation mode",
+                id: "build",
+                name: "Build",
+            },
+        ]);
+        expect(nextSnapshot.modelId).toBe("gpt-5");
+        expect(nextSnapshot.models).toEqual([
+            {
+                description: "Fast model",
+                id: "gpt-5",
+                name: "GPT-5",
+            },
+        ]);
     });
 });
 

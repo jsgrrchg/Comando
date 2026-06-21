@@ -174,6 +174,9 @@ Native AI streams small semantic events:
 - `ai://session-created`
 - `ai://session-updated`
 - `ai://session-closed`
+- `ai://session-catalog-updated`
+- `ai://subagent-created`
+- `ai://subagent-breadcrumb`
 - `ai://message-started`
 - `ai://message-delta`
 - `ai://message-completed`

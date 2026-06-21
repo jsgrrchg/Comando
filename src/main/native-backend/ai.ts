@@ -12,14 +12,17 @@ import type {
     AiUserInputResponseInput,
 } from "@shared/ipc";
 import {
+    nativeAiCatalogPatchToIpc,
     nativeAiEventToIpc,
     nativeAiRuntimeStatusToIpc,
+    type NativeAiCatalogPatch,
     type NativeAiCancelSessionOutput,
     type NativeAiCloseSessionOutput,
     type NativeAiLaunchSpec,
     type NativeAiRuntimeConnectionPayload,
     type NativeAiRuntimeStatus,
     type NativeAiSendPromptOutput,
+    type NativeAiSessionCatalogUpdatedPayload,
     type NativeAiSessionSummary,
     type NativeBackendEvent,
 } from "@shared/native-backend";
@@ -47,6 +50,12 @@ export interface NativeAiGatewayOptions {
         ownerWindowId: string,
         event: AiSessionDomainEvent,
     ) => void;
+    readonly onSessionCatalogPatch?: (
+        ownerWindowId: string,
+        sessionId: string,
+        patch: NativeAiCatalogPatch,
+        updatedAt: string,
+    ) => void;
 }
 
 const DEFAULT_NATIVE_AI_RUNTIME_IDS = new Set<AiRuntimeId>([
@@ -67,9 +76,16 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         ownerWindowId: string,
         event: AiSessionDomainEvent,
     ) => void;
+    readonly #onSessionCatalogPatch?: (
+        ownerWindowId: string,
+        sessionId: string,
+        patch: NativeAiCatalogPatch,
+        updatedAt: string,
+    ) => void;
     readonly #runtimeSessionIds = new Map<string, string | null>();
     readonly #sessionOwners = new Map<string, string>();
     readonly #sessionRuntimeIds = new Map<string, AiRuntimeId>();
+    readonly #subagentParentSessionIds = new Map<string, string>();
 
     constructor(options: NativeAiGatewayOptions) {
         this.#client = options.client;
@@ -79,6 +95,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         this.#onDiagnostic = options.onDiagnostic;
         this.#onRuntimeStatus = options.onRuntimeStatus;
         this.#onSessionEvent = options.onSessionEvent;
+        this.#onSessionCatalogPatch = options.onSessionCatalogPatch;
         this.#disposeEventListener = this.#client.onEvent((event) => {
             this.#handleNativeEvent(event);
         });
@@ -157,13 +174,28 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     async cancelSession(sessionId: string): Promise<void> {
+        if (!this.#sessionOwners.has(sessionId)) {
+            return;
+        }
+
+        const backendSessionId =
+            this.#subagentParentSessionIds.get(sessionId) ?? sessionId;
         await this.#client.request<NativeAiCancelSessionOutput>(
             "ai_cancel_session",
-            { sessionId },
+            { sessionId: backendSessionId },
         );
     }
 
     async closeSession(sessionId: string): Promise<void> {
+        if (!this.#sessionOwners.has(sessionId)) {
+            return;
+        }
+
+        if (this.#subagentParentSessionIds.has(sessionId)) {
+            this.#forgetSession(sessionId);
+            return;
+        }
+
         try {
             await this.#client.request<NativeAiCloseSessionOutput>(
                 "ai_close_session",
@@ -286,8 +318,34 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 return;
             }
 
-            const ownerWindowId = this.#sessionOwners.get(sessionId);
+            let ownerWindowId = this.#sessionOwners.get(sessionId);
+            if (!ownerWindowId && event.eventName === "ai://subagent-created") {
+                const parentSessionId = getPayloadString(
+                    event.payload,
+                    "parentSessionId",
+                );
+                ownerWindowId = parentSessionId
+                    ? this.#sessionOwners.get(parentSessionId)
+                    : undefined;
+                if (ownerWindowId) {
+                    this.#sessionOwners.set(sessionId, ownerWindowId);
+                }
+            }
             if (!ownerWindowId) {
+                return;
+            }
+
+            if (event.eventName === "ai://session-catalog-updated") {
+                const payload = requireRecord(
+                    event.payload,
+                    "Native AI catalog update",
+                ) as unknown as NativeAiSessionCatalogUpdatedPayload;
+                this.#onSessionCatalogPatch?.(
+                    ownerWindowId,
+                    payload.sessionId,
+                    nativeAiCatalogPatchToIpc(payload),
+                    payload.updatedAt,
+                );
                 return;
             }
 
@@ -297,6 +355,21 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             }
 
             this.#rememberRuntimeSession(converted);
+            if (converted.kind === "subagent-created") {
+                this.#sessionOwners.set(converted.childSessionId, ownerWindowId);
+                this.#sessionRuntimeIds.set(
+                    converted.childSessionId,
+                    converted.runtimeId,
+                );
+                this.#runtimeSessionIds.set(
+                    converted.childSessionId,
+                    converted.runtimeSessionId,
+                );
+                this.#subagentParentSessionIds.set(
+                    converted.childSessionId,
+                    converted.parentSessionId,
+                );
+            }
             this.#onSessionEvent(ownerWindowId, converted);
         } catch (error) {
             this.#reportDiagnostic(
@@ -401,6 +474,13 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     #forgetSession(sessionId: string): void {
+        const childSessionIds = [...this.#subagentParentSessionIds.entries()]
+            .filter(([, parentSessionId]) => parentSessionId === sessionId)
+            .map(([childSessionId]) => childSessionId);
+        for (const childSessionId of childSessionIds) {
+            this.#forgetSession(childSessionId);
+        }
+        this.#subagentParentSessionIds.delete(sessionId);
         this.#runtimeSessionIds.delete(sessionId);
         this.#sessionOwners.delete(sessionId);
         this.#sessionRuntimeIds.delete(sessionId);
@@ -520,6 +600,8 @@ function nativeLaunchSpecFromRuntime(
         ownerWindowId: launch.ownerWindowId,
         persistedRuntimeSessionId:
             launch.persistedSnapshot.runtimeSessionId ?? null,
+        persistedSubagentSessionMappings:
+            launch.persistedSubagentSessionMappings ?? [],
         projectId: launch.input.projectId,
         projectRoot: launch.projectRoot,
         runtimeId: launch.input.runtimeId,
@@ -578,6 +660,12 @@ function getPayloadSessionId(payload: unknown): string | null {
     return typeof sessionId === "string" && sessionId.trim()
         ? sessionId
         : null;
+}
+
+function getPayloadString(payload: unknown, key: string): string | null {
+    const record = requireRecord(payload, "Native AI event payload");
+    const value = record[key];
+    return typeof value === "string" && value.trim() ? value : null;
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {

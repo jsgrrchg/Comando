@@ -118,6 +118,7 @@ describe("NativeAiGateway", () => {
             executable: "opencode",
             ownerWindowId: "window-1",
             persistedRuntimeSessionId: null,
+            persistedSubagentSessionMappings: [],
             projectId: "project-1",
             projectRoot: "/workspace/project",
             runtimeId: "opencode",
@@ -158,6 +159,154 @@ describe("NativeAiGateway", () => {
                 sessionId: "session-1",
             }),
         );
+    });
+
+    it("projects native catalog updates through the owning window", async () => {
+        const client = createClient();
+        const onSessionCatalogPatch = vi.fn();
+        const gateway = createGateway(client, { onSessionCatalogPatch });
+
+        await gateway.prepareSession({
+            input: createPrepareInput(),
+            launch: createLaunch(),
+        });
+        client.emit({
+            eventName: "ai://session-catalog-updated",
+            payload: {
+                availableCommands: [
+                    {
+                        description: "Create a plan",
+                        name: "plan",
+                    },
+                ],
+                configOptions: [
+                    {
+                        category: "mode",
+                        currentValue: "build",
+                        description: null,
+                        id: "mode",
+                        name: "Mode",
+                        options: [
+                            {
+                                description: "Implementation mode",
+                                groupLabel: null,
+                                name: "Build",
+                                value: "build",
+                            },
+                        ],
+                        type: "select",
+                    },
+                ],
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-session-1",
+                sessionId: "session-1",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            },
+            type: "event",
+        });
+
+        expect(onSessionCatalogPatch).toHaveBeenCalledWith(
+            "window-1",
+            "session-1",
+            {
+                availableCommands: [
+                    {
+                        description: "Create a plan",
+                        id: "plan",
+                        insertText: "/plan ",
+                        label: "/plan",
+                    },
+                ],
+                configOptions: [
+                    {
+                        category: "mode",
+                        description: null,
+                        id: "mode",
+                        label: "Mode",
+                        options: [
+                            {
+                                description: "Implementation mode",
+                                groupLabel: null,
+                                label: "Build",
+                                value: "build",
+                            },
+                        ],
+                        type: "select",
+                        value: "build",
+                    },
+                ],
+            },
+            "2026-06-20T00:00:01.000Z",
+        );
+    });
+
+    it("routes native subagent events by parent ownership and remembers the child", async () => {
+        const client = createClient();
+        const onSessionEvent = vi.fn();
+        const gateway = createGateway(client, { onSessionEvent });
+
+        await gateway.prepareSession({
+            input: createPrepareInput(),
+            launch: createLaunch(),
+        });
+        client.emit({
+            eventName: "ai://subagent-created",
+            payload: {
+                childRuntimeSessionId: "runtime-child-1",
+                childSessionId: "session-1:subagent:runtime-child-1",
+                parentRuntimeSessionId: "runtime-session-1",
+                parentSessionId: "session-1",
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-child-1",
+                sessionId: "session-1:subagent:runtime-child-1",
+                title: "Galileo",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            },
+            type: "event",
+        });
+        client.emit({
+            eventName: "ai://message-delta",
+            payload: {
+                content: "Child output",
+                delta: "Child output",
+                messageId: "assistant-child-1",
+                messageKind: "assistant",
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-child-1",
+                sessionId: "session-1:subagent:runtime-child-1",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            },
+            type: "event",
+        });
+
+        expect(onSessionEvent).toHaveBeenCalledWith(
+            "window-1",
+            expect.objectContaining({
+                childSessionId: "session-1:subagent:runtime-child-1",
+                kind: "subagent-created",
+                parentSessionId: "session-1",
+                sessionId: "session-1:subagent:runtime-child-1",
+                title: "Galileo",
+            }),
+        );
+        expect(onSessionEvent).toHaveBeenCalledWith(
+            "window-1",
+            expect.objectContaining({
+                content: "Child output",
+                kind: "message-delta",
+                sessionId: "session-1:subagent:runtime-child-1",
+            }),
+        );
+
+        client.request.mockClear();
+        await gateway.cancelSession("session-1:subagent:runtime-child-1");
+        expect(client.request).toHaveBeenCalledWith("ai_cancel_session", {
+            sessionId: "session-1",
+        });
+
+        client.request.mockClear();
+        await gateway.closeSession("session-1:subagent:runtime-child-1");
+        expect(client.request).not.toHaveBeenCalled();
     });
 
     it("reports runtime connection events as diagnostics", () => {
@@ -241,7 +390,10 @@ function createGateway(
     options: Partial<
         Pick<
             NativeAiGatewayOptions,
-            "onDiagnostic" | "onRuntimeStatus" | "onSessionEvent"
+            | "onDiagnostic"
+            | "onRuntimeStatus"
+            | "onSessionCatalogPatch"
+            | "onSessionEvent"
         >
     > = {},
 ) {
@@ -250,6 +402,7 @@ function createGateway(
         env: { [NATIVE_AI_ENABLED_ENV]: "1" },
         onDiagnostic: options.onDiagnostic,
         onRuntimeStatus: options.onRuntimeStatus ?? vi.fn(),
+        onSessionCatalogPatch: options.onSessionCatalogPatch,
         onSessionEvent: options.onSessionEvent ?? vi.fn(),
     });
 }

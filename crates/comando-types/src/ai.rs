@@ -136,7 +136,18 @@ pub struct NativeAiLaunchSpec {
     pub auth_credential_source: Option<String>,
     pub auth_handshake: Option<NativeAiAuthHandshakeSpec>,
     pub persisted_runtime_session_id: Option<RuntimeSessionId>,
+    #[serde(default)]
+    pub persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
     pub desired_selections: NativeAiDesiredSelections,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiRuntimeSessionMapping {
+    pub app_session_id: SessionId,
+    pub parent_app_session_id: Option<SessionId>,
+    pub parent_runtime_session_id: Option<RuntimeSessionId>,
+    pub runtime_session_id: RuntimeSessionId,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -312,6 +323,66 @@ pub struct NativeAiSessionUpdatedPayload {
     pub status: NativeAiSessionStatus,
     pub title: Option<String>,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSubagentCreatedPayload {
+    #[serde(flatten)]
+    pub base: NativeAiEventBase,
+    pub child_session_id: SessionId,
+    pub child_runtime_session_id: RuntimeSessionId,
+    pub parent_session_id: SessionId,
+    pub parent_runtime_session_id: Option<RuntimeSessionId>,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSubagentBreadcrumbPayload {
+    #[serde(flatten)]
+    pub base: NativeAiEventBase,
+    pub child_session_id: SessionId,
+    pub child_runtime_session_id: RuntimeSessionId,
+    pub tool_call_id: ToolCallId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSessionCatalogUpdatedPayload {
+    #[serde(flatten)]
+    pub base: NativeAiEventBase,
+    pub available_commands: Option<Vec<NativeAiAvailableCommandPayload>>,
+    pub config_options: Option<Vec<NativeAiSessionConfigOptionPayload>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiAvailableCommandPayload {
+    pub description: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSessionConfigOptionPayload {
+    pub category: Option<String>,
+    pub description: Option<String>,
+    pub id: String,
+    pub name: String,
+    pub current_value: serde_json::Value,
+    pub options: Option<Vec<NativeAiSessionConfigSelectEntryPayload>>,
+    #[serde(rename = "type")]
+    pub option_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSessionConfigSelectEntryPayload {
+    pub description: Option<String>,
+    pub group_label: Option<String>,
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -1,8 +1,10 @@
 import type {
+    AiAvailableCommand,
     AiRuntimeId,
     AiRuntimeStatus,
     AiRuntimeSource,
     AiRuntimeState,
+    AiSessionConfigOption,
     AiSessionStatus,
     AiSessionDomainEvent,
     AiSessionMessageEventKind,
@@ -28,9 +30,12 @@ import type {
     NativeAiPermissionRequestPayload,
     NativeAiPlanUpdatedPayload,
     NativeAiRuntimeStatus,
+    NativeAiSessionCatalogUpdatedPayload,
     NativeAiSessionCreatedPayload,
     NativeAiSessionUpdatedPayload,
     NativeAiStatusEventPayload,
+    NativeAiSubagentBreadcrumbPayload,
+    NativeAiSubagentCreatedPayload,
     NativeAiThinkingCompletedPayload,
     NativeAiThinkingDeltaPayload,
     NativeAiThinkingStartedPayload,
@@ -85,6 +90,18 @@ export function nativeAiEventToIpc(
     if (event.eventName === "ai://session-updated") {
         return nativeAiSessionUpdatedToIpc(
             requireRecord(event.payload) as unknown as NativeAiSessionUpdatedPayload,
+        );
+    }
+
+    if (event.eventName === "ai://subagent-created") {
+        return nativeAiSubagentCreatedToIpc(
+            requireRecord(event.payload) as unknown as NativeAiSubagentCreatedPayload,
+        );
+    }
+
+    if (event.eventName === "ai://subagent-breadcrumb") {
+        return nativeAiSubagentBreadcrumbToIpc(
+            requireRecord(event.payload) as unknown as NativeAiSubagentBreadcrumbPayload,
         );
     }
 
@@ -167,6 +184,61 @@ export function nativeAiEventToIpc(
     }
 
     return null;
+}
+
+export type NativeAiCatalogPatch = {
+    readonly availableCommands?: readonly AiAvailableCommand[];
+    readonly configOptions?: readonly AiSessionConfigOption[];
+};
+
+export function nativeAiCatalogPatchToIpc(
+    payload: NativeAiSessionCatalogUpdatedPayload,
+): NativeAiCatalogPatch {
+    return {
+        ...(payload.availableCommands
+            ? {
+                  availableCommands: payload.availableCommands.map((command) => ({
+                      description: command.description,
+                      id: command.name,
+                      insertText: `/${command.name} `,
+                      label: `/${command.name}`,
+                  })),
+              }
+            : {}),
+        ...(payload.configOptions
+            ? {
+                  configOptions: payload.configOptions.map((option) =>
+                      option.type === "boolean"
+                          ? {
+                                category: mapNativeConfigOptionCategory(
+                                    option.category,
+                                ),
+                                description: option.description,
+                                id: option.id,
+                                label: option.name,
+                                type: "boolean" as const,
+                                value: option.currentValue,
+                            }
+                          : {
+                                category: mapNativeConfigOptionCategory(
+                                    option.category,
+                                ),
+                                description: option.description,
+                                id: option.id,
+                                label: option.name,
+                                options: option.options.map((entry) => ({
+                                    description: entry.description,
+                                    groupLabel: entry.groupLabel,
+                                    label: entry.name,
+                                    value: entry.value,
+                                })),
+                                type: "select" as const,
+                                value: option.currentValue,
+                            },
+                  ),
+              }
+            : {}),
+    };
 }
 
 export function nativeProjectSummaryToIpc(
@@ -335,6 +407,29 @@ function nativeAiSessionUpdatedToIpc(
         sessionId: payload.sessionId,
         status: nativeAiSessionStatusToIpc(payload.status),
         updatedAt: payload.updatedAt,
+    };
+}
+
+function nativeAiSubagentCreatedToIpc(
+    payload: NativeAiSubagentCreatedPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        childSessionId: payload.childSessionId,
+        kind: "subagent-created",
+        parentSessionId: payload.parentSessionId,
+        title: payload.title,
+    };
+}
+
+function nativeAiSubagentBreadcrumbToIpc(
+    payload: NativeAiSubagentBreadcrumbPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        childSessionId: payload.childSessionId,
+        kind: "subagent-breadcrumb",
+        toolCallId: payload.toolCallId,
     };
 }
 
@@ -587,6 +682,18 @@ function nativeAiEventBase(
         sessionId: payload.sessionId,
         updatedAt: payload.updatedAt,
     };
+}
+
+function mapNativeConfigOptionCategory(
+    category: string | null | undefined,
+): AiSessionConfigOption["category"] {
+    if (category === "mode" || category === "model") {
+        return category;
+    }
+    if (category === "thought_level" || category === "effort") {
+        return "reasoning";
+    }
+    return "other";
 }
 
 function nativeAiSessionStatusToIpc(status: string): AiSessionStatus {

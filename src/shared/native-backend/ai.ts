@@ -93,6 +93,13 @@ export type NativeAiDesiredSelections = {
     readonly configOptions: Readonly<Record<string, unknown>>;
 };
 
+export type NativeAiRuntimeSessionMapping = {
+    readonly appSessionId: NativeSessionId;
+    readonly parentAppSessionId: NativeSessionId | null;
+    readonly parentRuntimeSessionId: NativeRuntimeSessionId | null;
+    readonly runtimeSessionId: NativeRuntimeSessionId;
+};
+
 export type NativeAiLaunchSpec = {
     readonly runtimeId: NativeAiRuntimeId;
     readonly ownerWindowId: string;
@@ -110,6 +117,7 @@ export type NativeAiLaunchSpec = {
     readonly authCredentialSource: string | null;
     readonly authHandshake: NativeAiAuthHandshakeSpec | null;
     readonly persistedRuntimeSessionId: NativeRuntimeSessionId | null;
+    readonly persistedSubagentSessionMappings: readonly NativeAiRuntimeSessionMapping[];
     readonly desiredSelections: NativeAiDesiredSelections;
 };
 
@@ -235,6 +243,57 @@ export type NativeAiSessionUpdatedPayload = {
     readonly status: NativeAiSessionStatus;
     readonly title: string | null;
     readonly updatedAt: string;
+};
+
+export type NativeAiSubagentCreatedPayload = NativeAiEventBase & {
+    readonly childSessionId: NativeSessionId;
+    readonly childRuntimeSessionId: NativeRuntimeSessionId;
+    readonly parentSessionId: NativeSessionId;
+    readonly parentRuntimeSessionId: NativeRuntimeSessionId | null;
+    readonly title: string;
+};
+
+export type NativeAiSubagentBreadcrumbPayload = NativeAiEventBase & {
+    readonly childSessionId: NativeSessionId;
+    readonly childRuntimeSessionId: NativeRuntimeSessionId;
+    readonly toolCallId: NativeToolCallId;
+};
+
+export type NativeAiSessionCatalogUpdatedPayload = NativeAiEventBase & {
+    readonly availableCommands: readonly NativeAiAvailableCommandPayload[] | null;
+    readonly configOptions: readonly NativeAiSessionConfigOptionPayload[] | null;
+};
+
+export type NativeAiAvailableCommandPayload = {
+    readonly description: string;
+    readonly name: string;
+};
+
+export type NativeAiSessionConfigOptionPayload =
+    | {
+          readonly category: string | null;
+          readonly currentValue: boolean;
+          readonly description: string | null;
+          readonly id: string;
+          readonly name: string;
+          readonly options: null;
+          readonly type: "boolean";
+      }
+    | {
+          readonly category: string | null;
+          readonly currentValue: string;
+          readonly description: string | null;
+          readonly id: string;
+          readonly name: string;
+          readonly options: readonly NativeAiSessionConfigSelectEntryPayload[];
+          readonly type: "select";
+      };
+
+export type NativeAiSessionConfigSelectEntryPayload = {
+    readonly description: string | null;
+    readonly groupLabel: string | null;
+    readonly name: string;
+    readonly value: string;
 };
 
 export type NativeAiSessionClosedPayload = {

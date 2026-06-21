@@ -83,6 +83,7 @@ import {
     type SessionDescriptor,
 } from "./contracts";
 import {
+    applyNormalizedSessionCatalogToSnapshot,
     buildAiSessionUpdate,
     getModeConfigOption,
     getModelConfigOption,
@@ -96,6 +97,7 @@ import {
     setModeOnSnapshot,
     setModelOnSnapshot,
     setTitleOnSnapshot,
+    type NormalizedSessionCatalogPayload,
 } from "./session-core";
 import {
     diffToAiFileDiff,
@@ -625,7 +627,68 @@ export class AiService {
             }
         }
 
+        if (!previousSnapshot && event.kind === "subagent-created") {
+            const parentSnapshot = this.#liveSnapshots.get(event.parentSessionId);
+            if (parentSnapshot) {
+                const childSnapshot: AiSessionSnapshot = {
+                    ...parentSnapshot,
+                    activeTurnStartedAt: null,
+                    closedAt: null,
+                    lastError: null,
+                    messages: [],
+                    parentSessionId: event.parentSessionId,
+                    pendingPermission: null,
+                    pendingUserInput: null,
+                    plan: null,
+                    runtimeSessionId: event.runtimeSessionId,
+                    sessionId: event.childSessionId,
+                    status: "idle",
+                    title: event.title,
+                    tokenUsage: null,
+                    toolActivity: [],
+                    trackedFiles: [],
+                    updatedAt: event.updatedAt,
+                };
+                this.#cacheLiveSessionSnapshot(childSnapshot, ownerWindowId);
+                this.#persistence.saveSessionSnapshot(childSnapshot);
+                this.#onSessionSnapshot(ownerWindowId, {
+                    kind: "snapshot",
+                    snapshot: childSnapshot,
+                });
+            }
+        }
+
         this.#onSessionEvent(ownerWindowId, event);
+    }
+
+    handleNativeSessionCatalogPatch(
+        ownerWindowId: string,
+        sessionId: string,
+        patch: NormalizedSessionCatalogPayload,
+        updatedAt: string,
+    ): void {
+        if (this.#deletedSessionIds.has(sessionId)) {
+            return;
+        }
+
+        const previousSnapshot = this.#liveSnapshots.get(sessionId);
+        if (!previousSnapshot) {
+            return;
+        }
+
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(
+            {
+                ...previousSnapshot,
+                updatedAt,
+            },
+            patch,
+        );
+        this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+        this.#persistence.saveSessionSnapshot(nextSnapshot);
+        this.#onSessionSnapshot(
+            ownerWindowId,
+            buildAiSessionUpdate(previousSnapshot, nextSnapshot),
+        );
     }
 
     async handleWorkerRestarted(): Promise<void> {
@@ -2275,6 +2338,23 @@ export class AiService {
             return {
                 ...base,
                 tokenUsage: event.tokenUsage,
+            };
+        }
+
+        if (event.kind === "subagent-breadcrumb") {
+            return {
+                ...base,
+                toolActivity: snapshot.toolActivity.map((activity) =>
+                    activity.id === event.toolCallId
+                        ? {
+                              ...activity,
+                              action: {
+                                  kind: "open_session",
+                                  sessionId: event.childSessionId,
+                              },
+                          }
+                        : activity,
+                ),
             };
         }
 
