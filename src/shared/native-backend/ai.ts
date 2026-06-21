@@ -143,6 +143,8 @@ export type NativeAiPromptInput = {
 
 export type NativeAiSendPromptInput = {
     readonly sessionId: NativeSessionId;
+    readonly targetSessionId: NativeSessionId | null;
+    readonly runtimeSessionId: NativeRuntimeSessionId | null;
     readonly messageId: NativeMessageId;
     readonly prompt: NativeAiPromptInput;
 };
@@ -154,6 +156,8 @@ export type NativeAiSendPromptOutput = {
 
 export type NativeAiSessionIdInput = {
     readonly sessionId: NativeSessionId;
+    readonly targetSessionId: NativeSessionId | null;
+    readonly runtimeSessionId: NativeRuntimeSessionId | null;
 };
 
 export type NativeAiCancelSessionOutput = {
@@ -168,6 +172,7 @@ export type NativeAiCloseSessionOutput = {
 
 export type NativeAiPermissionResponseInput = {
     readonly sessionId: NativeSessionId;
+    readonly targetSessionId: NativeSessionId | null;
     readonly requestId: string;
     readonly optionId: string | null;
 };
@@ -179,22 +184,26 @@ export type NativeAiUserInputAnswer = {
 
 export type NativeAiUserInputResponseInput = {
     readonly sessionId: NativeSessionId;
+    readonly targetSessionId: NativeSessionId | null;
     readonly requestId: string;
     readonly answers: readonly NativeAiUserInputAnswer[];
 };
 
 export type NativeAiSetSessionModeInput = {
     readonly sessionId: NativeSessionId;
+    readonly runtimeSessionId: NativeRuntimeSessionId | null;
     readonly modeId: string;
 };
 
 export type NativeAiSetSessionModelInput = {
     readonly sessionId: NativeSessionId;
+    readonly runtimeSessionId: NativeRuntimeSessionId | null;
     readonly modelId: string;
 };
 
 export type NativeAiSetSessionConfigOptionInput = {
     readonly sessionId: NativeSessionId;
+    readonly runtimeSessionId: NativeRuntimeSessionId | null;
     readonly optionId: string;
     readonly value: unknown;
 };

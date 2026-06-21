@@ -1,0 +1,50 @@
+{
+  "type": "event",
+  "eventName": "ai://session-catalog-updated",
+  "payload": {
+    "sessionId": "session_1",
+    "runtimeId": "codex",
+    "runtimeSessionId": "runtime_session_1",
+    "updatedAt": "2026-06-20T00:00:00.300Z",
+    "availableCommands": [
+      {
+        "name": "review",
+        "description": "Review the current changes."
+      }
+    ],
+    "configOptions": [
+      {
+        "id": "model",
+        "name": "Model",
+        "category": "model",
+        "type": "select",
+        "currentValue": "gpt-5",
+        "description": "Model used for the session.",
+        "options": [
+          {
+            "name": "GPT-5",
+            "value": "gpt-5",
+            "description": "Balanced reasoning model.",
+            "groupLabel": "Recommended"
+          }
+        ]
+      },
+      {
+        "id": "autoApply",
+        "name": "Auto apply",
+        "category": "behavior",
+        "type": "boolean",
+        "currentValue": false,
+        "description": "Apply accepted changes automatically.",
+        "options": null
+      }
+    ]
+  },
+  "meta": {
+    "protocolVersion": 1,
+    "emittedAt": "2026-06-20T00:00:00.300Z",
+    "projectId": "project_1",
+    "worktreeId": "worktree_1",
+    "windowId": "window_main"
+  }
+}

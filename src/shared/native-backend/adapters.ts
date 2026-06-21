@@ -416,8 +416,11 @@ function nativeAiSubagentCreatedToIpc(
     return {
         ...nativeAiEventBase(payload),
         childSessionId: payload.childSessionId,
+        childRuntimeSessionId: payload.childRuntimeSessionId,
         kind: "subagent-created",
         parentSessionId: payload.parentSessionId,
+        runtimeSessionId: payload.childRuntimeSessionId,
+        sessionId: payload.childSessionId,
         title: payload.title,
     };
 }

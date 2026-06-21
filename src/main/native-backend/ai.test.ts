@@ -301,7 +301,29 @@ describe("NativeAiGateway", () => {
         client.request.mockClear();
         await gateway.cancelSession("session-1:subagent:runtime-child-1");
         expect(client.request).toHaveBeenCalledWith("ai_cancel_session", {
+            runtimeSessionId: "runtime-child-1",
             sessionId: "session-1",
+            targetSessionId: "session-1:subagent:runtime-child-1",
+        });
+
+        client.request.mockClear();
+        await gateway.sendPrompt({
+            input: {
+                ...createPromptInput(),
+                messageId: "user-message-child-1",
+                sessionId: "session-1:subagent:runtime-child-1",
+            },
+            launch: createLaunch(),
+        });
+        expect(client.request).toHaveBeenCalledWith("ai_send_prompt", {
+            messageId: "user-message-child-1",
+            prompt: {
+                attachments: [],
+                text: "Implement the feature.",
+            },
+            runtimeSessionId: "runtime-child-1",
+            sessionId: "session-1",
+            targetSessionId: "session-1:subagent:runtime-child-1",
         });
 
         client.request.mockClear();
@@ -364,7 +386,9 @@ describe("NativeAiGateway", () => {
                 attachments: [],
                 text: "Implement the feature.",
             },
+            runtimeSessionId: null,
             sessionId: "session-1",
+            targetSessionId: null,
         });
     });
 

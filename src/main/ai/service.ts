@@ -445,6 +445,7 @@ export class AiService {
         }
     >();
     #nativeAi: NativeAiGateway | null;
+    readonly #nativeChildParentSessionIds = new Map<string, string>();
     readonly #nativeReviewBaselines = new Map<string, NativeReviewBaseline>();
     readonly #nativeReviewReconciliations = new Set<string>();
     readonly #nativeSessionIds = new Set<string>();
@@ -640,7 +641,8 @@ export class AiService {
                     pendingPermission: null,
                     pendingUserInput: null,
                     plan: null,
-                    runtimeSessionId: event.runtimeSessionId,
+                    runtimeSessionId:
+                        event.childRuntimeSessionId ?? event.runtimeSessionId,
                     sessionId: event.childSessionId,
                     status: "idle",
                     title: event.title,
@@ -650,6 +652,11 @@ export class AiService {
                     updatedAt: event.updatedAt,
                 };
                 this.#cacheLiveSessionSnapshot(childSnapshot, ownerWindowId);
+                this.#nativeSessionIds.add(event.childSessionId);
+                this.#nativeChildParentSessionIds.set(
+                    event.childSessionId,
+                    event.parentSessionId,
+                );
                 this.#persistence.saveSessionSnapshot(childSnapshot);
                 this.#onSessionSnapshot(ownerWindowId, {
                     kind: "snapshot",
@@ -1895,6 +1902,13 @@ export class AiService {
     }
 
     #clearLiveSession(sessionId: string): void {
+        const childSessionIds = [...this.#nativeChildParentSessionIds.entries()]
+            .filter(([, parentSessionId]) => parentSessionId === sessionId)
+            .map(([childSessionId]) => childSessionId);
+        for (const childSessionId of childSessionIds) {
+            this.#clearLiveSession(childSessionId);
+        }
+        this.#nativeChildParentSessionIds.delete(sessionId);
         this.#liveSnapshots.delete(sessionId);
         this.#liveSessionContexts.delete(sessionId);
         this.#liveSessionTouches.delete(sessionId);

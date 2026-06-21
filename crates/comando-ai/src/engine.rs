@@ -8,6 +8,7 @@ use comando_types::ai::{
     NativeAiSetSessionConfigOptionInput, NativeAiSetSessionModeInput, NativeAiSetSessionModelInput,
     NativeAiUserInputResponseInput,
 };
+use comando_types::ids::RuntimeSessionId;
 
 use crate::acp::{AcpProcessSpec, NativeAiConfigValue, start_acp_session};
 use crate::commands::{
@@ -139,11 +140,16 @@ impl AiEngine {
             ));
         }
 
+        let root_session_id = input.session_id.clone();
+        let target_session_id = input
+            .target_session_id
+            .clone()
+            .unwrap_or_else(|| root_session_id.clone());
         let mut sessions = self.lock_sessions()?;
-        let session = sessions.get_mut(&input.session_id)?;
+        let session = sessions.get_mut(&root_session_id)?;
         if session.prompt_in_flight || session.session.status == NativeAiSessionStatus::Streaming {
             return Err(AiError::SessionBusy {
-                session_id: input.session_id.0,
+                session_id: target_session_id.0,
             });
         }
         let Some(controller) = session.acp_controller.clone() else {
@@ -155,36 +161,64 @@ impl AiEngine {
         session.prompt_in_flight = true;
         session.active_message_id = Some(input.message_id.0.clone());
         session.set_status(NativeAiSessionStatus::Streaming);
-        if let Err(error) =
-            controller.send_prompt(input.message_id.clone(), input.prompt.text.clone())
-        {
+        let runtime_session_id = input
+            .runtime_session_id
+            .clone()
+            .or_else(|| session.session.runtime_session_id.clone())
+            .ok_or_else(|| {
+                AiError::Unsupported("Native prompts require an ACP runtime session.".to_string())
+            })?;
+        if let Err(error) = controller.send_prompt(
+            runtime_session_id.clone(),
+            target_session_id.clone(),
+            input.message_id.clone(),
+            input.prompt.text.clone(),
+        ) {
             session.prompt_in_flight = false;
             session.active_message_id = None;
             session.set_status(NativeAiSessionStatus::Error);
             return Err(error);
         }
-        let summary = session.session.summary();
-        Ok((send_prompt_output(input.session_id), summary))
+        let mut summary = session.session.summary();
+        if target_session_id != root_session_id {
+            summary.session_id = target_session_id.clone();
+            summary.runtime_session_id = Some(runtime_session_id);
+            summary.status = NativeAiSessionStatus::Streaming;
+        }
+        Ok((send_prompt_output(target_session_id), summary))
     }
 
     pub fn cancel_session(
         &self,
         input: NativeAiSessionIdInput,
     ) -> AiResult<(NativeAiCancelSessionOutput, NativeAiSessionSummary)> {
+        let root_session_id = input.session_id.clone();
+        let target_session_id = input
+            .target_session_id
+            .clone()
+            .unwrap_or_else(|| root_session_id.clone());
         let mut sessions = self.lock_sessions()?;
-        let session = sessions.get_mut(&input.session_id)?;
+        let session = sessions.get_mut(&root_session_id)?;
         session.prompt_in_flight = false;
         session.active_message_id = None;
         if let (Some(controller), Some(runtime_session_id)) = (
             session.acp_controller.clone(),
-            session.session.runtime_session_id.clone(),
+            input
+                .runtime_session_id
+                .clone()
+                .or_else(|| session.session.runtime_session_id.clone()),
         ) {
             controller.cancel_pending_requests();
             controller.cancel(runtime_session_id)?;
         }
         session.set_status(NativeAiSessionStatus::Idle);
-        let summary = session.session.summary();
-        Ok((cancel_session_output(input.session_id), summary))
+        let mut summary = session.session.summary();
+        if target_session_id != root_session_id {
+            summary.session_id = target_session_id.clone();
+            summary.runtime_session_id = input.runtime_session_id;
+            summary.status = NativeAiSessionStatus::Idle;
+        }
+        Ok((cancel_session_output(target_session_id), summary))
     }
 
     pub fn close_session(
@@ -206,6 +240,7 @@ impl AiEngine {
     pub fn set_session_mode(&self, input: NativeAiSetSessionModeInput) -> AiResult<()> {
         self.set_session_config_value(
             &input.session_id,
+            input.runtime_session_id,
             "mode".to_string(),
             NativeAiConfigValue::ValueId(input.mode_id),
         )
@@ -214,6 +249,7 @@ impl AiEngine {
     pub fn set_session_model(&self, input: NativeAiSetSessionModelInput) -> AiResult<()> {
         self.set_session_config_value(
             &input.session_id,
+            input.runtime_session_id,
             "model".to_string(),
             NativeAiConfigValue::ValueId(input.model_id),
         )
@@ -224,7 +260,12 @@ impl AiEngine {
         input: NativeAiSetSessionConfigOptionInput,
     ) -> AiResult<()> {
         let value = native_config_value(input.value)?;
-        self.set_session_config_value(&input.session_id, input.option_id, value)
+        self.set_session_config_value(
+            &input.session_id,
+            input.runtime_session_id,
+            input.option_id,
+            value,
+        )
     }
 
     pub fn respond_permission(&self, input: NativeAiPermissionResponseInput) -> AiResult<()> {
@@ -275,13 +316,18 @@ impl AiEngine {
     fn set_session_config_value(
         &self,
         session_id: &comando_types::ids::SessionId,
+        runtime_session_id: Option<RuntimeSessionId>,
         config_id: String,
         value: NativeAiConfigValue,
     ) -> AiResult<()> {
         let session = self.lock_sessions()?.get(session_id)?.session.clone();
-        let runtime_session_id = session.runtime_session_id.clone().ok_or_else(|| {
-            AiError::Unsupported("Native config changes require an ACP-backed session.".to_string())
-        })?;
+        let runtime_session_id = runtime_session_id
+            .or_else(|| session.runtime_session_id.clone())
+            .ok_or_else(|| {
+                AiError::Unsupported(
+                    "Native config changes require an ACP-backed session.".to_string(),
+                )
+            })?;
         let controller = self
             .lock_sessions()?
             .get(session_id)?
@@ -384,6 +430,8 @@ mod tests {
         }
         let input = NativeAiSendPromptInput {
             session_id: SessionId("s1".to_string()),
+            target_session_id: None,
+            runtime_session_id: None,
             message_id: comando_types::ids::MessageId("m1".to_string()),
             prompt: comando_types::ai::NativeAiPromptInput {
                 text: "hello".to_string(),

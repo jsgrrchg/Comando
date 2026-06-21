@@ -62,8 +62,9 @@ Run this for each runtime: Codex, Claude, OpenCode, Kilo, and Grok.
 ## Runtime Specific Checks
 
 - Codex: confirm normal streaming still works if provider metadata is emitted.
-  Dedicated subagent projection remains on the legacy path until Rust maps the
-  provider-specific child-session metadata.
+  When provider-specific subagent metadata is emitted, confirm child sessions
+  appear, breadcrumbs open the child session, and output remains owned by the
+  child transcript.
 - Claude: confirm both direct executable and node wrapper launch contexts are
   accepted when locally available.
 - OpenCode: confirm `opencode acp` starts without requiring Rust to verify every

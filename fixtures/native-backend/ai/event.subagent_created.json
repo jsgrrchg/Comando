@@ -1,0 +1,22 @@
+{
+  "type": "event",
+  "eventName": "ai://subagent-created",
+  "payload": {
+    "sessionId": "session_1:subagent:runtime_child_1",
+    "runtimeId": "codex",
+    "runtimeSessionId": "runtime_child_1",
+    "updatedAt": "2026-06-20T00:00:00.400Z",
+    "childSessionId": "session_1:subagent:runtime_child_1",
+    "childRuntimeSessionId": "runtime_child_1",
+    "parentSessionId": "session_1",
+    "parentRuntimeSessionId": "runtime_session_1",
+    "title": "Aristotle"
+  },
+  "meta": {
+    "protocolVersion": 1,
+    "emittedAt": "2026-06-20T00:00:00.400Z",
+    "projectId": "project_1",
+    "worktreeId": "worktree_1",
+    "windowId": "window_main"
+  }
+}

@@ -2573,6 +2573,7 @@ export interface AiSessionInfoEvent extends AiSessionDomainEventBase {
 
 export interface AiSessionSubagentCreatedEvent
     extends AiSessionDomainEventBase {
+    readonly childRuntimeSessionId: string | null;
     readonly childSessionId: string;
     readonly kind: "subagent-created";
     readonly parentSessionId: string;

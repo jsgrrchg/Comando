@@ -149,7 +149,8 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             );
         }
 
-        this.#rememberOwner(request.input.sessionId, request.launch);
+        const target = this.#resolveSessionTarget(request.input.sessionId);
+        this.#rememberOwner(target.backendSessionId, request.launch);
 
         const result = await this.#client.request<NativeAiSendPromptOutput>(
             "ai_send_prompt",
@@ -159,7 +160,9 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                     attachments: request.input.attachments,
                     text: request.input.prompt,
                 },
-                sessionId: request.input.sessionId,
+                runtimeSessionId: target.runtimeSessionId,
+                sessionId: target.backendSessionId,
+                targetSessionId: target.targetSessionId,
             },
         );
 
@@ -178,11 +181,14 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             return;
         }
 
-        const backendSessionId =
-            this.#subagentParentSessionIds.get(sessionId) ?? sessionId;
+        const target = this.#resolveSessionTarget(sessionId);
         await this.#client.request<NativeAiCancelSessionOutput>(
             "ai_cancel_session",
-            { sessionId: backendSessionId },
+            {
+                runtimeSessionId: target.runtimeSessionId,
+                sessionId: target.backendSessionId,
+                targetSessionId: target.targetSessionId,
+            },
         );
     }
 
@@ -220,41 +226,51 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     async respondPermission(input: AiPermissionResponseInput): Promise<void> {
+        const target = this.#resolveSessionTarget(input.sessionId);
         await this.#client.request("ai_respond_permission", {
             optionId: input.optionId,
             requestId: input.requestId,
-            sessionId: input.sessionId,
+            sessionId: target.backendSessionId,
+            targetSessionId: target.targetSessionId,
         });
     }
 
     async respondUserInput(input: AiUserInputResponseInput): Promise<void> {
+        const target = this.#resolveSessionTarget(input.sessionId);
         await this.#client.request("ai_respond_user_input", {
             answers: input.answers,
             requestId: input.requestId,
-            sessionId: input.sessionId,
+            sessionId: target.backendSessionId,
+            targetSessionId: target.targetSessionId,
         });
     }
 
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
+        const target = this.#resolveSessionTarget(input.sessionId);
         await this.#client.request("ai_set_session_mode", {
             modeId: input.modeId,
-            sessionId: input.sessionId,
+            runtimeSessionId: target.runtimeSessionId,
+            sessionId: target.backendSessionId,
         });
     }
 
     async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
+        const target = this.#resolveSessionTarget(input.sessionId);
         await this.#client.request("ai_set_session_model", {
             modelId: input.modelId,
-            sessionId: input.sessionId,
+            runtimeSessionId: target.runtimeSessionId,
+            sessionId: target.backendSessionId,
         });
     }
 
     async setSessionConfigOption(
         input: AiSessionConfigOptionMutationInput,
     ): Promise<void> {
+        const target = this.#resolveSessionTarget(input.sessionId);
         await this.#client.request("ai_set_session_config_option", {
             optionId: input.optionId,
-            sessionId: input.sessionId,
+            runtimeSessionId: target.runtimeSessionId,
+            sessionId: target.backendSessionId,
             value: input.value,
         });
     }
@@ -363,7 +379,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 );
                 this.#runtimeSessionIds.set(
                     converted.childSessionId,
-                    converted.runtimeSessionId,
+                    converted.childRuntimeSessionId ?? converted.runtimeSessionId,
                 );
                 this.#subagentParentSessionIds.set(
                     converted.childSessionId,
@@ -484,6 +500,27 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         this.#runtimeSessionIds.delete(sessionId);
         this.#sessionOwners.delete(sessionId);
         this.#sessionRuntimeIds.delete(sessionId);
+    }
+
+    #resolveSessionTarget(sessionId: string): {
+        readonly backendSessionId: string;
+        readonly runtimeSessionId: string | null;
+        readonly targetSessionId: string | null;
+    } {
+        const parentSessionId = this.#subagentParentSessionIds.get(sessionId);
+        if (!parentSessionId) {
+            return {
+                backendSessionId: sessionId,
+                runtimeSessionId: null,
+                targetSessionId: null,
+            };
+        }
+
+        return {
+            backendSessionId: parentSessionId,
+            runtimeSessionId: this.#runtimeSessionIds.get(sessionId) ?? null,
+            targetSessionId: sessionId,
+        };
     }
 
     #reportDiagnostic(message: string): void {

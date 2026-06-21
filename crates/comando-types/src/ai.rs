@@ -181,6 +181,10 @@ pub struct NativeAiPromptInput {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSendPromptInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub target_session_id: Option<SessionId>,
+    #[serde(default)]
+    pub runtime_session_id: Option<RuntimeSessionId>,
     pub message_id: MessageId,
     pub prompt: NativeAiPromptInput,
 }
@@ -196,6 +200,10 @@ pub struct NativeAiSendPromptOutput {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSessionIdInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub target_session_id: Option<SessionId>,
+    #[serde(default)]
+    pub runtime_session_id: Option<RuntimeSessionId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -216,6 +224,8 @@ pub struct NativeAiCloseSessionOutput {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiPermissionResponseInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub target_session_id: Option<SessionId>,
     pub request_id: String,
     pub option_id: Option<String>,
 }
@@ -231,6 +241,8 @@ pub struct NativeAiUserInputAnswer {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiUserInputResponseInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub target_session_id: Option<SessionId>,
     pub request_id: String,
     pub answers: Vec<NativeAiUserInputAnswer>,
 }
@@ -239,6 +251,8 @@ pub struct NativeAiUserInputResponseInput {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSetSessionModeInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub runtime_session_id: Option<RuntimeSessionId>,
     pub mode_id: String,
 }
 
@@ -246,6 +260,8 @@ pub struct NativeAiSetSessionModeInput {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSetSessionModelInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub runtime_session_id: Option<RuntimeSessionId>,
     pub model_id: String,
 }
 
@@ -253,6 +269,8 @@ pub struct NativeAiSetSessionModelInput {
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSetSessionConfigOptionInput {
     pub session_id: SessionId,
+    #[serde(default)]
+    pub runtime_session_id: Option<RuntimeSessionId>,
     pub option_id: String,
     pub value: serde_json::Value,
 }

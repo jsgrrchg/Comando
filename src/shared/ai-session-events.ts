@@ -83,6 +83,7 @@ function appendSessionInfoEvents(
     ) {
         events.push({
             ...base,
+            childRuntimeSessionId: nextSnapshot.runtimeSessionId ?? null,
             childSessionId: nextSnapshot.sessionId,
             kind: "subagent-created",
             parentSessionId: nextSnapshot.parentSessionId,

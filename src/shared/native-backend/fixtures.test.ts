@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
     NATIVE_COMMANDS,
     NATIVE_EVENTS,
+    nativeAiCatalogPatchToIpc,
     nativeAiEventToIpc,
     nativeAiRuntimeStatusToIpc,
     nativeGitInvalidationToIpc,
@@ -184,6 +185,28 @@ describe("native backend fixtures", () => {
         expect(aiEvent("ai/event.token_usage.json")).toMatchObject({
             kind: "token-usage",
             tokenUsage: { used: 42 },
+        });
+        expect(aiEvent("ai/event.subagent_created.json")).toMatchObject({
+            childSessionId: "session_1:subagent:runtime_child_1",
+            kind: "subagent-created",
+            parentSessionId: "session_1",
+            title: "Aristotle",
+        });
+        expect(aiEvent("ai/event.subagent_breadcrumb.json")).toMatchObject({
+            childSessionId: "session_1:subagent:runtime_child_1",
+            kind: "subagent-breadcrumb",
+            toolCallId: "tool_1",
+        });
+        expect(
+            nativeAiCatalogPatchToIpc(
+                eventPayload("ai/event.session_catalog_updated.json"),
+            ),
+        ).toMatchObject({
+            availableCommands: [{ id: "review", label: "/review" }],
+            configOptions: [
+                { id: "model", type: "select", value: "gpt-5" },
+                { id: "autoApply", type: "boolean", value: false },
+            ],
         });
         expect(aiEvent("ai/event.error.json")).toMatchObject({
             kind: "status",
@@ -453,4 +476,14 @@ function aiEvent(relativePath: string) {
     }
 
     return nativeAiEventToIpc(event);
+}
+
+function eventPayload<T = never>(relativePath: string): T {
+    const event = parseNativeBackendOutput(fixture(relativePath));
+    expect(event.type).toBe("event");
+    if (event.type !== "event") {
+        throw new Error("expected event");
+    }
+
+    return event.payload as T;
 }
