@@ -588,7 +588,7 @@ describe("NativeAiGateway", () => {
         });
     });
 
-    it("surfaces review conflicts as non-text tracked files", async () => {
+    it("surfaces review conflicts over stale tracked files", async () => {
         const client = createClient();
         client.request.mockImplementation(
             <T = unknown>(command: string, _args?: unknown): Promise<T> => {
@@ -604,7 +604,26 @@ describe("NativeAiGateway", () => {
                             },
                         ],
                         sessionId: "session-1",
-                        trackedFiles: [],
+                        trackedFiles: [
+                            {
+                                currentText: "old pending\n",
+                                diffBase: "base\n",
+                                hunks: [],
+                                identityKey: "native:session-1::binary.bin",
+                                isText: true,
+                                kind: "update",
+                                newText: "old pending\n",
+                                oldText: "base\n",
+                                path: "binary.bin",
+                                previousPath: null,
+                                reviewState: "pending",
+                                reversible: true,
+                                sessionId: "session-1",
+                                toolCallId: null,
+                                updatedAt: "2026-06-20T00:00:01.000Z",
+                                version: 2,
+                            },
+                        ],
                         updatedAt: "2026-06-20T00:00:02.000Z",
                     } as T);
                 }
@@ -622,6 +641,8 @@ describe("NativeAiGateway", () => {
         await expect(gateway.reconcileTrackedFiles("session-1")).resolves.toEqual([
             expect.objectContaining({
                 conflict: "binary_file",
+                currentText: "",
+                diffBase: "",
                 isText: false,
                 path: "binary.bin",
                 reviewState: "conflict",

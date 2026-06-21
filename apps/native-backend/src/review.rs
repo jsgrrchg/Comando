@@ -302,20 +302,39 @@ impl NativeReviewService {
                                 .flatten()
                                 == unsupported.fingerprint
                         {
+                            if find_tracked_file_index(&tracked_files, &entry.path).is_some() {
+                                record_review_conflict(
+                                    &mut tracked_files,
+                                    &mut conflicts,
+                                    NativeReviewConflict {
+                                        path: entry.path.clone(),
+                                        reason: unsupported.reason.clone(),
+                                        external_change_hash: None,
+                                    },
+                                );
+                            }
                             continue;
                         }
-                        conflicts.push(conflict_for_content_error(&entry.path, &error));
+                        record_review_conflict(
+                            &mut tracked_files,
+                            &mut conflicts,
+                            conflict_for_content_error(&entry.path, &error),
+                        );
                         continue;
                     }
                     Err(error) => return Err(error),
                 }
             };
             if let Some(unsupported) = unsupported_baseline {
-                conflicts.push(NativeReviewConflict {
-                    path: entry.path.clone(),
-                    reason: unsupported.reason.clone(),
-                    external_change_hash: None,
-                });
+                record_review_conflict(
+                    &mut tracked_files,
+                    &mut conflicts,
+                    NativeReviewConflict {
+                        path: entry.path.clone(),
+                        reason: unsupported.reason.clone(),
+                        external_change_hash: None,
+                    },
+                );
                 continue;
             }
             if !deleted && current_text.is_none() && !baseline_text.known {
@@ -331,7 +350,11 @@ impl NativeReviewService {
                 ) {
                     Ok(text) => text,
                     Err(error) if is_review_content_error(&error) => {
-                        conflicts.push(conflict_for_content_error(&entry.path, &error));
+                        record_review_conflict(
+                            &mut tracked_files,
+                            &mut conflicts,
+                            conflict_for_content_error(&entry.path, &error),
+                        );
                         continue;
                     }
                     Err(error) => return Err(error),
@@ -593,12 +616,7 @@ impl NativeReviewService {
                 .iter()
                 .filter(|file| file.review_state == ReviewTrackedFileStatus::Pending)
                 .count(),
-            conflict_count: output.conflicts.len()
-                + output
-                    .tracked_files
-                    .iter()
-                    .filter(|file| file.review_state == ReviewTrackedFileStatus::Conflict)
-                    .count(),
+            conflict_count: review_conflict_count(&output.tracked_files, &output.conflicts),
             tracked_files: output.tracked_files.clone(),
             conflicts: output.conflicts.clone(),
             updated_at: output.updated_at.clone(),
@@ -1048,6 +1066,35 @@ fn command_output(
         conflicts,
         updated_at,
         tracked_file_events,
+    }
+}
+
+fn review_conflict_count(
+    tracked_files: &[ReviewTrackedFile],
+    conflicts: &[NativeReviewConflict],
+) -> usize {
+    let mut paths = HashSet::new();
+    for conflict in conflicts {
+        paths.insert(conflict.path.as_str());
+    }
+    for file in tracked_files {
+        if file.review_state == ReviewTrackedFileStatus::Conflict {
+            paths.insert(file.path.as_str());
+        }
+    }
+    paths.len()
+}
+
+fn record_review_conflict(
+    tracked_files: &mut Vec<ReviewTrackedFile>,
+    conflicts: &mut Vec<NativeReviewConflict>,
+    conflict: NativeReviewConflict,
+) {
+    if let Some(index) = find_tracked_file_index(tracked_files, &conflict.path) {
+        tracked_files.remove(index);
+    }
+    if !conflicts.iter().any(|entry| entry.path == conflict.path) {
+        conflicts.push(conflict);
     }
 }
 
@@ -1542,6 +1589,39 @@ mod tests {
 
         assert!(output.tracked_files.is_empty());
         assert!(output.conflicts.is_empty());
+    }
+
+    #[test]
+    fn reconcile_replaces_stale_pending_file_with_conflict() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("a.txt"), "base\n").expect("write text");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+
+        let session = test_session(repo.path(), "s-stale-conflict");
+        let mut service = service_with_app_data(repo.path());
+        service.capture_baseline(&session).expect("baseline");
+        fs::write(repo.path().join("a.txt"), "agent change\n").expect("modify text");
+        let first = service
+            .reconcile_tracked_files(&session)
+            .expect("first reconcile");
+        assert_eq!(first.tracked_files.len(), 1);
+        assert_eq!(
+            first.tracked_files[0].review_state,
+            ReviewTrackedFileStatus::Pending
+        );
+
+        service.capture_baseline(&session).expect("second baseline");
+        fs::write(repo.path().join("a.txt"), b"\0not text").expect("make binary");
+        let second = service
+            .reconcile_tracked_files(&session)
+            .expect("second reconcile");
+
+        assert!(second.tracked_files.is_empty());
+        assert_eq!(second.conflicts.len(), 1);
+        assert_eq!(second.conflicts[0].path, "a.txt");
+        assert_eq!(second.conflicts[0].reason, "binary_file");
     }
 
     #[test]

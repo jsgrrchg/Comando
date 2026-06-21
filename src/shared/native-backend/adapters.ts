@@ -744,7 +744,25 @@ function nativeReviewTrackedFilesWithConflictsToIpc(input: {
     readonly trackedFiles: readonly unknown[];
     readonly updatedAt: string;
 }): readonly AiTrackedFile[] {
-    const trackedFiles = input.trackedFiles.map(nativeReviewTrackedFileToIpc);
+    const conflictsByPath = new Map(
+        input.conflicts.map((conflict) => [conflict.path, conflict] as const),
+    );
+    const trackedFiles = input.trackedFiles.map((entry) => {
+        const trackedFile = nativeReviewTrackedFileToIpc(entry);
+        const conflict =
+            conflictsByPath.get(trackedFile.path) ??
+            (trackedFile.previousPath
+                ? conflictsByPath.get(trackedFile.previousPath)
+                : undefined);
+        if (!conflict) {
+            return trackedFile;
+        }
+        return nativeReviewConflictToTrackedFile(
+            conflict,
+            trackedFile.sessionId || input.sessionId,
+            trackedFile.updatedAt || input.updatedAt,
+        );
+    });
     const trackedPaths = new Set(
         trackedFiles.flatMap((file) => [
             file.path,
