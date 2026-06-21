@@ -105,7 +105,7 @@ describe("AiService history", () => {
 
         await service.deleteSession("session-1");
 
-        service.handleWorkerSessionSnapshot("window-1", {
+        service.handleNativeSessionSnapshot("window-1", {
             kind: "snapshot",
             snapshot: createSnapshot({
                 sessionId: "session-1",

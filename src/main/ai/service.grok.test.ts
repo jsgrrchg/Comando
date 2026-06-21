@@ -11,7 +11,7 @@ import type {
 } from "@shared/ipc";
 
 import { launchTerminalLoginCommand } from "./auth/terminal-login";
-import type { AiWorkerGateway } from "./contracts";
+import type { NativeAiGateway } from "./contracts";
 import { AiService } from "./service";
 
 const probeGrokCachedTokenAuthMock = vi.hoisted(() =>
@@ -441,12 +441,12 @@ describe("AiService Grok branch", () => {
         try {
             const binaryPath = writeExecutable(tempDir, "grok");
             const preparedSnapshot = createSessionSnapshot();
-            const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
+            const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
                 () => Promise.resolve(preparedSnapshot),
             );
-            const aiWorker = createAiWorker({ prepareSession });
+            const nativeAi = createNativeAi({ prepareSession });
             const service = createService({
-                aiWorker,
+                nativeAi,
                 secretValues: new Map([["ai.grok:xai_api_key", "xai-key"]]),
                 settingsService: createSettingsService({
                     loadGrokRuntimeSettings: vi.fn(() =>
@@ -504,14 +504,14 @@ describe("AiService Grok branch", () => {
                 binaryPath,
             });
             const preparedSnapshot = createSessionSnapshot();
-            const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
+            const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
                 () => Promise.resolve(preparedSnapshot),
             );
-            const aiWorker = createAiWorker({ prepareSession });
+            const nativeAi = createNativeAi({ prepareSession });
             probeGrokCachedTokenAuthMock.mockResolvedValueOnce(true);
 
             const service = createService({
-                aiWorker,
+                nativeAi,
                 settingsService: createSettingsService({
                     loadGrokRuntimeSettings: vi.fn(() => grokSettings),
                     saveGrokRuntimeSettings: (
@@ -572,7 +572,7 @@ describe("AiService Grok branch", () => {
             }),
         });
 
-        service.handleWorkerSessionSnapshot("window-1", {
+        service.handleNativeSessionSnapshot("window-1", {
             kind: "snapshot",
             snapshot: {
                 ...createSessionSnapshot(),
@@ -611,7 +611,7 @@ describe("AiService Grok branch", () => {
             }),
         });
 
-        service.handleWorkerSessionSnapshot("window-1", {
+        service.handleNativeSessionSnapshot("window-1", {
             kind: "snapshot",
             snapshot: {
                 ...createSessionSnapshot(),
@@ -650,7 +650,7 @@ describe("AiService Grok branch", () => {
             }),
         });
 
-        service.handleWorkerSessionSnapshot("window-1", {
+        service.handleNativeSessionSnapshot("window-1", {
             kind: "snapshot",
             snapshot: {
                 ...createSessionSnapshot(),
@@ -663,13 +663,13 @@ describe("AiService Grok branch", () => {
 });
 
 function createService(overrides: {
-    readonly aiWorker?: AiWorkerGateway;
+    readonly nativeAi?: NativeAiGateway;
     readonly onRuntimeStatus?: (status: AiRuntimeStatus) => void;
     readonly secretValues?: Map<string, string>;
     readonly settingsService?: unknown;
 }): AiService {
     return new AiService({
-        aiWorker: overrides.aiWorker ?? null,
+        nativeAi: overrides.nativeAi ?? null,
         onRuntimeStatus: overrides.onRuntimeStatus ?? vi.fn(),
         onSessionSnapshot: vi.fn(),
         persistence: {
@@ -808,22 +808,21 @@ function parseTestSecretStorageKey(
     };
 }
 
-function createAiWorker(overrides: Partial<AiWorkerGateway>): AiWorkerGateway {
+function createNativeAi(
+    overrides: Partial<NativeAiGateway> = {},
+): NativeAiGateway {
     return {
         cancelSession: vi.fn(),
+        captureReviewBaseline: vi.fn(() => Promise.resolve(true)),
         close: vi.fn(),
         closeOwnedByWindow: vi.fn(),
         closeSession: vi.fn(),
-        freezeSession: vi.fn(),
-        keepAllTrackedFiles: vi.fn(),
-        keepTrackedFile: vi.fn(),
-        keepTrackedFileHunks: vi.fn(),
-        notifyFileBuffer: vi.fn(),
+        deleteSession: vi.fn(),
+        listSessionHistory: vi.fn(() => Promise.resolve([])),
+        loadSessionSnapshot: vi.fn(() => Promise.resolve(null)),
+        loadSessionTranscriptPage: vi.fn(() => Promise.resolve(null)),
         prepareSession: vi.fn(),
-        refreshProjectScopes: vi.fn(),
-        rejectAllTrackedFiles: vi.fn(),
-        rejectTrackedFile: vi.fn(),
-        rejectTrackedFileHunks: vi.fn(),
+        reconcileTrackedFiles: vi.fn(() => Promise.resolve([])),
         renameSession: vi.fn(),
         respondPermission: vi.fn(),
         respondUserInput: vi.fn(),
@@ -831,6 +830,10 @@ function createAiWorker(overrides: Partial<AiWorkerGateway>): AiWorkerGateway {
         setSessionConfigOption: vi.fn(),
         setSessionMode: vi.fn(),
         setSessionModel: vi.fn(),
+        setSessionPinned: vi.fn(),
+        shouldHandleHistory: vi.fn(() => false),
+        shouldHandleReview: vi.fn(() => true),
+        shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "grok"),
         ...overrides,
     };
 }

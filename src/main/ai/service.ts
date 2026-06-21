@@ -68,10 +68,10 @@ import {
 import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
 import { listOpenFileBuffers, readOpenFileBuffer } from "./openFileBuffers";
 import {
-    type AiWorkerReviewMutationResult,
-    type AiWorkerReviewSessionContext,
-    type AiWorkerRuntimeSessionMapping,
-    type AiWorkerSessionLaunchInput,
+    type AiReviewMutationResult,
+    type AiReviewSessionContext,
+    type AiRuntimeSessionMapping,
+    type AiSessionLaunchInput,
     type AiSchedulerConfig,
     type AiSessionFreezeReason,
     type AiSessionFreezeSkippedReason,
@@ -545,18 +545,18 @@ export class AiService {
         };
     }
 
-    handleWorkerRuntimeStatus(status: AiRuntimeStatus): void {
+    handleNativeRuntimeStatus(status: AiRuntimeStatus): void {
         this.#onRuntimeStatus(status);
     }
 
-    handleWorkerSessionClosed(payload: {
+    handleNativeSessionClosed(payload: {
         readonly ownerWindowId: string;
         readonly sessionId: string;
     }): void {
         this.#clearLiveSession(payload.sessionId);
     }
 
-    handleWorkerSessionSnapshot(
+    handleNativeSessionSnapshot(
         ownerWindowId: string,
         update: AiSessionUpdate,
     ): void {
@@ -568,7 +568,7 @@ export class AiService {
             return;
         }
 
-        const snapshot = this.#resolveSnapshotFromWorkerUpdate(update);
+        const snapshot = this.#resolveSnapshotFromNativeUpdate(update);
         if (!snapshot) {
             return;
         }
@@ -579,13 +579,6 @@ export class AiService {
             this.#invalidateRuntimeAuthIfNeeded(snapshot.runtimeId, snapshot.lastError);
         }
         this.#onSessionSnapshot(ownerWindowId, update);
-    }
-
-    handleWorkerSessionEvent(
-        ownerWindowId: string,
-        event: AiSessionDomainEvent,
-    ): void {
-        this.#onSessionEvent(ownerWindowId, event);
     }
 
     notifyFileBuffer(input: FileBufferNotificationInput): void {
@@ -702,7 +695,7 @@ export class AiService {
         );
     }
 
-    async handleWorkerRestarted(): Promise<void> {
+    async handleNativeRestarted(): Promise<void> {
         const nativeAi = this.#requireNativeAiGateway();
         if (!nativeAi.notifyFileBuffer) {
             return;
@@ -1115,7 +1108,7 @@ export class AiService {
         input: PrepareAiSessionInput,
         ownerWindowId: string,
     ): Promise<AiSessionSnapshot> {
-        const launch = await this.#buildWorkerSessionLaunchInput(
+        const launch = await this.#buildNativeSessionLaunchInput(
             input,
             ownerWindowId,
         );
@@ -1138,7 +1131,7 @@ export class AiService {
         const isSubagentPrepare =
             nativePrepareLaunch.input.sessionId !== input.sessionId;
         try {
-            const snapshot = await this.#scheduleWorkerSessionStartup(
+            const snapshot = await this.#scheduleNativeSessionStartup(
                 launch,
                 1,
                 async () => {
@@ -1206,7 +1199,7 @@ export class AiService {
         input: SendAiPromptInput,
         ownerWindowId: string,
     ): Promise<AiPromptResult> {
-        const launch = await this.#buildWorkerSessionLaunchInput(
+        const launch = await this.#buildNativeSessionLaunchInput(
             input,
             ownerWindowId,
         );
@@ -1243,7 +1236,7 @@ export class AiService {
                 launch,
             );
         try {
-            const result = await this.#scheduleWorkerSessionStartup(
+            const result = await this.#scheduleNativeSessionStartup(
                 launch,
                 0,
                 async () => {
@@ -2382,12 +2375,12 @@ export class AiService {
         return nextDueAtMs === null ? null : Math.max(0, nextDueAtMs - now);
     }
 
-    #isColdSessionLaunch(launch: AiWorkerSessionLaunchInput): boolean {
+    #isColdNativeSessionLaunch(launch: AiSessionLaunchInput): boolean {
         return !this.#liveSnapshots.has(launch.input.sessionId);
     }
 
-    async #scheduleWorkerSessionStartup<T>(
-        launch: AiWorkerSessionLaunchInput,
+    async #scheduleNativeSessionStartup<T>(
+        launch: AiSessionLaunchInput,
         priority: AiSchedulerPriority,
         run: () => Promise<T>,
         options: { readonly forceColdStart?: boolean } = {},
@@ -2395,7 +2388,7 @@ export class AiService {
         return await this.#scheduler.schedule(
             {
                 coldStart:
-                    options.forceColdStart ?? this.#isColdSessionLaunch(launch),
+                    options.forceColdStart ?? this.#isColdNativeSessionLaunch(launch),
                 priority,
                 runtimeId: launch.input.runtimeId,
             },
@@ -2603,7 +2596,7 @@ export class AiService {
 
     async #captureNativeReviewBaseline(
         sessionId: string,
-        launch: AiWorkerSessionLaunchInput,
+        launch: AiSessionLaunchInput,
         messageId: string,
     ): Promise<boolean> {
         const nativeAi = this.#requireNativeReviewGateway("captureReviewBaseline");
@@ -2809,7 +2802,7 @@ export class AiService {
         return runtimeId;
     }
 
-    #resolveSnapshotFromWorkerUpdate(
+    #resolveSnapshotFromNativeUpdate(
         update: AiSessionUpdate,
     ): AiSessionSnapshot | null {
         if (update.kind === "snapshot") {
@@ -2852,11 +2845,11 @@ export class AiService {
 
     async #listPersistedRuntimeMappingsForParent(
         parentSessionId: string,
-    ): Promise<readonly AiWorkerRuntimeSessionMapping[]> {
-        const mappings: AiWorkerRuntimeSessionMapping[] = [];
+    ): Promise<readonly AiRuntimeSessionMapping[]> {
+        const mappings: AiRuntimeSessionMapping[] = [];
         const seen = new Set<string>();
         const append = (
-            entries: readonly AiWorkerRuntimeSessionMapping[],
+            entries: readonly AiRuntimeSessionMapping[],
         ): void => {
             for (const entry of entries) {
                 const key = `${entry.appSessionId}\0${entry.runtimeSessionId}`;
@@ -2897,10 +2890,10 @@ export class AiService {
     async #buildNativePrepareLaunchForSession(
         input: SessionDescriptor,
         ownerWindowId: string,
-        launch: AiWorkerSessionLaunchInput,
+        launch: AiSessionLaunchInput,
     ): Promise<{
         readonly input: SessionDescriptor;
-        readonly launch: AiWorkerSessionLaunchInput;
+        readonly launch: AiSessionLaunchInput;
     }> {
         const parentSessionId = launch.persistedSnapshot.parentSessionId ?? null;
         if (!parentSessionId) {
@@ -2927,7 +2920,7 @@ export class AiService {
 
         return {
             input: parentInput,
-            launch: await this.#buildWorkerSessionLaunchInput(
+            launch: await this.#buildNativeSessionLaunchInput(
                 parentInput,
                 ownerWindowId,
                 parentSnapshot,
@@ -2953,11 +2946,11 @@ export class AiService {
         });
     }
 
-    async #buildWorkerSessionLaunchInput(
+    async #buildNativeSessionLaunchInput(
         input: SessionDescriptor,
         ownerWindowId: string,
         snapshotOverride?: AiSessionSnapshot | null,
-    ): Promise<AiWorkerSessionLaunchInput> {
+    ): Promise<AiSessionLaunchInput> {
         const projectRoot = input.projectId
             ? this.#projectService.getProjectRootPath(
                   input.projectId,
@@ -3017,10 +3010,10 @@ export class AiService {
         };
     }
 
-    async #buildWorkerReviewContext(
+    async #buildNativeReviewContext(
         sessionId: string,
     ): Promise<{
-        readonly context: AiWorkerReviewSessionContext;
+        readonly context: AiReviewSessionContext;
         readonly snapshot: AiSessionSnapshot;
     }> {
         const liveContext = this.#liveSessionContexts.get(sessionId);
@@ -3063,7 +3056,7 @@ export class AiService {
 
     #persistReviewMutation(
         previousSnapshot: AiSessionSnapshot,
-        result: AiWorkerReviewMutationResult,
+        result: AiReviewMutationResult,
     ): void {
         if (!this.#isNativeAiSession(result.snapshot.sessionId)) {
             this.#persistence.saveSessionSnapshot(result.snapshot);
@@ -3080,7 +3073,7 @@ export class AiService {
     }
 
     async keepTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
-        const reviewSession = await this.#buildWorkerReviewContext(
+        const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
         const result = await this.#requireNativeReviewGateway(
@@ -3093,7 +3086,7 @@ export class AiService {
     }
 
     async rejectTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
-        const reviewSession = await this.#buildWorkerReviewContext(
+        const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
         const result = await this.#requireNativeReviewGateway(
@@ -3108,7 +3101,7 @@ export class AiService {
     async keepTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
-        const reviewSession = await this.#buildWorkerReviewContext(
+        const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
         const result = await this.#requireNativeReviewGateway(
@@ -3123,7 +3116,7 @@ export class AiService {
     async rejectTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
-        const reviewSession = await this.#buildWorkerReviewContext(
+        const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
         const result = await this.#requireNativeReviewGateway(
@@ -3136,7 +3129,7 @@ export class AiService {
     }
 
     async keepAllTrackedFiles(sessionId: string): Promise<void> {
-        const reviewSession = await this.#buildWorkerReviewContext(sessionId);
+        const reviewSession = await this.#buildNativeReviewContext(sessionId);
         const result = await this.#requireNativeReviewGateway(
             "keepAllTrackedFiles",
         ).keepAllTrackedFiles({
@@ -3147,7 +3140,7 @@ export class AiService {
     }
 
     async rejectAllTrackedFiles(sessionId: string): Promise<void> {
-        const reviewSession = await this.#buildWorkerReviewContext(sessionId);
+        const reviewSession = await this.#buildNativeReviewContext(sessionId);
         const result = await this.#requireNativeReviewGateway(
             "rejectAllTrackedFiles",
         ).rejectAllTrackedFiles({

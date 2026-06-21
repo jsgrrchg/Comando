@@ -164,7 +164,6 @@ import {
     shell,
     type OpenDialogOptions,
 } from "electron";
-import { simpleGit } from "simple-git";
 
 import { forEachLiveWindow, refreshWindowsTitleBarOverlays } from "@main/window";
 import { createIpcInFlightLimiter } from "@main/ipc/rate-limit";
@@ -1372,7 +1371,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const targetPath = path.join(parentDirectory, repositoryName);
 
             try {
-                await simpleGit(parentDirectory).clone(repositoryUrl, targetPath);
+                await options.gitService.cloneRepository({
+                    parentDirectory,
+                    repositoryUrl,
+                    targetPath,
+                });
             } catch (error) {
                 const message =
                     error instanceof Error

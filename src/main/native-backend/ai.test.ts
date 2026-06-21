@@ -11,7 +11,7 @@ import type {
 } from "@shared/native-backend";
 
 import { createEmptyAiSessionSnapshot } from "@main/ai/persistence";
-import type { AiWorkerSessionLaunchInput } from "@main/ai/contracts";
+import type { AiSessionLaunchInput } from "@main/ai/contracts";
 
 import {
     NativeAiGateway,
@@ -773,7 +773,7 @@ function createPromptInput(): SendAiPromptInput {
     };
 }
 
-function createLaunch(): AiWorkerSessionLaunchInput {
+function createLaunch(): AiSessionLaunchInput {
     const status: AiRuntimeStatus = {
         authMethod: "opencode-login",
         authMethods: [],

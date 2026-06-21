@@ -6,6 +6,12 @@ export type NativeGitRepositoryScope = {
     readonly rootPath: string;
 };
 
+export type NativeGitCloneRepositoryInput = {
+    readonly parentDirectory: string;
+    readonly repositoryUrl: string;
+    readonly targetPath: string;
+};
+
 export type NativeGitRepositoryResolution = {
     readonly inputPath: string;
     readonly canonicalRootPath: string | null;
@@ -372,4 +378,3 @@ export type NativeGitPushInput = {
     readonly remoteRef: string | null;
     readonly setUpstream: boolean | null;
 };
-

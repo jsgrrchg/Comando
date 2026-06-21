@@ -50,9 +50,9 @@ import {
 } from "@shared/native-backend";
 
 import type {
-    AiWorkerReviewMutationResult,
-    AiWorkerReviewSessionRpcInput,
-    AiWorkerRuntimeSessionMapping,
+    AiReviewMutationResult,
+    AiReviewSessionRpcInput,
+    AiRuntimeSessionMapping,
     NativeAiGateway as NativeAiGatewayContract,
     NativeAiPrepareSessionRpcInput,
     NativeAiRuntimeSettingsRpcInput,
@@ -253,8 +253,8 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     async keepTrackedFile(
-        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
-    ): Promise<AiWorkerReviewMutationResult> {
+        input: AiReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ): Promise<AiReviewMutationResult> {
         return await this.#runReviewMutation(input, "ai_keep_tracked_file", {
             path: input.input.path,
             ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
@@ -262,8 +262,8 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     async rejectTrackedFile(
-        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
-    ): Promise<AiWorkerReviewMutationResult> {
+        input: AiReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ): Promise<AiReviewMutationResult> {
         return await this.#runReviewMutation(input, "ai_reject_tracked_file", {
             path: input.input.path,
             ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
@@ -271,8 +271,8 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     async keepTrackedFileHunks(
-        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
-    ): Promise<AiWorkerReviewMutationResult> {
+        input: AiReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ): Promise<AiReviewMutationResult> {
         return await this.#runReviewMutation(input, "ai_keep_tracked_file_hunks", {
             hunkIds: input.input.hunkIds,
             path: input.input.path,
@@ -281,8 +281,8 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     async rejectTrackedFileHunks(
-        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
-    ): Promise<AiWorkerReviewMutationResult> {
+        input: AiReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ): Promise<AiReviewMutationResult> {
         return await this.#runReviewMutation(input, "ai_reject_tracked_file_hunks", {
             hunkIds: input.input.hunkIds,
             path: input.input.path,
@@ -291,22 +291,22 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     async keepAllTrackedFiles(
-        input: AiWorkerReviewSessionRpcInput<string>,
-    ): Promise<AiWorkerReviewMutationResult> {
+        input: AiReviewSessionRpcInput<string>,
+    ): Promise<AiReviewMutationResult> {
         return await this.#runReviewMutation(input, "ai_keep_all_tracked_files", {});
     }
 
     async rejectAllTrackedFiles(
-        input: AiWorkerReviewSessionRpcInput<string>,
-    ): Promise<AiWorkerReviewMutationResult> {
+        input: AiReviewSessionRpcInput<string>,
+    ): Promise<AiReviewMutationResult> {
         return await this.#runReviewMutation(input, "ai_reject_all_tracked_files", {});
     }
 
     async #runReviewMutation<TInput>(
-        input: AiWorkerReviewSessionRpcInput<TInput>,
+        input: AiReviewSessionRpcInput<TInput>,
         command: NativeReviewMutationCommand,
         args: Record<string, unknown>,
-    ): Promise<AiWorkerReviewMutationResult> {
+    ): Promise<AiReviewMutationResult> {
         if (!this.#reviewEnabled) {
             throw new Error("Native AI review is not enabled.");
         }
@@ -353,7 +353,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
 
     async listSessionRuntimeMappingsForParent(
         parentSessionId: string,
-    ): Promise<readonly AiWorkerRuntimeSessionMapping[]> {
+    ): Promise<readonly AiRuntimeSessionMapping[]> {
         if (!this.#historyEnabled) {
             return [];
         }
@@ -1037,7 +1037,7 @@ function nativeHistorySummaryToIpc(
 
 function nativeRuntimeMappingToIpc(
     mapping: NativeAiRuntimeSessionMapping,
-): AiWorkerRuntimeSessionMapping {
+): AiRuntimeSessionMapping {
     requireString(mapping.appSessionId, "Native AI runtime mapping appSessionId");
     requireString(
         mapping.runtimeSessionId,

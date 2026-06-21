@@ -14,9 +14,9 @@ use comando_ai::history::{
 use comando_ai::runtime_setup::invalidate_grok_auth_on_error;
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
 use comando_git::{
-    GitBranchListScope, GitError, GitFileDiffRequest, GitRunner, checkout_branch, commit,
-    create_branch, create_worktree, delete_local_branch, delete_remote_branch, discard_paths,
-    fetch, get_commit_detail, get_diff_stats, get_file_diff, get_original_file,
+    GitBranchListScope, GitError, GitFileDiffRequest, GitRunOptions, GitRunner, checkout_branch,
+    commit, create_branch, create_worktree, delete_local_branch, delete_remote_branch,
+    discard_paths, fetch, get_commit_detail, get_diff_stats, get_file_diff, get_original_file,
     get_repository_snapshot, get_status, init_repository, list_branches, list_history,
     list_remotes, list_worktree_diff, list_worktrees, pull, push, remove_worktree,
     resolve_repository, stage_paths, unstage_paths,
@@ -241,6 +241,7 @@ impl NativeBackend {
             "git_get_diff_stats" => self.git_get_diff_stats(request),
             "git_list_worktree_diff" => self.git_list_worktree_diff(request),
             "git_init_repository" => self.git_init_repository(request),
+            "git_clone_repository" => self.git_clone_repository(request),
             "git_stage_paths" => self.git_stage_paths(request),
             "git_unstage_paths" => self.git_unstage_paths(request),
             "git_discard_paths" => self.git_discard_paths(request),
@@ -2728,6 +2729,41 @@ impl NativeBackend {
             request.id,
             init_repository(&self.git_runner, &scope),
             "git init result serializes",
+        )
+    }
+
+    fn git_clone_repository(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_git::NativeGitCloneRepositoryInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        if input.parent_directory.trim().is_empty()
+            || input.repository_url.trim().is_empty()
+            || input.target_path.trim().is_empty()
+        {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::InvalidArgs,
+                    "Repository URL and destination path are required.",
+                ),
+            );
+        }
+
+        git_response(
+            request.id,
+            self.git_runner
+                .run(
+                    input.parent_directory,
+                    &[
+                        "clone",
+                        input.repository_url.as_str(),
+                        input.target_path.as_str(),
+                    ],
+                    GitRunOptions::network(),
+                )
+                .map(|_| json!({ "ok": true })),
+            "git clone result serializes",
         )
     }
 

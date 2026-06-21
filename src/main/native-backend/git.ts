@@ -201,6 +201,18 @@ export class NativeGitGateway implements ClosableGitGateway {
         );
     }
 
+    async cloneRepository(input: {
+        readonly parentDirectory: string;
+        readonly repositoryUrl: string;
+        readonly targetPath: string;
+    }): Promise<void> {
+        await this.#client.request("git_clone_repository", {
+            parentDirectory: input.parentDirectory,
+            repositoryUrl: input.repositoryUrl,
+            targetPath: input.targetPath,
+        });
+    }
+
     async stagePaths(
         inputPath: string,
         relativePaths: readonly string[],

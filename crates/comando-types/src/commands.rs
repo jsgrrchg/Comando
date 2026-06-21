@@ -89,6 +89,7 @@ pub const GIT_COMMANDS: &[&str] = &[
     "git_get_diff_stats",
     "git_list_worktree_diff",
     "git_init_repository",
+    "git_clone_repository",
     "git_stage_paths",
     "git_unstage_paths",
     "git_discard_paths",
