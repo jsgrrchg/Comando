@@ -658,19 +658,9 @@ async fn run_acp_session(
                             ),
                             PathBuf::from(&session.scope.cwd),
                         )
-                        .additional_directories(additional_directories.clone());
-                        match connection.send_request(load_session).block_task().await {
-                            Ok(_) => runtime_session_id,
-                            Err(error) if is_resource_not_found_error(&error.to_string()) => {
-                                let new_session =
-                                    NewSessionRequest::new(PathBuf::from(&session.scope.cwd))
-                                        .additional_directories(additional_directories);
-                                let new_session_response =
-                                    connection.send_request(new_session).block_task().await?;
-                                RuntimeSessionId(new_session_response.session_id.to_string())
-                            }
-                            Err(error) => return Err(error),
-                        }
+                        .additional_directories(additional_directories);
+                        connection.send_request(load_session).block_task().await?;
+                        runtime_session_id
                     } else {
                         let new_session = NewSessionRequest::new(PathBuf::from(&session.scope.cwd))
                             .additional_directories(additional_directories);
@@ -763,11 +753,6 @@ async fn run_acp_session(
     }
     let _ = child.kill().await;
     connect_result.map_err(|error| error.to_string())
-}
-
-fn is_resource_not_found_error(message: &str) -> bool {
-    let normalized = message.to_ascii_lowercase();
-    normalized.contains("resource not found") || normalized.contains("resource_not_found")
 }
 
 async fn run_prompt(
