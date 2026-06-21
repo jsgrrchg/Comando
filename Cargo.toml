@@ -8,6 +8,7 @@ members = [
     "crates/comando-fs",
     "crates/comando-persistence",
     "crates/comando-projects",
+    "crates/comando-settings",
     "crates/comando-terminal",
     "crates/comando-types",
 ]
@@ -20,9 +21,11 @@ edition = "2024"
 [workspace.dependencies]
 comando-types = { path = "crates/comando-types" }
 comando-diff = { path = "crates/comando-diff" }
+comando-settings = { path = "crates/comando-settings" }
 agent-client-protocol = { version = "=0.14.0", features = ["unstable"] }
 base64 = "0.22.1"
 imara-diff = "0.2"
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-async-persistent", "async-io", "crypto-rust"] }
 notify = "8.2.0"
 portable-pty = "0.9.0"
 serde = { version = "1", features = ["derive"] }

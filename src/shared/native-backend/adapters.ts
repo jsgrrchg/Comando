@@ -70,6 +70,13 @@ export function nativeAiRuntimeStatusToIpc(
         authMethod: status.authMethod,
         authMethods: status.authMethods,
         authReady: status.authReady,
+        authCredentialSource: status.authCredentialSource ?? undefined,
+        authCredentialSourceLabel:
+            status.authCredentialSourceLabel ?? undefined,
+        authSessionMessage: status.authSessionMessage ?? undefined,
+        authStorageMessage: status.authStorageMessage ?? undefined,
+        canDisconnectAuth: status.canDisconnectAuth ?? undefined,
+        canLogoutAuth: status.canLogoutAuth ?? undefined,
         checkedAt: status.checkedAt,
         command: status.command,
         hasCustomBinaryPath: status.hasCustomBinaryPath,

@@ -60,12 +60,24 @@ export type NativeAiAuthMethod = {
     readonly description: string;
 };
 
+export type NativeAiCredentialSource =
+    | "comando-secret"
+    | "environment"
+    | "external-runtime"
+    | "none";
+
 export type NativeAiRuntimeStatus = {
     readonly runtimeId: NativeAiRuntimeId;
     readonly state: string;
     readonly authMethod: string | null;
     readonly authMethods: readonly NativeAiAuthMethod[];
     readonly authReady: boolean;
+    readonly authCredentialSource?: NativeAiCredentialSource | null;
+    readonly authCredentialSourceLabel?: string | null;
+    readonly authSessionMessage?: string | null;
+    readonly authStorageMessage?: string | null;
+    readonly canDisconnectAuth?: boolean;
+    readonly canLogoutAuth?: boolean;
     readonly checkedAt: string;
     readonly command: string | null;
     readonly message: string | null;
@@ -79,6 +91,93 @@ export type NativeAiRuntimeStatus = {
 export type NativeAiGetRuntimeStatusInput = {
     readonly runtimeId: NativeAiRuntimeId;
     readonly launch?: NativeAiLaunchSpec | null;
+};
+
+export type NativeSecretStorageStatus = {
+    readonly backend: string;
+    readonly available: boolean;
+    readonly weak: boolean;
+    readonly message: string | null;
+    readonly platform: string;
+};
+
+export type NativeSecretSetInput = {
+    readonly runtimeId: NativeAiRuntimeId;
+    readonly envKey: string;
+    readonly value: string;
+};
+
+export type NativeSecretGetInput = {
+    readonly runtimeId: NativeAiRuntimeId;
+    readonly envKey: string;
+    readonly reason?: string | null;
+};
+
+export type NativeSecretDeleteInput = {
+    readonly runtimeId: NativeAiRuntimeId;
+    readonly envKey: string;
+};
+
+export type NativeSecretMutationOutput = {
+    readonly runtimeId: NativeAiRuntimeId;
+    readonly envKey: string;
+    readonly present: boolean;
+};
+
+export type NativeSecretValueOutput = {
+    readonly runtimeId: NativeAiRuntimeId;
+    readonly envKey: string;
+    readonly value: string | null;
+};
+
+export type NativeSecretPatchAction = "delete" | "set";
+
+export type NativeAiSecretPatch = {
+    readonly envKey: string;
+    readonly action: NativeSecretPatchAction;
+    readonly value?: string | null;
+};
+
+export type NativeAiRuntimeSettingsPatch = {
+    readonly binaryPath?: string | null;
+    readonly authMethod?: string | null;
+    readonly authInvalidatedAtMs?: number | null;
+    readonly gatewayBaseUrl?: string | null;
+    readonly bedrockGatewayBaseUrl?: string | null;
+    readonly nonSecretEnv?: Readonly<Record<string, string>>;
+};
+
+export type NativeAiSaveRuntimeSettingsInput = {
+    readonly runtimeId: NativeAiRuntimeId;
+    readonly settings: NativeAiRuntimeSettingsPatch;
+    readonly secretPatches?: readonly NativeAiSecretPatch[];
+};
+
+export type NativeAiRuntimeStatusOutput = {
+    readonly status: NativeAiRuntimeStatus;
+};
+
+export type NativeAiLaunchRuntimeAuthInput = {
+    readonly runtimeId: NativeAiRuntimeId;
+    readonly methodId: string;
+    readonly windowId: string;
+    readonly projectId?: NativeProjectId | null;
+    readonly worktreeId?: NativeWorktreeId | null;
+    readonly cwd?: string | null;
+    readonly cols?: number | null;
+    readonly rows?: number | null;
+};
+
+export type NativeAiLaunchRuntimeAuthOutput = {
+    readonly runtimeId: NativeAiRuntimeId;
+    readonly methodId: string;
+    readonly terminalSessionId: string | null;
+    readonly status: NativeAiRuntimeStatus;
+};
+
+export type NativeAiRuntimeAuthInput = {
+    readonly runtimeId: NativeAiRuntimeId;
+    readonly cwd?: string | null;
 };
 
 export type NativeAiAuthHandshakeSpec = {
