@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
 
 use comando_types::ai::{
@@ -9,6 +10,7 @@ use comando_types::ai::{
     NativeAiUserInputResponseInput,
 };
 use comando_types::ids::RuntimeSessionId;
+use serde_json::{Value, json};
 
 use crate::acp::{AcpProcessSpec, NativeAiConfigValue, start_acp_session};
 use crate::commands::{
@@ -16,7 +18,18 @@ use crate::commands::{
     send_prompt_output,
 };
 use crate::error::{AiError, AiResult};
-use crate::events::AiRuntimeEvent;
+use crate::events::{
+    AI_ERROR_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT,
+    AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT, AI_SESSION_CATALOG_UPDATED_EVENT,
+    AI_SESSION_CLOSED_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT,
+    AI_SUBAGENT_BREADCRUMB_EVENT, AI_SUBAGENT_CREATED_EVENT, AI_THINKING_COMPLETED_EVENT,
+    AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
+    AI_TOOL_ACTIVITY_EVENT, AI_USER_INPUT_REQUEST_EVENT, AiRuntimeEvent, now_iso8601,
+};
+use crate::history::{
+    AiHistorySessionMetadata, AiHistorySessionMetadataInput, AiHistoryStore,
+    AiHistorySubagentMetadata,
+};
 use crate::runtime::RuntimeRegistry;
 use crate::session::{NativeAiSession, SessionRegistry};
 
@@ -38,6 +51,8 @@ pub struct AiEngine {
     _config: AiEngineConfig,
     event_sender: Arc<Mutex<Option<mpsc::SyncSender<AiRuntimeEvent>>>>,
     registry: RuntimeRegistry,
+    history_messages: Arc<Mutex<HashMap<String, Vec<Value>>>>,
+    history_store: Arc<Mutex<Option<AiHistoryStore>>>,
     runtime: Arc<tokio::runtime::Runtime>,
     sessions: Arc<Mutex<SessionRegistry>>,
 }
@@ -54,6 +69,8 @@ impl AiEngine {
             _config: config,
             event_sender: Arc::new(Mutex::new(None)),
             registry: RuntimeRegistry::default(),
+            history_messages: Arc::new(Mutex::new(HashMap::new())),
+            history_store: Arc::new(Mutex::new(None)),
             runtime: Arc::new(
                 tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
@@ -71,6 +88,15 @@ impl AiEngine {
             .lock()
             .map_err(|error| AiError::Internal(format!("AI event sender lock failed: {error}")))?;
         *event_sender = Some(sender);
+        Ok(())
+    }
+
+    pub fn set_history_store(&self, store: Option<AiHistoryStore>) -> AiResult<()> {
+        let mut history_store = self
+            .history_store
+            .lock()
+            .map_err(|error| AiError::Internal(format!("AI history store lock failed: {error}")))?;
+        *history_store = store;
         Ok(())
     }
 
@@ -92,6 +118,25 @@ impl AiEngine {
         input: NativeAiPrepareSessionInput,
     ) -> AiResult<NativeAiSessionSummary> {
         let definition = self.registry.require_native(&input.runtime_id.0)?;
+        let history_metadata =
+            AiHistorySessionMetadata::new_native(AiHistorySessionMetadataInput {
+                session_id: input.session_id.clone(),
+                runtime_id: input.runtime_id.clone(),
+                runtime_session_id: input
+                    .launch
+                    .as_ref()
+                    .and_then(|launch| launch.persisted_runtime_session_id.clone()),
+                parent_session_id: None,
+                project_id: input.project_id.clone(),
+                worktree_id: input.worktree_id.clone(),
+                title: input.title.clone(),
+                status: NativeAiSessionStatus::Idle,
+                model_id: input.model_id.clone(),
+                mode_id: input.mode_id.clone(),
+                config_values: input.config_options.clone(),
+                cwd: input.cwd.clone(),
+                additional_roots: input.additional_roots.clone(),
+            });
 
         let runtime_id = input.runtime_id.0.clone();
         let launch = input
@@ -121,7 +166,16 @@ impl AiEngine {
             event_sender,
         )?;
         let mut sessions = self.lock_sessions()?;
-        prepare_session_output(sessions.insert_with_acp_controller(session, controller)?).pipe(Ok)
+        let summary = sessions.insert_with_acp_controller(session, controller)?;
+        drop(sessions);
+        let initial_history_messages = self.initialize_history_session(history_metadata)?;
+        self.history_messages
+            .lock()
+            .map_err(|error| {
+                AiError::Internal(format!("AI history messages lock failed: {error}"))
+            })?
+            .insert(summary.session_id.0.clone(), initial_history_messages);
+        prepare_session_output(summary).pipe(Ok)
     }
 
     pub fn send_prompt(
@@ -185,6 +239,13 @@ impl AiEngine {
             summary.runtime_session_id = Some(runtime_session_id);
             summary.status = NativeAiSessionStatus::Streaming;
         }
+        drop(sessions);
+        self.update_history_status(&summary)?;
+        self.push_history_user_message(
+            &target_session_id,
+            &input.message_id.0,
+            &input.prompt.text,
+        )?;
         Ok((send_prompt_output(target_session_id), summary))
     }
 
@@ -228,6 +289,8 @@ impl AiEngine {
             summary.runtime_session_id = runtime_session_id;
             summary.status = NativeAiSessionStatus::Idle;
         }
+        drop(sessions);
+        self.update_history_status(&summary)?;
         Ok((cancel_session_output(target_session_id), summary))
     }
 
@@ -244,6 +307,8 @@ impl AiEngine {
         session.active_message_id = None;
         session.set_status(NativeAiSessionStatus::Closed);
         let summary = session.session.summary();
+        drop(sessions);
+        self.update_history_status(&summary)?;
         Ok((close_session_output(input.session_id), summary))
     }
 
@@ -306,6 +371,53 @@ impl AiEngine {
         controller.respond_user_input(input)
     }
 
+    pub fn rename_session(
+        &self,
+        input: comando_types::ai::NativeAiRenameSessionInput,
+    ) -> AiResult<()> {
+        if let Ok(mut sessions) = self.lock_sessions()
+            && let Ok(session) = sessions.get_mut(&input.session_id)
+        {
+            session.session.title = input.title.clone();
+            session.session.updated_at = now_iso8601();
+        }
+        if let Some(store) = self.history_store()? {
+            if store.has_session(&input.session_id) {
+                store.rename_session(&input.session_id, input.title)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn record_history_event(&self, event: &AiRuntimeEvent) -> AiResult<()> {
+        match event.event_name.as_str() {
+            AI_MESSAGE_STARTED_EVENT | AI_THINKING_STARTED_EVENT => {
+                self.record_history_message_started(&event.payload)
+            }
+            AI_MESSAGE_DELTA_EVENT | AI_THINKING_DELTA_EVENT => {
+                self.record_history_message_delta(&event.payload)
+            }
+            AI_MESSAGE_COMPLETED_EVENT | AI_THINKING_COMPLETED_EVENT => {
+                self.record_history_message_completed(&event.payload)
+            }
+            AI_SESSION_CATALOG_UPDATED_EVENT => self.record_history_catalog_updated(&event.payload),
+            AI_TOOL_ACTIVITY_EVENT | AI_STATUS_EVENT => {
+                self.record_history_tool_activity(&event.payload, event.event_name.as_str())
+            }
+            AI_PLAN_UPDATED_EVENT => self.record_history_plan_updated(&event.payload),
+            AI_PERMISSION_REQUEST_EVENT => self.record_history_permission_request(&event.payload),
+            AI_USER_INPUT_REQUEST_EVENT => self.record_history_user_input_request(&event.payload),
+            AI_TOKEN_USAGE_EVENT => self.record_history_token_usage(&event.payload),
+            AI_SUBAGENT_CREATED_EVENT => self.record_history_subagent_created(&event.payload),
+            AI_SUBAGENT_BREADCRUMB_EVENT => self.record_history_subagent_breadcrumb(&event.payload),
+            AI_SESSION_UPDATED_EVENT | AI_SESSION_CLOSED_EVENT => {
+                self.record_history_session_status(&event.payload)
+            }
+            AI_ERROR_EVENT => self.record_history_error(&event.payload),
+            _ => Ok(()),
+        }
+    }
+
     pub fn close_owned_by_window(
         &self,
         owner_window_id: &str,
@@ -348,7 +460,8 @@ impl AiEngine {
                     "Native config changes require an ACP-backed session.".to_string(),
                 )
             })?;
-        controller.set_config_option(runtime_session_id, config_id, value)
+        controller.set_config_option(runtime_session_id, config_id, value)?;
+        self.update_history_status(&session.summary())
     }
 
     fn lock_sessions(&self) -> AiResult<std::sync::MutexGuard<'_, SessionRegistry>> {
@@ -363,6 +476,605 @@ impl AiEngine {
             .map(|sender| sender.clone())
             .map_err(|error| AiError::Internal(format!("AI event sender lock failed: {error}")))
     }
+
+    fn history_store(&self) -> AiResult<Option<AiHistoryStore>> {
+        Ok(self
+            .history_store
+            .lock()
+            .map_err(|error| AiError::Internal(format!("AI history store lock failed: {error}")))?
+            .clone())
+    }
+
+    fn initialize_history_session(
+        &self,
+        metadata: AiHistorySessionMetadata,
+    ) -> AiResult<Vec<Value>> {
+        let Some(store) = self.history_store()? else {
+            return Ok(Vec::new());
+        };
+        if !store.has_session(&metadata.session_id) {
+            store.create_session(metadata)?;
+            return Ok(Vec::new());
+        }
+
+        let snapshot = store.load_session_snapshot(&metadata.session_id)?;
+        let mut current = store.load_metadata(&metadata.session_id)?;
+        current.runtime_id = metadata.runtime_id;
+        current.runtime_session_id = metadata.runtime_session_id;
+        current.parent_session_id = metadata.parent_session_id;
+        current.project_id = metadata.project_id;
+        current.worktree_id = metadata.worktree_id;
+        current.title = metadata.title;
+        current.status = metadata.status;
+        current.model_id = metadata.model_id;
+        current.mode_id = metadata.mode_id;
+        current.config_values = metadata.config_values;
+        current.cwd = metadata.cwd;
+        current.additional_roots = metadata.additional_roots;
+        current.updated_at = now_iso8601();
+        store.save_metadata(&current)?;
+        Ok(snapshot
+            .map(|snapshot| snapshot.messages)
+            .unwrap_or_default())
+    }
+
+    fn update_history_status(&self, summary: &NativeAiSessionSummary) -> AiResult<()> {
+        if let Some(store) = self.history_store()? {
+            if store.has_session(&summary.session_id) {
+                let mut metadata = store.load_metadata(&summary.session_id)?;
+                metadata.runtime_session_id = summary.runtime_session_id.clone();
+                metadata.status = summary.status.clone();
+                metadata.title = summary.title.clone();
+                metadata.updated_at = summary.updated_at.clone();
+                if summary.status == NativeAiSessionStatus::Closed {
+                    metadata.closed_at = Some(summary.updated_at.clone());
+                }
+                store.save_metadata(&metadata)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn flush_history_messages(&self, session_id: &comando_types::ids::SessionId) -> AiResult<()> {
+        let Some(store) = self.history_store()? else {
+            return Ok(());
+        };
+        if !store.has_session(session_id) {
+            return Ok(());
+        }
+        let messages = self
+            .history_messages
+            .lock()
+            .map_err(|error| {
+                AiError::Internal(format!("AI history messages lock failed: {error}"))
+            })?
+            .get(&session_id.0)
+            .cloned()
+            .unwrap_or_default();
+        store.save_transcript_window(session_id, messages)
+    }
+
+    fn push_history_user_message(
+        &self,
+        session_id: &comando_types::ids::SessionId,
+        message_id: &str,
+        content: &str,
+    ) -> AiResult<()> {
+        let message = json!({
+            "attachments": [],
+            "content": content,
+            "createdAt": now_iso8601(),
+            "id": message_id,
+            "kind": "user",
+            "status": "completed"
+        });
+        self.history_messages
+            .lock()
+            .map_err(|error| {
+                AiError::Internal(format!("AI history messages lock failed: {error}"))
+            })?
+            .entry(session_id.0.clone())
+            .or_default()
+            .push(message);
+        self.flush_history_messages(session_id)
+    }
+
+    fn record_history_message_started(&self, payload: &Value) -> AiResult<()> {
+        let Some((session_id, message_id, message_kind, updated_at)) =
+            history_message_identity(payload)
+        else {
+            return Ok(());
+        };
+        let content = payload
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let mut messages = self.history_messages.lock().map_err(|error| {
+            AiError::Internal(format!("AI history messages lock failed: {error}"))
+        })?;
+        upsert_history_message(
+            messages.entry(session_id.0.clone()).or_default(),
+            json!({
+                "attachments": [],
+                "content": content,
+                "createdAt": updated_at,
+                "id": message_id,
+                "kind": message_kind,
+                "status": "streaming"
+            }),
+        );
+        drop(messages);
+        self.flush_history_messages(&session_id)
+    }
+
+    fn record_history_message_delta(&self, payload: &Value) -> AiResult<()> {
+        let Some((session_id, message_id, message_kind, updated_at)) =
+            history_message_identity(payload)
+        else {
+            return Ok(());
+        };
+        let content = payload
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let mut messages = self.history_messages.lock().map_err(|error| {
+            AiError::Internal(format!("AI history messages lock failed: {error}"))
+        })?;
+        upsert_history_message(
+            messages.entry(session_id.0.clone()).or_default(),
+            json!({
+                "attachments": [],
+                "content": content,
+                "createdAt": updated_at,
+                "id": message_id,
+                "kind": message_kind,
+                "status": "streaming"
+            }),
+        );
+        drop(messages);
+        self.flush_history_messages(&session_id)
+    }
+
+    fn record_history_message_completed(&self, payload: &Value) -> AiResult<()> {
+        let Some((session_id, message_id, message_kind, updated_at)) =
+            history_message_identity(payload)
+        else {
+            return Ok(());
+        };
+        let mut messages = self.history_messages.lock().map_err(|error| {
+            AiError::Internal(format!("AI history messages lock failed: {error}"))
+        })?;
+        let target = messages
+            .entry(session_id.0.clone())
+            .or_default()
+            .iter_mut()
+            .find(|message| message.get("id").and_then(Value::as_str) == Some(message_id.as_str()));
+        if let Some(message) = target {
+            if let Some(object) = message.as_object_mut() {
+                object.insert("status".to_string(), Value::String("completed".to_string()));
+            }
+        } else {
+            messages
+                .entry(session_id.0.clone())
+                .or_default()
+                .push(json!({
+                    "attachments": [],
+                    "content": "",
+                    "createdAt": updated_at,
+                    "id": message_id,
+                    "kind": message_kind,
+                    "status": "completed"
+                }));
+        }
+        drop(messages);
+        self.flush_history_messages(&session_id)
+    }
+
+    fn record_history_catalog_updated(&self, payload: &Value) -> AiResult<()> {
+        let Some(session_id) = payload_session_id(payload) else {
+            return Ok(());
+        };
+        let Some(store) = self.history_store()? else {
+            return Ok(());
+        };
+        if !store.has_session(&session_id) {
+            return Ok(());
+        }
+        let mut metadata = store.load_metadata(&session_id)?;
+        if let Some(commands) = payload.get("availableCommands").and_then(Value::as_array) {
+            metadata.available_commands = commands
+                .iter()
+                .filter_map(native_available_command_to_ipc)
+                .collect();
+        }
+        if let Some(config_options) = payload.get("configOptions").and_then(Value::as_array) {
+            metadata.config_options = config_options
+                .iter()
+                .filter_map(native_config_option_to_ipc)
+                .collect();
+        }
+        metadata.updated_at = payload
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .unwrap_or(&metadata.updated_at)
+            .to_string();
+        store.save_metadata(&metadata)
+    }
+
+    fn record_history_tool_activity(&self, payload: &Value, event_name: &str) -> AiResult<()> {
+        let Some(session_id) = payload_session_id(payload) else {
+            return Ok(());
+        };
+        let activity = if event_name == AI_STATUS_EVENT {
+            let Some(event_id) = payload.get("eventId").and_then(Value::as_str) else {
+                return Ok(());
+            };
+            let updated_at = payload
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(now_iso8601);
+            json!({
+                "action": null,
+                "createdAt": updated_at,
+                "diffs": [],
+                "exitCode": null,
+                "id": event_id,
+                "kind": "status",
+                "locations": [],
+                "rawInputJson": null,
+                "rawOutputJson": null,
+                "sessionId": session_id.0,
+                "status": payload.get("status").and_then(Value::as_str).unwrap_or("pending"),
+                "summary": payload.get("detail").cloned().unwrap_or(Value::Null),
+                "terminalOutput": null,
+                "title": payload.get("title").and_then(Value::as_str).unwrap_or("Status"),
+                "updatedAt": updated_at
+            })
+        } else {
+            let Some(tool_call_id) = payload.get("toolCallId").and_then(Value::as_str) else {
+                return Ok(());
+            };
+            let updated_at = payload
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(now_iso8601);
+            json!({
+                "action": null,
+                "createdAt": updated_at,
+                "diffs": [],
+                "exitCode": null,
+                "id": tool_call_id,
+                "kind": payload.get("kind").and_then(Value::as_str).unwrap_or("tool"),
+                "locations": [],
+                "rawInputJson": null,
+                "rawOutputJson": null,
+                "sessionId": session_id.0,
+                "status": payload.get("status").and_then(Value::as_str).unwrap_or("pending"),
+                "summary": payload.get("summary").cloned().unwrap_or(Value::Null),
+                "terminalOutput": null,
+                "title": payload.get("title").and_then(Value::as_str).unwrap_or("Tool"),
+                "updatedAt": updated_at
+            })
+        };
+        if let Some(store) = self.history_store()? {
+            store.update_session_state(&session_id, |state| {
+                upsert_state_activity(&mut state.tool_activity, activity);
+            })?;
+        }
+        Ok(())
+    }
+
+    fn record_history_plan_updated(&self, payload: &Value) -> AiResult<()> {
+        let Some(session_id) = payload_session_id(payload) else {
+            return Ok(());
+        };
+        let updated_at = payload
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(now_iso8601);
+        let entries = payload
+            .get("entries")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let plan = json!({
+            "entries": entries,
+            "title": payload.get("title").cloned().unwrap_or(Value::Null),
+            "updatedAt": updated_at
+        });
+        if let Some(store) = self.history_store()? {
+            store.update_session_state(&session_id, |state| {
+                state.plan = Some(plan);
+            })?;
+        }
+        Ok(())
+    }
+
+    fn record_history_permission_request(&self, payload: &Value) -> AiResult<()> {
+        let Some(session_id) = payload_session_id(payload) else {
+            return Ok(());
+        };
+        let Some(request_id) = payload.get("requestId").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        let updated_at = payload
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(now_iso8601);
+        let options = payload
+            .get("options")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let request = json!({
+            "description": payload.get("description").cloned().unwrap_or(Value::Null),
+            "options": options,
+            "requestId": request_id,
+            "sessionId": session_id.0,
+            "title": payload.get("title").and_then(Value::as_str).unwrap_or("Permission required"),
+            "toolCallId": payload.get("toolCallId").and_then(Value::as_str).unwrap_or_default(),
+            "updatedAt": updated_at
+        });
+        if let Some(store) = self.history_store()? {
+            store.update_session_state(&session_id, |state| {
+                state.pending_permission = Some(request);
+                state.pending_user_input = None;
+            })?;
+        }
+        Ok(())
+    }
+
+    fn record_history_user_input_request(&self, payload: &Value) -> AiResult<()> {
+        let Some(session_id) = payload_session_id(payload) else {
+            return Ok(());
+        };
+        let Some(request_id) = payload.get("requestId").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        let updated_at = payload
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(now_iso8601);
+        let questions = payload
+            .get("questions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let request = json!({
+            "questions": questions,
+            "requestId": request_id,
+            "sessionId": session_id.0,
+            "title": payload.get("title").and_then(Value::as_str).unwrap_or("Input required"),
+            "toolCallId": payload.get("toolCallId").and_then(Value::as_str).unwrap_or_default(),
+            "turnId": payload.get("turnId").cloned().unwrap_or(Value::Null),
+            "updatedAt": updated_at
+        });
+        if let Some(store) = self.history_store()? {
+            store.update_session_state(&session_id, |state| {
+                state.pending_permission = None;
+                state.pending_user_input = Some(request);
+            })?;
+        }
+        Ok(())
+    }
+
+    fn record_history_token_usage(&self, payload: &Value) -> AiResult<()> {
+        let Some(session_id) = payload_session_id(payload) else {
+            return Ok(());
+        };
+        let updated_at = payload
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(now_iso8601);
+        let token_usage = json!({
+            "cost": payload.get("cost").cloned().unwrap_or(Value::Null),
+            "size": payload.get("size").and_then(Value::as_u64).unwrap_or(0),
+            "updatedAt": updated_at,
+            "used": payload.get("used").and_then(Value::as_u64).unwrap_or(0)
+        });
+        if let Some(store) = self.history_store()? {
+            store.update_session_state(&session_id, |state| {
+                state.token_usage = Some(token_usage);
+            })?;
+        }
+        Ok(())
+    }
+
+    fn record_history_subagent_breadcrumb(&self, payload: &Value) -> AiResult<()> {
+        let Some(session_id) = payload_session_id(payload) else {
+            return Ok(());
+        };
+        let Some(tool_call_id) = payload.get("toolCallId").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        let Some(child_session_id) = payload.get("childSessionId").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        if let Some(store) = self.history_store()? {
+            store.update_session_state(&session_id, |state| {
+                if let Some(activity) = state.tool_activity.iter_mut().find(|activity| {
+                    activity.get("id").and_then(Value::as_str) == Some(tool_call_id)
+                }) && let Some(object) = activity.as_object_mut()
+                {
+                    object.insert(
+                        "action".to_string(),
+                        json!({
+                            "kind": "open_session",
+                            "sessionId": child_session_id
+                        }),
+                    );
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    fn record_history_subagent_created(&self, payload: &Value) -> AiResult<()> {
+        let Some(store) = self.history_store()? else {
+            return Ok(());
+        };
+        let Some(child_session_id) = payload.get("childSessionId").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        let parent_session_id = payload
+            .get("parentSessionId")
+            .and_then(Value::as_str)
+            .map(|value| comando_types::ids::SessionId(value.to_string()));
+        let session_id = comando_types::ids::SessionId(child_session_id.to_string());
+        if store.has_session(&session_id) {
+            return Ok(());
+        }
+        let runtime_id = payload
+            .get("runtimeId")
+            .and_then(Value::as_str)
+            .unwrap_or("codex");
+        let title = payload
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("Subagent");
+        let parent_metadata = parent_session_id
+            .as_ref()
+            .and_then(|parent_session_id| store.load_metadata(parent_session_id).ok());
+        let mut metadata = AiHistorySessionMetadata::new_native(AiHistorySessionMetadataInput {
+            session_id: session_id.clone(),
+            runtime_id: comando_types::ids::RuntimeId(runtime_id.to_string()),
+            runtime_session_id: payload
+                .get("childRuntimeSessionId")
+                .and_then(Value::as_str)
+                .map(|value| comando_types::ids::RuntimeSessionId(value.to_string())),
+            parent_session_id: parent_session_id.clone(),
+            project_id: parent_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.project_id.clone()),
+            worktree_id: parent_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.worktree_id.clone()),
+            title: title.to_string(),
+            status: NativeAiSessionStatus::Idle,
+            model_id: parent_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.model_id.clone()),
+            mode_id: parent_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.mode_id.clone()),
+            config_values: parent_metadata
+                .as_ref()
+                .map(|metadata| metadata.config_values.clone())
+                .unwrap_or_default(),
+            cwd: parent_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.cwd.clone())
+                .unwrap_or_default(),
+            additional_roots: parent_metadata
+                .as_ref()
+                .map(|metadata| metadata.additional_roots.clone())
+                .unwrap_or_default(),
+        });
+        if let Some(parent_session_id) = parent_session_id {
+            metadata.subagent = Some(AiHistorySubagentMetadata {
+                parent_session_id,
+                parent_runtime_session_id: payload
+                    .get("parentRuntimeSessionId")
+                    .and_then(Value::as_str)
+                    .map(|value| comando_types::ids::RuntimeSessionId(value.to_string())),
+                nickname: Some(title.to_string()),
+            });
+        }
+        store.create_session(metadata)?;
+        self.history_messages
+            .lock()
+            .map_err(|error| {
+                AiError::Internal(format!("AI history messages lock failed: {error}"))
+            })?
+            .entry(session_id.0)
+            .or_default();
+        Ok(())
+    }
+
+    fn record_history_session_status(&self, payload: &Value) -> AiResult<()> {
+        let Some(session_id) = payload.get("sessionId").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        if let Some(store) = self.history_store()? {
+            let session_id = comando_types::ids::SessionId(session_id.to_string());
+            if store.has_session(&session_id) {
+                let mut metadata = store.load_metadata(&session_id)?;
+                let updated_at = payload
+                    .get("updatedAt")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&metadata.updated_at)
+                    .to_string();
+                if let Some(status) = payload.get("status").and_then(Value::as_str) {
+                    metadata.status = native_status_from_event(status);
+                }
+                if let Some(title) = payload.get("title").and_then(Value::as_str) {
+                    metadata.title = title.to_string();
+                }
+                if let Some(runtime_session_id) =
+                    payload.get("runtimeSessionId").and_then(Value::as_str)
+                {
+                    metadata.runtime_session_id = Some(comando_types::ids::RuntimeSessionId(
+                        runtime_session_id.to_string(),
+                    ));
+                }
+                metadata.updated_at = updated_at.clone();
+                if metadata.status == NativeAiSessionStatus::Closed {
+                    metadata.closed_at = Some(updated_at.clone());
+                }
+                store.save_metadata(&metadata)?;
+                store.update_session_state(&session_id, |state| {
+                    state.active_turn_started_at = (metadata.status
+                        == NativeAiSessionStatus::Streaming)
+                        .then(|| updated_at.clone());
+                    if metadata.status != NativeAiSessionStatus::WaitingPermission {
+                        state.pending_permission = None;
+                    }
+                    if metadata.status != NativeAiSessionStatus::WaitingUserInput {
+                        state.pending_user_input = None;
+                    }
+                    state.last_error = (metadata.status == NativeAiSessionStatus::Error)
+                        .then(|| "Native AI session failed.".to_string());
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn record_history_error(&self, payload: &Value) -> AiResult<()> {
+        let Some(session_id) = payload_session_id(payload) else {
+            return Ok(());
+        };
+        if let Some(store) = self.history_store()? {
+            if store.has_session(&session_id) {
+                let mut metadata = store.load_metadata(&session_id)?;
+                metadata.status = NativeAiSessionStatus::Error;
+                metadata.updated_at = payload
+                    .get("updatedAt")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&metadata.updated_at)
+                    .to_string();
+                store.save_metadata(&metadata)?;
+                let message = payload
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Native AI session failed.")
+                    .to_string();
+                store.update_session_state(&session_id, |state| {
+                    state.active_turn_started_at = None;
+                    state.last_error = Some(message);
+                    state.pending_permission = None;
+                    state.pending_user_input = None;
+                })?;
+            }
+        }
+        Ok(())
+    }
 }
 
 trait Pipe: Sized {
@@ -372,6 +1084,151 @@ trait Pipe: Sized {
 }
 
 impl<T> Pipe for T {}
+
+fn history_message_identity(
+    payload: &Value,
+) -> Option<(comando_types::ids::SessionId, String, String, String)> {
+    Some((
+        comando_types::ids::SessionId(payload.get("sessionId")?.as_str()?.to_string()),
+        payload.get("messageId")?.as_str()?.to_string(),
+        payload
+            .get("messageKind")
+            .and_then(Value::as_str)
+            .unwrap_or("assistant")
+            .to_string(),
+        payload
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(now_iso8601),
+    ))
+}
+
+fn payload_session_id(payload: &Value) -> Option<comando_types::ids::SessionId> {
+    payload
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(|value| comando_types::ids::SessionId(value.to_string()))
+}
+
+fn upsert_history_message(messages: &mut Vec<Value>, next: Value) {
+    let Some(message_id) = next.get("id").and_then(Value::as_str) else {
+        return;
+    };
+    if let Some(current) = messages
+        .iter_mut()
+        .find(|message| message.get("id").and_then(Value::as_str) == Some(message_id))
+    {
+        *current = next;
+    } else {
+        messages.push(next);
+    }
+}
+
+fn upsert_state_activity(activities: &mut Vec<Value>, next: Value) {
+    let Some(activity_id) = next.get("id").and_then(Value::as_str) else {
+        return;
+    };
+    if let Some(current) = activities
+        .iter_mut()
+        .find(|activity| activity.get("id").and_then(Value::as_str) == Some(activity_id))
+    {
+        let created_at = current
+            .get("createdAt")
+            .cloned()
+            .or_else(|| next.get("createdAt").cloned());
+        *current = next;
+        if let (Some(created_at), Some(object)) = (created_at, current.as_object_mut()) {
+            object.insert("createdAt".to_string(), created_at);
+        }
+    } else {
+        activities.push(next);
+    }
+}
+
+fn native_available_command_to_ipc(command: &Value) -> Option<Value> {
+    let name = command.get("name").and_then(Value::as_str)?;
+    Some(json!({
+        "description": command.get("description").and_then(Value::as_str).unwrap_or_default(),
+        "id": name,
+        "insertText": format!("/{name} "),
+        "label": format!("/{name}")
+    }))
+}
+
+fn native_config_option_to_ipc(option: &Value) -> Option<Value> {
+    let id = option.get("id").and_then(Value::as_str)?;
+    let label = option.get("name").and_then(Value::as_str).unwrap_or(id);
+    let category = native_config_category(
+        option
+            .get("category")
+            .and_then(Value::as_str)
+            .unwrap_or("other"),
+    );
+    let description = option.get("description").cloned().unwrap_or(Value::Null);
+    match option.get("type").and_then(Value::as_str) {
+        Some("boolean") => Some(json!({
+            "category": category,
+            "description": description,
+            "id": id,
+            "label": label,
+            "type": "boolean",
+            "value": option.get("currentValue").and_then(Value::as_bool).unwrap_or(false)
+        })),
+        Some("select") => Some(json!({
+            "category": category,
+            "description": description,
+            "id": id,
+            "label": label,
+            "options": option
+                .get("options")
+                .and_then(Value::as_array)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(native_config_select_entry_to_ipc)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+            "type": "select",
+            "value": option
+                .get("currentValue")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        })),
+        _ => None,
+    }
+}
+
+fn native_config_select_entry_to_ipc(entry: &Value) -> Option<Value> {
+    let value = entry.get("value").and_then(Value::as_str)?;
+    Some(json!({
+        "description": entry.get("description").cloned().unwrap_or(Value::Null),
+        "groupLabel": entry.get("groupLabel").cloned().unwrap_or(Value::Null),
+        "label": entry.get("name").and_then(Value::as_str).unwrap_or(value),
+        "value": value
+    }))
+}
+
+fn native_config_category(category: &str) -> String {
+    match category {
+        "mode" | "model" => category.to_string(),
+        "thought_level" | "effort" => "reasoning".to_string(),
+        _ => "other".to_string(),
+    }
+}
+
+fn native_status_from_event(status: &str) -> NativeAiSessionStatus {
+    match status {
+        "streaming" => NativeAiSessionStatus::Streaming,
+        "waiting_permission" => NativeAiSessionStatus::WaitingPermission,
+        "waiting_user_input" => NativeAiSessionStatus::WaitingUserInput,
+        "review_required" => NativeAiSessionStatus::ReviewRequired,
+        "error" => NativeAiSessionStatus::Error,
+        "closed" => NativeAiSessionStatus::Closed,
+        _ => NativeAiSessionStatus::Idle,
+    }
+}
 
 fn native_config_value(value: serde_json::Value) -> AiResult<NativeAiConfigValue> {
     match value {

@@ -15,11 +15,13 @@ import type {
 import type {
     AiPermissionRequest,
     AiPermissionResponseInput,
+    AiHistorySessionSummary,
     AiPromptResult,
     AiSessionConfigOption,
     AiSessionConfigOptionMutationInput,
     AiSessionModeMutationInput,
     AiSessionModelMutationInput,
+    AiSessionPinnedMutationInput,
     AiSessionRenameMutationInput,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
@@ -28,8 +30,11 @@ import type {
     AiSessionDomainEvent,
     AiSessionSnapshot,
     AiSessionUpdate,
+    AiSessionTranscriptPage,
     AiUserInputResponseInput,
     FileBufferNotificationInput,
+    GetAiSessionTranscriptPageInput,
+    ListAiSessionHistoryInput,
     PrepareAiSessionInput,
     SendAiPromptInput,
 } from "@shared/ipc";
@@ -184,15 +189,29 @@ export interface NativeAiGateway {
     close(): Promise<void> | void;
     closeOwnedByWindow(ownerWindowId: string): Promise<void> | void;
     closeSession(sessionId: string): Promise<void>;
+    deleteSession(sessionId: string): Promise<void>;
+    listSessionHistory(
+        input: ListAiSessionHistoryInput,
+    ): Promise<readonly AiHistorySessionSummary[]>;
+    listSessionRuntimeMappingsForParent?(
+        parentSessionId: string,
+    ): Promise<readonly AiWorkerRuntimeSessionMapping[]>;
+    loadSessionSnapshot(sessionId: string): Promise<AiSessionSnapshot | null>;
+    loadSessionTranscriptPage(
+        input: GetAiSessionTranscriptPageInput,
+    ): Promise<AiSessionTranscriptPage | null>;
+    renameSession(input: AiSessionRenameMutationInput): Promise<void>;
     prepareSession(input: NativeAiPrepareSessionRpcInput): Promise<AiSessionSnapshot>;
     respondPermission(input: AiPermissionResponseInput): Promise<void>;
     respondUserInput(input: AiUserInputResponseInput): Promise<void>;
     sendPrompt(input: NativeAiSendPromptRpcInput): Promise<AiPromptResult>;
+    setSessionPinned(input: AiSessionPinnedMutationInput): Promise<void>;
     setSessionConfigOption(
         input: AiSessionConfigOptionMutationInput,
     ): Promise<void>;
     setSessionMode(input: AiSessionModeMutationInput): Promise<void>;
     setSessionModel(input: AiSessionModelMutationInput): Promise<void>;
+    shouldHandleHistory(): boolean;
     shouldHandleRuntime(runtimeId: AiRuntimeId): boolean;
 }
 

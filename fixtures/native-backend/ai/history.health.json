@@ -1,0 +1,9 @@
+{
+  "healthy": true,
+  "storageVersion": 1,
+  "nativeSessionCount": 2,
+  "legacyFallbackAvailable": true,
+  "migrationManifestExists": false,
+  "orphanedSessionDirs": 0,
+  "latestError": null
+}

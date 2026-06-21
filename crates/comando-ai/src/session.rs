@@ -30,10 +30,15 @@ impl NativeAiSession {
             ));
         }
 
+        let runtime_session_id = input
+            .launch
+            .as_ref()
+            .and_then(|launch| launch.persisted_runtime_session_id.clone());
+
         Ok(Self {
             owner_window_id: input.window_id,
             runtime_id: input.runtime_id,
-            runtime_session_id: None,
+            runtime_session_id,
             scope: SessionScope::new(
                 input.project_id,
                 input.worktree_id,

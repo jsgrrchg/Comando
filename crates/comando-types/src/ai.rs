@@ -318,6 +318,163 @@ pub struct NativeAiSessionSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeAiListSessionHistoryInput {
+    pub project_id: Option<ProjectId>,
+    #[serde(default)]
+    pub worktree_id: Option<WorktreeId>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiHistorySessionSummary {
+    pub session_id: SessionId,
+    pub parent_session_id: Option<SessionId>,
+    pub runtime_id: RuntimeId,
+    pub runtime_session_id: Option<RuntimeSessionId>,
+    pub project_id: Option<ProjectId>,
+    pub worktree_id: Option<WorktreeId>,
+    pub title: String,
+    pub preview: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub pinned_at: Option<String>,
+    pub message_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiLoadSessionTranscriptPageInput {
+    pub session_id: SessionId,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSessionTranscriptPage {
+    pub session_id: SessionId,
+    pub offset: usize,
+    pub total_messages: usize,
+    #[serde(default)]
+    pub messages: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiLoadSessionSnapshotInput {
+    pub session_id: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiListSessionRuntimeMappingsInput {
+    pub parent_session_id: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSessionSnapshot {
+    pub session_id: SessionId,
+    pub parent_session_id: Option<SessionId>,
+    pub runtime_id: RuntimeId,
+    pub runtime_session_id: Option<RuntimeSessionId>,
+    pub project_id: Option<ProjectId>,
+    pub worktree_id: Option<WorktreeId>,
+    pub title: String,
+    pub status: NativeAiSessionStatus,
+    pub updated_at: String,
+    pub active_turn_started_at: Option<String>,
+    pub closed_at: Option<String>,
+    pub last_error: Option<String>,
+    pub mode_id: Option<String>,
+    pub model_id: Option<String>,
+    pub pending_permission: Option<serde_json::Value>,
+    pub pending_user_input: Option<serde_json::Value>,
+    pub plan: Option<serde_json::Value>,
+    pub token_usage: Option<serde_json::Value>,
+    #[serde(default)]
+    pub available_commands: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub config_options: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub messages: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub modes: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub models: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub tool_activity: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub tracked_files: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSetSessionPinnedInput {
+    pub session_id: SessionId,
+    pub pinned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiDeleteSessionInput {
+    pub session_id: SessionId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiRenameSessionInput {
+    pub session_id: SessionId,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiMigrateSessionHistoryInput {
+    #[serde(default)]
+    pub source_database_path: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiHistoryMigrationError {
+    pub session_id: Option<SessionId>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiMigrateSessionHistoryOutput {
+    pub started_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+    pub migrated_sessions: usize,
+    pub skipped_sessions: usize,
+    pub failed_sessions: usize,
+    #[serde(default)]
+    pub errors: Vec<NativeAiHistoryMigrationError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiHistoryStorageHealth {
+    pub healthy: bool,
+    pub storage_version: u32,
+    pub native_session_count: usize,
+    pub legacy_fallback_available: bool,
+    pub migration_manifest_exists: bool,
+    pub orphaned_session_dirs: usize,
+    pub latest_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeAiEventBase {
     pub session_id: SessionId,
     pub runtime_id: RuntimeId,

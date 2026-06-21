@@ -1,4 +1,6 @@
 import type {
+    AiHistorySessionSummary,
+    AiMessage,
     AiPermissionResponseInput,
     AiPromptResult,
     AiRuntimeId,
@@ -7,9 +9,14 @@ import type {
     AiSessionDomainEvent,
     AiSessionModeMutationInput,
     AiSessionModelMutationInput,
+    AiSessionPinnedMutationInput,
+    AiSessionRenameMutationInput,
     AiSessionSnapshot,
     AiSessionStatus,
+    AiSessionTranscriptPage,
     AiUserInputResponseInput,
+    GetAiSessionTranscriptPageInput,
+    ListAiSessionHistoryInput,
 } from "@shared/ipc";
 import {
     nativeAiCatalogPatchToIpc,
@@ -18,7 +25,11 @@ import {
     type NativeAiCatalogPatch,
     type NativeAiCancelSessionOutput,
     type NativeAiCloseSessionOutput,
+    type NativeAiHistorySessionSummary,
     type NativeAiLaunchSpec,
+    type NativeAiRuntimeSessionMapping,
+    type NativeAiSessionSnapshot,
+    type NativeAiSessionTranscriptPage,
     type NativeAiRuntimeConnectionPayload,
     type NativeAiRuntimeStatus,
     type NativeAiSendPromptOutput,
@@ -28,6 +39,7 @@ import {
 } from "@shared/native-backend";
 
 import type {
+    AiWorkerRuntimeSessionMapping,
     NativeAiGateway as NativeAiGatewayContract,
     NativeAiPrepareSessionRpcInput,
     NativeAiSendPromptRpcInput,
@@ -35,6 +47,7 @@ import type {
 import type { NativeBackendRequester } from "./persistence";
 
 export const NATIVE_AI_ENABLED_ENV = "COMANDO_NATIVE_AI";
+export const NATIVE_AI_HISTORY_ENABLED_ENV = "COMANDO_NATIVE_AI_HISTORY";
 export const NATIVE_AI_RUNTIMES_ENV = "COMANDO_NATIVE_AI_RUNTIMES";
 
 type NativeAiClient = NativeBackendRequester & {
@@ -70,6 +83,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     readonly #client: NativeAiClient;
     readonly #disposeEventListener: () => void;
     readonly #enabledRuntimeIds: ReadonlySet<AiRuntimeId>;
+    readonly #historyEnabled: boolean;
     readonly #onDiagnostic?: (message: string) => void;
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly #onSessionEvent: (
@@ -92,6 +106,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         this.#enabledRuntimeIds = parseNativeAiRuntimeIds(
             options.env ?? process.env,
         );
+        this.#historyEnabled = shouldUseNativeAiHistory(options.env ?? process.env);
         this.#onDiagnostic = options.onDiagnostic;
         this.#onRuntimeStatus = options.onRuntimeStatus;
         this.#onSessionEvent = options.onSessionEvent;
@@ -103,6 +118,119 @@ export class NativeAiGateway implements NativeAiGatewayContract {
 
     shouldHandleRuntime(runtimeId: AiRuntimeId): boolean {
         return this.#enabledRuntimeIds.has(runtimeId);
+    }
+
+    shouldHandleHistory(): boolean {
+        return this.#historyEnabled;
+    }
+
+    async listSessionHistory(
+        input: ListAiSessionHistoryInput,
+    ): Promise<readonly AiHistorySessionSummary[]> {
+        if (!this.#historyEnabled) {
+            return [];
+        }
+        const output = await this.#client.request<unknown>(
+            "ai_list_session_history",
+            {
+                limit: input.limit ?? null,
+                projectId: input.projectId,
+                worktreeId: input.worktreeId ?? null,
+            },
+        );
+        if (!Array.isArray(output)) {
+            throw new Error("Native AI history list must be an array.");
+        }
+        return output.map((entry) =>
+            nativeHistorySummaryToIpc(
+                requireRecord(entry, "Native AI history summary") as unknown as NativeAiHistorySessionSummary,
+            ),
+        );
+    }
+
+    async listSessionRuntimeMappingsForParent(
+        parentSessionId: string,
+    ): Promise<readonly AiWorkerRuntimeSessionMapping[]> {
+        if (!this.#historyEnabled) {
+            return [];
+        }
+        const output = await this.#client.request<unknown>(
+            "ai_list_session_runtime_mappings",
+            { parentSessionId },
+        );
+        if (!Array.isArray(output)) {
+            throw new Error("Native AI runtime mappings must be an array.");
+        }
+        return output.map((entry) =>
+            nativeRuntimeMappingToIpc(
+                requireRecord(entry, "Native AI runtime mapping") as unknown as NativeAiRuntimeSessionMapping,
+            ),
+        );
+    }
+
+    async loadSessionTranscriptPage(
+        input: GetAiSessionTranscriptPageInput,
+    ): Promise<AiSessionTranscriptPage | null> {
+        if (!this.#historyEnabled) {
+            return null;
+        }
+        const output = await this.#client.request<unknown>(
+            "ai_load_session_transcript_page",
+            {
+                limit: input.limit,
+                offset: input.offset,
+                sessionId: input.sessionId,
+            },
+        );
+        if (output === null) {
+            return null;
+        }
+        return nativeTranscriptPageToIpc(
+            requireRecord(output, "Native AI transcript page") as unknown as NativeAiSessionTranscriptPage,
+        );
+    }
+
+    async loadSessionSnapshot(sessionId: string): Promise<AiSessionSnapshot | null> {
+        if (!this.#historyEnabled) {
+            return null;
+        }
+        const output = await this.#client.request<unknown>(
+            "ai_load_session_snapshot",
+            { sessionId },
+        );
+        if (output === null) {
+            return null;
+        }
+        return nativeSnapshotToIpc(
+            requireRecord(output, "Native AI session snapshot") as unknown as NativeAiSessionSnapshot,
+        );
+    }
+
+    async setSessionPinned(input: AiSessionPinnedMutationInput): Promise<void> {
+        if (!this.#historyEnabled) {
+            return;
+        }
+        await this.#client.request("ai_set_session_pinned", {
+            pinned: input.pinned,
+            sessionId: input.sessionId,
+        });
+    }
+
+    async deleteSession(sessionId: string): Promise<void> {
+        if (!this.#historyEnabled) {
+            return;
+        }
+        await this.#client.request("ai_delete_session", { sessionId });
+    }
+
+    async renameSession(input: AiSessionRenameMutationInput): Promise<void> {
+        if (!this.#historyEnabled) {
+            return;
+        }
+        await this.#client.request("ai_rename_session", {
+            sessionId: input.sessionId,
+            title: input.title,
+        });
     }
 
     async prepareSession(
@@ -601,6 +729,12 @@ export function shouldUseNativeAi(
     return env[NATIVE_AI_ENABLED_ENV] === "1";
 }
 
+export function shouldUseNativeAiHistory(
+    env: NodeJS.ProcessEnv = process.env,
+): boolean {
+    return shouldUseNativeAi(env) && env[NATIVE_AI_HISTORY_ENABLED_ENV] === "1";
+}
+
 export function shouldUseNativeAiRuntime(
     runtimeId: AiRuntimeId,
     env: NodeJS.ProcessEnv = process.env,
@@ -673,6 +807,138 @@ function nativeSessionStatusToIpc(status: string): AiSessionStatus {
         return "idle";
     }
     return "idle";
+}
+
+function nativeHistorySummaryToIpc(
+    summary: NativeAiHistorySessionSummary,
+): AiHistorySessionSummary {
+    requireString(summary.sessionId, "Native AI history summary sessionId");
+    requireString(summary.runtimeId, "Native AI history summary runtimeId");
+    requireString(summary.title, "Native AI history summary title");
+    requireString(summary.createdAt, "Native AI history summary createdAt");
+    requireString(summary.updatedAt, "Native AI history summary updatedAt");
+    requireNumber(
+        summary.messageCount,
+        "Native AI history summary messageCount",
+    );
+
+    return {
+        createdAt: summary.createdAt,
+        messageCount: summary.messageCount,
+        parentSessionId: nullableString(summary.parentSessionId),
+        pinnedAt: nullableString(summary.pinnedAt),
+        preview: nullableString(summary.preview),
+        projectId: nullableString(summary.projectId),
+        runtimeId: summary.runtimeId as AiRuntimeId,
+        runtimeSessionId: nullableString(summary.runtimeSessionId),
+        sessionId: summary.sessionId,
+        title: summary.title,
+        updatedAt: summary.updatedAt,
+        worktreeId: nullableString(summary.worktreeId),
+    };
+}
+
+function nativeRuntimeMappingToIpc(
+    mapping: NativeAiRuntimeSessionMapping,
+): AiWorkerRuntimeSessionMapping {
+    requireString(mapping.appSessionId, "Native AI runtime mapping appSessionId");
+    requireString(
+        mapping.runtimeSessionId,
+        "Native AI runtime mapping runtimeSessionId",
+    );
+    return {
+        appSessionId: mapping.appSessionId,
+        parentAppSessionId: nullableString(mapping.parentAppSessionId),
+        parentRuntimeSessionId: nullableString(mapping.parentRuntimeSessionId),
+        runtimeSessionId: mapping.runtimeSessionId,
+    };
+}
+
+function nativeTranscriptPageToIpc(
+    page: NativeAiSessionTranscriptPage,
+): AiSessionTranscriptPage {
+    requireString(page.sessionId, "Native AI transcript page sessionId");
+    requireNumber(page.offset, "Native AI transcript page offset");
+    requireNumber(page.totalMessages, "Native AI transcript page totalMessages");
+    if (!Array.isArray(page.messages)) {
+        throw new Error("Native AI transcript page messages must be an array.");
+    }
+    return {
+        messages: page.messages.map((message) =>
+            requireRecord(message, "Native AI transcript message") as unknown as AiMessage,
+        ),
+        offset: page.offset,
+        sessionId: page.sessionId,
+        totalMessages: page.totalMessages,
+    };
+}
+
+function nativeSnapshotToIpc(snapshot: NativeAiSessionSnapshot): AiSessionSnapshot {
+    requireString(snapshot.sessionId, "Native AI snapshot sessionId");
+    requireString(snapshot.runtimeId, "Native AI snapshot runtimeId");
+    requireString(snapshot.title, "Native AI snapshot title");
+    requireString(snapshot.updatedAt, "Native AI snapshot updatedAt");
+
+    return {
+        activeTurnStartedAt: nullableString(snapshot.activeTurnStartedAt),
+        availableCommands: requireRecordArray(
+            snapshot.availableCommands,
+            "Native AI snapshot availableCommands",
+        ) as unknown as AiSessionSnapshot["availableCommands"],
+        closedAt: nullableString(snapshot.closedAt),
+        configOptions: requireRecordArray(
+            snapshot.configOptions,
+            "Native AI snapshot configOptions",
+        ) as AiSessionSnapshot["configOptions"],
+        lastError: nullableString(snapshot.lastError),
+        messages: requireRecordArray(
+            snapshot.messages,
+            "Native AI snapshot messages",
+        ) as unknown as readonly AiMessage[],
+        modeId: nullableString(snapshot.modeId),
+        modes: requireRecordArray(
+            snapshot.modes,
+            "Native AI snapshot modes",
+        ) as unknown as AiSessionSnapshot["modes"],
+        modelId: nullableString(snapshot.modelId),
+        models: requireRecordArray(
+            snapshot.models,
+            "Native AI snapshot models",
+        ) as unknown as AiSessionSnapshot["models"],
+        pendingPermission: nullableRecord(
+            snapshot.pendingPermission,
+            "Native AI snapshot pendingPermission",
+        ) as AiSessionSnapshot["pendingPermission"],
+        pendingUserInput: nullableRecord(
+            snapshot.pendingUserInput,
+            "Native AI snapshot pendingUserInput",
+        ) as AiSessionSnapshot["pendingUserInput"],
+        plan: nullableRecord(
+            snapshot.plan,
+            "Native AI snapshot plan",
+        ) as AiSessionSnapshot["plan"],
+        parentSessionId: nullableString(snapshot.parentSessionId),
+        projectId: nullableString(snapshot.projectId),
+        runtimeId: snapshot.runtimeId as AiRuntimeId,
+        runtimeSessionId: nullableString(snapshot.runtimeSessionId),
+        sessionId: snapshot.sessionId,
+        status: nativeSessionStatusToIpc(snapshot.status),
+        title: snapshot.title,
+        tokenUsage: nullableRecord(
+            snapshot.tokenUsage,
+            "Native AI snapshot tokenUsage",
+        ) as AiSessionSnapshot["tokenUsage"],
+        toolActivity: requireRecordArray(
+            snapshot.toolActivity,
+            "Native AI snapshot toolActivity",
+        ) as unknown as AiSessionSnapshot["toolActivity"],
+        trackedFiles: requireRecordArray(
+            snapshot.trackedFiles,
+            "Native AI snapshot trackedFiles",
+        ) as unknown as AiSessionSnapshot["trackedFiles"],
+        updatedAt: snapshot.updatedAt,
+        worktreeId: nullableString(snapshot.worktreeId),
+    };
 }
 
 function nativeLaunchSpecFromRuntime(
@@ -777,6 +1043,38 @@ function requireRecord(value: unknown, label: string): Record<string, unknown> {
         throw new Error(`${label} must be an object.`);
     }
     return value as Record<string, unknown>;
+}
+
+function requireRecordArray(value: unknown, label: string): readonly Record<string, unknown>[] {
+    if (!Array.isArray(value)) {
+        throw new Error(`${label} must be an array.`);
+    }
+    return value.map((entry) => requireRecord(entry, label));
+}
+
+function nullableRecord(value: unknown, label: string): Record<string, unknown> | null {
+    if (value === null || value === undefined) {
+        return null;
+    }
+    return requireRecord(value, label);
+}
+
+function requireString(value: unknown, label: string): string {
+    if (typeof value !== "string") {
+        throw new Error(`${label} must be a string.`);
+    }
+    return value;
+}
+
+function nullableString(value: unknown): string | null {
+    return typeof value === "string" ? value : null;
+}
+
+function requireNumber(value: unknown, label: string): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new Error(`${label} must be a finite number.`);
+    }
+    return value;
 }
 
 function formatError(error: unknown): string {

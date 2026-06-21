@@ -8,8 +8,13 @@ agent-client-protocol.workspace = true
 comando-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+rusqlite.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
