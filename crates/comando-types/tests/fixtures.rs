@@ -140,6 +140,14 @@ fn ai_fixtures_deserialize() {
     let payload: NativeAiToolActivityPayload =
         serde_json::from_value(tool_activity.payload).expect("payload should deserialize");
     assert_eq!(payload.tool_call_id.0, "tool_1");
+    assert_eq!(
+        payload.raw_input.unwrap()["file_path"],
+        serde_json::json!("src/main.ts")
+    );
+    assert_eq!(
+        payload.raw_output.unwrap(),
+        serde_json::json!("export function main() {}\n")
+    );
 
     let catalog: NativeRpcOutput = fixture("ai/event.session_catalog_updated.json");
     let NativeRpcOutput::Event(catalog) = catalog else {

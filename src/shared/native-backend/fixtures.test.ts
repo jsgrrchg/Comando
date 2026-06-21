@@ -173,6 +173,8 @@ describe("native backend fixtures", () => {
             activity: {
                 id: "tool_1",
                 diffs: [],
+                rawInputJson: JSON.stringify({ file_path: "src/main.ts" }),
+                rawOutputJson: JSON.stringify("export function main() {}\n"),
                 status: "completed",
                 title: "Read file",
             },

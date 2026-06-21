@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
 
 import { ToolActivityItem } from "./ToolActivityItem";
+import { isFileToolActivity } from "./toolActivityKinds";
 
 const mockAiStoreState = vi.hoisted(() => ({
     current: {
@@ -143,6 +144,51 @@ function renderInteractiveToolActivityItem(
 }
 
 describe("ToolActivityItem", () => {
+    it("classifies native read_file activity as a file tool card", () => {
+        expect(
+            isFileToolActivity(
+                createActivity({
+                    kind: "read_file",
+                    locations: [],
+                    summary: "Read src/app.ts",
+                    title: "Read file",
+                }),
+                [],
+            ),
+        ).toBe(true);
+    });
+
+    it("renders raw output details for native search file tools", () => {
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "search",
+                locations: [],
+                rawOutputJson: JSON.stringify(
+                    "20/722 matches\nSidebarAgentsPanel.tsx git:clean",
+                ),
+                summary: "2 lines of output",
+                title: "List .personal",
+            }),
+            onOpenFile: async () => {},
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+        const chevronButton = container.querySelector<HTMLButtonElement>(
+            'button[aria-label="Expand details"]',
+        );
+        expect(chevronButton).not.toBeNull();
+
+        act(() => {
+            chevronButton?.click();
+        });
+
+        expect(container.textContent).toContain("20/722 matches");
+        expect(container.textContent).toContain(
+            "SidebarAgentsPanel.tsx git:clean",
+        );
+    });
+
     it("uses ChangeReviewPanel when tracked files or reviewable diffs exist", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {

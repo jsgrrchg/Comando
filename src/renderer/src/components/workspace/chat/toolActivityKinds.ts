@@ -26,6 +26,7 @@ export const FILE_TOOL_KINDS = new Set([
     "edit",
     "move",
     "read",
+    "read_file",
     "remove",
     "rename",
     "search",

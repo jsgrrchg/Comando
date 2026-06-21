@@ -634,6 +634,14 @@ function getReadToolOutput(activity: AiToolActivity): string | null {
     return null;
 }
 
+function getToolRawOutput(activity: AiToolActivity): string | null {
+    if (!activity.rawOutputJson) {
+        return null;
+    }
+
+    return getReadToolOutput(activity) ?? formatRawJson(activity.rawOutputJson);
+}
+
 function ToolDetailCodeBlock({
     accentBorder,
     backgroundColor,
@@ -882,15 +890,18 @@ function FileToolMessage({
         titleIsLink &&
         isPrimaryOpenFileTool(activity);
     const readOutput = getReadToolOutput(activity);
-    const readOutputLanguageInfo = getToolLanguageInfoFromPath(
-        titleReference?.target ??
-            activity.locations.find((location) => location.path)?.path ??
-            null,
-    );
+    const toolOutput = getToolRawOutput(activity);
+    const toolOutputLanguageInfo = readOutput
+        ? getToolLanguageInfoFromPath(
+              titleReference?.target ??
+                  activity.locations.find((location) => location.path)?.path ??
+                  null,
+          )
+        : null;
 
     const hasDetail =
-        (!!activity.summary && !readOutput) ||
-        !!readOutput ||
+        (!!activity.summary && !toolOutput) ||
+        !!toolOutput ||
         activity.locations.length > 0 ||
         activity.diffs.length > 0 ||
         pendingTrackedFiles.length > 0;
@@ -1119,19 +1130,19 @@ function FileToolMessage({
 
             {expanded ? (
                 <div className="px-3 py-1.5" style={{ fontSize: "0.78em" }}>
-                    {readOutput ? (
+                    {toolOutput ? (
                         <div className="mb-1">
                             <ToolDetailCodeBlock
                                 accentBorder={`1px solid color-mix(in srgb, ${accent} 10%, var(--color-border))`}
                                 backgroundColor={`color-mix(in srgb, ${accent} 4%, var(--color-bg-tertiary))`}
                                 color="var(--color-text-secondary)"
-                                content={readOutput}
-                                languageInfo={readOutputLanguageInfo}
+                                content={toolOutput}
+                                languageInfo={toolOutputLanguageInfo}
                                 preserveLayout
                             />
                         </div>
                     ) : null}
-                    {activity.summary && !readOutput ? (
+                    {activity.summary && !toolOutput ? (
                         <div className="mb-1">
                             <ToolDetailSummary
                                 accentBorder={`1px solid color-mix(in srgb, ${accent} 10%, var(--color-border))`}

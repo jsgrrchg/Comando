@@ -1560,6 +1560,7 @@ struct NotificationContextInner {
     subagents_by_runtime_session_id: HashMap<String, SubagentRuntimeSession>,
     synthetic_message_ids: HashMap<String, String>,
     synthetic_message_next_id: usize,
+    tool_calls: HashMap<String, ToolCall>,
 }
 
 struct PendingContentChunk {
@@ -1621,6 +1622,7 @@ impl NotificationContextInner {
             subagents_by_runtime_session_id,
             synthetic_message_ids: HashMap::new(),
             synthetic_message_next_id: 1,
+            tool_calls: HashMap::new(),
         }
     }
 
@@ -1797,6 +1799,7 @@ impl NotificationContextInner {
             return;
         }
 
+        let tool_call = self.upsert_tool_call(runtime_session_id, tool_call, meta);
         let tool_call_id = NativeToolCallId(tool_call.tool_call_id.to_string());
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
@@ -1804,7 +1807,9 @@ impl NotificationContextInner {
                 base: self.event_base_for_runtime_session(runtime_session_id),
                 kind: serde_label(&tool_call.kind),
                 status: serde_label(&tool_call.status),
-                summary: tool_call_content_summary(&tool_call.content),
+                summary: tool_call_summary(&tool_call),
+                raw_input: tool_call.raw_input.clone(),
+                raw_output: tool_call.raw_output.clone(),
                 title: tool_call.title,
                 tool_call_id: tool_call_id.clone(),
                 diffs: tool_call_content_diffs(&tool_call.content),
@@ -1823,42 +1828,62 @@ impl NotificationContextInner {
             return;
         }
 
-        let tool_call_id = NativeToolCallId(tool_call_update.tool_call_id.to_string());
+        let Some(tool_call) =
+            self.apply_tool_call_update(runtime_session_id, tool_call_update, meta)
+        else {
+            return;
+        };
+
+        let tool_call_id = NativeToolCallId(tool_call.tool_call_id.to_string());
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
             &NativeAiToolActivityPayload {
                 base: self.event_base_for_runtime_session(runtime_session_id),
-                kind: tool_call_update
-                    .fields
-                    .kind
-                    .as_ref()
-                    .map(serde_label)
-                    .unwrap_or_else(|| "other".to_string()),
-                status: tool_call_update
-                    .fields
-                    .status
-                    .as_ref()
-                    .map(serde_label)
-                    .unwrap_or_else(|| "in_progress".to_string()),
-                summary: tool_call_update
-                    .fields
-                    .content
-                    .as_deref()
-                    .and_then(tool_call_content_summary),
-                title: tool_call_update
-                    .fields
-                    .title
-                    .unwrap_or_else(|| "Tool activity".to_string()),
+                kind: serde_label(&tool_call.kind),
+                status: serde_label(&tool_call.status),
+                summary: tool_call_summary(&tool_call),
+                raw_input: tool_call.raw_input.clone(),
+                raw_output: tool_call.raw_output.clone(),
+                title: tool_call.title,
                 tool_call_id: tool_call_id.clone(),
-                diffs: tool_call_update
-                    .fields
-                    .content
-                    .as_deref()
-                    .map(tool_call_content_diffs)
-                    .unwrap_or_default(),
+                diffs: tool_call_content_diffs(&tool_call.content),
             },
         );
         self.emit_subagent_breadcrumb(runtime_session_id, tool_call_id, meta);
+    }
+
+    fn upsert_tool_call(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        mut tool_call: ToolCall,
+        meta: &Meta,
+    ) -> ToolCall {
+        merge_tool_call_meta(&mut tool_call, meta.clone());
+        let key = tool_call_state_key(runtime_session_id, &tool_call.tool_call_id.to_string());
+        self.tool_calls.insert(key, tool_call.clone());
+        tool_call
+    }
+
+    fn apply_tool_call_update(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        mut tool_call_update: ToolCallUpdate,
+        meta: &Meta,
+    ) -> Option<ToolCall> {
+        let key = tool_call_state_key(
+            runtime_session_id,
+            &tool_call_update.tool_call_id.to_string(),
+        );
+        if let Some(existing) = self.tool_calls.get_mut(&key) {
+            existing.update(tool_call_update.fields);
+            merge_tool_call_meta(existing, meta.clone());
+            return Some(existing.clone());
+        }
+
+        tool_call_update.meta = (!meta.is_empty()).then_some(meta.clone());
+        let tool_call = ToolCall::try_from(tool_call_update).ok()?;
+        self.upsert_tool_call(runtime_session_id, tool_call, meta);
+        self.tool_calls.get(&key).cloned()
     }
 
     fn complete_open_messages(&mut self) {
@@ -2434,6 +2459,21 @@ fn merged_meta(notification_meta: Option<&Meta>, update_meta: Option<&Meta>) -> 
     meta
 }
 
+fn merge_tool_call_meta(tool_call: &mut ToolCall, meta: Meta) {
+    if meta.is_empty() {
+        return;
+    }
+
+    tool_call
+        .meta
+        .get_or_insert_with(Meta::default)
+        .extend(meta);
+}
+
+fn tool_call_state_key(runtime_session_id: &RuntimeSessionId, tool_call_id: &str) -> String {
+    format!("{}::{tool_call_id}", runtime_session_id.0)
+}
+
 fn meta_string(meta: &Meta, key: &str) -> Option<String> {
     meta.get(key)
         .and_then(|value| value.as_str())
@@ -2486,6 +2526,33 @@ fn tool_call_content_summary(content: &[ToolCallContent]) -> Option<String> {
         ToolCallContent::Terminal(_) => Some("Terminal output available.".to_string()),
         _ => None,
     })
+}
+
+fn tool_call_summary(tool_call: &ToolCall) -> Option<String> {
+    tool_call_content_summary(&tool_call.content)
+        .or_else(|| raw_tool_output_summary(tool_call.raw_output.as_ref()))
+}
+
+fn raw_tool_output_summary(raw_output: Option<&serde_json::Value>) -> Option<String> {
+    let raw_output = raw_output?;
+    let output = match raw_output {
+        serde_json::Value::String(value) => value.clone(),
+        value => serde_json::to_string(value).ok()?,
+    };
+
+    if output.is_empty() {
+        return None;
+    }
+
+    if output.len() <= 100 {
+        return Some(output);
+    }
+
+    let lines = output.lines().count().max(1);
+    Some(format!(
+        "{lines} line{} of output",
+        if lines == 1 { "" } else { "s" }
+    ))
 }
 
 fn tool_call_content_diffs(content: &[ToolCallContent]) -> Vec<serde_json::Value> {
@@ -2548,6 +2615,7 @@ impl<T> MaybeUndefinedExt<T> for agent_client_protocol::schema::MaybeUndefined<T
 mod tests {
     use super::*;
     use crate::runtime::RuntimeRegistry;
+    use agent_client_protocol::schema::{ToolCallStatus, ToolCallUpdateFields, ToolKind};
     use comando_types::ai::{
         NativeAiAuthHandshakeSpec, NativeAiDesiredSelections, NativeAiPrepareSessionInput,
         NativeAiRuntimeStatus, NativeAiUserInputAnswer,
@@ -2862,6 +2930,77 @@ mod tests {
         assert_eq!(event.payload["diffs"][0]["path"], "src/main.rs");
         assert_eq!(event.payload["diffs"][0]["kind"], "update");
         assert_eq!(event.payload["diffs"][0]["hunks"][0]["newStart"], 1);
+    }
+
+    #[test]
+    fn notification_context_merges_partial_tool_updates_before_emitting_activity() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool-1", "Edit file")
+                    .kind(ToolKind::Edit)
+                    .status(ToolCallStatus::InProgress)
+                    .content(vec![ToolCallContent::Diff(
+                        agent_client_protocol::schema::Diff::new("src/main.rs", "fn main() {}\n")
+                            .old_text(""),
+                    )]),
+            ),
+        ));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+            )),
+        ));
+
+        let initial_event = receiver.recv().unwrap();
+        assert_eq!(initial_event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        let update_event = receiver.recv().unwrap();
+        assert_eq!(update_event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(update_event.payload["title"], "Edit file");
+        assert_eq!(update_event.payload["kind"], "edit");
+        assert_eq!(update_event.payload["status"], "completed");
+        assert_eq!(update_event.payload["diffs"][0]["path"], "src/main.rs");
+    }
+
+    #[test]
+    fn notification_context_projects_tool_raw_input_and_output() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool-1", "List .personal")
+                    .kind(ToolKind::Search)
+                    .status(ToolCallStatus::Completed)
+                    .raw_input(serde_json::json!({
+                        "path": ".personal"
+                    }))
+                    .raw_output(serde_json::json!(
+                        "20/722 matches\nSidebarAgentsPanel.tsx git:clean"
+                    )),
+            ),
+        ));
+
+        let event = receiver.recv().unwrap();
+        assert_eq!(event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(event.payload["rawInput"]["path"], ".personal");
+        assert_eq!(
+            event.payload["rawOutput"],
+            "20/722 matches\nSidebarAgentsPanel.tsx git:clean"
+        );
+        assert_eq!(
+            event.payload["summary"],
+            "20/722 matches\nSidebarAgentsPanel.tsx git:clean"
+        );
     }
 
     #[test]

@@ -561,8 +561,8 @@ function nativeAiToolActivityToIpc(
         id: payload.toolCallId,
         kind: payload.kind,
         locations: [],
-        rawInputJson: null,
-        rawOutputJson: null,
+        rawInputJson: stringifyNativeJson(payload.rawInput),
+        rawOutputJson: stringifyNativeJson(payload.rawOutput),
         sessionId: payload.sessionId,
         status: payload.status as AiToolActivity["status"],
         summary: payload.summary,
@@ -576,6 +576,18 @@ function nativeAiToolActivityToIpc(
         activity,
         kind: "tool-activity",
     };
+}
+
+function stringifyNativeJson(value: unknown): string | null {
+    if (value === undefined || value === null) {
+        return null;
+    }
+
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return null;
+    }
 }
 
 function nativeAiStatusEventToIpc(

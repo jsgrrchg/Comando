@@ -10,7 +10,11 @@
     "title": "Read file",
     "kind": "read_file",
     "status": "completed",
-    "summary": "Read src/main.ts"
+    "summary": "Read src/main.ts",
+    "rawInput": {
+      "file_path": "src/main.ts"
+    },
+    "rawOutput": "export function main() {}\n"
   },
   "meta": {
     "protocolVersion": 1,
