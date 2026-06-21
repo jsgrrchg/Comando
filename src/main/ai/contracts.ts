@@ -209,6 +209,7 @@ export interface NativeAiGateway {
     loadSessionTranscriptPage(
         input: GetAiSessionTranscriptPageInput,
     ): Promise<AiSessionTranscriptPage | null>;
+    loadReviewState?(sessionId: string): Promise<readonly AiTrackedFile[]>;
     notifyFileBuffer?(input: FileBufferNotificationInput): Promise<void>;
     reconcileTrackedFiles?(sessionId: string): Promise<readonly AiTrackedFile[]>;
     rejectAllTrackedFiles?(input: AiWorkerReviewSessionRpcInput<string>): Promise<AiWorkerReviewMutationResult>;

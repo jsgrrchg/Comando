@@ -180,6 +180,17 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         return nativeReviewCommandTrackedFiles(output);
     }
 
+    async loadReviewState(sessionId: string): Promise<readonly AiTrackedFile[]> {
+        if (!this.#reviewEnabled) {
+            return [];
+        }
+        const output = await this.#client.request<NativeAiReviewCommandOutput>(
+            "ai_load_review_state",
+            { sessionId },
+        );
+        return nativeReviewCommandTrackedFiles(output);
+    }
+
     async keepTrackedFile(
         input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
     ): Promise<AiWorkerReviewMutationResult> {
@@ -332,9 +343,24 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         if (output === null) {
             return null;
         }
-        return nativeSnapshotToIpc(
+        const snapshot = nativeSnapshotToIpc(
             requireRecord(output, "Native AI session snapshot") as unknown as NativeAiSessionSnapshot,
         );
+        if (!this.#reviewEnabled) {
+            return snapshot;
+        }
+        try {
+            const trackedFiles = await this.loadReviewState(sessionId);
+            return {
+                ...snapshot,
+                trackedFiles,
+            };
+        } catch (error) {
+            this.#reportDiagnostic(
+                `Native AI review state load failed: ${formatError(error)}`,
+            );
+            return snapshot;
+        }
     }
 
     async setSessionPinned(input: AiSessionPinnedMutationInput): Promise<void> {
@@ -1090,10 +1116,9 @@ function nativeSnapshotToIpc(snapshot: NativeAiSessionSnapshot): AiSessionSnapsh
             snapshot.toolActivity,
             "Native AI snapshot toolActivity",
         ) as unknown as AiSessionSnapshot["toolActivity"],
-        trackedFiles: requireRecordArray(
-            snapshot.trackedFiles,
-            "Native AI snapshot trackedFiles",
-        ) as unknown as AiSessionSnapshot["trackedFiles"],
+        trackedFiles: Array.isArray(snapshot.trackedFiles)
+            ? snapshot.trackedFiles.map(nativeReviewTrackedFileToIpc)
+            : [],
         updatedAt: snapshot.updatedAt,
         worktreeId: nullableString(snapshot.worktreeId),
     };

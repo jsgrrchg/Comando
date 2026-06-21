@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::hunks::{compute_line_diff, normalize_review_text};
+use crate::review::{ReviewTrackedFile, tracked_current_text, tracked_diff_base};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -71,11 +72,61 @@ pub struct LineRange {
     pub end: u32,
 }
 
+fn empty_text_range_patch() -> TextRangePatch {
+    TextRangePatch { spans: Vec::new() }
+}
+
+fn merge_overlapping_line_edits(edits: Vec<LineEdit>) -> Vec<LineEdit> {
+    if edits.len() <= 1 {
+        return edits;
+    }
+
+    let mut sorted = edits;
+    sorted.sort_by(|left, right| {
+        left.new_start
+            .cmp(&right.new_start)
+            .then(left.new_end.cmp(&right.new_end))
+            .then(left.old_start.cmp(&right.old_start))
+            .then(left.old_end.cmp(&right.old_end))
+    });
+
+    let mut merged = vec![sorted[0].clone()];
+    for edit in sorted.into_iter().skip(1) {
+        let previous = merged.last_mut().expect("merged contains first edit");
+        let overlaps_old = ranges_overlap(
+            previous.old_start,
+            previous.old_end,
+            edit.old_start,
+            edit.old_end,
+        );
+        let overlaps_new = ranges_overlap(
+            previous.new_start,
+            previous.new_end,
+            edit.new_start,
+            edit.new_end,
+        );
+
+        if overlaps_old || overlaps_new {
+            previous.old_start = previous.old_start.min(edit.old_start);
+            previous.old_end = previous.old_end.max(edit.old_end);
+            previous.new_start = previous.new_start.min(edit.new_start);
+            previous.new_end = previous.new_end.max(edit.new_end);
+        } else {
+            merged.push(edit);
+        }
+    }
+    merged
+}
+
 pub fn build_text_range_patch_from_texts(
     old_text: &str,
     new_text: &str,
     line_patch: Option<&LinePatch>,
 ) -> TextRangePatch {
+    if normalize_review_text(old_text) == normalize_review_text(new_text) {
+        return empty_text_range_patch();
+    }
+
     let owned_patch;
     let patch = match line_patch {
         Some(patch) => patch,
@@ -152,10 +203,24 @@ pub fn derive_line_patch_from_text_ranges(
     let edits = spans
         .iter()
         .map(|span| {
-            let old_range =
-                span_part_to_line_range(&base_line_starts, span.base_from, span.base_to);
-            let new_range =
-                span_part_to_line_range(&current_line_starts, span.current_from, span.current_to);
+            let old_range = span_part_to_line_range(
+                base_text,
+                &base_line_starts,
+                span.base_from,
+                span.base_to,
+                current_text,
+                span.current_from,
+                span.current_to,
+            );
+            let new_range = span_part_to_line_range(
+                current_text,
+                &current_line_starts,
+                span.current_from,
+                span.current_to,
+                base_text,
+                span.base_from,
+                span.base_to,
+            );
             LineEdit {
                 old_start: old_range.start,
                 old_end: old_range.end,
@@ -164,63 +229,84 @@ pub fn derive_line_patch_from_text_ranges(
             }
         })
         .collect();
-    LinePatch { edits }
+    LinePatch {
+        edits: merge_overlapping_line_edits(edits),
+    }
 }
 
-pub fn sync_derived_line_patch(
-    file: &crate::review::ReviewTrackedFile,
-) -> crate::review::ReviewTrackedFile {
+pub fn sync_derived_line_patch(file: &ReviewTrackedFile) -> ReviewTrackedFile {
     let mut next = file.clone();
-    let base = file
-        .diff_base
-        .as_deref()
-        .unwrap_or(file.old_text.as_deref().unwrap_or(""));
-    let current = file
-        .current_text
-        .as_deref()
-        .unwrap_or(file.new_text.as_deref().unwrap_or(""));
-    next.hunks = crate::hunks::compute_diff_hunks(base, current, &file.path);
+    let base = tracked_diff_base(file);
+    let current = tracked_current_text(file);
+    let spans = file
+        .spans
+        .clone()
+        .unwrap_or_else(|| build_text_range_patch_from_texts(&base, &current, None));
+    next.hunks = crate::hunks::compute_diff_hunks(&base, &current, &file.path);
+    next.diff_base = Some(base);
+    next.current_text = Some(current);
+    next.spans = Some(spans);
     next
 }
 
 pub fn keep_exact_spans(
-    file: &crate::review::ReviewTrackedFile,
-    _spans: &[AgentTextSpan],
-) -> Option<crate::review::ReviewTrackedFile> {
-    Some(sync_derived_line_patch(file))
+    file: &ReviewTrackedFile,
+    selected_spans: &[AgentTextSpan],
+) -> Option<ReviewTrackedFile> {
+    let synced = sync_derived_line_patch(file);
+    let base = tracked_diff_base(&synced);
+    let current = tracked_current_text(&synced);
+    let current_spans = synced
+        .spans
+        .clone()
+        .unwrap_or_else(empty_text_range_patch)
+        .spans;
+    let (_, remaining_spans) = partition_spans_by_exact(&current_spans, selected_spans);
+    let next_base = rebuild_diff_base_from_pending_spans(&base, &current, &remaining_spans);
+    let next_spans = if remaining_spans.is_empty() {
+        empty_text_range_patch()
+    } else {
+        build_text_range_patch_from_texts(&next_base, &current, None)
+    };
+    refresh_review_file(&synced, next_base, current, Some(next_spans))
 }
 
 pub fn reject_exact_spans(
-    file: &crate::review::ReviewTrackedFile,
-    _spans: &[AgentTextSpan],
-) -> Option<crate::review::ReviewTrackedFile> {
-    Some(sync_derived_line_patch(file))
+    file: &ReviewTrackedFile,
+    selected_spans: &[AgentTextSpan],
+) -> Option<ReviewTrackedFile> {
+    let synced = sync_derived_line_patch(file);
+    let base = tracked_diff_base(&synced);
+    let current = tracked_current_text(&synced);
+    let current_spans = synced
+        .spans
+        .clone()
+        .unwrap_or_else(empty_text_range_patch)
+        .spans;
+    let (rejected_spans, remaining_spans) =
+        partition_spans_by_exact(&current_spans, selected_spans);
+    let next_current = rebuild_diff_base_from_pending_spans(&base, &current, &rejected_spans);
+    let next_spans = if remaining_spans.is_empty() {
+        empty_text_range_patch()
+    } else {
+        build_text_range_patch_from_texts(&base, &next_current, None)
+    };
+    refresh_review_file(&synced, base, next_current, Some(next_spans))
 }
 
-pub fn reject_all_edits(
-    file: &crate::review::ReviewTrackedFile,
-) -> Option<crate::review::ReviewTrackedFile> {
-    let mut next = file.clone();
-    let base = file
-        .diff_base
-        .as_deref()
-        .unwrap_or(file.old_text.as_deref().unwrap_or(""));
-    next.current_text = Some(base.to_string());
-    next.new_text = if file.old_text.is_none() && base.is_empty() {
-        None
-    } else {
-        Some(base.to_string())
-    };
-    next.hunks.clear();
-    None
+pub fn reject_all_edits(file: &ReviewTrackedFile) -> Option<ReviewTrackedFile> {
+    let synced = sync_derived_line_patch(file);
+    let base = tracked_diff_base(&synced);
+    refresh_review_file(&synced, base.clone(), base, Some(empty_text_range_patch()))
 }
 
 pub fn apply_non_conflicting_edits(
-    file: &crate::review::ReviewTrackedFile,
+    file: &ReviewTrackedFile,
     user_edits: &[TextEdit],
     new_full_text: &str,
-) -> Result<crate::review::ReviewTrackedFile, String> {
-    let spans = file
+) -> Result<ReviewTrackedFile, String> {
+    let synced = sync_derived_line_patch(file);
+    let spans = synced
         .spans
         .as_ref()
         .map(|patch| patch.spans.as_slice())
@@ -238,14 +324,38 @@ pub fn apply_non_conflicting_edits(
         return Err("unsafe_rebase".to_string());
     }
 
-    let mut next = file.clone();
-    next.current_text = Some(new_full_text.to_string());
-    next.hunks = crate::hunks::compute_diff_hunks(
-        next.diff_base.as_deref().unwrap_or_default(),
-        new_full_text,
-        &next.path,
-    );
-    Ok(next)
+    let base = tracked_diff_base(&synced);
+    let surviving_spans = spans
+        .iter()
+        .map(|span| map_agent_span_through_text_edits(span, user_edits))
+        .collect::<Result<Vec<_>, _>>()?;
+    let next_base = if surviving_spans.is_empty() {
+        new_full_text.to_string()
+    } else {
+        rebuild_diff_base_from_pending_spans(&base, new_full_text, &surviving_spans)
+    };
+    let next_spans = if surviving_spans.is_empty() {
+        empty_text_range_patch()
+    } else {
+        build_text_range_patch_from_texts(&next_base, new_full_text, None)
+    };
+
+    Ok(refresh_review_file(
+        &synced,
+        next_base,
+        new_full_text.to_string(),
+        Some(next_spans),
+    )
+    .unwrap_or_else(|| {
+        let mut next = synced.clone();
+        next.diff_base = Some(new_full_text.to_string());
+        next.current_text = Some(new_full_text.to_string());
+        next.new_text = Some(new_full_text.to_string());
+        next.hunks.clear();
+        next.spans = Some(empty_text_range_patch());
+        next.version = Some(next.version.unwrap_or(1).saturating_add(1));
+        next
+    }))
 }
 
 pub fn map_text_position_through_edits(position: u32, edits: &[TextEdit], assoc: i32) -> u32 {
@@ -285,8 +395,8 @@ pub fn map_agent_span_through_text_edits(
     Ok(AgentTextSpan {
         base_from: span.base_from,
         base_to: span.base_to,
-        current_from: map_text_position_through_edits(span.current_from, edits, -1),
-        current_to: map_text_position_through_edits(span.current_to, edits, 1),
+        current_from: map_text_position_through_edits(span.current_from, edits, 1),
+        current_to: map_text_position_through_edits(span.current_to, edits, -1),
     })
 }
 
@@ -298,7 +408,32 @@ pub fn rebuild_diff_base_from_pending_spans(
     if spans.is_empty() {
         return current_text.to_string();
     }
-    original_diff_base.to_string()
+
+    let original_units = utf16_units(original_diff_base);
+    let current_units = utf16_units(current_text);
+    let mut sorted_spans = spans.to_vec();
+    sorted_spans.sort_by_key(|span| span.current_from);
+
+    let mut parts = Vec::new();
+    let mut cursor = 0u32;
+    for span in sorted_spans {
+        let cur_from = (cursor as usize).min(current_units.len());
+        let cur_to = (span.current_from as usize).min(current_units.len());
+        if cur_from < cur_to {
+            parts.extend_from_slice(&current_units[cur_from..cur_to]);
+        }
+
+        let base_from = (span.base_from as usize).min(original_units.len());
+        let base_to = (span.base_to as usize).min(original_units.len());
+        if base_from < base_to {
+            parts.extend_from_slice(&original_units[base_from..base_to]);
+        }
+        cursor = span.current_to;
+    }
+
+    let tail_start = (cursor as usize).min(current_units.len());
+    parts.extend_from_slice(&current_units[tail_start..]);
+    String::from_utf16_lossy(&parts)
 }
 
 pub fn partition_spans_by_overlap(
@@ -311,7 +446,15 @@ pub fn partition_spans_by_overlap(
     let mut overlapping = Vec::new();
     let mut non_overlapping = Vec::new();
     for span in spans {
-        let line_range = span_part_to_line_range(&base_line_starts, span.base_from, span.base_to);
+        let line_range = span_part_to_line_range(
+            base_text,
+            &base_line_starts,
+            span.base_from,
+            span.base_to,
+            _current_text,
+            span.current_from,
+            span.current_to,
+        );
         if ranges
             .iter()
             .any(|range| ranges_overlap(line_range.start, line_range.end, range.start, range.end))
@@ -322,6 +465,78 @@ pub fn partition_spans_by_overlap(
         }
     }
     (overlapping, non_overlapping)
+}
+
+fn partition_spans_by_exact(
+    spans: &[AgentTextSpan],
+    selected_spans: &[AgentTextSpan],
+) -> (Vec<AgentTextSpan>, Vec<AgentTextSpan>) {
+    if spans.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    if selected_spans.is_empty() {
+        return (Vec::new(), spans.to_vec());
+    }
+
+    let mut selected = Vec::new();
+    let mut remaining = Vec::new();
+    for span in spans.iter().cloned() {
+        if selected_spans.contains(&span) {
+            selected.push(span);
+        } else {
+            remaining.push(span);
+        }
+    }
+    (selected, remaining)
+}
+
+fn refresh_review_file(
+    file: &ReviewTrackedFile,
+    diff_base: String,
+    current_text: String,
+    spans: Option<TextRangePatch>,
+) -> Option<ReviewTrackedFile> {
+    if normalize_review_text(&diff_base) == normalize_review_text(&current_text)
+        && file.previous_path.is_none()
+    {
+        return None;
+    }
+
+    let old_text = finalize_text_side(file.old_text.as_ref(), &diff_base);
+    let new_text = finalize_text_side(file.new_text.as_ref(), &current_text);
+    let mut next = file.clone();
+    next.diff_base = Some(diff_base);
+    next.current_text = Some(current_text);
+    next.old_text = old_text.clone();
+    next.new_text = new_text.clone();
+    next.kind = crate::review::infer_kind(
+        next.previous_path.as_deref(),
+        old_text.as_deref(),
+        new_text.as_deref(),
+    );
+    next.hunks = crate::hunks::compute_diff_hunks(
+        next.diff_base.as_deref().unwrap_or_default(),
+        next.current_text.as_deref().unwrap_or_default(),
+        &next.path,
+    );
+    next.hunks_are_anchored = None;
+    next.spans = spans.or_else(|| {
+        Some(build_text_range_patch_from_texts(
+            next.diff_base.as_deref().unwrap_or_default(),
+            next.current_text.as_deref().unwrap_or_default(),
+            None,
+        ))
+    });
+    next.version = Some(next.version.unwrap_or(1).saturating_add(1));
+    Some(next)
+}
+
+fn finalize_text_side(original_value: Option<&String>, next_value: &str) -> Option<String> {
+    if original_value.is_none() && next_value.is_empty() {
+        None
+    } else {
+        Some(next_value.to_string())
+    }
 }
 
 fn ranges_overlap(a_start: u32, a_end: u32, b_start: u32, b_end: u32) -> bool {
@@ -368,14 +583,95 @@ fn line_index_at_offset(line_starts: &[u32], offset: u32) -> u32 {
     best
 }
 
-fn span_part_to_line_range(line_starts: &[u32], from: u32, to: u32) -> LineRange {
-    if from == to {
-        let line = line_index_at_offset(line_starts, from);
+fn insertion_line_index_at_offset(line_starts: &[u32], offset: u32) -> u32 {
+    let mut low = 0usize;
+    let mut high = line_starts.len();
+    while low < high {
+        let mid = (low + high) / 2;
+        if line_starts[mid] < offset {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    low as u32
+}
+
+fn contains_newline(text: &str, from: u32, to: u32) -> bool {
+    let units = utf16_units(text);
+    let start = (from as usize).min(units.len());
+    let end = (to as usize).min(units.len());
+    if start >= end {
+        return false;
+    }
+    units[start..end].contains(&(b'\n' as u16))
+}
+
+fn is_line_boundary(text: &str, offset: u32) -> bool {
+    let units = utf16_units(text);
+    if offset == 0 || offset >= units.len() as u32 {
+        return true;
+    }
+    units[offset as usize - 1] == b'\n' as u16
+}
+
+fn is_single_line_text_range(line_starts: &[u32], from: u32, to: u32) -> bool {
+    if from >= to {
+        return true;
+    }
+    line_index_at_offset(line_starts, from) == line_index_at_offset(line_starts, to - 1)
+}
+
+fn span_part_to_line_range(
+    text: &str,
+    line_starts: &[u32],
+    from: u32,
+    to: u32,
+    counterpart_text: &str,
+    counterpart_from: u32,
+    counterpart_to: u32,
+) -> LineRange {
+    if from == to && counterpart_from == counterpart_to {
+        let line = insertion_line_index_at_offset(line_starts, from);
         return LineRange {
             start: line,
             end: line,
         };
     }
+
+    if from == to {
+        let inline_single_line_insert =
+            !contains_newline(counterpart_text, counterpart_from, counterpart_to)
+                && !is_line_boundary(text, from)
+                && !is_line_boundary(counterpart_text, counterpart_from);
+
+        if inline_single_line_insert {
+            let line = line_index_at_offset(line_starts, from.saturating_sub(1));
+            return LineRange {
+                start: line,
+                end: line + 1,
+            };
+        }
+
+        let point = insertion_line_index_at_offset(line_starts, from);
+        return LineRange {
+            start: point,
+            end: point,
+        };
+    }
+
+    let inline_single_line_change = !contains_newline(text, from, to)
+        && !contains_newline(counterpart_text, counterpart_from, counterpart_to)
+        && is_single_line_text_range(line_starts, from, to);
+
+    if inline_single_line_change {
+        let line = line_index_at_offset(line_starts, from);
+        return LineRange {
+            start: line,
+            end: line + 1,
+        };
+    }
+
     LineRange {
         start: line_index_at_offset(line_starts, from),
         end: line_index_at_offset(line_starts, to.saturating_sub(1)).saturating_add(1),
@@ -406,6 +702,19 @@ fn common_suffix_length_utf16(left: &[u16], right: &[u16], prefix_length: u32) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::review::compute_tracked_file_patch;
+
+    fn tracked_file(diff_base: &str, current_text: &str) -> ReviewTrackedFile {
+        compute_tracked_file_patch(
+            "s1",
+            "test.rs",
+            None,
+            Some(diff_base.to_string()),
+            Some(current_text.to_string()),
+            "2026-06-21T00:00:00Z".to_string(),
+        )
+        .expect("tracked file")
+    }
 
     #[test]
     fn computes_utf16_span_for_emoji_edit() {
@@ -441,5 +750,120 @@ mod tests {
             new_to: 9,
         }];
         assert!(map_agent_span_through_text_edits(&span, &edits).is_err());
+    }
+
+    #[test]
+    fn rebuilds_diff_base_from_pending_spans() {
+        let rebuilt = rebuild_diff_base_from_pending_spans(
+            "foo bar baz",
+            "FOO bar BAZ",
+            &[AgentTextSpan {
+                base_from: 8,
+                base_to: 11,
+                current_from: 8,
+                current_to: 11,
+            }],
+        );
+
+        assert_eq!(rebuilt, "FOO bar baz");
+    }
+
+    #[test]
+    fn keep_exact_spans_does_not_absorb_neighbor_on_same_line() {
+        let mut file = tracked_file("foo bar baz", "FOO bar BAZ");
+        file.spans = Some(TextRangePatch {
+            spans: vec![
+                AgentTextSpan {
+                    base_from: 0,
+                    base_to: 3,
+                    current_from: 0,
+                    current_to: 3,
+                },
+                AgentTextSpan {
+                    base_from: 8,
+                    base_to: 11,
+                    current_from: 8,
+                    current_to: 11,
+                },
+            ],
+        });
+
+        let kept = keep_exact_spans(
+            &file,
+            &[AgentTextSpan {
+                base_from: 0,
+                base_to: 3,
+                current_from: 0,
+                current_to: 3,
+            }],
+        )
+        .expect("remaining review");
+
+        assert_eq!(kept.diff_base.as_deref(), Some("FOO bar baz"));
+        assert_eq!(kept.current_text.as_deref(), Some("FOO bar BAZ"));
+        assert_eq!(
+            kept.spans,
+            Some(TextRangePatch {
+                spans: vec![AgentTextSpan {
+                    base_from: 8,
+                    base_to: 11,
+                    current_from: 8,
+                    current_to: 11,
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn reject_exact_spans_does_not_revert_neighbor_on_same_line() {
+        let mut file = tracked_file("foo bar baz", "FOO bar BAZ");
+        file.spans = Some(TextRangePatch {
+            spans: vec![
+                AgentTextSpan {
+                    base_from: 0,
+                    base_to: 3,
+                    current_from: 0,
+                    current_to: 3,
+                },
+                AgentTextSpan {
+                    base_from: 8,
+                    base_to: 11,
+                    current_from: 8,
+                    current_to: 11,
+                },
+            ],
+        });
+
+        let rejected = reject_exact_spans(
+            &file,
+            &[AgentTextSpan {
+                base_from: 0,
+                base_to: 3,
+                current_from: 0,
+                current_to: 3,
+            }],
+        )
+        .expect("remaining review");
+
+        assert_eq!(rejected.diff_base.as_deref(), Some("foo bar baz"));
+        assert_eq!(rejected.current_text.as_deref(), Some("foo bar BAZ"));
+        assert_eq!(
+            rejected.spans,
+            Some(TextRangePatch {
+                spans: vec![AgentTextSpan {
+                    base_from: 8,
+                    base_to: 11,
+                    current_from: 8,
+                    current_to: 11,
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn reject_all_edits_clears_completed_review() {
+        let file = tracked_file("one\ntwo\n", "one\nTWO\n");
+
+        assert!(reject_all_edits(&file).is_none());
     }
 }

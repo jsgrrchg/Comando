@@ -16,6 +16,7 @@ import type { AiWorkerSessionLaunchInput } from "@main/ai/contracts";
 import {
     NATIVE_AI_ENABLED_ENV,
     NATIVE_AI_HISTORY_ENABLED_ENV,
+    NATIVE_AI_REVIEW_ENABLED_ENV,
     NATIVE_AI_RUNTIMES_ENV,
     NativeAiGateway,
     type NativeAiGatewayOptions,
@@ -493,6 +494,34 @@ describe("NativeAiGateway", () => {
                         worktreeId: "worktree-1",
                     } as T;
                 }
+                if (command === "ai_load_review_state") {
+                    return {
+                        changedFiles: [],
+                        conflicts: [],
+                        sessionId: "session-1",
+                        trackedFiles: [
+                            {
+                                currentText: "new\n",
+                                diffBase: "old\n",
+                                hunks: [],
+                                identityKey: "native:session-1::src/main.rs",
+                                isText: true,
+                                kind: "update",
+                                newText: "new\n",
+                                oldText: "old\n",
+                                path: "src/main.rs",
+                                previousPath: null,
+                                reviewState: "pending",
+                                reversible: true,
+                                sessionId: "session-1",
+                                toolCallId: null,
+                                updatedAt: "2026-06-20T00:00:02.000Z",
+                                version: 2,
+                            },
+                        ],
+                        updatedAt: "2026-06-20T00:00:02.000Z",
+                    } as T;
+                }
                 if (command === "ai_list_session_runtime_mappings") {
                     return [
                         {
@@ -510,6 +539,7 @@ describe("NativeAiGateway", () => {
             env: {
                 [NATIVE_AI_ENABLED_ENV]: "1",
                 [NATIVE_AI_HISTORY_ENABLED_ENV]: "1",
+                [NATIVE_AI_REVIEW_ENABLED_ENV]: "1",
             },
         });
 
@@ -526,9 +556,11 @@ describe("NativeAiGateway", () => {
                 sessionId: "session-1",
             }),
         ).resolves.toMatchObject({ totalMessages: 1 });
-        await expect(
-            gateway.loadSessionSnapshot("session-1"),
-        ).resolves.toMatchObject({ runtimeId: "opencode", sessionId: "session-1" });
+        await expect(gateway.loadSessionSnapshot("session-1")).resolves.toMatchObject({
+            runtimeId: "opencode",
+            sessionId: "session-1",
+            trackedFiles: [{ path: "src/main.rs", version: 2 }],
+        });
         await expect(
             gateway.listSessionRuntimeMappingsForParent("session-1"),
         ).resolves.toEqual([

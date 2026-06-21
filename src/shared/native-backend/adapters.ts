@@ -4,6 +4,7 @@ import type {
     AiRuntimeStatus,
     AiRuntimeSource,
     AiRuntimeState,
+    AiFileDiff,
     AiSessionConfigOption,
     AiSessionStatus,
     AiSessionDomainEvent,
@@ -532,7 +533,7 @@ function nativeAiToolActivityToIpc(
     const activity: AiToolActivity = {
         action: null,
         createdAt: payload.updatedAt,
-        diffs: [],
+        diffs: nativeFileDiffsToIpc(payload.diffs),
         exitCode: null,
         id: payload.toolCallId,
         kind: payload.kind,
@@ -709,6 +710,35 @@ export function nativeReviewTrackedFileToIpc(value: unknown): AiTrackedFile {
         toolCallId: readNullableString(record, "toolCallId"),
         updatedAt: readString(record, "updatedAt", new Date(0).toISOString()),
         ...(version !== null ? { version } : {}),
+    };
+}
+
+function nativeFileDiffsToIpc(value: unknown): readonly AiFileDiff[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.flatMap((entry) => {
+        try {
+            return [nativeFileDiffToIpc(entry)];
+        } catch {
+            return [];
+        }
+    });
+}
+
+function nativeFileDiffToIpc(value: unknown): AiFileDiff {
+    const record = requireRecord(value);
+    return {
+        hunks: Array.isArray(record.hunks)
+            ? (record.hunks as AiFileDiff["hunks"])
+            : [],
+        isText: record.isText !== false,
+        kind: readTrackedFileKind(record.kind),
+        newText: readNullableString(record, "newText"),
+        oldText: readNullableString(record, "oldText"),
+        path: readString(record, "path", ""),
+        previousPath: readNullableString(record, "previousPath"),
+        reversible: record.reversible !== false,
     };
 }
 

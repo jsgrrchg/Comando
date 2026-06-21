@@ -151,6 +151,8 @@ struct NativeGitStatusEntry {
 struct RollbackBackup {
     path: PathBuf,
     content: Option<Vec<u8>>,
+    had_open_buffer: bool,
+    open_buffer_content: Option<String>,
 }
 
 impl NativeReviewService {
@@ -238,6 +240,7 @@ impl NativeReviewService {
             .get(&session.session_id.0)
             .map(|state| state.tracked_files.clone())
             .unwrap_or_default();
+        let mut conflicts = Vec::new();
         let mut tracked_file_events = Vec::new();
 
         for entry in status_entries {
@@ -246,7 +249,14 @@ impl NativeReviewService {
             let current_text = if deleted {
                 None
             } else {
-                self.read_working_tree_text(&session.scope.cwd, &entry.path)?
+                match self.read_working_tree_text(&session.scope.cwd, &entry.path) {
+                    Ok(text) => text,
+                    Err(error) if is_review_content_error(&error) => {
+                        conflicts.push(conflict_for_content_error(&entry.path, &error));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
             };
             if !deleted && current_text.is_none() && !baseline_text.known {
                 continue;
@@ -255,11 +265,17 @@ impl NativeReviewService {
             let old_text = if baseline_text.known {
                 baseline_text.text
             } else {
-                read_head_text(
+                match read_head_text(
                     &session.scope.cwd,
                     entry.previous_path.as_deref().unwrap_or(&entry.path),
-                )
-                .unwrap_or(None)
+                ) {
+                    Ok(text) => text,
+                    Err(error) if is_review_content_error(&error) => {
+                        conflicts.push(conflict_for_content_error(&entry.path, &error));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
             };
             let previous_path = entry
                 .previous_path
@@ -300,7 +316,7 @@ impl NativeReviewService {
             });
         }
 
-        let state = self.replace_state(session, tracked_files, Vec::new(), updated_at.clone())?;
+        let state = self.replace_state(session, tracked_files, conflicts, updated_at.clone())?;
         Ok(command_output(
             session.session_id.clone(),
             state.tracked_files,
@@ -460,7 +476,19 @@ impl NativeReviewService {
             self.revert_tracked_file(session, tracked_file, write_tracker)
                 .map(|paths| changed_files.extend(paths))
         }) {
-            let _ = restore_backups(backups);
+            if let Err(rollback_error) = self.restore_backups(backups, write_tracker) {
+                return Err(NativeError::new(
+                    NativeErrorCode::InternalError,
+                    format!(
+                        "Native review reject all failed and rollback could not be completed: {} Rollback error: {}",
+                        error.message, rollback_error.message
+                    ),
+                )
+                .with_details(json!({
+                    "originalError": error,
+                    "rollbackError": rollback_error
+                })));
+            }
             return Err(error);
         }
         let updated_at = now();
@@ -836,13 +864,54 @@ impl NativeReviewService {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                     Err(error) => return Err(review_io("backup review file", &resolved, error)),
                 };
+                let open_buffer_content = self.open_buffers.get(&resolved).cloned();
                 backups.push(RollbackBackup {
                     path: resolved,
                     content,
+                    had_open_buffer: open_buffer_content.is_some(),
+                    open_buffer_content,
                 });
             }
         }
         Ok(backups)
+    }
+
+    fn restore_backups(
+        &mut self,
+        backups: Vec<RollbackBackup>,
+        write_tracker: &WriteTracker,
+    ) -> Result<(), NativeError> {
+        for backup in backups.into_iter().rev() {
+            if let Some(content) = backup.content {
+                if let Some(parent) = backup.path.parent() {
+                    fs::create_dir_all(parent).map_err(|error| {
+                        review_io("restore review parent directory", parent, error)
+                    })?;
+                }
+                fs::write(&backup.path, &content)
+                    .map_err(|error| review_io("restore review file", &backup.path, error))?;
+                write_tracker.track_bytes(backup.path.clone(), &content);
+            } else if let Err(error) = fs::remove_file(&backup.path)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(review_io(
+                    "remove restored review file",
+                    &backup.path,
+                    error,
+                ));
+            } else {
+                write_tracker.track_any(backup.path.clone());
+            }
+
+            if backup.had_open_buffer {
+                if let Some(content) = backup.open_buffer_content {
+                    self.open_buffers.insert(backup.path, content);
+                }
+            } else {
+                self.open_buffers.remove(&backup.path);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1001,10 +1070,14 @@ fn read_head_text(cwd: &str, relative_path: &str) -> Result<Option<String>, Nati
     if !output.status.success() {
         return Ok(None);
     }
-    ensure_review_text(
-        String::from_utf8_lossy(&output.stdout).to_string(),
-        relative_path,
-    )
+    let text = String::from_utf8(output.stdout).map_err(|_| {
+        NativeError::new(
+            NativeErrorCode::NotSupported,
+            "Cannot review this file because its encoding is unsupported.",
+        )
+        .with_details(json!({ "path": relative_path }))
+    })?;
+    ensure_review_text(text, relative_path)
 }
 
 fn read_text_file_for_review(
@@ -1109,6 +1182,30 @@ fn validate_version(
     Ok(())
 }
 
+fn is_review_content_error(error: &NativeError) -> bool {
+    matches!(
+        error.code,
+        NativeErrorCode::TooLarge | NativeErrorCode::BinaryFile | NativeErrorCode::NotSupported
+    )
+}
+
+fn content_error_reason(error: &NativeError) -> &'static str {
+    match error.code {
+        NativeErrorCode::TooLarge => "too_large",
+        NativeErrorCode::BinaryFile => "binary_file",
+        NativeErrorCode::NotSupported => "encoding_unsupported",
+        _ => "unsupported",
+    }
+}
+
+fn conflict_for_content_error(path: &str, error: &NativeError) -> NativeReviewConflict {
+    NativeReviewConflict {
+        path: path.to_string(),
+        reason: content_error_reason(error).to_string(),
+        external_change_hash: None,
+    }
+}
+
 fn revert_paths(tracked_file: &ReviewTrackedFile) -> Vec<String> {
     let mut paths = vec![tracked_file.path.clone()];
     if tracked_file.kind == ReviewTrackedFileKind::Move
@@ -1117,28 +1214,6 @@ fn revert_paths(tracked_file: &ReviewTrackedFile) -> Vec<String> {
         paths.push(previous_path.clone());
     }
     paths
-}
-
-fn restore_backups(backups: Vec<RollbackBackup>) -> Result<(), NativeError> {
-    for backup in backups.into_iter().rev() {
-        if let Some(content) = backup.content {
-            if let Some(parent) = backup.path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|error| review_io("restore review parent directory", parent, error))?;
-            }
-            fs::write(&backup.path, content)
-                .map_err(|error| review_io("restore review file", &backup.path, error))?;
-        } else if let Err(error) = fs::remove_file(&backup.path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(review_io(
-                "remove restored review file",
-                &backup.path,
-                error,
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn resolve_review_path(
@@ -1224,6 +1299,8 @@ fn now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use comando_ai::scope::SessionScope;
+    use comando_types::ai::NativeAiSessionStatus;
 
     #[test]
     fn parses_renamed_git_status_entries() {
@@ -1258,5 +1335,147 @@ mod tests {
         upsert_tracked_file(&mut files, second);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].version, Some(2));
+    }
+
+    #[test]
+    fn parses_untracked_git_status_entries() {
+        let entries = parse_git_status_output("?? new.txt\0!! ignored.log\0");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].code, "??");
+        assert_eq!(entries[0].path, "new.txt");
+        assert_eq!(entries[0].previous_path, None);
+    }
+
+    #[test]
+    fn reconciles_untracked_create_and_reject_deletes_it() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        let session = test_session(repo.path(), "s-create");
+        let mut service = service_with_app_data(repo.path());
+        service.capture_baseline(&session).expect("baseline");
+
+        let file_path = repo.path().join("new.txt");
+        fs::write(&file_path, "new file\n").expect("write new file");
+
+        let output = service
+            .reconcile_tracked_files(&session)
+            .expect("reconcile");
+        assert_eq!(output.tracked_files.len(), 1);
+        assert_eq!(output.tracked_files[0].path, "new.txt");
+        assert_eq!(output.tracked_files[0].kind, ReviewTrackedFileKind::Create);
+
+        let tracker = WriteTracker::new();
+        service
+            .reject_file(
+                &session,
+                NativeReviewFileMutationInput {
+                    session_id: session.session_id.clone(),
+                    path: "new.txt".to_string(),
+                    tracked_file_id: None,
+                    expected_version: None,
+                },
+                &tracker,
+            )
+            .expect("reject create");
+        assert!(!file_path.exists());
+    }
+
+    #[test]
+    fn reconcile_keeps_text_review_when_binary_file_conflicts() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("a.txt"), "one\n").expect("write text");
+        fs::write(repo.path().join("binary.bin"), b"plain\n").expect("write binary baseline");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+
+        let session = test_session(repo.path(), "s-binary");
+        let mut service = service_with_app_data(repo.path());
+        service.capture_baseline(&session).expect("baseline");
+
+        fs::write(repo.path().join("a.txt"), "two\n").expect("modify text");
+        fs::write(repo.path().join("binary.bin"), b"\0not text").expect("modify binary");
+
+        let output = service
+            .reconcile_tracked_files(&session)
+            .expect("reconcile");
+
+        assert_eq!(output.tracked_files.len(), 1);
+        assert_eq!(output.tracked_files[0].path, "a.txt");
+        assert_eq!(output.conflicts.len(), 1);
+        assert_eq!(output.conflicts[0].path, "binary.bin");
+        assert_eq!(output.conflicts[0].reason, "binary_file");
+    }
+
+    #[test]
+    fn reconcile_reports_invalid_head_utf8_as_conflict() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("latin1.txt"), [0xff, b'\n']).expect("write invalid utf8");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+
+        let session = test_session(repo.path(), "s-encoding");
+        let mut service = service_with_app_data(repo.path());
+        service.capture_baseline(&session).expect("baseline");
+
+        fs::write(repo.path().join("latin1.txt"), "valid now\n").expect("modify text");
+
+        let output = service
+            .reconcile_tracked_files(&session)
+            .expect("reconcile");
+
+        assert!(output.tracked_files.is_empty());
+        assert_eq!(output.conflicts.len(), 1);
+        assert_eq!(output.conflicts[0].path, "latin1.txt");
+        assert_eq!(output.conflicts[0].reason, "encoding_unsupported");
+    }
+
+    fn service_with_app_data(repo_path: &Path) -> NativeReviewService {
+        let mut service = NativeReviewService::default();
+        service.set_app_data_dir(repo_path.join(".app-data"));
+        service
+    }
+
+    fn test_session(repo_path: &Path, session_id: &str) -> NativeAiSession {
+        NativeAiSession {
+            owner_window_id: "window-1".to_string(),
+            runtime_id: "codex".into(),
+            runtime_session_id: None,
+            scope: SessionScope::new(
+                None,
+                None,
+                repo_path.to_string_lossy().to_string(),
+                Vec::new(),
+            )
+            .expect("scope"),
+            session_id: session_id.into(),
+            status: NativeAiSessionStatus::Idle,
+            title: "Test session".to_string(),
+            updated_at: now(),
+        }
+    }
+
+    fn init_git_repo(repo_path: &Path) {
+        git(repo_path, &["init"]);
+        git(repo_path, &["config", "user.email", "review@example.com"]);
+        git(repo_path, &["config", "user.name", "Review Test"]);
+    }
+
+    fn git(repo_path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(repo_path)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

@@ -750,7 +750,7 @@ impl AiEngine {
             json!({
                 "action": null,
                 "createdAt": updated_at,
-                "diffs": [],
+                "diffs": payload.get("diffs").cloned().unwrap_or_else(|| json!([])),
                 "exitCode": null,
                 "id": tool_call_id,
                 "kind": payload.get("kind").and_then(Value::as_str).unwrap_or("tool"),
@@ -1144,9 +1144,22 @@ fn upsert_state_activity(activities: &mut Vec<Value>, next: Value) {
             .get("createdAt")
             .cloned()
             .or_else(|| next.get("createdAt").cloned());
+        let existing_diffs = current.get("diffs").cloned();
+        let next_has_diffs = next
+            .get("diffs")
+            .and_then(Value::as_array)
+            .is_some_and(|diffs| !diffs.is_empty());
         *current = next;
         if let (Some(created_at), Some(object)) = (created_at, current.as_object_mut()) {
             object.insert("createdAt".to_string(), created_at);
+            if !next_has_diffs
+                && let Some(existing_diffs) = existing_diffs
+                && existing_diffs
+                    .as_array()
+                    .is_some_and(|diffs| !diffs.is_empty())
+            {
+                object.insert("diffs".to_string(), existing_diffs);
+            }
         }
     } else {
         activities.push(next);

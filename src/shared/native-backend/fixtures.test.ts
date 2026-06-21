@@ -172,8 +172,59 @@ describe("native backend fixtures", () => {
         expect(aiEvent("ai/event.tool_activity.json")).toMatchObject({
             activity: {
                 id: "tool_1",
+                diffs: [],
                 status: "completed",
                 title: "Read file",
+            },
+            kind: "tool-activity",
+        });
+        expect(
+            nativeAiEventToIpc({
+                eventName: "ai://tool-activity",
+                payload: {
+                    diffs: [
+                        {
+                            hunks: [
+                                {
+                                    id: "src/main.rs:1:1:0",
+                                    lines: [
+                                        {
+                                            id: "line:src/main.rs:1:1:0",
+                                            text: "fn main() {}",
+                                            type: "add",
+                                        },
+                                    ],
+                                    newCount: 1,
+                                    newStart: 1,
+                                    oldCount: 0,
+                                    oldStart: 1,
+                                },
+                            ],
+                            isText: true,
+                            kind: "create",
+                            newText: "fn main() {}\n",
+                            oldText: null,
+                            path: "src/main.rs",
+                            previousPath: null,
+                            reversible: true,
+                        },
+                    ],
+                    kind: "edit",
+                    runtimeId: "codex",
+                    runtimeSessionId: "runtime_1",
+                    sessionId: "session_1",
+                    status: "completed",
+                    summary: null,
+                    title: "Edit file",
+                    toolCallId: "tool_diff",
+                    updatedAt: "2026-06-20T00:00:00.000Z",
+                },
+                type: "event",
+            }),
+        ).toMatchObject({
+            activity: {
+                diffs: [{ kind: "create", path: "src/main.rs" }],
+                id: "tool_diff",
             },
             kind: "tool-activity",
         });
