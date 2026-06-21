@@ -164,7 +164,7 @@ impl AiEngine {
                 prepare_runtime_launch(&store, definition, &input)?.launch
             }
         };
-        let history_metadata =
+        let mut history_metadata =
             AiHistorySessionMetadata::new_native(AiHistorySessionMetadataInput {
                 session_id: input.session_id.clone(),
                 runtime_id: input.runtime_id.clone(),
@@ -222,6 +222,7 @@ impl AiEngine {
         let mut sessions = self.lock_sessions()?;
         let summary = sessions.insert_with_acp_controller(session, controller)?;
         drop(sessions);
+        history_metadata.runtime_session_id = summary.runtime_session_id.clone();
         let initial_history_messages = self.initialize_history_session(history_metadata)?;
         self.history_messages
             .lock()
