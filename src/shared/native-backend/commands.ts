@@ -10,9 +10,11 @@ export const NATIVE_PERSISTENCE_COMMANDS = [
     "persistence_open_store",
     "persistence_get_storage_health",
     "persistence_get_snapshot",
-    "persistence_save_workspace",
-    "persistence_load_workspace",
-    "persistence_list_projects",
+    "app_data_get_json",
+    "app_data_set_json",
+    "app_secret_get",
+    "app_secret_set",
+    "app_secret_delete",
 ] as const;
 
 export const NATIVE_PROJECT_COMMANDS = [
@@ -119,7 +121,6 @@ export const NATIVE_AI_COMMANDS = [
     "ai_send_prompt",
     "ai_cancel_session",
     "ai_close_session",
-    "ai_freeze_session",
     "ai_respond_permission",
     "ai_respond_user_input",
     "ai_set_session_model",
@@ -145,7 +146,6 @@ export const NATIVE_AI_COMMANDS = [
     "ai_keep_all_tracked_files",
     "ai_reject_all_tracked_files",
     "ai_notify_file_buffer",
-    "ai_refresh_project_scopes",
 ] as const;
 
 export const NATIVE_REVIEW_COMMANDS = [

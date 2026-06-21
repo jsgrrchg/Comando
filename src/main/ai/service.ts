@@ -1073,12 +1073,8 @@ export class AiService {
         input: AiSessionPinnedMutationInput,
     ): Promise<void> {
         if (this.#nativeAi?.shouldHandleHistory()) {
-            try {
-                await this.#nativeAi.setSessionPinned(input);
-                return;
-            } catch (error) {
-                debugBenignError("ai.service.setSessionPinned.native", error);
-            }
+            await this.#nativeAi.setSessionPinned(input);
+            return;
         }
         await this.#persistence.setSessionPinned(
             input.sessionId,
@@ -1095,6 +1091,7 @@ export class AiService {
             if (nativePage) {
                 return nativePage;
             }
+            throw new Error("The session could not be found.");
         }
         const page = await this.#persistence.loadSessionTranscriptPage(input);
         if (!page) {
@@ -1191,7 +1188,7 @@ export class AiService {
         }
     }
 
-    async refreshProjectScopes(projectId: string): Promise<void> {
+    refreshProjectScopes(projectId: string): void {
         void projectId;
     }
 
@@ -1410,12 +1407,8 @@ export class AiService {
         }
 
         if (this.#nativeAi?.shouldHandleHistory()) {
-            try {
-                await this.#nativeAi.renameSession(input);
-                return;
-            } catch (error) {
-                debugBenignError("ai.service.renameSession.native", error);
-            }
+            await this.#nativeAi.renameSession(input);
+            return;
         }
 
         await this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
@@ -1456,12 +1449,8 @@ export class AiService {
 
             this.#clearLiveSession(sessionId);
             if (this.#nativeAi?.shouldHandleHistory()) {
-                try {
-                    await this.#nativeAi.deleteSession(sessionId);
-                    return;
-                } catch (error) {
-                    debugBenignError("ai.service.deleteSession.native", error);
-                }
+                await this.#nativeAi.deleteSession(sessionId);
+                return;
             }
             await this.#persistence.deleteSession(sessionId);
         } catch (error) {
@@ -2826,18 +2815,7 @@ export class AiService {
         sessionId: string,
     ): Promise<AiSessionSnapshot | null> {
         if (this.#nativeAi?.shouldHandleHistory()) {
-            try {
-                const snapshot =
-                    await this.#nativeAi.loadSessionSnapshot(sessionId);
-                if (snapshot) {
-                    return snapshot;
-                }
-            } catch (error) {
-                debugBenignError(
-                    "ai.service.loadPersistedSessionSnapshot.native",
-                    error,
-                );
-            }
+            return await this.#nativeAi.loadSessionSnapshot(sessionId);
         }
 
         return await this.#persistence.loadSessionSnapshot(sessionId);
@@ -2865,18 +2843,12 @@ export class AiService {
             this.#nativeAi?.shouldHandleHistory() &&
             this.#nativeAi.listSessionRuntimeMappingsForParent
         ) {
-            try {
-                append(
-                    await this.#nativeAi.listSessionRuntimeMappingsForParent(
-                        parentSessionId,
-                    ),
-                );
-            } catch (error) {
-                debugBenignError(
-                    "ai.service.listRuntimeMappings.native",
-                    error,
-                );
-            }
+            append(
+                await this.#nativeAi.listSessionRuntimeMappingsForParent(
+                    parentSessionId,
+                ),
+            );
+            return mappings;
         }
         append(
             (await this.#persistence.listSessionRuntimeMappingsForParent?.(

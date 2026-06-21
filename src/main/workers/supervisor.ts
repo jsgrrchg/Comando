@@ -192,7 +192,7 @@ export class RpcWorkerSupervisor<TReady> {
 
         // When the shutdown RPC succeeded, the worker is tearing down
         // its own resources. Wait for it to exit naturally so native
-        // finalizers (e.g., better-sqlite3) complete before the Isolate
+        // finalizers complete before the Isolate
         // is disposed. Fall back to terminate() only if the worker does
         // not exit in time. If connection.faulted is already set, the
         // worker has already emitted exit while we were awaiting the

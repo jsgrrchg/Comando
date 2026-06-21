@@ -10,7 +10,6 @@ import {
     shouldRequireWindowsExecutableSignature,
     verifyWindowsExecutableMetadataSnapshot,
 } from "./windows-executable-metadata.mjs";
-import { verifyPackagedWindowsNativeModules } from "./windows-native-modules.mjs";
 import {
     ensurePackagedWindowsUpdaterConfig,
     verifyPackagedWindowsUpdaterChannel,
@@ -113,14 +112,6 @@ function packageWindowsApp(
         env: toolchainEnv,
     });
 
-    const nativeModules = verifyPackagedWindowsNativeModules({
-        relativePath: relativeToRepo,
-        targetArch,
-        unpackedAppDir,
-    });
-    console.log(
-        `[package:win] Verified packaged native modules: node-pty (${nativeModules.nodePty.length}), better-sqlite3 (${nativeModules.betterSqlite3.length}).`,
-    );
     const appUpdateConfigPath = path.join(
         unpackedAppDir,
         "resources",

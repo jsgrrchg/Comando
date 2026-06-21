@@ -4,6 +4,7 @@ import {
     MessageChannelMain,
     type MessagePortMain,
 } from "electron";
+import path from "node:path";
 
 import { APP_ZOOM_FACTOR_DEFAULT, stepAppZoomFactor } from "@shared/app-zoom";
 import {
@@ -30,7 +31,6 @@ import { appChannel, appIdentity, configureMainProcessApp } from "./app-runtime"
 import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
 import type { NormalizedSessionCatalogPayload } from "./ai/session-core";
-import { createDbWorkerClient, type DbWorkerClient } from "./db/client";
 import { GitHubService } from "./github/service";
 import {
     installFilePreviewProtocol,
@@ -48,6 +48,10 @@ import {
     NativePersistenceGateway,
 } from "./native-backend/persistence";
 import { NativeAiGateway } from "./native-backend/ai";
+import {
+    createNativeAppDataClient,
+    type NativeAppDataClient,
+} from "./native-backend/app-data";
 import { NativeFsGateway } from "./native-backend/fs";
 import { NativeGitGateway, type ClosableGitGateway } from "./native-backend/git";
 import { NativeSearchGateway } from "./native-backend/index-search";
@@ -79,7 +83,7 @@ import {
 import { windowRegistry } from "./windows/registry";
 import type { WorkspaceGateway } from "./workspace/service";
 
-let dbWorkerClient: DbWorkerClient | null = null;
+let nativeAppDataClient: NativeAppDataClient | null = null;
 let bootstrapSnapshot: AppBootstrapSnapshot | null = null;
 let aiService: AiService | null = null;
 let persistenceService: PersistenceGateway | null = null;
@@ -128,22 +132,26 @@ if (!hasSingleInstanceLock) {
         .then(async () => {
             mainProcessPerformance.markAppWhenReady();
             installFilePreviewProtocol();
-            dbWorkerClient = await createDbWorkerClient({
-                appWindowTitle: appIdentity.windowTitle,
-                dataDir: app.getPath("userData"),
-            });
             await startNativeBackendRequired();
-            await openNativePersistenceRequired();
+            const databaseFile = path.join(
+                app.getPath("userData"),
+                "comando.sqlite3",
+            );
+            await openNativePersistenceRequired(databaseFile);
             if (!nativeBackendClient) {
                 throw new Error(
                     "Native backend client was not available after startup.",
                 );
             }
             const nativeClient = nativeBackendClient;
-            persistenceService = dbWorkerClient.persistence;
-            secretStore = dbWorkerClient.secretStore;
+            nativeAppDataClient = await createNativeAppDataClient({
+                client: nativeClient,
+                databaseFile,
+            });
+            persistenceService = nativeAppDataClient.persistence;
+            secretStore = nativeAppDataClient.secretStore;
             githubService = new GitHubService({ secretStore });
-            settingsService = dbWorkerClient.settings;
+            settingsService = nativeAppDataClient.settings;
             gitService = new NativeGitGateway(nativeClient);
             const projectStore = await createNativeProjectRegistryStore({
                 nativeClient,
@@ -201,7 +209,7 @@ if (!hasSingleInstanceLock) {
                 onRuntimeStatus: broadcastAiRuntimeStatus,
                 onSessionEvent: broadcastAiSessionEvent,
                 onSessionSnapshot: broadcastAiSessionSnapshot,
-                persistence: dbWorkerClient.aiPersistence,
+                persistence: nativeAppDataClient.aiPersistence,
                 projectService,
                 secretStore,
                 settingsService,
@@ -213,11 +221,11 @@ if (!hasSingleInstanceLock) {
                 projectService,
                 settingsService,
             });
-            workspaceService = dbWorkerClient.workspace;
+            workspaceService = nativeAppDataClient.workspace;
 
             bootstrapSnapshot = {
                 app: appIdentity,
-                database: dbWorkerClient.status,
+                database: nativeAppDataClient.status,
                 platform: process.platform,
                 startedAt: new Date().toISOString(),
                 versions: {
@@ -363,14 +371,14 @@ async function shutdownApplication(): Promise<void> {
 
     aiService?.close();
 
-    const dbWorkerClientToClose = dbWorkerClient;
+    const nativeAppDataClientToClose = nativeAppDataClient;
     const gitServiceToClose = gitService;
     const nativeBackendClientToClose = nativeBackendClient;
     const projectServiceToClose = projectService;
     const terminalServiceToClose = terminalService;
 
     aiService = null;
-    dbWorkerClient = null;
+    nativeAppDataClient = null;
     gitService = null;
     githubService = null;
     nativeBackendClient = null;
@@ -388,7 +396,7 @@ async function shutdownApplication(): Promise<void> {
             await nativeBackendClientToClose?.dispose();
         })(),
         projectServiceToClose?.close(),
-        dbWorkerClientToClose?.close(),
+        nativeAppDataClientToClose?.close(),
     ]);
 
     for (const result of shutdownResults) {
@@ -482,19 +490,16 @@ async function startNativeBackendRequired(): Promise<void> {
 
         throw new Error(
             `[native-backend] Native backend startup failed: ${formatError(error)}`,
+            { cause: error },
         );
     }
 }
 
-async function openNativePersistenceRequired(): Promise<void> {
+async function openNativePersistenceRequired(databaseFile: string): Promise<void> {
     if (!nativeBackendClient) {
         throw new Error(
             "Native persistence requires a running native backend sidecar.",
         );
-    }
-
-    if (!dbWorkerClient) {
-        throw new Error("The database worker must be ready before native persistence opens.");
     }
 
     const gateway = new NativePersistenceGateway(nativeBackendClient);
@@ -502,7 +507,7 @@ async function openNativePersistenceRequired(): Promise<void> {
     try {
         const opened = await gateway.openStore({
             appDataDir: app.getPath("userData"),
-            databasePath: dbWorkerClient.status.databaseFile,
+            databasePath: databaseFile,
             mode: "write",
         });
         const health = await gateway.getStorageHealth();
@@ -518,6 +523,7 @@ async function openNativePersistenceRequired(): Promise<void> {
     } catch (error) {
         throw new Error(
             `[native-backend] Native persistence startup failed: ${formatError(error)}`,
+            { cause: error },
         );
     }
 }

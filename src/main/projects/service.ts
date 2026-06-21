@@ -459,13 +459,14 @@ export class ProjectService {
 
         await this.#trackFilesystemAccess(
             resolveProjectPath(project.rootPath, input.relativePath),
-            async () =>
+            async () => {
                 await this.#nativeFs.deleteProjectEntry({
                     projectId: input.projectId,
                     relativePath: input.relativePath,
                     rootPath: project.rootPath,
                     worktreeId: project.worktreeId,
-                }),
+                });
+            },
         );
     }
 
@@ -558,8 +559,9 @@ export class ProjectService {
         return resolveProjectPath(project.rootPath, relativePath);
     }
 
-    async close(): Promise<void> {
+    close(): Promise<void> {
         this.#indexedRoots.clear();
+        return Promise.resolve();
     }
 
     handleProjectTreeInvalidation(payload: ProjectTreeInvalidation): void {

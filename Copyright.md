@@ -76,9 +76,6 @@ required notices.
 | `electron` | MIT |
 | `electron-builder` | MIT |
 | `electron-updater` | MIT |
-| `better-sqlite3` | MIT |
-| `node-pty` | MIT |
-| `simple-git` | MIT |
 | `ms` | MIT |
 
 ### Editor, Terminal, And Syntax Packages
@@ -106,7 +103,6 @@ required notices.
 | `eslint`, `@eslint/js`, `eslint-plugin-react-hooks` | MIT |
 | `typescript-eslint` | MIT |
 | `vitest` | MIT |
-| `@electron/rebuild` | MIT |
 | `@types/*` packages | MIT |
 | `globals` | MIT |
 

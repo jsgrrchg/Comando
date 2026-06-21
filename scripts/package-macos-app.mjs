@@ -226,7 +226,6 @@ function prepareWorkspace() {
     });
     fs.rmSync(macPackageRoot, { force: true, recursive: true });
     ensurePackagerCommandWrappers();
-    patchNodePtyBindingGyp(repoRoot);
 }
 
 function stagePackagedApplication() {
@@ -245,7 +244,6 @@ function stagePackagedApplication() {
     }
     materializeNestedRuntimeDependencies(copiedPackages);
 
-    patchNodePtyBindingGyp(packageAppRoot);
     writePackagedAppPackageJson(copiedPackages);
     return copiedPackages;
 }
@@ -688,7 +686,6 @@ function stageStandaloneProject(copiedPackages) {
         dereference: true,
     });
     writeStandaloneProjectPackageJson(copiedPackages);
-    patchNodePtyBindingGyp(standaloneProjectRoot);
 }
 
 function writeStandaloneProjectPackageJson(copiedPackages) {
@@ -792,7 +789,7 @@ function verifyPackagedApplication(packagedAppPath) {
                 const appPath = process.argv[1];
                 const appRequire = createRequire(path.join(appPath, "package.json"));
                 appRequire("debug");
-                for (const packageName of ["simple-git", "zod"]) {
+                for (const packageName of ["zod"]) {
                     appRequire.resolve(packageName);
                 }
             `,
@@ -1147,39 +1144,6 @@ function writeCommandWrapper(commandName, targetPath) {
 
     fs.writeFileSync(wrapperPath, script, "utf8");
     fs.chmodSync(wrapperPath, 0o755);
-}
-
-function patchNodePtyBindingGyp(searchRoot) {
-    const wrapperPath = path.join(packageToolsRoot, "node");
-    const candidatePaths = [
-        path.join(searchRoot, "node_modules", "node-pty", "binding.gyp"),
-        path.join(
-            searchRoot,
-            "node_modules",
-            ".pnpm",
-            "node-pty@1.1.0",
-            "node_modules",
-            "node-pty",
-            "binding.gyp",
-        ),
-    ];
-
-    for (const bindingGypPath of candidatePaths) {
-        if (!isFile(bindingGypPath)) {
-            continue;
-        }
-
-        const original = fs.readFileSync(bindingGypPath, "utf8");
-        const patched = original
-            .replaceAll("<!@(node ", `<!@(${wrapperPath} `)
-            .replaceAll("<!(node ", `<!(${wrapperPath} `)
-            .replaceAll(`<!@( "${wrapperPath}" `, `<!@(${wrapperPath} `)
-            .replaceAll(`<!( "${wrapperPath}" `, `<!(${wrapperPath} `);
-
-        if (patched !== original) {
-            fs.writeFileSync(bindingGypPath, patched, "utf8");
-        }
-    }
 }
 
 function resolveExecutableCandidate(candidates, missingMessage) {

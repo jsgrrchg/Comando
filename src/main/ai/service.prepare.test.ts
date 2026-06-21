@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AiRuntimeStatus, AiSessionSnapshot } from "@shared/ipc";
+import type {
+    AiRuntimeStatus,
+    AiSessionSnapshot,
+    AiSessionUpdate,
+} from "@shared/ipc";
 
 import type { NativeAiGateway } from "./contracts";
 
@@ -87,8 +91,12 @@ describe("AiService prepareSession", () => {
         const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(() =>
             Promise.resolve(nativeSnapshot),
         );
+        const loadSessionSnapshot = vi.fn<NativeAiGateway["loadSessionSnapshot"]>(
+            () => Promise.resolve(persistedSnapshot),
+        );
         const renameSession = vi.fn(() => Promise.resolve());
         const nativeAi = createNativeAi({
+            loadSessionSnapshot,
             prepareSession,
             renameSession,
         });
@@ -396,7 +404,9 @@ describe("AiService prepareSession", () => {
             Promise.resolve(snapshot),
         );
         const renameSession = vi.fn(() => Promise.resolve());
-        const onSessionSnapshot = vi.fn();
+        const onSessionSnapshot = vi.fn<
+            (ownerWindowId: string, update: AiSessionUpdate) => void
+        >();
         const saveSessionSnapshot = vi.fn();
         const service = new AiService({
             nativeAi: createNativeAi({
@@ -472,16 +482,15 @@ describe("AiService prepareSession", () => {
             title: "Manual title",
         });
         expect(saveSessionSnapshot).not.toHaveBeenCalled();
-        expect(onSessionSnapshot).toHaveBeenLastCalledWith(
-            "window-1",
-            expect.objectContaining({
-                kind: "patch",
-                patch: expect.objectContaining({
-                    changes: expect.objectContaining({ title: "Manual title" }),
-                    sessionId: "session-1",
-                }),
-            }),
-        );
+        const lastSnapshotCall = onSessionSnapshot.mock.lastCall;
+        expect(lastSnapshotCall?.[0]).toBe("window-1");
+        expect(lastSnapshotCall?.[1]).toMatchObject({
+            kind: "patch",
+            patch: {
+                changes: { title: "Manual title" },
+                sessionId: "session-1",
+            },
+        });
         expect(await service.getSessionSnapshot("session-1")).toMatchObject({
                 sessionId: "session-1",
                 title: "Manual title",

@@ -167,7 +167,7 @@ describe("AiService history", () => {
         expect(history).toEqual(expectedHistory);
     });
 
-    it("falls back to persistence when native pinning cannot find a legacy session", async () => {
+    it("propagates native pinning failures without writing fallback persistence", async () => {
         const setSessionPinned = vi.fn();
         const nativeSetSessionPinned = vi.fn(() =>
             Promise.reject(new Error("missing")),
@@ -180,13 +180,15 @@ describe("AiService history", () => {
             setSessionPinned,
         });
 
-        await service.setSessionPinned({
-            pinned: true,
-            sessionId: "session-legacy",
-        });
+        await expect(
+            service.setSessionPinned({
+                pinned: true,
+                sessionId: "session-native",
+            }),
+        ).rejects.toThrow("missing");
 
         expect(nativeSetSessionPinned).toHaveBeenCalled();
-        expect(setSessionPinned).toHaveBeenCalledWith("session-legacy", true);
+        expect(setSessionPinned).not.toHaveBeenCalled();
     });
 });
 

@@ -35,7 +35,7 @@ Comando is a multi-pane workspace designed to let AI operate as a first-class co
 
 Comando is a development environment built around three principles:
 
-- **Local-first**: all relevant state (sessions, history, workspaces, and encrypted credentials) lives on your machine in SQLite, with secrets protected by Electron `safeStorage`. No proprietary backend, no telemetry, no mandatory remote sync.
+- **Local-first**: all relevant state (sessions, history, workspaces, and encrypted credentials) lives on your machine through the Rust native backend, with secrets protected by the OS keyring. No proprietary backend, no telemetry, no mandatory remote sync.
 - **Codebase-centric**: every AI session is anchored to a specific project root, branch, or worktree.
 - **Explicit control**: edits, tool calls, and changes proposed by the AI go through a review flow before being applied. No silent auto-apply.
 
@@ -63,7 +63,7 @@ Comando implements the [Agent Client Protocol (ACP)](https://github.com/agentcli
 | **Kilo** | Kilo | External runtime | `kilo auth` |
 | **OpenCode** | SST | External runtime | OpenCode CLI auth or external provider environment |
 
-Credentials are stored encrypted via Electron's `safeStorage`.
+Credentials are stored in the native OS credential store through the Rust sidecar.
 The `stage:ai` flow currently bundles and packages the Claude and Codex runtimes; Grok, Kilo, and OpenCode are configured as external runtimes.
 Comando no longer launches a dedicated Gemini ACP runtime. To use a Gemini API key, configure it through a compatible external runtime such as Kilo or OpenCode instead of the Gemini CLI ACP path.
 The bundled Codex runtime is vendored from Zed's `codex-acp`, pinned to OpenAI Codex Rust `rust-v0.133.0`, and carries Comando-specific patches for Fast mode, subagent session projection, generated-image rendering, custom prompt expansion, and ACP metadata compatibility.
@@ -73,8 +73,7 @@ The bundled Codex runtime is vendored from Zed's `codex-acp`, pinned to OpenAI C
 - **Node.js** `^20.19.0` or `>=22.12.0`
 - **pnpm** 10.33.0 (see `packageManager` in `package.json`)
 - **Supported platforms**: macOS 15+ (universal arm64 + x64), Windows 10/11 (x64 + arm64)
-- C++ toolchain to compile native dependencies during development (`better-sqlite3`, `node-pty`)
-- Rust/Cargo when rebuilding the vendored Codex ACP runtime locally; `pnpm stage:codex-runtime` also accepts `COMANDO_CODEX_ACP_BUNDLE_BIN` when using a prebuilt binary
+- Rust/Cargo for the required native backend sidecar and when rebuilding the vendored Codex ACP runtime locally; `pnpm stage:codex-runtime` also accepts `COMANDO_CODEX_ACP_BUNDLE_BIN` when using a prebuilt binary
 - macOS packaging must run on macOS; Windows packaging must run on Windows
 
 ## Installation
@@ -91,14 +90,8 @@ pnpm install
 pnpm dev
 ```
 
-`pnpm dev` already runs `pnpm stage:ai` through the `predev` hook, so you normally do not need to run it manually.
-Run `pnpm stage:ai` yourself only if you want to refresh the staged AI runtimes ahead of time or troubleshoot packaging/runtime issues.
-
-If native dependencies fail after install:
-
-```bash
-pnpm rebuild:native
-```
+`pnpm dev` already stages the Rust sidecar and AI runtimes through the `predev` hook, so you normally do not need to run those steps manually.
+Run `pnpm native:stage` or `pnpm stage:ai` yourself only if you want to refresh staged runtime assets ahead of time or troubleshoot packaging/runtime issues.
 
 ## Scripts
 
@@ -112,10 +105,12 @@ pnpm rebuild:native
 | `pnpm test:watch` | Tests in watch mode |
 | `pnpm typecheck` | Type checking for `node` and `web` |
 | `pnpm check` | Full CI-style check (typecheck + lint + test + build) |
+| `pnpm native:build` | Build the Rust native backend sidecar |
+| `pnpm native:stage` | Stage the Rust native backend sidecar for dev/build/package flows |
+| `pnpm native:check` | Build, test, stage, verify the sidecar, and typecheck |
 | `pnpm stage:ai` | Stage bundled AI runtimes and embedded assets used by dev/build/package flows |
 | `pnpm stage:codex-runtime` | Refresh only the staged Codex runtime payload |
 | `pnpm verify:ai-runtimes` | Verify that the staged AI runtimes are valid |
-| `pnpm rebuild:native` | Rebuild `better-sqlite3` and `node-pty` |
 | `pnpm package:mac` | Build the universal macOS app and local release artifacts |
 | `pnpm package:win` | Build the Windows app for the current Windows host architecture |
 | `pnpm package:win:x64` | Build the Windows app for `x64` |
@@ -175,26 +170,26 @@ For automatic GitHub releases:
 ┌─────────────────────────────────────────────────────────────┐
 │                    Main Process (Electron)                   │
 │  ┌──────────┐  ┌─────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │   IPC    │  │   AI    │  │   Git    │  │  Terminals   │  │
-│  │ handlers │  │  (ACP)  │  │  engine  │  │   (node-pty) │  │
+│  │   IPC    │  │ Native  │  │  Thin    │  │  Native      │  │
+│  │ handlers │  │ bridge  │  │ facades  │  │ event mux    │  │
 │  └──────────┘  └─────────┘  └──────────┘  └──────────────┘  │
 │  ┌──────────┐  ┌─────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │ Projects │  │Workspace│  │ Settings │  │  SQLite      │  │
-│  │ catalog  │  │  state  │  │ + secrets│  │ (migrations) │  │
+│  │ Projects │  │Workspace│  │ Settings │  │  Renderer    │  │
+│  │ facade   │  │ facade  │  │ facade   │  │ windows      │  │
 │  └──────────┘  └─────────┘  └──────────┘  └──────────────┘  │
 └─────────────────────────────────────────────────────────────┘
                 │
                 ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  External runtimes: Grok · Kilo · OpenCode                  │
-│  (spawned as child processes, NDJSON/stdio communication)   │
+│  Rust sidecar: persistence · FS/search · git · terminals · AI│
+│  External runtimes: Grok · Kilo · OpenCode via native bridge │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 - **IPC** follows the `invoke/handle` pattern with typed contracts in `src/shared/ipc`.
-- **Streaming** (AI deltas, pty, git watchers) is published with `webContents.send()` and consumed with `ipcRenderer.on()`.
-- **Persistence** in SQLite with a `schema_migrations` table for schema versioning.
-- **Secrets** encrypted via the OS `safeStorage`.
+- **Streaming** (AI deltas, terminal output, git/watch events) is multiplexed from the native sidecar and published with `webContents.send()`.
+- **Persistence** is owned by the Rust sidecar, with Electron main retaining UI-facing facades and DTO projection.
+- **Secrets** are stored through the native OS credential store.
 
 ## Project structure
 
@@ -202,14 +197,14 @@ For automatic GitHub releases:
 src/
 ├── main/                 # Electron main process
 │   ├── ai/              # ACP client, runtimes, review flow, runtime setup
-│   ├── db/              # SQLite bootstrap
-│   ├── git/             # Git operations (simple-git)
+│   ├── db/              # Shared migration fixtures and test DB types
+│   ├── git/             # Git facade contracts
 │   ├── ipc/             # Typed IPC handlers
 │   ├── observability/   # Logging
 │   ├── persistence/     # Cross-cutting persistence helpers
 │   ├── projects/        # Project catalog and FS access
 │   ├── settings/        # Settings service + encryption
-│   ├── terminals/       # pty spawning and management
+│   ├── terminals/       # Terminal facade contracts
 │   ├── testing/         # Main-process test helpers
 │   ├── windows/         # Main and settings windows
 │   ├── workers/         # Background worker supervisor
@@ -238,8 +233,8 @@ src/
 - React 19 · TypeScript 6 · Tailwind CSS 4 · Zustand 5
 - Monaco Editor · xterm.js · CodeMirror 6 · vscode-textmate
 
-**Backend (main)**
-- better-sqlite3 · node-pty · simple-git · `@agentclientprotocol/sdk`
+**Backend**
+- Rust native sidecar · `@agentclientprotocol/sdk`
 
 **Tooling**
 - Vite 7 · Vitest 4 · ESLint 10 · `@typescript-eslint` 8
