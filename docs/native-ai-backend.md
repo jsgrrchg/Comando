@@ -161,7 +161,9 @@ The native side implements the initial lifecycle subset:
 - `ai_set_session_mode`
 - `ai_set_session_config_option`
 
-Unsupported native mutations return typed native AI errors instead of falling through to the TypeScript worker.
+Mode, model, and config mutations are sent to the ACP session with runtime ack.
+Other unsupported native mutations return typed native AI errors instead of
+falling through to the TypeScript worker.
 
 ## Implemented Events
 
