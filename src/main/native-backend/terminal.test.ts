@@ -150,9 +150,9 @@ describe("NativeTerminalGateway", () => {
 
 function createClient() {
     let listener: ((event: NativeBackendEvent) => void) | null = null;
-    const request = vi.fn(async <T = unknown>(command: string): Promise<T> => {
+    const request = vi.fn(<T = unknown>(command: string): Promise<T> => {
         if (command === "terminal_create") {
-            return {
+            return Promise.resolve({
                 cols: 82,
                 cwd: "/workspace/worktree",
                 displayName: "zsh",
@@ -168,14 +168,14 @@ function createClient() {
                 terminalId: "terminal-tab",
                 windowId: "window-1",
                 worktreeId: "worktree-1",
-            } as T;
+            } as T);
         }
 
         if (command === "terminal_list") {
-            return { sessions: [] } as T;
+            return Promise.resolve({ sessions: [] } as T);
         }
 
-        return { ok: true } as T;
+        return Promise.resolve({ ok: true } as T);
     });
 
     return {

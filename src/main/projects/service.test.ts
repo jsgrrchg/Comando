@@ -829,9 +829,9 @@ describe("ProjectService", () => {
 
     it("routes tree and file reads through native filesystem in read mode", async () => {
         const connection = createTestConnection();
-        const requestMock = vi.fn(async (command: string) => {
+        const requestMock = vi.fn((command: string) => {
             if (command === "project_list_tree_children") {
-                return {
+                return Promise.resolve({
                     entries: [
                         nativeTreeEntry({
                             name: "src",
@@ -840,17 +840,17 @@ describe("ProjectService", () => {
                             hasChildren: true,
                         }),
                     ],
-                };
-            }
-
-            if (command === "fs_read_file") {
-                return nativeReadFileResult({
-                    content: "export const nativeRead = true;\n",
-                    relativePath: "src/index.ts",
                 });
             }
 
-            throw new Error(`Unexpected command ${command}`);
+            if (command === "fs_read_file") {
+                return Promise.resolve(nativeReadFileResult({
+                    content: "export const nativeRead = true;\n",
+                    relativePath: "src/index.ts",
+                }));
+            }
+
+            return Promise.reject(new Error(`Unexpected command ${command}`));
         });
         const projectService = createProjectService(connection, undefined, {
             env: {
@@ -906,9 +906,9 @@ describe("ProjectService", () => {
 
     it("routes project list and search through native index in read mode", async () => {
         const connection = createTestConnection();
-        const requestMock = vi.fn(async (command: string) => {
+        const requestMock = vi.fn((command: string) => {
             if (command === "project_list_entries") {
-                return {
+                return Promise.resolve({
                     entries: [
                         nativeTreeEntry({
                             hasChildren: false,
@@ -918,11 +918,11 @@ describe("ProjectService", () => {
                         }),
                     ],
                     truncated: false,
-                };
+                });
             }
 
             if (command === "project_search_entries") {
-                return {
+                return Promise.resolve({
                     entries: [nativeIndexedEntry("src/native.ts")],
                     generation: 1,
                     matches: [
@@ -934,10 +934,10 @@ describe("ProjectService", () => {
                     operationId: "operation_1",
                     stats: nativeIndexStats(),
                     status: "ready",
-                };
+                });
             }
 
-            throw new Error(`Unexpected command ${command}`);
+            return Promise.reject(new Error(`Unexpected command ${command}`));
         });
         const projectService = createProjectService(connection, undefined, {
             env: {
@@ -994,9 +994,7 @@ describe("ProjectService", () => {
         const projectRoot = createTempProject(tempDirs, "native-search-fallback");
         fs.writeFileSync(path.join(projectRoot, "fallback.ts"), "fallback\n");
         const failingSearch = searchGatewayWith(
-            vi.fn(async () => {
-                throw new Error("native unavailable");
-            }),
+            vi.fn(() => Promise.reject(new Error("native unavailable"))),
         );
         const strictService = createProjectService(connection, undefined, {
             env: {
@@ -1042,9 +1040,9 @@ describe("ProjectService", () => {
 
     it("runs native search shadow parity without changing visible results", async () => {
         const connection = createTestConnection();
-        const requestMock = vi.fn(async (command: string) => {
+        const requestMock = vi.fn((command: string) => {
             if (command === "project_search_entries") {
-                return {
+                return Promise.resolve({
                     entries: [nativeIndexedEntry("shadow.ts")],
                     generation: 1,
                     matches: [
@@ -1056,10 +1054,10 @@ describe("ProjectService", () => {
                     operationId: "operation_1",
                     stats: nativeIndexStats(),
                     status: "ready",
-                };
+                });
             }
 
-            throw new Error(`Unexpected command ${command}`);
+            return Promise.reject(new Error(`Unexpected command ${command}`));
         });
         const projectService = createProjectService(connection, undefined, {
             env: {
@@ -1098,23 +1096,25 @@ describe("ProjectService", () => {
 
     it("routes writes and mutations through native filesystem only in write mode", async () => {
         const connection = createTestConnection();
-        const requestMock = vi.fn(async (command: string, args: unknown) => {
+        const requestMock = vi.fn((command: string, args: unknown) => {
             if (command === "fs_write_file") {
-                return {
+                return Promise.resolve({
                     conflict: null,
                     entry: nativeEntry("src/index.ts"),
                     file: nativeReadFileResult({
                         content: "export const nativeWrite = true;\n",
                         relativePath: "src/index.ts",
                     }),
-                };
+                });
             }
 
             if (command === "fs_create_file") {
-                return nativeMutationResult("src/new.ts");
+                return Promise.resolve(nativeMutationResult("src/new.ts"));
             }
 
-            throw new Error(`Unexpected command ${command} ${JSON.stringify(args)}`);
+            return Promise.reject(
+                new Error(`Unexpected command ${command} ${JSON.stringify(args)}`),
+            );
         });
         const projectService = createProjectService(connection, undefined, {
             env: {

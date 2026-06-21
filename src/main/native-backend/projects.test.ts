@@ -38,16 +38,17 @@ describe("native project registry flags", () => {
 describe("NativeProjectRegistryGateway", () => {
     it("calls list and add commands", async () => {
         const requestMock = vi.fn(
-            async (command: string, _args?: Record<string, unknown>) => {
-            if (command === "project_add") {
-                return {
-                    projectIdsToOpen: ["project-1"],
-                    projects: [nativeProject()],
-                    state: nativeState(),
-                    touchedRootPaths: ["/tmp/project"],
-                };
-            }
-            return nativeState();
+            (command: string, args?: Record<string, unknown>) => {
+                void args;
+                if (command === "project_add") {
+                    return Promise.resolve({
+                        projectIdsToOpen: ["project-1"],
+                        projects: [nativeProject()],
+                        state: nativeState(),
+                        touchedRootPaths: ["/tmp/project"],
+                    });
+                }
+                return Promise.resolve(nativeState());
             },
         );
         const request: NativeBackendRequester["request"] = async (...args) =>
@@ -128,16 +129,17 @@ describe("createNativeProjectRegistryStore", () => {
     it("routes add/list through native in write mode", async () => {
         const legacy = createLegacyStore();
         const requestMock = vi.fn(
-            async (command: string, _args?: Record<string, unknown>) => {
-            if (command === "project_add") {
-                return {
-                    projectIdsToOpen: ["project-1"],
-                    projects: [nativeProject()],
-                    state: nativeState(),
-                    touchedRootPaths: ["/tmp/project"],
-                };
-            }
-            return nativeState();
+            (command: string, args?: Record<string, unknown>) => {
+                void args;
+                if (command === "project_add") {
+                    return Promise.resolve({
+                        projectIdsToOpen: ["project-1"],
+                        projects: [nativeProject()],
+                        state: nativeState(),
+                        touchedRootPaths: ["/tmp/project"],
+                    });
+                }
+                return Promise.resolve(nativeState());
             },
         );
         const request: NativeBackendRequester["request"] = async (...args) =>
@@ -198,7 +200,7 @@ function createLegacyStore(): ProjectStore & {
     const state = nativeProjectStateToStoreSnapshot(nativeState());
     return {
         addProjectPaths: vi.fn(
-            async (): Promise<ProjectStoreAddPathsResult> => ({
+            (): Promise<ProjectStoreAddPathsResult> => Promise.resolve({
                 projects: state.projects,
                 touchedProjectIds: ["legacy-project"],
                 touchedRootPaths: ["/tmp/legacy"],

@@ -72,9 +72,9 @@ describe("native filesystem flags", () => {
 
 describe("NativeFsGateway", () => {
     it("adapts native tree and file reads to project IPC models", async () => {
-        const requestMock = vi.fn(async (command: string) => {
+        const requestMock = vi.fn((command: string) => {
             if (command === "project_list_tree_children") {
-                return {
+                return Promise.resolve({
                     entries: [
                         {
                             extension: "ts",
@@ -90,10 +90,10 @@ describe("NativeFsGateway", () => {
                             worktreeId: "project-1:primary",
                         },
                     ],
-                };
+                });
             }
 
-            return {
+            return Promise.resolve({
                 content: "console.log('hi');\n",
                 contentHash: "hash",
                 encoding: "utf8",
@@ -110,7 +110,7 @@ describe("NativeFsGateway", () => {
                 relativePath: "src/main.ts",
                 sizeBytes: 19,
                 worktreeId: "project-1:primary",
-            };
+            });
         });
         const gateway = gatewayWith(requestMock);
 
@@ -144,7 +144,7 @@ describe("NativeFsGateway", () => {
     });
 
     it("throws the legacy conflict error shape for stale native writes", async () => {
-        const requestMock = vi.fn(async () => ({
+        const requestMock = vi.fn(() => Promise.resolve({
             conflict: {
                 currentContentHash: "next",
                 externalMtimeMs: 200,
@@ -169,7 +169,7 @@ describe("NativeFsGateway", () => {
     });
 
     it("rejects truncated native project entry listings", async () => {
-        const requestMock = vi.fn(async () => ({
+        const requestMock = vi.fn(() => Promise.resolve({
             entries: [],
             truncated: true,
         }));

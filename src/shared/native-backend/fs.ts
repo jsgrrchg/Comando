@@ -56,7 +56,7 @@ export type NativeFsReadFileResult = {
     readonly sizeBytes: number;
     readonly mtimeMs: number;
     readonly mimeType?: string | null;
-    readonly kind?: "binary" | "image" | "text" | string | null;
+    readonly kind?: string | null;
     readonly imageDataBase64?: string | null;
     readonly isBinary: boolean;
     readonly isTooLarge: boolean;
