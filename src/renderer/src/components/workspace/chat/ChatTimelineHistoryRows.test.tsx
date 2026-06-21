@@ -111,7 +111,10 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
     };
 });
 
-import { ChatTimelineHistoryRows } from "./ChatTimelineHistoryRows";
+import {
+    ChatTimelineHistoryRows,
+    resolveChatTimelineFrozenContentWidth,
+} from "./ChatTimelineHistoryRows";
 
 function createMessage(
     overrides: Partial<AiSessionSnapshot["messages"][number]> = {},
@@ -374,6 +377,21 @@ describe("ChatTimelineHistoryRows", () => {
 
         mounted.root.unmount();
         mounted.scrollContainer.remove();
+    });
+
+    it("does not freeze virtualized rows to a collapsed measured width", () => {
+        expect(
+            resolveChatTimelineFrozenContentWidth({
+                measuredWidth: 42,
+                scrollContainerWidth: 1200,
+            }),
+        ).toBe(CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX);
+        expect(
+            resolveChatTimelineFrozenContentWidth({
+                measuredWidth: 42,
+                scrollContainerWidth: 120,
+            }),
+        ).toBeNull();
     });
 
     it("keeps resize release capped when the panel grows beyond the timeline max", () => {

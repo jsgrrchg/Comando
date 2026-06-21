@@ -35,6 +35,8 @@ import {
     type ChatTimelineRowMeasurementContext,
 } from "./chatTimelineVirtualization";
 
+const MIN_FREEZABLE_CHAT_TIMELINE_WIDTH_PX = 240;
+
 interface ChatTimelineHistoryRowsProps {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
@@ -52,6 +54,25 @@ interface ChatTimelineHistoryRowsProps {
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly toolCardExpansionMode: AiToolCardExpansionMode;
+}
+
+export function resolveChatTimelineFrozenContentWidth(input: {
+    readonly measuredWidth: number;
+    readonly scrollContainerWidth: number;
+}): number | null {
+    if (
+        Number.isFinite(input.measuredWidth) &&
+        input.measuredWidth >= MIN_FREEZABLE_CHAT_TIMELINE_WIDTH_PX
+    ) {
+        return input.measuredWidth;
+    }
+
+    const fallbackWidth = getChatTimelineEffectiveContentWidth(
+        input.scrollContainerWidth,
+    );
+    return fallbackWidth >= MIN_FREEZABLE_CHAT_TIMELINE_WIDTH_PX
+        ? fallbackWidth
+        : null;
 }
 
 export const ChatTimelineHistoryRows = memo(
@@ -260,9 +281,14 @@ export const ChatTimelineHistoryRows = memo(
                     onVirtualResizeStart?.();
                 }
 
-                const width =
-                    historyRef.current?.getBoundingClientRect().width ?? 0;
-                setFrozenContentWidth(width > 0 ? width : null);
+                setFrozenContentWidth(
+                    resolveChatTimelineFrozenContentWidth({
+                        measuredWidth:
+                            historyRef.current?.getBoundingClientRect().width ??
+                            0,
+                        scrollContainerWidth: scrollRef.current?.clientWidth ?? 0,
+                    }),
+                );
             } else {
                 if (virtualResizeActiveRef.current) {
                     pendingVirtualResizeEndRef.current = true;

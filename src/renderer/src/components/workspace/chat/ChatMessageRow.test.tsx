@@ -7,6 +7,17 @@ import type { AiMessage } from "@shared/ipc";
 import { ChatMessageRow } from "./ChatMessageRow";
 
 describe("ChatMessageRow generated images", () => {
+    it("renders assistant text in a full-width container", () => {
+        const markup = renderMessage({
+            content: "A normal assistant paragraph should use the available width.",
+            kind: "assistant",
+            status: "streaming",
+        });
+
+        expect(markup).toContain("w-full");
+        expect(markup).toContain("chat-assistant-content");
+    });
+
     it("renders an in-progress generated image placeholder", () => {
         const markup = renderMessage({
             content: "Generating image...",

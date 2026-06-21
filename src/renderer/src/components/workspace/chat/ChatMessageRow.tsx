@@ -486,6 +486,7 @@ function HighlightedPlainText({
     const segments = splitContentByHighlightQuery(content, query);
     return (
         <div
+            className="w-full"
             style={{
                 fontFamily: chatFontFamily,
                 fontSize: chatFontSize,
@@ -687,7 +688,7 @@ function AssistantMessage(props: {
 }) {
     return (
         <div
-            className="min-w-0 max-w-full"
+            className="min-w-0 w-full max-w-full"
             style={{
                 color: "var(--color-text-primary)",
                 fontSize: props.chatFontSize,

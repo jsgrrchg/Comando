@@ -2049,7 +2049,7 @@ export const MarkdownContent = memo(function MarkdownContent({
 
     return (
         <div
-            className="chat-assistant-content min-w-0 max-w-full"
+            className="chat-assistant-content min-w-0 w-full max-w-full"
             onContextMenu={handleContextMenu}
             ref={contentRef}
             style={{

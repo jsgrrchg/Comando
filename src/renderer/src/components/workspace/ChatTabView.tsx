@@ -414,10 +414,6 @@ export const ChatTabView = memo(function ChatTabView({
         ? tab.sessionId
         : null;
     const activeTurnStartedAt = getActiveTurnStartedAt(snapshot, transcript);
-    const closedSubagentMessage =
-        snapshot.parentSessionId && snapshot.closedAt
-            ? CLOSED_SUBAGENT_MESSAGE
-            : null;
     const currentError = sessionState?.localError ?? snapshot.lastError;
     const availableCommands =
         snapshot.availableCommands.length > 0
@@ -425,6 +421,18 @@ export const ChatTabView = memo(function ChatTabView({
             : runtimeCatalog?.availableCommands.length
               ? runtimeCatalog.availableCommands
             : FALLBACK_COMMANDS;
+    const agentConfigOptions =
+        snapshot.configOptions.length > 0
+            ? snapshot.configOptions
+            : (runtimeCatalog?.configOptions ?? []);
+    const agentModes =
+        snapshot.modes.length > 0 ? snapshot.modes : (runtimeCatalog?.modes ?? []);
+    const agentModels =
+        snapshot.models.length > 0
+            ? snapshot.models
+            : (runtimeCatalog?.models ?? []);
+    const agentModeId = snapshot.modeId ?? runtimeCatalog?.modeId ?? "";
+    const agentModelId = snapshot.modelId ?? runtimeCatalog?.modelId ?? "";
     const draftAttachments =
         sessionState?.draftAttachments ?? EMPTY_DRAFT_ATTACHMENTS;
     const draftComposerParts =
@@ -446,6 +454,12 @@ export const ChatTabView = memo(function ChatTabView({
     const runtimeLifecycle =
         sessionState?.runtimeLifecycle ??
         deriveFallbackRuntimeLifecycle(snapshot);
+    const closedSubagentMessage =
+        snapshot.parentSessionId &&
+        snapshot.closedAt &&
+        !isActiveRuntimeLifecycle(runtimeLifecycle)
+            ? CLOSED_SUBAGENT_MESSAGE
+            : null;
     const runtimeLifecycleNotice = getRuntimeLifecycleNotice(
         runtimeLifecycle,
         runtimeDisplayName,
@@ -535,9 +549,9 @@ export const ChatTabView = memo(function ChatTabView({
         [aiChatSettings.composerFontFamily],
     );
     const hasAgentControls =
-        snapshot.configOptions.length > 0 ||
-        snapshot.models.length > 0 ||
-        snapshot.modes.length > 0;
+        agentConfigOptions.length > 0 ||
+        agentModels.length > 0 ||
+        agentModes.length > 0;
 
     const pendingTrackedFiles = useMemo(
         () =>
@@ -1905,11 +1919,11 @@ export const ChatTabView = memo(function ChatTabView({
                             agentControls={
                                 hasAgentControls ? (
                                     <AIChatAgentControls
-                                        configOptions={snapshot.configOptions}
-                                        modeId={snapshot.modeId ?? ""}
-                                        modelId={snapshot.modelId ?? ""}
-                                        modes={snapshot.modes}
-                                        models={snapshot.models}
+                                        configOptions={agentConfigOptions}
+                                        modeId={agentModeId}
+                                        modelId={agentModelId}
+                                        modes={agentModes}
+                                        models={agentModels}
                                         onConfigOptionChange={(
                                             optionId,
                                             value,
@@ -2782,33 +2796,37 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
 }: ChatTimelineRowViewProps) {
     if (row.kind === "message") {
         return (
-            <ChatMessageRow
-                canRenderFileReference={canRenderFileReference}
-                chatFontFamily={chatFontFamily}
-                chatFontSize={chatFontSize}
-                message={row.message}
-                onAddFileReferenceToChat={onAddFileReferenceToChat}
-                onOpenFile={onOpenResolvedFileReference}
-                onOpenImage={onOpenImage}
-                onRevealFileReference={onRevealFileReference}
-                resolveFileReference={resolveFileReference}
-            />
+            <div className="min-w-0 w-full">
+                <ChatMessageRow
+                    canRenderFileReference={canRenderFileReference}
+                    chatFontFamily={chatFontFamily}
+                    chatFontSize={chatFontSize}
+                    message={row.message}
+                    onAddFileReferenceToChat={onAddFileReferenceToChat}
+                    onOpenFile={onOpenResolvedFileReference}
+                    onOpenImage={onOpenImage}
+                    onRevealFileReference={onRevealFileReference}
+                    resolveFileReference={resolveFileReference}
+                />
+            </div>
         );
     }
 
     return (
-        <ToolActivityItem
-            activity={row.reviewEntry.activity}
-            expansionMode={toolCardExpansionMode}
-            isLatestStreamingTool={isLatestStreamingTool}
-            onOpenFile={onOpenFile}
-            onOpenFileReference={onOpenResolvedFileReference}
-            onOpenSession={onOpenSession}
-            projectId={projectId}
-            resolveFileReference={resolveFileReference}
-            trackedFiles={row.reviewEntry.trackedFiles}
-            worktreeId={worktreeId}
-        />
+        <div className="min-w-0 w-full">
+            <ToolActivityItem
+                activity={row.reviewEntry.activity}
+                expansionMode={toolCardExpansionMode}
+                isLatestStreamingTool={isLatestStreamingTool}
+                onOpenFile={onOpenFile}
+                onOpenFileReference={onOpenResolvedFileReference}
+                onOpenSession={onOpenSession}
+                projectId={projectId}
+                resolveFileReference={resolveFileReference}
+                trackedFiles={row.reviewEntry.trackedFiles}
+                worktreeId={worktreeId}
+            />
+        </div>
     );
 });
 
@@ -3231,7 +3249,9 @@ function deriveFallbackRuntimeLifecycle(
     snapshot: AiSessionSnapshot,
 ): AiRuntimeLifecycle {
     if (snapshot.parentSessionId && snapshot.closedAt) {
-        return "detached";
+        if (!isChatStreamingStatus(snapshot.status)) {
+            return "detached";
+        }
     }
 
     if (snapshot.lastError || snapshot.status === "error") {
@@ -3255,6 +3275,16 @@ function deriveFallbackRuntimeLifecycle(
     }
 
     return snapshot.runtimeSessionId ? "ready" : "cold";
+}
+
+function isActiveRuntimeLifecycle(lifecycle: AiRuntimeLifecycle): boolean {
+    return (
+        lifecycle === "dispatching" ||
+        lifecycle === "streaming" ||
+        lifecycle === "waiting_permission" ||
+        lifecycle === "waiting_user_input" ||
+        lifecycle === "cooling"
+    );
 }
 
 function getRuntimeLifecycleNotice(
