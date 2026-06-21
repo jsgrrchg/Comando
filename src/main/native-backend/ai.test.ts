@@ -588,6 +588,48 @@ describe("NativeAiGateway", () => {
         });
     });
 
+    it("surfaces review conflicts as non-text tracked files", async () => {
+        const client = createClient();
+        client.request.mockImplementation(
+            <T = unknown>(command: string, _args?: unknown): Promise<T> => {
+                void _args;
+                if (command === "ai_reconcile_tracked_files") {
+                    return Promise.resolve({
+                        changedFiles: [],
+                        conflicts: [
+                            {
+                                externalChangeHash: "hash-1",
+                                path: "binary.bin",
+                                reason: "binary_file",
+                            },
+                        ],
+                        sessionId: "session-1",
+                        trackedFiles: [],
+                        updatedAt: "2026-06-20T00:00:02.000Z",
+                    } as T);
+                }
+
+                return Promise.resolve({ ok: true } as T);
+            },
+        );
+        const gateway = createGateway(client, {
+            env: {
+                [NATIVE_AI_ENABLED_ENV]: "1",
+                [NATIVE_AI_REVIEW_ENABLED_ENV]: "1",
+            },
+        });
+
+        await expect(gateway.reconcileTrackedFiles("session-1")).resolves.toEqual([
+            expect.objectContaining({
+                conflict: "binary_file",
+                isText: false,
+                path: "binary.bin",
+                reviewState: "conflict",
+                reversible: false,
+            }),
+        ]);
+    });
+
     it("reports runtime connection events as diagnostics", () => {
         const client = createClient();
         const onDiagnostic = vi.fn();

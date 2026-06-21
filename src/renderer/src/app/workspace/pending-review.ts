@@ -1,4 +1,5 @@
 import type { AiTrackedFile } from "@shared/ipc";
+import { isAiTrackedFileUnresolved } from "@shared/ai-tracked-file";
 
 import {
     areTrackedFilePathsEquivalent,
@@ -34,7 +35,7 @@ export function collectPendingTrackedFilesFromSessions(
 
     const collected = Object.values(sessions)
         .flatMap((session) => session?.snapshot?.trackedFiles ?? [])
-        .filter((trackedFile) => trackedFile.reviewState === "pending");
+        .filter(isAiTrackedFileUnresolved);
     collectPendingCache.set(sessions, collected);
     return collected;
 }

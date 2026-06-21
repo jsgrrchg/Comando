@@ -49,6 +49,7 @@ import type {
 } from "@shared/ipc";
 import {
     computeDiffHunks,
+    isAiTrackedFileUnresolved,
     resolveTrackedFileHunks,
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
@@ -4243,7 +4244,16 @@ function upsertNativeToolActivity(
     }
 
     return activities.map((candidate, index) =>
-        index === existingIndex ? { ...candidate, ...activity } : candidate,
+        index === existingIndex
+            ? {
+                  ...candidate,
+                  ...activity,
+                  diffs:
+                      activity.diffs.length > 0
+                          ? activity.diffs
+                          : candidate.diffs,
+              }
+            : candidate,
     );
 }
 
@@ -4284,9 +4294,7 @@ function getRetentionSkippedReasonFromSnapshot(
     }
 
     if (
-        snapshot.trackedFiles.some(
-            (trackedFile) => trackedFile.reviewState === "pending",
-        )
+        snapshot.trackedFiles.some(isAiTrackedFileUnresolved)
     ) {
         return "pending_review";
     }

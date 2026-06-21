@@ -3,6 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::UNIX_EPOCH;
 
 use comando_ai::history::AiHistoryStore;
 use comando_ai::session::NativeAiSession;
@@ -95,6 +96,7 @@ pub struct NativeReviewUpdatedPayload {
     pub project_id: Option<comando_types::ids::ProjectId>,
     pub worktree_id: Option<comando_types::ids::WorktreeId>,
     pub tracked_files: Vec<ReviewTrackedFile>,
+    pub conflicts: Vec<NativeReviewConflict>,
     pub pending_count: usize,
     pub conflict_count: usize,
     pub updated_at: String,
@@ -138,6 +140,13 @@ pub struct NativeReviewSessionState {
 struct NativeReviewBaseline {
     cwd: PathBuf,
     files: HashMap<String, Option<String>>,
+    unsupported_files: HashMap<String, UnsupportedReviewBaseline>,
+}
+
+#[derive(Debug, Clone)]
+struct UnsupportedReviewBaseline {
+    reason: String,
+    fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -186,20 +195,52 @@ impl NativeReviewService {
             }
         };
         let mut files = HashMap::new();
+        let mut unsupported_files = HashMap::new();
         for entry in entries {
             if !files.contains_key(&entry.path) {
-                files.insert(
-                    entry.path.clone(),
-                    self.read_working_tree_text(&session.scope.cwd, &entry.path)?,
-                );
+                match self.read_working_tree_text(&session.scope.cwd, &entry.path) {
+                    Ok(text) => {
+                        files.insert(entry.path.clone(), text);
+                    }
+                    Err(error) if is_review_content_error(&error) => {
+                        unsupported_files.insert(
+                            entry.path.clone(),
+                            UnsupportedReviewBaseline {
+                                reason: content_error_reason(&error).to_string(),
+                                fingerprint: self
+                                    .read_working_tree_fingerprint(&session.scope.cwd, &entry.path)
+                                    .ok()
+                                    .flatten(),
+                            },
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             if let Some(previous_path) = entry.previous_path
                 && !files.contains_key(&previous_path)
             {
-                files.insert(
-                    previous_path.clone(),
-                    self.read_working_tree_text(&session.scope.cwd, &previous_path)?,
-                );
+                match self.read_working_tree_text(&session.scope.cwd, &previous_path) {
+                    Ok(text) => {
+                        files.insert(previous_path.clone(), text);
+                    }
+                    Err(error) if is_review_content_error(&error) => {
+                        unsupported_files.insert(
+                            previous_path.clone(),
+                            UnsupportedReviewBaseline {
+                                reason: content_error_reason(&error).to_string(),
+                                fingerprint: self
+                                    .read_working_tree_fingerprint(
+                                        &session.scope.cwd,
+                                        &previous_path,
+                                    )
+                                    .ok()
+                                    .flatten(),
+                            },
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
             }
         }
         self.baselines.insert(
@@ -207,6 +248,7 @@ impl NativeReviewService {
             NativeReviewBaseline {
                 cwd: PathBuf::from(&session.scope.cwd),
                 files,
+                unsupported_files,
             },
         );
         Ok(NativeReviewCaptureOutput {
@@ -245,6 +287,7 @@ impl NativeReviewService {
 
         for entry in status_entries {
             let baseline_text = baseline_text_for_entry(&baseline, &entry);
+            let unsupported_baseline = unsupported_baseline_for_entry(&baseline, &entry);
             let deleted = is_git_deleted(&entry);
             let current_text = if deleted {
                 None
@@ -252,12 +295,29 @@ impl NativeReviewService {
                 match self.read_working_tree_text(&session.scope.cwd, &entry.path) {
                     Ok(text) => text,
                     Err(error) if is_review_content_error(&error) => {
+                        if let Some(unsupported) = unsupported_baseline
+                            && self
+                                .read_working_tree_fingerprint(&session.scope.cwd, &entry.path)
+                                .ok()
+                                .flatten()
+                                == unsupported.fingerprint
+                        {
+                            continue;
+                        }
                         conflicts.push(conflict_for_content_error(&entry.path, &error));
                         continue;
                     }
                     Err(error) => return Err(error),
                 }
             };
+            if let Some(unsupported) = unsupported_baseline {
+                conflicts.push(NativeReviewConflict {
+                    path: entry.path.clone(),
+                    reason: unsupported.reason.clone(),
+                    external_change_hash: None,
+                });
+                continue;
+            }
             if !deleted && current_text.is_none() && !baseline_text.known {
                 continue;
             }
@@ -540,6 +600,7 @@ impl NativeReviewService {
                     .filter(|file| file.review_state == ReviewTrackedFileStatus::Conflict)
                     .count(),
             tracked_files: output.tracked_files.clone(),
+            conflicts: output.conflicts.clone(),
             updated_at: output.updated_at.clone(),
         }
     }
@@ -706,6 +767,47 @@ impl NativeReviewService {
             return ensure_review_text(buffer.clone(), relative_path);
         }
         read_text_file_for_review(&resolved, relative_path)
+    }
+
+    fn read_working_tree_fingerprint(
+        &self,
+        cwd: &str,
+        relative_path: &str,
+    ) -> Result<Option<String>, NativeError> {
+        let resolved = match resolve_review_path(cwd, relative_path, ScopedPathIntent::ReadExisting)
+        {
+            Ok(path) => path,
+            Err(error) if error.code == NativeErrorCode::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if let Some(buffer) = self.open_buffers.get(&resolved) {
+            return Ok(Some(format!(
+                "buffer:{}:{}",
+                buffer.len(),
+                hash_content_bytes(buffer.as_bytes())
+            )));
+        }
+        let metadata = fs::metadata(&resolved)
+            .map_err(|error| review_io("read review file metadata", &resolved, error))?;
+        if !metadata.is_file() {
+            return Ok(None);
+        }
+        if metadata.len() <= MAX_REVIEW_TEXT_BYTES {
+            let bytes = fs::read(&resolved)
+                .map_err(|error| review_io("read review file", &resolved, error))?;
+            return Ok(Some(format!(
+                "file-bytes:{}:{}",
+                bytes.len(),
+                hash_content_bytes(&bytes)
+            )));
+        }
+        let modified_ms = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default();
+        Ok(Some(format!("file:{}:{modified_ms}", metadata.len())))
     }
 
     fn assert_current_matches(
@@ -1000,6 +1102,18 @@ fn baseline_text_for_entry(
         known: false,
         text: None,
     }
+}
+
+fn unsupported_baseline_for_entry<'a>(
+    baseline: &'a NativeReviewBaseline,
+    entry: &NativeGitStatusEntry,
+) -> Option<&'a UnsupportedReviewBaseline> {
+    baseline.unsupported_files.get(&entry.path).or_else(|| {
+        entry
+            .previous_path
+            .as_ref()
+            .and_then(|previous_path| baseline.unsupported_files.get(previous_path))
+    })
 }
 
 fn list_git_status_entries(cwd: &Path) -> Result<Vec<NativeGitStatusEntry>, NativeError> {
@@ -1406,6 +1520,28 @@ mod tests {
         assert_eq!(output.conflicts.len(), 1);
         assert_eq!(output.conflicts[0].path, "binary.bin");
         assert_eq!(output.conflicts[0].reason, "binary_file");
+    }
+
+    #[test]
+    fn baseline_allows_preexisting_dirty_binary_file() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("binary.bin"), b"plain\n").expect("write baseline");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+        fs::write(repo.path().join("binary.bin"), b"\0already dirty").expect("dirty binary");
+
+        let session = test_session(repo.path(), "s-preexisting-binary");
+        let mut service = service_with_app_data(repo.path());
+        let captured = service.capture_baseline(&session).expect("baseline");
+        assert!(captured.captured);
+
+        let output = service
+            .reconcile_tracked_files(&session)
+            .expect("reconcile");
+
+        assert!(output.tracked_files.is_empty());
+        assert!(output.conflicts.is_empty());
     }
 
     #[test]

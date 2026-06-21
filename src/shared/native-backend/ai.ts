@@ -536,6 +536,7 @@ export type NativeAiReviewUpdatedPayload = NativeAiEventBase & {
     readonly projectId: NativeProjectId | null;
     readonly worktreeId: NativeWorktreeId | null;
     readonly trackedFiles: readonly unknown[];
+    readonly conflicts: readonly unknown[];
     readonly pendingCount: number;
     readonly conflictCount: number;
 };

@@ -2375,6 +2375,10 @@ function normalizeTrackedFiles(value: unknown): readonly AiTrackedFile[] {
 
         return [
             syncTrackedFile({
+                conflict:
+                    typeof entry.conflict === "string"
+                        ? entry.conflict
+                        : undefined,
                 identityKey: entry.identityKey,
                 currentText:
                     typeof entry.currentText === "string"
@@ -2410,6 +2414,7 @@ function normalizeTrackedFiles(value: unknown): readonly AiTrackedFile[] {
                         : entry.kind === "create" ||
                           typeof entry.oldText === "string",
                 reviewState:
+                    entry.reviewState === "conflict" ||
                     entry.reviewState === "kept" ||
                     entry.reviewState === "pending" ||
                     entry.reviewState === "rejected"

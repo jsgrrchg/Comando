@@ -2330,6 +2330,7 @@ export interface AiUserInputRequest {
 }
 
 export interface AiTrackedFile {
+    readonly conflict?: string;
     readonly identityKey: string;
     readonly diffBase?: string;
     readonly currentText?: string;
@@ -2341,12 +2342,18 @@ export interface AiTrackedFile {
     readonly oldText: string | null;
     readonly path: string;
     readonly previousPath: string | null;
-    readonly reviewState: "kept" | "pending" | "rejected";
+    readonly reviewState: "conflict" | "kept" | "pending" | "rejected";
     readonly reversible: boolean;
     readonly sessionId: string;
     readonly toolCallId: string | null;
     readonly updatedAt: string;
     readonly version?: number;
+}
+
+export interface AiReviewConflict {
+    readonly externalChangeHash: string | null;
+    readonly path: string;
+    readonly reason: string;
 }
 
 export type AiSessionConfigCategory = "mode" | "model" | "other" | "reasoning";
@@ -2566,6 +2573,7 @@ export interface AiSessionTokenUsageEvent extends AiSessionDomainEventBase {
 }
 
 export interface AiSessionReviewEvent extends AiSessionDomainEventBase {
+    readonly conflicts?: readonly AiReviewConflict[];
     readonly kind: "review";
     readonly trackedFiles: readonly AiTrackedFile[];
 }

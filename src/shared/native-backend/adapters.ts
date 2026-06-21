@@ -5,6 +5,7 @@ import type {
     AiRuntimeSource,
     AiRuntimeState,
     AiFileDiff,
+    AiReviewConflict,
     AiSessionConfigOption,
     AiSessionStatus,
     AiSessionDomainEvent,
@@ -32,6 +33,7 @@ import type {
     NativeAiPermissionRequestPayload,
     NativeAiPlanUpdatedPayload,
     NativeAiReviewUpdatedPayload,
+    NativeAiReviewCommandOutput,
     NativeAiRuntimeStatus,
     NativeAiSessionCatalogUpdatedPayload,
     NativeAiSessionCreatedPayload,
@@ -667,11 +669,29 @@ function nativeAiTokenUsageToIpc(
 function nativeAiReviewUpdatedToIpc(
     payload: NativeAiReviewUpdatedPayload,
 ): AiSessionDomainEvent {
+    const conflicts = nativeReviewConflictsToIpc(payload.conflicts);
     return {
         ...nativeAiEventBase(payload),
+        conflicts,
         kind: "review",
-        trackedFiles: payload.trackedFiles.map(nativeReviewTrackedFileToIpc),
+        trackedFiles: nativeReviewTrackedFilesWithConflictsToIpc({
+            conflicts,
+            sessionId: payload.sessionId,
+            trackedFiles: payload.trackedFiles,
+            updatedAt: payload.updatedAt,
+        }),
     };
+}
+
+export function nativeReviewCommandTrackedFilesToIpc(
+    output: NativeAiReviewCommandOutput,
+): readonly AiTrackedFile[] {
+    return nativeReviewTrackedFilesWithConflictsToIpc({
+        conflicts: nativeReviewConflictsToIpc(output.conflicts),
+        sessionId: output.sessionId,
+        trackedFiles: output.trackedFiles,
+        updatedAt: output.updatedAt,
+    });
 }
 
 export function nativeReviewTrackedFileToIpc(value: unknown): AiTrackedFile {
@@ -688,6 +708,9 @@ export function nativeReviewTrackedFileToIpc(value: unknown): AiTrackedFile {
         ...(typeof record.currentText === "string"
             ? { currentText: record.currentText }
             : {}),
+        ...(typeof record.conflict === "string"
+            ? { conflict: record.conflict }
+            : {}),
         ...(record.hunksAreAnchored === true
             ? { hunksAreAnchored: true }
             : {}),
@@ -702,7 +725,9 @@ export function nativeReviewTrackedFileToIpc(value: unknown): AiTrackedFile {
         path: readString(record, "path", ""),
         previousPath: readNullableString(record, "previousPath"),
         reviewState:
-            reviewState === "kept" || reviewState === "rejected"
+            reviewState === "conflict" ||
+            reviewState === "kept" ||
+            reviewState === "rejected"
                 ? reviewState
                 : "pending",
         reversible: record.reversible !== false,
@@ -710,6 +735,81 @@ export function nativeReviewTrackedFileToIpc(value: unknown): AiTrackedFile {
         toolCallId: readNullableString(record, "toolCallId"),
         updatedAt: readString(record, "updatedAt", new Date(0).toISOString()),
         ...(version !== null ? { version } : {}),
+    };
+}
+
+function nativeReviewTrackedFilesWithConflictsToIpc(input: {
+    readonly conflicts: readonly AiReviewConflict[];
+    readonly sessionId: string;
+    readonly trackedFiles: readonly unknown[];
+    readonly updatedAt: string;
+}): readonly AiTrackedFile[] {
+    const trackedFiles = input.trackedFiles.map(nativeReviewTrackedFileToIpc);
+    const trackedPaths = new Set(
+        trackedFiles.flatMap((file) => [
+            file.path,
+            ...(file.previousPath ? [file.previousPath] : []),
+        ]),
+    );
+    const conflictFiles = input.conflicts
+        .filter((conflict) => conflict.path.length > 0)
+        .filter((conflict) => !trackedPaths.has(conflict.path))
+        .map((conflict) =>
+            nativeReviewConflictToTrackedFile(
+                conflict,
+                input.sessionId,
+                input.updatedAt,
+            ),
+        );
+    return [...trackedFiles, ...conflictFiles];
+}
+
+function nativeReviewConflictsToIpc(value: unknown): readonly AiReviewConflict[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value.flatMap((entry) => {
+        try {
+            return [nativeReviewConflictToIpc(entry)];
+        } catch {
+            return [];
+        }
+    });
+}
+
+function nativeReviewConflictToIpc(value: unknown): AiReviewConflict {
+    const record = requireRecord(value);
+    return {
+        externalChangeHash: readNullableString(record, "externalChangeHash"),
+        path: readString(record, "path", ""),
+        reason: readString(record, "reason", "unknown"),
+    };
+}
+
+function nativeReviewConflictToTrackedFile(
+    conflict: AiReviewConflict,
+    sessionId: string,
+    updatedAt: string,
+): AiTrackedFile {
+    return {
+        conflict: conflict.reason,
+        currentText: "",
+        diffBase: "",
+        hunks: [],
+        identityKey: `native:${sessionId}:conflict:${conflict.path}`,
+        isText: false,
+        kind: "update",
+        newText: null,
+        oldText: null,
+        path: conflict.path,
+        previousPath: null,
+        reviewState: "conflict",
+        reversible: false,
+        sessionId,
+        toolCallId: null,
+        updatedAt,
+        version: 1,
     };
 }
 

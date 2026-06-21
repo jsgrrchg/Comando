@@ -1,4 +1,5 @@
 import type { AiFileDiff, AiToolActivity, AiTrackedFile } from "@shared/ipc";
+import { isAiTrackedFileUnresolved } from "@shared/ai-tracked-file";
 
 import {
     areTrackedFilePathsEquivalent,
@@ -13,6 +14,7 @@ import {
     computeFileStats,
     getFileSummary,
     getFileTone,
+    isReviewConflictFile,
 } from "../review/editedFilesPresentationModel";
 import {
     computeDiffStats,
@@ -58,7 +60,7 @@ export function deriveToolActivityReviewEntries(
             trackedFiles,
         );
         const pendingTrackedFiles = activityTrackedFiles.filter(
-            (trackedFile) => trackedFile.reviewState === "pending",
+            isAiTrackedFileUnresolved,
         );
 
         return {
@@ -196,13 +198,18 @@ function createChangeReviewItem(
     file: AiTrackedFile | null,
     index: number,
 ): ChangeReviewItem {
-    const isPendingReview = file?.reviewState === "pending";
+    const isPendingReview =
+        file != null && isAiTrackedFileUnresolved(file);
+    const isConflict = file != null && isReviewConflictFile(file);
 
     return {
-        canKeep: isPendingReview,
-        canReject: isPendingReview && file?.reversible !== false,
+        canKeep: isPendingReview && !isConflict,
+        canReject: isPendingReview && !isConflict && file?.reversible !== false,
         canResolveHunks:
-            isPendingReview && file != null && canResolveFileHunks(file, diff),
+            isPendingReview &&
+            !isConflict &&
+            file != null &&
+            canResolveFileHunks(file, diff),
         diff,
         file,
         key:

@@ -1,6 +1,7 @@
 import { memo, useCallback, useMemo, type CSSProperties } from "react";
 
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
+import { isAiTrackedFileUnresolved } from "@shared/ai-tracked-file";
 import type {
     RuntimeWorkspaceFileOpenLocation,
     RuntimeWorkspaceFileReviewContext,
@@ -425,7 +426,7 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
         activityId: activity.id,
         itemCount: items.length,
         pendingTrackedFiles: trackedFiles.filter(
-            (trackedFile) => trackedFile.reviewState === "pending",
+            isAiTrackedFileUnresolved,
         ).length,
     });
 

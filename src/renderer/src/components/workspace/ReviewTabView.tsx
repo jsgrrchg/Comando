@@ -25,6 +25,8 @@ import {
 import {
     deriveReviewItems,
     deriveReviewSummary,
+    isReviewConflictFile,
+    isReviewUnresolvedFile,
     type ReviewFileItem,
 } from "./review/editedFilesPresentationModel";
 import {
@@ -509,7 +511,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
     const trackedFiles = useMemo(
         () =>
             snapshot.trackedFiles
-                .filter((trackedFile) => trackedFile.reviewState === "pending")
+                .filter(isReviewUnresolvedFile)
                 .sort((left, right) =>
                     right.updatedAt.localeCompare(left.updatedAt),
                 ),
@@ -590,6 +592,10 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
     const summary = useMemo(() => deriveReviewSummary(items), [items]);
     const rejectableCount = useMemo(
         () => items.filter((item) => item.canReject).length,
+        [items],
+    );
+    const keepableCount = useMemo(
+        () => items.filter((item) => !isReviewConflictFile(item.file)).length,
         [items],
     );
     const diffZoom = DEFAULT_AI_DIFF_ZOOM;
@@ -999,6 +1005,9 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
 
     const handleKeepFile = useCallback(
         (item: ReviewFileItem) => {
+            if (isReviewConflictFile(item.file)) {
+                return;
+            }
             persistedAnchorRef.current = createPersistedReviewAnchor(item);
             persistViewState();
             void keepTrackedFile({
@@ -1148,7 +1157,7 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                         <button
                             aria-label="Keep all changes"
                             className="review-ghost-btn"
-                            disabled={items.length === 0}
+                            disabled={keepableCount === 0}
                             onClick={() => {
                                 persistedAnchorRef.current = null;
                                 persistViewState();
@@ -1158,14 +1167,14 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                                 alignItems: "center",
                                 color: "var(--diff-add)",
                                 cursor:
-                                    items.length === 0
+                                    keepableCount === 0
                                         ? "not-allowed"
                                         : "pointer",
                                 display: "inline-flex",
                                 fontSize: "11px",
                                 fontWeight: 600,
                                 gap: 4,
-                                opacity: items.length === 0 ? 0.3 : 0.7,
+                                opacity: keepableCount === 0 ? 0.3 : 0.7,
                                 padding: "4px 6px",
                             }}
                             title="Keep all changes"

@@ -26,6 +26,7 @@ import {
     nativeAiCatalogPatchToIpc,
     nativeAiEventToIpc,
     nativeAiRuntimeStatusToIpc,
+    nativeReviewCommandTrackedFilesToIpc,
     nativeReviewTrackedFileToIpc,
     type NativeAiCatalogPatch,
     type NativeAiCancelSessionOutput,
@@ -935,7 +936,7 @@ function parseNativeAiRuntimeIds(
 function nativeReviewCommandTrackedFiles(
     output: NativeAiReviewCommandOutput,
 ): readonly AiTrackedFile[] {
-    return output.trackedFiles.map(nativeReviewTrackedFileToIpc);
+    return nativeReviewCommandTrackedFilesToIpc(output);
 }
 
 function nativeExpectedReviewVersion(
