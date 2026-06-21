@@ -18,7 +18,7 @@ import { AI_SESSION_BUSY_MESSAGE } from "@shared/ai-errors";
 
 import { getSessionReviewPreferencesStorageKey } from "@renderer/app/ai/sessionReviewPreferences";
 import { useAppStore } from "./app-store";
-import { resetAiSessionActorsForTests, useAiStore } from "./ai-store";
+import { resetAiStoreRuntimeBuffersForTests, useAiStore } from "./ai-store";
 
 // Electron's ipcRenderer.invoke wraps handler errors with a prefix before
 // they reach the renderer. Tests build busy errors via this helper so they
@@ -236,7 +236,7 @@ describe("ai-store queue", () => {
             runtimeStatusById: {},
             sessions: {},
         }));
-        resetAiSessionActorsForTests();
+        resetAiStoreRuntimeBuffersForTests();
         useAppStore.setState({
             bootstrap: null,
             error: null,
@@ -266,46 +266,7 @@ describe("ai-store queue", () => {
         ).toEqual(availableCommands);
     });
 
-    it("tracks runtime lifecycle from cold through warming to ready", async () => {
-        const prepareSession = createDeferred<AiSessionSnapshot | null>();
-        Object.defineProperty(globalThis, "window", {
-            configurable: true,
-            value: {
-                comando: {
-                    getAiRuntimeStatus: vi
-                        .fn()
-                        .mockResolvedValue(createRuntimeStatus()),
-                    prepareAiSession: vi
-                        .fn()
-                        .mockImplementation(() => prepareSession.promise),
-                },
-            },
-            writable: true,
-        });
-
-        useAiStore.getState().registerSessionTab(TAB);
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
-        ).toBe("cold");
-
-        const ensurePromise = useAiStore.getState().ensureSession(TAB);
-
-        await vi.waitFor(() => {
-            expect(
-                useAiStore.getState().sessions[TAB.sessionId]
-                    ?.runtimeLifecycle,
-            ).toBe("warming");
-        });
-
-        prepareSession.resolve(createSnapshot());
-        await ensurePromise;
-
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
-        ).toBe("ready");
-    });
-
-    it("forces a focused hydrated session to thaw without replaying a prompt", async () => {
+    it("applies a prepared runtime session snapshot from the backend", async () => {
         const prepareAiSession = vi.fn().mockResolvedValue(createSnapshot());
         const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
         Object.defineProperty(globalThis, "window", {
@@ -323,30 +284,26 @@ describe("ai-store queue", () => {
         });
 
         await useAiStore.getState().ensureSession(TAB);
-        await useAiStore.getState().ensureSession(TAB, {
-            force: true,
-        });
 
-        expect(prepareAiSession).toHaveBeenCalledTimes(2);
+        expect(prepareAiSession).toHaveBeenCalledWith({
+            projectId: TAB.projectId,
+            runtimeId: TAB.runtimeId,
+            sessionId: TAB.sessionId,
+            title: TAB.title,
+            worktreeId: TAB.worktreeId,
+        });
         expect(sendAiPrompt).not.toHaveBeenCalled();
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
-        ).toBe("ready");
+        expect(useAiStore.getState().sessions[TAB.sessionId]?.snapshot).toEqual(
+            createSnapshot(),
+        );
     });
 
-    it("keeps a prompt pending while the runtime is warming and dispatches when ready", async () => {
-        const prepareSession = createDeferred<AiSessionSnapshot | null>();
+    it("dispatches a prompt immediately when the backend snapshot is idle", async () => {
         const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
         Object.defineProperty(globalThis, "window", {
             configurable: true,
             value: {
                 comando: {
-                    getAiRuntimeStatus: vi
-                        .fn()
-                        .mockResolvedValue(createRuntimeStatus()),
-                    prepareAiSession: vi
-                        .fn()
-                        .mockImplementation(() => prepareSession.promise),
                     sendAiPrompt,
                 },
             },
@@ -354,27 +311,9 @@ describe("ai-store queue", () => {
         });
 
         useAiStore.getState().registerSessionTab(TAB);
-        const ensurePromise = useAiStore.getState().ensureSession(TAB);
-
-        await vi.waitFor(() => {
-            expect(
-                useAiStore.getState().sessions[TAB.sessionId]
-                    ?.runtimeLifecycle,
-            ).toBe("warming");
-        });
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
 
         await useAiStore.getState().sendPrompt(TAB, "hello");
-
-        expect(sendAiPrompt).not.toHaveBeenCalled();
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
-        ).toBe("dispatching");
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]?.queue[0]?.status,
-        ).toBe("pending_dispatch");
-
-        prepareSession.resolve(createSnapshot());
-        await ensurePromise;
 
         await vi.waitFor(() => {
             expect(sendAiPrompt).toHaveBeenCalledTimes(1);
@@ -384,12 +323,9 @@ describe("ai-store queue", () => {
         });
     });
 
-    it("deduplicates concurrent ensureSession calls for the same session actor", async () => {
-        const prepareSession = createDeferred<AiSessionSnapshot | null>();
+    it("lets the backend handle concurrent ensureSession calls", async () => {
         const getAiRuntimeStatus = vi.fn().mockResolvedValue(createRuntimeStatus());
-        const prepareAiSession = vi
-            .fn()
-            .mockImplementation(() => prepareSession.promise);
+        const prepareAiSession = vi.fn().mockResolvedValue(createSnapshot());
         Object.defineProperty(globalThis, "window", {
             configurable: true,
             value: {
@@ -404,68 +340,44 @@ describe("ai-store queue", () => {
         const firstEnsure = useAiStore.getState().ensureSession(TAB);
         const secondEnsure = useAiStore.getState().ensureSession(TAB);
 
-        await vi.waitFor(() => {
-            expect(prepareAiSession).toHaveBeenCalledTimes(1);
-        });
-
-        prepareSession.resolve(createSnapshot());
         await Promise.all([firstEnsure, secondEnsure]);
 
-        expect(getAiRuntimeStatus).toHaveBeenCalledTimes(1);
-        expect(prepareAiSession).toHaveBeenCalledTimes(1);
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
-        ).toBe("ready");
+        expect(getAiRuntimeStatus).toHaveBeenCalledTimes(2);
+        expect(prepareAiSession).toHaveBeenCalledTimes(2);
+        expect(useAiStore.getState().sessions[TAB.sessionId]?.snapshot).toEqual(
+            createSnapshot(),
+        );
     });
 
-    it("shares an in-flight startup between ensureSession and sendPrompt", async () => {
-        const prepareSession = createDeferred<AiSessionSnapshot | null>();
+    it("queues prompts while the backend snapshot is busy", async () => {
         const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
-        const prepareAiSession = vi
-            .fn()
-            .mockImplementation(() => prepareSession.promise);
         Object.defineProperty(globalThis, "window", {
             configurable: true,
             value: {
                 comando: {
-                    getAiRuntimeStatus: vi
-                        .fn()
-                        .mockResolvedValue(createRuntimeStatus()),
-                    prepareAiSession,
                     sendAiPrompt,
                 },
             },
             writable: true,
         });
 
-        const ensurePromise = useAiStore.getState().ensureSession(TAB);
-        await vi.waitFor(() => {
-            expect(prepareAiSession).toHaveBeenCalledTimes(1);
-        });
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
 
-        await useAiStore.getState().sendPrompt(TAB, "hello while warming");
+        await useAiStore.getState().sendPrompt(TAB, "hello while busy");
 
-        expect(prepareAiSession).toHaveBeenCalledTimes(1);
         expect(sendAiPrompt).not.toHaveBeenCalled();
         expect(
             useAiStore.getState().sessions[TAB.sessionId]?.queue[0]?.status,
-        ).toBe("pending_dispatch");
-
-        prepareSession.resolve(createSnapshot());
-        await ensurePromise;
-
-        await vi.waitFor(() => {
-            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
-        });
-        expect(sendAiPrompt).toHaveBeenCalledWith(
-            expect.objectContaining({
-                prompt: "hello while warming",
-            }),
-        );
+        ).toBe("queued");
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.queue[0]?.prompt,
+        ).toBe("hello while busy");
     });
 
-    it("invalidates a warming startup when canceling so a queued prompt is not dispatched late", async () => {
-        const prepareSession = createDeferred<AiSessionSnapshot | null>();
+    it("pauses queued prompts after canceling so an idle snapshot does not dispatch the next item", async () => {
         const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
         const cancelAiSession = vi.fn().mockResolvedValue(undefined);
         Object.defineProperty(globalThis, "window", {
@@ -473,43 +385,29 @@ describe("ai-store queue", () => {
             value: {
                 comando: {
                     cancelAiSession,
-                    getAiRuntimeStatus: vi
-                        .fn()
-                        .mockResolvedValue(createRuntimeStatus()),
-                    prepareAiSession: vi
-                        .fn()
-                        .mockImplementation(() => prepareSession.promise),
                     sendAiPrompt,
                 },
             },
             writable: true,
         });
 
-        const ensurePromise = useAiStore.getState().ensureSession(TAB);
-        await vi.waitFor(() => {
-            expect(
-                useAiStore.getState().sessions[TAB.sessionId]
-                    ?.runtimeLifecycle,
-            ).toBe("warming");
-        });
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore
+            .getState()
+            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
 
         await useAiStore.getState().sendPrompt(TAB, "do not send late");
         await useAiStore.getState().cancelSession(TAB.sessionId);
-
-        prepareSession.resolve(createSnapshot());
-        await ensurePromise;
-        await Promise.resolve();
-        await Promise.resolve();
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
 
         const session = useAiStore.getState().sessions[TAB.sessionId];
         expect(cancelAiSession).toHaveBeenCalledWith(TAB.sessionId);
         expect(sendAiPrompt).not.toHaveBeenCalled();
-        expect(session?.isHydrating).toBe(false);
         expect(session?.queuePaused).toBe(true);
         expect(session?.queue[0]).toEqual(
             expect.objectContaining({
                 prompt: "do not send late",
-                status: "pending_dispatch",
+                status: "queued",
             }),
         );
     });
@@ -534,42 +432,6 @@ describe("ai-store queue", () => {
 
         expect(keepAllAiTrackedFiles).toHaveBeenCalledWith(TAB.sessionId);
         expect(prepareAiSession).not.toHaveBeenCalled();
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
-        ).toBe("cold");
-    });
-
-    it("maps runtime lifecycle for streaming, idle, and failed snapshots", async () => {
-        const sendAiPrompt = vi
-            .fn()
-            .mockRejectedValueOnce(new Error("Spawn failed"));
-        Object.defineProperty(globalThis, "window", {
-            configurable: true,
-            value: {
-                comando: {
-                    sendAiPrompt,
-                },
-            },
-            writable: true,
-        });
-
-        useAiStore.getState().registerSessionTab(TAB);
-        useAiStore
-            .getState()
-            .applySessionSnapshot(createSnapshot({ status: "streaming" }));
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
-        ).toBe("streaming");
-
-        useAiStore.getState().applySessionSnapshot(createSnapshot());
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
-        ).toBe("ready");
-
-        await useAiStore.getState().sendPrompt(TAB, "hello");
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
-        ).toBe("failed");
     });
 
     it("preserves runtime commands when session hydration returns an empty snapshot catalog", async () => {
@@ -609,7 +471,7 @@ describe("ai-store queue", () => {
 
         expect(
             useAiStore.getState().sessions[TAB.sessionId]?.snapshot
-            ?.availableCommands,
+                ?.availableCommands,
         ).toEqual(availableCommands);
     });
 
@@ -737,7 +599,7 @@ describe("ai-store queue", () => {
         );
     });
 
-    it("keeps a closed subagent in streaming lifecycle while output is active", () => {
+    it("preserves closed subagent status from incoming snapshots", () => {
         useAiStore.getState().applySessionSnapshot(
             createSnapshot({
                 closedAt: "2026-04-14T00:00:01.000Z",
@@ -746,9 +608,13 @@ describe("ai-store queue", () => {
             }),
         );
 
-        expect(
-            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
-        ).toBe("streaming");
+        expect(useAiStore.getState().sessions[TAB.sessionId]?.snapshot).toEqual(
+            expect.objectContaining({
+                closedAt: "2026-04-14T00:00:01.000Z",
+                parentSessionId: "parent-session-1",
+                status: "streaming",
+            }),
+        );
     });
 
     it("upserts typed tool activity events by tool id", () => {

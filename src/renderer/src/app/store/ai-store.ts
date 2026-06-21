@@ -45,7 +45,6 @@ import {
     cloneDraftFileContexts,
     createEmptyComposerDraftParts,
     normalizeAiDiffZoom,
-    type AiRuntimeLifecycle,
     type AiComposerDraftPart,
     type QueuedPrompt,
 } from "@renderer/app/ai/sessionReviewContracts";
@@ -121,10 +120,8 @@ interface AiSessionClientState {
     readonly diffZoom: number | null;
     readonly editingQueuedPromptState: QueuedPromptEditState | null;
     readonly editingQueuedPrompt: QueuedPrompt | null;
-    readonly hydrated: boolean;
     readonly incomingSnapshotVersion: number;
     readonly isDispatching: boolean;
-    readonly isHydrating: boolean;
     readonly lastIncomingSnapshotUpdatedAt: string | null;
     readonly localError: string | null;
     readonly meta: RegisteredSessionMeta | null;
@@ -136,7 +133,6 @@ interface AiSessionClientState {
     // a queued item), at which point that prompt dispatches and the rest of
     // the queue resumes draining when its turn completes.
     readonly queuePaused: boolean;
-    readonly runtimeLifecycle: AiRuntimeLifecycle;
     readonly snapshot: AiSessionSnapshot | null;
     readonly transcript: AiSessionTranscriptModel;
 }
@@ -382,24 +378,8 @@ function resetBufferedSessionDeltas(): void {
 
 const activeQueueDrainSessionIds = new Set<string>();
 const pendingQueueDrainSessionIds = new Set<string>();
-type SessionActorOperationPriority = "urgent" | "normal" | "background";
 
-interface SessionPrepareOperation {
-    readonly key: string;
-    readonly promise: Promise<void>;
-    readonly token: number;
-}
-
-interface SessionActorState {
-    invalidationToken: number;
-    prepare: SessionPrepareOperation | null;
-    queue: Promise<void>;
-}
-
-const sessionActors = new Map<string, SessionActorState>();
-
-export function resetAiSessionActorsForTests(): void {
-    sessionActors.clear();
+export function resetAiStoreRuntimeBuffersForTests(): void {
     resetBufferedSessionDeltas();
 }
 
@@ -565,14 +545,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return {
                 sessions: {
                     ...state.sessions,
-                    [sessionId]: withRuntimeLifecycle({
+                    [sessionId]: {
                         ...session,
                         activeQueuedPrompt: null,
                         editingQueuedPromptState: null,
                         editingQueuedPrompt: null,
                         queue: [],
                         queuePaused: false,
-                    }),
+                    },
                 },
             };
         });
@@ -632,23 +612,21 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return {
                 sessions: {
                     ...state.sessions,
-                    [event.sessionId]: withRuntimeLifecycle({
+                    [event.sessionId]: {
                         ...session,
                         ...reconcileDispatchStateForIncomingSnapshot(
                             session,
                             nextSnapshot,
                         ),
-                        hydrated: true,
                         ...resolveIncomingSnapshotProgress(
                             session,
                             nextSnapshot.updatedAt,
                         ),
-                        isHydrating: false,
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: nextSnapshot,
                         transcript: nextTranscript,
-                    }),
+                    },
                 },
             };
         });
@@ -738,23 +716,21 @@ export const useAiStore = create<AiStore>((set, get) => ({
                                 : state.runtimeCatalogById,
                         sessions: {
                             ...state.sessions,
-                            [update.patch.sessionId]: withRuntimeLifecycle({
+                            [update.patch.sessionId]: {
                                 ...session,
                                 ...reconcileDispatchStateForIncomingSnapshot(
                                     session,
                                     nextSnapshot,
                                 ),
-                                hydrated: true,
                                 ...resolveIncomingSnapshotProgress(
                                     session,
                                     incomingSnapshot.updatedAt,
                                 ),
-                                isHydrating: false,
                                 localError: nextSnapshot.lastError,
                                 meta: nextMeta,
                                 snapshot: nextSnapshot,
                                 transcript: nextTranscript,
-                            }),
+                            },
                         },
                     };
                 }
@@ -813,23 +789,21 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         : state.runtimeCatalogById,
                 sessions: {
                     ...state.sessions,
-                    [update.patch.sessionId]: withRuntimeLifecycle({
+                    [update.patch.sessionId]: {
                         ...session,
                         ...reconcileDispatchStateForIncomingSnapshot(
                             session,
                             incomingSnapshot,
                         ),
-                        hydrated: true,
                         ...resolveIncomingSnapshotProgress(
                             session,
                             incomingSnapshot.updatedAt,
                         ),
-                        isHydrating: false,
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: nextSnapshot,
                         transcript: nextTranscript,
-                    }),
+                    },
                 },
             };
         });
@@ -883,23 +857,21 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     : state.runtimeCatalogById,
                 sessions: {
                     ...state.sessions,
-                    [snapshot.sessionId]: withRuntimeLifecycle({
+                    [snapshot.sessionId]: {
                         ...session,
                         ...reconcileDispatchStateForIncomingSnapshot(
                             session,
                             nextSnapshot,
                         ),
-                        hydrated: true,
                         ...resolveIncomingSnapshotProgress(
                             session,
                             nextSnapshot.updatedAt,
                         ),
-                        isHydrating: false,
                         localError: resolvedSnapshot.lastError,
                         meta: nextMeta,
                         snapshot: resolvedSnapshot,
                         transcript: resolvedTranscript,
-                    }),
+                    },
                 },
             };
         });
@@ -918,11 +890,8 @@ export const useAiStore = create<AiStore>((set, get) => ({
         // snapshot that follows the cancel cannot race a drain and ship the
         // next queued prompt. Pausing with an empty queue is fine — pause
         // only matters while there is something to hold back.
-        invalidateSessionActorOperations(sessionId, set);
         pauseQueue(sessionId, set);
-        await runSessionActorOperation(sessionId, "urgent", () =>
-            getComandoApi().cancelAiSession(sessionId),
-        );
+        await getComandoApi().cancelAiSession(sessionId);
     },
 
     dismissSessionPlan: (sessionId, planUpdatedAt) => {
@@ -945,7 +914,8 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     ensureSession: async (tab, options) => {
-        await runSessionPrepare(tab, options, get, set);
+        void options;
+        await executeSessionPrepare(tab, get, set);
     },
 
     hydrateSettings: (settings) => {
@@ -968,10 +938,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 trackedFiles: [],
                 updatedAt: new Date().toISOString(),
             }),
-            () =>
-                runSessionActorOperation(sessionId, "background", () =>
-                    getComandoApi().keepAllAiTrackedFiles(sessionId),
-                ),
+            () => getComandoApi().keepAllAiTrackedFiles(sessionId),
             set,
             get,
         );
@@ -981,10 +948,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
         await runOptimisticSnapshotMutation(
             input.sessionId,
             (snapshot) => removeTrackedFileFromSnapshot(snapshot, input.path),
-            () =>
-                runSessionActorOperation(input.sessionId, "background", () =>
-                    getComandoApi().keepAiTrackedFile(input),
-                ),
+            () => getComandoApi().keepAiTrackedFile(input),
             set,
             get,
         );
@@ -995,10 +959,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             input.sessionId,
             (snapshot) =>
                 resolveTrackedFileHunksInSnapshot(snapshot, input, "keep"),
-            () =>
-                runSessionActorOperation(input.sessionId, "background", () =>
-                    getComandoApi().keepAiTrackedFileHunks(input),
-                ),
+            () => getComandoApi().keepAiTrackedFileHunks(input),
             set,
             get,
         );
@@ -1014,7 +975,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
         set((state) => ({
             sessions: {
                 ...state.sessions,
-                [tab.sessionId]: withRuntimeLifecycle({
+                [tab.sessionId]: {
                     ...(state.sessions[tab.sessionId] ??
                         createSessionState(persistedPreferences)),
                     draftComposerParts:
@@ -1029,7 +990,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             tab,
                             state.runtimeCatalogById[tab.runtimeId] ?? null,
                         ),
-                }),
+                },
             },
         }));
     },
@@ -1042,10 +1003,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 trackedFiles: [],
                 updatedAt: new Date().toISOString(),
             }),
-            () =>
-                runSessionActorOperation(sessionId, "background", () =>
-                    getComandoApi().rejectAllAiTrackedFiles(sessionId),
-                ),
+            () => getComandoApi().rejectAllAiTrackedFiles(sessionId),
             set,
             get,
         );
@@ -1055,10 +1013,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
         await runOptimisticSnapshotMutation(
             input.sessionId,
             (snapshot) => removeTrackedFileFromSnapshot(snapshot, input.path),
-            () =>
-                runSessionActorOperation(input.sessionId, "background", () =>
-                    getComandoApi().rejectAiTrackedFile(input),
-                ),
+            () => getComandoApi().rejectAiTrackedFile(input),
             set,
             get,
         );
@@ -1069,10 +1024,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             input.sessionId,
             (snapshot) =>
                 resolveTrackedFileHunksInSnapshot(snapshot, input, "reject"),
-            () =>
-                runSessionActorOperation(input.sessionId, "background", () =>
-                    getComandoApi().rejectAiTrackedFileHunks(input),
-                ),
+            () => getComandoApi().rejectAiTrackedFileHunks(input),
             set,
             get,
         );
@@ -1213,9 +1165,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     respondPermission: async (input) => {
-        await runSessionActorOperation(input.sessionId, "urgent", () =>
-            getComandoApi().respondAiPermission(input),
-        );
+        await getComandoApi().respondAiPermission(input);
     },
 
     respondUserInput: async (input) => {
@@ -1228,10 +1178,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 status: "starting",
                 updatedAt: new Date().toISOString(),
             }),
-            () =>
-                runSessionActorOperation(input.sessionId, "urgent", () =>
-                    getComandoApi().respondAiUserInput(input),
-                ),
+            () => getComandoApi().respondAiUserInput(input),
             set,
             get,
         );
@@ -1430,16 +1377,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
             (currentSnapshot) =>
                 setModeOnSnapshot(currentSnapshot, input.modeId),
             () =>
-                runSessionActorOperation(input.sessionId, "background", () =>
-                    modeConfig?.type === "select" &&
-                    hasSelectConfigValue(modeConfig, input.modeId)
-                        ? getComandoApi().setAiSessionConfigOption({
-                              optionId: modeConfig.id,
-                              sessionId: input.sessionId,
-                              value: input.modeId,
-                          })
-                        : getComandoApi().setAiSessionMode(input),
-                ),
+                modeConfig?.type === "select" &&
+                hasSelectConfigValue(modeConfig, input.modeId)
+                    ? getComandoApi().setAiSessionConfigOption({
+                          optionId: modeConfig.id,
+                          sessionId: input.sessionId,
+                          value: input.modeId,
+                      })
+                    : getComandoApi().setAiSessionMode(input),
             set,
             get,
         );
@@ -1454,16 +1399,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
             (currentSnapshot) =>
                 setModelOnSnapshot(currentSnapshot, input.modelId),
             () =>
-                runSessionActorOperation(input.sessionId, "background", () =>
-                    modelConfig?.type === "select" &&
-                    hasSelectConfigValue(modelConfig, input.modelId)
-                        ? getComandoApi().setAiSessionConfigOption({
-                              optionId: modelConfig.id,
-                              sessionId: input.sessionId,
-                              value: input.modelId,
-                          })
-                        : getComandoApi().setAiSessionModel(input),
-                ),
+                modelConfig?.type === "select" &&
+                hasSelectConfigValue(modelConfig, input.modelId)
+                    ? getComandoApi().setAiSessionConfigOption({
+                          optionId: modelConfig.id,
+                          sessionId: input.sessionId,
+                          value: input.modelId,
+                      })
+                    : getComandoApi().setAiSessionModel(input),
             set,
             get,
         );
@@ -1478,10 +1421,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     input.optionId,
                     input.value,
                 ),
-            () =>
-                runSessionActorOperation(input.sessionId, "background", () =>
-                    getComandoApi().setAiSessionConfigOption(input),
-                ),
+            () => getComandoApi().setAiSessionConfigOption(input),
             set,
             get,
         );
@@ -1513,10 +1453,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 title: input.title,
                 updatedAt: new Date().toISOString(),
             }),
-            () =>
-                runSessionActorOperation(input.sessionId, "background", () =>
-                    getComandoApi().renameAiSession(input),
-                ),
+            () => getComandoApi().renameAiSession(input),
             set,
             get,
         );
@@ -1551,10 +1488,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             isBusySession(latestSession.snapshot)
         ) {
             try {
-                invalidateSessionActorOperations(sessionId, set);
-                await runSessionActorOperation(sessionId, "urgent", () =>
-                    getComandoApi().cancelAiSession(sessionId),
-                );
+                await getComandoApi().cancelAiSession(sessionId);
             } catch (error) {
                 set((state) => {
                     const session = state.sessions[sessionId];
@@ -1702,224 +1636,39 @@ function createSessionState(
         diffZoom: preferences?.diffZoom ?? null,
         editingQueuedPromptState: null,
         editingQueuedPrompt: null,
-        hydrated: false,
         incomingSnapshotVersion: 0,
         isDispatching: false,
-        isHydrating: false,
         lastIncomingSnapshotUpdatedAt: null,
         localError: null,
         meta: null,
         queue: [],
         queuePaused: false,
-        runtimeLifecycle: "cold",
         snapshot: null,
         transcript: createEmptyAiSessionTranscriptModel(),
     };
 }
 
-function getSessionActor(sessionId: string): SessionActorState {
-    let actor = sessionActors.get(sessionId);
-    if (!actor) {
-        actor = {
-            invalidationToken: 0,
-            prepare: null,
-            queue: Promise.resolve(),
-        };
-        sessionActors.set(sessionId, actor);
-    }
-
-    return actor;
-}
-
-function createPrepareActorKey(tab: RuntimeAiSessionTab): string {
-    return JSON.stringify({
-        projectId: tab.projectId,
-        runtimeId: tab.runtimeId,
-        sessionId: tab.sessionId,
-        title: tab.title,
-        worktreeId: tab.worktreeId ?? null,
-    });
-}
-
-function runSessionActorOperation<T>(
-    sessionId: string,
-    priority: SessionActorOperationPriority,
-    operation: () => Promise<T>,
-): Promise<T> {
-    const actor = getSessionActor(sessionId);
-
-    if (priority === "urgent") {
-        return Promise.resolve().then(operation);
-    }
-
-    const run = actor.queue.catch(() => undefined).then(operation);
-    actor.queue = run.then(
-        () => undefined,
-        () => undefined,
-    );
-
-    return run;
-}
-
-function invalidateSessionActorOperations(
-    sessionId: string,
-    set: SetAiState,
-): void {
-    const actor = getSessionActor(sessionId);
-    actor.invalidationToken += 1;
-    actor.prepare = null;
-
-    set((state) => {
-        const session = state.sessions[sessionId];
-        if (!session?.isHydrating) {
-            return state;
-        }
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: withRuntimeLifecycle({
-                    ...session,
-                    isHydrating: false,
-                }),
-            },
-        };
-    });
-}
-
-function isSessionActorTokenCurrent(sessionId: string, token: number): boolean {
-    return getSessionActor(sessionId).invalidationToken === token;
-}
-
-async function waitForCurrentSessionPrepare(
-    sessionId: string,
-): Promise<"current" | "invalidated"> {
-    const actor = getSessionActor(sessionId);
-    const prepare = actor.prepare;
-    if (!prepare) {
-        return "current";
-    }
-
-    await prepare.promise.catch(() => undefined);
-    return isSessionActorTokenCurrent(sessionId, prepare.token)
-        ? "current"
-        : "invalidated";
-}
-
-function runSessionPrepare(
+async function executeSessionPrepare(
     tab: RuntimeAiSessionTab,
-    options: { readonly force?: boolean } | undefined,
     get: GetAiState,
     set: SetAiState,
 ): Promise<void> {
     get().registerSessionTab(tab);
 
-    const actor = getSessionActor(tab.sessionId);
-    const currentSession = get().sessions[tab.sessionId];
-    const force = options?.force ?? false;
-    if (!force && currentSession?.hydrated) {
-        return Promise.resolve();
-    }
-
-    const prepareKey = createPrepareActorKey(tab);
-    if (!force && actor.prepare?.key === prepareKey) {
-        return actor.prepare.promise;
-    }
-
-    const token = actor.invalidationToken + 1;
-    actor.invalidationToken = token;
-
-    const promise = executeSessionPrepare(tab, token, get, set).finally(() => {
-        const latestActor = getSessionActor(tab.sessionId);
-        if (latestActor.prepare?.token === token) {
-            latestActor.prepare = null;
-        }
-    });
-    actor.prepare = {
-        key: prepareKey,
-        promise,
-        token,
-    };
-
-    return promise;
-}
-
-async function executeSessionPrepare(
-    tab: RuntimeAiSessionTab,
-    token: number,
-    get: GetAiState,
-    set: SetAiState,
-): Promise<void> {
     set((state) => ({
         sessions: {
             ...state.sessions,
-            [tab.sessionId]: withRuntimeLifecycle({
+            [tab.sessionId]: {
                 ...(state.sessions[tab.sessionId] ?? createSessionState()),
-                isHydrating: true,
                 meta: buildSessionMeta(tab),
-            }),
+            },
         },
     }));
 
     try {
-        const runtimeStatusPromise = getComandoApi()
-            .getAiRuntimeStatus(tab.runtimeId)
-            .then((runtimeStatus) => {
-                const runtimeCatalog =
-                    extractRuntimeCatalogFromStatus(runtimeStatus);
-
-                set((state) => {
-                    const existingSession =
-                        state.sessions[tab.sessionId] ?? createSessionState();
-                    const existingSnapshot =
-                        existingSession.snapshot ??
-                        createEmptySessionSnapshot(
-                            tab,
-                            state.runtimeCatalogById[tab.runtimeId] ?? null,
-                        );
-                    const nextCatalog =
-                        runtimeCatalog && hasRuntimeCatalog(runtimeCatalog)
-                            ? runtimeCatalog
-                            : (state.runtimeCatalogById[tab.runtimeId] ??
-                              null);
-                    const shouldUpdateSession = isSessionActorTokenCurrent(
-                        tab.sessionId,
-                        token,
-                    );
-
-                    return {
-                        runtimeCatalogById:
-                            nextCatalog && hasRuntimeCatalog(nextCatalog)
-                                ? {
-                                      ...state.runtimeCatalogById,
-                                      [tab.runtimeId]: nextCatalog,
-                                  }
-                                : state.runtimeCatalogById,
-                        runtimeStatusById: {
-                            ...state.runtimeStatusById,
-                            [runtimeStatus.runtimeId]: runtimeStatus,
-                        },
-                        sessions: shouldUpdateSession
-                            ? {
-                                  ...state.sessions,
-                                  [tab.sessionId]: withRuntimeLifecycle({
-                                      ...existingSession,
-                                      snapshot:
-                                          nextCatalog &&
-                                          hasRuntimeCatalog(nextCatalog)
-                                              ? mergeRuntimeCatalogIntoSnapshot(
-                                                    existingSnapshot,
-                                                    nextCatalog,
-                                                )
-                                              : existingSnapshot,
-                                  }),
-                              }
-                            : state.sessions,
-                    };
-                });
-
-                return runtimeStatus;
-            });
+        const runtimeStatusPromise = getComandoApi().getAiRuntimeStatus(
+            tab.runtimeId,
+        );
         const snapshotPromise = getComandoApi()
             .prepareAiSession({
                 projectId: tab.projectId,
@@ -1940,9 +1689,6 @@ async function executeSessionPrepare(
             runtimeStatusPromise,
             snapshotPromise,
         ]);
-        if (!isSessionActorTokenCurrent(tab.sessionId, token)) {
-            return;
-        }
 
         const resolvedSnapshot =
             snapshot ??
@@ -1952,10 +1698,6 @@ async function executeSessionPrepare(
             );
 
         set((state) => {
-            if (!isSessionActorTokenCurrent(tab.sessionId, token)) {
-                return state;
-            }
-
             const runtimeCatalog = extractRuntimeCatalogFromStatus(runtimeStatus);
             const nextCatalog =
                 runtimeCatalog && hasRuntimeCatalog(runtimeCatalog)
@@ -1986,10 +1728,9 @@ async function executeSessionPrepare(
                 },
                 sessions: {
                     ...state.sessions,
-                    [tab.sessionId]: withRuntimeLifecycle({
+                    [tab.sessionId]: {
                         ...(state.sessions[tab.sessionId] ??
                             createSessionState()),
-                        hydrated: true,
                         ...(snapshot
                             ? resolveIncomingSnapshotProgress(
                                   currentSession,
@@ -2003,20 +1744,15 @@ async function executeSessionPrepare(
                                       currentSession?.lastIncomingSnapshotUpdatedAt ??
                                       null,
                               }),
-                        isHydrating: false,
                         meta: buildSessionMeta(tab),
                         snapshot: nextSnapshot,
                         transcript: nextTranscript,
-                    }),
+                    },
                 },
             };
         });
         void drainQueueIfNeeded(tab.sessionId, get, set);
     } catch (error) {
-        if (!isSessionActorTokenCurrent(tab.sessionId, token)) {
-            return;
-        }
-
         set((state) => ({
             runtimeCatalogById: {
                 ...state.runtimeCatalogById,
@@ -2029,14 +1765,8 @@ async function executeSessionPrepare(
             },
             sessions: {
                 ...state.sessions,
-                [tab.sessionId]: withRuntimeLifecycle({
+                [tab.sessionId]: {
                     ...(state.sessions[tab.sessionId] ?? createSessionState()),
-                    // Keep `hydrated: false` so a subsequent ensureSession
-                    // call (tab re-focus, window restore) can retry instead
-                    // of landing on the early-return that treats hydrated
-                    // as "done forever".
-                    hydrated: false,
-                    isHydrating: false,
                     localError:
                         error instanceof Error
                             ? error.message
@@ -2047,7 +1777,7 @@ async function executeSessionPrepare(
                         state.runtimeCatalogById[tab.runtimeId] ?? null,
                     ),
                     transcript: createEmptyAiSessionTranscriptModel(),
-                }),
+                },
             },
         }));
     }
@@ -2626,14 +2356,16 @@ function resolveIncomingSessionSnapshot(
         currentSnapshot,
     );
     const changedKeys = options.changedKeys ?? null;
+    const hasAcceptedIncomingSnapshot =
+        session.lastIncomingSnapshotUpdatedAt !== null;
     const incomingIsFreshEnough = isUpdatedAtAtLeast(
         session.lastIncomingSnapshotUpdatedAt ?? currentSnapshot.updatedAt,
         incomingSnapshot.updatedAt,
     );
 
     if (
+        hasAcceptedIncomingSnapshot &&
         !incomingIsFreshEnough &&
-        session.hydrated &&
         (currentTranscript.messageOrder.length > 0 ||
             incomingTranscript.messageOrder.length > 0)
     ) {
@@ -2833,12 +2565,12 @@ async function dispatchPrompt(
         return {
             sessions: {
                 ...state.sessions,
-                [meta.sessionId]: withRuntimeLifecycle({
+                [meta.sessionId]: {
                     ...session,
                     activeDispatchToken: dispatchToken,
                     isDispatching: true,
                     localError: null,
-                }),
+                },
             },
         };
     });
@@ -2846,14 +2578,6 @@ async function dispatchPrompt(
     let result: "deferred" | "sent" = "sent";
 
     try {
-        const prepareState = await waitForCurrentSessionPrepare(
-            meta.sessionId,
-        );
-        if (prepareState === "invalidated") {
-            result = "deferred";
-            return result;
-        }
-
         await getComandoApi().sendAiPrompt({
             additionalRoots: meta.additionalRoots,
             attachments,
@@ -2878,7 +2602,7 @@ async function dispatchPrompt(
                 return {
                     sessions: {
                         ...state.sessions,
-                        [meta.sessionId]: withRuntimeLifecycle({
+                        [meta.sessionId]: {
                             ...session,
                             localError: null,
                             snapshot: session.snapshot
@@ -2888,7 +2612,7 @@ async function dispatchPrompt(
                                       updatedAt: session.snapshot.updatedAt,
                                   }
                                 : session.snapshot,
-                        }),
+                        },
                     },
                 };
             });
@@ -2910,7 +2634,7 @@ async function dispatchPrompt(
             return {
                 sessions: {
                     ...state.sessions,
-                    [meta.sessionId]: withRuntimeLifecycle({
+                    [meta.sessionId]: {
                         ...session,
                         activeDispatchToken: null,
                         isDispatching: false,
@@ -2924,7 +2648,7 @@ async function dispatchPrompt(
                                   updatedAt: session.snapshot.updatedAt,
                               }
                             : session.snapshot,
-                    }),
+                    },
                 },
             };
         });
@@ -2940,11 +2664,11 @@ async function dispatchPrompt(
             return {
                 sessions: {
                     ...state.sessions,
-                    [meta.sessionId]: withRuntimeLifecycle({
+                    [meta.sessionId]: {
                         ...session,
                         activeDispatchToken: null,
                         isDispatching: false,
-                    }),
+                    },
                 },
             };
         });
@@ -2975,7 +2699,7 @@ async function drainQueueIfNeeded(
         !session.snapshot ||
         session.queue.length === 0 ||
         session.queuePaused ||
-        isRuntimeLifecycleBlockingDrain(session) ||
+        isBusySession(session.snapshot) ||
         isClosedSubagentSession(session.snapshot)
     ) {
         return;
@@ -3148,7 +2872,7 @@ function applyLocalPromptAcceptanceToSession(
         },
     );
 
-    return withRuntimeLifecycle({
+    return {
         ...session,
         localError: null,
         snapshot: writeAiSessionTranscriptToSnapshot(
@@ -3156,7 +2880,7 @@ function applyLocalPromptAcceptanceToSession(
             nextTranscript,
         ),
         transcript: nextTranscript,
-    });
+    };
 }
 
 function completeLocalStreamingMessages(
@@ -3315,7 +3039,7 @@ function commitQueuedPromptEdit(
         return {
             sessions: {
                 ...state.sessions,
-                [sessionId]: withRuntimeLifecycle({
+                [sessionId]: {
                     ...session,
                     meta: meta ?? session.meta,
                     queue: insertQueuedPromptAtEditPosition(
@@ -3323,7 +3047,7 @@ function commitQueuedPromptEdit(
                         queuedPrompt,
                         session.editingQueuedPromptState,
                     ),
-                }),
+                },
             },
         };
     });
@@ -3349,11 +3073,11 @@ function enqueuePrompt(
         return {
             sessions: {
                 ...state.sessions,
-                [sessionId]: withRuntimeLifecycle({
+                [sessionId]: {
                     ...session,
                     meta: meta ?? session.meta,
                     queue,
-                }),
+                },
             },
         };
     });
@@ -3394,10 +3118,10 @@ function setQueuedPromptStatusInState(
         return {
             sessions: {
                 ...state.sessions,
-                [sessionId]: withRuntimeLifecycle({
+                [sessionId]: {
                     ...session,
                     queue,
-                }),
+                },
             },
         };
     });
@@ -3478,7 +3202,7 @@ function restoreActiveQueuedPrompt(
         return {
             sessions: {
                 ...state.sessions,
-                [sessionId]: withRuntimeLifecycle({
+                [sessionId]: {
                     ...session,
                     activeQueuedPrompt: null,
                     queue: insertQueuedPromptAtPosition(
@@ -3489,7 +3213,7 @@ function restoreActiveQueuedPrompt(
                         },
                         activeQueuedPrompt.position,
                     ),
-                }),
+                },
             },
         };
     });
@@ -3514,10 +3238,10 @@ function completeActiveQueuedPromptAfterSuccessfulDispatch(
             return state;
         }
 
-        const nextSession = withRuntimeLifecycle({
+        const nextSession = {
             ...session,
             activeQueuedPrompt: null,
-        });
+        };
 
         shouldDrainAfterUnlock =
             hasIncomingSnapshotVersionAdvancedPastActiveQueuedPrompt(
@@ -3528,7 +3252,7 @@ function completeActiveQueuedPromptAfterSuccessfulDispatch(
                 isDispatchableQueuedPrompt(queuedPrompt),
             ) &&
             !nextSession.queuePaused &&
-            !isRuntimeLifecycleBlockingDrain(nextSession) &&
+            !isBusySession(session.snapshot) &&
             !isClosedSubagentSession(session.snapshot);
 
         return {
@@ -3811,105 +3535,6 @@ function isBusySession(snapshot: AiSessionSnapshot): boolean {
         snapshot.status === "waiting_permission" ||
         snapshot.status === "waiting_user_input"
     );
-}
-
-function isBlockingRuntimeLifecycle(
-    lifecycle: AiRuntimeLifecycle,
-): boolean {
-    return (
-        lifecycle === "warming" ||
-        lifecycle === "dispatching" ||
-        lifecycle === "streaming" ||
-        lifecycle === "waiting_permission" ||
-        lifecycle === "waiting_user_input" ||
-        lifecycle === "cooling" ||
-        lifecycle === "detached"
-    );
-}
-
-function isRuntimeLifecycleBlockingDrain(
-    session: AiSessionClientState,
-): boolean {
-    if (session.runtimeLifecycle === "dispatching") {
-        return Boolean(
-            session.isHydrating ||
-                hasActiveLocalDispatch(session) ||
-                (session.snapshot && isBusySession(session.snapshot)),
-        );
-    }
-
-    return isBlockingRuntimeLifecycle(session.runtimeLifecycle);
-}
-
-function withRuntimeLifecycle(
-    session: AiSessionClientState,
-): AiSessionClientState {
-    const runtimeLifecycle = deriveRuntimeLifecycle(session);
-    return runtimeLifecycle === session.runtimeLifecycle
-        ? session
-        : {
-              ...session,
-              runtimeLifecycle,
-          };
-}
-
-function deriveRuntimeLifecycle(
-    session: AiSessionClientState,
-): AiRuntimeLifecycle {
-    const snapshot = session.snapshot;
-    if (!snapshot) {
-        return session.isHydrating ? "warming" : "cold";
-    }
-
-    if (
-        session.localError ||
-        snapshot.lastError ||
-        snapshot.status === "error"
-    ) {
-        return "failed";
-    }
-
-    if (
-        session.isDispatching ||
-        session.activeQueuedPrompt ||
-        session.queue.some(
-            (queuedPrompt) =>
-                queuedPrompt.status === "pending_dispatch" ||
-                queuedPrompt.status === "sending",
-        )
-    ) {
-        return "dispatching";
-    }
-
-    if (session.isHydrating) {
-        return "warming";
-    }
-
-    if (snapshot.status === "streaming") {
-        return "streaming";
-    }
-
-    if (snapshot.status === "waiting_permission") {
-        return "waiting_permission";
-    }
-
-    if (snapshot.status === "waiting_user_input") {
-        return "waiting_user_input";
-    }
-
-    if (snapshot.status === "starting") {
-        return snapshot.activeTurnStartedAt ? "dispatching" : "warming";
-    }
-
-    if (!snapshot.runtimeSessionId) {
-        return "cold";
-    }
-
-    if (snapshot.parentSessionId && snapshot.closedAt) {
-        return "detached";
-    }
-
-    return "ready";
 }
 
 function hasActiveLocalDispatch(session: AiSessionClientState): boolean {

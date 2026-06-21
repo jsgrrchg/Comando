@@ -256,9 +256,8 @@ type WorkspaceReviewTabHandle = {
 
 type ReviewTabAutoCloseCandidate = {
     readonly hasError: boolean;
+    readonly hasIncomingSnapshot: boolean;
     readonly hasPendingTrackedFiles: boolean;
-    readonly hydrated: boolean;
-    readonly isHydrating: boolean;
     readonly reviewTabId: string;
     readonly sessionId: string;
 };
@@ -338,8 +337,7 @@ function createReviewTabAutoCloseCandidateKey(
     return JSON.stringify([
         candidate.reviewTabId,
         candidate.sessionId,
-        candidate.hydrated,
-        candidate.isHydrating,
+        candidate.hasIncomingSnapshot,
         candidate.hasError,
         candidate.hasPendingTrackedFiles,
     ]);
@@ -351,16 +349,14 @@ function parseReviewTabAutoCloseCandidateKey(
     const [
         reviewTabId,
         sessionId,
-        hydrated,
-        isHydrating,
+        hasIncomingSnapshot,
         hasError,
         hasPendingTrackedFiles,
-    ] = JSON.parse(key) as [string, string, boolean, boolean, boolean, boolean];
+    ] = JSON.parse(key) as [string, string, boolean, boolean, boolean];
     return {
         hasError,
+        hasIncomingSnapshot,
         hasPendingTrackedFiles,
-        hydrated,
-        isHydrating,
         reviewTabId,
         sessionId,
     };
@@ -381,9 +377,10 @@ function buildReviewTabAutoCloseCandidateKeys(
             hasError: Boolean(
                 sessionState?.localError || sessionState?.snapshot?.lastError,
             ),
+            hasIncomingSnapshot: Boolean(
+                sessionState?.lastIncomingSnapshotUpdatedAt,
+            ),
             hasPendingTrackedFiles,
-            hydrated: Boolean(sessionState?.hydrated),
-            isHydrating: sessionState?.isHydrating ?? false,
             reviewTabId: reviewTab.id,
             sessionId: reviewTab.sessionId,
         });
@@ -1011,8 +1008,7 @@ export function WorkspaceView({
 
         for (const candidate of reviewTabAutoCloseCandidates) {
             if (
-                !candidate.hydrated ||
-                candidate.isHydrating ||
+                !candidate.hasIncomingSnapshot ||
                 candidate.hasError ||
                 candidate.hasPendingTrackedFiles ||
                 autoClosingReviewTabIdsRef.current.has(candidate.reviewTabId)

@@ -16,18 +16,6 @@ export type AiQueuedPromptStatus =
     | "queued"
     | "sending";
 
-export type AiRuntimeLifecycle =
-    | "cold"
-    | "warming"
-    | "ready"
-    | "dispatching"
-    | "streaming"
-    | "waiting_permission"
-    | "waiting_user_input"
-    | "cooling"
-    | "detached"
-    | "failed";
-
 export type AiComposerDraftPart = AiComposerMessagePart;
 
 export interface QueuedPrompt {
