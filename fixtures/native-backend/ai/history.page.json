@@ -1,0 +1,23 @@
+{
+  "sessionId": "session_1",
+  "offset": 0,
+  "totalMessages": 2,
+  "messages": [
+    {
+      "attachments": [],
+      "content": "Hello",
+      "createdAt": "2026-06-20T12:00:00.000Z",
+      "id": "message_user_1",
+      "kind": "user",
+      "status": "completed"
+    },
+    {
+      "attachments": [],
+      "content": "Hello from native history",
+      "createdAt": "2026-06-20T12:01:00.000Z",
+      "id": "message_assistant_1",
+      "kind": "assistant",
+      "status": "completed"
+    }
+  ]
+}

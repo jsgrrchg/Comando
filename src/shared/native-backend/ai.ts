@@ -236,6 +236,117 @@ export type NativeAiSessionSummary = {
     readonly updatedAt: string;
 };
 
+export type NativeAiListSessionHistoryInput = {
+    readonly projectId: NativeProjectId | null;
+    readonly worktreeId?: NativeWorktreeId | null;
+    readonly limit?: number | null;
+};
+
+export type NativeAiHistorySessionSummary = {
+    readonly sessionId: NativeSessionId;
+    readonly parentSessionId: NativeSessionId | null;
+    readonly runtimeId: NativeRuntimeId;
+    readonly runtimeSessionId: NativeRuntimeSessionId | null;
+    readonly projectId: NativeProjectId | null;
+    readonly worktreeId: NativeWorktreeId | null;
+    readonly title: string;
+    readonly preview: string | null;
+    readonly createdAt: string;
+    readonly updatedAt: string;
+    readonly pinnedAt: string | null;
+    readonly messageCount: number;
+};
+
+export type NativeAiLoadSessionTranscriptPageInput = {
+    readonly sessionId: NativeSessionId;
+    readonly offset: number;
+    readonly limit: number;
+};
+
+export type NativeAiSessionTranscriptPage = {
+    readonly sessionId: NativeSessionId;
+    readonly offset: number;
+    readonly totalMessages: number;
+    readonly messages: readonly unknown[];
+};
+
+export type NativeAiLoadSessionSnapshotInput = {
+    readonly sessionId: NativeSessionId;
+};
+
+export type NativeAiSessionSnapshot = {
+    readonly sessionId: NativeSessionId;
+    readonly parentSessionId: NativeSessionId | null;
+    readonly runtimeId: NativeRuntimeId;
+    readonly runtimeSessionId: NativeRuntimeSessionId | null;
+    readonly projectId: NativeProjectId | null;
+    readonly worktreeId: NativeWorktreeId | null;
+    readonly title: string;
+    readonly status: NativeAiSessionStatus;
+    readonly updatedAt: string;
+    readonly activeTurnStartedAt: string | null;
+    readonly closedAt: string | null;
+    readonly lastError: string | null;
+    readonly modeId: string | null;
+    readonly modelId: string | null;
+    readonly pendingPermission: unknown | null;
+    readonly pendingUserInput: unknown | null;
+    readonly plan: unknown | null;
+    readonly tokenUsage: unknown | null;
+    readonly availableCommands: readonly unknown[];
+    readonly configOptions: readonly unknown[];
+    readonly messages: readonly unknown[];
+    readonly modes: readonly unknown[];
+    readonly models: readonly unknown[];
+    readonly toolActivity: readonly unknown[];
+    readonly trackedFiles: readonly unknown[];
+};
+
+export type NativeAiSetSessionPinnedInput = {
+    readonly sessionId: NativeSessionId;
+    readonly pinned: boolean;
+};
+
+export type NativeAiDeleteSessionInput = {
+    readonly sessionId: NativeSessionId;
+};
+
+export type NativeAiRenameSessionInput = {
+    readonly sessionId: NativeSessionId;
+    readonly title: string;
+};
+
+export type NativeAiMigrateSessionHistoryInput = {
+    readonly sourceDatabasePath?: string | null;
+    readonly mode?: string | null;
+    readonly limit?: number | null;
+};
+
+export type NativeAiHistoryMigrationError = {
+    readonly sessionId: NativeSessionId | null;
+    readonly message: string;
+};
+
+export type NativeAiMigrateSessionHistoryOutput = {
+    readonly startedAt: string;
+    readonly updatedAt: string;
+    readonly completedAt: string | null;
+    readonly migratedSessions: number;
+    readonly skippedSessions: number;
+    readonly failedSessions: number;
+    readonly errors: readonly NativeAiHistoryMigrationError[];
+};
+
+export type NativeAiHistoryStorageHealth = {
+    readonly healthy: boolean;
+    readonly storageVersion: number;
+    readonly nativeSessionCount: number;
+    readonly legacyFallbackAvailable: boolean;
+    readonly migrationManifestExists: boolean;
+    readonly orphanedSessionDirs: number;
+    readonly latestError: string | null;
+};
+
 export type NativeAiEventBase = {
     readonly sessionId: NativeSessionId;
     readonly runtimeId: NativeRuntimeId;

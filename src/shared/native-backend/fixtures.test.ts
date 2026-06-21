@@ -16,7 +16,14 @@ import {
     parseNativeBackendCapabilitiesOutput,
     parseNativeBackendOutput,
 } from ".";
-import type { NativeAiRuntimeStatus } from "./ai";
+import type {
+    NativeAiHistorySessionSummary,
+    NativeAiHistoryStorageHealth,
+    NativeAiMigrateSessionHistoryOutput,
+    NativeAiRuntimeStatus,
+    NativeAiSessionSnapshot,
+    NativeAiSessionTranscriptPage,
+} from "./ai";
 import type {
     NativeGitBranchSummary,
     NativeGitChangeEntry,
@@ -212,6 +219,41 @@ describe("native backend fixtures", () => {
             kind: "status",
             lastError: "Runtime process exited.",
             status: "error",
+        });
+        expect(
+            fixture<readonly NativeAiHistorySessionSummary[]>(
+                "ai/history.summary.json",
+            ),
+        ).toHaveLength(2);
+        expect(
+            fixture<NativeAiSessionTranscriptPage>("ai/history.page.json"),
+        ).toMatchObject({
+            sessionId: "session_1",
+            totalMessages: 2,
+        });
+        const historySnapshot = fixture<NativeAiSessionSnapshot>(
+            "ai/history.snapshot.json",
+        );
+        expect(historySnapshot).toMatchObject({
+            runtimeId: "codex",
+            sessionId: "session_1",
+        });
+        expect(historySnapshot.messages[0]).toMatchObject({
+            id: "message_user_1",
+        });
+        expect(
+            fixture<NativeAiMigrateSessionHistoryOutput>(
+                "ai/history.migration.json",
+            ),
+        ).toMatchObject({
+            migratedSessions: 2,
+            failedSessions: 0,
+        });
+        expect(
+            fixture<NativeAiHistoryStorageHealth>("ai/history.health.json"),
+        ).toMatchObject({
+            healthy: true,
+            nativeSessionCount: 2,
         });
     });
 

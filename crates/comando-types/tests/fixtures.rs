@@ -2,7 +2,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use comando_types::ai::{
-    NativeAiMessageDeltaPayload, NativeAiSessionCatalogUpdatedPayload, NativeAiSessionSummary,
+    NativeAiHistorySessionSummary, NativeAiHistoryStorageHealth, NativeAiMessageDeltaPayload,
+    NativeAiMigrateSessionHistoryOutput, NativeAiSessionCatalogUpdatedPayload,
+    NativeAiSessionSnapshot, NativeAiSessionSummary, NativeAiSessionTranscriptPage,
     NativeAiSubagentBreadcrumbPayload, NativeAiSubagentCreatedPayload, NativeAiToolActivityPayload,
 };
 use comando_types::capabilities::NativeBackendCapabilitiesOutput;
@@ -165,6 +167,12 @@ fn ai_fixtures_deserialize() {
 
     let summary: NativeAiSessionSummary = fixture("ai/session.summary.json");
     assert_eq!(summary.session_id.0, "session_1");
+
+    assert_typed_roundtrip::<Vec<NativeAiHistorySessionSummary>>("ai/history.summary.json");
+    assert_typed_roundtrip::<NativeAiSessionTranscriptPage>("ai/history.page.json");
+    assert_typed_roundtrip::<NativeAiSessionSnapshot>("ai/history.snapshot.json");
+    assert_typed_roundtrip::<NativeAiMigrateSessionHistoryOutput>("ai/history.migration.json");
+    assert_typed_roundtrip::<NativeAiHistoryStorageHealth>("ai/history.health.json");
 }
 
 #[test]
