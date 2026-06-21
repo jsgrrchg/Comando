@@ -249,6 +249,10 @@ describe("AiService OpenCode branch", () => {
                 close: vi.fn(),
                 closeOwnedByWindow: vi.fn(),
                 closeSession: vi.fn(),
+                deleteSession: vi.fn(),
+                listSessionHistory: vi.fn(() => Promise.resolve([])),
+                loadSessionSnapshot: vi.fn(() => Promise.resolve(null)),
+                loadSessionTranscriptPage: vi.fn(() => Promise.resolve(null)),
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -261,9 +265,12 @@ describe("AiService OpenCode branch", () => {
                 respondPermission: vi.fn(),
                 respondUserInput: vi.fn(),
                 sendPrompt: vi.fn(),
+                renameSession: vi.fn(),
                 setSessionConfigOption: vi.fn(),
                 setSessionMode: vi.fn(),
                 setSessionModel: vi.fn(),
+                setSessionPinned: vi.fn(),
+                shouldHandleHistory: vi.fn(() => false),
                 shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "opencode"),
             };
             const service = createService({
@@ -324,19 +331,23 @@ describe("AiService OpenCode branch", () => {
                 updatedAt: "2026-06-20T00:00:02.000Z",
             });
 
-            const persistedSnapshots = saveSessionSnapshot.mock.calls.map(
-                ([snapshot]) => snapshot as AiSessionSnapshot,
-            );
-            expect(persistedSnapshots.at(-1)?.messages).toEqual([
-                expect.objectContaining({
-                    content: "Hello",
-                    id: "assistant-1",
-                    status: "streaming",
-                }),
-            ]);
+            expect(saveSessionSnapshot).not.toHaveBeenCalled();
             expect(onSessionSnapshot).toHaveBeenCalledWith(
                 "window-1",
-                expect.objectContaining({ kind: "patch" }),
+                expect.objectContaining({
+                    kind: "patch",
+                    patch: expect.objectContaining({
+                        changes: expect.objectContaining({
+                            messages: [
+                                expect.objectContaining({
+                                    content: "Hello",
+                                    id: "assistant-1",
+                                    status: "streaming",
+                                }),
+                            ],
+                        }),
+                    }),
+                }),
             );
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
@@ -388,6 +399,7 @@ describe("AiService OpenCode branch", () => {
             const binaryPath = writeExecutable(tempDir, "opencode");
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const saveSessionSnapshot = vi.fn();
+            const onSessionSnapshot = vi.fn();
             let promptCallCount = 0;
             const serviceRef: { current: AiService | null } = {
                 current: null,
@@ -397,6 +409,10 @@ describe("AiService OpenCode branch", () => {
                 close: vi.fn(),
                 closeOwnedByWindow: vi.fn(),
                 closeSession: vi.fn(),
+                deleteSession: vi.fn(),
+                listSessionHistory: vi.fn(() => Promise.resolve([])),
+                loadSessionSnapshot: vi.fn(() => Promise.resolve(null)),
+                loadSessionTranscriptPage: vi.fn(() => Promise.resolve(null)),
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -444,15 +460,19 @@ describe("AiService OpenCode branch", () => {
                         stopReason: "accepted",
                     });
                 }),
+                renameSession: vi.fn(),
                 setSessionConfigOption: vi.fn(),
                 setSessionMode: vi.fn(),
                 setSessionModel: vi.fn(),
+                setSessionPinned: vi.fn(),
+                shouldHandleHistory: vi.fn(() => false),
                 shouldHandleRuntime: vi.fn(
                     (runtimeId) => runtimeId === "opencode",
                 ),
             };
             const service = createService({
                 nativeAi,
+                onSessionSnapshot,
                 persistence: {
                     saveSessionSnapshot,
                 },
@@ -524,10 +544,19 @@ describe("AiService OpenCode branch", () => {
             });
 
             await waitForAssertion(() => {
-                const snapshots = saveSessionSnapshot.mock.calls.map(
-                    ([snapshot]) => snapshot as AiSessionSnapshot,
+                const snapshots = onSessionSnapshot.mock.calls.map(
+                    ([, update]) => update as AiSessionUpdate,
                 );
-                const trackedFiles = snapshots.at(-1)?.trackedFiles ?? [];
+                const latestSnapshot = snapshots
+                    .map((update) =>
+                        update.kind === "snapshot"
+                            ? update.snapshot
+                            : update.patch.changes,
+                    )
+                    .findLast(
+                        (snapshot) => snapshot.trackedFiles !== undefined,
+                    );
+                const trackedFiles = latestSnapshot?.trackedFiles ?? [];
                 expect(
                     trackedFiles.map((trackedFile) => trackedFile.path).sort(),
                 ).toEqual(["scratch.txt", "src/app.ts", "src/restored.ts"]);
@@ -609,22 +638,31 @@ describe("AiService OpenCode branch", () => {
             );
             const cancelSession = vi.fn<NativeAiGateway["cancelSession"]>();
             const saveSessionSnapshot = vi.fn();
+            const onSessionSnapshot = vi.fn();
             const nativeAi: NativeAiGateway = {
                 cancelSession,
                 close: vi.fn(),
                 closeOwnedByWindow: vi.fn(),
                 closeSession: vi.fn(),
+                deleteSession: vi.fn(),
+                listSessionHistory: vi.fn(() => Promise.resolve([])),
+                loadSessionSnapshot: vi.fn(() => Promise.resolve(null)),
+                loadSessionTranscriptPage: vi.fn(() => Promise.resolve(null)),
                 prepareSession,
                 respondPermission: vi.fn(),
                 respondUserInput: vi.fn(),
                 sendPrompt,
+                renameSession: vi.fn(),
                 setSessionConfigOption: vi.fn(),
                 setSessionMode: vi.fn(),
                 setSessionModel: vi.fn(),
+                setSessionPinned: vi.fn(),
+                shouldHandleHistory: vi.fn(() => false),
                 shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "opencode"),
             };
             const service = createService({
                 nativeAi,
+                onSessionSnapshot,
                 persistence: {
                     listSessionRuntimeMappingsForParent: vi.fn((sessionId) =>
                         sessionId === "session-parent"
@@ -699,13 +737,21 @@ describe("AiService OpenCode branch", () => {
                 status: "streaming",
                 updatedAt: "2026-06-20T00:00:01.000Z",
             });
-            expect(
-                saveSessionSnapshot.mock.calls.at(-1)?.[0],
-            ).toMatchObject({
-                runtimeSessionId: "runtime-child",
-                sessionId: "session-child",
-                status: "streaming",
-            });
+            expect(saveSessionSnapshot).not.toHaveBeenCalledWith(
+                expect.objectContaining({ sessionId: "session-child" }),
+            );
+            expect(onSessionSnapshot).toHaveBeenCalledWith(
+                "window-1",
+                expect.objectContaining({
+                    kind: "patch",
+                    patch: expect.objectContaining({
+                        changes: expect.objectContaining({
+                            status: "streaming",
+                        }),
+                        sessionId: "session-child",
+                    }),
+                }),
+            );
 
             await service.cancelSession("session-child");
             expect(cancelSession).toHaveBeenCalledWith("session-child");
@@ -750,13 +796,20 @@ describe("AiService OpenCode branch", () => {
                 close: vi.fn(),
                 closeOwnedByWindow: vi.fn(),
                 closeSession,
+                deleteSession: vi.fn(),
+                listSessionHistory: vi.fn(() => Promise.resolve([])),
+                loadSessionSnapshot: vi.fn(() => Promise.resolve(null)),
+                loadSessionTranscriptPage: vi.fn(() => Promise.resolve(null)),
                 prepareSession,
                 respondPermission: vi.fn(),
                 respondUserInput: vi.fn(),
                 sendPrompt: vi.fn(),
+                renameSession: vi.fn(),
                 setSessionConfigOption: vi.fn(),
                 setSessionMode: vi.fn(),
                 setSessionModel: vi.fn(),
+                setSessionPinned: vi.fn(),
+                shouldHandleHistory: vi.fn(() => false),
                 shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "opencode"),
             };
             const service = createService({

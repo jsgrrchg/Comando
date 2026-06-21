@@ -8,6 +8,7 @@ import type {
 } from "@shared/ipc";
 
 import { AiService } from "./service";
+import type { NativeAiGateway } from "./contracts";
 
 describe("AiService history", () => {
     it("returns session history from persistence", async () => {
@@ -129,6 +130,58 @@ describe("AiService history", () => {
 
         expect(setSessionPinned).toHaveBeenCalledWith("session-1", true);
     });
+
+    it("uses native history when the native gateway owns history", async () => {
+        const expectedHistory: readonly AiHistorySessionSummary[] = [
+            {
+                createdAt: "2026-04-16T12:00:00.000Z",
+                messageCount: 1,
+                preview: "Native",
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-native",
+                title: "Native",
+                updatedAt: "2026-04-16T12:00:00.000Z",
+                worktreeId: "worktree-a",
+            },
+        ];
+        const nativeAi = createNativeAiGateway({
+            listSessionHistory: vi.fn(() => Promise.resolve(expectedHistory)),
+        });
+        const persistenceList = vi.fn(() => []);
+        const service = createService({
+            listSessionHistory: persistenceList,
+            nativeAi,
+        });
+
+        const history = await service.listSessionHistory({
+            projectId: "project-1",
+            worktreeId: "worktree-a",
+        });
+
+        expect(nativeAi.listSessionHistory).toHaveBeenCalled();
+        expect(persistenceList).not.toHaveBeenCalled();
+        expect(history).toEqual(expectedHistory);
+    });
+
+    it("falls back to persistence when native pinning cannot find a legacy session", async () => {
+        const setSessionPinned = vi.fn();
+        const nativeAi = createNativeAiGateway({
+            setSessionPinned: vi.fn(() => Promise.reject(new Error("missing"))),
+        });
+        const service = createService({
+            nativeAi,
+            setSessionPinned,
+        });
+
+        await service.setSessionPinned({
+            pinned: true,
+            sessionId: "session-legacy",
+        });
+
+        expect(nativeAi.setSessionPinned).toHaveBeenCalled();
+        expect(setSessionPinned).toHaveBeenCalledWith("session-legacy", true);
+    });
 });
 
 function createSnapshot(
@@ -174,8 +227,10 @@ function createService(overrides: {
         draft?: string,
     ) => void;
     readonly setSessionPinned?: ReturnType<typeof vi.fn>;
+    readonly nativeAi?: NativeAiGateway | null;
 }) {
     return new AiService({
+        nativeAi: overrides.nativeAi ?? null,
         onRuntimeStatus: vi.fn(),
         onSessionSnapshot: overrides.onSessionSnapshot ?? vi.fn(),
         persistence: {
@@ -227,4 +282,31 @@ function createService(overrides: {
             saveKiloRuntimeSettings: vi.fn(),
         } as never,
     });
+}
+
+function createNativeAiGateway(
+    overrides: Partial<NativeAiGateway> = {},
+): NativeAiGateway {
+    return {
+        cancelSession: vi.fn(),
+        close: vi.fn(),
+        closeOwnedByWindow: vi.fn(),
+        closeSession: vi.fn(),
+        deleteSession: vi.fn(),
+        listSessionHistory: vi.fn(() => Promise.resolve([])),
+        loadSessionSnapshot: vi.fn(() => Promise.resolve(null)),
+        loadSessionTranscriptPage: vi.fn(() => Promise.resolve(null)),
+        prepareSession: vi.fn(),
+        renameSession: vi.fn(),
+        respondPermission: vi.fn(),
+        respondUserInput: vi.fn(),
+        sendPrompt: vi.fn(),
+        setSessionConfigOption: vi.fn(),
+        setSessionMode: vi.fn(),
+        setSessionModel: vi.fn(),
+        setSessionPinned: vi.fn(),
+        shouldHandleHistory: vi.fn(() => true),
+        shouldHandleRuntime: vi.fn(() => true),
+        ...overrides,
+    };
 }

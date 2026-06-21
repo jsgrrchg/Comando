@@ -602,7 +602,6 @@ export class AiService {
                 event,
             );
             this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
-            this.#persistence.saveSessionSnapshot(nextSnapshot);
             this.#onSessionSnapshot(
                 ownerWindowId,
                 buildAiSessionUpdate(previousSnapshot, nextSnapshot),
@@ -657,7 +656,6 @@ export class AiService {
                     event.childSessionId,
                     event.parentSessionId,
                 );
-                this.#persistence.saveSessionSnapshot(childSnapshot);
                 this.#onSessionSnapshot(ownerWindowId, {
                     kind: "snapshot",
                     snapshot: childSnapshot,
@@ -691,7 +689,6 @@ export class AiService {
             patch,
         );
         this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
-        this.#persistence.saveSessionSnapshot(nextSnapshot);
         this.#onSessionSnapshot(
             ownerWindowId,
             buildAiSessionUpdate(previousSnapshot, nextSnapshot),
@@ -984,6 +981,14 @@ export class AiService {
             return liveSnapshot;
         }
 
+        if (this.#nativeAi?.shouldHandleHistory()) {
+            const nativeSnapshot =
+                await this.#nativeAi.loadSessionSnapshot(sessionId);
+            if (nativeSnapshot) {
+                return await this.#reconcilePersistedTrackedFiles(nativeSnapshot);
+            }
+        }
+
         const persistedSnapshot =
             await this.#persistence.loadSessionSnapshot(sessionId);
         return persistedSnapshot
@@ -994,12 +999,23 @@ export class AiService {
     async listSessionHistory(
         input: ListAiSessionHistoryInput,
     ): Promise<readonly AiHistorySessionSummary[]> {
+        if (this.#nativeAi?.shouldHandleHistory()) {
+            return await this.#nativeAi.listSessionHistory(input);
+        }
         return await this.#persistence.listSessionHistory(input);
     }
 
     async setSessionPinned(
         input: AiSessionPinnedMutationInput,
     ): Promise<void> {
+        if (this.#nativeAi?.shouldHandleHistory()) {
+            try {
+                await this.#nativeAi.setSessionPinned(input);
+                return;
+            } catch (error) {
+                debugBenignError("ai.service.setSessionPinned.native", error);
+            }
+        }
         await this.#persistence.setSessionPinned(
             input.sessionId,
             input.pinned,
@@ -1009,6 +1025,13 @@ export class AiService {
     async getSessionTranscriptPage(
         input: GetAiSessionTranscriptPageInput,
     ): Promise<AiSessionTranscriptPage> {
+        if (this.#nativeAi?.shouldHandleHistory()) {
+            const nativePage =
+                await this.#nativeAi.loadSessionTranscriptPage(input);
+            if (nativePage) {
+                return nativePage;
+            }
+        }
         const page = await this.#persistence.loadSessionTranscriptPage(input);
         if (!page) {
             throw new Error("The session could not be found.");
@@ -1407,6 +1430,7 @@ export class AiService {
     async renameSession(input: AiSessionRenameMutationInput): Promise<void> {
         if (this.#liveSessionContexts.has(input.sessionId)) {
             if (this.#isNativeAiSession(input.sessionId)) {
+                await this.#requireNativeAiGateway().renameSession(input);
                 await this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
                     setTitleOnSnapshot(snapshot, input.title),
                 );
@@ -1414,6 +1438,15 @@ export class AiService {
             }
             await this.#requireAiWorker().renameSession(input);
             return;
+        }
+
+        if (this.#nativeAi?.shouldHandleHistory()) {
+            try {
+                await this.#nativeAi.renameSession(input);
+                return;
+            } catch (error) {
+                debugBenignError("ai.service.renameSession.native", error);
+            }
         }
 
         await this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
@@ -1462,6 +1495,14 @@ export class AiService {
             }
 
             this.#clearLiveSession(sessionId);
+            if (this.#nativeAi?.shouldHandleHistory()) {
+                try {
+                    await this.#nativeAi.deleteSession(sessionId);
+                    return;
+                } catch (error) {
+                    debugBenignError("ai.service.deleteSession.native", error);
+                }
+            }
             await this.#persistence.deleteSession(sessionId);
         } catch (error) {
             this.#deletedSessionIds.delete(sessionId);
@@ -2282,7 +2323,9 @@ export class AiService {
         ownerWindowId: string,
     ): void {
         this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
-        this.#persistence.saveSessionSnapshot(snapshot);
+        if (!this.#isNativeAiSession(snapshot.sessionId)) {
+            this.#persistence.saveSessionSnapshot(snapshot);
+        }
     }
 
     #applyNativeSessionEvent(
@@ -2562,7 +2605,6 @@ export class AiService {
                 updatedAt: new Date().toISOString(),
             };
             this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
-            this.#persistence.saveSessionSnapshot(nextSnapshot);
             this.#onSessionSnapshot(
                 ownerWindowId,
                 buildAiSessionUpdate(snapshot, nextSnapshot),
@@ -2754,7 +2796,6 @@ export class AiService {
         }
 
         this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
-        this.#persistence.saveSessionSnapshot(snapshot);
         this.#nativeSessionIds.add(snapshot.sessionId);
         this.#nativeChildParentSessionIds.set(snapshot.sessionId, parentSessionId);
         this.#onSessionSnapshot(ownerWindowId, {
@@ -2922,7 +2963,9 @@ export class AiService {
         previousSnapshot: AiSessionSnapshot,
         result: AiWorkerReviewMutationResult,
     ): void {
-        this.#persistence.saveSessionSnapshot(result.snapshot);
+        if (!this.#isNativeAiSession(result.snapshot.sessionId)) {
+            this.#persistence.saveSessionSnapshot(result.snapshot);
+        }
         if (this.#liveSnapshots.has(result.snapshot.sessionId)) {
             this.#liveSnapshots.set(result.snapshot.sessionId, result.snapshot);
             this.#touchLiveSession(result.snapshot.sessionId);
@@ -3093,7 +3136,9 @@ export class AiService {
         if (liveSnapshot) {
             const nextSnapshot = mutate(liveSnapshot);
             this.#liveSnapshots.set(sessionId, nextSnapshot);
-            this.#persistence.saveSessionSnapshot(nextSnapshot);
+            if (!this.#isNativeAiSession(sessionId)) {
+                this.#persistence.saveSessionSnapshot(nextSnapshot);
+            }
             this.#onSessionSnapshot(
                 this.#liveSessionContexts.get(sessionId)?.ownerWindowId ?? "",
                 buildAiSessionUpdate(liveSnapshot, nextSnapshot),

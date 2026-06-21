@@ -15,10 +15,12 @@ import type { AiWorkerSessionLaunchInput } from "@main/ai/contracts";
 
 import {
     NATIVE_AI_ENABLED_ENV,
+    NATIVE_AI_HISTORY_ENABLED_ENV,
     NATIVE_AI_RUNTIMES_ENV,
     NativeAiGateway,
     type NativeAiGatewayOptions,
     shouldUseNativeAi,
+    shouldUseNativeAiHistory,
     shouldUseNativeAiRuntime,
 } from "./ai";
 
@@ -63,6 +65,12 @@ describe("native AI flags", () => {
             shouldUseNativeAiRuntime("opencode", {
                 [NATIVE_AI_ENABLED_ENV]: "1",
                 [NATIVE_AI_RUNTIMES_ENV]: "opencode",
+            }),
+        ).toBe(true);
+        expect(
+            shouldUseNativeAiHistory({
+                [NATIVE_AI_ENABLED_ENV]: "1",
+                [NATIVE_AI_HISTORY_ENABLED_ENV]: "1",
             }),
         ).toBe(true);
     });
@@ -417,6 +425,117 @@ describe("NativeAiGateway", () => {
         });
     });
 
+    it("requests and adapts native history payloads when history is enabled", async () => {
+        const client = createClient();
+        client.request.mockImplementation(
+            async <T = unknown>(command: string): Promise<T> => {
+                if (command === "ai_list_session_history") {
+                    return [
+                        {
+                            createdAt: "2026-06-20T00:00:00.000Z",
+                            messageCount: 1,
+                            parentSessionId: null,
+                            pinnedAt: null,
+                            preview: "Hello",
+                            projectId: "project-1",
+                            runtimeId: "opencode",
+                            runtimeSessionId: "runtime-session-1",
+                            sessionId: "session-1",
+                            title: "Native session",
+                            updatedAt: "2026-06-20T00:00:01.000Z",
+                            worktreeId: "worktree-1",
+                        },
+                    ] as T;
+                }
+                if (command === "ai_load_session_transcript_page") {
+                    return {
+                        messages: [
+                            {
+                                attachments: [],
+                                content: "Hello",
+                                createdAt: "2026-06-20T00:00:00.000Z",
+                                id: "message-1",
+                                kind: "assistant",
+                                status: "completed",
+                            },
+                        ],
+                        offset: 0,
+                        sessionId: "session-1",
+                        totalMessages: 1,
+                    } as T;
+                }
+                if (command === "ai_load_session_snapshot") {
+                    return {
+                        activeTurnStartedAt: null,
+                        availableCommands: [],
+                        closedAt: null,
+                        configOptions: [],
+                        lastError: null,
+                        messages: [],
+                        modeId: null,
+                        modes: [],
+                        modelId: null,
+                        models: [],
+                        parentSessionId: null,
+                        pendingPermission: null,
+                        pendingUserInput: null,
+                        plan: null,
+                        projectId: "project-1",
+                        runtimeId: "opencode",
+                        runtimeSessionId: "runtime-session-1",
+                        sessionId: "session-1",
+                        status: "idle",
+                        title: "Native session",
+                        tokenUsage: null,
+                        toolActivity: [],
+                        trackedFiles: [],
+                        updatedAt: "2026-06-20T00:00:01.000Z",
+                        worktreeId: "worktree-1",
+                    } as T;
+                }
+                return { ok: true } as T;
+            },
+        );
+        const gateway = createGateway(client, {
+            env: {
+                [NATIVE_AI_ENABLED_ENV]: "1",
+                [NATIVE_AI_HISTORY_ENABLED_ENV]: "1",
+            },
+        });
+
+        await expect(
+            gateway.listSessionHistory({
+                projectId: "project-1",
+                worktreeId: "worktree-1",
+            }),
+        ).resolves.toMatchObject([{ sessionId: "session-1" }]);
+        await expect(
+            gateway.loadSessionTranscriptPage({
+                limit: 50,
+                offset: 0,
+                sessionId: "session-1",
+            }),
+        ).resolves.toMatchObject({ totalMessages: 1 });
+        await expect(
+            gateway.loadSessionSnapshot("session-1"),
+        ).resolves.toMatchObject({ runtimeId: "opencode", sessionId: "session-1" });
+        await gateway.setSessionPinned({ pinned: true, sessionId: "session-1" });
+        await gateway.renameSession({ sessionId: "session-1", title: "Renamed" });
+        await gateway.deleteSession("session-1");
+
+        expect(client.request).toHaveBeenCalledWith("ai_set_session_pinned", {
+            pinned: true,
+            sessionId: "session-1",
+        });
+        expect(client.request).toHaveBeenCalledWith("ai_rename_session", {
+            sessionId: "session-1",
+            title: "Renamed",
+        });
+        expect(client.request).toHaveBeenCalledWith("ai_delete_session", {
+            sessionId: "session-1",
+        });
+    });
+
     it("reports runtime connection events as diagnostics", () => {
         const client = createClient();
         const onDiagnostic = vi.fn();
@@ -500,6 +619,7 @@ function createGateway(
     options: Partial<
         Pick<
             NativeAiGatewayOptions,
+            | "env"
             | "onDiagnostic"
             | "onRuntimeStatus"
             | "onSessionCatalogPatch"
@@ -509,7 +629,7 @@ function createGateway(
 ) {
     return new NativeAiGateway({
         client,
-        env: { [NATIVE_AI_ENABLED_ENV]: "1" },
+        env: options.env ?? { [NATIVE_AI_ENABLED_ENV]: "1" },
         onDiagnostic: options.onDiagnostic,
         onRuntimeStatus: options.onRuntimeStatus ?? vi.fn(),
         onSessionCatalogPatch: options.onSessionCatalogPatch,
