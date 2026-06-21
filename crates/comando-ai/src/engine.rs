@@ -188,13 +188,17 @@ impl AiEngine {
         let launch = resolved_launch;
         let runtime_id_for_invalidation = input.runtime_id.0.clone();
         let session = NativeAiSession::from_prepare_input(input)?;
-        let sessions = self.lock_sessions()?;
-        if sessions.get(&session.session_id).is_ok() {
-            return Err(AiError::SessionOwnerMismatch {
-                session_id: session.session_id.0,
-                owner: "native".to_string(),
-                expected: "new".to_string(),
-            });
+        let mut sessions = self.lock_sessions()?;
+        if let Ok(existing) = sessions.get_mut(&session.session_id) {
+            if existing.session.runtime_id != session.runtime_id {
+                return Err(AiError::SessionOwnerMismatch {
+                    session_id: session.session_id.0,
+                    owner: existing.session.runtime_id.0.clone(),
+                    expected: session.runtime_id.0,
+                });
+            }
+            existing.session.owner_window_id = session.owner_window_id;
+            return Ok(prepare_session_output(existing.session.summary()));
         }
         let event_sender = self.event_sender()?;
         drop(sessions);
@@ -1335,6 +1339,9 @@ fn native_config_value(value: serde_json::Value) -> AiResult<NativeAiConfigValue
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    use comando_types::ai::{NativeAiDesiredSelections, NativeAiLaunchSpec, NativeAiRuntimeStatus};
     use comando_types::ids::{RuntimeId, SessionId};
 
     fn prepare_input(session_id: &str, runtime_id: &str) -> NativeAiPrepareSessionInput {
@@ -1356,6 +1363,64 @@ mod tests {
         }
     }
 
+    fn prepare_input_with_launch(
+        session_id: &str,
+        runtime_id: &str,
+    ) -> NativeAiPrepareSessionInput {
+        let mut input = prepare_input(session_id, runtime_id);
+        input.launch = Some(NativeAiLaunchSpec {
+            runtime_id: RuntimeId(runtime_id.to_string()),
+            owner_window_id: "window_main".to_string(),
+            project_id: None,
+            worktree_id: None,
+            project_root: None,
+            additional_roots: Vec::new(),
+            executable: "opencode".to_string(),
+            args: vec!["acp".to_string()],
+            cwd: "/tmp".to_string(),
+            env: BTreeMap::new(),
+            command: "opencode acp".to_string(),
+            status: NativeAiRuntimeStatus {
+                runtime_id: RuntimeId(runtime_id.to_string()),
+                state: "ready".to_string(),
+                auth_method: None,
+                auth_methods: Vec::new(),
+                auth_ready: true,
+                auth_credential_source: None,
+                auth_credential_source_label: None,
+                auth_session_message: None,
+                auth_storage_message: None,
+                can_disconnect_auth: false,
+                can_logout_auth: false,
+                checked_at: "2026-06-21T00:00:00.000Z".to_string(),
+                command: Some("opencode acp".to_string()),
+                available_commands: Vec::new(),
+                config_options: Vec::new(),
+                message: None,
+                mode_id: None,
+                modes: Vec::new(),
+                model_id: None,
+                models: Vec::new(),
+                onboarding_required: false,
+                source: Some("test".to_string()),
+                has_custom_binary_path: false,
+                has_gateway_config: false,
+                has_gateway_url: false,
+            },
+            auth_method: None,
+            auth_credential_source: None,
+            auth_handshake: None,
+            persisted_runtime_session_id: None,
+            persisted_subagent_session_mappings: Vec::new(),
+            desired_selections: NativeAiDesiredSelections {
+                model_id: None,
+                mode_id: None,
+                config_options: BTreeMap::new(),
+            },
+        });
+        input
+    }
+
     #[test]
     fn rejects_missing_launch_before_session_creation() {
         let engine = AiEngine::default();
@@ -1374,6 +1439,26 @@ mod tests {
             engine.prepare_session(prepare_input("s1", "gemini")),
             Err(AiError::RuntimeMissing { .. })
         ));
+    }
+
+    #[test]
+    fn prepare_existing_native_session_returns_live_summary() {
+        let engine = AiEngine::default();
+        {
+            let mut sessions = engine.lock_sessions().unwrap();
+            sessions
+                .insert(
+                    NativeAiSession::from_prepare_input(prepare_input("s1", "opencode")).unwrap(),
+                )
+                .unwrap();
+        }
+
+        let summary = engine
+            .prepare_session(prepare_input_with_launch("s1", "opencode"))
+            .unwrap();
+
+        assert_eq!(summary.session_id, SessionId("s1".to_string()));
+        assert_eq!(summary.runtime_id, RuntimeId("opencode".to_string()));
     }
 
     #[test]
