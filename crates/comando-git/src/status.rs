@@ -17,7 +17,7 @@ pub fn get_status(
 ) -> GitResult<NativeGitStatusSnapshot> {
     let output = runner.run(
         root_path,
-        &["status", "--porcelain=v2", "--branch", "--renames"],
+        &["status", "--porcelain=v2", "-z", "--branch", "--renames"],
         GitRunOptions::read_only(),
     )?;
 
@@ -38,20 +38,53 @@ pub fn parse_status_porcelain(
         tracking_branch_name: None,
     };
 
-    for line in output.lines() {
-        if let Some(header) = line.strip_prefix("# ") {
-            parse_branch_header(header, &mut sync);
+    if output.contains('\0') {
+        parse_status_records(
+            output.split('\0'),
+            true,
+            worktree_id,
+            &mut sync,
+            &mut entries,
+        );
+        let entry_list = entries.into_values().collect::<Vec<_>>();
+        return build_status_snapshot(entry_list, Some(sync));
+    }
+
+    parse_status_records(output.lines(), false, worktree_id, &mut sync, &mut entries);
+    let entry_list = entries.into_values().collect::<Vec<_>>();
+    build_status_snapshot(entry_list, Some(sync))
+}
+
+fn parse_status_records<'a>(
+    records: impl IntoIterator<Item = &'a str>,
+    nul_separated: bool,
+    worktree_id: Option<WorktreeId>,
+    sync: &mut NativeGitSyncStatus,
+    entries: &mut BTreeMap<String, NativeGitChangeEntry>,
+) {
+    let mut records = records.into_iter();
+
+    while let Some(line) = records.next() {
+        if line.is_empty() {
             continue;
         }
 
-        let Some(entry) = parse_status_entry(line, worktree_id.clone()) else {
+        let previous_path = if nul_separated && line.starts_with("2 ") {
+            records.next().filter(|path| !path.is_empty())
+        } else {
+            None
+        };
+
+        if let Some(header) = line.strip_prefix("# ") {
+            parse_branch_header(header, sync);
+            continue;
+        }
+
+        let Some(entry) = parse_status_entry(line, previous_path, worktree_id.clone()) else {
             continue;
         };
-        merge_entry(&mut entries, entry);
+        merge_entry(entries, entry);
     }
-
-    let entry_list = entries.into_values().collect::<Vec<_>>();
-    build_status_snapshot(entry_list, Some(sync))
 }
 
 pub fn build_status_snapshot(
@@ -117,7 +150,11 @@ fn parse_branch_header(header: &str, sync: &mut NativeGitSyncStatus) {
     }
 }
 
-fn parse_status_entry(line: &str, worktree_id: Option<WorktreeId>) -> Option<NativeGitChangeEntry> {
+fn parse_status_entry(
+    line: &str,
+    nul_previous_path: Option<&str>,
+    worktree_id: Option<WorktreeId>,
+) -> Option<NativeGitChangeEntry> {
     if let Some(path) = line.strip_prefix("? ") {
         return Some(build_entry(path, None, "?", "?", worktree_id));
     }
@@ -139,7 +176,11 @@ fn parse_status_entry(line: &str, worktree_id: Option<WorktreeId>) -> Option<Nat
         let parts = split_status_fields(rest, 9);
         let xy = parts.first()?;
         let path_field = parts.get(8)?;
-        let (path, previous_path) = split_rename_paths(path_field);
+        let (path, previous_path) = if let Some(previous_path) = nul_previous_path {
+            (*path_field, Some(previous_path.to_string()))
+        } else {
+            split_rename_paths(path_field)
+        };
         return Some(build_entry(
             path,
             previous_path,
@@ -587,6 +628,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_nul_separated_utf8_status() {
+        let status = parse_status_porcelain(
+            "# branch.oid (initial)\0# branch.head main\0? café.txt\0",
+            None,
+        );
+
+        assert_eq!(status.summary.untracked_count, 1);
+        assert_eq!(status.entries[0].path, "café.txt");
+        assert_eq!(status.entries[0].name, "café.txt");
+    }
+
+    #[test]
+    fn parses_nul_separated_renamed_status() {
+        let status = parse_status_porcelain(
+            "2 R. N... 100644 100644 100644 1111111 2222222 R100 café nuevo.txt\0café viejo.txt\0",
+            None,
+        );
+
+        assert_eq!(status.summary.staged_count, 1);
+        assert_eq!(status.entries[0].path, "café nuevo.txt");
+        assert_eq!(
+            status.entries[0].previous_path.as_deref(),
+            Some("café viejo.txt")
+        );
+    }
+
+    #[test]
     fn reads_status_from_git_repository() {
         let temp = TempDir::new().expect("temp");
         init_repo_with_commit(&temp);
@@ -599,6 +667,24 @@ mod tests {
         assert_eq!(status.summary.unstaged_count, 1);
         assert_eq!(status.summary.untracked_count, 1);
         assert_eq!(status.tree[0].kind, "file");
+    }
+
+    #[test]
+    fn reads_utf8_paths_from_git_repository() {
+        let temp = TempDir::new().expect("temp");
+        init_repo_with_commit(&temp);
+        fs::write(temp.path().join("café.txt"), "nuevo\n").expect("write utf8");
+
+        let status = get_status(&GitRunner::new(), temp.path(), None).expect("status");
+        let entry = status
+            .entries
+            .iter()
+            .find(|entry| entry.path == "café.txt")
+            .expect("utf8 entry");
+
+        assert_eq!(entry.kind, "untracked");
+        assert!(!entry.path.contains("\\303"));
+        assert!(!entry.path.contains('"'));
     }
 
     #[test]
