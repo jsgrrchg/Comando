@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::env;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
@@ -2720,9 +2719,6 @@ impl NativeBackend {
     }
 
     fn git_init_repository(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let scope = match parse_args::<native_git::NativeGitRepositoryScope>(&request) {
             Ok(scope) => scope,
             Err(error) => return error_only(request.id, error),
@@ -2748,9 +2744,6 @@ impl NativeBackend {
     }
 
     fn git_commit(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitCommitInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2770,9 +2763,6 @@ impl NativeBackend {
     }
 
     fn git_checkout_branch(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitCheckoutBranchInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2793,9 +2783,6 @@ impl NativeBackend {
     }
 
     fn git_create_branch(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitCheckoutBranchInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2817,9 +2804,6 @@ impl NativeBackend {
     }
 
     fn git_delete_local_branch(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitDeleteLocalBranchInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2838,9 +2822,6 @@ impl NativeBackend {
     }
 
     fn git_create_worktree(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitWorktreeMutationInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2870,9 +2851,6 @@ impl NativeBackend {
     }
 
     fn git_remove_worktree(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitWorktreeMutationInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2891,9 +2869,6 @@ impl NativeBackend {
     }
 
     fn git_fetch(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_network_enabled() {
-            return disabled_git_network_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitFetchInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2913,9 +2888,6 @@ impl NativeBackend {
     }
 
     fn git_pull(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_network_enabled() {
-            return disabled_git_network_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitPullInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2935,9 +2907,6 @@ impl NativeBackend {
     }
 
     fn git_push(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_network_enabled() {
-            return disabled_git_network_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitPushInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2959,9 +2928,6 @@ impl NativeBackend {
     }
 
     fn git_delete_remote_branch(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_network_enabled() {
-            return disabled_git_network_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitDeleteRemoteBranchInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2989,9 +2955,6 @@ impl NativeBackend {
         ) -> comando_git::GitResult<native_git::NativeGitOperationResult>,
         serialize_message: &'static str,
     ) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitPathsInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -3519,43 +3482,6 @@ fn ai_error_runtime_outputs(
 
 fn ai_runtime_event_output(event_payload: AiRuntimeEvent) -> RpcOutput {
     event(event_payload.event_name, event_payload.payload)
-}
-
-fn disabled_git_operation(request: RpcRequest) -> CommandResult {
-    error_only(
-        request.id,
-        NativeError::new(
-            NativeErrorCode::PermissionDenied,
-            "Native Git operation is disabled by guardrails.",
-        )
-        .with_details(json!({ "gitCode": "operation_disabled" })),
-    )
-}
-
-fn disabled_git_network_operation(request: RpcRequest) -> CommandResult {
-    error_only(
-        request.id,
-        NativeError::new(
-            NativeErrorCode::PermissionDenied,
-            "Native Git network operation is disabled by guardrails.",
-        )
-        .with_details(json!({ "gitCode": "network_disabled" })),
-    )
-}
-
-fn native_git_mutations_enabled() -> bool {
-    native_git_write_mode_enabled()
-        && env::var("COMANDO_NATIVE_GIT_MUTATIONS").ok().as_deref() == Some("1")
-}
-
-fn native_git_network_enabled() -> bool {
-    native_git_mutations_enabled()
-        && env::var("COMANDO_NATIVE_GIT_NETWORK").ok().as_deref() == Some("1")
-}
-
-fn native_git_write_mode_enabled() -> bool {
-    env::var("COMANDO_NATIVE_GIT").ok().as_deref() == Some("1")
-        && env::var("COMANDO_NATIVE_GIT_MODE").ok().as_deref() == Some("write")
 }
 
 fn parse_args<T: DeserializeOwned>(request: &RpcRequest) -> Result<T, NativeError> {

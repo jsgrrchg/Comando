@@ -35,7 +35,6 @@ import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
 import type { NormalizedSessionCatalogPayload } from "./ai/session-core";
 import { createDbWorkerClient, type DbWorkerClient } from "./db/client";
-import { createGitWorkerClient, type GitWorkerClient } from "./git";
 import { GitHubService } from "./github/service";
 import {
     installFilePreviewProtocol,
@@ -54,7 +53,7 @@ import {
 } from "./native-backend/persistence";
 import { NativeAiGateway, shouldUseNativeAi } from "./native-backend/ai";
 import { NativeFsGateway } from "./native-backend/fs";
-import { NativeGitGateway, NativeGitRoutingGateway } from "./native-backend/git";
+import { NativeGitGateway, type ClosableGitGateway } from "./native-backend/git";
 import { NativeSearchGateway } from "./native-backend/index-search";
 import {
     NativeTerminalGateway,
@@ -91,7 +90,7 @@ let aiService: AiService | null = null;
 let aiWorkerClient: AiWorkerClient | null = null;
 let persistenceService: PersistenceGateway | null = null;
 let projectService: ProjectService | null = null;
-let gitService: GitWorkerClient | null = null;
+let gitService: ClosableGitGateway | null = null;
 let githubService: GitHubService | null = null;
 let secretStore: SecretStoreGateway | null = null;
 let settingsService: SettingsGateway | null = null;
@@ -151,17 +150,7 @@ if (!hasSingleInstanceLock) {
             secretStore = dbWorkerClient.secretStore;
             githubService = new GitHubService({ secretStore });
             settingsService = dbWorkerClient.settings;
-            const gitWorker = await createGitWorkerClient();
-            gitService = nativeBackendClient
-                ? new NativeGitRoutingGateway({
-                      env: process.env,
-                      legacy: gitWorker,
-                      native: new NativeGitGateway(nativeBackendClient),
-                      onDiagnostic: (message) => {
-                          console.warn(message);
-                      },
-                  })
-                : gitWorker;
+            gitService = new NativeGitGateway(nativeClient);
             const projectStore = await createNativeProjectRegistryStore({
                 nativeClient,
                 onDiagnostic: (message) => {
