@@ -124,6 +124,7 @@ export const NATIVE_AI_COMMANDS = [
     "ai_list_session_history",
     "ai_load_session_transcript_page",
     "ai_load_session_snapshot",
+    "ai_list_session_runtime_mappings",
     "ai_set_session_pinned",
     "ai_delete_session",
     "ai_migrate_session_history",

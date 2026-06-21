@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use comando_types::ai::{
     NativeAiHistorySessionSummary, NativeAiHistoryStorageHealth, NativeAiListSessionHistoryInput,
-    NativeAiLoadSessionTranscriptPageInput, NativeAiSessionSnapshot, NativeAiSessionStatus,
-    NativeAiSessionTranscriptPage,
+    NativeAiLoadSessionTranscriptPageInput, NativeAiRuntimeSessionMapping, NativeAiSessionSnapshot,
+    NativeAiSessionStatus, NativeAiSessionTranscriptPage,
 };
 use comando_types::ids::{ProjectId, RuntimeId, RuntimeSessionId, SessionId, WorktreeId};
 use rusqlite::{Connection, OptionalExtension};
@@ -23,6 +23,7 @@ pub const HISTORY_FORMAT_VERSION: u32 = 1;
 const AI_DIR: &str = "ai";
 const SESSIONS_DIR: &str = "sessions";
 const SESSION_META_FILE: &str = "session-meta.json";
+const SESSION_STATE_FILE: &str = "session-state.json";
 const SESSION_TRANSCRIPT_FILE: &str = "transcript.jsonl";
 const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_COMPACT_STATE_FILE: &str = "compact-state.json";
@@ -256,6 +257,44 @@ pub struct AiTranscriptRecord {
     pub payload: Value,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiHistorySessionState {
+    pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_turn_started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_permission: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_user_input: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_activity: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracked_files: Vec<Value>,
+}
+
+impl Default for AiHistorySessionState {
+    fn default() -> Self {
+        Self {
+            version: HISTORY_FORMAT_VERSION,
+            active_turn_started_at: None,
+            last_error: None,
+            pending_permission: None,
+            pending_user_input: None,
+            plan: None,
+            token_usage: None,
+            tool_activity: Vec::new(),
+            tracked_files: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct HistoryCompactionState {
@@ -302,6 +341,9 @@ impl AiHistoryStore {
     pub fn create_session(&self, metadata: AiHistorySessionMetadata) -> AiResult<()> {
         self.ensure_session_dir(&metadata.session_id)?;
         self.save_metadata(&metadata)?;
+        if !self.session_state_path(&metadata.session_id).exists() {
+            self.save_session_state(&metadata.session_id, &AiHistorySessionState::default())?;
+        }
         if !self.index_path(&metadata.session_id).exists() {
             self.save_index(&metadata.session_id, &AiTranscriptIndex::empty())?;
         }
@@ -323,6 +365,38 @@ impl AiHistoryStore {
     pub fn save_metadata(&self, metadata: &AiHistorySessionMetadata) -> AiResult<()> {
         self.ensure_session_dir(&metadata.session_id)?;
         atomic_write_json(&self.metadata_path(&metadata.session_id), metadata)
+    }
+
+    pub fn load_session_state(&self, session_id: &SessionId) -> AiResult<AiHistorySessionState> {
+        self.recover_if_needed(session_id)?;
+        let path = self.session_state_path(session_id);
+        if !path.exists() {
+            return Ok(AiHistorySessionState::default());
+        }
+        read_json_file(&path)
+    }
+
+    pub fn save_session_state(
+        &self,
+        session_id: &SessionId,
+        state: &AiHistorySessionState,
+    ) -> AiResult<()> {
+        self.ensure_session_dir(session_id)?;
+        atomic_write_json(&self.session_state_path(session_id), state)
+    }
+
+    pub fn update_session_state(
+        &self,
+        session_id: &SessionId,
+        update: impl FnOnce(&mut AiHistorySessionState),
+    ) -> AiResult<()> {
+        if !self.has_session(session_id) {
+            return Ok(());
+        }
+        let mut state = self.load_session_state(session_id)?;
+        update(&mut state);
+        state.version = HISTORY_FORMAT_VERSION;
+        self.save_session_state(session_id, &state)
     }
 
     pub fn save_transcript_window(
@@ -435,6 +509,7 @@ impl AiHistoryStore {
             return Ok(None);
         }
         let metadata = self.load_metadata(session_id)?;
+        let state = self.load_session_state(session_id)?;
         let index = self.load_or_repair_index(session_id)?;
         let messages = self.read_payloads_by_index(session_id, &index, 0, index.len())?;
 
@@ -448,22 +523,22 @@ impl AiHistoryStore {
             title: metadata.title,
             status: metadata.status,
             updated_at: metadata.updated_at,
-            active_turn_started_at: None,
+            active_turn_started_at: state.active_turn_started_at,
             closed_at: metadata.closed_at,
-            last_error: None,
+            last_error: state.last_error,
             mode_id: metadata.mode_id,
             model_id: metadata.model_id,
-            pending_permission: None,
-            pending_user_input: None,
-            plan: None,
-            token_usage: None,
+            pending_permission: state.pending_permission,
+            pending_user_input: state.pending_user_input,
+            plan: state.plan,
+            token_usage: state.token_usage,
             available_commands: metadata.available_commands,
             config_options: metadata.config_options,
             messages,
             modes: metadata.modes,
             models: metadata.models,
-            tool_activity: Vec::new(),
-            tracked_files: Vec::new(),
+            tool_activity: state.tool_activity,
+            tracked_files: state.tracked_files,
         }))
     }
 
@@ -511,6 +586,67 @@ impl AiHistoryStore {
             summaries.truncate(limit);
         }
         Ok(summaries)
+    }
+
+    pub fn list_runtime_mappings_for_parent(
+        &self,
+        parent_session_id: &SessionId,
+    ) -> AiResult<Vec<NativeAiRuntimeSessionMapping>> {
+        let sessions_dir = self.sessions_dir();
+        if !sessions_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let parent_runtime_session_id = self
+            .load_metadata(parent_session_id)
+            .ok()
+            .and_then(|metadata| metadata.runtime_session_id);
+        let mut mappings: Vec<(String, NativeAiRuntimeSessionMapping)> = Vec::new();
+        for entry in fs::read_dir(&sessions_dir)
+            .map_err(|error| history_io("read AI sessions dir", &sessions_dir, error))?
+        {
+            let entry = entry
+                .map_err(|error| history_io("read AI sessions dir entry", &sessions_dir, error))?;
+            if !entry
+                .file_type()
+                .map_err(|error| history_io("read AI session file type", &entry.path(), error))?
+                .is_dir()
+            {
+                continue;
+            }
+
+            let metadata_path = entry.path().join(SESSION_META_FILE);
+            let Ok(metadata) = read_json_file::<AiHistorySessionMetadata>(&metadata_path) else {
+                continue;
+            };
+            let Some(subagent) = metadata.subagent else {
+                continue;
+            };
+            let matches_parent = subagent.parent_session_id == *parent_session_id
+                || parent_runtime_session_id
+                    .as_ref()
+                    .is_some_and(|parent_runtime| {
+                        subagent.parent_runtime_session_id.as_ref() == Some(parent_runtime)
+                    });
+            if !matches_parent {
+                continue;
+            }
+            let Some(runtime_session_id) = metadata.runtime_session_id else {
+                continue;
+            };
+            mappings.push((
+                metadata.updated_at,
+                NativeAiRuntimeSessionMapping {
+                    app_session_id: metadata.session_id,
+                    parent_app_session_id: Some(subagent.parent_session_id),
+                    parent_runtime_session_id: subagent.parent_runtime_session_id,
+                    runtime_session_id,
+                },
+            ));
+        }
+
+        mappings.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(mappings.into_iter().map(|(_, mapping)| mapping).collect())
     }
 
     pub fn set_session_pinned(&self, session_id: &SessionId, pinned: bool) -> AiResult<()> {
@@ -776,6 +912,10 @@ impl AiHistoryStore {
 
     fn metadata_path(&self, session_id: &SessionId) -> PathBuf {
         self.session_dir(session_id).join(SESSION_META_FILE)
+    }
+
+    fn session_state_path(&self, session_id: &SessionId) -> PathBuf {
+        self.session_dir(session_id).join(SESSION_STATE_FILE)
     }
 
     fn transcript_path(&self, session_id: &SessionId) -> PathBuf {
@@ -1144,6 +1284,39 @@ pub struct AiHistoryMigrator<'a> {
     source_database_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiHistoryMigrationMode {
+    Copy,
+    ReadOnly,
+}
+
+impl AiHistoryMigrationMode {
+    pub fn from_optional(value: Option<&str>) -> AiResult<Self> {
+        match value.unwrap_or("copy") {
+            "copy" => Ok(Self::Copy),
+            "read_only" => Ok(Self::ReadOnly),
+            other => Err(AiError::InvalidInput(format!(
+                "Unsupported AI history migration mode: {other}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AiHistoryMigrationOptions {
+    pub mode: AiHistoryMigrationMode,
+    pub limit: Option<usize>,
+}
+
+impl Default for AiHistoryMigrationOptions {
+    fn default() -> Self {
+        Self {
+            mode: AiHistoryMigrationMode::Copy,
+            limit: None,
+        }
+    }
+}
+
 impl<'a> AiHistoryMigrator<'a> {
     pub fn new(
         store: &'a AiHistoryStore,
@@ -1160,6 +1333,13 @@ impl<'a> AiHistoryMigrator<'a> {
     pub fn copy_legacy_history(
         &self,
     ) -> AiResult<comando_types::ai::NativeAiMigrateSessionHistoryOutput> {
+        self.copy_legacy_history_with_options(AiHistoryMigrationOptions::default())
+    }
+
+    pub fn copy_legacy_history_with_options(
+        &self,
+        options: AiHistoryMigrationOptions,
+    ) -> AiResult<comando_types::ai::NativeAiMigrateSessionHistoryOutput> {
         let started_at = now_iso8601();
         let mut manifest = AiHistoryMigrationManifest {
             version: HISTORY_FORMAT_VERSION,
@@ -1174,7 +1354,12 @@ impl<'a> AiHistoryMigrator<'a> {
         let mut failed_sessions = 0;
         let mut errors = Vec::new();
 
-        for session_id in self.legacy.list_all_session_ids()? {
+        let mut session_ids = self.legacy.list_all_session_ids()?;
+        if let Some(limit) = options.limit {
+            session_ids.truncate(limit);
+        }
+
+        for session_id in session_ids {
             if self.store.has_session(&session_id) {
                 skipped_sessions += 1;
                 manifest.sessions.push(AiHistoryMigrationSessionRecord {
@@ -1188,15 +1373,26 @@ impl<'a> AiHistoryMigrator<'a> {
                 continue;
             }
 
-            match self.copy_session(&session_id) {
+            let result = match options.mode {
+                AiHistoryMigrationMode::Copy => self.copy_session(&session_id),
+                AiHistoryMigrationMode::ReadOnly => self.inspect_session(&session_id),
+            };
+            match result {
                 Ok(count) => {
                     migrated_sessions += 1;
                     manifest.sessions.push(AiHistoryMigrationSessionRecord {
                         session_id: session_id.clone(),
                         storage_key: AiHistoryStore::storage_key(&session_id.0),
-                        status: "migrated".to_string(),
+                        status: match options.mode {
+                            AiHistoryMigrationMode::Copy => "migrated",
+                            AiHistoryMigrationMode::ReadOnly => "read_only",
+                        }
+                        .to_string(),
                         source_message_count: count,
-                        target_message_count: count,
+                        target_message_count: match options.mode {
+                            AiHistoryMigrationMode::Copy => count,
+                            AiHistoryMigrationMode::ReadOnly => 0,
+                        },
                         error: None,
                     });
                 }
@@ -1222,7 +1418,9 @@ impl<'a> AiHistoryMigrator<'a> {
         let completed_at = now_iso8601();
         manifest.updated_at = completed_at.clone();
         manifest.completed_at = Some(completed_at.clone());
-        self.save_manifest(&manifest)?;
+        if options.mode == AiHistoryMigrationMode::Copy {
+            self.save_manifest(&manifest)?;
+        }
 
         Ok(comando_types::ai::NativeAiMigrateSessionHistoryOutput {
             started_at,
@@ -1233,6 +1431,16 @@ impl<'a> AiHistoryMigrator<'a> {
             failed_sessions,
             errors,
         })
+    }
+
+    fn inspect_session(&self, session_id: &SessionId) -> AiResult<usize> {
+        let snapshot = self
+            .legacy
+            .load_session_snapshot(session_id)?
+            .ok_or_else(|| AiError::SessionNotFound {
+                session_id: session_id.0.clone(),
+            })?;
+        Ok(snapshot.messages.len())
     }
 
     fn copy_session(&self, session_id: &SessionId) -> AiResult<usize> {
@@ -1271,6 +1479,20 @@ impl<'a> AiHistoryMigrator<'a> {
         metadata.message_count = snapshot.messages.len();
         metadata.preview = derive_session_preview(snapshot.messages.iter());
         self.store.create_session(metadata.clone())?;
+        self.store.save_session_state(
+            &metadata.session_id,
+            &AiHistorySessionState {
+                version: HISTORY_FORMAT_VERSION,
+                active_turn_started_at: snapshot.active_turn_started_at,
+                last_error: snapshot.last_error,
+                pending_permission: snapshot.pending_permission,
+                pending_user_input: snapshot.pending_user_input,
+                plan: snapshot.plan,
+                token_usage: snapshot.token_usage,
+                tool_activity: snapshot.tool_activity,
+                tracked_files: snapshot.tracked_files,
+            },
+        )?;
         self.store
             .save_transcript_window(&metadata.session_id, snapshot.messages)?;
         Ok(metadata.message_count)
@@ -1823,9 +2045,9 @@ mod tests {
                     created_at,
                     updated_at
                 )
-                VALUES ('runtime_legacy_1', ?1, NULL, NULL, ?2, ?2)
+                VALUES (?1, ?2, NULL, NULL, ?3, ?3)
                 ",
-                (session_id, now),
+                (format!("runtime_{session_id}"), session_id, now),
             )
             .unwrap();
     }
@@ -1997,6 +2219,100 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_includes_aggregated_session_state() {
+        let (_temp, store) = store();
+        let metadata = metadata("session_1");
+        store.create_session(metadata.clone()).unwrap();
+        store
+            .update_session_state(&metadata.session_id, |state| {
+                state.active_turn_started_at = Some("2026-06-20T12:00:00.000Z".to_string());
+                state.plan = Some(json!({
+                    "entries": [],
+                    "title": "Plan",
+                    "updatedAt": "2026-06-20T12:00:00.000Z"
+                }));
+                state.pending_permission = Some(json!({
+                    "requestId": "permission_1",
+                    "sessionId": "session_1",
+                    "title": "Permission",
+                    "toolCallId": "tool_1",
+                    "updatedAt": "2026-06-20T12:00:00.000Z",
+                    "description": null,
+                    "options": []
+                }));
+                state.token_usage = Some(json!({
+                    "used": 12,
+                    "size": 100,
+                    "cost": null,
+                    "updatedAt": "2026-06-20T12:00:00.000Z"
+                }));
+                state.tool_activity = vec![json!({
+                    "id": "tool_1",
+                    "sessionId": "session_1",
+                    "kind": "tool",
+                    "status": "completed",
+                    "title": "Tool",
+                    "summary": null,
+                    "createdAt": "2026-06-20T12:00:00.000Z",
+                    "updatedAt": "2026-06-20T12:00:00.000Z",
+                    "action": null,
+                    "diffs": [],
+                    "exitCode": null,
+                    "locations": [],
+                    "rawInputJson": null,
+                    "rawOutputJson": null,
+                    "terminalOutput": null
+                })];
+            })
+            .unwrap();
+
+        let snapshot = store
+            .load_session_snapshot(&metadata.session_id)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            snapshot.active_turn_started_at.as_deref(),
+            Some("2026-06-20T12:00:00.000Z")
+        );
+        assert!(snapshot.plan.is_some());
+        assert!(snapshot.pending_permission.is_some());
+        assert_eq!(snapshot.token_usage.unwrap()["used"], 12);
+        assert_eq!(snapshot.tool_activity.len(), 1);
+    }
+
+    #[test]
+    fn runtime_mappings_include_native_subagent_children() {
+        let (_temp, store) = store();
+        let parent = metadata("parent");
+        store.create_session(parent.clone()).unwrap();
+        let mut child = metadata("child");
+        child.parent_session_id = Some(parent.session_id.clone());
+        child.runtime_session_id = Some(RuntimeSessionId("runtime_child".to_string()));
+        child.subagent = Some(AiHistorySubagentMetadata {
+            parent_session_id: parent.session_id.clone(),
+            parent_runtime_session_id: parent.runtime_session_id.clone(),
+            nickname: Some("Child".to_string()),
+        });
+        store.create_session(child.clone()).unwrap();
+
+        let mappings = store
+            .list_runtime_mappings_for_parent(&parent.session_id)
+            .unwrap();
+
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].app_session_id, child.session_id);
+        assert_eq!(
+            mappings[0].parent_app_session_id.as_ref(),
+            Some(&parent.session_id)
+        );
+        assert_eq!(
+            mappings[0].runtime_session_id,
+            RuntimeSessionId("runtime_child".to_string())
+        );
+    }
+
+    #[test]
     fn compaction_rewrites_obsolete_transcript_lines() {
         let (_temp, store) = store();
         let store = store.with_compaction_policy(HistoryCompactionPolicy {
@@ -2123,5 +2439,43 @@ mod tests {
                 .join("sqlite-history-v1.json")
                 .exists()
         );
+    }
+
+    #[test]
+    fn migrator_respects_read_only_and_limit() {
+        let connection = legacy_connection();
+        insert_legacy_session(&connection, "legacy_1", vec![message("message_1", "hello")]);
+        insert_legacy_session(&connection, "legacy_2", vec![message("message_2", "world")]);
+        let (_temp, store) = store();
+        let migrator =
+            AiHistoryMigrator::new(&store, &connection, Some("/tmp/comando.sqlite".to_string()));
+
+        let read_only = migrator
+            .copy_legacy_history_with_options(AiHistoryMigrationOptions {
+                mode: AiHistoryMigrationMode::ReadOnly,
+                limit: Some(1),
+            })
+            .unwrap();
+
+        assert_eq!(read_only.migrated_sessions, 1);
+        assert!(!store.has_session(&SessionId("legacy_1".to_string())));
+        assert!(
+            !store
+                .history_root()
+                .join("migrations")
+                .join("sqlite-history-v1.json")
+                .exists()
+        );
+
+        let copied = migrator
+            .copy_legacy_history_with_options(AiHistoryMigrationOptions {
+                mode: AiHistoryMigrationMode::Copy,
+                limit: Some(1),
+            })
+            .unwrap();
+
+        assert_eq!(copied.migrated_sessions, 1);
+        assert!(store.has_session(&SessionId("legacy_1".to_string())));
+        assert!(!store.has_session(&SessionId("legacy_2".to_string())));
     }
 }

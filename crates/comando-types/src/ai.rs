@@ -367,6 +367,12 @@ pub struct NativeAiLoadSessionSnapshotInput {
     pub session_id: SessionId,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiListSessionRuntimeMappingsInput {
+    pub parent_session_id: SessionId,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSessionSnapshot {

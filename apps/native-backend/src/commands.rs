@@ -7,7 +7,10 @@ use comando_ai::events::{
     AI_RUNTIME_STATUS_EVENT, AI_SESSION_CLOSED_EVENT, AI_SESSION_CREATED_EVENT,
     AI_SESSION_UPDATED_EVENT, AiRuntimeEvent, session_closed, session_created, session_updated,
 };
-use comando_ai::history::{AiHistoryMigrator, AiHistoryStore, LegacyAiHistoryReader};
+use comando_ai::history::{
+    AiHistoryMigrationMode, AiHistoryMigrationOptions, AiHistoryMigrator, AiHistoryStore,
+    LegacyAiHistoryReader,
+};
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
 use comando_git::{
     GitBranchListScope, GitError, GitFileDiffRequest, GitRunner, checkout_branch, commit,
@@ -129,6 +132,7 @@ impl NativeBackend {
             | "ai_list_session_history"
             | "ai_load_session_transcript_page"
             | "ai_load_session_snapshot"
+            | "ai_list_session_runtime_mappings"
             | "ai_set_session_pinned"
             | "ai_delete_session"
             | "ai_migrate_session_history"
@@ -223,6 +227,7 @@ impl NativeBackend {
             | "ai_list_session_history"
             | "ai_load_session_transcript_page"
             | "ai_load_session_snapshot"
+            | "ai_list_session_runtime_mappings"
             | "ai_set_session_pinned"
             | "ai_delete_session"
             | "ai_migrate_session_history"
@@ -1374,6 +1379,21 @@ impl NativeBackend {
                     Err(error) => error_only(request.id, error),
                 }
             }
+            "ai_list_session_runtime_mappings" => {
+                let input = match parse_args::<native_ai::NativeAiListSessionRuntimeMappingsInput>(
+                    &request,
+                ) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.list_ai_session_runtime_mappings(input.parent_session_id) {
+                    Ok(mappings) => response_only(
+                        request.id,
+                        serde_json::to_value(mappings).expect("ai runtime mappings serialize"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
             "ai_set_session_pinned" => {
                 let input = match parse_args::<native_ai::NativeAiSetSessionPinnedInput>(&request) {
                     Ok(input) => input,
@@ -1475,6 +1495,7 @@ impl NativeBackend {
         &self,
         input: native_ai::NativeAiListSessionHistoryInput,
     ) -> Result<Vec<native_ai::NativeAiHistorySessionSummary>, NativeError> {
+        let limit = input.limit;
         let store = self.ai_history_store()?;
         let mut history = store
             .list_session_history(input.clone())
@@ -1500,6 +1521,9 @@ impl NativeBackend {
                 _ => right.updated_at.cmp(&left.updated_at),
             }
         });
+        if let Some(limit) = limit {
+            history.truncate(limit);
+        }
         Ok(history)
     }
 
@@ -1536,6 +1560,16 @@ impl NativeBackend {
         };
         LegacyAiHistoryReader::new(persistence_store.connection())
             .load_session_snapshot(&session_id)
+            .map_err(|error| error.to_native_error())
+    }
+
+    fn list_ai_session_runtime_mappings(
+        &self,
+        parent_session_id: comando_types::ids::SessionId,
+    ) -> Result<Vec<native_ai::NativeAiRuntimeSessionMapping>, NativeError> {
+        let store = self.ai_history_store()?;
+        store
+            .list_runtime_mappings_for_parent(&parent_session_id)
             .map_err(|error| error.to_native_error())
     }
 
@@ -1606,8 +1640,14 @@ impl NativeBackend {
                     .to_string(),
             )
         });
+        let mode = AiHistoryMigrationMode::from_optional(input.mode.as_deref())
+            .map_err(|error| error.to_native_error())?;
+        let options = AiHistoryMigrationOptions {
+            mode,
+            limit: input.limit,
+        };
         AiHistoryMigrator::new(&store, persistence_store.connection(), source_database_path)
-            .copy_legacy_history()
+            .copy_legacy_history_with_options(options)
             .map_err(|error| error.to_native_error())
     }
 

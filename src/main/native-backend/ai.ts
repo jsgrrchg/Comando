@@ -27,6 +27,7 @@ import {
     type NativeAiCloseSessionOutput,
     type NativeAiHistorySessionSummary,
     type NativeAiLaunchSpec,
+    type NativeAiRuntimeSessionMapping,
     type NativeAiSessionSnapshot,
     type NativeAiSessionTranscriptPage,
     type NativeAiRuntimeConnectionPayload,
@@ -38,6 +39,7 @@ import {
 } from "@shared/native-backend";
 
 import type {
+    AiWorkerRuntimeSessionMapping,
     NativeAiGateway as NativeAiGatewayContract,
     NativeAiPrepareSessionRpcInput,
     NativeAiSendPromptRpcInput,
@@ -142,6 +144,26 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         return output.map((entry) =>
             nativeHistorySummaryToIpc(
                 requireRecord(entry, "Native AI history summary") as unknown as NativeAiHistorySessionSummary,
+            ),
+        );
+    }
+
+    async listSessionRuntimeMappingsForParent(
+        parentSessionId: string,
+    ): Promise<readonly AiWorkerRuntimeSessionMapping[]> {
+        if (!this.#historyEnabled) {
+            return [];
+        }
+        const output = await this.#client.request<unknown>(
+            "ai_list_session_runtime_mappings",
+            { parentSessionId },
+        );
+        if (!Array.isArray(output)) {
+            throw new Error("Native AI runtime mappings must be an array.");
+        }
+        return output.map((entry) =>
+            nativeRuntimeMappingToIpc(
+                requireRecord(entry, "Native AI runtime mapping") as unknown as NativeAiRuntimeSessionMapping,
             ),
         );
     }
@@ -813,6 +835,22 @@ function nativeHistorySummaryToIpc(
         title: summary.title,
         updatedAt: summary.updatedAt,
         worktreeId: nullableString(summary.worktreeId),
+    };
+}
+
+function nativeRuntimeMappingToIpc(
+    mapping: NativeAiRuntimeSessionMapping,
+): AiWorkerRuntimeSessionMapping {
+    requireString(mapping.appSessionId, "Native AI runtime mapping appSessionId");
+    requireString(
+        mapping.runtimeSessionId,
+        "Native AI runtime mapping runtimeSessionId",
+    );
+    return {
+        appSessionId: mapping.appSessionId,
+        parentAppSessionId: nullableString(mapping.parentAppSessionId),
+        parentRuntimeSessionId: nullableString(mapping.parentRuntimeSessionId),
+        runtimeSessionId: mapping.runtimeSessionId,
     };
 }
 

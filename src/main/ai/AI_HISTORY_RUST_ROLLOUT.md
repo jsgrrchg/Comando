@@ -25,6 +25,7 @@ ai/
   sessions/
     session-<sha256(session_id)>/
       session-meta.json
+      session-state.json
       transcript.jsonl
       index.json
       compact-state.json
@@ -39,9 +40,13 @@ The logical `sessionId` is preserved in metadata. The directory name is a hash s
 `ai_migrate_session_history` copies legacy SQLite sessions into native history storage. It is idempotent and non-destructive:
 
 - Existing native sessions win and are skipped.
+- `mode: "read_only"` performs a dry run without writing native sessions or a manifest.
+- `limit` bounds the number of legacy sessions processed in one run.
 - SQLite legacy tables are not deleted or modified.
 - Failures are recorded per session in the migration output and manifest.
 - Payloads are not logged.
+
+`ai_list_session_runtime_mappings` exposes native subagent runtime mappings so resumed parent sessions can reattach child runtime sessions without falling back to SQLite.
 
 ## Rollback
 
@@ -64,7 +69,9 @@ Rollback does not delete native history storage. Legacy SQLite remains available
 - Create a native AI session.
 - Send a prompt and confirm the user message is persisted to Rust history.
 - Close and reopen the session from history.
+- Continue a reopened native session and confirm prior transcript messages remain visible.
 - Load the transcript page.
+- Open a native subagent from history and confirm it remains scoped to the parent project/worktree.
 - Pin and unpin the native session.
 - Rename the native session.
 - Delete the native session.

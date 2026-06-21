@@ -493,6 +493,16 @@ describe("NativeAiGateway", () => {
                         worktreeId: "worktree-1",
                     } as T;
                 }
+                if (command === "ai_list_session_runtime_mappings") {
+                    return [
+                        {
+                            appSessionId: "session-child",
+                            parentAppSessionId: "session-1",
+                            parentRuntimeSessionId: "runtime-session-1",
+                            runtimeSessionId: "runtime-child",
+                        },
+                    ] as T;
+                }
                 return { ok: true } as T;
             },
         );
@@ -519,6 +529,16 @@ describe("NativeAiGateway", () => {
         await expect(
             gateway.loadSessionSnapshot("session-1"),
         ).resolves.toMatchObject({ runtimeId: "opencode", sessionId: "session-1" });
+        await expect(
+            gateway.listSessionRuntimeMappingsForParent("session-1"),
+        ).resolves.toEqual([
+            {
+                appSessionId: "session-child",
+                parentAppSessionId: "session-1",
+                parentRuntimeSessionId: "runtime-session-1",
+                runtimeSessionId: "runtime-child",
+            },
+        ]);
         await gateway.setSessionPinned({ pinned: true, sessionId: "session-1" });
         await gateway.renameSession({ sessionId: "session-1", title: "Renamed" });
         await gateway.deleteSession("session-1");

@@ -274,6 +274,10 @@ export type NativeAiLoadSessionSnapshotInput = {
     readonly sessionId: NativeSessionId;
 };
 
+export type NativeAiListSessionRuntimeMappingsInput = {
+    readonly parentSessionId: NativeSessionId;
+};
+
 export type NativeAiSessionSnapshot = {
     readonly sessionId: NativeSessionId;
     readonly parentSessionId: NativeSessionId | null;

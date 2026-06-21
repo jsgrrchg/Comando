@@ -193,6 +193,9 @@ export interface NativeAiGateway {
     listSessionHistory(
         input: ListAiSessionHistoryInput,
     ): Promise<readonly AiHistorySessionSummary[]>;
+    listSessionRuntimeMappingsForParent?(
+        parentSessionId: string,
+    ): Promise<readonly AiWorkerRuntimeSessionMapping[]>;
     loadSessionSnapshot(sessionId: string): Promise<AiSessionSnapshot | null>;
     loadSessionTranscriptPage(
         input: GetAiSessionTranscriptPageInput,

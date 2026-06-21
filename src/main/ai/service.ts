@@ -72,6 +72,7 @@ import {
     type AiWorkerRefreshProjectScopesRpcInput,
     type AiWorkerReviewMutationResult,
     type AiWorkerReviewSessionContext,
+    type AiWorkerRuntimeSessionMapping,
     type AiWorkerSessionLaunchInput,
     type AiSchedulerConfig,
     type AiSessionFreezeReason,
@@ -2745,6 +2746,71 @@ export class AiService {
         };
     }
 
+    async #loadPersistedSessionSnapshot(
+        sessionId: string,
+    ): Promise<AiSessionSnapshot | null> {
+        if (this.#nativeAi?.shouldHandleHistory()) {
+            try {
+                const snapshot =
+                    await this.#nativeAi.loadSessionSnapshot(sessionId);
+                if (snapshot) {
+                    return snapshot;
+                }
+            } catch (error) {
+                debugBenignError(
+                    "ai.service.loadPersistedSessionSnapshot.native",
+                    error,
+                );
+            }
+        }
+
+        return await this.#persistence.loadSessionSnapshot(sessionId);
+    }
+
+    async #listPersistedRuntimeMappingsForParent(
+        parentSessionId: string,
+    ): Promise<readonly AiWorkerRuntimeSessionMapping[]> {
+        const mappings: AiWorkerRuntimeSessionMapping[] = [];
+        const seen = new Set<string>();
+        const append = (
+            entries: readonly AiWorkerRuntimeSessionMapping[],
+        ): void => {
+            for (const entry of entries) {
+                const key = `${entry.appSessionId}\0${entry.runtimeSessionId}`;
+                if (seen.has(key)) {
+                    continue;
+                }
+                seen.add(key);
+                mappings.push(entry);
+            }
+        };
+
+        if (
+            this.#nativeAi?.shouldHandleHistory() &&
+            this.#nativeAi.listSessionRuntimeMappingsForParent
+        ) {
+            try {
+                append(
+                    await this.#nativeAi.listSessionRuntimeMappingsForParent(
+                        parentSessionId,
+                    ),
+                );
+            } catch (error) {
+                debugBenignError(
+                    "ai.service.listRuntimeMappings.native",
+                    error,
+                );
+            }
+        }
+        append(
+            (await this.#persistence.listSessionRuntimeMappingsForParent?.(
+                parentSessionId,
+            )) ?? [],
+        );
+
+        return mappings;
+    }
+
     async #buildNativePrepareLaunchForSession(
         input: SessionDescriptor,
         ownerWindowId: string,
@@ -2760,7 +2826,7 @@ export class AiService {
 
         const parentSnapshot =
             this.#liveSnapshots.get(parentSessionId) ??
-            (await this.#persistence.loadSessionSnapshot(parentSessionId));
+            (await this.#loadPersistedSessionSnapshot(parentSessionId));
         if (!parentSnapshot) {
             throw new Error(
                 "The parent session could not be loaded for this subagent.",
@@ -2835,7 +2901,7 @@ export class AiService {
         const persistedSnapshot =
             snapshotOverride ??
             this.#liveSnapshots.get(input.sessionId) ??
-            (await this.#persistence.loadSessionSnapshot(input.sessionId)) ??
+            (await this.#loadPersistedSessionSnapshot(input.sessionId)) ??
             createEmptyAiSessionSnapshot({
                 projectId: input.projectId,
                 runtimeId: input.runtimeId,
@@ -2844,9 +2910,9 @@ export class AiService {
                 worktreeId: input.worktreeId ?? null,
             });
         const persistedSubagentSessionMappings =
-            (await this.#persistence.listSessionRuntimeMappingsForParent?.(
+            await this.#listPersistedRuntimeMappingsForParent(
                 persistedSnapshot.sessionId,
-            )) ?? [];
+            );
 
         return {
             additionalRoots,

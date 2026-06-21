@@ -874,6 +874,113 @@ describe("AiService OpenCode branch", () => {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
     });
+
+    it("rehydrates native launches from native history before sending", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-native-history-resume-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            const previousMessage = {
+                attachments: [],
+                content: "Earlier answer",
+                createdAt: "2026-06-20T00:00:00.000Z",
+                id: "message-previous",
+                kind: "assistant" as const,
+                status: "completed" as const,
+            };
+            const nativeSnapshot: AiSessionSnapshot = {
+                ...createSessionSnapshot(),
+                messages: [previousMessage],
+                runtimeSessionId: "runtime-native",
+                sessionId: "session-native",
+                title: "Native history",
+            };
+            const loadSessionSnapshot = vi.fn<NativeAiGateway["loadSessionSnapshot"]>(
+                (sessionId) =>
+                    Promise.resolve(
+                        sessionId === "session-native" ? nativeSnapshot : null,
+                    ),
+            );
+            const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+                ({ launch }) => Promise.resolve(launch.persistedSnapshot),
+            );
+            const sendPrompt = vi.fn<NativeAiGateway["sendPrompt"]>(() =>
+                Promise.resolve({
+                    sessionId: "session-native",
+                    stopReason: "accepted",
+                }),
+            );
+            const nativeAi: NativeAiGateway = {
+                cancelSession: vi.fn(),
+                close: vi.fn(),
+                closeOwnedByWindow: vi.fn(),
+                closeSession: vi.fn(),
+                deleteSession: vi.fn(),
+                listSessionHistory: vi.fn(() => Promise.resolve([])),
+                listSessionRuntimeMappingsForParent: vi.fn(() =>
+                    Promise.resolve([]),
+                ),
+                loadSessionSnapshot,
+                loadSessionTranscriptPage: vi.fn(() => Promise.resolve(null)),
+                prepareSession,
+                respondPermission: vi.fn(),
+                respondUserInput: vi.fn(),
+                sendPrompt,
+                renameSession: vi.fn(),
+                setSessionConfigOption: vi.fn(),
+                setSessionMode: vi.fn(),
+                setSessionModel: vi.fn(),
+                setSessionPinned: vi.fn(),
+                shouldHandleHistory: vi.fn(() => true),
+                shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "opencode"),
+            };
+            const persistenceLoadSnapshot = vi.fn(() => null);
+            const service = createService({
+                nativeAi,
+                persistence: {
+                    loadSessionSnapshot: persistenceLoadSnapshot,
+                },
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+
+            await service.sendPrompt(
+                {
+                    additionalRoots: [],
+                    attachments: [],
+                    messageId: "user-message-1",
+                    projectId: null,
+                    prompt: "Continue.",
+                    runtimeId: "opencode",
+                    sessionId: "session-native",
+                    title: "Native history",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+
+            expect(loadSessionSnapshot).toHaveBeenCalledWith("session-native");
+            expect(persistenceLoadSnapshot).not.toHaveBeenCalled();
+            expect(
+                prepareSession.mock.calls[0]?.[0].launch.persistedSnapshot
+                    .messages,
+            ).toEqual([previousMessage]);
+            expect(
+                sendPrompt.mock.calls[0]?.[0].launch.persistedSnapshot.messages,
+            ).toEqual([previousMessage]);
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
 });
 
 function createService(overrides: {
