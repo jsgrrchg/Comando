@@ -47,15 +47,10 @@ import {
     parseNativeBackendCapabilitiesOutput,
 } from "./native-backend/client";
 import {
-    isNativeBackendEnabled,
-    isNativeBackendStrict,
     resolveNativeBackendPath,
 } from "./native-backend/path";
 import {
     NativePersistenceGateway,
-    isNativePersistenceEnabled,
-    isNativePersistenceStrict,
-    normalizeNativePersistenceMode,
 } from "./native-backend/persistence";
 import { NativeAiGateway, shouldUseNativeAi } from "./native-backend/ai";
 import { NativeFsGateway } from "./native-backend/fs";
@@ -67,7 +62,6 @@ import {
 } from "./native-backend/terminal";
 import {
     createNativeProjectRegistryStore,
-    resolveNativeProjectRegistryMode,
 } from "./native-backend/projects";
 import type { NativeBackendEvent } from "./native-backend/protocol";
 import { debugBenignError } from "./observability/logging";
@@ -146,9 +140,8 @@ if (!hasSingleInstanceLock) {
                 appWindowTitle: appIdentity.windowTitle,
                 dataDir: app.getPath("userData"),
             });
-            await startNativeBackendIfEnabled();
-            const nativePersistenceReady =
-                await openNativePersistenceIfEnabled();
+            await startNativeBackendRequired();
+            await openNativePersistenceRequired();
             persistenceService = dbWorkerClient.persistence;
             secretStore = dbWorkerClient.secretStore;
             githubService = new GitHubService({ secretStore });
@@ -175,7 +168,7 @@ if (!hasSingleInstanceLock) {
             const projectStore = await createNativeProjectRegistryStore({
                 env: process.env,
                 legacyStore: dbWorkerClient.projectStore,
-                nativeClient: nativePersistenceReady ? nativeBackendClient : null,
+                nativeClient: nativeBackendClient,
                 onDiagnostic: (message) => {
                     console.warn(message);
                 },
@@ -183,11 +176,11 @@ if (!hasSingleInstanceLock) {
             projectService = new ProjectService({
                 env: process.env,
                 nativeFs:
-                    nativePersistenceReady && nativeBackendClient
+                    nativeBackendClient
                         ? new NativeFsGateway(nativeBackendClient)
                         : null,
                 nativeSearch:
-                    nativePersistenceReady && nativeBackendClient
+                    nativeBackendClient
                         ? new NativeSearchGateway(nativeBackendClient)
                         : null,
                 onProjectTreeInvalidated: (payload) => {
@@ -554,27 +547,18 @@ function createTerminalGateway(input: {
     });
 }
 
-async function startNativeBackendIfEnabled(): Promise<void> {
-    if (!isNativeBackendEnabled()) {
-        return;
-    }
-
+async function startNativeBackendRequired(): Promise<void> {
     const resolution = resolveNativeBackendPath({
         isPackaged: app.isPackaged,
         resourcesPath: process.resourcesPath,
     });
     if (!resolution.binaryPath) {
         const message = [
-            "[native-backend] Native backend is enabled but no binary was found.",
+            "[native-backend] Native backend sidecar is required but no binary was found.",
             `Attempted: ${resolution.attemptedPaths.join(", ")}`,
         ].join(" ");
 
-        if (isNativeBackendStrict()) {
-            throw new Error(message);
-        }
-
-        console.warn(message);
-        return;
+        throw new Error(message);
     }
 
     const client = new NativeBackendClient({
@@ -599,76 +583,45 @@ async function startNativeBackendIfEnabled(): Promise<void> {
         nativeBackendClient = null;
         await client.dispose();
 
-        if (isNativeBackendStrict()) {
-            throw error;
-        }
-
-        console.warn(
+        throw new Error(
             `[native-backend] Native backend startup failed: ${formatError(error)}`,
         );
     }
 }
 
-async function openNativePersistenceIfEnabled(): Promise<boolean> {
-    const projectRegistryMode = resolveNativeProjectRegistryMode();
-    const persistenceEnabled = isNativePersistenceEnabled();
-
-    if (!persistenceEnabled) {
-        if (projectRegistryMode === "write") {
-            throw new Error(
-                "Native project registry write mode requires COMANDO_NATIVE_PERSISTENCE=1.",
-            );
-        }
-
-        if (projectRegistryMode) {
-            console.warn(
-                "[native-backend] Native project registry is enabled but COMANDO_NATIVE_PERSISTENCE=1 is not set; using the legacy project store.",
-            );
-        }
-
-        return false;
-    }
-
+async function openNativePersistenceRequired(): Promise<void> {
     if (!nativeBackendClient) {
-        const message =
-            "Native persistence is enabled but the native backend sidecar is not running.";
-
-        if (isNativePersistenceStrict() || projectRegistryMode === "write") {
-            throw new Error(message);
-        }
-
-        console.warn(`[native-backend] ${message}`);
-        return false;
+        throw new Error(
+            "Native persistence requires a running native backend sidecar.",
+        );
     }
 
     if (!dbWorkerClient) {
         throw new Error("The database worker must be ready before native persistence opens.");
     }
 
-    const persistenceMode = normalizeNativePersistenceMode(projectRegistryMode);
     const gateway = new NativePersistenceGateway(nativeBackendClient);
 
     try {
         const opened = await gateway.openStore({
             appDataDir: app.getPath("userData"),
             databasePath: dbWorkerClient.status.databaseFile,
-            mode: persistenceMode,
+            mode: "write",
         });
         const health = await gateway.getStorageHealth();
 
         console.info(
-            `[native-backend] Native persistence opened mode=${persistenceMode} schema=${opened.schemaVersion} projects=${health.projectCount} worktrees=${health.worktreeCount}.`,
+            `[native-backend] Native persistence opened mode=write schema=${opened.schemaVersion} projects=${health.projectCount} worktrees=${health.worktreeCount}.`,
         );
-        return opened.opened && health.opened && health.schemaCompatible;
-    } catch (error) {
-        if (isNativePersistenceStrict() || projectRegistryMode === "write") {
-            throw error;
+        if (!opened.opened || !health.opened || !health.schemaCompatible) {
+            throw new Error(
+                "Native persistence did not report a compatible open store.",
+            );
         }
-
-        console.warn(
+    } catch (error) {
+        throw new Error(
             `[native-backend] Native persistence startup failed: ${formatError(error)}`,
         );
-        return false;
     }
 }
 

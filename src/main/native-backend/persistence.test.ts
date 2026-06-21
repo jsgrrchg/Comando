@@ -1,40 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-    NATIVE_PERSISTENCE_ENABLED_ENV,
-    NATIVE_PERSISTENCE_STRICT_ENV,
     NativePersistenceGateway,
-    isNativePersistenceEnabled,
-    isNativePersistenceStrict,
-    normalizeNativePersistenceMode,
     type NativeBackendRequester,
 } from "./persistence";
-
-describe("native persistence flags", () => {
-    it("defaults persistence off", () => {
-        expect(isNativePersistenceEnabled({})).toBe(false);
-        expect(isNativePersistenceStrict({})).toBe(false);
-    });
-
-    it("requires explicit opt-in", () => {
-        expect(
-            isNativePersistenceEnabled({
-                [NATIVE_PERSISTENCE_ENABLED_ENV]: "1",
-            }),
-        ).toBe(true);
-        expect(
-            isNativePersistenceStrict({
-                [NATIVE_PERSISTENCE_STRICT_ENV]: "1",
-            }),
-        ).toBe(true);
-    });
-
-    it("normalizes persistence mode defensively", () => {
-        expect(normalizeNativePersistenceMode(undefined)).toBe("shadow");
-        expect(normalizeNativePersistenceMode("shadow")).toBe("shadow");
-        expect(normalizeNativePersistenceMode("write")).toBe("write");
-    });
-});
 
 describe("NativePersistenceGateway", () => {
     it("opens native storage with the expected command", async () => {
