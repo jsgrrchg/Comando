@@ -88,6 +88,37 @@ describe("resolveNativeBackendPath", () => {
         });
     });
 
+    it("prefers the most recently built dev binary when both exist", () => {
+        withTempDir((root) => {
+            const debugPath = touch(
+                path.join(root, "target", "debug", "comando-native-backend"),
+            );
+            const releasePath = touch(
+                path.join(root, "target", "release", "comando-native-backend"),
+            );
+
+            // Release is fresher than debug — it must win even though debug is
+            // listed first among the candidates.
+            const mtimes = new Map([
+                [debugPath, 1_000],
+                [releasePath, 2_000],
+            ]);
+
+            expect(
+                resolveNativeBackendPath({
+                    cwd: root,
+                    env: {},
+                    exists: fs.existsSync,
+                    mtimeMs: (candidate) => mtimes.get(candidate) ?? 0,
+                    resourcesPath: path.join(root, "resources"),
+                }),
+            ).toMatchObject({
+                binaryPath: releasePath,
+                source: "dev-release",
+            });
+        });
+    });
+
     it("resolves packaged resources by platform and arch", () => {
         withTempDir((root) => {
             const resourcesPath = path.join(root, "packaged-resources");

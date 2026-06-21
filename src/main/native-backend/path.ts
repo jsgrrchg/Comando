@@ -25,6 +25,7 @@ export type NativeBackendPathOptions = {
     readonly env?: NodeJS.ProcessEnv;
     readonly exists?: (candidatePath: string) => boolean;
     readonly isPackaged?: boolean;
+    readonly mtimeMs?: (candidatePath: string) => number;
     readonly platform?: NodeJS.Platform;
     readonly resourcesPath?: string;
 };
@@ -60,19 +61,37 @@ export function resolveNativeBackendPath(
     }
 
     const exists = options.exists ?? fs.existsSync;
+    const mtimeMs = options.mtimeMs ?? defaultMtimeMs;
     const cwd = options.cwd ?? process.cwd();
     const platform = options.platform ?? process.platform;
     const arch = options.arch ?? process.arch;
-    const attemptedPaths = [
-        ...devCandidatePaths(cwd),
-        ...packagedCandidatePaths({
-            arch,
-            platform,
-            resourcesPath: options.resourcesPath ?? process.resourcesPath,
-        }),
-    ];
+    const devPaths = devCandidatePaths(cwd);
+    const packagedPaths = packagedCandidatePaths({
+        arch,
+        platform,
+        resourcesPath: options.resourcesPath ?? process.resourcesPath,
+    });
+    const attemptedPaths = [...devPaths, ...packagedPaths];
 
-    for (const candidatePath of attemptedPaths) {
+    // Among the dev candidates (debug/release), prefer the most recently built
+    // binary instead of a fixed debug-before-release order. A stale debug build
+    // must never shadow a freshly compiled release one — or vice versa — which
+    // would silently run the app against an outdated sidecar.
+    const existingDevPaths = devPaths.filter(exists);
+    if (existingDevPaths.length > 0) {
+        const chosen = existingDevPaths.reduce((best, candidate) =>
+            mtimeMs(candidate) > mtimeMs(best) ? candidate : best,
+        );
+        return {
+            attemptedPaths,
+            binaryPath: chosen,
+            source: chosen.includes(`${path.sep}target${path.sep}debug${path.sep}`)
+                ? "dev-debug"
+                : "dev-release",
+        };
+    }
+
+    for (const candidatePath of packagedPaths) {
         if (!exists(candidatePath)) {
             continue;
         }
@@ -80,11 +99,7 @@ export function resolveNativeBackendPath(
         return {
             attemptedPaths,
             binaryPath: candidatePath,
-            source: candidatePath.includes(`${path.sep}target${path.sep}debug${path.sep}`)
-                ? "dev-debug"
-                : candidatePath.includes(`${path.sep}target${path.sep}release${path.sep}`)
-                  ? "dev-release"
-                  : "packaged",
+            source: "packaged",
         };
     }
 
@@ -101,6 +116,14 @@ export function getNativeBackendExecutableName(
     return platform === "win32"
         ? `${BASE_EXECUTABLE_NAME}.exe`
         : BASE_EXECUTABLE_NAME;
+}
+
+function defaultMtimeMs(candidatePath: string): number {
+    try {
+        return fs.statSync(candidatePath).mtimeMs;
+    } catch {
+        return 0;
+    }
 }
 
 function devCandidatePaths(cwd: string): readonly string[] {
