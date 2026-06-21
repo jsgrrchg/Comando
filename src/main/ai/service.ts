@@ -770,7 +770,9 @@ export class AiService {
         const nativeAi = this.#nativeAuthGateway(runtimeId);
         if (nativeAi?.getRuntimeStatus) {
             await this.#migrateNativeRuntimeSettingsIfNeeded(runtimeId);
-            const status = await nativeAi.getRuntimeStatus(runtimeId);
+            const status = this.#withPersistedRuntimeCatalog(
+                await nativeAi.getRuntimeStatus(runtimeId),
+            );
             this.#onRuntimeStatus(status);
             return status;
         }

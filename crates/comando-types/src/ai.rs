@@ -105,7 +105,19 @@ pub struct NativeAiRuntimeStatus {
     pub can_logout_auth: bool,
     pub checked_at: String,
     pub command: Option<String>,
+    #[serde(default)]
+    pub available_commands: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub config_options: Vec<serde_json::Value>,
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_id: Option<String>,
+    #[serde(default)]
+    pub modes: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub models: Vec<serde_json::Value>,
     pub onboarding_required: bool,
     pub source: Option<String>,
     pub has_custom_binary_path: bool,
@@ -667,6 +679,7 @@ pub struct NativeAiSessionCatalogUpdatedPayload {
     pub base: NativeAiEventBase,
     pub available_commands: Option<Vec<NativeAiAvailableCommandPayload>>,
     pub config_options: Option<Vec<NativeAiSessionConfigOptionPayload>>,
+    pub mode_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

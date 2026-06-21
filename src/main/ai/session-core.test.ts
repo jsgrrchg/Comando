@@ -138,6 +138,72 @@ describe("session-core model reconciliation", () => {
             },
         ]);
     });
+
+    it("applies normalized native mode updates without replacing catalog options", () => {
+        const snapshot = createSnapshot({
+            sessionId: "session-native",
+            configOptions: [
+                {
+                    category: "mode",
+                    description: null,
+                    id: "mode",
+                    label: "Mode",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Ask",
+                            value: "ask",
+                        },
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Build",
+                            value: "build",
+                        },
+                    ],
+                    type: "select",
+                    value: "ask",
+                },
+            ],
+            modeId: "ask",
+            modes: [
+                { description: null, id: "ask", name: "Ask" },
+                { description: null, id: "build", name: "Build" },
+            ],
+        });
+
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(snapshot, {
+            modeId: "build",
+        });
+
+        const modeConfig = nextSnapshot.configOptions.find(
+            (option) => option.id === "mode",
+        );
+        expect(nextSnapshot.modeId).toBe("build");
+        expect(nextSnapshot.modes).toEqual(snapshot.modes);
+        expect(modeConfig?.type === "select" && modeConfig.value).toBe("build");
+    });
+
+    it("clears the active mode when the catalog reports modeId null", () => {
+        const snapshot = createSnapshot({
+            sessionId: "session-native",
+            modeId: "ask",
+            modes: [
+                { description: null, id: "ask", name: "Ask" },
+                { description: null, id: "build", name: "Build" },
+            ],
+        });
+
+        // `null` is an explicit "clear" signal, distinct from `undefined`
+        // (leave untouched). The adapter preserves it, so it must reach here.
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(snapshot, {
+            modeId: null,
+        });
+
+        expect(nextSnapshot.modeId).toBeNull();
+        expect(nextSnapshot.modes).toEqual(snapshot.modes);
+    });
 });
 
 describe("session-core path scope identity", () => {

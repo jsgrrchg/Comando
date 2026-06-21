@@ -79,10 +79,17 @@ export function nativeAiRuntimeStatusToIpc(
         canLogoutAuth: status.canLogoutAuth ?? undefined,
         checkedAt: status.checkedAt,
         command: status.command,
+        availableCommands:
+            status.availableCommands as AiRuntimeStatus["availableCommands"],
+        configOptions: status.configOptions as AiRuntimeStatus["configOptions"],
         hasCustomBinaryPath: status.hasCustomBinaryPath,
         hasGatewayConfig: status.hasGatewayConfig,
         hasGatewayUrl: status.hasGatewayUrl,
         message: status.message,
+        modeId: status.modeId ?? undefined,
+        modes: status.modes as AiRuntimeStatus["modes"],
+        modelId: status.modelId ?? undefined,
+        models: status.models as AiRuntimeStatus["models"],
         onboardingRequired: status.onboardingRequired,
         runtimeId: status.runtimeId as AiRuntimeId,
         source: status.source as AiRuntimeSource | null,
@@ -207,6 +214,7 @@ export function nativeAiEventToIpc(
 export type NativeAiCatalogPatch = {
     readonly availableCommands?: readonly AiAvailableCommand[];
     readonly configOptions?: readonly AiSessionConfigOption[];
+    readonly modeId?: string | null;
 };
 
 export function nativeAiCatalogPatchToIpc(
@@ -256,6 +264,12 @@ export function nativeAiCatalogPatchToIpc(
                   ),
               }
             : {}),
+        // `modeId` is tri-state: `undefined` means "leave untouched", `null`
+        // means "clear the active mode", a string means "set it". Rust always
+        // serializes the key (no skip_serializing_if), so a `null` here is an
+        // explicit clear signal — preserve it instead of collapsing it with
+        // `undefined`, otherwise the sidecar can never clear a selected mode.
+        ...(payload.modeId !== undefined ? { modeId: payload.modeId } : {}),
     };
 }
 

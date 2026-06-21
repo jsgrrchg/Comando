@@ -189,6 +189,7 @@ export function applySessionCatalogToSnapshot(
 export interface NormalizedSessionCatalogPayload {
     readonly availableCommands?: readonly AiAvailableCommand[];
     readonly configOptions?: readonly AiSessionConfigOption[];
+    readonly modeId?: string | null;
 }
 
 export function applyNormalizedSessionCatalogToSnapshot(
@@ -205,9 +206,11 @@ export function applyNormalizedSessionCatalogToSnapshot(
             ? buildModelsFromConfigOptions(configOptions)
             : snapshot.models;
     const modeId =
-        payload.configOptions !== undefined
-            ? deriveModeId(null, configOptions, snapshot.modeId)
-            : snapshot.modeId;
+        payload.modeId !== undefined
+            ? payload.modeId
+            : payload.configOptions !== undefined
+              ? deriveModeId(null, configOptions, snapshot.modeId)
+              : snapshot.modeId;
     const modelId =
         payload.configOptions !== undefined
             ? deriveModelId(null, configOptions, snapshot.modelId)
@@ -218,7 +221,10 @@ export function applyNormalizedSessionCatalogToSnapshot(
         ...(payload.availableCommands !== undefined
             ? { availableCommands: payload.availableCommands }
             : {}),
-        configOptions: syncSelectedModelOption(configOptions, modelId),
+        configOptions: syncSelectedModelOption(
+            syncSelectedModeOption(configOptions, modeId),
+            modelId,
+        ),
         modeId,
         modes,
         modelId,
@@ -476,6 +482,33 @@ export function syncSelectedModelOption(
             ? {
                   ...option,
                   value: modelId,
+              }
+            : option,
+    );
+}
+
+export function syncSelectedModeOption(
+    configOptions: readonly AiSessionConfigOption[],
+    modeId: string | null,
+): readonly AiSessionConfigOption[] {
+    if (!modeId?.trim()) {
+        return configOptions;
+    }
+
+    const modeConfig = getModeConfigOption(configOptions);
+    if (
+        !modeConfigOrModelConfigExists(modeConfig) ||
+        !hasSelectConfigValue(modeConfig, modeId) ||
+        modeConfig.value === modeId
+    ) {
+        return configOptions;
+    }
+
+    return configOptions.map((option) =>
+        option === modeConfig
+            ? {
+                  ...option,
+                  value: modeId,
               }
             : option,
     );

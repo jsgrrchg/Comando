@@ -80,7 +80,13 @@ export type NativeAiRuntimeStatus = {
     readonly canLogoutAuth?: boolean;
     readonly checkedAt: string;
     readonly command: string | null;
+    readonly availableCommands?: readonly unknown[];
+    readonly configOptions?: readonly unknown[];
     readonly message: string | null;
+    readonly modeId?: string | null;
+    readonly modes?: readonly unknown[];
+    readonly modelId?: string | null;
+    readonly models?: readonly unknown[];
     readonly onboardingRequired: boolean;
     readonly source: string | null;
     readonly hasCustomBinaryPath: boolean;
@@ -473,6 +479,7 @@ export type NativeAiSubagentBreadcrumbPayload = NativeAiEventBase & {
 export type NativeAiSessionCatalogUpdatedPayload = NativeAiEventBase & {
     readonly availableCommands: readonly NativeAiAvailableCommandPayload[] | null;
     readonly configOptions: readonly NativeAiSessionConfigOptionPayload[] | null;
+    readonly modeId: string | null;
 };
 
 export type NativeAiAvailableCommandPayload = {

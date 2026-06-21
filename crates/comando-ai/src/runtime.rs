@@ -304,7 +304,13 @@ fn native_unavailable_status(definition: RuntimeDefinition) -> NativeAiRuntimeSt
                 .collect::<Vec<_>>()
                 .join(" "),
         ),
+        available_commands: Vec::new(),
+        config_options: Vec::new(),
         message: definition.message.map(ToString::to_string),
+        mode_id: None,
+        modes: Vec::new(),
+        model_id: None,
+        models: Vec::new(),
         onboarding_required: true,
         source: Some("native".to_string()),
         has_custom_binary_path: false,

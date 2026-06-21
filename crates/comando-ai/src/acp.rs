@@ -54,8 +54,6 @@ use crate::runtime::{AcpProtocolFlavor, RuntimeDefinition};
 use crate::session::{NativeAiSession, SessionRegistry};
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
-const MESSAGE_DELTA_COALESCE_CHARS: usize = 512;
-const MESSAGE_DELTA_COALESCE_CHUNKS: usize = 8;
 const CODEX_ACP_STATUS_EVENT_TYPE_KEY: &str = "codexAcpEventType";
 const CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE: &str = "subagent_session_created";
 const CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE: &str = "subagent_breadcrumb";
@@ -1560,6 +1558,8 @@ struct NotificationContextInner {
     runtime_session_id: Option<RuntimeSessionId>,
     session: NativeAiSession,
     subagents_by_runtime_session_id: HashMap<String, SubagentRuntimeSession>,
+    synthetic_message_ids: HashMap<String, String>,
+    synthetic_message_next_id: usize,
 }
 
 struct PendingContentChunk {
@@ -1619,6 +1619,8 @@ impl NotificationContextInner {
             runtime_session_id: session.runtime_session_id.clone(),
             session,
             subagents_by_runtime_session_id,
+            synthetic_message_ids: HashMap::new(),
+            synthetic_message_next_id: 1,
         }
     }
 
@@ -1659,15 +1661,18 @@ impl NotificationContextInner {
             SessionUpdate::ToolCall(tool_call) => {
                 let meta = merged_meta(notification_meta.as_ref(), tool_call.meta.as_ref());
                 self.prepare_runtime_session_event(&runtime_session_id, Some(&meta), None);
+                self.complete_runtime_messages(&runtime_session_id);
                 self.handle_tool_call(&runtime_session_id, tool_call, &meta);
             }
             SessionUpdate::ToolCallUpdate(tool_call_update) => {
                 let meta = merged_meta(notification_meta.as_ref(), tool_call_update.meta.as_ref());
                 self.prepare_runtime_session_event(&runtime_session_id, Some(&meta), None);
+                self.complete_runtime_messages(&runtime_session_id);
                 self.handle_tool_call_update(&runtime_session_id, tool_call_update, &meta);
             }
             SessionUpdate::Plan(plan) => {
                 self.prepare_runtime_session_event(&runtime_session_id, None, None);
+                self.complete_runtime_messages(&runtime_session_id);
                 self.emit(
                     AI_PLAN_UPDATED_EVENT,
                     &NativeAiPlanUpdatedPayload {
@@ -1712,7 +1717,14 @@ impl NotificationContextInner {
                 self.prepare_runtime_session_event(&runtime_session_id, None, None);
                 self.handle_config_option_update(&runtime_session_id, update);
             }
-            SessionUpdate::UserMessageChunk(_) | SessionUpdate::CurrentModeUpdate(_) => {}
+            SessionUpdate::CurrentModeUpdate(update) => {
+                self.prepare_runtime_session_event(&runtime_session_id, update.meta.as_ref(), None);
+                self.handle_current_mode_update(
+                    &runtime_session_id,
+                    update.current_mode_id.0.to_string(),
+                );
+            }
+            SessionUpdate::UserMessageChunk(_) => {}
             _ => {}
         }
     }
@@ -1739,10 +1751,7 @@ impl NotificationContextInner {
             return;
         }
 
-        let message_id = chunk
-            .message_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| format!("acp:{message_kind}:{}", self.open_messages.len() + 1));
+        let message_id = self.resolve_stream_message_id(runtime_session_id, message_kind, &chunk);
         let stream_key = stream_message_key(runtime_session_id, &message_id);
         let is_new = !self.open_messages.contains_key(&stream_key);
         if is_new {
@@ -1761,13 +1770,12 @@ impl NotificationContextInner {
             self.send(payload);
         }
 
-        let should_flush = {
+        {
             let message = self
                 .open_messages
                 .entry(stream_key)
                 .or_insert_with(|| StreamedMessage {
                     content: String::new(),
-                    pending_chunks: 0,
                     pending_delta: String::new(),
                     kind: message_kind,
                     message_id: message_id.clone(),
@@ -1775,14 +1783,8 @@ impl NotificationContextInner {
                 });
             message.content.push_str(&delta);
             message.pending_delta.push_str(&delta);
-            message.pending_chunks += 1;
-            message.pending_delta.len() >= MESSAGE_DELTA_COALESCE_CHARS
-                || message.pending_chunks >= MESSAGE_DELTA_COALESCE_CHUNKS
-        };
-
-        if should_flush {
-            self.flush_message_delta(runtime_session_id, &message_id);
         }
+        self.flush_message_delta(runtime_session_id, &message_id);
     }
 
     fn handle_tool_call(
@@ -1791,6 +1793,10 @@ impl NotificationContextInner {
         tool_call: ToolCall,
         meta: &Meta,
     ) {
+        if should_suppress_status_tool_call(&tool_call, meta) {
+            return;
+        }
+
         let tool_call_id = NativeToolCallId(tool_call.tool_call_id.to_string());
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
@@ -1798,7 +1804,7 @@ impl NotificationContextInner {
                 base: self.event_base_for_runtime_session(runtime_session_id),
                 kind: serde_label(&tool_call.kind),
                 status: serde_label(&tool_call.status),
-                summary: None,
+                summary: tool_call_content_summary(&tool_call.content),
                 title: tool_call.title,
                 tool_call_id: tool_call_id.clone(),
                 diffs: tool_call_content_diffs(&tool_call.content),
@@ -1813,6 +1819,10 @@ impl NotificationContextInner {
         tool_call_update: ToolCallUpdate,
         meta: &Meta,
     ) {
+        if should_suppress_status_tool_call_update(&tool_call_update, meta) {
+            return;
+        }
+
         let tool_call_id = NativeToolCallId(tool_call_update.tool_call_id.to_string());
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
@@ -1833,8 +1843,8 @@ impl NotificationContextInner {
                 summary: tool_call_update
                     .fields
                     .content
-                    .as_ref()
-                    .and_then(|content| serde_json::to_string(content).ok()),
+                    .as_deref()
+                    .and_then(tool_call_content_summary),
                 title: tool_call_update
                     .fields
                     .title
@@ -1868,6 +1878,7 @@ impl NotificationContextInner {
                 );
             }
         }
+        self.synthetic_message_ids.clear();
     }
 
     fn handle_session_info_update(
@@ -1876,9 +1887,13 @@ impl NotificationContextInner {
         info: agent_client_protocol::schema::SessionInfoUpdate,
         meta: &Meta,
     ) {
-        let title = info.title.into_option();
+        let title = info
+            .title
+            .into_option()
+            .filter(|title| !title.trim().is_empty());
         if meta_string(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY).as_deref()
             == Some(CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE)
+            || meta_references_subagent(meta)
         {
             self.ensure_subagent_runtime_session_from_meta(
                 runtime_session_id,
@@ -1905,7 +1920,7 @@ impl NotificationContextInner {
             return;
         }
 
-        if let Some(title) = title {
+        if let Some(title) = title.filter(|title| !is_generic_subagent_title(title)) {
             self.session.title = title;
             let summary = self.summary_for_runtime_session(runtime_session_id);
             self.emit(AI_SESSION_UPDATED_EVENT, &session_updated(&summary));
@@ -1929,6 +1944,7 @@ impl NotificationContextInner {
                         .collect(),
                 ),
                 config_options: None,
+                mode_id: None,
             },
         );
     }
@@ -1950,6 +1966,23 @@ impl NotificationContextInner {
                         .map(session_config_option_payload)
                         .collect(),
                 ),
+                mode_id: None,
+            },
+        );
+    }
+
+    fn handle_current_mode_update(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        mode_id: String,
+    ) {
+        self.emit(
+            AI_SESSION_CATALOG_UPDATED_EVENT,
+            &NativeAiSessionCatalogUpdatedPayload {
+                base: self.event_base_for_runtime_session(runtime_session_id),
+                available_commands: None,
+                config_options: None,
+                mode_id: Some(mode_id),
             },
         );
     }
@@ -2103,13 +2136,43 @@ impl NotificationContextInner {
         }
     }
 
+    fn complete_runtime_messages(&mut self, runtime_session_id: &RuntimeSessionId) {
+        let stream_keys = self
+            .open_messages
+            .iter()
+            .filter(|(_key, message)| message.runtime_session_id == *runtime_session_id)
+            .map(|(key, _message)| key.clone())
+            .collect::<Vec<_>>();
+
+        for stream_key in stream_keys {
+            let Some(mut message) = self.open_messages.remove(&stream_key) else {
+                continue;
+            };
+            self.emit_pending_message_delta(&mut message);
+            let summary = self.summary_for_runtime_session(&message.runtime_session_id);
+            if message.kind == "thinking" {
+                self.emit(
+                    AI_THINKING_COMPLETED_EVENT,
+                    &message_completed(&summary, MessageId(message.message_id), message.kind),
+                );
+            } else {
+                self.emit(
+                    AI_MESSAGE_COMPLETED_EVENT,
+                    &message_completed(&summary, MessageId(message.message_id), message.kind),
+                );
+            }
+        }
+
+        self.clear_synthetic_message_ids_for_runtime(runtime_session_id);
+    }
+
     fn prepare_runtime_session_event(
         &mut self,
         runtime_session_id: &RuntimeSessionId,
         meta: Option<&Meta>,
         fallback_title: Option<&str>,
     ) {
-        if let Some(meta) = meta {
+        if let Some(meta) = meta.filter(|meta| meta_references_subagent(meta)) {
             self.ensure_subagent_runtime_session_from_meta(
                 runtime_session_id,
                 meta,
@@ -2159,7 +2222,6 @@ impl NotificationContextInner {
 
         let summary = self.summary_for_runtime_session(&message.runtime_session_id);
         let pending_delta = std::mem::take(&mut message.pending_delta);
-        message.pending_chunks = 0;
         let payload = message_delta(
             &summary,
             MessageId(message.message_id.clone()),
@@ -2172,6 +2234,34 @@ impl NotificationContextInner {
         } else {
             self.emit(AI_MESSAGE_DELTA_EVENT, &payload);
         }
+    }
+
+    fn resolve_stream_message_id(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        message_kind: &'static str,
+        chunk: &ContentChunk,
+    ) -> String {
+        if let Some(message_id) = chunk.message_id.as_ref() {
+            return message_id.to_string();
+        }
+
+        let synthetic_key = synthetic_message_key(runtime_session_id, message_kind);
+        if let Some(message_id) = self.synthetic_message_ids.get(&synthetic_key) {
+            return message_id.clone();
+        }
+
+        let message_id = format!("acp:{message_kind}:{}", self.synthetic_message_next_id);
+        self.synthetic_message_next_id += 1;
+        self.synthetic_message_ids
+            .insert(synthetic_key, message_id.clone());
+        message_id
+    }
+
+    fn clear_synthetic_message_ids_for_runtime(&mut self, runtime_session_id: &RuntimeSessionId) {
+        let prefix = format!("{}\u{1f}", runtime_session_id.0);
+        self.synthetic_message_ids
+            .retain(|key, _message_id| !key.starts_with(&prefix));
     }
 
     fn summary_for_runtime_session(
@@ -2240,13 +2330,16 @@ struct StreamedMessage {
     content: String,
     kind: &'static str,
     message_id: String,
-    pending_chunks: usize,
     pending_delta: String,
     runtime_session_id: RuntimeSessionId,
 }
 
 fn stream_message_key(runtime_session_id: &RuntimeSessionId, message_id: &str) -> String {
     format!("{}\u{1f}{message_id}", runtime_session_id.0)
+}
+
+fn synthetic_message_key(runtime_session_id: &RuntimeSessionId, message_kind: &str) -> String {
+    format!("{}\u{1f}{message_kind}", runtime_session_id.0)
 }
 
 fn available_command_payload(command: AvailableCommand) -> NativeAiAvailableCommandPayload {
@@ -2361,6 +2454,40 @@ fn meta_references_subagent(meta: &Meta) -> bool {
         )
 }
 
+fn is_generic_subagent_title(title: &str) -> bool {
+    title.trim().eq_ignore_ascii_case("subagent")
+}
+
+fn should_suppress_status_tool_call(tool_call: &ToolCall, meta: &Meta) -> bool {
+    let _ = meta;
+    is_suppressed_status_title(&tool_call.title)
+}
+
+fn should_suppress_status_tool_call_update(update: &ToolCallUpdate, meta: &Meta) -> bool {
+    let _ = meta;
+    update
+        .fields
+        .title
+        .as_deref()
+        .is_some_and(is_suppressed_status_title)
+}
+
+fn is_suppressed_status_title(title: &str) -> bool {
+    matches!(title.trim(), "Preparing input" | "Drafting response")
+}
+
+fn tool_call_content_summary(content: &[ToolCallContent]) -> Option<String> {
+    content.iter().find_map(|item| match item {
+        ToolCallContent::Content(content) => match &content.content {
+            ContentBlock::Text(text) => Some(text.text.clone()),
+            _ => None,
+        },
+        ToolCallContent::Diff(diff) => Some(format!("Updated {}", diff.path.display())),
+        ToolCallContent::Terminal(_) => Some("Terminal output available.".to_string()),
+        _ => None,
+    })
+}
+
 fn tool_call_content_diffs(content: &[ToolCallContent]) -> Vec<serde_json::Value> {
     content
         .iter()
@@ -2452,7 +2579,13 @@ mod tests {
             can_logout_auth: false,
             checked_at: now_iso8601(),
             command: Some(command.to_string()),
+            available_commands: Vec::new(),
+            config_options: Vec::new(),
             message: None,
+            mode_id: None,
+            modes: Vec::new(),
+            model_id: None,
+            models: Vec::new(),
             onboarding_required: false,
             source: Some("path".to_string()),
             has_custom_binary_path: false,
@@ -2576,6 +2709,46 @@ mod tests {
     }
 
     #[test]
+    fn notification_context_keeps_synthetic_message_id_stable_for_chunks_without_ids() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new("Hello ".into())),
+        ));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new("world".into())),
+        ));
+        context.complete_open_messages();
+
+        let started = receiver.recv().unwrap();
+        let first_delta = receiver.recv().unwrap();
+        let second_delta = receiver.recv().unwrap();
+        let completed = receiver.recv().unwrap();
+
+        assert_eq!(started.event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(first_delta.event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(second_delta.event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(completed.event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            started.payload["messageId"],
+            first_delta.payload["messageId"]
+        );
+        assert_eq!(
+            started.payload["messageId"],
+            second_delta.payload["messageId"]
+        );
+        assert_eq!(started.payload["messageId"], completed.payload["messageId"]);
+        assert_eq!(first_delta.payload["content"], "Hello ");
+        assert_eq!(first_delta.payload["delta"], "Hello ");
+        assert_eq!(second_delta.payload["content"], "Hello world");
+        assert_eq!(second_delta.payload["delta"], "world");
+    }
+
+    #[test]
     fn notification_context_projects_subagent_sessions_and_breadcrumbs() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
         let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
@@ -2645,6 +2818,27 @@ mod tests {
     }
 
     #[test]
+    fn notification_context_does_not_rename_root_session_to_generic_subagent() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::SessionInfoUpdate(
+                agent_client_protocol::schema::SessionInfoUpdate::new()
+                    .title("Subagent".to_string()),
+            ),
+        ));
+
+        assert!(receiver.try_recv().is_err());
+        let summary = context
+            .summary_for_runtime_session(&RuntimeSessionId("runtime-parent".to_string()))
+            .expect("root runtime session should have a summary");
+        assert_eq!(summary.title, "Parent");
+    }
+
+    #[test]
     fn notification_context_projects_tool_diffs() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
         let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
@@ -2668,6 +2862,114 @@ mod tests {
         assert_eq!(event.payload["diffs"][0]["path"], "src/main.rs");
         assert_eq!(event.payload["diffs"][0]["kind"], "update");
         assert_eq!(event.payload["diffs"][0]["hunks"][0]["newStart"], 1);
+    }
+
+    #[test]
+    fn notification_context_completes_text_segments_before_tool_activity() {
+        let (sender, receiver) = std_mpsc::sync_channel(16);
+        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new("Before tool".into())),
+        ));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(ToolCall::new("tool-1", "Read file")),
+        ));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new("After tool".into())),
+        ));
+
+        let events = (0..6).map(|_| receiver.recv().unwrap()).collect::<Vec<_>>();
+
+        assert_eq!(events[0].event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(events[1].event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(events[2].event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(events[3].event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(events[4].event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(events[5].event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_ne!(
+            events[0].payload["messageId"],
+            events[4].payload["messageId"]
+        );
+    }
+
+    #[test]
+    fn notification_context_suppresses_internal_status_tool_activity() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let status_meta = test_meta(&[(CODEX_ACP_STATUS_EVENT_TYPE_KEY, "status")]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCall(
+                    ToolCall::new("status-1", "Drafting response").meta(status_meta.clone()),
+                ),
+            )
+            .meta(status_meta.clone()),
+        );
+        context.handle(
+            SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCallUpdate(
+                    ToolCallUpdate::new(
+                        "status-1",
+                        agent_client_protocol::schema::ToolCallUpdateFields::new()
+                            .title("Preparing input".to_string()),
+                    )
+                    .meta(status_meta.clone()),
+                ),
+            )
+            .meta(status_meta),
+        );
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(ToolCall::new("status-2", "Preparing input")),
+        ));
+
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn notification_context_projects_tool_activity_summary() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(ToolCall::new("tool-1", "Run command").content(vec![
+                ToolCallContent::from(ContentBlock::Text(TextContent::new("Command completed"))),
+            ])),
+        ));
+
+        let event = receiver.recv().unwrap();
+        assert_eq!(event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(event.payload["summary"], "Command completed");
+    }
+
+    #[test]
+    fn notification_context_projects_current_mode_updates() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::CurrentModeUpdate(
+                agent_client_protocol::schema::CurrentModeUpdate::new("build"),
+            ),
+        ));
+
+        let event = receiver.recv().unwrap();
+        assert_eq!(event.event_name, AI_SESSION_CATALOG_UPDATED_EVENT);
+        assert_eq!(event.payload["modeId"], "build");
     }
 
     #[test]
@@ -2708,6 +3010,13 @@ mod tests {
             "session-1:subagent:runtime-child-late"
         );
         assert_eq!(delta_event.payload["delta"], "Child output");
+
+        let completed_event = receiver.recv().unwrap();
+        assert_eq!(completed_event.event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            completed_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-late"
+        );
 
         let tool_event = receiver.recv().unwrap();
         assert_eq!(tool_event.event_name, AI_TOOL_ACTIVITY_EVENT);

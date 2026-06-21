@@ -295,6 +295,91 @@ interface AiStore {
 type SetAiState = typeof useAiStore.setState;
 type GetAiState = () => AiStore;
 
+type BufferedSessionDeltaEvent = Extract<
+    AiSessionDomainEvent,
+    { kind: "message-delta" | "thinking-delta" }
+>;
+
+const bufferedSessionDeltaEvents = new Map<string, BufferedSessionDeltaEvent>();
+let bufferedSessionDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let isFlushingBufferedSessionDeltas = false;
+
+function isSessionDeltaEvent(
+    event: AiSessionDomainEvent,
+): event is BufferedSessionDeltaEvent {
+    return event.kind === "message-delta" || event.kind === "thinking-delta";
+}
+
+function sessionDeltaBufferKey(event: BufferedSessionDeltaEvent): string {
+    return event.kind === "message-delta"
+        ? `${event.sessionId}\u{1f}${event.kind}\u{1f}${event.messageKind}\u{1f}${event.messageId}`
+        : `${event.sessionId}\u{1f}${event.kind}\u{1f}${event.messageId}`;
+}
+
+function mergeBufferedSessionDelta(
+    existing: BufferedSessionDeltaEvent,
+    incoming: BufferedSessionDeltaEvent,
+): BufferedSessionDeltaEvent {
+    const nextContent =
+        incoming.content.length >= existing.content.length
+            ? incoming.content
+            : `${existing.content}${incoming.delta}`;
+    return {
+        ...incoming,
+        content: nextContent,
+        delta: `${existing.delta}${incoming.delta}`,
+    };
+}
+
+function bufferSessionDeltaEvent(
+    event: BufferedSessionDeltaEvent,
+    get: GetAiState,
+): void {
+    const key = sessionDeltaBufferKey(event);
+    const existing = bufferedSessionDeltaEvents.get(key);
+    bufferedSessionDeltaEvents.set(
+        key,
+        existing ? mergeBufferedSessionDelta(existing, event) : event,
+    );
+
+    if (bufferedSessionDeltaFlushTimer === null) {
+        bufferedSessionDeltaFlushTimer = setTimeout(() => {
+            flushBufferedSessionDeltas(get);
+        }, 0);
+    }
+}
+
+function flushBufferedSessionDeltas(get: GetAiState): void {
+    if (bufferedSessionDeltaFlushTimer !== null) {
+        clearTimeout(bufferedSessionDeltaFlushTimer);
+        bufferedSessionDeltaFlushTimer = null;
+    }
+
+    if (bufferedSessionDeltaEvents.size === 0) {
+        return;
+    }
+
+    const events = Array.from(bufferedSessionDeltaEvents.values());
+    bufferedSessionDeltaEvents.clear();
+    isFlushingBufferedSessionDeltas = true;
+    try {
+        for (const event of events) {
+            get().applySessionEvent(event);
+        }
+    } finally {
+        isFlushingBufferedSessionDeltas = false;
+    }
+}
+
+function resetBufferedSessionDeltas(): void {
+    if (bufferedSessionDeltaFlushTimer !== null) {
+        clearTimeout(bufferedSessionDeltaFlushTimer);
+        bufferedSessionDeltaFlushTimer = null;
+    }
+    bufferedSessionDeltaEvents.clear();
+    isFlushingBufferedSessionDeltas = false;
+}
+
 const activeQueueDrainSessionIds = new Set<string>();
 const pendingQueueDrainSessionIds = new Set<string>();
 type SessionActorOperationPriority = "urgent" | "normal" | "background";
@@ -315,6 +400,7 @@ const sessionActors = new Map<string, SessionActorState>();
 
 export function resetAiSessionActorsForTests(): void {
     sessionActors.clear();
+    resetBufferedSessionDeltas();
 }
 
 export const useAiStore = create<AiStore>((set, get) => ({
@@ -510,6 +596,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     applySessionEvent: (event) => {
+        if (!isFlushingBufferedSessionDeltas && isSessionDeltaEvent(event)) {
+            bufferSessionDeltaEvent(event, get);
+            return;
+        }
+        if (!isSessionDeltaEvent(event)) {
+            flushBufferedSessionDeltas(get);
+        }
+
         let syncedTitle: string | null = null;
         set((state) => {
             const session =
@@ -569,6 +663,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     applySessionUpdate: (update) => {
+        flushBufferedSessionDeltas(get);
         if (update.kind === "snapshot") {
             get().applySessionSnapshot(update.snapshot);
             return;
@@ -749,6 +844,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     applySessionSnapshot: (snapshot) => {
+        flushBufferedSessionDeltas(get);
         let syncedTitle: string | null = null;
         set((state) => {
             const session =
@@ -3765,10 +3861,6 @@ function deriveRuntimeLifecycle(
         return session.isHydrating ? "warming" : "cold";
     }
 
-    if (snapshot.parentSessionId && snapshot.closedAt) {
-        return "detached";
-    }
-
     if (
         session.localError ||
         snapshot.lastError ||
@@ -3811,6 +3903,10 @@ function deriveRuntimeLifecycle(
 
     if (!snapshot.runtimeSessionId) {
         return "cold";
+    }
+
+    if (snapshot.parentSessionId && snapshot.closedAt) {
+        return "detached";
     }
 
     return "ready";

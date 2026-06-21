@@ -680,6 +680,77 @@ describe("ai-store queue", () => {
         );
     });
 
+    it("flushes buffered deltas before completing a message", () => {
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "message-started",
+                message: {
+                    attachments: [],
+                    content: "",
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    id: "msg-1",
+                    kind: "assistant",
+                    status: "streaming",
+                },
+                messageKind: "assistant",
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                content: "Hel",
+                delta: "Hel",
+                kind: "message-delta",
+                messageId: "msg-1",
+                messageKind: "assistant",
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                content: "Hello",
+                delta: "lo",
+                kind: "message-delta",
+                messageId: "msg-1",
+                messageKind: "assistant",
+            }),
+        );
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.messages[0]
+                ?.content,
+        ).toBe("");
+
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "message-completed",
+                messageId: "msg-1",
+                messageKind: "assistant",
+            }),
+        );
+
+        const message =
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.messages[0];
+        expect(message).toEqual(
+            expect.objectContaining({
+                content: "Hello",
+                status: "completed",
+            }),
+        );
+    });
+
+    it("keeps a closed subagent in streaming lifecycle while output is active", () => {
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                closedAt: "2026-04-14T00:00:01.000Z",
+                parentSessionId: "parent-session-1",
+                status: "streaming",
+            }),
+        );
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.runtimeLifecycle,
+        ).toBe("streaming");
+    });
+
     it("upserts typed tool activity events by tool id", () => {
         useAiStore.getState().applySessionSnapshot(createSnapshot());
 

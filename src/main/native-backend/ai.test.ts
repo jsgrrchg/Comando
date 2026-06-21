@@ -206,6 +206,7 @@ describe("NativeAiGateway", () => {
                         type: "select",
                     },
                 ],
+                modeId: "build",
                 runtimeId: "opencode",
                 runtimeSessionId: "runtime-session-1",
                 sessionId: "session-1",
@@ -244,6 +245,7 @@ describe("NativeAiGateway", () => {
                         value: "build",
                     },
                 ],
+                modeId: "build",
             },
             "2026-06-20T00:00:01.000Z",
         );
