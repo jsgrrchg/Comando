@@ -65,13 +65,15 @@ this PR, so rollback remains safe.
 Native commands added or completed:
 
 - `secret_status`
-- `secret_get`
 - `secret_set`
 - `secret_delete`
 - `ai_save_runtime_settings`
 - `ai_launch_runtime_auth`
 - `ai_disconnect_runtime_auth`
 - `ai_logout_runtime_auth`
+
+Secret reads are internal to the Rust resolver and never return plaintext over the
+JSONL command channel.
 
 Runtime behavior:
 

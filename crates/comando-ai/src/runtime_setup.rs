@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use comando_settings::{RuntimeSetupState, RuntimeSetupStore};
 use comando_types::ai::{
@@ -11,6 +12,7 @@ use comando_types::ai::{
 };
 use comando_types::ids::{RuntimeId, RuntimeSessionId};
 use serde_json::json;
+use url::Url;
 
 use crate::error::{AiError, AiResult};
 use crate::events::now_iso8601;
@@ -22,6 +24,14 @@ const SESSION_AUTH_MESSAGE: &str =
 #[derive(Debug, Clone)]
 pub struct RuntimeResolvedSetup {
     pub launch: NativeAiLaunchSpec,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeAuthTerminalLaunch {
+    pub program: String,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    pub status: NativeAiRuntimeStatus,
 }
 
 #[derive(Debug, Clone)]
@@ -126,13 +136,64 @@ pub fn prepare_runtime_launch(
     Ok(RuntimeResolvedSetup { launch })
 }
 
-fn load_runtime_setup(
+pub fn prepare_auth_terminal_launch(
     store: &RuntimeSetupStore,
-    runtime_id: &str,
-) -> AiResult<RuntimeSetupState> {
-    store.load_runtime(runtime_id).map_err(|error| {
-        AiError::Internal(format!("Native runtime setup load failed: {error}"))
+    definition: RuntimeDefinition,
+    method_id: &str,
+) -> AiResult<RuntimeAuthTerminalLaunch> {
+    let mut setup = load_runtime_setup(store, definition.id)?;
+    setup.auth_method = Some(method_id.to_string());
+    let command = resolve_runtime_command(definition, &setup);
+    let login_args = auth_terminal_args(definition.id, method_id)?;
+    let auth = runtime_auth_state(store, definition.id, &setup);
+    let status = status_from_parts(definition, &setup, &command, &auth);
+    if command.state != "ready" {
+        return Err(AiError::RuntimeNotReady {
+            runtime_id: definition.id.to_string(),
+            message: status
+                .message
+                .clone()
+                .unwrap_or_else(|| "Native runtime binary is not ready.".to_string()),
+        });
+    }
+    let mut args = command.args.clone();
+    args.extend(login_args);
+    let env = runtime_spawn_env(store, definition.id, &setup, &auth, &command.executable);
+    Ok(RuntimeAuthTerminalLaunch {
+        program: command.executable,
+        args,
+        env,
+        status,
     })
+}
+
+pub fn invalidate_grok_auth_on_error(store: &RuntimeSetupStore, message: &str) -> AiResult<bool> {
+    if !is_grok_auth_error(message) {
+        return Ok(false);
+    }
+    store
+        .update_runtime("grok", |state| {
+            if state.auth_method.is_none() {
+                state.auth_method = if env_secret_present("XAI_API_KEY")
+                    || secret_present(store, "grok", "XAI_API_KEY")
+                {
+                    Some("xai-api-key".to_string())
+                } else {
+                    Some("grok-login".to_string())
+                };
+            }
+            state.auth_invalidated_at_ms = Some(now_ms());
+        })
+        .map_err(|error| {
+            AiError::Internal(format!("Native Grok auth invalidation failed: {error}"))
+        })?;
+    Ok(true)
+}
+
+fn load_runtime_setup(store: &RuntimeSetupStore, runtime_id: &str) -> AiResult<RuntimeSetupState> {
+    store
+        .load_runtime(runtime_id)
+        .map_err(|error| AiError::Internal(format!("Native runtime setup load failed: {error}")))
 }
 
 fn status_from_parts(
@@ -173,7 +234,10 @@ fn status_from_parts(
     }
 }
 
-fn resolve_runtime_command(definition: RuntimeDefinition, setup: &RuntimeSetupState) -> ResolvedCommand {
+fn resolve_runtime_command(
+    definition: RuntimeDefinition,
+    setup: &RuntimeSetupState,
+) -> ResolvedCommand {
     let env_var = match definition.id {
         "codex" => "COMANDO_CODEX_ACP_BIN",
         "claude" => "COMANDO_CLAUDE_ACP_BIN",
@@ -190,6 +254,14 @@ fn resolve_runtime_command(definition: RuntimeDefinition, setup: &RuntimeSetupSt
     if let Some(binary_path) = setup.binary_path.as_deref() {
         if !binary_path.trim().is_empty() {
             return resolve_command_candidate(definition, binary_path.trim(), "settings");
+        }
+    }
+    if definition.id == "claude" {
+        if let Some(command) = find_claude_vendor_command(definition) {
+            return command;
+        }
+        if let Some(command) = find_claude_embedded_node_command() {
+            return command;
         }
     }
     if let Some(candidate) = find_bundled_runtime(definition) {
@@ -233,7 +305,8 @@ fn resolve_command_candidate(
     let looks_like_path = raw.contains(std::path::MAIN_SEPARATOR)
         || raw.contains('/')
         || raw.contains('\\')
-        || Path::new(raw).is_absolute();
+        || Path::new(raw).is_absolute()
+        || is_javascript_path(Path::new(raw));
     if looks_like_path {
         let candidate = PathBuf::from(raw);
         let candidate = if candidate.is_absolute() {
@@ -280,6 +353,9 @@ fn command_from_existing_path(
     source: &str,
 ) -> ResolvedCommand {
     let executable = candidate.display().to_string();
+    if definition.id == "claude" && is_javascript_path(&candidate) {
+        return command_from_claude_javascript(candidate, source);
+    }
     if definition.id == "codex" && is_codex_mcp_cli(&candidate) {
         return ResolvedCommand {
             executable: executable.clone(),
@@ -301,6 +377,45 @@ fn command_from_existing_path(
         state: "ready".to_string(),
         message: None,
         has_custom_binary_path: source == "settings",
+    }
+}
+
+fn command_from_claude_javascript(entry_path: PathBuf, source: &str) -> ResolvedCommand {
+    let Some(node_path) = resolve_from_runtime_path("node", None) else {
+        let entry = entry_path.display().to_string();
+        return ResolvedCommand {
+            executable: entry.clone(),
+            args: Vec::new(),
+            command: Some(entry),
+            source: Some(source.to_string()),
+            state: "missing".to_string(),
+            message: Some(
+                "Claude vendor JS was found, but `node` is missing from PATH.".to_string(),
+            ),
+            has_custom_binary_path: source == "settings",
+        };
+    };
+    command_from_embedded_node(node_path, entry_path, source, source == "settings")
+}
+
+fn command_from_embedded_node(
+    node_path: PathBuf,
+    entry_path: PathBuf,
+    source: &str,
+    has_custom_binary_path: bool,
+) -> ResolvedCommand {
+    let executable = node_path.display().to_string();
+    let entry = entry_path.display().to_string();
+    let args = vec![entry];
+    let command = command_line(&executable, &args);
+    ResolvedCommand {
+        executable,
+        args,
+        command: Some(command),
+        source: Some(source.to_string()),
+        state: "ready".to_string(),
+        message: None,
+        has_custom_binary_path,
     }
 }
 
@@ -411,13 +526,21 @@ fn claude_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Ru
         selected
     } else if selected.as_deref() == Some("gateway")
         && gateway_url.is_ok()
-        && gateway_url.as_ref().ok().and_then(|value| value.as_ref()).is_some()
+        && gateway_url
+            .as_ref()
+            .ok()
+            .and_then(|value| value.as_ref())
+            .is_some()
         && (token_env || headers_env || token_secret || headers_secret)
     {
         selected
     } else if selected.as_deref() == Some("gateway-bedrock")
         && bedrock_url.is_ok()
-        && bedrock_url.as_ref().ok().and_then(|value| value.as_ref()).is_some()
+        && bedrock_url
+            .as_ref()
+            .ok()
+            .and_then(|value| value.as_ref())
+            .is_some()
     {
         selected
     } else if matches!(
@@ -485,17 +608,20 @@ fn claude_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Ru
 fn grok_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> RuntimeAuthState {
     let env_ready = env_secret_present("XAI_API_KEY");
     let stored_ready = secret_present(store, "grok", "XAI_API_KEY");
-    let selected = normalize_auth_method(setup.auth_method.as_deref(), &["grok-login", "xai-api-key"]);
-    let login_ready = external_auth_dir_available(grok_auth_dir_path(), setup.auth_invalidated_at_ms);
-    let method = if env_ready {
+    let selected =
+        normalize_auth_method(setup.auth_method.as_deref(), &["grok-login", "xai-api-key"]);
+    let auth_invalidated = setup.auth_invalidated_at_ms.is_some();
+    let login_ready =
+        external_auth_dir_available(grok_auth_dir_path(), setup.auth_invalidated_at_ms);
+    let method = if env_ready && !auth_invalidated {
         Some("xai-api-key".to_string())
-    } else if selected.as_deref() == Some("xai-api-key") && stored_ready {
+    } else if selected.as_deref() == Some("xai-api-key") && stored_ready && !auth_invalidated {
         selected
-    } else if selected.as_deref() == Some("grok-login") && setup.auth_invalidated_at_ms.is_none() {
+    } else if selected.as_deref() == Some("grok-login") && !auth_invalidated {
         Some("grok-login".to_string())
     } else if selected.is_some() {
         None
-    } else if stored_ready {
+    } else if stored_ready && !auth_invalidated {
         Some("xai-api-key".to_string())
     } else if login_ready {
         Some("grok-login".to_string())
@@ -529,7 +655,10 @@ fn grok_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Runt
 fn kilo_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> RuntimeAuthState {
     let env_ready = env_secret_present("KILO_API_KEY");
     let stored_ready = secret_present(store, "kilo", "KILO_API_KEY");
-    let selected = normalize_auth_method(setup.auth_method.as_deref(), &["kilo-login", "kilo-api-key"]);
+    let selected = normalize_auth_method(
+        setup.auth_method.as_deref(),
+        &["kilo-login", "kilo-api-key"],
+    );
     let login_ready = external_auth_available(kilo_auth_file_path(), setup.auth_invalidated_at_ms);
     let method = if env_ready {
         Some("kilo-api-key".to_string())
@@ -582,7 +711,8 @@ fn opencode_auth_state(setup: &RuntimeSetupState) -> RuntimeAuthState {
     .iter()
     .any(|key| env_secret_present(key));
     let selected = normalize_auth_method(setup.auth_method.as_deref(), &["opencode-login"]);
-    let login_ready = external_auth_available(opencode_auth_file_path(), setup.auth_invalidated_at_ms);
+    let login_ready =
+        external_auth_available(opencode_auth_file_path(), setup.auth_invalidated_at_ms);
     let method = if env_ready
         || (selected.as_deref() == Some("opencode-login") && setup.auth_invalidated_at_ms.is_none())
         || login_ready
@@ -625,6 +755,11 @@ fn runtime_spawn_env(
     executable: &str,
 ) -> BTreeMap<String, String> {
     let mut env_map = env::vars().collect::<BTreeMap<_, _>>();
+    for (key, value) in &setup.non_secret_env {
+        if !key.trim().is_empty() && !value.trim().is_empty() {
+            env_map.insert(key.clone(), value.clone());
+        }
+    }
     apply_runtime_auth_env(store, runtime_id, setup, auth, &mut env_map);
     let path_value = build_runtime_path(&env_map, executable);
     if !path_value.is_empty() {
@@ -650,8 +785,12 @@ fn apply_runtime_auth_env(
             env_map.remove("CODEX_API_KEY");
             env_map.remove("OPENAI_API_KEY");
             match auth.method.as_deref() {
-                Some("codex-api-key") => insert_secret_env(store, env_map, "codex", "CODEX_API_KEY"),
-                Some("openai-api-key") => insert_secret_env(store, env_map, "codex", "OPENAI_API_KEY"),
+                Some("codex-api-key") => {
+                    insert_secret_env(store, env_map, "codex", "CODEX_API_KEY")
+                }
+                Some("openai-api-key") => {
+                    insert_secret_env(store, env_map, "codex", "OPENAI_API_KEY")
+                }
                 _ => {}
             }
         }
@@ -693,7 +832,9 @@ fn apply_claude_env(
                 env_map.insert("ANTHROPIC_BEDROCK_BASE_URL".to_string(), url.to_string());
             }
         }
-        env_map.entry("CLAUDE_CODE_USE_BEDROCK".to_string()).or_insert_with(|| "1".to_string());
+        env_map
+            .entry("CLAUDE_CODE_USE_BEDROCK".to_string())
+            .or_insert_with(|| "1".to_string());
         env_map
             .entry("AWS_BEARER_TOKEN_BEDROCK".to_string())
             .or_insert_with(|| " ".to_string());
@@ -744,7 +885,9 @@ fn env_secret_present(key: &str) -> bool {
 }
 
 fn env_secret_present_in(env_map: &BTreeMap<String, String>, key: &str) -> bool {
-    env_map.get(key).is_some_and(|value| !value.trim().is_empty())
+    env_map
+        .get(key)
+        .is_some_and(|value| !value.trim().is_empty())
 }
 
 fn auth_methods(runtime_id: &str) -> Vec<NativeAiAuthMethod> {
@@ -850,13 +993,15 @@ fn auth_method(id: &str, name: &str, description: &str) -> NativeAiAuthMethod {
 }
 
 fn credential_source_wire(source: &NativeAiCredentialSource) -> Option<String> {
-    Some(match source {
-        NativeAiCredentialSource::ComandoSecret => "comando-secret",
-        NativeAiCredentialSource::Environment => "environment",
-        NativeAiCredentialSource::ExternalRuntime => "external-runtime",
-        NativeAiCredentialSource::None => "none",
-    }
-    .to_string())
+    Some(
+        match source {
+            NativeAiCredentialSource::ComandoSecret => "comando-secret",
+            NativeAiCredentialSource::Environment => "environment",
+            NativeAiCredentialSource::ExternalRuntime => "external-runtime",
+            NativeAiCredentialSource::None => "none",
+        }
+        .to_string(),
+    )
 }
 
 fn credential_source_label(runtime_id: &str, source: &NativeAiCredentialSource) -> String {
@@ -891,6 +1036,42 @@ fn definition_args(definition: RuntimeDefinition) -> Vec<String> {
         .collect()
 }
 
+fn auth_terminal_args(runtime_id: &str, method_id: &str) -> AiResult<Vec<String>> {
+    let args = match (runtime_id, method_id) {
+        ("claude", "claude-login") => vec!["--cli"],
+        ("claude", "claude-ai-login") => vec!["--cli", "auth", "login", "--claudeai"],
+        ("claude", "console-login") => vec!["--cli", "auth", "login", "--console"],
+        ("grok", "grok-login") => vec!["login"],
+        ("kilo", "kilo-login") => vec!["auth", "login"],
+        ("opencode", "opencode-login") => vec!["auth", "login"],
+        ("codex", "chatgpt") => {
+            return Err(AiError::RuntimeNotReady {
+                runtime_id: runtime_id.to_string(),
+                message: "Codex ChatGPT login is handled by the runtime authentication handshake, not an auth terminal.".to_string(),
+            });
+        }
+        (_, method)
+            if method.ends_with("api-key")
+                || method == "gateway"
+                || method == "gateway-bedrock" =>
+        {
+            return Err(AiError::RuntimeAuthMissing {
+                runtime_id: runtime_id.to_string(),
+                message: "This authentication method does not use a login terminal.".to_string(),
+            });
+        }
+        _ => {
+            return Err(AiError::RuntimeAuthMissing {
+                runtime_id: runtime_id.to_string(),
+                message: format!(
+                    "Unsupported auth terminal method `{method_id}` for runtime `{runtime_id}`."
+                ),
+            });
+        }
+    };
+    Ok(args.into_iter().map(ToString::to_string).collect())
+}
+
 fn command_line(executable: &str, args: &[String]) -> String {
     std::iter::once(executable.to_string())
         .chain(args.iter().cloned())
@@ -900,11 +1081,17 @@ fn command_line(executable: &str, args: &[String]) -> String {
 
 fn missing_binary_message(runtime_id: &str) -> &'static str {
     match runtime_id {
-        "codex" => "No compatible ACP runtime was found. Run `pnpm run stage:ai` to build/stage `codex-acp`, or configure an explicit binary.",
-        "claude" => "Claude runtime was not found. Run `pnpm run stage:ai`, install `claude-agent-acp`, or provide a custom runtime path.",
+        "codex" => {
+            "No compatible ACP runtime was found. Run `pnpm run stage:ai` to build/stage `codex-acp`, or configure an explicit binary."
+        }
+        "claude" => {
+            "Claude runtime was not found. Run `pnpm run stage:ai`, install `claude-agent-acp`, or provide a custom runtime path."
+        }
         "grok" => "Grok CLI was not found. Install `grok` or provide a custom runtime path.",
         "kilo" => "Kilo CLI was not found. Install `kilo` or provide a custom runtime path.",
-        "opencode" => "OpenCode CLI was not found. Install opencode or provide a custom runtime path.",
+        "opencode" => {
+            "OpenCode CLI was not found. Install opencode or provide a custom runtime path."
+        }
         _ => "Native runtime was not found.",
     }
 }
@@ -921,7 +1108,11 @@ fn find_bundled_runtime(definition: RuntimeDefinition) -> Option<PathBuf> {
     let app_root = find_app_root()?;
     let name = runtime_binary_name(definition.default_executable);
     [
-        app_root.join("resources").join("ai").join("binaries").join(&name),
+        app_root
+            .join("resources")
+            .join("ai")
+            .join("binaries")
+            .join(&name),
         app_root
             .join("resources")
             .join("ai")
@@ -931,6 +1122,97 @@ fn find_bundled_runtime(definition: RuntimeDefinition) -> Option<PathBuf> {
     ]
     .into_iter()
     .find(|candidate| is_executable_or_script(candidate))
+}
+
+fn find_claude_vendor_command(definition: RuntimeDefinition) -> Option<ResolvedCommand> {
+    let app_root = find_app_root()?;
+    let entry = app_root
+        .join("vendor")
+        .join("Claude-agent-acp-upstream")
+        .join("dist")
+        .join("index.js");
+    is_file(&entry).then(|| command_from_existing_path(definition, entry, "vendor"))
+}
+
+fn find_claude_embedded_node_command() -> Option<ResolvedCommand> {
+    let app_root = find_app_root()?;
+    for resources_root in claude_resource_roots(&app_root) {
+        if let Some(command) =
+            claude_embedded_node_command_from_resources(resources_root.as_path(), "bundled")
+        {
+            let mut command = command;
+            command.has_custom_binary_path = false;
+            return Some(command);
+        }
+    }
+    None
+}
+
+fn claude_embedded_node_command_from_resources(
+    resources_root: &Path,
+    source: &str,
+) -> Option<ResolvedCommand> {
+    let entry = resources_root
+        .join("ai")
+        .join("embedded")
+        .join("claude-agent-acp")
+        .join("dist")
+        .join("index.js");
+    if !is_file(&entry) {
+        return None;
+    }
+    let node = embedded_node_candidates(resources_root)
+        .into_iter()
+        .find(|candidate| is_executable_or_script(candidate))?;
+    Some(command_from_embedded_node(node, entry, source, false))
+}
+
+fn claude_resource_roots(app_root: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![app_root.join("resources")];
+    for start in runtime_search_roots() {
+        let mut current = start.as_path();
+        loop {
+            if current.join("ai").join("embedded").exists() {
+                roots.push(current.to_path_buf());
+            }
+            let resources = current.join("resources");
+            if resources.join("ai").join("embedded").exists() {
+                roots.push(resources);
+            }
+            let Some(parent) = current.parent() else {
+                break;
+            };
+            if parent == current {
+                break;
+            }
+            current = parent;
+        }
+    }
+    dedupe_paths(roots)
+}
+
+fn embedded_node_candidates(resources_root: &Path) -> Vec<PathBuf> {
+    let executable_name = if cfg!(windows) { "node.exe" } else { "node" };
+    let mut candidates = vec![
+        resources_root
+            .join("ai")
+            .join("embedded")
+            .join("node")
+            .join("bin")
+            .join(executable_name),
+    ];
+    if cfg!(target_os = "macos") {
+        candidates.push(
+            resources_root
+                .join("ai")
+                .join("embedded")
+                .join("node")
+                .join(format!("darwin-{}", env::consts::ARCH))
+                .join("bin")
+                .join(executable_name),
+        );
+    }
+    candidates
 }
 
 fn find_vendor_runtime(definition: RuntimeDefinition) -> Option<PathBuf> {
@@ -961,19 +1243,11 @@ fn find_vendor_runtime(definition: RuntimeDefinition) -> Option<PathBuf> {
 }
 
 fn find_app_root() -> Option<PathBuf> {
-    let mut roots = Vec::new();
-    if let Ok(exe) = env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            roots.push(parent.to_path_buf());
-        }
-    }
-    if let Ok(cwd) = env::current_dir() {
-        roots.push(cwd);
-    }
-    for root in roots {
+    for root in runtime_search_roots() {
         let mut current = root.as_path();
         loop {
-            if current.join("package.json").exists() && current.join("resources").join("ai").exists()
+            if current.join("package.json").exists()
+                && current.join("resources").join("ai").exists()
             {
                 return Some(current.to_path_buf());
             }
@@ -987,6 +1261,19 @@ fn find_app_root() -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn runtime_search_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(exe) = env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    if let Ok(cwd) = env::current_dir() {
+        roots.push(cwd);
+    }
+    roots
 }
 
 fn resolve_from_runtime_path(command: &str, extra_path: Option<&str>) -> Option<PathBuf> {
@@ -1009,13 +1296,12 @@ fn resolve_from_runtime_path(command: &str, extra_path: Option<&str>) -> Option<
     let extensions = vec!["".to_string()];
     for entry in path_entries {
         for extension in &extensions {
-            let file_name = if cfg!(windows)
-                && !command.to_lowercase().ends_with(&extension.to_lowercase())
-            {
-                format!("{command}{extension}")
-            } else {
-                command.to_string()
-            };
+            let file_name =
+                if cfg!(windows) && !command.to_lowercase().ends_with(&extension.to_lowercase()) {
+                    format!("{command}{extension}")
+                } else {
+                    command.to_string()
+                };
             let candidate = Path::new(&entry).join(file_name);
             if is_executable_or_script(&candidate) {
                 return Some(candidate);
@@ -1067,19 +1353,40 @@ fn runtime_path_entries(
     }
     if cfg!(target_os = "macos") {
         entries.extend(
-            ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"]
-                .iter()
-                .map(|entry| (*entry).to_string()),
+            [
+                "/opt/homebrew/bin",
+                "/opt/homebrew/sbin",
+                "/usr/local/bin",
+                "/usr/local/sbin",
+            ]
+            .iter()
+            .map(|entry| (*entry).to_string()),
         );
     }
-    entries.extend(["/usr/bin", "/bin", "/usr/sbin", "/sbin"].iter().map(|entry| (*entry).to_string()));
+    entries.extend(
+        ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+            .iter()
+            .map(|entry| (*entry).to_string()),
+    );
     if let Some(path) = current_path {
-        entries.extend(path.split(if cfg!(windows) { ';' } else { ':' }).filter(|entry| !entry.is_empty()).map(ToString::to_string));
+        entries.extend(
+            path.split(if cfg!(windows) { ';' } else { ':' })
+                .filter(|entry| !entry.is_empty())
+                .map(ToString::to_string),
+        );
     }
     dedupe(entries)
 }
 
 fn dedupe(values: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    values
+        .into_iter()
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
+}
+
+fn dedupe_paths(values: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen = std::collections::BTreeSet::new();
     values
         .into_iter()
@@ -1097,11 +1404,17 @@ fn is_file(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
 }
 
+fn is_javascript_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("js"))
+}
+
 fn is_executable_or_script(path: &Path) -> bool {
     if !is_file(path) {
         return false;
     }
-    if path.extension().and_then(|ext| ext.to_str()) == Some("js") {
+    if is_javascript_path(path) {
         return true;
     }
     #[cfg(unix)]
@@ -1119,25 +1432,22 @@ fn validate_gateway_url(raw: Option<&str>) -> Result<Option<String>, String> {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
-    let lower = raw.to_ascii_lowercase();
-    if lower.contains('@') {
+    let parsed = Url::parse(raw).map_err(|_| "Enter a valid gateway URL.".to_string())?;
+    if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err("Gateway URL must not include embedded credentials.".to_string());
     }
-    if lower.starts_with("https://") {
-        return Ok(Some(raw.to_string()));
-    }
-    if lower.starts_with("http://") {
-        let host = lower
-            .trim_start_matches("http://")
-            .split(['/', ':'])
-            .next()
-            .unwrap_or("");
-        if matches!(host, "localhost" | "127.0.0.1" | "::1") || host.ends_with(".localhost") {
-            return Ok(Some(raw.to_string()));
+    match parsed.scheme() {
+        "https" => Ok(Some(parsed.to_string())),
+        "http" if parsed.host_str().is_some_and(is_loopback_gateway_host) => {
+            Ok(Some(parsed.to_string()))
         }
-        return Err("HTTP gateways are only allowed for localhost.".to_string());
+        "http" => Err("HTTP gateways are only allowed for localhost.".to_string()),
+        _ => Err("Gateway URL must use HTTPS.".to_string()),
     }
-    Err("Gateway URL must use HTTPS.".to_string())
+}
+
+fn is_loopback_gateway_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1") || host.ends_with(".localhost")
 }
 
 fn default_claude_login_method() -> &'static str {
@@ -1158,6 +1468,35 @@ fn is_remote_claude_auth_environment() -> bool {
     ]
     .iter()
     .any(|key| env_secret_present(key))
+}
+
+fn is_grok_auth_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    let auth_hint = [
+        "auth",
+        "authenticate",
+        "authentication",
+        "authorization",
+        "unauthorized",
+        "forbidden",
+        "permission denied",
+        "invalid api key",
+        "api key",
+        "xai",
+        "cached_token",
+        "401",
+        "403",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle));
+    auth_hint && (lower.contains("grok") || lower.contains("xai") || lower.contains("auth"))
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn external_auth_available(path: Option<PathBuf>, invalidated_at_ms: Option<u64>) -> bool {
@@ -1191,9 +1530,8 @@ fn external_auth_dir_available(path: Option<PathBuf>, invalidated_at_ms: Option<
         }
     }
     has_non_empty_file
-        && invalidated_at_ms.is_none_or(|invalidated| {
-            newest.is_some_and(|modified| modified > invalidated)
-        })
+        && invalidated_at_ms
+            .is_none_or(|invalidated| newest.is_some_and(|modified| modified > invalidated))
 }
 
 fn modified_at_ms(path: &Path) -> Option<u64> {
@@ -1244,6 +1582,7 @@ fn opencode_auth_file_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::sync::Arc;
 
     use comando_settings::{InMemoryRuntimeSecretStore, RuntimeSecretStore};
@@ -1254,8 +1593,11 @@ mod tests {
     fn store_with_secret(runtime_id: &str, env_key: &str, value: &str) -> RuntimeSetupStore {
         let temp = tempdir().expect("temp");
         let secrets = Arc::new(InMemoryRuntimeSecretStore::default());
-        secrets.set_secret(runtime_id, env_key, value).expect("secret");
-        let store = RuntimeSetupStore::with_secret_store(temp.path().join("runtime-setup.json"), secrets);
+        secrets
+            .set_secret(runtime_id, env_key, value)
+            .expect("secret");
+        let store =
+            RuntimeSetupStore::with_secret_store(temp.path().join("runtime-setup.json"), secrets);
         store
             .update_runtime(runtime_id, |state| {
                 state.secret_env_keys.insert(env_key.to_string());
@@ -1272,7 +1614,9 @@ mod tests {
                 state.auth_method = Some("openai-api-key".to_string());
             })
             .expect("setup");
-        let definition = crate::runtime::RuntimeRegistry::default().get("codex").unwrap();
+        let definition = crate::runtime::RuntimeRegistry::default()
+            .get("codex")
+            .unwrap();
 
         let status = runtime_status(&store, definition).expect("status");
 
@@ -1295,7 +1639,9 @@ mod tests {
                 state.gateway_base_url = Some("https://user:pass@example.com".to_string());
             })
             .expect("setup");
-        let definition = crate::runtime::RuntimeRegistry::default().get("claude").unwrap();
+        let definition = crate::runtime::RuntimeRegistry::default()
+            .get("claude")
+            .unwrap();
 
         let status = runtime_status(&store, definition).expect("status");
 
@@ -1304,5 +1650,83 @@ mod tests {
             status.message.as_deref(),
             Some("Gateway URL must not include embedded credentials.")
         );
+    }
+
+    #[test]
+    fn claude_embedded_node_uses_staged_entrypoint() {
+        let temp = tempdir().expect("temp");
+        let resources = temp.path().join("resources");
+        let node = resources
+            .join("ai")
+            .join("embedded")
+            .join("node")
+            .join("bin")
+            .join(if cfg!(windows) { "node.exe" } else { "node" });
+        let entry = resources
+            .join("ai")
+            .join("embedded")
+            .join("claude-agent-acp")
+            .join("dist")
+            .join("index.js");
+        write_executable(&node);
+        write_file(&entry, "console.log('claude');");
+
+        let command =
+            claude_embedded_node_command_from_resources(&resources, "bundled").expect("command");
+
+        assert_eq!(command.executable, node.display().to_string());
+        assert_eq!(command.args, vec![entry.display().to_string()]);
+        assert_eq!(
+            command.command,
+            Some(format!("{} {}", node.display(), entry.display()))
+        );
+        assert_eq!(command.source.as_deref(), Some("bundled"));
+        assert_eq!(command.state, "ready");
+    }
+
+    #[test]
+    fn grok_auth_error_invalidates_selected_secret() {
+        let store = store_with_secret("grok", "XAI_API_KEY", "xai-test");
+        store
+            .update_runtime("grok", |state| {
+                state.auth_method = Some("xai-api-key".to_string());
+            })
+            .expect("setup");
+        let definition = crate::runtime::RuntimeRegistry::default()
+            .get("grok")
+            .unwrap();
+        let ready = runtime_status(&store, definition).expect("ready status");
+        assert!(ready.auth_ready);
+
+        let invalidated =
+            invalidate_grok_auth_on_error(&store, "grok authentication failed with 401")
+                .expect("invalidate");
+        let status = runtime_status(&store, definition).expect("status");
+
+        assert!(invalidated);
+        assert!(!status.auth_ready);
+        assert_eq!(status.auth_method, None);
+        assert_eq!(
+            status.message.as_deref(),
+            Some("Run Grok login or add an xAI API key to finish setup.")
+        );
+    }
+
+    fn write_file(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("dir");
+        }
+        fs::write(path, contents).expect("write");
+    }
+
+    fn write_executable(path: &Path) {
+        write_file(path, "#!/bin/sh\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(path).expect("metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("permissions");
+        }
     }
 }

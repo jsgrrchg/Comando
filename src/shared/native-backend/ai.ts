@@ -107,12 +107,6 @@ export type NativeSecretSetInput = {
     readonly value: string;
 };
 
-export type NativeSecretGetInput = {
-    readonly runtimeId: NativeAiRuntimeId;
-    readonly envKey: string;
-    readonly reason?: string | null;
-};
-
 export type NativeSecretDeleteInput = {
     readonly runtimeId: NativeAiRuntimeId;
     readonly envKey: string;
@@ -122,12 +116,6 @@ export type NativeSecretMutationOutput = {
     readonly runtimeId: NativeAiRuntimeId;
     readonly envKey: string;
     readonly present: boolean;
-};
-
-export type NativeSecretValueOutput = {
-    readonly runtimeId: NativeAiRuntimeId;
-    readonly envKey: string;
-    readonly value: string | null;
 };
 
 export type NativeSecretPatchAction = "delete" | "set";

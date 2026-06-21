@@ -55,7 +55,12 @@ impl RuntimeSetupState {
         self.binary_path.as_deref().unwrap_or("").trim().is_empty()
             && self.auth_method.as_deref().unwrap_or("").trim().is_empty()
             && self.auth_invalidated_at_ms.is_none()
-            && self.gateway_base_url.as_deref().unwrap_or("").trim().is_empty()
+            && self
+                .gateway_base_url
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .is_empty()
             && self
                 .bedrock_gateway_base_url
                 .as_deref()
@@ -186,10 +191,9 @@ impl RuntimeSetupStore {
             }
             Err(error) => return Err(RuntimeSetupError::ReadFailed(error.to_string())),
         };
-        let persisted: PersistedRuntimeSetupFile =
-            serde_json::from_str(&raw).map_err(|error| {
-                RuntimeSetupError::ParseFailed(redact_setup_error(error.to_string()))
-            })?;
+        let persisted: PersistedRuntimeSetupFile = serde_json::from_str(&raw).map_err(|error| {
+            RuntimeSetupError::ParseFailed(redact_setup_error(error.to_string()))
+        })?;
         if persisted.version != RUNTIME_SETUP_STORE_VERSION {
             return Ok(BTreeMap::new());
         }
@@ -204,10 +208,7 @@ impl RuntimeSetupStore {
             .collect())
     }
 
-    pub fn load_runtime(
-        &self,
-        runtime_id: &str,
-    ) -> Result<RuntimeSetupState, RuntimeSetupError> {
+    pub fn load_runtime(&self, runtime_id: &str) -> Result<RuntimeSetupState, RuntimeSetupError> {
         validate_runtime_id(runtime_id)?;
         Ok(self.load_all()?.remove(runtime_id).unwrap_or_default())
     }
@@ -218,7 +219,7 @@ impl RuntimeSetupStore {
         state: RuntimeSetupState,
     ) -> Result<(), RuntimeSetupError> {
         validate_runtime_id(runtime_id)?;
-        let mut all = self.load_all().unwrap_or_default();
+        let mut all = self.load_all()?;
         let state = state.normalize(runtime_id);
         if state.is_empty() {
             all.remove(runtime_id);
@@ -234,7 +235,7 @@ impl RuntimeSetupStore {
         update: impl FnOnce(&mut RuntimeSetupState),
     ) -> Result<RuntimeSetupState, RuntimeSetupError> {
         validate_runtime_id(runtime_id)?;
-        let mut all = self.load_all().unwrap_or_default();
+        let mut all = self.load_all()?;
         let mut state = all.remove(runtime_id).unwrap_or_default();
         update(&mut state);
         state = state.normalize(runtime_id);
@@ -260,11 +261,7 @@ impl RuntimeSetupStore {
         Ok(())
     }
 
-    pub fn delete_secret(
-        &self,
-        runtime_id: &str,
-        env_key: &str,
-    ) -> Result<(), RuntimeSetupError> {
+    pub fn delete_secret(&self, runtime_id: &str, env_key: &str) -> Result<(), RuntimeSetupError> {
         self.secrets.delete_secret(runtime_id, env_key)?;
         self.update_runtime(runtime_id, |state| {
             state.secret_env_keys.remove(env_key);
@@ -421,9 +418,10 @@ mod tests {
             gateway_base_url: Some("https://gateway.example.com".to_string()),
             ..RuntimeSetupState::default()
         };
-        state
-            .non_secret_env
-            .insert("ANTHROPIC_BASE_URL".to_string(), "https://api.example.com".to_string());
+        state.non_secret_env.insert(
+            "ANTHROPIC_BASE_URL".to_string(),
+            "https://api.example.com".to_string(),
+        );
 
         store.save_runtime("claude", state).expect("save");
         let loaded = store.load_runtime("claude").expect("load");
@@ -435,7 +433,10 @@ mod tests {
             Some("https://gateway.example.com")
         );
         assert_eq!(
-            loaded.non_secret_env.get("ANTHROPIC_BASE_URL").map(String::as_str),
+            loaded
+                .non_secret_env
+                .get("ANTHROPIC_BASE_URL")
+                .map(String::as_str),
             Some("https://api.example.com")
         );
     }
@@ -478,6 +479,30 @@ mod tests {
         let error = store.load_all().expect_err("parse error");
 
         assert!(!error.to_string().contains("sk-secret-value"));
+    }
+
+    #[test]
+    fn corrupt_json_is_not_overwritten_by_save() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("runtime-setup.json");
+        fs::write(&path, "{\"secret\":\"sk-secret-value\"").expect("write");
+        let store = RuntimeSetupStore::in_memory_for_tests(path.clone());
+
+        let error = store
+            .save_runtime(
+                "codex",
+                RuntimeSetupState {
+                    auth_method: Some("chatgpt".to_string()),
+                    ..RuntimeSetupState::default()
+                },
+            )
+            .expect_err("parse error");
+
+        assert!(!error.to_string().contains("sk-secret-value"));
+        assert_eq!(
+            fs::read_to_string(path).expect("runtime setup json"),
+            "{\"secret\":\"sk-secret-value\""
+        );
     }
 
     #[test]

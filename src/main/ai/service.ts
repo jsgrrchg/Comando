@@ -1852,7 +1852,7 @@ export class AiService {
         input: AiRuntimeAuthLogoutInput,
     ): Promise<AiRuntimeStatus> {
         const nativeAi = this.#nativeAuthGateway(input.runtimeId);
-        if (nativeAi?.logoutRuntimeAuth) {
+        if (nativeAi?.logoutRuntimeAuth && input.runtimeId !== "codex") {
             const status = await nativeAi.logoutRuntimeAuth(input);
             this.#onRuntimeStatus(status);
             return status;

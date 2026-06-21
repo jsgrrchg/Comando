@@ -140,15 +140,6 @@ pub struct NativeSecretSetInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct NativeSecretGetInput {
-    pub runtime_id: NativeAiRuntimeId,
-    pub env_key: String,
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct NativeSecretDeleteInput {
     pub runtime_id: NativeAiRuntimeId,
     pub env_key: String,
@@ -160,14 +151,6 @@ pub struct NativeSecretMutationOutput {
     pub runtime_id: NativeAiRuntimeId,
     pub env_key: String,
     pub present: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeSecretValueOutput {
-    pub runtime_id: NativeAiRuntimeId,
-    pub env_key: String,
-    pub value: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
