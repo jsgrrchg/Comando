@@ -370,6 +370,38 @@ describe("NativeGitRoutingGateway", () => {
         expect(native.calls.stagePaths).not.toHaveBeenCalled();
     });
 
+    it("falls back to legacy when a native read fails in read mode", async () => {
+        const diagnostics: string[] = [];
+        const legacy = mainGitGateway("legacy");
+        const native = mainGitGateway("native");
+        native.calls.getRepositorySnapshot.mockRejectedValueOnce(
+            new Error("native git unavailable"),
+        );
+        const gateway = new NativeGitRoutingGateway({
+            env: {
+                [NATIVE_GIT_ENABLED_ENV]: "1",
+                [NATIVE_GIT_MODE_ENV]: "read",
+            },
+            legacy,
+            native,
+            onDiagnostic: (message) => {
+                diagnostics.push(message);
+            },
+        });
+
+        await expect(
+            gateway.getRepositorySnapshot("/tmp/comando-project"),
+        ).resolves.toMatchObject({
+            branches: [{ commit: "legacy" }],
+        });
+
+        expect(native.calls.getRepositorySnapshot).toHaveBeenCalledOnce();
+        expect(legacy.calls.getRepositorySnapshot).toHaveBeenCalledOnce();
+        expect(diagnostics[0]).toContain(
+            "getRepositorySnapshot failed; falling back to legacy",
+        );
+    });
+
     it("keeps shadow reads on legacy and reports parity mismatches", async () => {
         const diagnostics: string[] = [];
         const legacy = mainGitGateway("legacy");

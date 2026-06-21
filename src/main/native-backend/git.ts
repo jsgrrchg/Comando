@@ -533,94 +533,66 @@ export class NativeGitRoutingGateway implements ClosableGitGateway {
     async resolveRepository(
         inputPath: string,
     ): Promise<GitRepositoryResolution> {
-        if (shouldUseNativeGitReads(this.#env)) {
-            return await this.#native.resolveRepository(inputPath);
-        }
-
-        const legacy = await this.#legacy.resolveRepository(inputPath);
-        this.#shadow(
+        return this.#read(
             "resolveRepository",
             () => this.#native.resolveRepository(inputPath),
-            (native) => compareRepositoryResolution(native, legacy),
+            () => this.#legacy.resolveRepository(inputPath),
+            compareRepositoryResolution,
         );
-        return legacy;
     }
 
     async getRepositorySnapshot(
         inputPath: string,
     ): Promise<GitRepositorySnapshot> {
-        if (shouldUseNativeGitReads(this.#env)) {
-            return await this.#native.getRepositorySnapshot(inputPath);
-        }
-
-        const legacy = await this.#legacy.getRepositorySnapshot(inputPath);
-        this.#shadow(
+        return this.#read(
             "getRepositorySnapshot",
             () => this.#native.getRepositorySnapshot(inputPath),
-            (native) => compareRepositorySnapshot(native, legacy),
+            () => this.#legacy.getRepositorySnapshot(inputPath),
+            compareRepositorySnapshot,
         );
-        return legacy;
     }
 
     async getStatus(inputPath: string): Promise<GitStatusSnapshot> {
-        if (shouldUseNativeGitReads(this.#env)) {
-            return await this.#native.getStatus(inputPath);
-        }
-
-        const legacy = await this.#legacy.getStatus(inputPath);
-        this.#shadow(
+        return this.#read(
             "getStatus",
             () => this.#native.getStatus(inputPath),
-            (native) => compareStatusSnapshot(native, legacy),
+            () => this.#legacy.getStatus(inputPath),
+            compareStatusSnapshot,
         );
-        return legacy;
     }
 
     async getSyncStatus(inputPath: string): Promise<GitSyncStatus | null> {
-        if (shouldUseNativeGitReads(this.#env)) {
-            return await this.#native.getSyncStatus(inputPath);
-        }
-
-        const legacy = await this.#legacy.getSyncStatus(inputPath);
-        this.#shadow(
+        return this.#read(
             "getSyncStatus",
             () => this.#native.getSyncStatus(inputPath),
-            (native) => compareSyncStatus(native, legacy),
+            () => this.#legacy.getSyncStatus(inputPath),
+            compareSyncStatus,
         );
-        return legacy;
     }
 
     async listWorktrees(
         inputPath: string,
     ): Promise<readonly GitWorktreeSummary[]> {
-        if (shouldUseNativeGitReads(this.#env)) {
-            return await this.#native.listWorktrees(inputPath);
-        }
-
-        const legacy = await this.#legacy.listWorktrees(inputPath);
-        this.#shadow(
+        return this.#read(
             "listWorktrees",
             () => this.#native.listWorktrees(inputPath),
-            (native) => compareStringLists(worktreeSignature(native), worktreeSignature(legacy)),
+            () => this.#legacy.listWorktrees(inputPath),
+            (native, legacy) =>
+                compareStringLists(worktreeSignature(native), worktreeSignature(legacy)),
         );
-        return legacy;
     }
 
     async listBranches(
         inputPath: string,
         options?: GitListBranchesOptions,
     ): Promise<readonly GitBranchSummary[]> {
-        if (shouldUseNativeGitReads(this.#env)) {
-            return await this.#native.listBranches(inputPath, options);
-        }
-
-        const legacy = await this.#legacy.listBranches(inputPath, options);
-        this.#shadow(
+        return this.#read(
             "listBranches",
             () => this.#native.listBranches(inputPath, options),
-            (native) => compareStringLists(branchSignature(native), branchSignature(legacy)),
+            () => this.#legacy.listBranches(inputPath, options),
+            (native, legacy) =>
+                compareStringLists(branchSignature(native), branchSignature(legacy)),
         );
-        return legacy;
     }
 
     async getFileDiff(
@@ -628,17 +600,12 @@ export class NativeGitRoutingGateway implements ClosableGitGateway {
         relativePath: string,
         options?: GitFileDiffOptions,
     ): Promise<GitFileDiff> {
-        if (shouldUseNativeGitReads(this.#env)) {
-            return await this.#native.getFileDiff(inputPath, relativePath, options);
-        }
-
-        const legacy = await this.#legacy.getFileDiff(inputPath, relativePath, options);
-        this.#shadow(
+        return this.#read(
             "getFileDiff",
             () => this.#native.getFileDiff(inputPath, relativePath, options),
-            (native) => compareFileDiff(native, legacy),
+            () => this.#legacy.getFileDiff(inputPath, relativePath, options),
+            compareFileDiff,
         );
-        return legacy;
     }
 
     async getFileText(
@@ -646,55 +613,36 @@ export class NativeGitRoutingGateway implements ClosableGitGateway {
         relativePath: string,
         reference: GitFileTextReference,
     ): Promise<string | null> {
-        if (shouldUseNativeGitReads(this.#env)) {
-            return await this.#native.getFileText(inputPath, relativePath, reference);
-        }
-
-        const legacy = await this.#legacy.getFileText(
-            inputPath,
-            relativePath,
-            reference,
-        );
-        this.#shadow(
+        return this.#read(
             "getFileText",
             () => this.#native.getFileText(inputPath, relativePath, reference),
-            (native) => compareTextShape(native, legacy),
+            () => this.#legacy.getFileText(inputPath, relativePath, reference),
+            compareTextShape,
         );
-        return legacy;
     }
 
     async listHistory(
         inputPath: string,
         options?: GitListHistoryOptions,
     ): Promise<GitHistoryListResult> {
-        if (shouldUseNativeGitReads(this.#env)) {
-            return await this.#native.listHistory(inputPath, options);
-        }
-
-        const legacy = await this.#legacy.listHistory(inputPath, options);
-        this.#shadow(
+        return this.#read(
             "listHistory",
             () => this.#native.listHistory(inputPath, options),
-            (native) => compareHistoryList(native, legacy),
+            () => this.#legacy.listHistory(inputPath, options),
+            compareHistoryList,
         );
-        return legacy;
     }
 
     async getCommitDetail(
         inputPath: string,
         commitSha: string,
     ): Promise<GitCommitDetail> {
-        if (shouldUseNativeGitReads(this.#env)) {
-            return await this.#native.getCommitDetail(inputPath, commitSha);
-        }
-
-        const legacy = await this.#legacy.getCommitDetail(inputPath, commitSha);
-        this.#shadow(
+        return this.#read(
             `getCommitDetail:${commitSha.slice(0, 12)}`,
             () => this.#native.getCommitDetail(inputPath, commitSha),
-            (native) => compareCommitDetail(native, legacy),
+            () => this.#legacy.getCommitDetail(inputPath, commitSha),
+            compareCommitDetail,
         );
-        return legacy;
     }
 
     async initRepository(inputPath: string): Promise<GitRepositorySnapshot> {
@@ -795,22 +743,7 @@ export class NativeGitRoutingGateway implements ClosableGitGateway {
         aheadBy: number,
         behindBy: number,
     ): Promise<readonly GitRemoteSummary[]> {
-        if (shouldUseNativeGitReads(this.#env)) {
-            return await this.#native.listRemotes(
-                inputPath,
-                trackingBranchName,
-                aheadBy,
-                behindBy,
-            );
-        }
-
-        const legacy = await this.#legacy.listRemotes(
-            inputPath,
-            trackingBranchName,
-            aheadBy,
-            behindBy,
-        );
-        this.#shadow(
+        return this.#read(
             "listRemotes",
             () =>
                 this.#native.listRemotes(
@@ -819,25 +752,28 @@ export class NativeGitRoutingGateway implements ClosableGitGateway {
                     aheadBy,
                     behindBy,
                 ),
-            (native) => compareStringLists(remoteSignature(native), remoteSignature(legacy)),
+            () =>
+                this.#legacy.listRemotes(
+                    inputPath,
+                    trackingBranchName,
+                    aheadBy,
+                    behindBy,
+                ),
+            (native, legacy) =>
+                compareStringLists(remoteSignature(native), remoteSignature(legacy)),
         );
-        return legacy;
     }
 
     async getDiffStats(
         inputPath: string,
     ): Promise<Awaited<ReturnType<GitGateway["getDiffStats"]>>> {
-        if (shouldUseNativeGitReads(this.#env)) {
-            return await this.#native.getDiffStats(inputPath);
-        }
-
-        const legacy = await this.#legacy.getDiffStats(inputPath);
-        this.#shadow(
+        return this.#read(
             "getDiffStats",
             () => this.#native.getDiffStats(inputPath),
-            (native) => compareStringLists(diffStatSignature(native), diffStatSignature(legacy)),
+            () => this.#legacy.getDiffStats(inputPath),
+            (native, legacy) =>
+                compareStringLists(diffStatSignature(native), diffStatSignature(legacy)),
         );
-        return legacy;
     }
 
     invalidate(inputPath?: string): void {
@@ -852,6 +788,32 @@ export class NativeGitRoutingGateway implements ClosableGitGateway {
 
     async close(): Promise<void> {
         await this.#legacy.close();
+    }
+
+    async #read<T>(
+        operation: string,
+        readNative: () => Promise<T>,
+        readLegacy: () => Promise<T>,
+        compare: (native: T, legacy: T) => string | null,
+    ): Promise<T> {
+        if (shouldUseNativeGitReads(this.#env)) {
+            try {
+                return await readNative();
+            } catch (error: unknown) {
+                this.#onDiagnostic?.(
+                    `[native-git] ${operation} failed; falling back to legacy: ${formatNativeGitShadowError(error)}`,
+                );
+                return await readLegacy();
+            }
+        }
+
+        const legacy = await readLegacy();
+        this.#shadow(
+            operation,
+            readNative,
+            (native) => compare(native, legacy),
+        );
+        return legacy;
     }
 
     #localMutation(): GitGateway {
