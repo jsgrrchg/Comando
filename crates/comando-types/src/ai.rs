@@ -316,6 +316,10 @@ pub struct NativeAiPrepareSessionInput {
     pub config_options: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub additional_roots: Vec<String>,
+    #[serde(default)]
+    pub persisted_runtime_session_id: Option<RuntimeSessionId>,
+    #[serde(default)]
+    pub persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
     pub launch: Option<NativeAiLaunchSpec>,
 }
 

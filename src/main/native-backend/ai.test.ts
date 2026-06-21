@@ -135,6 +135,53 @@ describe("NativeAiGateway", () => {
         });
     });
 
+    it("passes persisted history links when Rust owns runtime launch resolution", async () => {
+        const client = createClient();
+        const gateway = createGateway(client, {
+            env: {
+                COMANDO_NATIVE_AUTH: "1",
+                COMANDO_NATIVE_AUTH_MODE: "write",
+                [NATIVE_AI_ENABLED_ENV]: "1",
+            },
+        });
+        const launch = {
+            ...createLaunch(),
+            persistedSnapshot: {
+                ...createLaunch().persistedSnapshot,
+                runtimeSessionId: "runtime-session-previous",
+            },
+            persistedSubagentSessionMappings: [
+                {
+                    appSessionId: "session-child",
+                    parentAppSessionId: "session-1",
+                    parentRuntimeSessionId: "runtime-session-previous",
+                    runtimeSessionId: "runtime-child",
+                },
+            ],
+        };
+
+        await gateway.prepareSession({
+            input: createPrepareInput(),
+            launch,
+        });
+
+        expect(client.request).toHaveBeenCalledWith(
+            "ai_prepare_session",
+            expect.objectContaining({
+                launch: null,
+                persistedRuntimeSessionId: "runtime-session-previous",
+                persistedSubagentSessionMappings: [
+                    {
+                        appSessionId: "session-child",
+                        parentAppSessionId: "session-1",
+                        parentRuntimeSessionId: "runtime-session-previous",
+                        runtimeSessionId: "runtime-child",
+                    },
+                ],
+            }),
+        );
+    });
+
     it("routes native AI events through the owning window", async () => {
         const client = createClient();
         const onSessionEvent = vi.fn();

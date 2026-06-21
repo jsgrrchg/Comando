@@ -619,14 +619,20 @@ impl AiHistoryStore {
             let Ok(metadata) = read_json_file::<AiHistorySessionMetadata>(&metadata_path) else {
                 continue;
             };
-            let Some(subagent) = metadata.subagent else {
-                continue;
-            };
-            let matches_parent = subagent.parent_session_id == *parent_session_id
+            let subagent = metadata.subagent.clone();
+            let metadata_parent_session_id = metadata.parent_session_id.clone();
+            let parent_app_session_id = subagent
+                .as_ref()
+                .map(|subagent| subagent.parent_session_id.clone())
+                .or(metadata_parent_session_id);
+            let parent_runtime_for_child = subagent
+                .as_ref()
+                .and_then(|subagent| subagent.parent_runtime_session_id.clone());
+            let matches_parent = parent_app_session_id.as_ref() == Some(parent_session_id)
                 || parent_runtime_session_id
                     .as_ref()
                     .is_some_and(|parent_runtime| {
-                        subagent.parent_runtime_session_id.as_ref() == Some(parent_runtime)
+                        parent_runtime_for_child.as_ref() == Some(parent_runtime)
                     });
             if !matches_parent {
                 continue;
@@ -638,8 +644,8 @@ impl AiHistoryStore {
                 metadata.updated_at,
                 NativeAiRuntimeSessionMapping {
                     app_session_id: metadata.session_id,
-                    parent_app_session_id: Some(subagent.parent_session_id),
-                    parent_runtime_session_id: subagent.parent_runtime_session_id,
+                    parent_app_session_id,
+                    parent_runtime_session_id: parent_runtime_for_child,
                     runtime_session_id,
                 },
             ));
@@ -949,6 +955,7 @@ struct LegacyHistoryRow {
     title: String,
     runtime_id: String,
     runtime_session_id: Option<String>,
+    parent_runtime_session_id: Option<String>,
     status: String,
     created_at: String,
     updated_at: String,
@@ -1065,6 +1072,58 @@ impl<'a> LegacyAiHistoryReader<'a> {
             tool_activity: array_field(&state, "toolActivity"),
             tracked_files: Vec::new(),
         }))
+    }
+
+    pub fn list_runtime_mappings_for_parent(
+        &self,
+        parent_session_id: &SessionId,
+    ) -> AiResult<Vec<NativeAiRuntimeSessionMapping>> {
+        if !self.table_exists("chat_session_runtime_links")? {
+            return Ok(Vec::new());
+        }
+
+        let parent_runtime_session_id =
+            self.find_runtime_session_id_by_app_session_id(parent_session_id)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "
+                SELECT
+                    runtime_session_id,
+                    app_session_id,
+                    parent_runtime_session_id,
+                    parent_app_session_id
+                FROM chat_session_runtime_links
+                WHERE parent_app_session_id = ?1
+                   OR (
+                        ?2 IS NOT NULL
+                        AND parent_runtime_session_id = ?2
+                   )
+                ORDER BY updated_at ASC
+                ",
+            )
+            .map_err(|error| history_sql("prepare legacy runtime mapping query", error))?;
+        let rows = statement
+            .query_map(
+                rusqlite::params![parent_session_id.0, parent_runtime_session_id],
+                |row| {
+                    Ok(NativeAiRuntimeSessionMapping {
+                        runtime_session_id: RuntimeSessionId(row.get::<_, String>(0)?),
+                        app_session_id: SessionId(row.get::<_, String>(1)?),
+                        parent_runtime_session_id: row
+                            .get::<_, Option<String>>(2)?
+                            .map(RuntimeSessionId),
+                        parent_app_session_id: row.get::<_, Option<String>>(3)?.map(SessionId),
+                    })
+                },
+            )
+            .map_err(|error| history_sql("query legacy runtime mappings", error))?;
+
+        let mut mappings = Vec::new();
+        for row in rows {
+            mappings.push(row.map_err(|error| history_sql("read legacy runtime mapping", error))?);
+        }
+        Ok(mappings)
     }
 
     fn load_all_messages(&self, session_id: &SessionId) -> AiResult<Vec<Value>> {
@@ -1221,6 +1280,29 @@ impl<'a> LegacyAiHistoryReader<'a> {
             .query_row(&sql, [&session_id.0], legacy_row_from_sql)
             .optional()
             .map_err(|error| history_sql("query legacy history row", error))
+    }
+
+    fn find_runtime_session_id_by_app_session_id(
+        &self,
+        app_session_id: &SessionId,
+    ) -> AiResult<Option<String>> {
+        if !self.table_exists("chat_session_runtime_links")? {
+            return Ok(None);
+        }
+
+        self.connection
+            .query_row(
+                "
+                SELECT runtime_session_id
+                FROM chat_session_runtime_links
+                WHERE app_session_id = ?1
+                LIMIT 1
+                ",
+                [&app_session_id.0],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| history_sql("query legacy parent runtime session", error))
     }
 
     fn list_all_session_ids(&self) -> AiResult<Vec<SessionId>> {
@@ -1467,6 +1549,18 @@ impl<'a> AiHistoryMigrator<'a> {
         });
         metadata.owner_kind = AiHistoryOwnerKind::MigratedLegacy;
         let legacy_row = self.legacy.query_history_row(session_id)?;
+        if let Some(row) = legacy_row.as_ref()
+            && let Some(parent_session_id) = row.parent_session_id.as_ref()
+        {
+            metadata.subagent = Some(AiHistorySubagentMetadata {
+                parent_session_id: SessionId(parent_session_id.clone()),
+                parent_runtime_session_id: row
+                    .parent_runtime_session_id
+                    .clone()
+                    .map(RuntimeSessionId),
+                nickname: None,
+            });
+        }
         metadata.created_at = legacy_row
             .as_ref()
             .map(|row| row.created_at.clone())
@@ -1612,6 +1706,7 @@ fn legacy_history_select_sql() -> String {
         chat_sessions.title,
         chat_sessions.runtime,
         runtime_links.runtime_session_id,
+        runtime_links.parent_runtime_session_id,
         chat_sessions.status,
         chat_sessions.created_at,
         chat_sessions.updated_at,
@@ -1639,6 +1734,7 @@ fn legacy_row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<LegacyHistor
         title: row.get("title")?,
         runtime_id: row.get("runtime")?,
         runtime_session_id: row.get("runtime_session_id")?,
+        parent_runtime_session_id: row.get("parent_runtime_session_id")?,
         status: row.get("status")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
@@ -2314,6 +2410,28 @@ mod tests {
     }
 
     #[test]
+    fn runtime_mappings_include_migrated_children_without_subagent_metadata() {
+        let (_temp, store) = store();
+        let parent = metadata("parent");
+        store.create_session(parent.clone()).unwrap();
+        let mut child = metadata("child");
+        child.parent_session_id = Some(parent.session_id.clone());
+        child.runtime_session_id = Some(RuntimeSessionId("runtime_child".to_string()));
+        store.create_session(child.clone()).unwrap();
+
+        let mappings = store
+            .list_runtime_mappings_for_parent(&parent.session_id)
+            .unwrap();
+
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].app_session_id, child.session_id);
+        assert_eq!(
+            mappings[0].parent_app_session_id.as_ref(),
+            Some(&parent.session_id)
+        );
+    }
+
+    #[test]
     fn compaction_rewrites_obsolete_transcript_lines() {
         let (_temp, store) = store();
         let store = store.with_compaction_policy(HistoryCompactionPolicy {
@@ -2410,6 +2528,54 @@ mod tests {
         assert_eq!(
             history[0].runtime_session_id.as_ref().unwrap().0,
             "runtime_legacy_1"
+        );
+    }
+
+    #[test]
+    fn legacy_reader_lists_runtime_mappings_for_parent() {
+        let connection = legacy_connection();
+        insert_legacy_session(
+            &connection,
+            "parent",
+            vec![message("message_parent", "parent")],
+        );
+        insert_legacy_session(
+            &connection,
+            "child",
+            vec![message("message_child", "child")],
+        );
+        connection
+            .execute(
+                "UPDATE chat_sessions SET parent_session_id = 'parent' WHERE id = 'child'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "
+                UPDATE chat_session_runtime_links
+                SET parent_app_session_id = 'parent',
+                    parent_runtime_session_id = 'runtime_parent'
+                WHERE app_session_id = 'child'
+                ",
+                [],
+            )
+            .unwrap();
+
+        let reader = LegacyAiHistoryReader::new(&connection);
+        let mappings = reader
+            .list_runtime_mappings_for_parent(&SessionId("parent".to_string()))
+            .unwrap();
+
+        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings[0].app_session_id, SessionId("child".to_string()));
+        assert_eq!(
+            mappings[0].runtime_session_id,
+            RuntimeSessionId("runtime_child".to_string())
+        );
+        assert_eq!(
+            mappings[0].parent_runtime_session_id.as_ref(),
+            Some(&RuntimeSessionId("runtime_parent".to_string()))
         );
     }
 

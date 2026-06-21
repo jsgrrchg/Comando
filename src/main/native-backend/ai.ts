@@ -107,6 +107,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     readonly #client: NativeAiClient;
     readonly #disposeEventListener: () => void;
     readonly #enabledRuntimeIds: ReadonlySet<AiRuntimeId>;
+    readonly #env: NodeJS.ProcessEnv;
     readonly #historyEnabled: boolean;
     readonly #onDiagnostic?: (message: string) => void;
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
@@ -127,12 +128,11 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     readonly #subagentParentSessionIds = new Map<string, string>();
 
     constructor(options: NativeAiGatewayOptions) {
+        this.#env = options.env ?? process.env;
         this.#client = options.client;
-        this.#enabledRuntimeIds = parseNativeAiRuntimeIds(
-            options.env ?? process.env,
-        );
-        this.#historyEnabled = shouldUseNativeAiHistory(options.env ?? process.env);
-        this.#reviewEnabled = shouldUseNativeAiReview(options.env ?? process.env);
+        this.#enabledRuntimeIds = parseNativeAiRuntimeIds(this.#env);
+        this.#historyEnabled = shouldUseNativeAiHistory(this.#env);
+        this.#reviewEnabled = shouldUseNativeAiReview(this.#env);
         this.#onDiagnostic = options.onDiagnostic;
         this.#onRuntimeStatus = options.onRuntimeStatus;
         this.#onSessionEvent = options.onSessionEvent;
@@ -476,11 +476,15 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                     additionalRoots: request.launch.additionalRoots,
                     configOptions: nativeConfigOptionsFromLaunch(request.launch),
                     cwd: request.launch.cwd,
-                    launch: shouldUseNativeAuthWrite(process.env)
+                    launch: shouldUseNativeAuthWrite(this.#env)
                         ? null
                         : nativeLaunchSpecFromRuntime(request.launch),
                     modeId: request.launch.desiredSelections.modeId,
                     modelId: request.launch.desiredSelections.modelId,
+                    persistedRuntimeSessionId:
+                        request.launch.persistedSnapshot.runtimeSessionId ?? null,
+                    persistedSubagentSessionMappings:
+                        request.launch.persistedSubagentSessionMappings ?? [],
                     projectId: request.input.projectId,
                     runtimeId: request.input.runtimeId,
                     sessionId: request.input.sessionId,

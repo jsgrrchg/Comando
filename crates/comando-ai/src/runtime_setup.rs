@@ -8,9 +8,9 @@ use comando_settings::{RuntimeSetupState, RuntimeSetupStore};
 use comando_types::ai::{
     NativeAiAuthHandshakeSpec, NativeAiAuthMethod, NativeAiCredentialSource,
     NativeAiDesiredSelections, NativeAiLaunchSpec, NativeAiPrepareSessionInput,
-    NativeAiRuntimeSessionMapping, NativeAiRuntimeStatus,
+    NativeAiRuntimeStatus,
 };
-use comando_types::ids::{RuntimeId, RuntimeSessionId};
+use comando_types::ids::RuntimeId;
 use serde_json::json;
 use url::Url;
 
@@ -125,8 +125,8 @@ pub fn prepare_runtime_launch(
         auth_method: auth.method.clone(),
         auth_credential_source,
         auth_handshake,
-        persisted_runtime_session_id: None::<RuntimeSessionId>,
-        persisted_subagent_session_mappings: Vec::<NativeAiRuntimeSessionMapping>::new(),
+        persisted_runtime_session_id: input.persisted_runtime_session_id.clone(),
+        persisted_subagent_session_mappings: input.persisted_subagent_session_mappings.clone(),
         desired_selections: NativeAiDesiredSelections {
             model_id: input.model_id.clone(),
             mode_id: input.mode_id.clone(),

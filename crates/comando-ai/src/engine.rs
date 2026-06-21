@@ -577,7 +577,7 @@ impl AiEngine {
         let snapshot = store.load_session_snapshot(&metadata.session_id)?;
         let mut current = store.load_metadata(&metadata.session_id)?;
         current.runtime_id = metadata.runtime_id;
-        current.runtime_session_id = metadata.runtime_session_id;
+        current.runtime_session_id = metadata.runtime_session_id.or(current.runtime_session_id);
         current.parent_session_id = metadata.parent_session_id;
         current.project_id = metadata.project_id;
         current.worktree_id = metadata.worktree_id;
@@ -1350,6 +1350,8 @@ mod tests {
             mode_id: None,
             config_options: Default::default(),
             additional_roots: Vec::new(),
+            persisted_runtime_session_id: None,
+            persisted_subagent_session_mappings: Vec::new(),
             launch: None,
         }
     }

@@ -230,6 +230,8 @@ mod tests {
             mode_id: None,
             config_options: Default::default(),
             additional_roots: Vec::new(),
+            persisted_runtime_session_id: None,
+            persisted_subagent_session_mappings: Vec::new(),
             launch: None,
         }
     }

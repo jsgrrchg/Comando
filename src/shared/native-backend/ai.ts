@@ -226,6 +226,8 @@ export type NativeAiPrepareSessionInput = {
     readonly modeId: string | null;
     readonly configOptions: Readonly<Record<string, unknown>>;
     readonly additionalRoots: readonly string[];
+    readonly persistedRuntimeSessionId?: NativeRuntimeSessionId | null;
+    readonly persistedSubagentSessionMappings?: readonly NativeAiRuntimeSessionMapping[];
     readonly launch: NativeAiLaunchSpec | null;
 };
 

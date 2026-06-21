@@ -2053,9 +2053,33 @@ impl NativeBackend {
         parent_session_id: comando_types::ids::SessionId,
     ) -> Result<Vec<native_ai::NativeAiRuntimeSessionMapping>, NativeError> {
         let store = self.ai_history_store()?;
-        store
+        let mut mappings = store
             .list_runtime_mappings_for_parent(&parent_session_id)
-            .map_err(|error| error.to_native_error())
+            .map_err(|error| error.to_native_error())?;
+        if let Some(persistence_store) = self.persistence_store.as_ref() {
+            let legacy = LegacyAiHistoryReader::new(persistence_store.connection())
+                .list_runtime_mappings_for_parent(&parent_session_id)
+                .map_err(|error| error.to_native_error())?;
+            let mut seen = mappings
+                .iter()
+                .map(|mapping| {
+                    (
+                        mapping.app_session_id.0.clone(),
+                        mapping.runtime_session_id.0.clone(),
+                    )
+                })
+                .collect::<std::collections::HashSet<_>>();
+            for mapping in legacy {
+                let key = (
+                    mapping.app_session_id.0.clone(),
+                    mapping.runtime_session_id.0.clone(),
+                );
+                if seen.insert(key) {
+                    mappings.push(mapping);
+                }
+            }
+        }
+        Ok(mappings)
     }
 
     fn set_ai_session_pinned(
