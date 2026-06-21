@@ -172,7 +172,6 @@ import { resolveSettingsSnapshotSaveEffects } from "@main/ipc/settings-save-effe
 import { debugBenignError } from "@main/observability/logging";
 import { resolveCodexGeneratedImageFilePath } from "@main/file-preview-protocol";
 
-import type { AiWorkerClient } from "@main/ai/client";
 import type { AiService } from "@main/ai/service";
 import {
     forgetOpenFileBuffer,
@@ -210,7 +209,6 @@ import { windowRegistry } from "@main/windows/registry";
 
 interface RegisterIpcHandlersOptions {
     readonly aiService: AiService;
-    readonly aiWorker: Pick<AiWorkerClient, "notifyFileBuffer"> | null;
     readonly gitService: GitGateway;
     readonly githubService: GitHubGateway;
     readonly getSnapshot: () => AppBootstrapSnapshot;
@@ -1647,10 +1645,6 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 recordOpenFileBuffer(input.absolutePath, input.content);
             }
 
-            const notifyPromise = options.aiWorker?.notifyFileBuffer(input);
-            void notifyPromise?.catch((error) => {
-                debugBenignError("ai.worker.notifyFileBuffer", error);
-            });
             options.aiService.notifyFileBuffer(input);
         },
     );

@@ -27,10 +27,6 @@ import {
 } from "@shared/native-backend";
 
 import { appChannel, appIdentity, configureMainProcessApp } from "./app-runtime";
-import {
-    createAiWorkerClient,
-    type AiWorkerClient,
-} from "./ai/client";
 import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
 import type { NormalizedSessionCatalogPayload } from "./ai/session-core";
@@ -51,7 +47,7 @@ import {
 import {
     NativePersistenceGateway,
 } from "./native-backend/persistence";
-import { NativeAiGateway, shouldUseNativeAi } from "./native-backend/ai";
+import { NativeAiGateway } from "./native-backend/ai";
 import { NativeFsGateway } from "./native-backend/fs";
 import { NativeGitGateway, type ClosableGitGateway } from "./native-backend/git";
 import { NativeSearchGateway } from "./native-backend/index-search";
@@ -86,7 +82,6 @@ import type { WorkspaceGateway } from "./workspace/service";
 let dbWorkerClient: DbWorkerClient | null = null;
 let bootstrapSnapshot: AppBootstrapSnapshot | null = null;
 let aiService: AiService | null = null;
-let aiWorkerClient: AiWorkerClient | null = null;
 let persistenceService: PersistenceGateway | null = null;
 let projectService: ProjectService | null = null;
 let gitService: ClosableGitGateway | null = null;
@@ -181,7 +176,7 @@ if (!hasSingleInstanceLock) {
             });
             aiService = new AiService({
                 nativeAi: createNativeAiGateway({
-                    nativeClient: nativeBackendClient,
+                    nativeClient,
                     onRuntimeStatus: broadcastAiRuntimeStatus,
                     onSessionCatalogPatch: (
                         ownerWindowId,
@@ -211,42 +206,8 @@ if (!hasSingleInstanceLock) {
                 secretStore,
                 settingsService,
             });
-            try {
-                aiWorkerClient = await createAiWorkerClient({
-                    onRuntimeStatus: (status) => {
-                        aiService?.handleWorkerRuntimeStatus(status);
-                    },
-                    onSessionClosed: (payload) => {
-                        aiService?.handleWorkerSessionClosed(payload);
-                    },
-                    onSessionEvent: (ownerWindowId, event) => {
-                        aiService?.handleWorkerSessionEvent(
-                            ownerWindowId,
-                            event,
-                        );
-                    },
-                    onSessionSnapshot: (ownerWindowId, update) => {
-                        aiService?.handleWorkerSessionSnapshot(
-                            ownerWindowId,
-                            update,
-                        );
-                    },
-                    onWorkerRestarted: async () => {
-                        await aiService?.handleWorkerRestarted();
-                    },
-                    shardCount: parseAiWorkerShardCount(
-                        process.env.COMANDO_AI_WORKER_SHARDS,
-                    ),
-                });
-                aiService.setWorker(aiWorkerClient);
-            } catch (error) {
-                console.error(
-                    "[main] Failed to initialize the AI worker",
-                    error,
-                );
-            }
             terminalService = createTerminalGateway({
-                nativeClient: nativeBackendClient,
+                nativeClient,
                 onData: broadcastTerminalData,
                 onExit: broadcastTerminalExit,
                 projectService,
@@ -271,7 +232,6 @@ if (!hasSingleInstanceLock) {
 
             registerIpcHandlers({
                 aiService,
-                aiWorker: aiWorkerClient,
                 getSnapshot: () => {
                     if (!bootstrapSnapshot) {
                         throw new Error(
@@ -403,7 +363,6 @@ async function shutdownApplication(): Promise<void> {
 
     aiService?.close();
 
-    const aiWorkerClientToClose = aiWorkerClient;
     const dbWorkerClientToClose = dbWorkerClient;
     const gitServiceToClose = gitService;
     const nativeBackendClientToClose = nativeBackendClient;
@@ -411,7 +370,6 @@ async function shutdownApplication(): Promise<void> {
     const terminalServiceToClose = terminalService;
 
     aiService = null;
-    aiWorkerClient = null;
     dbWorkerClient = null;
     gitService = null;
     githubService = null;
@@ -424,7 +382,6 @@ async function shutdownApplication(): Promise<void> {
     workspaceService = null;
 
     const shutdownResults = await Promise.allSettled([
-        aiWorkerClientToClose?.close(),
         gitServiceToClose?.close(),
         (async () => {
             await terminalServiceToClose?.close();
@@ -441,17 +398,8 @@ async function shutdownApplication(): Promise<void> {
     }
 }
 
-function parseAiWorkerShardCount(value: string | undefined): number {
-    const parsed = Number.parseInt(value ?? "", 10);
-    if (!Number.isFinite(parsed)) {
-        return 1;
-    }
-
-    return Math.max(1, Math.min(8, parsed));
-}
-
 function createNativeAiGateway(input: {
-    readonly nativeClient: NativeBackendClient | null;
+    readonly nativeClient: NativeBackendClient;
     readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly onSessionCatalogPatch: (
         ownerWindowId: string,
@@ -463,28 +411,17 @@ function createNativeAiGateway(input: {
         ownerWindowId: string,
         event: AiSessionDomainEvent,
     ) => void;
-}): NativeAiGateway | null {
-    if (!shouldUseNativeAi()) {
-        return null;
-    }
-
-    if (input.nativeClient) {
-        console.info("[native-backend] Native AI backend enabled.");
-        return new NativeAiGateway({
-            client: input.nativeClient,
-            onDiagnostic: (message) => {
-                console.warn(`[native-ai] ${message}`);
-            },
-            onRuntimeStatus: input.onRuntimeStatus,
-            onSessionCatalogPatch: input.onSessionCatalogPatch,
-            onSessionEvent: input.onSessionEvent,
-        });
-    }
-
-    console.warn(
-        "[native-backend] Native AI backend is enabled but the native backend sidecar is not running; using the legacy AI worker.",
-    );
-    return null;
+}): NativeAiGateway {
+    console.info("[native-backend] Native AI backend enabled.");
+    return new NativeAiGateway({
+        client: input.nativeClient,
+        onDiagnostic: (message) => {
+            console.warn(`[native-ai] ${message}`);
+        },
+        onRuntimeStatus: input.onRuntimeStatus,
+        onSessionCatalogPatch: input.onSessionCatalogPatch,
+        onSessionEvent: input.onSessionEvent,
+    });
 }
 
 function createTerminalGateway(input: {

@@ -35,7 +35,6 @@ import {
     type NativeAiCancelSessionOutput,
     type NativeAiCloseSessionOutput,
     type NativeAiHistorySessionSummary,
-    type NativeAiLaunchSpec,
     type NativeAiLaunchRuntimeAuthOutput,
     type NativeAiReviewCaptureOutput,
     type NativeAiReviewCommandOutput,
@@ -61,11 +60,6 @@ import type {
 } from "@main/ai/contracts";
 import type { NativeBackendRequester } from "./persistence";
 
-export const NATIVE_AI_ENABLED_ENV = "COMANDO_NATIVE_AI";
-export const NATIVE_AI_HISTORY_ENABLED_ENV = "COMANDO_NATIVE_AI_HISTORY";
-export const NATIVE_AI_RUNTIMES_ENV = "COMANDO_NATIVE_AI_RUNTIMES";
-export const NATIVE_AI_REVIEW_ENABLED_ENV = "COMANDO_NATIVE_REVIEW";
-
 type NativeAiClient = NativeBackendRequester & {
     onEvent(listener: (event: NativeBackendEvent) => void): () => void;
 };
@@ -80,7 +74,6 @@ type NativeReviewMutationCommand =
 
 export interface NativeAiGatewayOptions {
     readonly client: NativeAiClient;
-    readonly env?: NodeJS.ProcessEnv;
     readonly onDiagnostic?: (message: string) => void;
     readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly onSessionEvent: (
@@ -107,7 +100,6 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     readonly #client: NativeAiClient;
     readonly #disposeEventListener: () => void;
     readonly #enabledRuntimeIds: ReadonlySet<AiRuntimeId>;
-    readonly #env: NodeJS.ProcessEnv;
     readonly #historyEnabled: boolean;
     readonly #onDiagnostic?: (message: string) => void;
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
@@ -128,11 +120,10 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     readonly #subagentParentSessionIds = new Map<string, string>();
 
     constructor(options: NativeAiGatewayOptions) {
-        this.#env = options.env ?? process.env;
         this.#client = options.client;
-        this.#enabledRuntimeIds = parseNativeAiRuntimeIds(this.#env);
-        this.#historyEnabled = shouldUseNativeAiHistory(this.#env);
-        this.#reviewEnabled = shouldUseNativeAiReview(this.#env);
+        this.#enabledRuntimeIds = DEFAULT_NATIVE_AI_RUNTIME_IDS;
+        this.#historyEnabled = true;
+        this.#reviewEnabled = true;
         this.#onDiagnostic = options.onDiagnostic;
         this.#onRuntimeStatus = options.onRuntimeStatus;
         this.#onSessionEvent = options.onSessionEvent;
@@ -476,9 +467,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                     additionalRoots: request.launch.additionalRoots,
                     configOptions: nativeConfigOptionsFromLaunch(request.launch),
                     cwd: request.launch.cwd,
-                    launch: shouldUseNativeAuthWrite(this.#env)
-                        ? null
-                        : nativeLaunchSpecFromRuntime(request.launch),
+                    launch: null,
                     modeId: request.launch.desiredSelections.modeId,
                     modelId: request.launch.desiredSelections.modelId,
                     persistedRuntimeSessionId:
@@ -956,58 +945,6 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 }
 
-export function shouldUseNativeAi(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return env[NATIVE_AI_ENABLED_ENV] === "1";
-}
-
-export function shouldUseNativeAiHistory(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return shouldUseNativeAi(env) && env[NATIVE_AI_HISTORY_ENABLED_ENV] === "1";
-}
-
-export function shouldUseNativeAiReview(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return shouldUseNativeAi(env) && env[NATIVE_AI_REVIEW_ENABLED_ENV] === "1";
-}
-
-export function shouldUseNativeAiRuntime(
-    runtimeId: AiRuntimeId,
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    if (!shouldUseNativeAi(env)) {
-        return false;
-    }
-
-    return parseNativeAiRuntimeIds(env).has(runtimeId);
-}
-
-function parseNativeAiRuntimeIds(
-    env: NodeJS.ProcessEnv | undefined,
-): ReadonlySet<AiRuntimeId> {
-    if (!shouldUseNativeAi(env ?? {})) {
-        return new Set();
-    }
-
-    const rawValue = env?.[NATIVE_AI_RUNTIMES_ENV]?.trim() ?? "";
-    if (!rawValue) {
-        return DEFAULT_NATIVE_AI_RUNTIME_IDS;
-    }
-
-    const normalized = rawValue
-        .split(",")
-        .map((value) => value.trim().toLowerCase())
-        .filter(Boolean);
-    if (normalized.includes("*") || normalized.includes("all")) {
-        return DEFAULT_NATIVE_AI_RUNTIME_IDS;
-    }
-
-    return new Set(normalized.filter(isNativeAiRuntimeId));
-}
-
 function nativeReviewCommandTrackedFiles(
     output: NativeAiReviewCommandOutput,
 ): readonly AiTrackedFile[] {
@@ -1200,77 +1137,6 @@ function nativeSnapshotToIpc(snapshot: NativeAiSessionSnapshot): AiSessionSnapsh
     };
 }
 
-function nativeLaunchSpecFromRuntime(
-    launch: NativeAiPrepareSessionRpcInput["launch"],
-): NativeAiLaunchSpec {
-    return {
-        additionalRoots: launch.additionalRoots,
-        args: launch.resolvedRuntime.args,
-        authCredentialSource:
-            launch.resolvedRuntime.status.authCredentialSource ?? null,
-        authHandshake: launch.resolvedRuntime.authHandshake
-            ? {
-                  envMethodId: launch.resolvedRuntime.authHandshake.envMethodId,
-                  externalMethodId:
-                      launch.resolvedRuntime.authHandshake.externalMethodId,
-                  meta: launch.resolvedRuntime.authHandshake.meta ?? {},
-              }
-            : null,
-        authMethod: launch.resolvedRuntime.status.authMethod,
-        command: launch.resolvedRuntime.command,
-        cwd: launch.cwd,
-        desiredSelections: {
-            configOptions: nativeConfigOptionsFromLaunch(launch),
-            modeId: launch.desiredSelections.modeId,
-            modelId: launch.desiredSelections.modelId,
-        },
-        env: sanitizeEnv(launch.resolvedRuntime.env),
-        executable: launch.resolvedRuntime.executable,
-        ownerWindowId: launch.ownerWindowId,
-        persistedRuntimeSessionId:
-            launch.persistedSnapshot.runtimeSessionId ?? null,
-        persistedSubagentSessionMappings:
-            launch.persistedSubagentSessionMappings ?? [],
-        projectId: launch.input.projectId,
-        projectRoot: launch.projectRoot,
-        runtimeId: launch.input.runtimeId,
-        status: nativeRuntimeStatusFromIpc(launch.resolvedRuntime.status),
-        worktreeId: launch.input.worktreeId ?? null,
-    };
-}
-
-function nativeRuntimeStatusFromIpc(
-    status: AiRuntimeStatus,
-): NativeAiRuntimeStatus {
-    return {
-        authMethod: status.authMethod,
-        authMethods: status.authMethods,
-        authReady: status.authReady,
-        authCredentialSource: status.authCredentialSource ?? null,
-        authCredentialSourceLabel: status.authCredentialSourceLabel ?? null,
-        authSessionMessage: status.authSessionMessage ?? null,
-        authStorageMessage: status.authStorageMessage ?? null,
-        canDisconnectAuth: status.canDisconnectAuth ?? false,
-        canLogoutAuth: status.canLogoutAuth ?? false,
-        checkedAt: status.checkedAt,
-        command: status.command,
-        availableCommands: status.availableCommands ?? [],
-        configOptions: status.configOptions ?? [],
-        hasCustomBinaryPath: status.hasCustomBinaryPath,
-        hasGatewayConfig: status.hasGatewayConfig,
-        hasGatewayUrl: status.hasGatewayUrl,
-        message: status.message,
-        modeId: status.modeId ?? null,
-        modes: status.modes ?? [],
-        modelId: status.modelId ?? null,
-        models: status.models ?? [],
-        onboardingRequired: status.onboardingRequired,
-        runtimeId: status.runtimeId,
-        source: status.source,
-        state: status.state,
-    };
-}
-
 function nativeConfigOptionsFromLaunch(
     launch: NativeAiPrepareSessionRpcInput["launch"],
 ): Readonly<Record<string, unknown>> {
@@ -1280,26 +1146,6 @@ function nativeConfigOptionsFromLaunch(
             option.value,
         ]),
     );
-}
-
-function sanitizeEnv(env: NodeJS.ProcessEnv): Record<string, string> {
-    return Object.fromEntries(
-        Object.entries(env).filter(
-            (entry): entry is [string, string] =>
-                typeof entry[0] === "string" && typeof entry[1] === "string",
-        ),
-    );
-}
-
-function shouldUseNativeAuthWrite(env: NodeJS.ProcessEnv): boolean {
-    return (
-        env.COMANDO_NATIVE_AUTH === "1" &&
-        (env.COMANDO_NATIVE_AUTH_MODE ?? "shadow") === "write"
-    );
-}
-
-function isNativeAiRuntimeId(value: string): value is AiRuntimeId {
-    return DEFAULT_NATIVE_AI_RUNTIME_IDS.has(value as AiRuntimeId);
 }
 
 function getPayloadSessionId(payload: unknown): string | null {

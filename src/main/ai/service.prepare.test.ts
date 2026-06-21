@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AiRuntimeStatus, AiSessionSnapshot } from "@shared/ipc";
 
-import type { AiWorkerGateway } from "./contracts";
+import type { NativeAiGateway } from "./contracts";
 
 const readyStatus: AiRuntimeStatus = {
     authMethod: "chatgpt",
@@ -53,7 +53,7 @@ describe("AiService prepareSession", () => {
         vi.clearAllMocks();
     });
 
-    it("delegates session startup to the AI worker with a resolved launch payload", async () => {
+    it("delegates session startup to the native AI backend with a resolved launch payload", async () => {
         const persistedSnapshot: AiSessionSnapshot = {
             availableCommands: [],
             configOptions: [],
@@ -78,43 +78,24 @@ describe("AiService prepareSession", () => {
             updatedAt: "2026-04-15T22:23:13.719838Z",
             worktreeId: null,
         };
-        const workerSnapshot: AiSessionSnapshot = {
+        const nativeSnapshot: AiSessionSnapshot = {
             ...persistedSnapshot,
             lastError: null,
             status: "idle",
             updatedAt: "2026-04-16T00:00:00.000Z",
         };
-        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(() =>
-            Promise.resolve(workerSnapshot),
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(() =>
+            Promise.resolve(nativeSnapshot),
         );
         const renameSession = vi.fn(() => Promise.resolve());
-        const aiWorker: AiWorkerGateway = {
-            cancelSession: vi.fn(),
-            close: vi.fn(),
-            closeOwnedByWindow: vi.fn(),
-            closeSession: vi.fn(),
-            freezeSession: vi.fn(),
-            keepAllTrackedFiles: vi.fn(),
-            keepTrackedFile: vi.fn(),
-            keepTrackedFileHunks: vi.fn(),
-            notifyFileBuffer: vi.fn(),
+        const nativeAi = createNativeAi({
             prepareSession,
             renameSession,
-            rejectAllTrackedFiles: vi.fn(),
-            rejectTrackedFile: vi.fn(),
-            rejectTrackedFileHunks: vi.fn(),
-            refreshProjectScopes: vi.fn(),
-            respondPermission: vi.fn(),
-            respondUserInput: vi.fn(),
-            sendPrompt: vi.fn(),
-            setSessionConfigOption: vi.fn(),
-            setSessionMode: vi.fn(),
-            setSessionModel: vi.fn(),
-        };
+        });
         const runtimeStatusEvents: AiRuntimeStatus[] = [];
         const saveSessionSnapshot = vi.fn();
         const service = new AiService({
-            aiWorker,
+            nativeAi,
             onRuntimeStatus: (status) => runtimeStatusEvents.push(status),
             onSessionSnapshot: vi.fn(),
             persistence: {
@@ -174,7 +155,7 @@ describe("AiService prepareSession", () => {
             "window-1",
         );
 
-        expect(snapshot).toBe(workerSnapshot);
+        expect(snapshot).toBe(nativeSnapshot);
         const [prepareSessionInput] = prepareSession.mock.calls[0] ?? [];
         expect(prepareSessionInput?.input).toEqual({
             projectId: null,
@@ -203,37 +184,17 @@ describe("AiService prepareSession", () => {
                 status: readyStatus,
             },
         });
-        expect(saveSessionSnapshot).toHaveBeenCalledWith(workerSnapshot);
+        expect(saveSessionSnapshot).not.toHaveBeenCalled();
         expect(runtimeStatusEvents.at(-1)).toEqual(readyStatus);
     });
 
-    it("rejects legacy Gemini sessions before worker startup", async () => {
-        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>();
+    it("rejects legacy Gemini sessions before native startup", async () => {
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>();
         const runtimeStatusEvents: AiRuntimeStatus[] = [];
         const service = new AiService({
-            aiWorker: {
-                cancelSession: vi.fn(),
-                close: vi.fn(),
-                closeOwnedByWindow: vi.fn(),
-                closeSession: vi.fn(),
-                freezeSession: vi.fn(),
-                keepAllTrackedFiles: vi.fn(),
-                keepTrackedFile: vi.fn(),
-                keepTrackedFileHunks: vi.fn(),
-                notifyFileBuffer: vi.fn(),
+            nativeAi: createNativeAi({
                 prepareSession,
-                rejectAllTrackedFiles: vi.fn(),
-                rejectTrackedFile: vi.fn(),
-                rejectTrackedFileHunks: vi.fn(),
-                refreshProjectScopes: vi.fn(),
-                renameSession: vi.fn(),
-                respondPermission: vi.fn(),
-                respondUserInput: vi.fn(),
-                sendPrompt: vi.fn(),
-                setSessionConfigOption: vi.fn(),
-                setSessionMode: vi.fn(),
-                setSessionModel: vi.fn(),
-            },
+            }),
             onRuntimeStatus: (status) => runtimeStatusEvents.push(status),
             onSessionSnapshot: vi.fn(),
             persistence: {
@@ -286,7 +247,7 @@ describe("AiService prepareSession", () => {
         });
     });
 
-    it("clears the live context when worker startup fails", async () => {
+    it("clears the live context when native startup fails", async () => {
         const persistedSnapshot: AiSessionSnapshot = {
             availableCommands: [],
             configOptions: [],
@@ -311,38 +272,22 @@ describe("AiService prepareSession", () => {
             updatedAt: "2026-04-15T22:23:13.719838Z",
             worktreeId: null,
         };
-        const workerPrepareError = new Error("worker startup failed");
-        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(() =>
-            Promise.reject(workerPrepareError),
+        const nativePrepareError = new Error("native startup failed");
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(() =>
+            Promise.reject(nativePrepareError),
         );
         const renameSession = vi.fn(() => Promise.resolve());
         const setSessionMode = vi.fn();
         const saveSessionSnapshot = vi.fn();
         const saveRuntimeModePreference = vi.fn();
         const service = new AiService({
-            aiWorker: {
-                cancelSession: vi.fn(),
-                close: vi.fn(),
-                closeOwnedByWindow: vi.fn(),
-                closeSession: vi.fn(),
-                freezeSession: vi.fn(),
-                keepAllTrackedFiles: vi.fn(),
-                keepTrackedFile: vi.fn(),
-                keepTrackedFileHunks: vi.fn(),
-                notifyFileBuffer: vi.fn(),
+            nativeAi: createNativeAi({
                 prepareSession,
                 renameSession,
-                rejectAllTrackedFiles: vi.fn(),
-                rejectTrackedFile: vi.fn(),
-                rejectTrackedFileHunks: vi.fn(),
-                refreshProjectScopes: vi.fn(),
-                respondPermission: vi.fn(),
-                respondUserInput: vi.fn(),
-                sendPrompt: vi.fn(),
                 setSessionConfigOption: vi.fn(),
                 setSessionMode,
                 setSessionModel: vi.fn(),
-            },
+            }),
             onRuntimeStatus: vi.fn(),
             onSessionSnapshot: vi.fn(),
             persistence: {
@@ -402,7 +347,7 @@ describe("AiService prepareSession", () => {
                 },
                 "window-1",
             ),
-        ).rejects.toThrow(workerPrepareError);
+        ).rejects.toThrow(nativePrepareError);
 
         await service.setSessionMode({
             modeId: "agent",
@@ -422,7 +367,7 @@ describe("AiService prepareSession", () => {
         );
     });
 
-    it("routes live renames through the worker instead of mutating a stale shadow snapshot", async () => {
+    it("routes live renames through the native backend and updates the cached snapshot", async () => {
         const snapshot: AiSessionSnapshot = {
             availableCommands: [],
             configOptions: [],
@@ -447,37 +392,19 @@ describe("AiService prepareSession", () => {
             updatedAt: "2026-04-16T00:00:00.000Z",
             worktreeId: null,
         };
-        const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(() =>
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(() =>
             Promise.resolve(snapshot),
         );
         const renameSession = vi.fn(() => Promise.resolve());
+        const onSessionSnapshot = vi.fn();
         const saveSessionSnapshot = vi.fn();
         const service = new AiService({
-            aiWorker: {
-                cancelSession: vi.fn(),
-                close: vi.fn(),
-                closeOwnedByWindow: vi.fn(),
-                closeSession: vi.fn(),
-                freezeSession: vi.fn(),
-                keepAllTrackedFiles: vi.fn(),
-                keepTrackedFile: vi.fn(),
-                keepTrackedFileHunks: vi.fn(),
-                notifyFileBuffer: vi.fn(),
+            nativeAi: createNativeAi({
                 prepareSession,
                 renameSession,
-                rejectAllTrackedFiles: vi.fn(),
-                rejectTrackedFile: vi.fn(),
-                rejectTrackedFileHunks: vi.fn(),
-                refreshProjectScopes: vi.fn(),
-                respondPermission: vi.fn(),
-                respondUserInput: vi.fn(),
-                sendPrompt: vi.fn(),
-                setSessionConfigOption: vi.fn(),
-                setSessionMode: vi.fn(),
-                setSessionModel: vi.fn(),
-            },
+            }),
             onRuntimeStatus: vi.fn(),
-            onSessionSnapshot: vi.fn(),
+            onSessionSnapshot,
             persistence: {
                 loadLatestRuntimeCatalog: vi.fn(() => null),
                 loadRuntimeSelectionPreferences: vi.fn(() => ({
@@ -544,12 +471,48 @@ describe("AiService prepareSession", () => {
             sessionId: "session-1",
             title: "Manual title",
         });
-        expect(saveSessionSnapshot).toHaveBeenCalledTimes(1);
-        expect(saveSessionSnapshot).not.toHaveBeenCalledWith(
+        expect(saveSessionSnapshot).not.toHaveBeenCalled();
+        expect(onSessionSnapshot).toHaveBeenLastCalledWith(
+            "window-1",
             expect.objectContaining({
-                sessionId: "session-1",
-                title: "Manual title",
+                kind: "patch",
+                patch: expect.objectContaining({
+                    changes: expect.objectContaining({ title: "Manual title" }),
+                    sessionId: "session-1",
+                }),
             }),
         );
+        expect(await service.getSessionSnapshot("session-1")).toMatchObject({
+                sessionId: "session-1",
+                title: "Manual title",
+        });
     });
 });
+
+function createNativeAi(
+    overrides: Partial<NativeAiGateway> = {},
+): NativeAiGateway {
+    return {
+        cancelSession: vi.fn(),
+        close: vi.fn(),
+        closeOwnedByWindow: vi.fn(),
+        closeSession: vi.fn(),
+        deleteSession: vi.fn(),
+        listSessionHistory: vi.fn(() => Promise.resolve([])),
+        loadSessionSnapshot: vi.fn(() => Promise.resolve(null)),
+        loadSessionTranscriptPage: vi.fn(() => Promise.resolve(null)),
+        prepareSession: vi.fn(),
+        renameSession: vi.fn(),
+        respondPermission: vi.fn(),
+        respondUserInput: vi.fn(),
+        sendPrompt: vi.fn(),
+        setSessionConfigOption: vi.fn(),
+        setSessionMode: vi.fn(),
+        setSessionModel: vi.fn(),
+        setSessionPinned: vi.fn(),
+        shouldHandleHistory: vi.fn(() => true),
+        shouldHandleReview: vi.fn(() => true),
+        shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "codex"),
+        ...overrides,
+    };
+}

@@ -9,11 +9,12 @@ import type {
     AiRuntimeStatus,
     AiSessionSnapshot,
     AiSessionUpdate,
+    AiTrackedFile,
     OpenCodeRuntimeSettings,
 } from "@shared/ipc";
 
 import { AiService } from "./service";
-import type { AiWorkerGateway, NativeAiGateway } from "./contracts";
+import type { NativeAiGateway } from "./contracts";
 
 const OPENCODE_ENV_CREDENTIAL_NAMES = [
     "ANTHROPIC_API_KEY",
@@ -194,12 +195,12 @@ describe("AiService OpenCode branch", () => {
             const binaryPath = writeExecutable(tempDir, "opencode");
             process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
             const preparedSnapshot = createSessionSnapshot();
-            const prepareSession = vi.fn<AiWorkerGateway["prepareSession"]>(
+            const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
                 () => Promise.resolve(preparedSnapshot),
             );
-            const aiWorker = createAiWorker({ prepareSession });
+            const nativeAi = createNativeAi({ prepareSession });
             const service = createService({
-                aiWorker,
+                nativeAi,
                 settingsService: createSettingsService({
                     loadOpenCodeRuntimeSettings: vi.fn(() =>
                         createOpenCodeSettings({
@@ -246,7 +247,7 @@ describe("AiService OpenCode branch", () => {
             const onSessionSnapshot = vi.fn<
                 (ownerWindowId: string, update: AiSessionUpdate) => void
             >();
-            const nativeAi: NativeAiGateway = {
+            const nativeAi = createNativeAi({
                 cancelSession: vi.fn(),
                 close: vi.fn(),
                 closeOwnedByWindow: vi.fn(),
@@ -274,7 +275,7 @@ describe("AiService OpenCode branch", () => {
                 setSessionPinned: vi.fn(),
                 shouldHandleHistory: vi.fn(() => false),
                 shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "opencode"),
-            };
+            });
             const service = createService({
                 nativeAi,
                 onSessionSnapshot,
@@ -404,7 +405,63 @@ describe("AiService OpenCode branch", () => {
             const serviceRef: { current: AiService | null } = {
                 current: null,
             };
-            const nativeAi: NativeAiGateway = {
+            const trackedReviewFiles: readonly AiTrackedFile[] = [
+                {
+                    currentText: "export const value = 2;\n",
+                    diffBase: "export const value = 1;\n",
+                    hunks: [],
+                    identityKey: "native:session-opencode:src/app.ts",
+                    isText: true,
+                    kind: "update",
+                    newText: "export const value = 2;\n",
+                    oldText: "export const value = 1;\n",
+                    path: "src/app.ts",
+                    previousPath: null,
+                    reviewState: "pending",
+                    reversible: true,
+                    sessionId: "session-opencode",
+                    toolCallId: null,
+                    updatedAt: "2026-06-20T00:00:02.000Z",
+                    version: 1,
+                },
+                {
+                    currentText: "export const restored = false;\n",
+                    diffBase: "export const restored = true;\n",
+                    hunks: [],
+                    identityKey: "native:session-opencode:src/restored.ts",
+                    isText: true,
+                    kind: "update",
+                    newText: "export const restored = false;\n",
+                    oldText: "export const restored = true;\n",
+                    path: "src/restored.ts",
+                    previousPath: null,
+                    reviewState: "pending",
+                    reversible: true,
+                    sessionId: "session-opencode",
+                    toolCallId: null,
+                    updatedAt: "2026-06-20T00:00:02.000Z",
+                    version: 1,
+                },
+                {
+                    currentText: "",
+                    diffBase: "temporary local note\n",
+                    hunks: [],
+                    identityKey: "native:session-opencode:scratch.txt",
+                    isText: true,
+                    kind: "delete",
+                    newText: null,
+                    oldText: "temporary local note\n",
+                    path: "scratch.txt",
+                    previousPath: null,
+                    reviewState: "pending",
+                    reversible: true,
+                    sessionId: "session-opencode",
+                    toolCallId: null,
+                    updatedAt: "2026-06-20T00:00:02.000Z",
+                    version: 1,
+                },
+            ];
+            const nativeAi = createNativeAi({
                 cancelSession: vi.fn(),
                 close: vi.fn(),
                 closeOwnedByWindow: vi.fn(),
@@ -460,6 +517,9 @@ describe("AiService OpenCode branch", () => {
                         stopReason: "accepted",
                     });
                 }),
+                reconcileTrackedFiles: vi.fn(() =>
+                    Promise.resolve(trackedReviewFiles),
+                ),
                 renameSession: vi.fn(),
                 setSessionConfigOption: vi.fn(),
                 setSessionMode: vi.fn(),
@@ -469,7 +529,7 @@ describe("AiService OpenCode branch", () => {
                 shouldHandleRuntime: vi.fn(
                     (runtimeId) => runtimeId === "opencode",
                 ),
-            };
+            });
             const service = createService({
                 nativeAi,
                 onSessionSnapshot,
@@ -641,7 +701,7 @@ describe("AiService OpenCode branch", () => {
             const onSessionSnapshot = vi.fn<
                 (ownerWindowId: string, update: AiSessionUpdate) => void
             >();
-            const nativeAi: NativeAiGateway = {
+            const nativeAi = createNativeAi({
                 cancelSession,
                 close: vi.fn(),
                 closeOwnedByWindow: vi.fn(),
@@ -661,7 +721,7 @@ describe("AiService OpenCode branch", () => {
                 setSessionPinned: vi.fn(),
                 shouldHandleHistory: vi.fn(() => false),
                 shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "opencode"),
-            };
+            });
             const service = createService({
                 nativeAi,
                 onSessionSnapshot,
@@ -790,7 +850,7 @@ describe("AiService OpenCode branch", () => {
                     }),
             );
             const closeSession = vi.fn<NativeAiGateway["closeSession"]>();
-            const nativeAi: NativeAiGateway = {
+            const nativeAi = createNativeAi({
                 cancelSession: vi.fn(),
                 close: vi.fn(),
                 closeOwnedByWindow: vi.fn(),
@@ -810,7 +870,7 @@ describe("AiService OpenCode branch", () => {
                 setSessionPinned: vi.fn(),
                 shouldHandleHistory: vi.fn(() => false),
                 shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "opencode"),
-            };
+            });
             const service = createService({
                 nativeAi,
                 persistence: {
@@ -912,7 +972,7 @@ describe("AiService OpenCode branch", () => {
                     stopReason: "accepted",
                 }),
             );
-            const nativeAi: NativeAiGateway = {
+            const nativeAi = createNativeAi({
                 cancelSession: vi.fn(),
                 close: vi.fn(),
                 closeOwnedByWindow: vi.fn(),
@@ -935,7 +995,7 @@ describe("AiService OpenCode branch", () => {
                 setSessionPinned: vi.fn(),
                 shouldHandleHistory: vi.fn(() => true),
                 shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "opencode"),
-            };
+            });
             const persistenceLoadSnapshot = vi.fn(() => null);
             const service = createService({
                 nativeAi,
@@ -983,7 +1043,6 @@ describe("AiService OpenCode branch", () => {
 });
 
 function createService(overrides: {
-    readonly aiWorker?: AiWorkerGateway;
     readonly nativeAi?: NativeAiGateway;
     readonly onRuntimeStatus?: (status: AiRuntimeStatus) => void;
     readonly onSessionSnapshot?: (
@@ -1010,7 +1069,6 @@ function createService(overrides: {
     };
 
     return new AiService({
-        aiWorker: overrides.aiWorker ?? null,
         nativeAi: overrides.nativeAi ?? null,
         onRuntimeStatus: overrides.onRuntimeStatus ?? vi.fn(),
         onSessionSnapshot: overrides.onSessionSnapshot ?? vi.fn(),
@@ -1071,22 +1129,21 @@ function createSettingsService(overrides: Record<string, unknown>) {
     } as never;
 }
 
-function createAiWorker(overrides: Partial<AiWorkerGateway>): AiWorkerGateway {
+function createNativeAi(
+    overrides: Partial<NativeAiGateway> = {},
+): NativeAiGateway {
     return {
         cancelSession: vi.fn(),
+        captureReviewBaseline: vi.fn(() => Promise.resolve(true)),
         close: vi.fn(),
         closeOwnedByWindow: vi.fn(),
         closeSession: vi.fn(),
-        freezeSession: vi.fn(),
-        keepAllTrackedFiles: vi.fn(),
-        keepTrackedFile: vi.fn(),
-        keepTrackedFileHunks: vi.fn(),
-        notifyFileBuffer: vi.fn(),
+        deleteSession: vi.fn(),
+        listSessionHistory: vi.fn(() => Promise.resolve([])),
+        loadSessionSnapshot: vi.fn(() => Promise.resolve(null)),
+        loadSessionTranscriptPage: vi.fn(() => Promise.resolve(null)),
         prepareSession: vi.fn(),
-        refreshProjectScopes: vi.fn(),
-        rejectAllTrackedFiles: vi.fn(),
-        rejectTrackedFile: vi.fn(),
-        rejectTrackedFileHunks: vi.fn(),
+        reconcileTrackedFiles: vi.fn(() => Promise.resolve([])),
         renameSession: vi.fn(),
         respondPermission: vi.fn(),
         respondUserInput: vi.fn(),
@@ -1094,6 +1151,10 @@ function createAiWorker(overrides: Partial<AiWorkerGateway>): AiWorkerGateway {
         setSessionConfigOption: vi.fn(),
         setSessionMode: vi.fn(),
         setSessionModel: vi.fn(),
+        setSessionPinned: vi.fn(),
+        shouldHandleHistory: vi.fn(() => false),
+        shouldHandleReview: vi.fn(() => true),
+        shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "opencode"),
         ...overrides,
     };
 }
