@@ -7,6 +7,7 @@ use comando_ai::events::{
     AI_RUNTIME_STATUS_EVENT, AI_SESSION_CLOSED_EVENT, AI_SESSION_CREATED_EVENT,
     AI_SESSION_UPDATED_EVENT, AiRuntimeEvent, session_closed, session_created, session_updated,
 };
+use comando_ai::history::{AiHistoryMigrator, AiHistoryStore, LegacyAiHistoryReader};
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
 use comando_git::{
     GitBranchListScope, GitError, GitFileDiffRequest, GitRunner, checkout_branch, commit,
@@ -123,7 +124,15 @@ impl NativeBackend {
             | "ai_respond_user_input"
             | "ai_set_session_model"
             | "ai_set_session_mode"
-            | "ai_set_session_config_option" => {
+            | "ai_set_session_config_option"
+            | "ai_rename_session"
+            | "ai_list_session_history"
+            | "ai_load_session_transcript_page"
+            | "ai_load_session_snapshot"
+            | "ai_set_session_pinned"
+            | "ai_delete_session"
+            | "ai_migrate_session_history"
+            | "ai_get_history_storage_health" => {
                 if let Err(error) = self.ensure_ai_event_bridge(background_sender) {
                     return error_only(request.id, error);
                 }
@@ -209,7 +218,15 @@ impl NativeBackend {
             | "ai_respond_user_input"
             | "ai_set_session_model"
             | "ai_set_session_mode"
-            | "ai_set_session_config_option" => self.handle_ai_request(request),
+            | "ai_set_session_config_option"
+            | "ai_rename_session"
+            | "ai_list_session_history"
+            | "ai_load_session_transcript_page"
+            | "ai_load_session_snapshot"
+            | "ai_set_session_pinned"
+            | "ai_delete_session"
+            | "ai_migrate_session_history"
+            | "ai_get_history_storage_health" => self.handle_ai_request(request),
             #[cfg(test)]
             "backend_queue_test_fs_event" => self.queue_test_fs_event(request),
             command => CommandResult {
@@ -252,6 +269,13 @@ impl NativeBackend {
 
         match SqlitePersistenceStore::open(config) {
             Ok((store, output)) => {
+                let history_store = match AiHistoryStore::new(store.app_data_dir().to_path_buf()) {
+                    Ok(history_store) => Some(history_store),
+                    Err(error) => return error_only(request.id, error.to_native_error()),
+                };
+                if let Err(error) = self.ai_engine.set_history_store(history_store) {
+                    return error_only(request.id, error.to_native_error());
+                }
                 self.persistence_store = Some(store);
                 CommandResult {
                     outputs: vec![
@@ -1307,6 +1331,100 @@ impl NativeBackend {
                     Err(error) => error_only(request.id, error.to_native_error()),
                 }
             }
+            "ai_list_session_history" => {
+                let input = match parse_args::<native_ai::NativeAiListSessionHistoryInput>(&request)
+                {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.list_ai_session_history(input) {
+                    Ok(history) => response_only(
+                        request.id,
+                        serde_json::to_value(history).expect("ai history list serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_session_transcript_page" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadSessionTranscriptPageInput>(&request)
+                    {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.load_ai_session_transcript_page(input) {
+                    Ok(page) => response_only(
+                        request.id,
+                        serde_json::to_value(page).expect("ai transcript page serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_session_snapshot" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadSessionSnapshotInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.load_ai_session_snapshot(input.session_id) {
+                    Ok(snapshot) => response_only(
+                        request.id,
+                        serde_json::to_value(snapshot).expect("ai snapshot serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_set_session_pinned" => {
+                let input = match parse_args::<native_ai::NativeAiSetSessionPinnedInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.set_ai_session_pinned(input) {
+                    Ok(()) => response_only(request.id, json!({"ok": true})),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_delete_session" => {
+                let input = match parse_args::<native_ai::NativeAiDeleteSessionInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.delete_ai_session(input.session_id) {
+                    Ok(()) => response_only(request.id, json!({"ok": true})),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_rename_session" => {
+                let input = match parse_args::<native_ai::NativeAiRenameSessionInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.rename_ai_session(input) {
+                    Ok(()) => response_only(request.id, json!({"ok": true})),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_migrate_session_history" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiMigrateSessionHistoryInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.migrate_ai_session_history(input) {
+                    Ok(output) => response_only(
+                        request.id,
+                        serde_json::to_value(output).expect("ai history migration serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_get_history_storage_health" => match self.get_ai_history_storage_health() {
+                Ok(health) => response_only(
+                    request.id,
+                    serde_json::to_value(health).expect("ai history health serializes"),
+                ),
+                Err(error) => error_only(request.id, error),
+            },
             "ai_respond_permission" => {
                 let input = match parse_args::<native_ai::NativeAiPermissionResponseInput>(&request)
                 {
@@ -1342,6 +1460,168 @@ impl NativeBackend {
         }
     }
 
+    fn ai_history_store(&self) -> Result<AiHistoryStore, NativeError> {
+        let Some(store) = self.persistence_store.as_ref() else {
+            return Err(NativeError::new(
+                NativeErrorCode::BackendNotReady,
+                "Native persistence store has not been opened.",
+            ));
+        };
+        AiHistoryStore::new(store.app_data_dir().to_path_buf())
+            .map_err(|error| error.to_native_error())
+    }
+
+    fn list_ai_session_history(
+        &self,
+        input: native_ai::NativeAiListSessionHistoryInput,
+    ) -> Result<Vec<native_ai::NativeAiHistorySessionSummary>, NativeError> {
+        let store = self.ai_history_store()?;
+        let mut history = store
+            .list_session_history(input.clone())
+            .map_err(|error| error.to_native_error())?;
+        if let Some(persistence_store) = self.persistence_store.as_ref() {
+            let legacy = LegacyAiHistoryReader::new(persistence_store.connection())
+                .list_session_history(input)
+                .map_err(|error| error.to_native_error())?;
+            let mut seen = history
+                .iter()
+                .map(|summary| summary.session_id.0.clone())
+                .collect::<std::collections::HashSet<_>>();
+            for summary in legacy {
+                if seen.insert(summary.session_id.0.clone()) {
+                    history.push(summary);
+                }
+            }
+        }
+        history.sort_by(|left, right| {
+            match (left.pinned_at.is_some(), right.pinned_at.is_some()) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => right.updated_at.cmp(&left.updated_at),
+            }
+        });
+        Ok(history)
+    }
+
+    fn load_ai_session_transcript_page(
+        &self,
+        input: native_ai::NativeAiLoadSessionTranscriptPageInput,
+    ) -> Result<Option<native_ai::NativeAiSessionTranscriptPage>, NativeError> {
+        let store = self.ai_history_store()?;
+        if store.has_session(&input.session_id) {
+            return store
+                .load_transcript_page(input)
+                .map_err(|error| error.to_native_error());
+        }
+        let Some(persistence_store) = self.persistence_store.as_ref() else {
+            return Ok(None);
+        };
+        LegacyAiHistoryReader::new(persistence_store.connection())
+            .load_transcript_page(input)
+            .map_err(|error| error.to_native_error())
+    }
+
+    fn load_ai_session_snapshot(
+        &self,
+        session_id: comando_types::ids::SessionId,
+    ) -> Result<Option<native_ai::NativeAiSessionSnapshot>, NativeError> {
+        let store = self.ai_history_store()?;
+        if store.has_session(&session_id) {
+            return store
+                .load_session_snapshot(&session_id)
+                .map_err(|error| error.to_native_error());
+        }
+        let Some(persistence_store) = self.persistence_store.as_ref() else {
+            return Ok(None);
+        };
+        LegacyAiHistoryReader::new(persistence_store.connection())
+            .load_session_snapshot(&session_id)
+            .map_err(|error| error.to_native_error())
+    }
+
+    fn set_ai_session_pinned(
+        &self,
+        input: native_ai::NativeAiSetSessionPinnedInput,
+    ) -> Result<(), NativeError> {
+        let store = self.ai_history_store()?;
+        if !store.has_session(&input.session_id) {
+            return Err(comando_ai::AiError::SessionNotFound {
+                session_id: input.session_id.0,
+            }
+            .to_native_error());
+        }
+        store
+            .set_session_pinned(&input.session_id, input.pinned)
+            .map_err(|error| error.to_native_error())
+    }
+
+    fn delete_ai_session(
+        &self,
+        session_id: comando_types::ids::SessionId,
+    ) -> Result<(), NativeError> {
+        let store = self.ai_history_store()?;
+        if !store.has_session(&session_id) {
+            return Err(comando_ai::AiError::SessionNotFound {
+                session_id: session_id.0,
+            }
+            .to_native_error());
+        }
+        store
+            .delete_session(&session_id)
+            .map_err(|error| error.to_native_error())
+    }
+
+    fn rename_ai_session(
+        &self,
+        input: native_ai::NativeAiRenameSessionInput,
+    ) -> Result<(), NativeError> {
+        let store = self.ai_history_store()?;
+        if !store.has_session(&input.session_id) {
+            return Err(comando_ai::AiError::SessionNotFound {
+                session_id: input.session_id.0,
+            }
+            .to_native_error());
+        }
+        self.ai_engine
+            .rename_session(input)
+            .map_err(|error| error.to_native_error())
+    }
+
+    fn migrate_ai_session_history(
+        &self,
+        input: native_ai::NativeAiMigrateSessionHistoryInput,
+    ) -> Result<native_ai::NativeAiMigrateSessionHistoryOutput, NativeError> {
+        let store = self.ai_history_store()?;
+        let Some(persistence_store) = self.persistence_store.as_ref() else {
+            return Err(NativeError::new(
+                NativeErrorCode::BackendNotReady,
+                "Native persistence store has not been opened.",
+            ));
+        };
+        let source_database_path = input.source_database_path.or_else(|| {
+            Some(
+                persistence_store
+                    .database_path()
+                    .to_string_lossy()
+                    .to_string(),
+            )
+        });
+        AiHistoryMigrator::new(&store, persistence_store.connection(), source_database_path)
+            .copy_legacy_history()
+            .map_err(|error| error.to_native_error())
+    }
+
+    fn get_ai_history_storage_health(
+        &self,
+    ) -> Result<native_ai::NativeAiHistoryStorageHealth, NativeError> {
+        let store = self.ai_history_store()?;
+        let mut health = store
+            .storage_health()
+            .map_err(|error| error.to_native_error())?;
+        health.legacy_fallback_available = self.persistence_store.is_some();
+        Ok(health)
+    }
+
     fn ensure_terminal_service(
         &mut self,
         background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
@@ -1375,8 +1655,14 @@ impl NativeBackend {
         self.ai_engine
             .set_event_sender(event_sender)
             .map_err(|error| error.to_native_error())?;
+        let ai_engine = self.ai_engine.clone();
         thread::spawn(move || {
             for event in event_receiver {
+                if let Err(error) = ai_engine.record_history_event(&event) {
+                    eprintln!(
+                        "[comando-native-backend] Native AI history event write failed: {error}"
+                    );
+                }
                 let output = ai_runtime_event_output(event);
                 if background_sender.send(vec![output]).is_err() {
                     break;
