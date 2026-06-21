@@ -1034,6 +1034,14 @@ export class AiService {
         );
 
         if (nativeAi) {
+            const nativePrepareLaunch =
+                await this.#buildNativePrepareLaunchForSession(
+                    input,
+                    ownerWindowId,
+                    launch,
+                );
+            const isSubagentPrepare =
+                nativePrepareLaunch.input.sessionId !== input.sessionId;
             try {
                 const snapshot = await this.#scheduleWorkerSessionStartup(
                     launch,
@@ -1044,10 +1052,40 @@ export class AiService {
                             ownerWindowId,
                             input.runtimeId,
                         );
-                        return await nativeAi.prepareSession({
-                            input,
-                            launch,
-                        });
+                        if (isSubagentPrepare) {
+                            if (
+                                !this.#nativeSessionIds.has(
+                                    nativePrepareLaunch.input.sessionId,
+                                )
+                            ) {
+                                this.#rememberLiveSessionContext(
+                                    nativePrepareLaunch.input,
+                                    ownerWindowId,
+                                    nativePrepareLaunch.launch.additionalRoots,
+                                    nativePrepareLaunch.launch.persistedSnapshot
+                                        .parentSessionId ?? null,
+                                );
+                                const parentSnapshot =
+                                    await nativeAi.prepareSession({
+                                        input: nativePrepareLaunch.input,
+                                        launch: nativePrepareLaunch.launch,
+                                    });
+                                this.#nativeSessionIds.add(
+                                    parentSnapshot.sessionId,
+                                );
+                                this.#acceptPreparedLiveSnapshot(
+                                    parentSnapshot,
+                                    ownerWindowId,
+                                );
+                            }
+                            this.#adoptNativeSubagentSnapshot(
+                                launch.persistedSnapshot,
+                                ownerWindowId,
+                            );
+                            return launch.persistedSnapshot;
+                        }
+
+                        return await nativeAi.prepareSession({ input, launch });
                     },
                 );
                 this.#nativeSessionIds.add(snapshot.sessionId);
@@ -1152,7 +1190,7 @@ export class AiService {
                 } | null,
             };
             const nativePrepareLaunch =
-                await this.#buildNativePrepareLaunchForPrompt(
+                await this.#buildNativePrepareLaunchForSession(
                     input,
                     ownerWindowId,
                     launch,
@@ -2665,8 +2703,8 @@ export class AiService {
         };
     }
 
-    async #buildNativePrepareLaunchForPrompt(
-        input: SendAiPromptInput,
+    async #buildNativePrepareLaunchForSession(
+        input: SessionDescriptor,
         ownerWindowId: string,
         launch: AiWorkerSessionLaunchInput,
     ): Promise<{
