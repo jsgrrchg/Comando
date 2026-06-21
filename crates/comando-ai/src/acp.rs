@@ -14,7 +14,8 @@ use agent_client_protocol::schema::{
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigOptionValue, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall, ToolCallUpdate,
+    SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall, ToolCallContent,
+    ToolCallUpdate,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use comando_types::ai::{
@@ -1800,6 +1801,7 @@ impl NotificationContextInner {
                 summary: None,
                 title: tool_call.title,
                 tool_call_id: tool_call_id.clone(),
+                diffs: tool_call_content_diffs(&tool_call.content),
             },
         );
         self.emit_subagent_breadcrumb(runtime_session_id, tool_call_id, meta);
@@ -1838,6 +1840,12 @@ impl NotificationContextInner {
                     .title
                     .unwrap_or_else(|| "Tool activity".to_string()),
                 tool_call_id: tool_call_id.clone(),
+                diffs: tool_call_update
+                    .fields
+                    .content
+                    .as_deref()
+                    .map(tool_call_content_diffs)
+                    .unwrap_or_default(),
             },
         );
         self.emit_subagent_breadcrumb(runtime_session_id, tool_call_id, meta);
@@ -2353,6 +2361,34 @@ fn meta_references_subagent(meta: &Meta) -> bool {
         )
 }
 
+fn tool_call_content_diffs(content: &[ToolCallContent]) -> Vec<serde_json::Value> {
+    content
+        .iter()
+        .filter_map(|item| {
+            let ToolCallContent::Diff(diff) = item else {
+                return None;
+            };
+            let path = diff.path.to_string_lossy().to_string();
+            let old_text = diff.old_text.clone();
+            let hunks = comando_diff::compute_diff_hunks(
+                old_text.as_deref().unwrap_or_default(),
+                &diff.new_text,
+                &path,
+            );
+            Some(serde_json::json!({
+                "hunks": hunks,
+                "isText": true,
+                "kind": if old_text.is_none() { "create" } else { "update" },
+                "newText": diff.new_text,
+                "oldText": old_text,
+                "path": path,
+                "previousPath": null,
+                "reversible": true
+            }))
+        })
+        .collect()
+}
+
 fn content_block_text(content: &ContentBlock) -> String {
     match content {
         ContentBlock::Text(text) => text.text.clone(),
@@ -2600,6 +2636,32 @@ mod tests {
             breadcrumb_event.payload["toolCallId"],
             "codex-acp:subagent:interaction-1"
         );
+    }
+
+    #[test]
+    fn notification_context_projects_tool_diffs() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(ToolCall::new("tool-1", "Edit file").content(
+                vec![ToolCallContent::Diff(
+                    agent_client_protocol::schema::Diff::new("src/main.rs", "fn main() {}\n")
+                        .old_text(""),
+                )],
+            )),
+        ));
+
+        let event = (0..4)
+            .map(|_| receiver.recv().unwrap())
+            .find(|event| event.event_name == AI_TOOL_ACTIVITY_EVENT)
+            .expect("tool activity event");
+        assert_eq!(event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(event.payload["diffs"][0]["path"], "src/main.rs");
+        assert_eq!(event.payload["diffs"][0]["kind"], "update");
+        assert_eq!(event.payload["diffs"][0]["hunks"][0]["newStart"], 1);
     }
 
     #[test]

@@ -16,6 +16,7 @@ import type { AiWorkerSessionLaunchInput } from "@main/ai/contracts";
 import {
     NATIVE_AI_ENABLED_ENV,
     NATIVE_AI_HISTORY_ENABLED_ENV,
+    NATIVE_AI_REVIEW_ENABLED_ENV,
     NATIVE_AI_RUNTIMES_ENV,
     NativeAiGateway,
     type NativeAiGatewayOptions,
@@ -493,6 +494,34 @@ describe("NativeAiGateway", () => {
                         worktreeId: "worktree-1",
                     } as T;
                 }
+                if (command === "ai_load_review_state") {
+                    return {
+                        changedFiles: [],
+                        conflicts: [],
+                        sessionId: "session-1",
+                        trackedFiles: [
+                            {
+                                currentText: "new\n",
+                                diffBase: "old\n",
+                                hunks: [],
+                                identityKey: "native:session-1::src/main.rs",
+                                isText: true,
+                                kind: "update",
+                                newText: "new\n",
+                                oldText: "old\n",
+                                path: "src/main.rs",
+                                previousPath: null,
+                                reviewState: "pending",
+                                reversible: true,
+                                sessionId: "session-1",
+                                toolCallId: null,
+                                updatedAt: "2026-06-20T00:00:02.000Z",
+                                version: 2,
+                            },
+                        ],
+                        updatedAt: "2026-06-20T00:00:02.000Z",
+                    } as T;
+                }
                 if (command === "ai_list_session_runtime_mappings") {
                     return [
                         {
@@ -510,6 +539,7 @@ describe("NativeAiGateway", () => {
             env: {
                 [NATIVE_AI_ENABLED_ENV]: "1",
                 [NATIVE_AI_HISTORY_ENABLED_ENV]: "1",
+                [NATIVE_AI_REVIEW_ENABLED_ENV]: "1",
             },
         });
 
@@ -526,9 +556,11 @@ describe("NativeAiGateway", () => {
                 sessionId: "session-1",
             }),
         ).resolves.toMatchObject({ totalMessages: 1 });
-        await expect(
-            gateway.loadSessionSnapshot("session-1"),
-        ).resolves.toMatchObject({ runtimeId: "opencode", sessionId: "session-1" });
+        await expect(gateway.loadSessionSnapshot("session-1")).resolves.toMatchObject({
+            runtimeId: "opencode",
+            sessionId: "session-1",
+            trackedFiles: [{ path: "src/main.rs", version: 2 }],
+        });
         await expect(
             gateway.listSessionRuntimeMappingsForParent("session-1"),
         ).resolves.toEqual([
@@ -554,6 +586,69 @@ describe("NativeAiGateway", () => {
         expect(client.request).toHaveBeenCalledWith("ai_delete_session", {
             sessionId: "session-1",
         });
+    });
+
+    it("surfaces review conflicts over stale tracked files", async () => {
+        const client = createClient();
+        client.request.mockImplementation(
+            <T = unknown>(command: string, _args?: unknown): Promise<T> => {
+                void _args;
+                if (command === "ai_reconcile_tracked_files") {
+                    return Promise.resolve({
+                        changedFiles: [],
+                        conflicts: [
+                            {
+                                externalChangeHash: "hash-1",
+                                path: "binary.bin",
+                                reason: "binary_file",
+                            },
+                        ],
+                        sessionId: "session-1",
+                        trackedFiles: [
+                            {
+                                currentText: "old pending\n",
+                                diffBase: "base\n",
+                                hunks: [],
+                                identityKey: "native:session-1::binary.bin",
+                                isText: true,
+                                kind: "update",
+                                newText: "old pending\n",
+                                oldText: "base\n",
+                                path: "binary.bin",
+                                previousPath: null,
+                                reviewState: "pending",
+                                reversible: true,
+                                sessionId: "session-1",
+                                toolCallId: null,
+                                updatedAt: "2026-06-20T00:00:01.000Z",
+                                version: 2,
+                            },
+                        ],
+                        updatedAt: "2026-06-20T00:00:02.000Z",
+                    } as T);
+                }
+
+                return Promise.resolve({ ok: true } as T);
+            },
+        );
+        const gateway = createGateway(client, {
+            env: {
+                [NATIVE_AI_ENABLED_ENV]: "1",
+                [NATIVE_AI_REVIEW_ENABLED_ENV]: "1",
+            },
+        });
+
+        await expect(gateway.reconcileTrackedFiles("session-1")).resolves.toEqual([
+            expect.objectContaining({
+                conflict: "binary_file",
+                currentText: "",
+                diffBase: "",
+                isText: false,
+                path: "binary.bin",
+                reviewState: "conflict",
+                reversible: false,
+            }),
+        ]);
     });
 
     it("reports runtime connection events as diagnostics", () => {

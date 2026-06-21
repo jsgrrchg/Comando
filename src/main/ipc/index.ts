@@ -1651,6 +1651,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             void notifyPromise?.catch((error) => {
                 debugBenignError("ai.worker.notifyFileBuffer", error);
             });
+            options.aiService.notifyFileBuffer(input);
         },
     );
     ipcMain.handle(

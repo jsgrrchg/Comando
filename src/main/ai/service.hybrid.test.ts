@@ -228,6 +228,96 @@ describe("AiService hybrid persistence", () => {
         );
     });
 
+    it("preserves native tool diffs when later updates omit content", async () => {
+        const baseSnapshot = createSnapshot({
+            sessionId: "session-1",
+            updatedAt: "2026-04-16T00:00:00.000Z",
+        });
+        const service = createService({
+            loadSessionSnapshot: vi.fn(() => baseSnapshot),
+        });
+        service.handleWorkerSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: baseSnapshot,
+        });
+
+        service.handleNativeSessionEvent("window-1", {
+            activity: {
+                action: null,
+                createdAt: "2026-04-16T00:00:01.000Z",
+                diffs: [
+                    {
+                        hunks: [],
+                        isText: true,
+                        kind: "create",
+                        newText: "hello\n",
+                        oldText: null,
+                        path: "new.txt",
+                        previousPath: null,
+                        reversible: true,
+                    },
+                ],
+                exitCode: null,
+                id: "tool-1",
+                kind: "edit",
+                locations: [],
+                rawInputJson: null,
+                rawOutputJson: null,
+                sessionId: "session-1",
+                status: "in_progress",
+                summary: null,
+                terminalOutput: null,
+                title: "Edit file",
+                updatedAt: "2026-04-16T00:00:01.000Z",
+            },
+            kind: "tool-activity",
+            origin: "live",
+            parentSessionId: null,
+            runtimeId: "codex",
+            runtimeSessionId: "runtime-session-1",
+            sessionId: "session-1",
+            updatedAt: "2026-04-16T00:00:01.000Z",
+        });
+        service.handleNativeSessionEvent("window-1", {
+            activity: {
+                action: null,
+                createdAt: "2026-04-16T00:00:02.000Z",
+                diffs: [],
+                exitCode: null,
+                id: "tool-1",
+                kind: "edit",
+                locations: [],
+                rawInputJson: null,
+                rawOutputJson: null,
+                sessionId: "session-1",
+                status: "completed",
+                summary: null,
+                terminalOutput: null,
+                title: "Edit file",
+                updatedAt: "2026-04-16T00:00:02.000Z",
+            },
+            kind: "tool-activity",
+            origin: "live",
+            parentSessionId: null,
+            runtimeId: "codex",
+            runtimeSessionId: "runtime-session-1",
+            sessionId: "session-1",
+            updatedAt: "2026-04-16T00:00:02.000Z",
+        });
+
+        await expect(service.getSessionSnapshot("session-1")).resolves.toEqual(
+            expect.objectContaining({
+                toolActivity: [
+                    expect.objectContaining({
+                        diffs: [expect.objectContaining({ path: "new.txt" })],
+                        id: "tool-1",
+                        status: "completed",
+                    }),
+                ],
+            }),
+        );
+    });
+
     it("replays open file buffers to the worker when it restarts", async () => {
         const persistedSnapshot = createSnapshot({
             sessionId: "session-1",

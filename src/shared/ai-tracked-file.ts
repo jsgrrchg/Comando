@@ -1,5 +1,9 @@
 import type { AiDiffHunk, AiTrackedFile } from "./ipc";
 
+export function isAiTrackedFileUnresolved(file: AiTrackedFile): boolean {
+    return file.reviewState === "pending" || file.reviewState === "conflict";
+}
+
 export function normalizeReviewText(text: string): string {
     return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }

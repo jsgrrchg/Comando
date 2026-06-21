@@ -42,6 +42,7 @@ import {
 import {
     computeDiffHunks,
     getTrackedFileCurrentText,
+    isAiTrackedFileUnresolved,
     replaceTrackedFile,
     resolveTrackedFileHunks,
     syncTrackedFile,
@@ -788,9 +789,7 @@ export class AiWorkerRuntime {
         }
 
         if (
-            liveSession.snapshot.trackedFiles.some(
-                (trackedFile) => trackedFile.reviewState === "pending",
-            )
+            liveSession.snapshot.trackedFiles.some(isAiTrackedFileUnresolved)
         ) {
             return "pending_review";
         }

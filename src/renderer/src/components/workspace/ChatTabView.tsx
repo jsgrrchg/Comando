@@ -111,6 +111,8 @@ import {
 import {
     deriveReviewItems,
     deriveReviewSummary,
+    isReviewConflictFile,
+    isReviewUnresolvedFile,
     type ReviewFileItem,
 } from "./review/editedFilesPresentationModel";
 
@@ -539,9 +541,7 @@ export const ChatTabView = memo(function ChatTabView({
 
     const pendingTrackedFiles = useMemo(
         () =>
-            snapshot.trackedFiles.filter(
-                (trackedFile) => trackedFile.reviewState === "pending",
-            ),
+            snapshot.trackedFiles.filter(isReviewUnresolvedFile),
         [snapshot.trackedFiles],
     );
     const projectFileRoots = useMemo(() => {
@@ -1483,6 +1483,9 @@ export const ChatTabView = memo(function ChatTabView({
 
     const handleKeepPendingReviewItem = useCallback(
         (item: ReviewFileItem) => {
+            if (isReviewConflictFile(item.file)) {
+                return;
+            }
             void keepTrackedFile({
                 path: item.file.path,
                 sessionId: tab.sessionId,

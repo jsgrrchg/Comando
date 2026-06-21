@@ -6,6 +6,7 @@ import type {
     AiToolActivityLocation,
     AiTrackedFile,
 } from "@shared/ipc";
+import { isAiTrackedFileUnresolved } from "@shared/ai-tracked-file";
 import { FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexStore";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
@@ -1643,7 +1644,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     readonly worktreeId?: string | null;
 }) {
     const pendingTrackedFiles = trackedFiles.filter(
-        (trackedFile) => trackedFile.reviewState === "pending",
+        isAiTrackedFileUnresolved,
     );
     const hasInlineReview = trackedFiles.length > 0 || activity.diffs.length > 0;
 

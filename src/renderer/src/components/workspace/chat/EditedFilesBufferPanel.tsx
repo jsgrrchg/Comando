@@ -13,6 +13,7 @@ import type {
     ReviewFileItem,
     ReviewSummary,
 } from "../review/editedFilesPresentationModel";
+import { isReviewConflictFile } from "../review/editedFilesPresentationModel";
 import { formatDiffStat } from "../review/reviewDiff";
 
 const COMPACT_MAX_VISIBLE_ROWS = 8;
@@ -75,6 +76,10 @@ export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
 
     const rejectableCount = useMemo(
         () => items.filter((item) => item.canReject).length,
+        [items],
+    );
+    const keepableCount = useMemo(
+        () => items.filter((item) => !isReviewConflictFile(item.file)).length,
         [items],
     );
 
@@ -230,7 +235,8 @@ export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
                     <button
                         aria-label="Keep All"
                         className="review-icon-btn review-icon-btn--keep"
-                        onClick={onKeepAll}
+                        disabled={keepableCount === 0}
+                        onClick={keepableCount > 0 ? onKeepAll : undefined}
                         title="Keep All"
                         type="button"
                     >

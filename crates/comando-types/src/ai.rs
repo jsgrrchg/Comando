@@ -635,6 +635,8 @@ pub struct NativeAiToolActivityPayload {
     pub kind: String,
     pub status: String,
     pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diffs: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -40,6 +40,7 @@ import type {
     GrokRuntimeSettings,
     GrokRuntimeSettingsInput,
     GetAiSessionTranscriptPageInput,
+    FileBufferNotificationInput,
     KiloRuntimeSettingsInput,
     ListAiSessionHistoryInput,
     OpenCodeRuntimeSettingsInput,
@@ -48,6 +49,7 @@ import type {
 } from "@shared/ipc";
 import {
     computeDiffHunks,
+    isAiTrackedFileUnresolved,
     resolveTrackedFileHunks,
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
@@ -586,6 +588,12 @@ export class AiService {
         event: AiSessionDomainEvent,
     ): void {
         this.#onSessionEvent(ownerWindowId, event);
+    }
+
+    notifyFileBuffer(input: FileBufferNotificationInput): void {
+        void this.#nativeAi?.notifyFileBuffer?.(input).catch((error: unknown) => {
+            debugBenignError("ai.service.nativeNotifyFileBuffer", error);
+        });
     }
 
     handleNativeSessionEvent(
@@ -2438,6 +2446,13 @@ export class AiService {
             };
         }
 
+        if (event.kind === "review") {
+            return {
+                ...base,
+                trackedFiles: event.trackedFiles,
+            };
+        }
+
         if (event.kind === "plan") {
             return {
                 ...base,
@@ -2493,6 +2508,25 @@ export class AiService {
         launch: AiWorkerSessionLaunchInput,
         messageId: string,
     ): Promise<boolean> {
+        if (
+            this.#nativeAi?.shouldHandleReview?.() === true &&
+            this.#isNativeAiSession(sessionId) &&
+            this.#nativeAi.captureReviewBaseline
+        ) {
+            const captured = await this.#nativeAi.captureReviewBaseline(sessionId);
+            if (captured) {
+                this.#nativeReviewBaselines.set(sessionId, {
+                    cwd: launch.cwd,
+                    files: new Map(),
+                    messageId,
+                    turnStarted: false,
+                });
+            } else {
+                this.#nativeReviewBaselines.delete(sessionId);
+            }
+            return captured;
+        }
+
         try {
             const statusEntries = await listNativeGitStatusEntries(launch.cwd);
             const files = new Map<string, string | null>();
@@ -2581,20 +2615,36 @@ export class AiService {
                 return;
             }
 
-            const trackedFiles = await buildNativeReviewTrackedFiles(
-                snapshot.sessionId,
-                baseline,
-            );
+            const trackedFiles =
+                this.#nativeAi?.shouldHandleReview?.() === true &&
+                this.#isNativeAiSession(sessionId) &&
+                this.#nativeAi.reconcileTrackedFiles
+                    ? await this.#nativeAi.reconcileTrackedFiles(sessionId)
+                    : await buildNativeReviewTrackedFiles(
+                          snapshot.sessionId,
+                          baseline,
+                      );
             if (trackedFiles.length === 0) {
                 return;
             }
 
-            let nextTrackedFiles = snapshot.trackedFiles;
-            for (const trackedFile of trackedFiles) {
-                nextTrackedFiles = upsertTrackedFile(
-                    nextTrackedFiles,
-                    trackedFile,
-                );
+            let nextTrackedFiles =
+                this.#nativeAi?.shouldHandleReview?.() === true &&
+                this.#isNativeAiSession(sessionId)
+                    ? trackedFiles
+                    : snapshot.trackedFiles;
+            if (
+                !(
+                    this.#nativeAi?.shouldHandleReview?.() === true &&
+                    this.#isNativeAiSession(sessionId)
+                )
+            ) {
+                for (const trackedFile of trackedFiles) {
+                    nextTrackedFiles = upsertTrackedFile(
+                        nextTrackedFiles,
+                        trackedFile,
+                    );
+                }
             }
             if (nextTrackedFiles === snapshot.trackedFiles) {
                 return;
@@ -3047,10 +3097,18 @@ export class AiService {
         const reviewSession = await this.#buildWorkerReviewContext(
             input.sessionId,
         );
-        const result = await this.#requireAiWorker().keepTrackedFile({
+        const result =
+            this.#nativeAi?.shouldHandleReview?.() === true &&
+            this.#isNativeAiSession(input.sessionId) &&
+            this.#nativeAi.keepTrackedFile
+                ? await this.#nativeAi.keepTrackedFile({
+                      context: reviewSession.context,
+                      input,
+                  })
+                : await this.#requireAiWorker().keepTrackedFile({
             context: reviewSession.context,
             input,
-        });
+                  });
         this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
@@ -3058,10 +3116,18 @@ export class AiService {
         const reviewSession = await this.#buildWorkerReviewContext(
             input.sessionId,
         );
-        const result = await this.#requireAiWorker().rejectTrackedFile({
+        const result =
+            this.#nativeAi?.shouldHandleReview?.() === true &&
+            this.#isNativeAiSession(input.sessionId) &&
+            this.#nativeAi.rejectTrackedFile
+                ? await this.#nativeAi.rejectTrackedFile({
+                      context: reviewSession.context,
+                      input,
+                  })
+                : await this.#requireAiWorker().rejectTrackedFile({
             context: reviewSession.context,
             input,
-        });
+                  });
         this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
@@ -3071,10 +3137,18 @@ export class AiService {
         const reviewSession = await this.#buildWorkerReviewContext(
             input.sessionId,
         );
-        const result = await this.#requireAiWorker().keepTrackedFileHunks({
+        const result =
+            this.#nativeAi?.shouldHandleReview?.() === true &&
+            this.#isNativeAiSession(input.sessionId) &&
+            this.#nativeAi.keepTrackedFileHunks
+                ? await this.#nativeAi.keepTrackedFileHunks({
+                      context: reviewSession.context,
+                      input,
+                  })
+                : await this.#requireAiWorker().keepTrackedFileHunks({
             context: reviewSession.context,
             input,
-        });
+                  });
         this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
@@ -3084,28 +3158,52 @@ export class AiService {
         const reviewSession = await this.#buildWorkerReviewContext(
             input.sessionId,
         );
-        const result = await this.#requireAiWorker().rejectTrackedFileHunks({
+        const result =
+            this.#nativeAi?.shouldHandleReview?.() === true &&
+            this.#isNativeAiSession(input.sessionId) &&
+            this.#nativeAi.rejectTrackedFileHunks
+                ? await this.#nativeAi.rejectTrackedFileHunks({
+                      context: reviewSession.context,
+                      input,
+                  })
+                : await this.#requireAiWorker().rejectTrackedFileHunks({
             context: reviewSession.context,
             input,
-        });
+                  });
         this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async keepAllTrackedFiles(sessionId: string): Promise<void> {
         const reviewSession = await this.#buildWorkerReviewContext(sessionId);
-        const result = await this.#requireAiWorker().keepAllTrackedFiles({
+        const result =
+            this.#nativeAi?.shouldHandleReview?.() === true &&
+            this.#isNativeAiSession(sessionId) &&
+            this.#nativeAi.keepAllTrackedFiles
+                ? await this.#nativeAi.keepAllTrackedFiles({
+                      context: reviewSession.context,
+                      input: sessionId,
+                  })
+                : await this.#requireAiWorker().keepAllTrackedFiles({
             context: reviewSession.context,
             input: sessionId,
-        });
+                  });
         this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async rejectAllTrackedFiles(sessionId: string): Promise<void> {
         const reviewSession = await this.#buildWorkerReviewContext(sessionId);
-        const result = await this.#requireAiWorker().rejectAllTrackedFiles({
+        const result =
+            this.#nativeAi?.shouldHandleReview?.() === true &&
+            this.#isNativeAiSession(sessionId) &&
+            this.#nativeAi.rejectAllTrackedFiles
+                ? await this.#nativeAi.rejectAllTrackedFiles({
+                      context: reviewSession.context,
+                      input: sessionId,
+                  })
+                : await this.#requireAiWorker().rejectAllTrackedFiles({
             context: reviewSession.context,
             input: sessionId,
-        });
+                  });
         this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
@@ -4146,7 +4244,16 @@ function upsertNativeToolActivity(
     }
 
     return activities.map((candidate, index) =>
-        index === existingIndex ? { ...candidate, ...activity } : candidate,
+        index === existingIndex
+            ? {
+                  ...candidate,
+                  ...activity,
+                  diffs:
+                      activity.diffs.length > 0
+                          ? activity.diffs
+                          : candidate.diffs,
+              }
+            : candidate,
     );
 }
 
@@ -4187,9 +4294,7 @@ function getRetentionSkippedReasonFromSnapshot(
     }
 
     if (
-        snapshot.trackedFiles.some(
-            (trackedFile) => trackedFile.reviewState === "pending",
-        )
+        snapshot.trackedFiles.some(isAiTrackedFileUnresolved)
     ) {
         return "pending_review";
     }

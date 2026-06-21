@@ -27,6 +27,7 @@ import type {
     GitOriginalFile,
     ProjectFileDocument,
 } from "@shared/ipc";
+import { isAiTrackedFileUnresolved } from "@shared/ai-tracked-file";
 import {
     ACTIVE_AI_RUNTIME_IDS,
     getAiRuntimeDisplayName,
@@ -373,7 +374,7 @@ function buildReviewTabAutoCloseCandidateKeys(
         const sessionState = sessions[reviewTab.sessionId];
         const trackedFiles = sessionState?.snapshot?.trackedFiles ?? [];
         const hasPendingTrackedFiles = trackedFiles.some(
-            (trackedFile) => trackedFile.reviewState === "pending",
+            isAiTrackedFileUnresolved,
         );
 
         return createReviewTabAutoCloseCandidateKey({

@@ -41,7 +41,32 @@ function isPartialFile(file: AiTrackedFile): boolean {
     return file.reversible === false || file.isText === false;
 }
 
+export function isReviewConflictFile(file: AiTrackedFile): boolean {
+    return file.reviewState === "conflict" || Boolean(file.conflict);
+}
+
+export function isReviewUnresolvedFile(file: AiTrackedFile): boolean {
+    return file.reviewState === "pending" || isReviewConflictFile(file);
+}
+
+export function formatReviewConflictReason(reason: string | undefined): string {
+    switch (reason) {
+        case "binary_file":
+            return "Binary file changed outside review";
+        case "encoding_unsupported":
+            return "File encoding is not supported";
+        case "too_large":
+            return "File is too large for inline review";
+        default:
+            return "Manual review required";
+    }
+}
+
 export function getFileTone(file: AiTrackedFile): ReviewFileTone {
+    if (isReviewConflictFile(file)) {
+        return { accent: "var(--diff-warn)", badge: "Conflict" };
+    }
+
     if (isPartialFile(file)) {
         return { accent: "var(--diff-warn)", badge: "Partial" };
     }
@@ -62,6 +87,10 @@ export function getFileTone(file: AiTrackedFile): ReviewFileTone {
 }
 
 export function getFileSummary(file: AiTrackedFile): string {
+    if (isReviewConflictFile(file)) {
+        return formatReviewConflictReason(file.conflict);
+    }
+
     if (file.kind === "move" && file.previousPath) {
         return `Moved from ${getFileNameFromPath(file.previousPath)}`;
     }

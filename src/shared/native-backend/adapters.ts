@@ -4,10 +4,13 @@ import type {
     AiRuntimeStatus,
     AiRuntimeSource,
     AiRuntimeState,
+    AiFileDiff,
+    AiReviewConflict,
     AiSessionConfigOption,
     AiSessionStatus,
     AiSessionDomainEvent,
     AiSessionMessageEventKind,
+    AiTrackedFile,
     AiPermissionOption,
     AiToolActivity,
     AiUserInputQuestion,
@@ -29,6 +32,8 @@ import type {
     NativeAiMessageStartedPayload,
     NativeAiPermissionRequestPayload,
     NativeAiPlanUpdatedPayload,
+    NativeAiReviewUpdatedPayload,
+    NativeAiReviewCommandOutput,
     NativeAiRuntimeStatus,
     NativeAiSessionCatalogUpdatedPayload,
     NativeAiSessionCreatedPayload,
@@ -174,6 +179,12 @@ export function nativeAiEventToIpc(
     if (event.eventName === "ai://token-usage") {
         return nativeAiTokenUsageToIpc(
             requireRecord(event.payload) as unknown as NativeAiTokenUsagePayload,
+        );
+    }
+
+    if (event.eventName === "ai://review-updated") {
+        return nativeAiReviewUpdatedToIpc(
+            requireRecord(event.payload) as unknown as NativeAiReviewUpdatedPayload,
         );
     }
 
@@ -524,7 +535,7 @@ function nativeAiToolActivityToIpc(
     const activity: AiToolActivity = {
         action: null,
         createdAt: payload.updatedAt,
-        diffs: [],
+        diffs: nativeFileDiffsToIpc(payload.diffs),
         exitCode: null,
         id: payload.toolCallId,
         kind: payload.kind,
@@ -655,6 +666,200 @@ function nativeAiTokenUsageToIpc(
     };
 }
 
+function nativeAiReviewUpdatedToIpc(
+    payload: NativeAiReviewUpdatedPayload,
+): AiSessionDomainEvent {
+    const conflicts = nativeReviewConflictsToIpc(payload.conflicts);
+    return {
+        ...nativeAiEventBase(payload),
+        conflicts,
+        kind: "review",
+        trackedFiles: nativeReviewTrackedFilesWithConflictsToIpc({
+            conflicts,
+            sessionId: payload.sessionId,
+            trackedFiles: payload.trackedFiles,
+            updatedAt: payload.updatedAt,
+        }),
+    };
+}
+
+export function nativeReviewCommandTrackedFilesToIpc(
+    output: NativeAiReviewCommandOutput,
+): readonly AiTrackedFile[] {
+    return nativeReviewTrackedFilesWithConflictsToIpc({
+        conflicts: nativeReviewConflictsToIpc(output.conflicts),
+        sessionId: output.sessionId,
+        trackedFiles: output.trackedFiles,
+        updatedAt: output.updatedAt,
+    });
+}
+
+export function nativeReviewTrackedFileToIpc(value: unknown): AiTrackedFile {
+    const record = requireRecord(value);
+    const reviewState = readString(record, "reviewState", "pending");
+    const version =
+        typeof record.version === "number" && Number.isFinite(record.version)
+            ? Math.max(1, Math.trunc(record.version))
+            : null;
+    return {
+        ...(typeof record.diffBase === "string"
+            ? { diffBase: record.diffBase }
+            : {}),
+        ...(typeof record.currentText === "string"
+            ? { currentText: record.currentText }
+            : {}),
+        ...(typeof record.conflict === "string"
+            ? { conflict: record.conflict }
+            : {}),
+        ...(record.hunksAreAnchored === true
+            ? { hunksAreAnchored: true }
+            : {}),
+        identityKey: readString(record, "identityKey", readString(record, "path", "")),
+        hunks: Array.isArray(record.hunks)
+            ? (record.hunks as AiTrackedFile["hunks"])
+            : [],
+        isText: record.isText !== false,
+        kind: readTrackedFileKind(record.kind),
+        newText: readNullableString(record, "newText"),
+        oldText: readNullableString(record, "oldText"),
+        path: readString(record, "path", ""),
+        previousPath: readNullableString(record, "previousPath"),
+        reviewState:
+            reviewState === "conflict" ||
+            reviewState === "kept" ||
+            reviewState === "rejected"
+                ? reviewState
+                : "pending",
+        reversible: record.reversible !== false,
+        sessionId: readString(record, "sessionId", ""),
+        toolCallId: readNullableString(record, "toolCallId"),
+        updatedAt: readString(record, "updatedAt", new Date(0).toISOString()),
+        ...(version !== null ? { version } : {}),
+    };
+}
+
+function nativeReviewTrackedFilesWithConflictsToIpc(input: {
+    readonly conflicts: readonly AiReviewConflict[];
+    readonly sessionId: string;
+    readonly trackedFiles: readonly unknown[];
+    readonly updatedAt: string;
+}): readonly AiTrackedFile[] {
+    const conflictsByPath = new Map(
+        input.conflicts.map((conflict) => [conflict.path, conflict] as const),
+    );
+    const trackedFiles = input.trackedFiles.map((entry) => {
+        const trackedFile = nativeReviewTrackedFileToIpc(entry);
+        const conflict =
+            conflictsByPath.get(trackedFile.path) ??
+            (trackedFile.previousPath
+                ? conflictsByPath.get(trackedFile.previousPath)
+                : undefined);
+        if (!conflict) {
+            return trackedFile;
+        }
+        return nativeReviewConflictToTrackedFile(
+            conflict,
+            trackedFile.sessionId || input.sessionId,
+            trackedFile.updatedAt || input.updatedAt,
+        );
+    });
+    const trackedPaths = new Set(
+        trackedFiles.flatMap((file) => [
+            file.path,
+            ...(file.previousPath ? [file.previousPath] : []),
+        ]),
+    );
+    const conflictFiles = input.conflicts
+        .filter((conflict) => conflict.path.length > 0)
+        .filter((conflict) => !trackedPaths.has(conflict.path))
+        .map((conflict) =>
+            nativeReviewConflictToTrackedFile(
+                conflict,
+                input.sessionId,
+                input.updatedAt,
+            ),
+        );
+    return [...trackedFiles, ...conflictFiles];
+}
+
+function nativeReviewConflictsToIpc(value: unknown): readonly AiReviewConflict[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value.flatMap((entry) => {
+        try {
+            return [nativeReviewConflictToIpc(entry)];
+        } catch {
+            return [];
+        }
+    });
+}
+
+function nativeReviewConflictToIpc(value: unknown): AiReviewConflict {
+    const record = requireRecord(value);
+    return {
+        externalChangeHash: readNullableString(record, "externalChangeHash"),
+        path: readString(record, "path", ""),
+        reason: readString(record, "reason", "unknown"),
+    };
+}
+
+function nativeReviewConflictToTrackedFile(
+    conflict: AiReviewConflict,
+    sessionId: string,
+    updatedAt: string,
+): AiTrackedFile {
+    return {
+        conflict: conflict.reason,
+        currentText: "",
+        diffBase: "",
+        hunks: [],
+        identityKey: `native:${sessionId}:conflict:${conflict.path}`,
+        isText: false,
+        kind: "update",
+        newText: null,
+        oldText: null,
+        path: conflict.path,
+        previousPath: null,
+        reviewState: "conflict",
+        reversible: false,
+        sessionId,
+        toolCallId: null,
+        updatedAt,
+        version: 1,
+    };
+}
+
+function nativeFileDiffsToIpc(value: unknown): readonly AiFileDiff[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return value.flatMap((entry) => {
+        try {
+            return [nativeFileDiffToIpc(entry)];
+        } catch {
+            return [];
+        }
+    });
+}
+
+function nativeFileDiffToIpc(value: unknown): AiFileDiff {
+    const record = requireRecord(value);
+    return {
+        hunks: Array.isArray(record.hunks)
+            ? (record.hunks as AiFileDiff["hunks"])
+            : [],
+        isText: record.isText !== false,
+        kind: readTrackedFileKind(record.kind),
+        newText: readNullableString(record, "newText"),
+        oldText: readNullableString(record, "oldText"),
+        path: readString(record, "path", ""),
+        previousPath: readNullableString(record, "previousPath"),
+        reversible: record.reversible !== false,
+    };
+}
+
 function nativeAiErrorToIpc(payload: NativeAiErrorPayload): AiSessionDomainEvent | null {
     if (!payload.sessionId || !payload.runtimeId) {
         return null;
@@ -731,6 +936,32 @@ function requireRecord(value: unknown): Record<string, unknown> {
     }
 
     return value as Record<string, unknown>;
+}
+
+function readString(
+    record: Record<string, unknown>,
+    key: string,
+    fallback: string,
+): string {
+    const value = record[key];
+    return typeof value === "string" ? value : fallback;
+}
+
+function readNullableString(
+    record: Record<string, unknown>,
+    key: string,
+): string | null {
+    const value = record[key];
+    return typeof value === "string" ? value : null;
+}
+
+function readTrackedFileKind(value: unknown): AiTrackedFile["kind"] {
+    return value === "create" ||
+        value === "delete" ||
+        value === "move" ||
+        value === "update"
+        ? value
+        : "update";
 }
 
 function parseNativeProjectFileKind(

@@ -31,6 +31,7 @@ import type {
     AiSessionSnapshot,
     AiSessionUpdate,
     AiSessionTranscriptPage,
+    AiTrackedFile,
     AiUserInputResponseInput,
     FileBufferNotificationInput,
     GetAiSessionTranscriptPageInput,
@@ -186,10 +187,18 @@ export interface AiWorkerGateway {
 
 export interface NativeAiGateway {
     cancelSession(sessionId: string): Promise<void>;
+    captureReviewBaseline?(sessionId: string): Promise<boolean>;
     close(): Promise<void> | void;
     closeOwnedByWindow(ownerWindowId: string): Promise<void> | void;
     closeSession(sessionId: string): Promise<void>;
     deleteSession(sessionId: string): Promise<void>;
+    keepAllTrackedFiles?(input: AiWorkerReviewSessionRpcInput<string>): Promise<AiWorkerReviewMutationResult>;
+    keepTrackedFile?(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult>;
+    keepTrackedFileHunks?(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult>;
     listSessionHistory(
         input: ListAiSessionHistoryInput,
     ): Promise<readonly AiHistorySessionSummary[]>;
@@ -200,6 +209,16 @@ export interface NativeAiGateway {
     loadSessionTranscriptPage(
         input: GetAiSessionTranscriptPageInput,
     ): Promise<AiSessionTranscriptPage | null>;
+    loadReviewState?(sessionId: string): Promise<readonly AiTrackedFile[]>;
+    notifyFileBuffer?(input: FileBufferNotificationInput): Promise<void>;
+    reconcileTrackedFiles?(sessionId: string): Promise<readonly AiTrackedFile[]>;
+    rejectAllTrackedFiles?(input: AiWorkerReviewSessionRpcInput<string>): Promise<AiWorkerReviewMutationResult>;
+    rejectTrackedFile?(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult>;
+    rejectTrackedFileHunks?(
+        input: AiWorkerReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
+    ): Promise<AiWorkerReviewMutationResult>;
     renameSession(input: AiSessionRenameMutationInput): Promise<void>;
     prepareSession(input: NativeAiPrepareSessionRpcInput): Promise<AiSessionSnapshot>;
     respondPermission(input: AiPermissionResponseInput): Promise<void>;
@@ -212,6 +231,7 @@ export interface NativeAiGateway {
     setSessionMode(input: AiSessionModeMutationInput): Promise<void>;
     setSessionModel(input: AiSessionModelMutationInput): Promise<void>;
     shouldHandleHistory(): boolean;
+    shouldHandleReview?(): boolean;
     shouldHandleRuntime(runtimeId: AiRuntimeId): boolean;
 }
 

@@ -2330,6 +2330,7 @@ export interface AiUserInputRequest {
 }
 
 export interface AiTrackedFile {
+    readonly conflict?: string;
     readonly identityKey: string;
     readonly diffBase?: string;
     readonly currentText?: string;
@@ -2341,12 +2342,18 @@ export interface AiTrackedFile {
     readonly oldText: string | null;
     readonly path: string;
     readonly previousPath: string | null;
-    readonly reviewState: "kept" | "pending" | "rejected";
+    readonly reviewState: "conflict" | "kept" | "pending" | "rejected";
     readonly reversible: boolean;
     readonly sessionId: string;
     readonly toolCallId: string | null;
     readonly updatedAt: string;
     readonly version?: number;
+}
+
+export interface AiReviewConflict {
+    readonly externalChangeHash: string | null;
+    readonly path: string;
+    readonly reason: string;
 }
 
 export type AiSessionConfigCategory = "mode" | "model" | "other" | "reasoning";
@@ -2464,6 +2471,7 @@ export interface AiSessionDomainEventBase {
         | "message-started"
         | "permission-request"
         | "plan"
+        | "review"
         | "session-info"
         | "status"
         | "subagent-breadcrumb"
@@ -2564,6 +2572,12 @@ export interface AiSessionTokenUsageEvent extends AiSessionDomainEventBase {
     readonly tokenUsage: AiTokenUsage | null;
 }
 
+export interface AiSessionReviewEvent extends AiSessionDomainEventBase {
+    readonly conflicts?: readonly AiReviewConflict[];
+    readonly kind: "review";
+    readonly trackedFiles: readonly AiTrackedFile[];
+}
+
 export interface AiSessionInfoEvent extends AiSessionDomainEventBase {
     readonly kind: "session-info";
     readonly projectId: string | null;
@@ -2595,6 +2609,7 @@ export type AiSessionDomainEvent =
     | AiSessionMessageStartedEvent
     | AiSessionPermissionRequestEvent
     | AiSessionPlanEvent
+    | AiSessionReviewEvent
     | AiSessionStatusEvent
     | AiSessionSubagentBreadcrumbEvent
     | AiSessionSubagentCreatedEvent

@@ -1,6 +1,10 @@
 import { memo, type RefObject } from "react";
 
-import type { ReviewFileItem } from "./editedFilesPresentationModel";
+import {
+    formatReviewConflictReason,
+    isReviewConflictFile,
+    type ReviewFileItem,
+} from "./editedFilesPresentationModel";
 import { EditedFileDiffPreview } from "./EditedFileDiffPreview";
 import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 import {
@@ -171,6 +175,10 @@ export const ReviewFileRow = memo(function ReviewFileRow({
 }: ReviewFileRowProps) {
     const badgeLabel = getReviewBadgeLabel(item);
     const canShowOpen = item.canOpen && onOpen;
+    const canKeep = !isReviewConflictFile(item.file);
+    const conflictPreviewLabel = isReviewConflictFile(item.file)
+        ? formatReviewConflictReason(item.file.conflict)
+        : undefined;
     const compactPath = getCompactPath(item.file.path);
     const resolvedLineWrapping =
         lineWrapping ?? shouldWrapDiffPreview(item.file.path);
@@ -280,8 +288,9 @@ export const ReviewFileRow = memo(function ReviewFileRow({
                         <button
                             aria-label="Keep"
                             className="review-icon-btn review-icon-btn--keep shrink-0"
-                            onClick={onKeep}
-                            title="Keep"
+                            disabled={!canKeep}
+                            onClick={canKeep ? onKeep : undefined}
+                            title={canKeep ? "Keep" : "Resolve manually"}
                             type="button"
                         >
                             <ReviewKeepIcon size={14} />
@@ -488,16 +497,17 @@ export const ReviewFileRow = memo(function ReviewFileRow({
                     <button
                         aria-label="Accept"
                         className="review-ghost-btn shrink-0"
-                        onClick={onKeep}
+                        disabled={!canKeep}
+                        onClick={canKeep ? onKeep : undefined}
                         style={{
                             color: "var(--diff-add)",
-                            cursor: "pointer",
+                            cursor: canKeep ? "pointer" : "not-allowed",
                             fontSize: "0.72em",
                             fontWeight: 600,
-                            opacity: 0.6,
+                            opacity: canKeep ? 0.6 : 0.3,
                             padding: "2px 5px",
                         }}
-                        title="Accept"
+                        title={canKeep ? "Accept" : "Resolve manually"}
                         type="button"
                     >
                         accept
@@ -511,6 +521,7 @@ export const ReviewFileRow = memo(function ReviewFileRow({
                 diffZoom={diffZoom}
                 expanded={expanded}
                 file={item.file}
+                emptyLabel={conflictPreviewLabel}
                 lineWrapping={resolvedLineWrapping}
                 onKeepHunk={item.canResolveHunks ? onKeepHunk : undefined}
                 onRejectHunk={item.canResolveHunks ? onRejectHunk : undefined}
