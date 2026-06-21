@@ -2727,6 +2727,7 @@ export interface AiUserInputResponseInput {
 
 export interface AiRuntimeAuthLaunchInput {
     readonly methodId: string;
+    readonly ownerWindowId?: string | null;
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
     readonly worktreeId?: string | null;

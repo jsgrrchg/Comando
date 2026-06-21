@@ -11,6 +11,7 @@ comando-git = { path = "../../crates/comando-git" }
 comando-index = { path = "../../crates/comando-index" }
 comando-persistence = { path = "../../crates/comando-persistence" }
 comando-projects = { path = "../../crates/comando-projects" }
+comando-settings.workspace = true
 comando-terminal = { path = "../../crates/comando-terminal" }
 comando-types.workspace = true
 serde.workspace = true

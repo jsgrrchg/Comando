@@ -3,6 +3,9 @@ import type {
     AiMessage,
     AiPermissionResponseInput,
     AiPromptResult,
+    AiRuntimeAuthDisconnectInput,
+    AiRuntimeAuthLaunchInput,
+    AiRuntimeAuthLogoutInput,
     AiRuntimeId,
     AiRuntimeStatus,
     AiSessionConfigOptionMutationInput,
@@ -33,6 +36,7 @@ import {
     type NativeAiCloseSessionOutput,
     type NativeAiHistorySessionSummary,
     type NativeAiLaunchSpec,
+    type NativeAiLaunchRuntimeAuthOutput,
     type NativeAiReviewCaptureOutput,
     type NativeAiReviewCommandOutput,
     type NativeAiRuntimeSessionMapping,
@@ -52,6 +56,7 @@ import type {
     AiWorkerRuntimeSessionMapping,
     NativeAiGateway as NativeAiGatewayContract,
     NativeAiPrepareSessionRpcInput,
+    NativeAiRuntimeSettingsRpcInput,
     NativeAiSendPromptRpcInput,
 } from "@main/ai/contracts";
 import type { NativeBackendRequester } from "./persistence";
@@ -139,6 +144,70 @@ export class NativeAiGateway implements NativeAiGatewayContract {
 
     shouldHandleRuntime(runtimeId: AiRuntimeId): boolean {
         return this.#enabledRuntimeIds.has(runtimeId);
+    }
+
+    async getRuntimeStatus(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus> {
+        const status = await this.#client.request<NativeAiRuntimeStatus>(
+            "ai_get_runtime_status",
+            { runtimeId },
+        );
+        return nativeAiRuntimeStatusToIpc(status);
+    }
+
+    async saveRuntimeSettings(
+        input: NativeAiRuntimeSettingsRpcInput,
+    ): Promise<AiRuntimeStatus> {
+        const status = await this.#client.request<NativeAiRuntimeStatus>(
+            "ai_save_runtime_settings",
+            {
+                runtimeId: input.runtimeId,
+                settings: input.settings,
+                secretPatches: input.secretPatches ?? [],
+            },
+        );
+        return nativeAiRuntimeStatusToIpc(status);
+    }
+
+    async launchRuntimeAuth(input: AiRuntimeAuthLaunchInput): Promise<void> {
+        const output =
+            await this.#client.request<NativeAiLaunchRuntimeAuthOutput>(
+                "ai_launch_runtime_auth",
+                {
+                    cols: null,
+                    cwd: null,
+                    methodId: input.methodId,
+                    projectId: input.projectId ?? null,
+                    rows: null,
+                    runtimeId: input.runtimeId,
+                    windowId: input.ownerWindowId ?? "auth",
+                    worktreeId: input.worktreeId ?? null,
+                },
+            );
+        this.#onRuntimeStatus(nativeAiRuntimeStatusToIpc(output.status));
+    }
+
+    async logoutRuntimeAuth(
+        input: AiRuntimeAuthLogoutInput,
+    ): Promise<AiRuntimeStatus> {
+        const status = await this.#client.request<NativeAiRuntimeStatus>(
+            "ai_logout_runtime_auth",
+            {
+                runtimeId: input.runtimeId,
+            },
+        );
+        return nativeAiRuntimeStatusToIpc(status);
+    }
+
+    async disconnectRuntimeAuth(
+        input: AiRuntimeAuthDisconnectInput,
+    ): Promise<AiRuntimeStatus> {
+        const status = await this.#client.request<NativeAiRuntimeStatus>(
+            "ai_disconnect_runtime_auth",
+            {
+                runtimeId: input.runtimeId,
+            },
+        );
+        return nativeAiRuntimeStatusToIpc(status);
     }
 
     shouldHandleHistory(): boolean {
@@ -407,7 +476,9 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                     additionalRoots: request.launch.additionalRoots,
                     configOptions: nativeConfigOptionsFromLaunch(request.launch),
                     cwd: request.launch.cwd,
-                    launch: nativeLaunchSpecFromRuntime(request.launch),
+                    launch: shouldUseNativeAuthWrite(process.env)
+                        ? null
+                        : nativeLaunchSpecFromRuntime(request.launch),
                     modeId: request.launch.desiredSelections.modeId,
                     modelId: request.launch.desiredSelections.modelId,
                     projectId: request.input.projectId,
@@ -1171,6 +1242,12 @@ function nativeRuntimeStatusFromIpc(
         authMethod: status.authMethod,
         authMethods: status.authMethods,
         authReady: status.authReady,
+        authCredentialSource: status.authCredentialSource ?? null,
+        authCredentialSourceLabel: status.authCredentialSourceLabel ?? null,
+        authSessionMessage: status.authSessionMessage ?? null,
+        authStorageMessage: status.authStorageMessage ?? null,
+        canDisconnectAuth: status.canDisconnectAuth ?? false,
+        canLogoutAuth: status.canLogoutAuth ?? false,
         checkedAt: status.checkedAt,
         command: status.command,
         hasCustomBinaryPath: status.hasCustomBinaryPath,
@@ -1201,6 +1278,13 @@ function sanitizeEnv(env: NodeJS.ProcessEnv): Record<string, string> {
             (entry): entry is [string, string] =>
                 typeof entry[0] === "string" && typeof entry[1] === "string",
         ),
+    );
+}
+
+function shouldUseNativeAuthWrite(env: NodeJS.ProcessEnv): boolean {
+    return (
+        env.COMANDO_NATIVE_AUTH === "1" &&
+        (env.COMANDO_NATIVE_AUTH_MODE ?? "shadow") === "write"
     );
 }
 

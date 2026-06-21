@@ -1,0 +1,14 @@
+[package]
+name = "comando-settings"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+comando-types.workspace = true
+keyring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"

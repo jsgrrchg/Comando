@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{
-    MessageId, ProjectId, RuntimeId, RuntimeSessionId, SessionId, ToolCallId, WorktreeId,
+    MessageId, ProjectId, RuntimeId, RuntimeSessionId, SessionId, TerminalSessionId, ToolCallId,
+    WindowId, WorktreeId,
 };
 
 pub type NativeAiRuntimeId = RuntimeId;
@@ -74,6 +75,15 @@ pub struct NativeAiAuthMethod {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeAiCredentialSource {
+    ComandoSecret,
+    Environment,
+    ExternalRuntime,
+    None,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiRuntimeStatus {
     pub runtime_id: NativeAiRuntimeId,
@@ -81,6 +91,18 @@ pub struct NativeAiRuntimeStatus {
     pub auth_method: Option<String>,
     pub auth_methods: Vec<NativeAiAuthMethod>,
     pub auth_ready: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_credential_source: Option<NativeAiCredentialSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_credential_source_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_session_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_storage_message: Option<String>,
+    #[serde(default)]
+    pub can_disconnect_auth: bool,
+    #[serde(default)]
+    pub can_logout_auth: bool,
     pub checked_at: String,
     pub command: Option<String>,
     pub message: Option<String>,
@@ -96,6 +118,122 @@ pub struct NativeAiRuntimeStatus {
 pub struct NativeAiGetRuntimeStatusInput {
     pub runtime_id: NativeAiRuntimeId,
     pub launch: Option<NativeAiLaunchSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeSecretStorageStatus {
+    pub backend: String,
+    pub available: bool,
+    pub weak: bool,
+    pub message: Option<String>,
+    pub platform: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeSecretSetInput {
+    pub runtime_id: NativeAiRuntimeId,
+    pub env_key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeSecretDeleteInput {
+    pub runtime_id: NativeAiRuntimeId,
+    pub env_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeSecretMutationOutput {
+    pub runtime_id: NativeAiRuntimeId,
+    pub env_key: String,
+    pub present: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeSecretPatchAction {
+    Delete,
+    Set,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSecretPatch {
+    pub env_key: String,
+    pub action: NativeSecretPatchAction,
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiRuntimeSettingsPatch {
+    #[serde(default)]
+    pub binary_path: Option<String>,
+    #[serde(default)]
+    pub auth_method: Option<String>,
+    #[serde(default)]
+    pub auth_invalidated_at_ms: Option<u64>,
+    #[serde(default)]
+    pub gateway_base_url: Option<String>,
+    #[serde(default)]
+    pub bedrock_gateway_base_url: Option<String>,
+    #[serde(default)]
+    pub non_secret_env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSaveRuntimeSettingsInput {
+    pub runtime_id: NativeAiRuntimeId,
+    pub settings: NativeAiRuntimeSettingsPatch,
+    #[serde(default)]
+    pub secret_patches: Vec<NativeAiSecretPatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiRuntimeStatusOutput {
+    pub status: NativeAiRuntimeStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiLaunchRuntimeAuthInput {
+    pub runtime_id: NativeAiRuntimeId,
+    pub method_id: String,
+    pub window_id: WindowId,
+    #[serde(default)]
+    pub project_id: Option<ProjectId>,
+    #[serde(default)]
+    pub worktree_id: Option<WorktreeId>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub cols: Option<u16>,
+    #[serde(default)]
+    pub rows: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiLaunchRuntimeAuthOutput {
+    pub runtime_id: NativeAiRuntimeId,
+    pub method_id: String,
+    pub terminal_session_id: Option<TerminalSessionId>,
+    pub status: NativeAiRuntimeStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiRuntimeAuthInput {
+    pub runtime_id: NativeAiRuntimeId,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

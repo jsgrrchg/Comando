@@ -291,6 +291,12 @@ fn native_unavailable_status(definition: RuntimeDefinition) -> NativeAiRuntimeSt
         auth_method: None,
         auth_methods: Vec::new(),
         auth_ready: false,
+        auth_credential_source: None,
+        auth_credential_source_label: None,
+        auth_session_message: None,
+        auth_storage_message: None,
+        can_disconnect_auth: false,
+        can_logout_auth: false,
         checked_at: crate::events::now_iso8601(),
         command: Some(
             std::iter::once(definition.default_executable)

@@ -26,6 +26,9 @@ import type {
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiRuntimeId,
+    AiRuntimeAuthDisconnectInput,
+    AiRuntimeAuthLaunchInput,
+    AiRuntimeAuthLogoutInput,
     AiRuntimeStatus,
     AiSessionDomainEvent,
     AiSessionSnapshot,
@@ -210,6 +213,11 @@ export interface NativeAiGateway {
         input: GetAiSessionTranscriptPageInput,
     ): Promise<AiSessionTranscriptPage | null>;
     loadReviewState?(sessionId: string): Promise<readonly AiTrackedFile[]>;
+    getRuntimeStatus?(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus>;
+    saveRuntimeSettings?(input: NativeAiRuntimeSettingsRpcInput): Promise<AiRuntimeStatus>;
+    launchRuntimeAuth?(input: AiRuntimeAuthLaunchInput): Promise<void>;
+    logoutRuntimeAuth?(input: AiRuntimeAuthLogoutInput): Promise<AiRuntimeStatus>;
+    disconnectRuntimeAuth?(input: AiRuntimeAuthDisconnectInput): Promise<AiRuntimeStatus>;
     notifyFileBuffer?(input: FileBufferNotificationInput): Promise<void>;
     reconcileTrackedFiles?(sessionId: string): Promise<readonly AiTrackedFile[]>;
     rejectAllTrackedFiles?(input: AiWorkerReviewSessionRpcInput<string>): Promise<AiWorkerReviewMutationResult>;
@@ -233,6 +241,25 @@ export interface NativeAiGateway {
     shouldHandleHistory(): boolean;
     shouldHandleReview?(): boolean;
     shouldHandleRuntime(runtimeId: AiRuntimeId): boolean;
+}
+
+export interface NativeAiSecretPatchRpcInput {
+    readonly action: "delete" | "set";
+    readonly envKey: string;
+    readonly value?: string | null;
+}
+
+export interface NativeAiRuntimeSettingsRpcInput {
+    readonly runtimeId: AiRuntimeId;
+    readonly settings: {
+        readonly authInvalidatedAtMs?: number | null;
+        readonly authMethod?: string | null;
+        readonly bedrockGatewayBaseUrl?: string | null;
+        readonly binaryPath?: string | null;
+        readonly gatewayBaseUrl?: string | null;
+        readonly nonSecretEnv?: Readonly<Record<string, string>>;
+    };
+    readonly secretPatches?: readonly NativeAiSecretPatchRpcInput[];
 }
 
 export interface AiWorkerDesiredSelections {

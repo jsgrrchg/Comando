@@ -82,6 +82,8 @@ import {
     type AiSessionRetentionConfig,
     type AiServiceOptions,
     type NativeAiGateway,
+    type NativeAiSecretPatchRpcInput,
+    type NativeAiRuntimeSettingsRpcInput,
     type ResolvedAcpRuntime,
     type SessionDescriptor,
 } from "./contracts";
@@ -448,6 +450,7 @@ export class AiService {
         }
     >();
     #nativeAi: NativeAiGateway | null;
+    readonly #nativeAuthMigratedRuntimeIds = new Set<AiRuntimeId>();
     readonly #nativeChildParentSessionIds = new Map<string, string>();
     readonly #nativeReviewBaselines = new Map<string, NativeReviewBaseline>();
     readonly #nativeReviewReconciliations = new Set<string>();
@@ -764,6 +767,14 @@ export class AiService {
     }
 
     async getRuntimeStatus(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus> {
+        const nativeAi = this.#nativeAuthGateway(runtimeId);
+        if (nativeAi?.getRuntimeStatus) {
+            await this.#migrateNativeRuntimeSettingsIfNeeded(runtimeId);
+            const status = await nativeAi.getRuntimeStatus(runtimeId);
+            this.#onRuntimeStatus(status);
+            return status;
+        }
+
         const resolvedStatus = this.#withPersistedRuntimeCatalog(
             this.#resolveRuntimeStatus(runtimeId),
         );
@@ -810,6 +821,29 @@ export class AiService {
             hasOpenAiApiKey: secretPatch.flags.hasOpenAiApiKey,
         } satisfies CodexRuntimeSettings;
         await this.#saveCodexAuthSettings(nextSettings, secretPatch.patches);
+        const nativeStatus = await this.#saveNativeRuntimeSettingsIfEnabled({
+            runtimeId: "codex",
+            settings: {
+                authMethod: nextSettings.authMethod,
+                binaryPath: nextSettings.binaryPath,
+            },
+            secretPatches: [
+                ...nativeSecretPatchesFromValuePatch(
+                    "CODEX_API_KEY",
+                    settings.codexApiKey,
+                    nextSecrets.codexApiKey,
+                ),
+                ...nativeSecretPatchesFromValuePatch(
+                    "OPENAI_API_KEY",
+                    settings.openaiApiKey,
+                    nextSecrets.openaiApiKey,
+                ),
+            ],
+        });
+        if (nativeStatus) {
+            this.#onRuntimeStatus(nativeStatus);
+            return nativeStatus;
+        }
         const status = this.#withPersistedRuntimeCatalog(
             getCodexRuntimeStatus(nextSettings, nextSecrets),
         );
@@ -854,6 +888,37 @@ export class AiService {
         };
 
         await this.#saveClaudeAuthSettings(nextSettings, secretPatch.patches);
+        const nativeStatus = await this.#saveNativeRuntimeSettingsIfEnabled({
+            runtimeId: "claude",
+            settings: {
+                authInvalidatedAtMs: nextSettings.authInvalidatedAtMs,
+                authMethod: nextSettings.authMethod,
+                bedrockGatewayBaseUrl: nextSettings.bedrockGatewayBaseUrl,
+                binaryPath: nextSettings.binaryPath,
+                gatewayBaseUrl: nextSettings.gatewayBaseUrl,
+            },
+            secretPatches: [
+                ...nativeSecretPatchesFromValuePatch(
+                    "ANTHROPIC_API_KEY",
+                    settings.anthropicApiKey,
+                    anthropicApiKey,
+                ),
+                ...nativeSecretPatchesFromValuePatch(
+                    "ANTHROPIC_AUTH_TOKEN",
+                    settings.gatewayAuthToken,
+                    gatewayAuthToken,
+                ),
+                ...nativeSecretPatchesFromValuePatch(
+                    "ANTHROPIC_CUSTOM_HEADERS",
+                    settings.gatewayCustomHeaders,
+                    gatewayCustomHeaders,
+                ),
+            ],
+        });
+        if (nativeStatus) {
+            this.#onRuntimeStatus(nativeStatus);
+            return nativeStatus;
+        }
         const status = this.#withPersistedRuntimeCatalog(
             getClaudeRuntimeStatus(nextSettings, this.#secretStore),
         );
@@ -895,6 +960,23 @@ export class AiService {
             persistedSettings,
             secretPatch.patches,
         );
+        const nativeStatus = await this.#saveNativeRuntimeSettingsIfEnabled({
+            runtimeId: "grok",
+            settings: {
+                authInvalidatedAtMs: persistedSettings.authInvalidatedAtMs,
+                authMethod: persistedSettings.authMethod,
+                binaryPath: persistedSettings.binaryPath,
+            },
+            secretPatches: nativeSecretPatchesFromValuePatch(
+                "XAI_API_KEY",
+                settings.xaiApiKey,
+                xaiApiKey,
+            ),
+        });
+        if (nativeStatus) {
+            this.#onRuntimeStatus(nativeStatus);
+            return nativeStatus;
+        }
         const status = this.#withPersistedRuntimeCatalog(
             getGrokRuntimeStatus(persistedSettings, this.#secretStore),
         );
@@ -921,6 +1003,23 @@ export class AiService {
         };
 
         await this.#saveKiloAuthSettings(nextSettings, secretPatch.patches);
+        const nativeStatus = await this.#saveNativeRuntimeSettingsIfEnabled({
+            runtimeId: "kilo",
+            settings: {
+                authInvalidatedAtMs: nextSettings.authInvalidatedAtMs,
+                authMethod: nextSettings.authMethod,
+                binaryPath: nextSettings.binaryPath,
+            },
+            secretPatches: nativeSecretPatchesFromValuePatch(
+                "KILO_API_KEY",
+                settings.kiloApiKey,
+                kiloApiKey,
+            ),
+        });
+        if (nativeStatus) {
+            this.#onRuntimeStatus(nativeStatus);
+            return nativeStatus;
+        }
         const status = this.#withPersistedRuntimeCatalog(
             getKiloRuntimeStatus(nextSettings, this.#secretStore),
         );
@@ -952,6 +1051,18 @@ export class AiService {
         };
 
         await this.#saveOpenCodeAuthSettings(nextSettings);
+        const nativeStatus = await this.#saveNativeRuntimeSettingsIfEnabled({
+            runtimeId: "opencode",
+            settings: {
+                authInvalidatedAtMs: nextSettings.authInvalidatedAtMs,
+                authMethod: nextSettings.authMethod,
+                binaryPath: nextSettings.binaryPath,
+            },
+        });
+        if (nativeStatus) {
+            this.#onRuntimeStatus(nativeStatus);
+            return nativeStatus;
+        }
         const status = this.#withPersistedRuntimeCatalog(
             getOpenCodeRuntimeStatus(nextSettings, this.#secretStore),
         );
@@ -1543,6 +1654,16 @@ export class AiService {
     }
 
     async launchRuntimeAuth(input: AiRuntimeAuthLaunchInput): Promise<void> {
+        const nativeAi = this.#nativeAuthGateway(input.runtimeId);
+        if (
+            nativeAi?.launchRuntimeAuth &&
+            process.env.COMANDO_NATIVE_AUTH_TERMINAL === "1" &&
+            input.runtimeId !== "codex"
+        ) {
+            await nativeAi.launchRuntimeAuth(input);
+            return;
+        }
+
         const cwd = input.projectId
             ? this.#projectService.getProjectRootPath(
                   input.projectId,
@@ -1730,6 +1851,13 @@ export class AiService {
     async logoutRuntimeAuth(
         input: AiRuntimeAuthLogoutInput,
     ): Promise<AiRuntimeStatus> {
+        const nativeAi = this.#nativeAuthGateway(input.runtimeId);
+        if (nativeAi?.logoutRuntimeAuth && input.runtimeId !== "codex") {
+            const status = await nativeAi.logoutRuntimeAuth(input);
+            this.#onRuntimeStatus(status);
+            return status;
+        }
+
         if (input.runtimeId !== "codex") {
             throw new Error(
                 `${getRuntimeDisplayName(input.runtimeId)} does not support logout yet.`,
@@ -1798,6 +1926,13 @@ export class AiService {
     async disconnectRuntimeAuth(
         input: AiRuntimeAuthDisconnectInput,
     ): Promise<AiRuntimeStatus> {
+        const nativeAi = this.#nativeAuthGateway(input.runtimeId);
+        if (nativeAi?.disconnectRuntimeAuth) {
+            const status = await nativeAi.disconnectRuntimeAuth(input);
+            this.#onRuntimeStatus(status);
+            return status;
+        }
+
         if (input.runtimeId === "codex") {
             const currentSettings =
                 this.#settingsService.loadCodexRuntimeSettings();
@@ -1931,6 +2066,158 @@ export class AiService {
         }
 
         return this.#nativeAi;
+    }
+
+    #nativeAuthGateway(runtimeId: AiRuntimeId): NativeAiGateway | null {
+        if (!shouldUseNativeAuthWrite(process.env)) {
+            return null;
+        }
+
+        return this.#selectNativeAiGateway(runtimeId);
+    }
+
+    async #saveNativeRuntimeSettingsIfEnabled(
+        input: NativeAiRuntimeSettingsRpcInput,
+    ): Promise<AiRuntimeStatus | null> {
+        const nativeAi = this.#nativeAuthGateway(input.runtimeId);
+        if (!nativeAi?.saveRuntimeSettings) {
+            return null;
+        }
+
+        return await nativeAi.saveRuntimeSettings(input);
+    }
+
+    async #migrateNativeRuntimeSettingsIfNeeded(
+        runtimeId: AiRuntimeId,
+    ): Promise<void> {
+        if (this.#nativeAuthMigratedRuntimeIds.has(runtimeId)) {
+            return;
+        }
+        const nativeAi = this.#nativeAuthGateway(runtimeId);
+        if (!nativeAi?.saveRuntimeSettings) {
+            return;
+        }
+        const input = this.#legacyRuntimeSettingsForNative(runtimeId);
+        if (!input) {
+            this.#nativeAuthMigratedRuntimeIds.add(runtimeId);
+            return;
+        }
+        await nativeAi.saveRuntimeSettings(input);
+        this.#nativeAuthMigratedRuntimeIds.add(runtimeId);
+    }
+
+    #legacyRuntimeSettingsForNative(
+        runtimeId: AiRuntimeId,
+    ): NativeAiRuntimeSettingsRpcInput | null {
+        switch (runtimeId) {
+            case "codex": {
+                const settings = this.#settingsService.loadCodexRuntimeSettings();
+                return {
+                    runtimeId,
+                    settings: {
+                        authMethod: settings.authMethod,
+                        binaryPath: settings.binaryPath,
+                    },
+                    secretPatches: [
+                        ...nativeSetSecretPatch(
+                            "CODEX_API_KEY",
+                            this.#secretStore.loadSecret(
+                                "ai.codex",
+                                "codex_api_key",
+                            ),
+                        ),
+                        ...nativeSetSecretPatch(
+                            "OPENAI_API_KEY",
+                            this.#secretStore.loadSecret(
+                                "ai.codex",
+                                "openai_api_key",
+                            ),
+                        ),
+                    ],
+                };
+            }
+            case "claude": {
+                const settings =
+                    this.#settingsService.loadClaudeRuntimeSettings();
+                return {
+                    runtimeId,
+                    settings: {
+                        authInvalidatedAtMs: settings.authInvalidatedAtMs,
+                        authMethod: settings.authMethod,
+                        bedrockGatewayBaseUrl: settings.bedrockGatewayBaseUrl,
+                        binaryPath: settings.binaryPath,
+                        gatewayBaseUrl: settings.gatewayBaseUrl,
+                    },
+                    secretPatches: [
+                        ...nativeSetSecretPatch(
+                            "ANTHROPIC_API_KEY",
+                            this.#secretStore.loadSecret(
+                                "ai.claude",
+                                "anthropic_api_key",
+                            ),
+                        ),
+                        ...nativeSetSecretPatch(
+                            "ANTHROPIC_AUTH_TOKEN",
+                            this.#secretStore.loadSecret(
+                                "ai.claude",
+                                "anthropic_auth_token",
+                            ),
+                        ),
+                        ...nativeSetSecretPatch(
+                            "ANTHROPIC_CUSTOM_HEADERS",
+                            this.#secretStore.loadSecret(
+                                "ai.claude",
+                                "anthropic_custom_headers",
+                            ),
+                        ),
+                    ],
+                };
+            }
+            case "grok": {
+                const settings = this.#settingsService.loadGrokRuntimeSettings();
+                return {
+                    runtimeId,
+                    settings: {
+                        authInvalidatedAtMs: settings.authInvalidatedAtMs,
+                        authMethod: settings.authMethod,
+                        binaryPath: settings.binaryPath,
+                    },
+                    secretPatches: nativeSetSecretPatch(
+                        "XAI_API_KEY",
+                        this.#secretStore.loadSecret("ai.grok", "xai_api_key"),
+                    ),
+                };
+            }
+            case "kilo": {
+                const settings = this.#settingsService.loadKiloRuntimeSettings();
+                return {
+                    runtimeId,
+                    settings: {
+                        authInvalidatedAtMs: settings.authInvalidatedAtMs,
+                        authMethod: settings.authMethod,
+                        binaryPath: settings.binaryPath,
+                    },
+                    secretPatches: nativeSetSecretPatch(
+                        "KILO_API_KEY",
+                        this.#secretStore.loadSecret("ai.kilo", "kilo_api_key"),
+                    ),
+                };
+            }
+            case "opencode": {
+                const settings =
+                    this.#settingsService.loadOpenCodeRuntimeSettings();
+                return {
+                    runtimeId,
+                    settings: {
+                        authInvalidatedAtMs: settings.authInvalidatedAtMs,
+                        authMethod: settings.authMethod,
+                        binaryPath: settings.binaryPath,
+                    },
+                };
+            }
+            case "gemini":
+                return null;
+        }
     }
 
     #isNativeAiSession(sessionId: string): boolean {
@@ -4313,6 +4600,50 @@ function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
     if (typeof timer.unref === "function") {
         timer.unref();
     }
+}
+
+function shouldUseNativeAuthWrite(env: NodeJS.ProcessEnv): boolean {
+    return (
+        env.COMANDO_NATIVE_AUTH === "1" &&
+        (env.COMANDO_NATIVE_AUTH_MODE ?? "shadow") === "write"
+    );
+}
+
+function nativeSecretPatchesFromValuePatch(
+    envKey: string,
+    patch: SecretValuePatch,
+    resolvedValue: string | null,
+): readonly NativeAiSecretPatchRpcInput[] {
+    switch (patch.kind) {
+        case "clear":
+            return [{ action: "delete", envKey }];
+        case "set":
+            return [
+                {
+                    action: resolvedValue?.trim() ? "set" : "delete",
+                    envKey,
+                    value: resolvedValue,
+                },
+            ];
+        case "unchanged":
+            return [];
+    }
+}
+
+function nativeSetSecretPatch(
+    envKey: string,
+    value: string | null,
+): readonly NativeAiSecretPatchRpcInput[] {
+    const normalized = normalizeOptionalText(value);
+    return normalized
+        ? [
+              {
+                  action: "set",
+                  envKey,
+                  value: normalized,
+              },
+          ]
+        : [];
 }
 
 export const __testing = {

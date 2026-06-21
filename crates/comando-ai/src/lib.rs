@@ -8,6 +8,7 @@ pub mod history;
 pub mod permissions;
 pub mod redaction;
 pub mod runtime;
+pub mod runtime_setup;
 pub mod scope;
 pub mod session;
 pub mod stream;

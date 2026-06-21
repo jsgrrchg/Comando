@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
 
+use comando_settings::RuntimeSetupStore;
 use comando_types::ai::{
     NativeAiCancelSessionOutput, NativeAiCloseSessionOutput, NativeAiGetRuntimeStatusInput,
     NativeAiListRuntimesOutput, NativeAiPermissionResponseInput, NativeAiPrepareSessionInput,
@@ -31,6 +32,10 @@ use crate::history::{
     AiHistorySubagentMetadata,
 };
 use crate::runtime::RuntimeRegistry;
+use crate::runtime_setup::{
+    RuntimeAuthTerminalLaunch, invalidate_grok_auth_on_error, prepare_auth_terminal_launch,
+    prepare_runtime_launch, runtime_status,
+};
 use crate::session::{NativeAiSession, SessionRegistry};
 
 #[derive(Debug, Clone)]
@@ -53,6 +58,7 @@ pub struct AiEngine {
     registry: RuntimeRegistry,
     history_messages: Arc<Mutex<HashMap<String, Vec<Value>>>>,
     history_store: Arc<Mutex<Option<AiHistoryStore>>>,
+    runtime_setup_store: Arc<Mutex<Option<RuntimeSetupStore>>>,
     runtime: Arc<tokio::runtime::Runtime>,
     sessions: Arc<Mutex<SessionRegistry>>,
 }
@@ -71,6 +77,7 @@ impl AiEngine {
             registry: RuntimeRegistry::default(),
             history_messages: Arc::new(Mutex::new(HashMap::new())),
             history_store: Arc::new(Mutex::new(None)),
+            runtime_setup_store: Arc::new(Mutex::new(None)),
             runtime: Arc::new(
                 tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
@@ -100,6 +107,14 @@ impl AiEngine {
         Ok(())
     }
 
+    pub fn set_runtime_setup_store(&self, store: Option<RuntimeSetupStore>) -> AiResult<()> {
+        let mut runtime_setup_store = self.runtime_setup_store.lock().map_err(|error| {
+            AiError::Internal(format!("AI runtime setup store lock failed: {error}"))
+        })?;
+        *runtime_setup_store = store;
+        Ok(())
+    }
+
     pub fn list_runtimes(&self) -> NativeAiListRuntimesOutput {
         list_runtimes_output(self.registry.list())
     }
@@ -109,8 +124,27 @@ impl AiEngine {
         input: NativeAiGetRuntimeStatusInput,
     ) -> AiResult<NativeAiRuntimeStatus> {
         let runtime_id = input.runtime_id.0;
+        if let Some(store) = self.runtime_setup_store()? {
+            let definition = self.registry.get(&runtime_id)?;
+            return runtime_status(&store, definition);
+        }
         let launch_status = input.launch.map(|launch| launch.status);
         self.registry.status_from_launch(&runtime_id, launch_status)
+    }
+
+    pub fn prepare_auth_terminal_launch(
+        &self,
+        runtime_id: &str,
+        method_id: &str,
+    ) -> AiResult<RuntimeAuthTerminalLaunch> {
+        let definition = self.registry.require_native(runtime_id)?;
+        let store =
+            self.runtime_setup_store()?
+                .ok_or_else(|| AiError::RuntimeLaunchContextInvalid {
+                    runtime_id: runtime_id.to_string(),
+                    message: "Native runtime setup is not initialized.".to_string(),
+                })?;
+        prepare_auth_terminal_launch(&store, definition, method_id)
     }
 
     pub fn prepare_session(
@@ -118,6 +152,18 @@ impl AiEngine {
         input: NativeAiPrepareSessionInput,
     ) -> AiResult<NativeAiSessionSummary> {
         let definition = self.registry.require_native(&input.runtime_id.0)?;
+        let resolved_launch = match input.launch.clone() {
+            Some(launch) => launch,
+            None => {
+                let store = self.runtime_setup_store()?.ok_or_else(|| {
+                    AiError::RuntimeLaunchContextInvalid {
+                        runtime_id: input.runtime_id.0.clone(),
+                        message: "Native runtime setup is not initialized.".to_string(),
+                    }
+                })?;
+                prepare_runtime_launch(&store, definition, &input)?.launch
+            }
+        };
         let history_metadata =
             AiHistorySessionMetadata::new_native(AiHistorySessionMetadataInput {
                 session_id: input.session_id.clone(),
@@ -125,7 +171,8 @@ impl AiEngine {
                 runtime_session_id: input
                     .launch
                     .as_ref()
-                    .and_then(|launch| launch.persisted_runtime_session_id.clone()),
+                    .and_then(|launch| launch.persisted_runtime_session_id.clone())
+                    .or_else(|| resolved_launch.persisted_runtime_session_id.clone()),
                 parent_session_id: None,
                 project_id: input.project_id.clone(),
                 worktree_id: input.worktree_id.clone(),
@@ -138,14 +185,8 @@ impl AiEngine {
                 additional_roots: input.additional_roots.clone(),
             });
 
-        let runtime_id = input.runtime_id.0.clone();
-        let launch = input
-            .launch
-            .clone()
-            .ok_or_else(|| AiError::RuntimeLaunchContextInvalid {
-                runtime_id: runtime_id.clone(),
-                message: "Native AI sessions require a launch context.".to_string(),
-            })?;
+        let launch = resolved_launch;
+        let runtime_id_for_invalidation = input.runtime_id.0.clone();
         let session = NativeAiSession::from_prepare_input(input)?;
         let sessions = self.lock_sessions()?;
         if sessions.get(&session.session_id).is_ok() {
@@ -158,13 +199,22 @@ impl AiEngine {
         let event_sender = self.event_sender()?;
         drop(sessions);
         let spec = AcpProcessSpec::from_launch(definition, &launch)?;
-        let (session, controller) = start_acp_session(
+        let (session, controller) = match start_acp_session(
             &self.runtime,
             spec,
             session,
             Arc::clone(&self.sessions),
             event_sender,
-        )?;
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                self.invalidate_runtime_auth_on_error(
+                    &runtime_id_for_invalidation,
+                    &error.to_string(),
+                );
+                return Err(error);
+            }
+        };
         let mut sessions = self.lock_sessions()?;
         let summary = sessions.insert_with_acp_controller(session, controller)?;
         drop(sessions);
@@ -490,6 +540,26 @@ impl AiEngine {
             .lock()
             .map_err(|error| AiError::Internal(format!("AI history store lock failed: {error}")))?
             .clone())
+    }
+
+    fn runtime_setup_store(&self) -> AiResult<Option<RuntimeSetupStore>> {
+        Ok(self
+            .runtime_setup_store
+            .lock()
+            .map_err(|error| {
+                AiError::Internal(format!("AI runtime setup store lock failed: {error}"))
+            })?
+            .clone())
+    }
+
+    fn invalidate_runtime_auth_on_error(&self, runtime_id: &str, message: &str) {
+        if runtime_id != "grok" {
+            return;
+        }
+        let Ok(Some(store)) = self.runtime_setup_store() else {
+            return;
+        };
+        let _ = invalidate_grok_auth_on_error(&store, message);
     }
 
     fn initialize_history_session(

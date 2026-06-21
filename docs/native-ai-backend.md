@@ -14,6 +14,94 @@ The relevant patterns are the native backend owning an AI session, a provider-ne
 
 Comando must not copy NeverWrite names, storage assumptions, vault filesystem policy, UI behavior, or complete review/history ownership in this slice.
 
+## PR 12 Native Auth And Secrets
+
+PR 12 moves native runtime setup, auth readiness, secret storage, env injection,
+and auth terminal launch into Rust for native AI sessions.
+
+Additional flags:
+
+- `COMANDO_NATIVE_AUTH=1` enables the native auth/setup path in Electron main.
+- `COMANDO_NATIVE_AUTH_MODE=shadow|write` controls ownership. `shadow` keeps
+  TypeScript visible; `write` returns native runtime status and sends native
+  sessions without a TypeScript-built launch env.
+- `COMANDO_NATIVE_AUTH_STRICT=1` is reserved for rollout paths that should fail
+  instead of silently falling back after a native auth error.
+- `COMANDO_NATIVE_SECRETS=1` enables native `secret_*` command routing.
+- `COMANDO_NATIVE_SECRET_STORE=keyring|memory|electron-bridge` selects the
+  native secret backend. `memory` is for tests and smoke only;
+  `electron-bridge` currently reports unavailable unless Electron main migrates
+  values into native storage.
+- `COMANDO_NATIVE_AUTH_TERMINAL=1` routes Claude, OpenCode, Kilo, and Grok
+  login flows through native integrated terminals with `purpose: auth`.
+- `COMANDO_NATIVE_AUTH_PARITY_LOG=1` is reserved for redacted shadow-mode parity
+  diagnostics.
+
+Native storage:
+
+```text
+<Comando app data>/ai/runtime-setup.json
+```
+
+This file stores only non-secret metadata:
+
+- selected auth method
+- custom binary path
+- invalidation timestamp
+- Claude gateway URLs
+- `secretEnvKeys` markers
+- non-secret env entries
+
+Secret values are stored through `RuntimeSecretStore`. Production uses the OS
+keyring service `Comando AI Provider Secrets` with accounts shaped as
+`<runtimeId>:<ENV_KEY>`. Tests use the opt-in memory store. `runtime-setup.json`
+is written atomically and with `0600` permissions on Unix.
+
+Electron main migrates legacy `electron-safe-storage-v1` secrets by reading
+them with the existing `SecretStoreService` and sending in-memory
+`secretPatches` to `ai_save_runtime_settings`. Legacy secrets are not deleted in
+this PR, so rollback remains safe.
+
+Native commands added or completed:
+
+- `secret_status`
+- `secret_set`
+- `secret_delete`
+- `ai_save_runtime_settings`
+- `ai_launch_runtime_auth`
+- `ai_disconnect_runtime_auth`
+- `ai_logout_runtime_auth`
+
+Secret reads are internal to the Rust resolver and never return plaintext over the
+JSONL command channel.
+
+Runtime behavior:
+
+- `ai_get_runtime_status` no longer needs a TypeScript `launch` when native auth
+  write mode is active.
+- `ai_prepare_session` accepts `launch: null`; Rust resolves the binary,
+  credential source, auth method, real spawn env, and Grok ACP auth handshake.
+- Env maps are kept inside Rust/native process boundaries and are not serialized
+  to the renderer for status.
+- Auth terminals reuse `comando-terminal` with `NativeTerminalPurpose::Auth`.
+
+Rollback:
+
+```text
+COMANDO_NATIVE_AUTH=0
+COMANDO_NATIVE_SECRETS=0
+COMANDO_NATIVE_AUTH_TERMINAL=0
+```
+
+or keep native calculations non-authoritative:
+
+```text
+COMANDO_NATIVE_AUTH_MODE=shadow
+```
+
+With rollback, the TypeScript setup files and Electron safeStorage secrets
+remain available.
+
 ## PR 9 Baseline Audit
 
 The PR 9 audit rechecked the same local reference before expanding the runtime

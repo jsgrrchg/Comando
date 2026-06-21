@@ -108,7 +108,6 @@ pub const SETTINGS_COMMANDS: &[&str] = &[
     "settings_save_snapshot",
     "settings_get_project",
     "settings_save_project",
-    "secret_get",
     "secret_set",
     "secret_delete",
     "secret_status",
