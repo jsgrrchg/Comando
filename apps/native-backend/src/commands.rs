@@ -3695,6 +3695,64 @@ mod tests {
     }
 
     #[test]
+    fn native_secret_commands_do_not_persist_plaintext() {
+        let (temp_dir, mut backend) = backend_with_memory_runtime_setup();
+        let result = backend.handle_request(request(
+            "secret_set",
+            json!({
+                "runtimeId": "codex",
+                "envKey": "OPENAI_API_KEY",
+                "value": "sk-native-secret",
+            }),
+        ));
+        let response = only_response(&result);
+        assert!(response.ok);
+        assert_eq!(response.result.as_ref().unwrap()["present"], true);
+
+        let setup_path = temp_dir.path().join("ai").join("runtime-setup.json");
+        let encoded = fs::read_to_string(setup_path).expect("runtime setup");
+        assert!(encoded.contains("OPENAI_API_KEY"));
+        assert!(!encoded.contains("sk-native-secret"));
+    }
+
+    #[test]
+    fn ai_save_runtime_settings_returns_native_status() {
+        let (temp_dir, mut backend) = backend_with_memory_runtime_setup();
+        let executable = std::env::current_exe().expect("current exe");
+        let result = backend.handle_request(request(
+            "ai_save_runtime_settings",
+            json!({
+                "runtimeId": "codex",
+                "settings": {
+                    "authMethod": "openai-api-key",
+                    "binaryPath": executable,
+                },
+                "secretPatches": [{
+                    "envKey": "OPENAI_API_KEY",
+                    "action": "set",
+                    "value": "sk-native-status-secret",
+                }],
+            }),
+        ));
+
+        let response = only_response(&result);
+        assert!(response.ok);
+        assert_eq!(response.result.as_ref().unwrap()["runtimeId"], "codex");
+        assert_eq!(
+            response.result.as_ref().unwrap()["authMethod"],
+            "openai-api-key"
+        );
+        assert_eq!(response.result.as_ref().unwrap()["authReady"], true);
+        assert!(result.outputs.iter().any(|output| {
+            matches!(output, RpcOutput::Event(event) if event.event_name == AI_RUNTIME_STATUS_EVENT)
+        }));
+
+        let encoded = fs::read_to_string(temp_dir.path().join("ai").join("runtime-setup.json"))
+            .expect("runtime setup");
+        assert!(!encoded.contains("sk-native-status-secret"));
+    }
+
+    #[test]
     fn handles_native_tree_read_and_write_commands() {
         let (temp_dir, mut backend, project_id) = backend_with_registered_project();
         let project_path = temp_dir.path().join("project-native");
@@ -4059,6 +4117,31 @@ mod tests {
             .to_string();
 
         (temp_dir, backend, project_id)
+    }
+
+    fn backend_with_memory_runtime_setup() -> (TempDir, NativeBackend) {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let database_path = temp_dir.path().join("comando.sqlite3");
+        create_current_schema(&database_path);
+        let mut backend = NativeBackend::default();
+        let open_result = backend.handle_request(request(
+            "persistence_open_store",
+            json!({
+                "appDataDir": temp_dir.path(),
+                "databasePath": database_path,
+                "mode": "write",
+            }),
+        ));
+        assert!(only_response(&open_result).ok);
+
+        let setup_store =
+            RuntimeSetupStore::in_memory_for_tests(temp_dir.path().join("ai").join("runtime-setup.json"));
+        backend
+            .ai_engine
+            .set_runtime_setup_store(Some(setup_store.clone()))
+            .expect("runtime setup store");
+        backend.runtime_setup_store = Some(setup_store);
+        (temp_dir, backend)
     }
 
     fn create_current_schema(database_path: &std::path::Path) {

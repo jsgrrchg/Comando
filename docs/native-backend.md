@@ -72,6 +72,14 @@ remain on the existing TypeScript/renderer path.
   runtime ids may create native-owned AI sessions. Omit it to use the full PR 9
   matrix, or remove a runtime id to roll that provider back to the TypeScript
   worker.
+- `COMANDO_NATIVE_AUTH=1` enables native AI runtime setup/auth resolution.
+- `COMANDO_NATIVE_AUTH_MODE=shadow|write` controls whether native auth is
+  diagnostic-only or authoritative for native sessions.
+- `COMANDO_NATIVE_SECRETS=1` enables native secret commands.
+- `COMANDO_NATIVE_SECRET_STORE=keyring|memory|electron-bridge` selects the
+  native runtime secret backend. `memory` is for tests/smoke only.
+- `COMANDO_NATIVE_AUTH_TERMINAL=1` opens runtime login flows through native
+  integrated terminals with `purpose: auth`.
 
 With flags unset, Comando uses the existing TypeScript path. Write mode requires
 `COMANDO_NATIVE_BACKEND=1`, `COMANDO_NATIVE_PERSISTENCE=1`, and
