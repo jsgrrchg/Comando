@@ -7,33 +7,9 @@ import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
 
 import {
-    NATIVE_TERMINAL_ENABLED_ENV,
-    NATIVE_TERMINAL_MODE_ENV,
     NativeTerminalGateway,
     type NativeTerminalGatewayOptions,
-    shouldUseNativeTerminal,
 } from "./terminal";
-
-describe("native terminal flags", () => {
-    it("requires explicit terminal opt-in and defaults to native mode", () => {
-        expect(shouldUseNativeTerminal({})).toBe(false);
-        expect(shouldUseNativeTerminal({ [NATIVE_TERMINAL_ENABLED_ENV]: "1" })).toBe(
-            true,
-        );
-        expect(
-            shouldUseNativeTerminal({
-                [NATIVE_TERMINAL_ENABLED_ENV]: "1",
-                [NATIVE_TERMINAL_MODE_ENV]: "native",
-            }),
-        ).toBe(true);
-        expect(
-            shouldUseNativeTerminal({
-                [NATIVE_TERMINAL_ENABLED_ENV]: "1",
-                [NATIVE_TERMINAL_MODE_ENV]: "legacy",
-            }),
-        ).toBe(false);
-    });
-});
 
 describe("NativeTerminalGateway", () => {
     it("creates native sessions with owner window, cwd, settings, and env", async () => {

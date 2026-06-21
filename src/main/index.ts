@@ -57,7 +57,6 @@ import { NativeGitGateway, type ClosableGitGateway } from "./native-backend/git"
 import { NativeSearchGateway } from "./native-backend/index-search";
 import {
     NativeTerminalGateway,
-    shouldUseNativeTerminal,
 } from "./native-backend/terminal";
 import {
     createNativeProjectRegistryStore,
@@ -74,7 +73,7 @@ import {
     broadcastSettingsUpdated,
 } from "./settings/window-zoom";
 import { openSettingsWindow } from "./settings/window";
-import { TerminalService, type TerminalGateway } from "./terminals/service";
+import type { TerminalGateway } from "./terminals/service";
 import { initializeAutoUpdates } from "./updater";
 import {
     createMainWindow,
@@ -489,34 +488,19 @@ function createNativeAiGateway(input: {
 }
 
 function createTerminalGateway(input: {
-    readonly nativeClient: NativeBackendClient | null;
+    readonly nativeClient: NativeBackendClient;
     readonly onData: (ownerWindowId: string, event: TerminalDataEvent) => void;
     readonly onExit: (ownerWindowId: string, event: TerminalExitEvent) => void;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsGateway;
 }): TerminalGateway {
-    if (shouldUseNativeTerminal()) {
-        if (input.nativeClient) {
-            console.info("[native-backend] Native terminal backend enabled.");
-            return new NativeTerminalGateway({
-                client: input.nativeClient,
-                onData: input.onData,
-                onDiagnostic: (message) => {
-                    console.warn(`[native-terminal] ${message}`);
-                },
-                onExit: input.onExit,
-                projectService: input.projectService,
-                settingsService: input.settingsService,
-            });
-        }
-
-        console.warn(
-            "[native-backend] Native terminal backend is enabled but the native backend sidecar is not running; using the legacy terminal backend.",
-        );
-    }
-
-    return new TerminalService({
+    console.info("[native-backend] Native terminal backend enabled.");
+    return new NativeTerminalGateway({
+        client: input.nativeClient,
         onData: input.onData,
+        onDiagnostic: (message) => {
+            console.warn(`[native-terminal] ${message}`);
+        },
         onExit: input.onExit,
         projectService: input.projectService,
         settingsService: input.settingsService,
