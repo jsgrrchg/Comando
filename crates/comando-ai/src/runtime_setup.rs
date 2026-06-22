@@ -167,6 +167,73 @@ pub fn prepare_auth_terminal_launch(
     })
 }
 
+pub fn prepare_runtime_auth_connection(
+    store: &RuntimeSetupStore,
+    definition: RuntimeDefinition,
+    method_id: &str,
+    cwd: String,
+    owner_window_id: String,
+    project_id: Option<comando_types::ids::ProjectId>,
+    worktree_id: Option<comando_types::ids::WorktreeId>,
+) -> AiResult<NativeAiLaunchSpec> {
+    let mut setup = load_runtime_setup(store, definition.id)?;
+    setup.auth_method = Some(method_id.to_string());
+    let command = resolve_runtime_command(definition, &setup);
+    let auth = runtime_auth_state(store, definition.id, &setup);
+    let status = status_from_parts(definition, &setup, &command, &auth);
+    if !status
+        .auth_methods
+        .iter()
+        .any(|method| method.id == method_id)
+    {
+        return Err(AiError::RuntimeAuthMissing {
+            runtime_id: definition.id.to_string(),
+            message: format!(
+                "{} does not support the authentication method `{method_id}` on this machine.",
+                definition.display_name
+            ),
+        });
+    }
+    if command.state != "ready" {
+        return Err(AiError::RuntimeNotReady {
+            runtime_id: definition.id.to_string(),
+            message: status
+                .message
+                .clone()
+                .unwrap_or_else(|| "Native runtime binary is not ready.".to_string()),
+        });
+    }
+    let executable = command.executable.clone();
+    let env = runtime_spawn_env(store, definition.id, &setup, &auth, &executable);
+    Ok(NativeAiLaunchSpec {
+        runtime_id: RuntimeId(definition.id.to_string()),
+        owner_window_id,
+        project_id,
+        worktree_id,
+        project_root: None,
+        additional_roots: Vec::new(),
+        executable: command.executable,
+        args: command.args.clone(),
+        cwd,
+        env,
+        command: command
+            .command
+            .clone()
+            .unwrap_or_else(|| command_line(&executable, &command.args)),
+        status,
+        auth_method: auth.method.clone(),
+        auth_credential_source: credential_source_wire(&auth.credential_source),
+        auth_handshake: None,
+        persisted_runtime_session_id: None,
+        persisted_subagent_session_mappings: Vec::new(),
+        desired_selections: NativeAiDesiredSelections {
+            model_id: None,
+            mode_id: None,
+            config_options: BTreeMap::new(),
+        },
+    })
+}
+
 pub fn invalidate_grok_auth_on_error(store: &RuntimeSetupStore, message: &str) -> AiResult<bool> {
     if !is_grok_auth_error(message) {
         return Ok(false);
@@ -454,6 +521,7 @@ fn codex_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Run
     let openai_env = env_secret_present("OPENAI_API_KEY");
     let codex_secret = secret_present(store, "codex", "CODEX_API_KEY");
     let openai_secret = secret_present(store, "codex", "OPENAI_API_KEY");
+    let chatgpt_ready = codex_chatgpt_auth_available(setup.auth_invalidated_at_ms);
     let selected = normalize_auth_method(
         setup.auth_method.as_deref(),
         &["chatgpt", "codex-api-key", "openai-api-key"],
@@ -462,7 +530,7 @@ fn codex_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Run
         Some("codex-api-key".to_string())
     } else if openai_env {
         Some("openai-api-key".to_string())
-    } else if selected.as_deref() == Some("chatgpt") {
+    } else if selected.as_deref() == Some("chatgpt") && chatgpt_ready {
         selected
     } else if selected.as_deref() == Some("codex-api-key") && codex_secret {
         selected
@@ -474,6 +542,8 @@ fn codex_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Run
         Some("codex-api-key".to_string())
     } else if openai_secret {
         Some("openai-api-key".to_string())
+    } else if chatgpt_ready {
+        Some("chatgpt".to_string())
     } else {
         None
     };
@@ -495,7 +565,11 @@ fn codex_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Run
         },
         has_gateway_config: false,
         has_gateway_url: false,
-        can_disconnect: setup.auth_method.is_some() || codex_secret || openai_secret,
+        can_disconnect: setup.auth_method.is_some()
+            || codex_secret
+            || openai_secret
+            || setup.auth_invalidated_at_ms.is_some()
+            || chatgpt_ready,
         can_logout: method.as_deref() == Some("chatgpt"),
     }
 }
@@ -1586,6 +1660,43 @@ fn opencode_auth_file_path() -> Option<PathBuf> {
     xdg_data_dir().map(|base| base.join("opencode").join("auth.json"))
 }
 
+fn codex_auth_file_path() -> Option<PathBuf> {
+    if let Ok(value) = env::var("CODEX_HOME") {
+        if !value.trim().is_empty() {
+            return Some(PathBuf::from(value).join("auth.json"));
+        }
+    }
+    home_dir().map(|home| home.join(".codex").join("auth.json"))
+}
+
+fn codex_chatgpt_auth_available(invalidated_at_ms: Option<u64>) -> bool {
+    let Some(path) = codex_auth_file_path() else {
+        return false;
+    };
+    codex_chatgpt_auth_available_at(&path, invalidated_at_ms)
+}
+
+fn codex_chatgpt_auth_available_at(path: &Path, invalidated_at_ms: Option<u64>) -> bool {
+    if !external_auth_available(Some(path.to_path_buf()), invalidated_at_ms) {
+        return false;
+    }
+    let Ok(contents) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return false;
+    };
+    let tokens = value.get("tokens");
+    has_non_empty_json_string(tokens.and_then(|tokens| tokens.get("access_token")))
+        && has_non_empty_json_string(tokens.and_then(|tokens| tokens.get("refresh_token")))
+}
+
+fn has_non_empty_json_string(value: Option<&serde_json::Value>) -> bool {
+    value
+        .and_then(|value| value.as_str())
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1716,6 +1827,120 @@ mod tests {
             status.message.as_deref(),
             Some("Run Grok login or add an xAI API key to finish setup.")
         );
+    }
+
+    #[test]
+    fn codex_chatgpt_auth_detects_local_cli_login_file() {
+        let temp = tempdir().expect("temp");
+        let auth_path = temp.path().join("auth.json");
+        write_file(
+            &auth_path,
+            r#"{
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "access",
+                    "refresh_token": "refresh"
+                }
+            }"#,
+        );
+
+        assert!(codex_chatgpt_auth_available_at(&auth_path, None));
+        assert!(!codex_chatgpt_auth_available_at(&auth_path, Some(u64::MAX)));
+    }
+
+    #[test]
+    fn codex_chatgpt_prepares_acp_auth_connection() {
+        let temp = tempdir().expect("temp");
+        let store = RuntimeSetupStore::in_memory_for_tests(temp.path().join("runtime-setup.json"));
+        let binary = std::env::current_exe().unwrap().display().to_string();
+        store
+            .update_runtime("codex", |state| {
+                state.binary_path = Some(binary.clone());
+            })
+            .expect("setup");
+        let definition = crate::runtime::RuntimeRegistry::default()
+            .get("codex")
+            .unwrap();
+
+        let launch = prepare_runtime_auth_connection(
+            &store,
+            definition,
+            "chatgpt",
+            temp.path().display().to_string(),
+            "window-1".to_string(),
+            None,
+            None,
+        )
+        .expect("auth launch");
+
+        assert_eq!(launch.executable, binary);
+        assert_eq!(launch.args, Vec::<String>::new());
+        assert!(matches!(
+            launch.auth_method.as_deref(),
+            None | Some("chatgpt")
+        ));
+        assert_eq!(launch.status.auth_methods[0].id, "chatgpt");
+    }
+
+    #[test]
+    fn codex_chatgpt_does_not_use_auth_terminal() {
+        let temp = tempdir().expect("temp");
+        let store = RuntimeSetupStore::in_memory_for_tests(temp.path().join("runtime-setup.json"));
+        store
+            .update_runtime("codex", |state| {
+                state.binary_path = Some(std::env::current_exe().unwrap().display().to_string());
+            })
+            .expect("setup");
+        let definition = crate::runtime::RuntimeRegistry::default()
+            .get("codex")
+            .unwrap();
+
+        let error = prepare_auth_terminal_launch(&store, definition, "chatgpt")
+            .expect_err("codex chatgpt is ACP auth");
+
+        assert!(matches!(error, AiError::RuntimeNotReady { .. }));
+    }
+
+    #[test]
+    fn terminal_auth_methods_still_prepare_login_commands() {
+        let temp = tempdir().expect("temp");
+        let store = RuntimeSetupStore::in_memory_for_tests(temp.path().join("runtime-setup.json"));
+        let binary = std::env::current_exe().unwrap().display().to_string();
+        for runtime_id in ["claude", "grok", "kilo", "opencode"] {
+            store
+                .update_runtime(runtime_id, |state| {
+                    state.binary_path = Some(binary.clone());
+                })
+                .expect("setup");
+        }
+        let registry = crate::runtime::RuntimeRegistry::default();
+
+        let claude = prepare_auth_terminal_launch(
+            &store,
+            registry.get("claude").unwrap(),
+            "claude-ai-login",
+        )
+        .expect("claude terminal");
+        let grok =
+            prepare_auth_terminal_launch(&store, registry.get("grok").unwrap(), "grok-login")
+                .expect("grok terminal");
+        let kilo =
+            prepare_auth_terminal_launch(&store, registry.get("kilo").unwrap(), "kilo-login")
+                .expect("kilo terminal");
+        let opencode = prepare_auth_terminal_launch(
+            &store,
+            registry.get("opencode").unwrap(),
+            "opencode-login",
+        )
+        .expect("opencode terminal");
+
+        assert_eq!(claude.args, vec!["--cli", "auth", "login", "--claudeai"]);
+        assert_eq!(
+            grok.args,
+            vec!["--no-auto-update", "agent", "stdio", "login"]
+        );
+        assert_eq!(kilo.args, vec!["acp", "auth", "login"]);
+        assert_eq!(opencode.args, vec!["acp", "auth", "login"]);
     }
 
     fn write_file(path: &Path, contents: &str) {

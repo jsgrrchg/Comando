@@ -10,10 +10,13 @@ use comando_types::ai::{
     NativeAiSetSessionConfigOptionInput, NativeAiSetSessionModeInput, NativeAiSetSessionModelInput,
     NativeAiUserInputResponseInput,
 };
-use comando_types::ids::RuntimeSessionId;
+use comando_types::ids::{ProjectId, RuntimeSessionId, WorktreeId};
 use serde_json::{Value, json};
 
-use crate::acp::{AcpProcessSpec, NativeAiConfigValue, start_acp_session};
+use crate::acp::{
+    AcpProcessSpec, AcpRuntimeAuthAction, NativeAiConfigValue, run_acp_runtime_auth,
+    start_acp_session,
+};
 use crate::commands::{
     cancel_session_output, close_session_output, list_runtimes_output, prepare_session_output,
     send_prompt_output,
@@ -34,7 +37,7 @@ use crate::history::{
 use crate::runtime::RuntimeRegistry;
 use crate::runtime_setup::{
     RuntimeAuthTerminalLaunch, invalidate_grok_auth_on_error, prepare_auth_terminal_launch,
-    prepare_runtime_launch, runtime_status,
+    prepare_runtime_auth_connection, prepare_runtime_launch, runtime_status,
 };
 use crate::session::{NativeAiSession, SessionRegistry};
 
@@ -145,6 +148,62 @@ impl AiEngine {
                     message: "Native runtime setup is not initialized.".to_string(),
                 })?;
         prepare_auth_terminal_launch(&store, definition, method_id)
+    }
+
+    pub fn authenticate_runtime_auth(
+        &self,
+        runtime_id: &str,
+        method_id: &str,
+        cwd: String,
+        owner_window_id: String,
+        project_id: Option<ProjectId>,
+        worktree_id: Option<WorktreeId>,
+    ) -> AiResult<()> {
+        let definition = self.registry.require_native(runtime_id)?;
+        let store =
+            self.runtime_setup_store()?
+                .ok_or_else(|| AiError::RuntimeLaunchContextInvalid {
+                    runtime_id: runtime_id.to_string(),
+                    message: "Native runtime setup is not initialized.".to_string(),
+                })?;
+        let launch = prepare_runtime_auth_connection(
+            &store,
+            definition,
+            method_id,
+            cwd,
+            owner_window_id,
+            project_id,
+            worktree_id,
+        )?;
+        let spec = AcpProcessSpec::from_launch(definition, &launch)?;
+        run_acp_runtime_auth(
+            &self.runtime,
+            spec,
+            AcpRuntimeAuthAction::Authenticate {
+                method_id: method_id.to_string(),
+            },
+        )
+    }
+
+    pub fn logout_runtime_auth(&self, runtime_id: &str, cwd: String) -> AiResult<()> {
+        let definition = self.registry.require_native(runtime_id)?;
+        let store =
+            self.runtime_setup_store()?
+                .ok_or_else(|| AiError::RuntimeLaunchContextInvalid {
+                    runtime_id: runtime_id.to_string(),
+                    message: "Native runtime setup is not initialized.".to_string(),
+                })?;
+        let launch = prepare_runtime_auth_connection(
+            &store,
+            definition,
+            "chatgpt",
+            cwd,
+            String::new(),
+            None,
+            None,
+        )?;
+        let spec = AcpProcessSpec::from_launch(definition, &launch)?;
+        run_acp_runtime_auth(&self.runtime, spec, AcpRuntimeAuthAction::Logout)
     }
 
     pub fn prepare_session(

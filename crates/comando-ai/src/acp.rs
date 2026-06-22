@@ -9,9 +9,9 @@ use agent_client_protocol::schema::{
     ClientCapabilities, ConfigOptionUpdate, ContentBlock, ContentChunk, CreateElicitationRequest,
     CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities,
     ElicitationContentValue, ElicitationFormCapabilities, ElicitationMode,
-    ElicitationPropertySchema, InitializeRequest, InitializeResponse, LoadSessionRequest, Meta,
-    MultiSelectItems, NewSessionRequest, PermissionOption, PromptRequest, ProtocolVersion,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    ElicitationPropertySchema, InitializeRequest, InitializeResponse, LoadSessionRequest,
+    LogoutRequest, Meta, MultiSelectItems, NewSessionRequest, PermissionOption, PromptRequest,
+    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigOptionValue, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall, ToolCallContent,
@@ -534,6 +534,109 @@ pub fn start_acp_session(
     session.runtime_session_id = Some(runtime_session_id);
     session.updated_at = now_iso8601();
     Ok((session, controller))
+}
+
+#[derive(Debug, Clone)]
+pub enum AcpRuntimeAuthAction {
+    Authenticate { method_id: String },
+    Logout,
+}
+
+pub fn run_acp_runtime_auth(
+    runtime: &Runtime,
+    spec: AcpProcessSpec,
+    action: AcpRuntimeAuthAction,
+) -> AiResult<()> {
+    runtime
+        .block_on(run_acp_runtime_auth_async(spec, action))
+        .map_err(|message| AiError::RuntimeExited { message })
+}
+
+async fn run_acp_runtime_auth_async(
+    spec: AcpProcessSpec,
+    action: AcpRuntimeAuthAction,
+) -> Result<(), String> {
+    let mut command = Command::new(&spec.executable);
+    command
+        .args(&spec.args)
+        .current_dir(&spec.cwd)
+        .env_clear()
+        .envs(&spec.env)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Failed to start ACP runtime `{}`: {error}", spec.executable))?;
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(drain_stderr(stderr));
+    }
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "ACP runtime stdin was not available.".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "ACP runtime stdout was not available.".to_string())?;
+    let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
+
+    let result = Client
+        .builder()
+        .connect_with(transport, |connection: ConnectionTo<Agent>| {
+            let spec = spec.clone();
+            let action = action.clone();
+            async move {
+                let initialize_response = connection
+                    .send_request(
+                        InitializeRequest::new(protocol_version_for_flavor(spec.protocol_flavor))
+                            .client_capabilities(acp_client_capabilities()),
+                    )
+                    .block_task()
+                    .await?;
+                match action {
+                    AcpRuntimeAuthAction::Authenticate { method_id } => {
+                        if !initialize_response
+                            .auth_methods
+                            .iter()
+                            .any(|method| method.id().0.as_ref() == method_id)
+                        {
+                            return Err(agent_client_protocol::Error::internal_error().data(
+                                format!(
+                                    "{} ACP runtime did not advertise auth method `{method_id}`.",
+                                    spec.runtime_id
+                                ),
+                            ));
+                        }
+                        connection
+                            .send_request(AuthenticateRequest::new(method_id))
+                            .block_task()
+                            .await?;
+                    }
+                    AcpRuntimeAuthAction::Logout => {
+                        if initialize_response.agent_capabilities.auth.logout.is_none() {
+                            return Err(agent_client_protocol::Error::internal_error().data(
+                                format!(
+                                    "{} ACP runtime did not advertise logout support.",
+                                    spec.runtime_id
+                                ),
+                            ));
+                        }
+                        connection
+                            .send_request(LogoutRequest::new())
+                            .block_task()
+                            .await?;
+                    }
+                }
+                Ok(())
+            }
+        })
+        .await
+        .map_err(|error| format!("ACP runtime authentication failed: {error}"));
+
+    let _ = child.kill().await;
+    result
 }
 
 async fn run_acp_session(

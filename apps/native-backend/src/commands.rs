@@ -758,19 +758,46 @@ impl NativeBackend {
     }
 
     fn ai_logout_runtime_auth(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.runtime_setup_store.clone() else {
+            return backend_not_ready(request.id);
+        };
         let input = match parse_args::<native_ai::NativeAiRuntimeAuthInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
         };
-        let message = if input.runtime_id.0 == "codex" {
-            "Codex ChatGPT logout requires the legacy ACP logout flow until native logout reaches parity."
-        } else {
-            "This runtime does not support native logout yet."
-        };
-        error_only(
-            request.id,
-            NativeError::new(NativeErrorCode::NotSupported, message),
-        )
+        if input.runtime_id.0 != "codex" {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::NotSupported,
+                    "This runtime does not support native logout yet.",
+                ),
+            );
+        }
+        let cwd = input.cwd.unwrap_or_else(auth_fallback_cwd);
+        let result = store
+            .load_runtime("codex")
+            .map_err(|error| runtime_setup_native_error(error.to_string()))
+            .and_then(|state| {
+                if state.auth_method.as_deref() != Some("chatgpt") {
+                    return Err(NativeError::new(
+                        NativeErrorCode::InvalidArgs,
+                        "Codex provider logout is only available for ChatGPT login. Use Disconnect from Comando to clear local API keys.",
+                    ));
+                }
+                Ok(())
+            })
+            .and_then(|_| {
+                self.ai_engine
+                    .logout_runtime_auth("codex", cwd)
+                    .map_err(|error| error.to_native_error())
+            })
+            .and_then(|_| disconnect_runtime_auth(&store, "codex"))
+            .and_then(|_| self.runtime_status_output("codex"));
+        match result {
+            Ok(status) => runtime_status_response(request.id, status),
+            Err(error) => error_only(request.id, error),
+        }
     }
 
     fn handle_ai_auth_terminal_request(
@@ -787,6 +814,54 @@ impl NativeBackend {
         };
         let runtime_id = input.runtime_id.0.clone();
         let method_id = input.method_id.clone();
+        let cwd = input.cwd.clone().or_else(|| {
+            self.resolve_auth_terminal_cwd(input.project_id.as_ref(), input.worktree_id.as_ref())
+        });
+        if runtime_id == "codex" {
+            let result = self
+                .ai_engine
+                .authenticate_runtime_auth(
+                    &runtime_id,
+                    &method_id,
+                    cwd.unwrap_or_else(auth_fallback_cwd),
+                    input.window_id.0.clone(),
+                    input.project_id.clone(),
+                    input.worktree_id.clone(),
+                )
+                .map_err(|error| error.to_native_error())
+                .and_then(|_| {
+                    store
+                        .update_runtime(&runtime_id, |state| {
+                            state.auth_method = Some(method_id.clone());
+                            state.auth_invalidated_at_ms = None;
+                        })
+                        .map_err(|error| runtime_setup_native_error(error.to_string()))
+                })
+                .and_then(|_| self.runtime_status_output(&runtime_id));
+            return match result {
+                Ok(status) => CommandResult {
+                    outputs: vec![
+                        response_ok(
+                            request.id,
+                            serde_json::to_value(native_ai::NativeAiLaunchRuntimeAuthOutput {
+                                runtime_id: input.runtime_id,
+                                method_id: input.method_id,
+                                terminal_session_id: None,
+                                status: status.clone(),
+                            })
+                            .expect("ai auth launch output serializes"),
+                        ),
+                        event(
+                            AI_RUNTIME_STATUS_EVENT,
+                            serde_json::to_value(&status)
+                                .expect("ai runtime status event serializes"),
+                        ),
+                    ],
+                    should_shutdown: false,
+                },
+                Err(error) => error_only(request.id, error),
+            };
+        }
         let launch = match self
             .ai_engine
             .prepare_auth_terminal_launch(&runtime_id, &method_id)
@@ -794,9 +869,6 @@ impl NativeBackend {
             Ok(launch) => launch,
             Err(error) => return error_only(request.id, error.to_native_error()),
         };
-        let cwd = input.cwd.clone().or_else(|| {
-            self.resolve_auth_terminal_cwd(input.project_id.as_ref(), input.worktree_id.as_ref())
-        });
         let terminal_input = native_terminal::NativeTerminalCreateInput {
             window_id: input.window_id.clone(),
             terminal_id: None,
@@ -3504,6 +3576,7 @@ fn disconnect_runtime_auth(store: &RuntimeSetupStore, runtime_id: &str) -> Resul
             "claude-login"
                 | "claude-ai-login"
                 | "console-login"
+                | "chatgpt"
                 | "opencode-login"
                 | "grok-login"
                 | "kilo-login"
@@ -3534,6 +3607,13 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
         .unwrap_or_default()
+}
+
+fn auth_fallback_cwd() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|path| path.to_str().map(|path| path.to_string()))
+        .unwrap_or_else(|| ".".to_string())
 }
 
 fn runtime_status_response(
