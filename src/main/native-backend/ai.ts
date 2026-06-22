@@ -1011,7 +1011,7 @@ function nativeSummaryToSnapshot(
         activeTurnStartedAt:
             status === "streaming"
                 ? summary.updatedAt
-                : launch.persistedSnapshot.activeTurnStartedAt ?? null,
+                : null,
         configOptions: launch.desiredSelections.configOptions,
         modeId: launch.desiredSelections.modeId,
         modelId: launch.desiredSelections.modelId,

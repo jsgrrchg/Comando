@@ -352,6 +352,158 @@ describe("AiService prepareSession", () => {
         });
     });
 
+    it("normalizes restored active snapshots before native startup", async () => {
+        const persistedSnapshot = createSnapshot({
+            activeTurnStartedAt: "2026-04-15T22:23:13.000Z",
+            messages: [
+                {
+                    attachments: [],
+                    content: "partial response",
+                    createdAt: "2026-04-15T22:23:14.000Z",
+                    id: "assistant-1",
+                    kind: "assistant",
+                    status: "streaming",
+                },
+            ],
+            pendingPermission: {
+                options: [],
+                requestId: "permission-1",
+                sessionId: "session-1",
+                title: "Run command",
+                toolCallId: "tool-1",
+            } as never,
+            runtimeSessionId: "runtime-session-1",
+            status: "streaming",
+            toolActivity: [
+                {
+                    createdAt: "2026-04-15T22:23:15.000Z",
+                    diffs: [],
+                    exitCode: null,
+                    id: "tool-1",
+                    kind: "shell",
+                    locations: [],
+                    rawInputJson: null,
+                    rawOutputJson: null,
+                    sessionId: "session-1",
+                    status: "in_progress",
+                    summary: null,
+                    terminalOutput: null,
+                    title: "Run command",
+                    updatedAt: "2026-04-15T22:23:16.000Z",
+                },
+            ],
+        });
+        const loadSessionSnapshot = vi.fn<NativeAiGateway["loadSessionSnapshot"]>(
+            () => Promise.resolve(persistedSnapshot),
+        );
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+            ({ launch }) =>
+                Promise.resolve({
+                    ...launch.persistedSnapshot,
+                    runtimeSessionId: "runtime-session-1",
+                    updatedAt: "2026-04-16T00:00:00.000Z",
+                }),
+        );
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                loadSessionSnapshot,
+                prepareSession,
+            }),
+        });
+
+        const snapshot = await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        const launchSnapshot =
+            prepareSession.mock.calls[0]?.[0].launch.persistedSnapshot;
+        expect(launchSnapshot).toMatchObject({
+            activeTurnStartedAt: null,
+            pendingPermission: null,
+            pendingUserInput: null,
+            status: "idle",
+        });
+        expect(launchSnapshot?.messages[0]?.status).toBe("completed");
+        expect(launchSnapshot?.toolActivity[0]?.status).toBe("failed");
+        expect(snapshot.status).toBe("idle");
+        expect(snapshot.activeTurnStartedAt).toBeNull();
+    });
+
+    it("adopts restored active subagent snapshots as idle on cold prepare", async () => {
+        const parentSnapshot = createSnapshot({
+            runtimeSessionId: "parent-runtime-session",
+            sessionId: "parent-session",
+            title: "Parent",
+        });
+        const childSnapshot = createSnapshot({
+            activeTurnStartedAt: "2026-04-15T22:23:13.000Z",
+            parentSessionId: "parent-session",
+            runtimeSessionId: "child-runtime-session",
+            sessionId: "child-session",
+            status: "streaming",
+            title: "Child",
+        });
+        const loadSessionSnapshot = vi.fn<NativeAiGateway["loadSessionSnapshot"]>(
+            (sessionId) =>
+                Promise.resolve(
+                    sessionId === "child-session"
+                        ? childSnapshot
+                        : parentSnapshot,
+                ),
+        );
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+            ({ launch }) => Promise.resolve(launch.persistedSnapshot),
+        );
+        const onSessionSnapshot = vi.fn<
+            (ownerWindowId: string, update: AiSessionUpdate) => void
+        >();
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                loadSessionSnapshot,
+                prepareSession,
+            }),
+            onSessionSnapshot,
+        });
+
+        const snapshot = await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "child-session",
+                title: "Child",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        expect(prepareSession.mock.calls[0]?.[0].input.sessionId).toBe(
+            "parent-session",
+        );
+        expect(snapshot).toMatchObject({
+            activeTurnStartedAt: null,
+            parentSessionId: "parent-session",
+            sessionId: "child-session",
+            status: "idle",
+        });
+        const emittedUpdate = onSessionSnapshot.mock.calls[0]?.[1];
+        if (emittedUpdate?.kind !== "snapshot") {
+            throw new Error("Expected a snapshot update for the subagent.");
+        }
+        expect(onSessionSnapshot.mock.calls[0]?.[0]).toBe("window-1");
+        expect(emittedUpdate.snapshot).toMatchObject({
+            activeTurnStartedAt: null,
+            sessionId: "child-session",
+            status: "idle",
+        });
+    });
+
     it("rejects legacy Gemini sessions before native startup", async () => {
         const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>();
         const runtimeStatusEvents: AiRuntimeStatus[] = [];
@@ -680,4 +832,96 @@ function createNativeAi(
         shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "codex"),
         ...overrides,
     };
+}
+
+function createSnapshot(
+    overrides: Partial<AiSessionSnapshot> = {},
+): AiSessionSnapshot {
+    return {
+        activeTurnStartedAt: null,
+        availableCommands: [],
+        closedAt: null,
+        configOptions: [],
+        lastError: null,
+        messages: [],
+        modeId: null,
+        modes: [],
+        modelId: null,
+        models: [],
+        pendingPermission: null,
+        pendingUserInput: null,
+        plan: null,
+        projectId: null,
+        runtimeId: "codex",
+        runtimeSessionId: null,
+        sessionId: "session-1",
+        status: "idle",
+        title: "Codex 1",
+        tokenUsage: null,
+        toolActivity: [],
+        trackedFiles: [],
+        updatedAt: "2026-04-15T22:23:13.719838Z",
+        worktreeId: null,
+        ...overrides,
+    };
+}
+
+function createPrepareService(
+    options: {
+        readonly nativeAi?: NativeAiGateway;
+        readonly onSessionSnapshot?: (
+            ownerWindowId: string,
+            update: AiSessionUpdate,
+        ) => void;
+    } = {},
+): InstanceType<typeof AiService> {
+    return new AiService({
+        nativeAi: options.nativeAi ?? createNativeAi(),
+        onRuntimeStatus: vi.fn(),
+        onSessionSnapshot: options.onSessionSnapshot ?? vi.fn(),
+        persistence: {
+            loadLatestRuntimeCatalog: vi.fn(() => null),
+            loadRuntimeSelectionPreferences: vi.fn(() => ({
+                configOptions: {},
+                modeId: null,
+                modelId: null,
+            })),
+            loadSessionSnapshot: vi.fn(() => null),
+            saveRuntimeSelectionPreferenceOption: vi.fn(),
+            saveRuntimeModePreference: vi.fn(),
+            saveRuntimeModelPreference: vi.fn(),
+            saveSessionSnapshot: vi.fn(),
+        } as never,
+        projectService: {
+            getProjectRootPath: vi.fn(() => process.cwd()),
+            listProjectWorktrees: vi.fn(() => []),
+        } as never,
+        secretStore: {
+            loadSecret: vi.fn(() => null),
+            saveSecret: vi.fn(),
+        },
+        settingsService: {
+            loadClaudeRuntimeSettings: vi.fn(() => ({
+                authInvalidatedAtMs: null,
+                authMethod: null,
+                binaryPath: null,
+                gatewayBaseUrl: null,
+                hasGatewayAuthToken: false,
+                hasGatewayCustomHeaders: false,
+            })),
+            loadCodexRuntimeSettings: vi.fn(() => ({
+                authMethod: "chatgpt",
+                binaryPath: null,
+                hasCodexApiKey: false,
+                hasOpenAiApiKey: false,
+            })),
+            loadKiloRuntimeSettings: vi.fn(() => ({
+                authInvalidatedAtMs: null,
+                binaryPath: null,
+            })),
+            saveClaudeRuntimeSettings: vi.fn(),
+            saveCodexRuntimeSettings: vi.fn(),
+            saveKiloRuntimeSettings: vi.fn(),
+        } as never,
+    });
 }

@@ -22,6 +22,7 @@ import type {
     AiSessionModel,
     AiSessionSnapshot,
     AiSessionUpdate,
+    AiToolActivity,
     AiUserInputRequest,
     AiUserInputResponseInput,
     SendAiPromptInput,
@@ -45,6 +46,55 @@ export function shouldFlushLiveSessionImmediately(
         snapshot.pendingUserInput !== null ||
         snapshot.lastError !== null
     );
+}
+
+export function normalizeRestoredAiSessionSnapshot(
+    snapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    const hadRestoredRuntimeState =
+        isActiveAiSessionStatus(snapshot.status) ||
+        (snapshot.activeTurnStartedAt ?? null) !== null ||
+        (snapshot.pendingPermission ?? null) !== null ||
+        (snapshot.pendingUserInput ?? null) !== null ||
+        snapshot.messages.some((message) => message.status === "streaming") ||
+        snapshot.toolActivity.some((activity) =>
+            isActiveToolActivityStatus(activity.status),
+        );
+
+    if (!hadRestoredRuntimeState) {
+        return snapshot;
+    }
+
+    return {
+        ...snapshot,
+        activeTurnStartedAt: null,
+        messages: snapshot.messages.map((message) =>
+            message.status === "streaming"
+                ? { ...message, status: "completed" as const }
+                : message,
+        ),
+        pendingPermission: null,
+        pendingUserInput: null,
+        status: isActiveAiSessionStatus(snapshot.status) ? "idle" : snapshot.status,
+        toolActivity: snapshot.toolActivity.map((activity) =>
+            isActiveToolActivityStatus(activity.status)
+                ? { ...activity, status: "failed" as const }
+                : activity,
+        ),
+    };
+}
+
+function isActiveAiSessionStatus(status: AiSessionSnapshot["status"]): boolean {
+    return (
+        status === "starting" ||
+        status === "streaming" ||
+        status === "waiting_permission" ||
+        status === "waiting_user_input"
+    );
+}
+
+function isActiveToolActivityStatus(status: AiToolActivity["status"]): boolean {
+    return status === "pending" || status === "in_progress";
 }
 
 export function buildAiSessionUpdate(

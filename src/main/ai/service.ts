@@ -94,6 +94,7 @@ import {
     isPathInsideRoot,
     isSamePath,
     normalizeAdditionalRoots,
+    normalizeRestoredAiSessionSnapshot,
     resolveSessionScopedPath,
     setConfigOptionOnSnapshot,
     setModeOnSnapshot,
@@ -1073,18 +1074,8 @@ export class AiService {
             return liveSnapshot;
         }
 
-        if (this.#nativeAi?.shouldHandleHistory()) {
-            const nativeSnapshot =
-                await this.#nativeAi.loadSessionSnapshot(sessionId);
-            if (nativeSnapshot) {
-                return this.#hydrateSnapshotRuntimeCatalog(
-                    await this.#reconcilePersistedTrackedFiles(nativeSnapshot),
-                );
-            }
-        }
-
         const persistedSnapshot =
-            await this.#persistence.loadSessionSnapshot(sessionId);
+            await this.#loadPersistedSessionSnapshot(sessionId);
         return persistedSnapshot
             ? this.#hydrateSnapshotRuntimeCatalog(
                   await this.#reconcilePersistedTrackedFiles(persistedSnapshot),
@@ -2907,11 +2898,11 @@ export class AiService {
     async #loadPersistedSessionSnapshot(
         sessionId: string,
     ): Promise<AiSessionSnapshot | null> {
-        if (this.#nativeAi?.shouldHandleHistory()) {
-            return await this.#nativeAi.loadSessionSnapshot(sessionId);
-        }
+        const snapshot = this.#nativeAi?.shouldHandleHistory()
+            ? await this.#nativeAi.loadSessionSnapshot(sessionId)
+            : await this.#persistence.loadSessionSnapshot(sessionId);
 
-        return await this.#persistence.loadSessionSnapshot(sessionId);
+        return snapshot ? normalizeRestoredAiSessionSnapshot(snapshot) : null;
     }
 
     async #listPersistedRuntimeMappingsForParent(
