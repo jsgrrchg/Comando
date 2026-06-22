@@ -19,7 +19,7 @@
     },
     "main": "out/main/index.js",
     "scripts": {
-        "predev": "pnpm run native:stage && pnpm run stage:ai",
+        "predev": "pnpm run native:dev && pnpm run stage:ai",
         "dev": "node scripts/dev.mjs",
         "prebuild": "pnpm run stage:ai",
         "build": "electron-vite build",
@@ -48,6 +48,7 @@
         "stage:ai": "node scripts/ai/stage-ai-runtimes.mjs",
         "stage:codex-runtime": "node scripts/ai/stage-codex-runtime.mjs",
         "native:build": "node scripts/native/build-native-backend.mjs",
+        "native:dev": "pnpm run native:build -- --debug && pnpm run native:stage -- --debug",
         "native:wasm": "cargo build -p comando-diff --target wasm32-unknown-unknown",
         "native:test": "cargo test --workspace",
         "native:stage": "node scripts/native/stage-native-backend.mjs",

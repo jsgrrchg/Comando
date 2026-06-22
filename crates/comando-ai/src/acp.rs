@@ -1897,7 +1897,7 @@ impl NotificationContextInner {
         }
 
         let message_id = self.resolve_stream_message_id(runtime_session_id, message_kind, &chunk);
-        let stream_key = stream_message_key(runtime_session_id, &message_id);
+        let stream_key = stream_message_key(runtime_session_id, message_kind, &message_id);
         let is_new = !self.open_messages.contains_key(&stream_key);
         if is_new {
             let summary = self.summary_for_runtime_session(runtime_session_id);
@@ -1929,7 +1929,7 @@ impl NotificationContextInner {
             message.content.push_str(&delta);
             message.pending_delta.push_str(&delta);
         }
-        self.flush_message_delta(runtime_session_id, &message_id);
+        self.flush_message_delta(runtime_session_id, message_kind, &message_id);
     }
 
     fn handle_tool_call(
@@ -2282,8 +2282,13 @@ impl NotificationContextInner {
         );
     }
 
-    fn flush_message_delta(&mut self, runtime_session_id: &RuntimeSessionId, message_id: &str) {
-        let stream_key = stream_message_key(runtime_session_id, message_id);
+    fn flush_message_delta(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        message_kind: &str,
+        message_id: &str,
+    ) {
+        let stream_key = stream_message_key(runtime_session_id, message_kind, message_id);
         let mut message = match self.open_messages.remove(&stream_key) {
             Some(message) => message,
             None => return,
@@ -2297,10 +2302,10 @@ impl NotificationContextInner {
             .open_messages
             .values()
             .filter(|message| message.runtime_session_id == *runtime_session_id)
-            .map(|message| message.message_id.clone())
+            .map(|message| (message.kind, message.message_id.clone()))
             .collect::<Vec<_>>();
-        for message_id in message_ids {
-            self.flush_message_delta(runtime_session_id, &message_id);
+        for (message_kind, message_id) in message_ids {
+            self.flush_message_delta(runtime_session_id, message_kind, &message_id);
         }
     }
 
@@ -2411,7 +2416,7 @@ impl NotificationContextInner {
         chunk: &ContentChunk,
     ) -> String {
         if let Some(message_id) = chunk.message_id.as_ref() {
-            return message_id.to_string();
+            return runtime_message_id(message_kind, &message_id.to_string());
         }
 
         let synthetic_key = synthetic_message_key(runtime_session_id, message_kind);
@@ -2502,12 +2507,26 @@ struct StreamedMessage {
     runtime_session_id: RuntimeSessionId,
 }
 
-fn stream_message_key(runtime_session_id: &RuntimeSessionId, message_id: &str) -> String {
-    format!("{}\u{1f}{message_id}", runtime_session_id.0)
+fn stream_message_key(
+    runtime_session_id: &RuntimeSessionId,
+    message_kind: &str,
+    message_id: &str,
+) -> String {
+    format!(
+        "{}\u{1f}{message_kind}\u{1f}{message_id}",
+        runtime_session_id.0
+    )
 }
 
 fn synthetic_message_key(runtime_session_id: &RuntimeSessionId, message_kind: &str) -> String {
     format!("{}\u{1f}{message_kind}", runtime_session_id.0)
+}
+
+fn runtime_message_id(message_kind: &str, message_id: &str) -> String {
+    if message_kind == "thinking" {
+        return format!("acp:thinking:{message_id}");
+    }
+    message_id.to_string()
 }
 
 fn available_command_payload(command: AvailableCommand) -> NativeAiAvailableCommandPayload {
@@ -2991,6 +3010,48 @@ mod tests {
         assert_eq!(first_delta.payload["delta"], "Hello ");
         assert_eq!(second_delta.payload["content"], "Hello world");
         assert_eq!(second_delta.payload["delta"], "world");
+    }
+
+    #[test]
+    fn notification_context_separates_thinking_and_assistant_chunks_with_shared_message_id() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        // OpenCode can reuse one ACP messageId for thought and assistant streams.
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AgentThoughtChunk(
+                ContentChunk::new("Reasoning".into()).message_id("msg-shared"),
+            ),
+        ));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AgentMessageChunk(
+                ContentChunk::new("Visible answer".into()).message_id("msg-shared"),
+            ),
+        ));
+
+        let thinking_started = receiver.recv().unwrap();
+        let thinking_delta = receiver.recv().unwrap();
+        let message_started = receiver.recv().unwrap();
+        let message_delta = receiver.recv().unwrap();
+
+        assert_eq!(thinking_started.event_name, AI_THINKING_STARTED_EVENT);
+        assert_eq!(thinking_delta.event_name, AI_THINKING_DELTA_EVENT);
+        assert_eq!(message_started.event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(message_delta.event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(
+            thinking_delta.payload["messageId"],
+            "acp:thinking:msg-shared"
+        );
+        assert_eq!(message_delta.payload["messageId"], "msg-shared");
+        assert_ne!(
+            thinking_delta.payload["messageId"],
+            message_delta.payload["messageId"]
+        );
+        assert_eq!(thinking_delta.payload["content"], "Reasoning");
+        assert_eq!(message_delta.payload["content"], "Visible answer");
     }
 
     #[test]
