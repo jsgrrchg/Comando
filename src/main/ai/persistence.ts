@@ -69,6 +69,10 @@ export interface AiPersistenceGateway {
         runtimeId: AiSessionSnapshot["runtimeId"],
         modelId: string,
     ): void;
+    saveRuntimeCatalogPatch?(
+        runtimeId: AiSessionSnapshot["runtimeId"],
+        patch: Partial<PersistedRuntimeCatalogSnapshot>,
+    ): void;
     setSessionPinned(sessionId: string, pinned: boolean): Awaitable<void>;
     saveSessionSnapshot(snapshot: AiSessionSnapshot, draft?: string): void;
 }

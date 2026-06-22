@@ -196,6 +196,162 @@ describe("AiService prepareSession", () => {
         expect(runtimeStatusEvents.at(-1)).toEqual(readyStatus);
     });
 
+    it("hydrates newly prepared native sessions with persisted ACP catalog controls", async () => {
+        const nativeSnapshot: AiSessionSnapshot = {
+            availableCommands: [],
+            configOptions: [],
+            lastError: null,
+            messages: [],
+            modeId: null,
+            modes: [],
+            modelId: null,
+            models: [],
+            pendingPermission: null,
+            pendingUserInput: null,
+            plan: null,
+            projectId: null,
+            runtimeId: "codex",
+            runtimeSessionId: "runtime-session-1",
+            sessionId: "session-1",
+            status: "idle",
+            title: "Codex 1",
+            tokenUsage: null,
+            toolActivity: [],
+            trackedFiles: [],
+            updatedAt: "2026-04-16T00:00:00.000Z",
+            worktreeId: null,
+        };
+        const runtimeCatalog = {
+            availableCommands: [
+                {
+                    description: "Review changes",
+                    id: "review",
+                    insertText: "/review ",
+                    label: "/review",
+                },
+            ],
+            configOptions: [
+                {
+                    category: "model",
+                    description: null,
+                    id: "model",
+                    label: "Model",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "GPT-5.5",
+                            value: "gpt-5.5",
+                        },
+                    ],
+                    type: "select",
+                    value: "gpt-5.5",
+                },
+            ],
+            modeId: "full-access",
+            modes: [
+                {
+                    description: "No prompts",
+                    id: "full-access",
+                    name: "Full Access",
+                },
+            ],
+            modelId: "gpt-5.5",
+            models: [
+                {
+                    description: "Frontier model",
+                    id: "gpt-5.5",
+                    name: "GPT-5.5",
+                },
+            ],
+        } satisfies Pick<
+            AiSessionSnapshot,
+            | "availableCommands"
+            | "configOptions"
+            | "modeId"
+            | "modes"
+            | "modelId"
+            | "models"
+        >;
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(() =>
+            Promise.resolve(nativeSnapshot),
+        );
+        const service = new AiService({
+            nativeAi: createNativeAi({ prepareSession }),
+            onRuntimeStatus: vi.fn(),
+            onSessionSnapshot: vi.fn(),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => runtimeCatalog),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {},
+                    modeId: null,
+                    modelId: null,
+                })),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+            projectService: {
+                getProjectRootPath: vi.fn(() => process.cwd()),
+                listProjectWorktrees: vi.fn(() => []),
+            } as never,
+            secretStore: {
+                loadSecret: vi.fn(() => null),
+                saveSecret: vi.fn(),
+            },
+            settingsService: {
+                loadClaudeRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    authMethod: null,
+                    binaryPath: null,
+                    gatewayBaseUrl: null,
+                    hasGatewayAuthToken: false,
+                    hasGatewayCustomHeaders: false,
+                })),
+                loadCodexRuntimeSettings: vi.fn(() => ({
+                    authMethod: "chatgpt",
+                    binaryPath: null,
+                    hasCodexApiKey: false,
+                    hasOpenAiApiKey: false,
+                })),
+                loadKiloRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    binaryPath: null,
+                })),
+                saveClaudeRuntimeSettings: vi.fn(),
+                saveCodexRuntimeSettings: vi.fn(),
+                saveKiloRuntimeSettings: vi.fn(),
+            } as never,
+        });
+
+        const snapshot = await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        expect(snapshot).toMatchObject({
+            availableCommands: runtimeCatalog.availableCommands,
+            configOptions: runtimeCatalog.configOptions,
+            modeId: "full-access",
+            modes: runtimeCatalog.modes,
+            modelId: "gpt-5.5",
+            models: runtimeCatalog.models,
+            sessionId: "session-1",
+        });
+        expect(prepareSession.mock.calls[0]?.[0].launch.persistedSnapshot).toMatchObject({
+            configOptions: runtimeCatalog.configOptions,
+            modelId: "gpt-5.5",
+        });
+    });
+
     it("rejects legacy Gemini sessions before native startup", async () => {
         const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>();
         const runtimeStatusEvents: AiRuntimeStatus[] = [];

@@ -681,8 +681,11 @@ pub struct NativeAiSubagentBreadcrumbPayload {
 pub struct NativeAiSessionCatalogUpdatedPayload {
     #[serde(flatten)]
     pub base: NativeAiEventBase,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub available_commands: Option<Vec<NativeAiAvailableCommandPayload>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub config_options: Option<Vec<NativeAiSessionConfigOptionPayload>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mode_id: Option<String>,
 }
 

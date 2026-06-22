@@ -77,6 +77,14 @@ const PERSISTENCE_KEY = "persistence.windows";
 const AI_CATALOGS_KEY = "ai.runtimeCatalogs";
 const AI_PREFERENCES_KEY = "ai.runtimePreferences";
 const WORKSPACE_KEY_PREFIX = "workspace.";
+const AI_RUNTIME_IDS = [
+    "claude",
+    "codex",
+    "gemini",
+    "grok",
+    "kilo",
+    "opencode",
+] as const satisfies readonly AiRuntimeId[];
 const THEME_PRESETS = [
     "default",
     "ocean",
@@ -755,7 +763,14 @@ class NativeAiPersistenceClient implements AiPersistenceGateway {
         for (const [runtimeId, value] of Object.entries(catalogs)) {
             const catalog = toRuntimeCatalog(value);
             if (catalog) {
-                this.#catalogs.set(runtimeId as AiRuntimeId, catalog);
+                const typedRuntimeId = runtimeId as AiRuntimeId;
+                this.#catalogs.set(
+                    typedRuntimeId,
+                    mergeRuntimeCatalog(
+                        this.#catalogs.get(typedRuntimeId) ?? null,
+                        catalog,
+                    ),
+                );
             }
         }
     }
@@ -861,9 +876,32 @@ class NativeAiPersistenceClient implements AiPersistenceGateway {
     saveSessionSnapshot(snapshot: AiSessionSnapshot): void {
         const catalog = toRuntimeCatalog(snapshot);
         if (catalog) {
-            this.#catalogs.set(snapshot.runtimeId, catalog);
+            this.#catalogs.set(
+                snapshot.runtimeId,
+                mergeRuntimeCatalog(
+                    this.#catalogs.get(snapshot.runtimeId) ?? null,
+                    catalog,
+                ),
+            );
             this.#store.save(AI_CATALOGS_KEY, Object.fromEntries(this.#catalogs));
         }
+    }
+
+    saveRuntimeCatalogPatch(
+        runtimeId: AiRuntimeId,
+        patch: Partial<PersistedRuntimeCatalogSnapshot>,
+    ): void {
+        const nextCatalog = applyRuntimeCatalogPatch(
+            this.#catalogs.get(runtimeId) ?? createEmptyRuntimeCatalog(),
+            patch,
+        );
+        const catalog = toRuntimeCatalog(nextCatalog);
+        if (catalog) {
+            this.#catalogs.set(runtimeId, catalog);
+        } else {
+            this.#catalogs.delete(runtimeId);
+        }
+        this.#store.save(AI_CATALOGS_KEY, Object.fromEntries(this.#catalogs));
     }
 }
 
@@ -903,6 +941,7 @@ async function migrateLegacyAppData(input: {
         await migrateLegacyWorkspaces(database, input.store);
         await migrateLegacyProjectSettings(database, input.store);
         await migrateLegacyRuntimePreferences(settings, input.store);
+        await migrateLegacyRuntimeCatalogs(settings, input.store);
         await migrateLegacySecrets(settings, input.store, input.secretStore);
     } catch (error) {
         debugBenignError("nativeAppData.legacyMigration", error);
@@ -1421,6 +1460,43 @@ async function migrateLegacyRuntimePreferences(
     }
 }
 
+async function migrateLegacyRuntimeCatalogs(
+    settings: ReadonlyMap<string, string>,
+    store: NativeJsonStore,
+): Promise<void> {
+    const catalogs = {
+        ...(await store.load<Record<string, PersistedRuntimeCatalogSnapshot>>(
+            AI_CATALOGS_KEY,
+            {},
+        )),
+    };
+    let changed = false;
+
+    for (const runtimeId of AI_RUNTIME_IDS) {
+        const legacyCatalog =
+            readLegacyJsonSetting<PersistedRuntimeCatalogSnapshot>(
+                settings,
+                `ai.runtime_catalog.${runtimeId}`,
+            );
+        const normalizedLegacyCatalog = legacyCatalog
+            ? toRuntimeCatalog(legacyCatalog)
+            : null;
+        if (!normalizedLegacyCatalog) {
+            continue;
+        }
+
+        const existingCatalog = toRuntimeCatalog(catalogs[runtimeId]);
+        catalogs[runtimeId] = existingCatalog
+            ? mergeRuntimeCatalog(normalizedLegacyCatalog, existingCatalog)
+            : normalizedLegacyCatalog;
+        changed = true;
+    }
+
+    if (changed) {
+        await store.saveNow(AI_CATALOGS_KEY, catalogs);
+    }
+}
+
 async function migrateLegacySecrets(
     settings: ReadonlyMap<string, string>,
     store: NativeJsonStore,
@@ -1778,8 +1854,11 @@ function workspaceKey(workspaceId: string): string {
 }
 
 function toRuntimeCatalog(
-    snapshot: PersistedRuntimeCatalogSnapshot,
+    snapshot: PersistedRuntimeCatalogSnapshot | null | undefined,
 ): PersistedRuntimeCatalogSnapshot | null {
+    if (!snapshot) {
+        return null;
+    }
     if (
         snapshot.availableCommands.length === 0 &&
         snapshot.configOptions.length === 0 &&
@@ -1795,6 +1874,57 @@ function toRuntimeCatalog(
         modes: snapshot.modes,
         modelId: snapshot.modelId,
         models: snapshot.models,
+    };
+}
+
+function mergeRuntimeCatalog(
+    current: PersistedRuntimeCatalogSnapshot | null,
+    incoming: PersistedRuntimeCatalogSnapshot,
+): PersistedRuntimeCatalogSnapshot {
+    return {
+        availableCommands:
+            incoming.availableCommands.length > 0
+                ? incoming.availableCommands
+                : (current?.availableCommands ?? []),
+        configOptions:
+            incoming.configOptions.length > 0
+                ? incoming.configOptions
+                : (current?.configOptions ?? []),
+        modeId: incoming.modeId ?? current?.modeId ?? null,
+        modes:
+            incoming.modes.length > 0 ? incoming.modes : (current?.modes ?? []),
+        modelId: incoming.modelId ?? current?.modelId ?? null,
+        models:
+            incoming.models.length > 0
+                ? incoming.models
+                : (current?.models ?? []),
+    };
+}
+
+function applyRuntimeCatalogPatch(
+    current: PersistedRuntimeCatalogSnapshot,
+    patch: Partial<PersistedRuntimeCatalogSnapshot>,
+): PersistedRuntimeCatalogSnapshot {
+    return {
+        availableCommands:
+            patch.availableCommands ?? current.availableCommands,
+        configOptions: patch.configOptions ?? current.configOptions,
+        modeId: "modeId" in patch ? (patch.modeId ?? null) : current.modeId,
+        modes: patch.modes ?? current.modes,
+        modelId:
+            "modelId" in patch ? (patch.modelId ?? null) : current.modelId,
+        models: patch.models ?? current.models,
+    };
+}
+
+function createEmptyRuntimeCatalog(): PersistedRuntimeCatalogSnapshot {
+    return {
+        availableCommands: [],
+        configOptions: [],
+        modeId: null,
+        modes: [],
+        modelId: null,
+        models: [],
     };
 }
 

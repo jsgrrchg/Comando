@@ -57,6 +57,28 @@ describe("createNativeAppDataClient", () => {
                 modelId: "gpt-5",
             },
         );
+        expect(client.aiPersistence.loadLatestRuntimeCatalog("codex")).toMatchObject(
+            {
+                configOptions: [
+                    {
+                        id: "model",
+                        value: "gpt-5",
+                    },
+                ],
+                modeId: "full-access",
+                modelId: "gpt-5",
+                models: [
+                    {
+                        id: "gpt-5",
+                    },
+                ],
+                modes: [
+                    {
+                        id: "full-access",
+                    },
+                ],
+            },
+        );
 
         const windows = client.persistence.listRestorableMainWindowSnapshots();
         expect(windows).toHaveLength(1);
@@ -85,6 +107,59 @@ describe("createNativeAppDataClient", () => {
         };
         expect(snapshot.appearance?.themeMode).toBe("light");
         expect(native.appData.get("legacy.secretsMigrated.v1")).toBe(true);
+    });
+
+    it("fills partial native runtime catalogs from legacy ACP catalogs", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        createLegacyDatabase(databaseFile);
+        const native = createFakeNativeRequester();
+        native.appData.set("ai.runtimeCatalogs", {
+            codex: {
+                availableCommands: [
+                    {
+                        description: "New command",
+                        id: "new-command",
+                        insertText: "/new-command ",
+                        label: "/new-command",
+                    },
+                ],
+                configOptions: [],
+                modeId: null,
+                modes: [],
+                modelId: "gpt-5.4-mini",
+                models: [],
+            },
+        });
+        const { createNativeAppDataClient } = await import("./app-data");
+
+        const client = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        const catalog = client.aiPersistence.loadLatestRuntimeCatalog("codex");
+
+        expect(catalog).toMatchObject({
+            availableCommands: [
+                {
+                    id: "new-command",
+                },
+            ],
+            configOptions: [
+                {
+                    id: "model",
+                    value: "gpt-5",
+                },
+            ],
+            modelId: "gpt-5.4-mini",
+            models: [
+                {
+                    id: "gpt-5",
+                },
+            ],
+        });
+        await client.close();
     });
 
     it("persists runtime catalogs for status rehydration", async () => {
@@ -156,6 +231,77 @@ describe("createNativeAppDataClient", () => {
             modelId: "gpt-5",
         });
         await secondClient.close();
+    });
+
+    it("applies explicit runtime catalog patches without inferring from snapshots", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        new DatabaseSync(databaseFile).close();
+        const native = createFakeNativeRequester();
+        const { createNativeAppDataClient } = await import("./app-data");
+
+        const client = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        client.aiPersistence.saveSessionSnapshot(
+            createCatalogSnapshot({
+                availableCommands: [
+                    {
+                        description: "Review changes",
+                        id: "review",
+                        insertText: "/review ",
+                        label: "/review",
+                    },
+                ],
+                configOptions: [
+                    {
+                        category: "model",
+                        description: null,
+                        id: "model",
+                        label: "Model",
+                        options: [
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "GPT-5",
+                                value: "gpt-5",
+                            },
+                        ],
+                        type: "select",
+                        value: "gpt-5",
+                    },
+                ],
+                modelId: "gpt-5",
+                models: [
+                    {
+                        description: "Frontier model",
+                        id: "gpt-5",
+                        name: "GPT-5",
+                    },
+                ],
+            }),
+        );
+        client.aiPersistence.saveRuntimeCatalogPatch?.("codex", {
+            configOptions: [],
+            modelId: null,
+            models: [],
+        });
+
+        expect(client.aiPersistence.loadLatestRuntimeCatalog("codex")).toMatchObject(
+            {
+                availableCommands: [
+                    {
+                        id: "review",
+                    },
+                ],
+                configOptions: [],
+                modelId: null,
+                models: [],
+            },
+        );
+        await client.close();
     });
 });
 
@@ -322,6 +468,53 @@ function createLegacyDatabase(databaseFile: string): void {
                 configOptions: { approvalPolicy: "never" },
                 modeId: "agent",
                 modelId: "gpt-5",
+            }),
+        );
+        setting.run(
+            "ai.runtime_catalog.codex",
+            JSON.stringify({
+                availableCommands: [
+                    {
+                        description: "Review changes",
+                        id: "review",
+                        insertText: "/review ",
+                        label: "/review",
+                    },
+                ],
+                configOptions: [
+                    {
+                        category: "model",
+                        description: null,
+                        id: "model",
+                        label: "Model",
+                        options: [
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "GPT-5",
+                                value: "gpt-5",
+                            },
+                        ],
+                        type: "select",
+                        value: "gpt-5",
+                    },
+                ],
+                modeId: "full-access",
+                modes: [
+                    {
+                        description: "No prompts",
+                        id: "full-access",
+                        name: "Full Access",
+                    },
+                ],
+                modelId: "gpt-5",
+                models: [
+                    {
+                        description: "Frontier model",
+                        id: "gpt-5",
+                        name: "GPT-5",
+                    },
+                ],
             }),
         );
         setting.run(

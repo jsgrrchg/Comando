@@ -64,6 +64,7 @@ import { prepareCommandForSpawn } from "@main/shell/command-launch";
 import {
     createEmptyAiSessionSnapshot,
     type AiPersistenceGateway,
+    type PersistedRuntimeCatalogSnapshot,
 } from "./persistence";
 import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
 import { listOpenFileBuffers, readOpenFileBuffer } from "./openFileBuffers";
@@ -573,12 +574,20 @@ export class AiService {
             return;
         }
 
-        this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
-        this.#persistence.saveSessionSnapshot(snapshot);
-        if (snapshot.lastError) {
-            this.#invalidateRuntimeAuthIfNeeded(snapshot.runtimeId, snapshot.lastError);
+        const nextSnapshot = this.#hydrateSnapshotRuntimeCatalog(snapshot);
+        const previousSnapshot = this.#liveSnapshots.get(sessionId) ?? null;
+        this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+        this.#persistence.saveSessionSnapshot(nextSnapshot);
+        if (nextSnapshot.lastError) {
+            this.#invalidateRuntimeAuthIfNeeded(
+                nextSnapshot.runtimeId,
+                nextSnapshot.lastError,
+            );
         }
-        this.#onSessionSnapshot(ownerWindowId, update);
+        this.#onSessionSnapshot(
+            ownerWindowId,
+            buildAiSessionUpdate(previousSnapshot, nextSnapshot),
+        );
     }
 
     notifyFileBuffer(input: FileBufferNotificationInput): void {
@@ -681,15 +690,16 @@ export class AiService {
             return;
         }
 
+        const baseSnapshot = this.#hydrateSnapshotRuntimeCatalog(previousSnapshot);
         const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(
             {
-                ...previousSnapshot,
+                ...baseSnapshot,
                 updatedAt,
             },
             patch,
         );
         this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
-        this.#persistence.saveSessionSnapshot(nextSnapshot);
+        this.#persistNativeCatalogPatch(nextSnapshot, patch);
         this.#onSessionSnapshot(
             ownerWindowId,
             buildAiSessionUpdate(previousSnapshot, nextSnapshot),
@@ -1050,14 +1060,18 @@ export class AiService {
             const nativeSnapshot =
                 await this.#nativeAi.loadSessionSnapshot(sessionId);
             if (nativeSnapshot) {
-                return await this.#reconcilePersistedTrackedFiles(nativeSnapshot);
+                return this.#hydrateSnapshotRuntimeCatalog(
+                    await this.#reconcilePersistedTrackedFiles(nativeSnapshot),
+                );
             }
         }
 
         const persistedSnapshot =
             await this.#persistence.loadSessionSnapshot(sessionId);
         return persistedSnapshot
-            ? await this.#reconcilePersistedTrackedFiles(persistedSnapshot)
+            ? this.#hydrateSnapshotRuntimeCatalog(
+                  await this.#reconcilePersistedTrackedFiles(persistedSnapshot),
+              )
             : null;
     }
 
@@ -1175,9 +1189,12 @@ export class AiService {
                 },
             );
             this.#nativeSessionIds.add(snapshot.sessionId);
-            this.#acceptPreparedLiveSnapshot(snapshot, ownerWindowId);
+            const acceptedSnapshot = this.#acceptPreparedLiveSnapshot(
+                snapshot,
+                ownerWindowId,
+            );
             void this.#enforceSessionRetention();
-            return snapshot;
+            return acceptedSnapshot;
         } catch (error) {
             this.#nativeSessionIds.delete(input.sessionId);
             this.#discardPreparedSessionContextOnFailure(
@@ -2411,11 +2428,13 @@ export class AiService {
     #acceptPreparedLiveSnapshot(
         snapshot: AiSessionSnapshot,
         ownerWindowId: string,
-    ): void {
-        this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
-        if (!this.#isNativeAiSession(snapshot.sessionId)) {
-            this.#persistence.saveSessionSnapshot(snapshot);
+    ): AiSessionSnapshot {
+        const nextSnapshot = this.#hydrateSnapshotRuntimeCatalog(snapshot);
+        this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+        if (!this.#isNativeAiSession(nextSnapshot.sessionId)) {
+            this.#persistence.saveSessionSnapshot(nextSnapshot);
         }
+        return nextSnapshot;
     }
 
     #applyNativeSessionEvent(
@@ -2947,17 +2966,18 @@ export class AiService {
             );
         }
 
-        const persistedSnapshot =
+        const persistedSnapshot = this.#hydrateSnapshotRuntimeCatalog(
             snapshotOverride ??
-            this.#liveSnapshots.get(input.sessionId) ??
-            (await this.#loadPersistedSessionSnapshot(input.sessionId)) ??
-            createEmptyAiSessionSnapshot({
-                projectId: input.projectId,
-                runtimeId: input.runtimeId,
-                sessionId: input.sessionId,
-                title: input.title,
-                worktreeId: input.worktreeId ?? null,
-            });
+                this.#liveSnapshots.get(input.sessionId) ??
+                (await this.#loadPersistedSessionSnapshot(input.sessionId)) ??
+                createEmptyAiSessionSnapshot({
+                    projectId: input.projectId,
+                    runtimeId: input.runtimeId,
+                    sessionId: input.sessionId,
+                    title: input.title,
+                    worktreeId: input.worktreeId ?? null,
+                }),
+        );
         const persistedSubagentSessionMappings =
             await this.#listPersistedRuntimeMappingsForParent(
                 persistedSnapshot.sessionId,
@@ -3380,15 +3400,35 @@ export class AiService {
             return status;
         }
 
-        return {
-            ...status,
-            availableCommands: catalog.availableCommands,
-            configOptions: catalog.configOptions,
-            modeId: catalog.modeId,
-            modes: catalog.modes,
-            modelId: catalog.modelId,
-            models: catalog.models,
-        };
+        return mergePersistedCatalogIntoRuntimeStatus(status, catalog);
+    }
+
+    #hydrateSnapshotRuntimeCatalog(snapshot: AiSessionSnapshot): AiSessionSnapshot {
+        const catalog = this.#persistence.loadLatestRuntimeCatalog(
+            snapshot.runtimeId,
+        );
+
+        if (!catalog) {
+            return snapshot;
+        }
+
+        return mergePersistedCatalogIntoSessionSnapshot(snapshot, catalog);
+    }
+
+    #persistNativeCatalogPatch(
+        snapshot: AiSessionSnapshot,
+        patch: NormalizedSessionCatalogPayload,
+    ): void {
+        const catalogPatch = buildPersistedRuntimeCatalogPatch(snapshot, patch);
+        if (this.#persistence.saveRuntimeCatalogPatch) {
+            this.#persistence.saveRuntimeCatalogPatch(
+                snapshot.runtimeId,
+                catalogPatch,
+            );
+            return;
+        }
+
+        this.#persistence.saveSessionSnapshot(snapshot);
     }
 
     async #resolveGrokRuntimeStatusWithProbe(
@@ -3877,6 +3917,75 @@ function upsertNativeToolActivity(
               }
             : candidate,
     );
+}
+
+function mergePersistedCatalogIntoSessionSnapshot(
+    snapshot: AiSessionSnapshot,
+    catalog: PersistedRuntimeCatalogSnapshot,
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        availableCommands:
+            snapshot.availableCommands.length > 0
+                ? snapshot.availableCommands
+                : catalog.availableCommands,
+        configOptions:
+            snapshot.configOptions.length > 0
+                ? snapshot.configOptions
+                : catalog.configOptions,
+        modeId: snapshot.modeId ?? catalog.modeId,
+        modes: snapshot.modes.length > 0 ? snapshot.modes : catalog.modes,
+        modelId: snapshot.modelId ?? catalog.modelId,
+        models: snapshot.models.length > 0 ? snapshot.models : catalog.models,
+    };
+}
+
+function mergePersistedCatalogIntoRuntimeStatus(
+    status: AiRuntimeStatus,
+    catalog: PersistedRuntimeCatalogSnapshot,
+): AiRuntimeStatus {
+    return {
+        ...status,
+        availableCommands:
+            status.availableCommands && status.availableCommands.length > 0
+                ? status.availableCommands
+                : catalog.availableCommands,
+        configOptions:
+            status.configOptions && status.configOptions.length > 0
+                ? status.configOptions
+                : catalog.configOptions,
+        modeId: status.modeId ?? catalog.modeId,
+        modes:
+            status.modes && status.modes.length > 0
+                ? status.modes
+                : catalog.modes,
+        modelId: status.modelId ?? catalog.modelId,
+        models:
+            status.models && status.models.length > 0
+                ? status.models
+                : catalog.models,
+    };
+}
+
+function buildPersistedRuntimeCatalogPatch(
+    snapshot: AiSessionSnapshot,
+    patch: NormalizedSessionCatalogPayload,
+): Partial<PersistedRuntimeCatalogSnapshot> {
+    return {
+        ...(patch.availableCommands !== undefined
+            ? { availableCommands: snapshot.availableCommands }
+            : {}),
+        ...(patch.configOptions !== undefined
+            ? {
+                  configOptions: snapshot.configOptions,
+                  modeId: snapshot.modeId,
+                  modes: snapshot.modes,
+                  modelId: snapshot.modelId,
+                  models: snapshot.models,
+              }
+            : {}),
+        ...(patch.modeId !== undefined ? { modeId: snapshot.modeId } : {}),
+    };
 }
 
 function parseSecretStorageKey(key: string): {

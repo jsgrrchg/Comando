@@ -163,13 +163,25 @@ export function applySessionCatalogToSnapshot(
         baseConfigOptions,
         models,
     );
+    const hasModeCatalog =
+        modes.length > 0 || getModeConfigOption(mergedConfigOptions) !== null;
+    const hasModelCatalog =
+        models.length > 0 || getModelConfigOption(mergedConfigOptions) !== null;
     const modeId =
         payload.modes !== undefined || payload.configOptions !== undefined
-            ? deriveModeId(payload.modes, mergedConfigOptions, snapshot.modeId)
+            ? hasModeCatalog
+                ? deriveModeId(payload.modes, mergedConfigOptions, snapshot.modeId)
+                : null
             : snapshot.modeId;
     const modelId =
         payload.models !== undefined || payload.configOptions !== undefined
-            ? deriveModelId(payload.models, mergedConfigOptions, snapshot.modelId)
+            ? hasModelCatalog
+                ? deriveModelId(
+                      payload.models,
+                      mergedConfigOptions,
+                      snapshot.modelId,
+                  )
+                : null
             : snapshot.modelId;
     const configOptions = syncSelectedModelOption(
         mergedConfigOptions,
@@ -205,15 +217,23 @@ export function applyNormalizedSessionCatalogToSnapshot(
         payload.configOptions !== undefined
             ? buildModelsFromConfigOptions(configOptions)
             : snapshot.models;
+    const hasModeCatalog =
+        modes.length > 0 || getModeConfigOption(configOptions) !== null;
+    const hasModelCatalog =
+        models.length > 0 || getModelConfigOption(configOptions) !== null;
     const modeId =
         payload.modeId !== undefined
             ? payload.modeId
             : payload.configOptions !== undefined
-              ? deriveModeId(null, configOptions, snapshot.modeId)
+              ? hasModeCatalog
+                  ? deriveModeId(null, configOptions, snapshot.modeId)
+                  : null
               : snapshot.modeId;
     const modelId =
         payload.configOptions !== undefined
-            ? deriveModelId(null, configOptions, snapshot.modelId)
+            ? hasModelCatalog
+                ? deriveModelId(null, configOptions, snapshot.modelId)
+                : null
             : snapshot.modelId;
 
     return {

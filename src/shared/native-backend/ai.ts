@@ -479,9 +479,9 @@ export type NativeAiSubagentBreadcrumbPayload = NativeAiEventBase & {
 };
 
 export type NativeAiSessionCatalogUpdatedPayload = NativeAiEventBase & {
-    readonly availableCommands: readonly NativeAiAvailableCommandPayload[] | null;
-    readonly configOptions: readonly NativeAiSessionConfigOptionPayload[] | null;
-    readonly modeId: string | null;
+    readonly availableCommands?: readonly NativeAiAvailableCommandPayload[] | null;
+    readonly configOptions?: readonly NativeAiSessionConfigOptionPayload[] | null;
+    readonly modeId?: string | null;
 };
 
 export type NativeAiAvailableCommandPayload = {
