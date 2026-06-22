@@ -184,6 +184,72 @@ describe("AiService history", () => {
         );
     });
 
+    it("applies native catalog patches that arrive before the session snapshot", () => {
+        const onSessionSnapshot = vi.fn<
+            (ownerWindowId: string, update: AiSessionUpdate) => void
+        >();
+        const saveRuntimeCatalogPatch = vi.fn();
+        const service = createService({
+            onSessionSnapshot,
+            saveRuntimeCatalogPatch,
+        });
+        const configOptions = [
+            {
+                category: "model",
+                description: null,
+                id: "model",
+                label: "Model",
+                options: [
+                    {
+                        description: null,
+                        groupLabel: null,
+                        label: "GPT-5",
+                        value: "gpt-5",
+                    },
+                ],
+                type: "select",
+                value: "gpt-5",
+            },
+        ] satisfies AiSessionSnapshot["configOptions"];
+
+        service.handleNativeSessionCatalogPatch(
+            "window-1",
+            "session-1",
+            { configOptions },
+            "2026-04-16T12:05:00.000Z",
+        );
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSnapshot(),
+        });
+
+        expect(saveRuntimeCatalogPatch).toHaveBeenCalledWith(
+            "codex",
+            expect.objectContaining({
+                configOptions,
+                modelId: "gpt-5",
+                models: [
+                    {
+                        description: null,
+                        id: "gpt-5",
+                        name: "GPT-5",
+                    },
+                ],
+            }),
+        );
+        const lastSnapshotCall = onSessionSnapshot.mock.lastCall;
+        expect(lastSnapshotCall?.[0]).toBe("window-1");
+        const lastSnapshotUpdate = lastSnapshotCall?.[1];
+        expect(lastSnapshotUpdate?.kind).toBe("snapshot");
+        if (lastSnapshotUpdate?.kind !== "snapshot") {
+            throw new Error("Expected the pending catalog patch to emit a snapshot.");
+        }
+        expect(lastSnapshotUpdate.snapshot).toMatchObject({
+            configOptions,
+            modelId: "gpt-5",
+        });
+    });
+
     it("preserves persisted controls when ACP sends a partial catalog patch", () => {
         const saveSessionSnapshot = vi.fn();
         const saveRuntimeCatalogPatch = vi.fn();

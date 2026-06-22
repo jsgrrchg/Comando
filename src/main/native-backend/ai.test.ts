@@ -17,6 +17,7 @@ import {
     NativeAiGateway,
     type NativeAiGatewayOptions,
 } from "./ai";
+import { NativeBackendError } from "./client";
 
 describe("NativeAiGateway", () => {
     it("prepares native sessions with launch context and returns a live snapshot", async () => {
@@ -94,6 +95,52 @@ describe("NativeAiGateway", () => {
                 ],
             }),
         );
+    });
+
+    it("starts a fresh runtime session when the persisted runtime session is stale", async () => {
+        const client = createClient();
+        const gateway = createGateway(client, {
+            onDiagnostic: vi.fn(),
+        });
+        const launch = {
+            ...createLaunch(),
+            persistedSnapshot: {
+                ...createLaunch().persistedSnapshot,
+                runtimeSessionId: "runtime-session-stale",
+            },
+        };
+
+        client.request.mockImplementationOnce(() =>
+            Promise.reject(
+                new NativeBackendError({
+                    code: "ai_runtime_exited",
+                    details: null,
+                    message: "AI runtime process exited: Resource not found: stale",
+                    retryable: false,
+                }),
+            ),
+        );
+
+        await expect(
+            gateway.prepareSession({
+                input: createPrepareInput(),
+                launch,
+            }),
+        ).resolves.toMatchObject({
+            runtimeSessionId: "runtime-session-1",
+            sessionId: "session-1",
+        });
+
+        const prepareCalls = client.request.mock.calls.filter(
+            ([command]) => command === "ai_prepare_session",
+        );
+        expect(prepareCalls).toHaveLength(2);
+        expect(prepareCalls[0]?.[1]).toMatchObject({
+            persistedRuntimeSessionId: "runtime-session-stale",
+        });
+        expect(prepareCalls[1]?.[1]).toMatchObject({
+            persistedRuntimeSessionId: null,
+        });
     });
 
     it("routes native AI events through the owning window", async () => {

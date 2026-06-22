@@ -753,7 +753,7 @@ async fn run_acp_session(
                     .iter()
                     .map(PathBuf::from)
                     .collect::<Vec<_>>();
-                let runtime_session_id =
+                let (runtime_session_id, initial_config_options) =
                     if let Some(runtime_session_id) = spec.persisted_runtime_session_id.clone() {
                         let load_session = LoadSessionRequest::new(
                             agent_client_protocol::schema::SessionId::from(
@@ -762,16 +762,26 @@ async fn run_acp_session(
                             PathBuf::from(&session.scope.cwd),
                         )
                         .additional_directories(additional_directories);
-                        connection.send_request(load_session).block_task().await?;
-                        runtime_session_id
+                        let load_session_response =
+                            connection.send_request(load_session).block_task().await?;
+                        (runtime_session_id, load_session_response.config_options)
                     } else {
                         let new_session = NewSessionRequest::new(PathBuf::from(&session.scope.cwd))
                             .additional_directories(additional_directories);
                         let new_session_response =
                             connection.send_request(new_session).block_task().await?;
-                        RuntimeSessionId(new_session_response.session_id.to_string())
+                        (
+                            RuntimeSessionId(new_session_response.session_id.to_string()),
+                            new_session_response.config_options,
+                        )
                     };
                 notification_context.set_runtime_session_id(runtime_session_id.clone());
+                emit_initial_config_options(
+                    event_sender.as_ref(),
+                    &session,
+                    &runtime_session_id,
+                    initial_config_options,
+                );
                 emit_event(
                     event_sender.as_ref(),
                     AI_RUNTIME_CONNECTION_EVENT,
@@ -1224,6 +1234,36 @@ fn emit_event<T: serde::Serialize>(
 ) {
     if let Some(sender) = sender {
         let _ = sender.send(AiRuntimeEvent::new(event_name, payload));
+    }
+}
+
+fn emit_initial_config_options(
+    sender: Option<&std_mpsc::SyncSender<AiRuntimeEvent>>,
+    session: &NativeAiSession,
+    runtime_session_id: &RuntimeSessionId,
+    config_options: Option<Vec<SessionConfigOption>>,
+) {
+    if let Some(config_options) = config_options {
+        emit_event(
+            sender,
+            AI_SESSION_CATALOG_UPDATED_EVENT,
+            &NativeAiSessionCatalogUpdatedPayload {
+                base: crate::events::event_base(
+                    &session.session_id,
+                    &session.runtime_id,
+                    Some(runtime_session_id.clone()),
+                    now_iso8601(),
+                ),
+                available_commands: None,
+                config_options: Some(
+                    config_options
+                        .into_iter()
+                        .map(session_config_option_payload)
+                        .collect(),
+                ),
+                mode_id: None,
+            },
+        );
     }
 }
 
@@ -2834,6 +2874,38 @@ mod tests {
             );
         }
         meta
+    }
+
+    #[test]
+    fn emits_initial_config_options_from_session_response() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let session = native_test_session();
+
+        emit_initial_config_options(
+            Some(&sender),
+            &session,
+            &RuntimeSessionId("runtime-parent".to_string()),
+            Some(vec![
+                SessionConfigOption::select(
+                    "model",
+                    "Model",
+                    "gpt-5",
+                    vec![
+                        agent_client_protocol::schema::SessionConfigSelectOption::new(
+                            "gpt-5", "GPT-5",
+                        ),
+                    ],
+                )
+                .category(SessionConfigOptionCategory::Model),
+            ]),
+        );
+
+        let event = receiver.recv().unwrap();
+        assert_eq!(event.event_name, AI_SESSION_CATALOG_UPDATED_EVENT);
+        assert_eq!(event.payload["sessionId"], "session-1");
+        assert_eq!(event.payload["runtimeSessionId"], "runtime-parent");
+        assert_eq!(event.payload["configOptions"][0]["id"], "model");
+        assert_eq!(event.payload["configOptions"][0]["currentValue"], "gpt-5");
     }
 
     #[test]

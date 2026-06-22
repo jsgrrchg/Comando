@@ -4,6 +4,7 @@ import {
     appendComposerProjectEntries,
     getComposerPillLayoutStyle,
     getComposerShellSizingStyle,
+    getComposerInputSizingStyle,
     getComposerSubmitKeyboardAction,
     shouldAutoFocusComposerForKeyChange,
     shouldResetComposerForNonceChange,
@@ -332,6 +333,12 @@ describe("AIChatComposer", () => {
     it("caps the default composer shell height so large pastes stay scrollable", () => {
         expect(getComposerShellSizingStyle(null)).toEqual({
             maxHeight: 600,
+            minHeight: 112,
+        });
+    });
+
+    it("keeps room for the bottom toolbar inside the collapsed composer", () => {
+        expect(getComposerInputSizingStyle()).toEqual({
             minHeight: 76,
         });
     });
@@ -340,13 +347,13 @@ describe("AIChatComposer", () => {
         expect(getComposerShellSizingStyle(320)).toEqual({
             height: 320,
             maxHeight: 600,
-            minHeight: 76,
+            minHeight: 112,
         });
     });
 
     it("ignores manual resize height while the composer is expanded", () => {
         expect(getComposerShellSizingStyle(320, { expanded: true })).toEqual({
-            minHeight: 76,
+            minHeight: 112,
         });
     });
 });

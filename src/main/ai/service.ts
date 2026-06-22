@@ -436,6 +436,12 @@ class AiWorkScheduler {
     }
 }
 
+interface PendingNativeCatalogPatch {
+    readonly ownerWindowId: string;
+    readonly patch: NormalizedSessionCatalogPayload;
+    readonly updatedAt: string;
+}
+
 export class AiService {
     readonly #deletedSessionIds = new Set<string>();
     readonly #freezingSessionIds = new Set<string>();
@@ -453,6 +459,10 @@ export class AiService {
     #nativeAi: NativeAiGateway | null;
     readonly #nativeAuthMigratedRuntimeIds = new Set<AiRuntimeId>();
     readonly #nativeChildParentSessionIds = new Map<string, string>();
+    readonly #pendingNativeCatalogPatches = new Map<
+        string,
+        PendingNativeCatalogPatch[]
+    >();
     readonly #nativeReviewBaselines = new Map<string, NativeReviewBaseline>();
     readonly #nativeReviewReconciliations = new Set<string>();
     readonly #nativeSessionIds = new Set<string>();
@@ -507,6 +517,7 @@ export class AiService {
         this.#nativeReviewBaselines.clear();
         this.#nativeReviewReconciliations.clear();
         this.#nativeSessionIds.clear();
+        this.#pendingNativeCatalogPatches.clear();
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
         this.#liveSessionTouches.clear();
@@ -574,7 +585,10 @@ export class AiService {
             return;
         }
 
-        const nextSnapshot = this.#hydrateSnapshotRuntimeCatalog(snapshot);
+        const nextSnapshot = this.#drainPendingNativeCatalogPatches(
+            this.#hydrateSnapshotRuntimeCatalog(snapshot),
+            ownerWindowId,
+        );
         const previousSnapshot = this.#liveSnapshots.get(sessionId) ?? null;
         this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
         this.#persistence.saveSessionSnapshot(nextSnapshot);
@@ -687,22 +701,25 @@ export class AiService {
 
         const previousSnapshot = this.#liveSnapshots.get(sessionId);
         if (!previousSnapshot) {
+            const pending =
+                this.#pendingNativeCatalogPatches.get(sessionId) ?? [];
+            this.#pendingNativeCatalogPatches.set(sessionId, [
+                ...pending,
+                {
+                    ownerWindowId,
+                    patch,
+                    updatedAt,
+                },
+            ]);
             return;
         }
 
-        const baseSnapshot = this.#hydrateSnapshotRuntimeCatalog(previousSnapshot);
-        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(
-            {
-                ...baseSnapshot,
-                updatedAt,
-            },
-            patch,
-        );
-        this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
-        this.#persistNativeCatalogPatch(nextSnapshot, patch);
-        this.#onSessionSnapshot(
+        this.#applyNativeCatalogPatchToLiveSnapshot(
             ownerWindowId,
-            buildAiSessionUpdate(previousSnapshot, nextSnapshot),
+            previousSnapshot,
+            patch,
+            updatedAt,
+            { emitUpdate: true },
         );
     }
 
@@ -2429,12 +2446,68 @@ export class AiService {
         snapshot: AiSessionSnapshot,
         ownerWindowId: string,
     ): AiSessionSnapshot {
-        const nextSnapshot = this.#hydrateSnapshotRuntimeCatalog(snapshot);
+        const nextSnapshot = this.#drainPendingNativeCatalogPatches(
+            this.#hydrateSnapshotRuntimeCatalog(snapshot),
+            ownerWindowId,
+        );
         this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
         if (!this.#isNativeAiSession(nextSnapshot.sessionId)) {
             this.#persistence.saveSessionSnapshot(nextSnapshot);
         }
         return nextSnapshot;
+    }
+
+    #applyNativeCatalogPatchToLiveSnapshot(
+        ownerWindowId: string,
+        previousSnapshot: AiSessionSnapshot,
+        patch: NormalizedSessionCatalogPayload,
+        updatedAt: string,
+        options: { readonly emitUpdate: boolean },
+    ): AiSessionSnapshot {
+        const baseSnapshot = this.#hydrateSnapshotRuntimeCatalog(previousSnapshot);
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(
+            {
+                ...baseSnapshot,
+                updatedAt,
+            },
+            patch,
+        );
+        this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+        this.#persistNativeCatalogPatch(nextSnapshot, patch);
+
+        if (options.emitUpdate) {
+            this.#onSessionSnapshot(
+                ownerWindowId,
+                buildAiSessionUpdate(previousSnapshot, nextSnapshot),
+            );
+        }
+
+        return nextSnapshot;
+    }
+
+    #drainPendingNativeCatalogPatches(
+        snapshot: AiSessionSnapshot,
+        fallbackOwnerWindowId: string,
+    ): AiSessionSnapshot {
+        const pending = this.#pendingNativeCatalogPatches.get(
+            snapshot.sessionId,
+        );
+        if (!pending || pending.length === 0) {
+            return snapshot;
+        }
+
+        this.#pendingNativeCatalogPatches.delete(snapshot.sessionId);
+
+        // ACP runtimes can emit catalog updates before prepareSession returns.
+        return pending.reduce((currentSnapshot, pendingPatch) => {
+            return this.#applyNativeCatalogPatchToLiveSnapshot(
+                pendingPatch.ownerWindowId || fallbackOwnerWindowId,
+                currentSnapshot,
+                pendingPatch.patch,
+                pendingPatch.updatedAt,
+                { emitUpdate: false },
+            );
+        }, snapshot);
     }
 
     #applyNativeSessionEvent(

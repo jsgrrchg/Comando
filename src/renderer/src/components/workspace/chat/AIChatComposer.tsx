@@ -56,7 +56,8 @@ import { useTextContextMenu } from "../../context-menu/useTextContextMenu";
 
 /* ─── Constants ─── */
 
-const MIN_COMPOSER_HEIGHT = 76;
+const MIN_COMPOSER_INPUT_HEIGHT = 76;
+const MIN_COMPOSER_HEIGHT = 112;
 const MAX_COMPOSER_HEIGHT = 600;
 
 type ComposerPillLayoutStyle = Pick<
@@ -83,6 +84,12 @@ export function getComposerShellSizingStyle(
         minHeight: MIN_COMPOSER_HEIGHT,
         maxHeight: MAX_COMPOSER_HEIGHT,
         ...(customHeight != null ? { height: customHeight } : {}),
+    };
+}
+
+export function getComposerInputSizingStyle(): Pick<CSSProperties, "minHeight"> {
+    return {
+        minHeight: MIN_COMPOSER_INPUT_HEIGHT,
     };
 }
 
@@ -1635,7 +1642,7 @@ export function AIChatComposer({
                         fontFamily: composerFontFamily,
                         fontSize: composerFontSize,
                         lineHeight: 1.5,
-                        minHeight: MIN_COMPOSER_HEIGHT,
+                        ...getComposerInputSizingStyle(),
                         overflowY: "auto",
                         padding: "10px 42px 10px 14px",
                         userSelect: "text",

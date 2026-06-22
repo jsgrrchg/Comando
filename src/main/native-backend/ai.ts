@@ -58,6 +58,7 @@ import type {
     NativeAiRuntimeSettingsRpcInput,
     NativeAiSendPromptRpcInput,
 } from "@main/ai/contracts";
+import { NativeBackendError } from "./client";
 import type { NativeBackendRequester } from "./persistence";
 
 type NativeAiClient = NativeBackendRequester & {
@@ -461,26 +462,8 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         this.#rememberPersistedSubagentMappings(request.launch);
 
         try {
-            const summary = await this.#client.request<NativeAiSessionSummary>(
-                "ai_prepare_session",
-                {
-                    additionalRoots: request.launch.additionalRoots,
-                    configOptions: nativeConfigOptionsFromLaunch(request.launch),
-                    cwd: request.launch.cwd,
-                    launch: null,
-                    modeId: request.launch.desiredSelections.modeId,
-                    modelId: request.launch.desiredSelections.modelId,
-                    persistedRuntimeSessionId:
-                        request.launch.persistedSnapshot.runtimeSessionId ?? null,
-                    persistedSubagentSessionMappings:
-                        request.launch.persistedSubagentSessionMappings ?? [],
-                    projectId: request.input.projectId,
-                    runtimeId: request.input.runtimeId,
-                    sessionId: request.input.sessionId,
-                    title: request.input.title,
-                    windowId: request.launch.ownerWindowId,
-                    worktreeId: request.input.worktreeId ?? null,
-                },
+            const summary = await this.#prepareSessionWithStaleRuntimeRetry(
+                request,
             );
             this.#rememberSummary(summary, request.launch.ownerWindowId);
 
@@ -489,6 +472,58 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             this.#restoreOwner(request.input.sessionId, previousOwner);
             throw error;
         }
+    }
+
+    async #prepareSessionWithStaleRuntimeRetry(
+        request: NativeAiPrepareSessionRpcInput,
+    ): Promise<NativeAiSessionSummary> {
+        const persistedRuntimeSessionId =
+            request.launch.persistedSnapshot.runtimeSessionId ?? null;
+
+        try {
+            return await this.#requestPrepareSession(
+                request,
+                persistedRuntimeSessionId,
+            );
+        } catch (error) {
+            if (
+                !persistedRuntimeSessionId ||
+                !isStalePersistedRuntimeSessionError(error)
+            ) {
+                throw error;
+            }
+
+            this.#reportDiagnostic(
+                `Native AI session ${request.input.sessionId} could not reload runtime session ${persistedRuntimeSessionId}; starting a fresh runtime session.`,
+            );
+            return await this.#requestPrepareSession(request, null);
+        }
+    }
+
+    async #requestPrepareSession(
+        request: NativeAiPrepareSessionRpcInput,
+        persistedRuntimeSessionId: string | null,
+    ): Promise<NativeAiSessionSummary> {
+        return await this.#client.request<NativeAiSessionSummary>(
+            "ai_prepare_session",
+            {
+                additionalRoots: request.launch.additionalRoots,
+                configOptions: nativeConfigOptionsFromLaunch(request.launch),
+                cwd: request.launch.cwd,
+                launch: null,
+                modeId: request.launch.desiredSelections.modeId,
+                modelId: request.launch.desiredSelections.modelId,
+                persistedRuntimeSessionId,
+                persistedSubagentSessionMappings:
+                    request.launch.persistedSubagentSessionMappings ?? [],
+                projectId: request.input.projectId,
+                runtimeId: request.input.runtimeId,
+                sessionId: request.input.sessionId,
+                title: request.input.title,
+                windowId: request.launch.ownerWindowId,
+                worktreeId: request.input.worktreeId ?? null,
+            },
+        );
     }
 
     async sendPrompt(
@@ -1199,6 +1234,15 @@ function requireNumber(value: unknown, label: string): number {
         throw new Error(`${label} must be a finite number.`);
     }
     return value;
+}
+
+function isStalePersistedRuntimeSessionError(error: unknown): boolean {
+    return (
+        error instanceof NativeBackendError &&
+        (error.code === "not_found" ||
+            error.message === "Resource not found" ||
+            error.message.includes("Resource not found:"))
+    );
 }
 
 function formatError(error: unknown): string {
