@@ -74,6 +74,7 @@ import type { NativeBackendRequester } from "./persistence";
 const SETTINGS_KEY = "settings.snapshot";
 const PROJECT_SETTINGS_KEY = "settings.projects";
 const PERSISTENCE_KEY = "persistence.windows";
+const AI_CATALOGS_KEY = "ai.runtimeCatalogs";
 const AI_PREFERENCES_KEY = "ai.runtimePreferences";
 const WORKSPACE_KEY_PREFIX = "workspace.";
 const THEME_PRESETS = [
@@ -745,10 +746,17 @@ class NativeAiPersistenceClient implements AiPersistenceGateway {
     constructor(
         store: NativeJsonStore,
         preferences: Readonly<Record<string, PersistedRuntimeSelectionPreferences>>,
+        catalogs: Readonly<Record<string, PersistedRuntimeCatalogSnapshot>>,
     ) {
         this.#store = store;
         for (const [runtimeId, value] of Object.entries(preferences)) {
             this.#preferences.set(runtimeId as AiRuntimeId, value);
+        }
+        for (const [runtimeId, value] of Object.entries(catalogs)) {
+            const catalog = toRuntimeCatalog(value);
+            if (catalog) {
+                this.#catalogs.set(runtimeId as AiRuntimeId, catalog);
+            }
         }
     }
 
@@ -854,6 +862,7 @@ class NativeAiPersistenceClient implements AiPersistenceGateway {
         const catalog = toRuntimeCatalog(snapshot);
         if (catalog) {
             this.#catalogs.set(snapshot.runtimeId, catalog);
+            this.#store.save(AI_CATALOGS_KEY, Object.fromEntries(this.#catalogs));
         }
     }
 }
@@ -1599,6 +1608,7 @@ export async function createNativeAppDataClient(
     const aiPersistence = new NativeAiPersistenceClient(
         store,
         await store.load(AI_PREFERENCES_KEY, {}),
+        await store.load(AI_CATALOGS_KEY, {}),
     );
 
     return {
@@ -1771,6 +1781,7 @@ function toRuntimeCatalog(
     snapshot: PersistedRuntimeCatalogSnapshot,
 ): PersistedRuntimeCatalogSnapshot | null {
     if (
+        snapshot.availableCommands.length === 0 &&
         snapshot.configOptions.length === 0 &&
         snapshot.models.length === 0 &&
         snapshot.modes.length === 0

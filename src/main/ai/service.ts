@@ -689,6 +689,7 @@ export class AiService {
             patch,
         );
         this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+        this.#persistence.saveSessionSnapshot(nextSnapshot);
         this.#onSessionSnapshot(
             ownerWindowId,
             buildAiSessionUpdate(previousSnapshot, nextSnapshot),

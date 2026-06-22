@@ -5,6 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { AiSessionSnapshot } from "@shared/ipc";
+
 import type { NativeBackendRequester } from "./persistence";
 
 vi.mock("electron", () => ({
@@ -84,6 +86,77 @@ describe("createNativeAppDataClient", () => {
         expect(snapshot.appearance?.themeMode).toBe("light");
         expect(native.appData.get("legacy.secretsMigrated.v1")).toBe(true);
     });
+
+    it("persists runtime catalogs for status rehydration", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        new DatabaseSync(databaseFile).close();
+        const native = createFakeNativeRequester();
+        const { createNativeAppDataClient } = await import("./app-data");
+
+        const firstClient = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        firstClient.aiPersistence.saveSessionSnapshot(
+            createCatalogSnapshot({
+                availableCommands: [
+                    {
+                        description: "Review changes",
+                        id: "review",
+                        insertText: "/review ",
+                        label: "/review",
+                    },
+                ],
+                configOptions: [
+                    {
+                        category: "model",
+                        description: null,
+                        id: "model",
+                        label: "Model",
+                        options: [
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "GPT-5",
+                                value: "gpt-5",
+                            },
+                        ],
+                        type: "select",
+                        value: "gpt-5",
+                    },
+                ],
+                modelId: "gpt-5",
+            }),
+        );
+        await firstClient.close();
+
+        const secondClient = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+
+        expect(
+            secondClient.aiPersistence.loadLatestRuntimeCatalog("codex"),
+        ).toMatchObject({
+            availableCommands: [
+                {
+                    id: "review",
+                    insertText: "/review ",
+                    label: "/review",
+                },
+            ],
+            configOptions: [
+                {
+                    id: "model",
+                    value: "gpt-5",
+                },
+            ],
+            modelId: "gpt-5",
+        });
+        await secondClient.close();
+    });
 });
 
 function createFakeNativeRequester(): {
@@ -146,6 +219,38 @@ function createFakeNativeRequester(): {
 
 function secretMapKey(namespace: unknown, secretId: unknown): string {
     return `${String(namespace)}.${String(secretId)}`;
+}
+
+function createCatalogSnapshot(
+    overrides: Partial<AiSessionSnapshot>,
+): AiSessionSnapshot {
+    return {
+        activeTurnStartedAt: null,
+        availableCommands: [],
+        closedAt: null,
+        configOptions: [],
+        lastError: null,
+        messages: [],
+        modeId: null,
+        modes: [],
+        modelId: null,
+        models: [],
+        pendingPermission: null,
+        pendingUserInput: null,
+        plan: null,
+        projectId: "project-1",
+        runtimeId: "codex",
+        runtimeSessionId: "runtime-session-1",
+        sessionId: "session-1",
+        status: "idle",
+        title: "Session 1",
+        tokenUsage: null,
+        toolActivity: [],
+        trackedFiles: [],
+        updatedAt: "2026-06-20T12:00:00.000Z",
+        worktreeId: "worktree-1",
+        ...overrides,
+    };
 }
 
 function createLegacyDatabase(databaseFile: string): void {

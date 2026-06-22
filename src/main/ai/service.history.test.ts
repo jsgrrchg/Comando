@@ -117,6 +117,63 @@ describe("AiService history", () => {
         expect(onSessionSnapshot).not.toHaveBeenCalled();
     });
 
+    it("persists native catalog patches for runtime control rehydration", () => {
+        const onSessionSnapshot = vi.fn();
+        const saveSessionSnapshot = vi.fn();
+        const service = createService({
+            onSessionSnapshot,
+            saveSessionSnapshot,
+        });
+        const configOptions = [
+            {
+                category: "model",
+                description: null,
+                id: "model",
+                label: "Model",
+                options: [
+                    {
+                        description: null,
+                        groupLabel: null,
+                        label: "GPT-5",
+                        value: "gpt-5",
+                    },
+                ],
+                type: "select",
+                value: "gpt-5",
+            },
+        ] satisfies AiSessionSnapshot["configOptions"];
+
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSnapshot(),
+        });
+        saveSessionSnapshot.mockClear();
+
+        service.handleNativeSessionCatalogPatch(
+            "window-1",
+            "session-1",
+            {
+                configOptions,
+            },
+            "2026-04-16T12:05:00.000Z",
+        );
+
+        expect(saveSessionSnapshot).toHaveBeenCalledWith(
+            expect.objectContaining({
+                configOptions,
+                modelId: "gpt-5",
+                sessionId: "session-1",
+                updatedAt: "2026-04-16T12:05:00.000Z",
+            }),
+        );
+        expect(onSessionSnapshot).toHaveBeenLastCalledWith(
+            "window-1",
+            expect.objectContaining({
+                kind: "patch",
+            }),
+        );
+    });
+
     it("delegates pinning mutations to persistence", async () => {
         const setSessionPinned = vi.fn();
         const service = createService({
