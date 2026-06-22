@@ -51,12 +51,6 @@ export function resolveWindowsPackagingPreflight({
         suggestion: "Run pnpm install --frozen-lockfile before packaging Windows.",
         isFile,
     });
-    assertFile(paths.electronBuilderInstallAppDepsCli, {
-        label: "electron-builder install-app-deps CLI",
-        relativePath,
-        suggestion: "Run pnpm install --frozen-lockfile before packaging Windows.",
-        isFile,
-    });
     assertFile(paths.windowsIconPath, {
         label: "Windows icon",
         relativePath,
@@ -64,17 +58,6 @@ export function resolveWindowsPackagingPreflight({
         isFile,
     });
 
-    const pythonBinary = resolveRequiredPythonBinary({
-        env,
-        isExecutableFile,
-        resolveCommand,
-    });
-    const visualStudioToolchain = resolveRequiredVisualStudioToolchain({
-        env,
-        isExecutableFile,
-        isFile,
-        resolveCommand,
-    });
     const rceditPath = resolveRequiredRcedit({
         env,
         isExecutableFile,
@@ -94,16 +77,9 @@ export function resolveWindowsPackagingPreflight({
     return {
         aiPayload,
         electronBuilderCli: paths.electronBuilderCli,
-        electronBuilderInstallAppDepsCli: paths.electronBuilderInstallAppDepsCli,
         powerShellCommand,
         pnpmCommand,
         rceditPath,
-        toolchainEnv: createWindowsBuildEnv({
-            basePath: env.PATH,
-            pathDelimiter: platform === "win32" ? ";" : path.delimiter,
-            pythonBinary,
-        }),
-        visualStudioToolchain,
         windowsIconPath: paths.windowsIconPath,
     };
 }
@@ -115,12 +91,6 @@ export function resolveWindowsPackagingPaths(repoRoot) {
             "node_modules",
             "electron-builder",
             "cli.js",
-        ),
-        electronBuilderInstallAppDepsCli: path.join(
-            repoRoot,
-            "node_modules",
-            "electron-builder",
-            "install-app-deps.js",
         ),
         windowsIconPath: path.join(repoRoot, "resources", "icons", "windows.ico"),
     };
@@ -196,80 +166,6 @@ export function resolveCommandFromPath(
     }
 
     return null;
-}
-
-function resolveRequiredPythonBinary({ env, isExecutableFile, resolveCommand }) {
-    const explicit = env.PYTHON?.trim();
-    if (explicit) {
-        if (isExecutableFile(explicit)) {
-            return explicit;
-        }
-
-        throw new Error(
-            `PYTHON points to a missing or non-executable file: ${explicit}.`,
-        );
-    }
-
-    const pythonBinary =
-        resolveCommand("python.exe") ??
-        resolveCommand("python") ??
-        resolveCommand("py.exe") ??
-        resolveCommand("py");
-
-    if (pythonBinary) {
-        return pythonBinary;
-    }
-
-    throw new Error(
-        "Required Python was not found. Install Python or set PYTHON before packaging Windows native modules.",
-    );
-}
-
-function resolveRequiredVisualStudioToolchain({
-    env,
-    isExecutableFile,
-    isFile,
-    resolveCommand,
-}) {
-    for (const [name, value] of [
-        ["VCINSTALLDIR", env.VCINSTALLDIR],
-        ["VSINSTALLDIR", env.VSINSTALLDIR],
-        ["VisualStudioVersion", env.VisualStudioVersion],
-    ]) {
-        if (value?.trim()) {
-            return { source: name, value };
-        }
-    }
-
-    const vswhereCandidates = [
-        resolveCommand("vswhere.exe"),
-        env["ProgramFiles(x86)"]
-            ? path.join(
-                  env["ProgramFiles(x86)"],
-                  "Microsoft Visual Studio",
-                  "Installer",
-                  "vswhere.exe",
-              )
-            : null,
-        env.ProgramFiles
-            ? path.join(
-                  env.ProgramFiles,
-                  "Microsoft Visual Studio",
-                  "Installer",
-                  "vswhere.exe",
-              )
-            : null,
-    ].filter(Boolean);
-
-    for (const candidate of vswhereCandidates) {
-        if (isExecutableFile(candidate) || isFile(candidate)) {
-            return { source: "vswhere.exe", value: candidate };
-        }
-    }
-
-    throw new Error(
-        "Required Visual Studio Build Tools were not detected. Install VS Build Tools 2022 with the C++ workload before packaging Windows native modules.",
-    );
 }
 
 function resolveRequiredWindowsAiPayload({
@@ -354,17 +250,6 @@ function assertFile(filePath, { isFile, label, relativePath, suggestion }) {
     throw new Error(
         `Missing ${label}: ${relativePath(filePath)}. ${suggestion}`,
     );
-}
-
-function createWindowsBuildEnv({ basePath, pathDelimiter, pythonBinary }) {
-    return {
-        GYP_MSVS_VERSION: "2022",
-        PATH: [path.dirname(pythonBinary), basePath ?? ""]
-            .filter(Boolean)
-            .join(pathDelimiter),
-        PYTHON: pythonBinary,
-        npm_config_python: pythonBinary,
-    };
 }
 
 function defaultIsDirectory(candidatePath) {

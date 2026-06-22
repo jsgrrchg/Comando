@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::env;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
@@ -15,9 +14,9 @@ use comando_ai::history::{
 use comando_ai::runtime_setup::invalidate_grok_auth_on_error;
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
 use comando_git::{
-    GitBranchListScope, GitError, GitFileDiffRequest, GitRunner, checkout_branch, commit,
-    create_branch, create_worktree, delete_local_branch, delete_remote_branch, discard_paths,
-    fetch, get_commit_detail, get_diff_stats, get_file_diff, get_original_file,
+    GitBranchListScope, GitError, GitFileDiffRequest, GitRunOptions, GitRunner, checkout_branch,
+    commit, create_branch, create_worktree, delete_local_branch, delete_remote_branch,
+    discard_paths, fetch, get_commit_detail, get_diff_stats, get_file_diff, get_original_file,
     get_repository_snapshot, get_status, init_repository, list_branches, list_history,
     list_remotes, list_worktree_diff, list_worktrees, pull, push, remove_worktree,
     resolve_repository, stage_paths, unstage_paths,
@@ -36,9 +35,12 @@ use comando_types::capabilities::{
     bootstrap_capabilities, negotiate_protocol_version,
 };
 use comando_types::commands::{
+    APP_DATA_GET_JSON, APP_DATA_SET_JSON, APP_SECRET_DELETE, APP_SECRET_GET, APP_SECRET_SET,
     BACKEND_CAPABILITIES, BACKEND_EMIT_TEST_EVENT, BACKEND_HANDSHAKE, BACKEND_PING,
     BACKEND_SHUTDOWN, PERSISTENCE_GET_SNAPSHOT, PERSISTENCE_GET_STORAGE_HEALTH,
-    PERSISTENCE_OPEN_STORE, PROJECT_ADD, PROJECT_LIST, PROJECT_SYNC_WORKTREES,
+    PERSISTENCE_OPEN_STORE, PROJECT_ADD, PROJECT_CLEAR_APP_DATA, PROJECT_GET_APP_DATA_SUMMARY,
+    PROJECT_LIST, PROJECT_RELOCATE, PROJECT_REMOVE, PROJECT_SYNC_WORKTREES, PROJECT_TOUCH,
+    SETTINGS_GET_PROJECT, SETTINGS_GET_SNAPSHOT, SETTINGS_SAVE_PROJECT, SETTINGS_SAVE_SNAPSHOT,
 };
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::BACKEND_TEST_EVENT;
@@ -51,6 +53,7 @@ use comando_types::{
     ai as native_ai, fs as native_fs, git as native_git, index as native_index,
     projects as native_projects, terminal as native_terminal,
 };
+use rusqlite::{OptionalExtension, params};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
@@ -59,6 +62,9 @@ use crate::review::{
     NativeReviewCommandOutput, NativeReviewFileBufferInput, NativeReviewFileMutationInput,
     NativeReviewHunkMutationInput, NativeReviewService, NativeReviewSessionInput,
 };
+
+const SETTINGS_SNAPSHOT_KEY: &str = "settings.snapshot";
+const PROJECT_SETTINGS_KEY: &str = "settings.projects";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandResult {
@@ -108,6 +114,53 @@ struct NativeGitListRemotesInput {
 struct NativeGitWorktreeDiffInput {
     scope: native_git::NativeGitRepositoryScope,
     scopes: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeAppDataGetJsonInput {
+    key: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeAppDataSetJsonInput {
+    key: String,
+    value: Value,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeAppSecretInput {
+    namespace: String,
+    secret_id: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeAppSecretSetInput {
+    namespace: String,
+    secret_id: String,
+    value: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeSettingsSaveSnapshotInput {
+    snapshot: Value,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeSettingsProjectInput {
+    project_id: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeSettingsSaveProjectInput {
+    project_id: String,
+    snapshot: Value,
 }
 
 pub fn handle_request(request: RpcRequest) -> CommandResult {
@@ -195,8 +248,22 @@ impl NativeBackend {
             PERSISTENCE_OPEN_STORE => self.open_persistence_store(request),
             PERSISTENCE_GET_STORAGE_HEALTH => self.get_storage_health(request),
             PERSISTENCE_GET_SNAPSHOT => self.get_snapshot(request),
+            APP_DATA_GET_JSON => self.app_data_get_json(request),
+            APP_DATA_SET_JSON => self.app_data_set_json(request),
+            SETTINGS_GET_SNAPSHOT => self.settings_get_snapshot(request),
+            SETTINGS_SAVE_SNAPSHOT => self.settings_save_snapshot(request),
+            SETTINGS_GET_PROJECT => self.settings_get_project(request),
+            SETTINGS_SAVE_PROJECT => self.settings_save_project(request),
+            APP_SECRET_GET => self.app_secret_get(request),
+            APP_SECRET_SET => self.app_secret_set(request),
+            APP_SECRET_DELETE => self.app_secret_delete(request),
             PROJECT_LIST => self.list_projects(request),
             PROJECT_ADD => self.add_projects(request),
+            PROJECT_REMOVE => self.remove_project(request),
+            PROJECT_TOUCH => self.touch_project(request),
+            PROJECT_RELOCATE => self.relocate_project(request),
+            PROJECT_GET_APP_DATA_SUMMARY => self.get_project_app_data_summary(request),
+            PROJECT_CLEAR_APP_DATA => self.clear_project_app_data(request),
             PROJECT_SYNC_WORKTREES => self.sync_project_worktrees(request),
             "project_open" | "project_refresh" => self.refresh_projects(request),
             "project_list_tree_children" => self.list_project_tree_children(request),
@@ -236,6 +303,7 @@ impl NativeBackend {
             "git_get_diff_stats" => self.git_get_diff_stats(request),
             "git_list_worktree_diff" => self.git_list_worktree_diff(request),
             "git_init_repository" => self.git_init_repository(request),
+            "git_clone_repository" => self.git_clone_repository(request),
             "git_stage_paths" => self.git_stage_paths(request),
             "git_unstage_paths" => self.git_unstage_paths(request),
             "git_discard_paths" => self.git_discard_paths(request),
@@ -401,6 +469,197 @@ impl NativeBackend {
             })
             .expect("snapshot output serializes"),
         )
+    }
+
+    fn app_data_get_json(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<NativeAppDataGetJsonInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        let value = match load_app_data_value(store, &input.key) {
+            Ok(value) => value,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        response_only(request.id, json!({ "value": value }))
+    }
+
+    fn app_data_set_json(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<NativeAppDataSetJsonInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        match save_app_data_value(store, &input.key, &input.value) {
+            Ok(()) => response_only(request.id, json!({ "ok": true })),
+            Err(error) => error_only(request.id, error),
+        }
+    }
+
+    fn settings_get_snapshot(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        let value = match load_app_data_value(store, SETTINGS_SNAPSHOT_KEY) {
+            Ok(value) => value,
+            Err(error) => return error_only(request.id, error),
+        };
+        response_only(
+            request.id,
+            json!({ "snapshot": value.clone(), "value": value }),
+        )
+    }
+
+    fn settings_save_snapshot(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<NativeSettingsSaveSnapshotInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        match save_app_data_value(store, SETTINGS_SNAPSHOT_KEY, &input.snapshot) {
+            Ok(()) => response_only(request.id, json!({ "ok": true })),
+            Err(error) => error_only(request.id, error),
+        }
+    }
+
+    fn settings_get_project(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<NativeSettingsProjectInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let project_id = match settings_project_id(&input.project_id) {
+            Ok(project_id) => project_id,
+            Err(error) => return error_only(request.id, error),
+        };
+        let projects = match load_app_data_value(store, PROJECT_SETTINGS_KEY) {
+            Ok(Value::Object(projects)) => projects,
+            Ok(Value::Null) => serde_json::Map::new(),
+            Ok(_) => {
+                return error_only(
+                    request.id,
+                    NativeError::new(
+                        NativeErrorCode::InvalidJson,
+                        "Native project settings storage must be a JSON object.",
+                    ),
+                );
+            }
+            Err(error) => return error_only(request.id, error),
+        };
+        let value = projects.get(project_id).cloned().unwrap_or(Value::Null);
+        response_only(
+            request.id,
+            json!({ "snapshot": value.clone(), "value": value }),
+        )
+    }
+
+    fn settings_save_project(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<NativeSettingsSaveProjectInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let project_id = match settings_project_id(&input.project_id) {
+            Ok(project_id) => project_id,
+            Err(error) => return error_only(request.id, error),
+        };
+        let mut projects = match load_app_data_value(store, PROJECT_SETTINGS_KEY) {
+            Ok(Value::Object(projects)) => projects,
+            Ok(Value::Null) => serde_json::Map::new(),
+            Ok(_) => {
+                return error_only(
+                    request.id,
+                    NativeError::new(
+                        NativeErrorCode::InvalidJson,
+                        "Native project settings storage must be a JSON object.",
+                    ),
+                );
+            }
+            Err(error) => return error_only(request.id, error),
+        };
+        if input.snapshot.is_null() {
+            projects.remove(project_id);
+        } else {
+            projects.insert(project_id.to_string(), input.snapshot);
+        }
+        match save_app_data_value(store, PROJECT_SETTINGS_KEY, &Value::Object(projects)) {
+            Ok(()) => response_only(request.id, json!({ "ok": true })),
+            Err(error) => error_only(request.id, error),
+        }
+    }
+
+    fn app_secret_get(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<NativeAppSecretInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let account = match app_secret_account(&input.namespace, &input.secret_id) {
+            Ok(account) => account,
+            Err(error) => return error_only(request.id, error),
+        };
+        match app_secret_entry(&account).and_then(|entry| match entry.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(app_secret_error("read", error)),
+        }) {
+            Ok(value) => response_only(request.id, json!({ "value": value })),
+            Err(error) => error_only(request.id, error),
+        }
+    }
+
+    fn app_secret_set(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<NativeAppSecretSetInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let account = match app_secret_account(&input.namespace, &input.secret_id) {
+            Ok(account) => account,
+            Err(error) => return error_only(request.id, error),
+        };
+        let value = input.value.unwrap_or_default();
+        let value = value.trim();
+        if value.is_empty() {
+            return match delete_app_secret(&account) {
+                Ok(()) => response_only(request.id, json!({ "present": false })),
+                Err(error) => error_only(request.id, error),
+            };
+        }
+
+        match app_secret_entry(&account).and_then(|entry| {
+            entry
+                .set_password(value)
+                .map_err(|error| app_secret_error("save", error))
+        }) {
+            Ok(()) => response_only(request.id, json!({ "present": true })),
+            Err(error) => error_only(request.id, error),
+        }
+    }
+
+    fn app_secret_delete(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<NativeAppSecretInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let account = match app_secret_account(&input.namespace, &input.secret_id) {
+            Ok(account) => account,
+            Err(error) => return error_only(request.id, error),
+        };
+        match delete_app_secret(&account) {
+            Ok(()) => response_only(request.id, json!({ "present": false })),
+            Err(error) => error_only(request.id, error),
+        }
     }
 
     fn secret_status(&mut self, request: RpcRequest) -> CommandResult {
@@ -687,6 +946,197 @@ impl NativeBackend {
                 }
                 CommandResult {
                     outputs,
+                    should_shutdown: false,
+                }
+            }
+            Err(error) => error_only(request.id, project_error(error)),
+        }
+    }
+
+    fn remove_project(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        if !matches!(store.mode(), NativePersistenceMode::Write) {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::PermissionDenied,
+                    "Native project_remove requires project registry write mode.",
+                ),
+            );
+        }
+        let input = match parse_args::<native_projects::NativeProjectIdInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        let mut registry = ProjectRegistry::new(store.connection_mut());
+        match registry.remove_project(&input.project_id) {
+            Ok(state) => {
+                self.fs_service.sync_state(state.clone());
+                CommandResult {
+                    outputs: vec![
+                        response_ok(
+                            request.id,
+                            serde_json::to_value(native_projects::NativeProjectMutationResult {
+                                state,
+                            })
+                            .expect("project remove output serializes"),
+                        ),
+                        event(
+                            "project://updated",
+                            json!({
+                                "projectId": input.project_id.0.as_str(),
+                                "worktreeId": Value::Null,
+                                "reason": "project_remove",
+                                "occurredAt": comando_persistence::store::now_rfc3339(),
+                            }),
+                        ),
+                    ],
+                    should_shutdown: false,
+                }
+            }
+            Err(error) => error_only(request.id, project_error(error)),
+        }
+    }
+
+    fn touch_project(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        if !matches!(store.mode(), NativePersistenceMode::Write) {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::PermissionDenied,
+                    "Native project_touch requires project registry write mode.",
+                ),
+            );
+        }
+        let input = match parse_args::<native_projects::NativeProjectIdInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        let mut registry = ProjectRegistry::new(store.connection_mut());
+        match registry.touch_project(&input.project_id) {
+            Ok(state) => {
+                self.fs_service.sync_state(state.clone());
+                response_only(
+                    request.id,
+                    serde_json::to_value(native_projects::NativeProjectMutationResult { state })
+                        .expect("project touch output serializes"),
+                )
+            }
+            Err(error) => error_only(request.id, project_error(error)),
+        }
+    }
+
+    fn relocate_project(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        if !matches!(store.mode(), NativePersistenceMode::Write) {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::PermissionDenied,
+                    "Native project_relocate requires project registry write mode.",
+                ),
+            );
+        }
+        let input = match parse_args::<native_projects::NativeProjectRelocateInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        let mut registry = ProjectRegistry::new(store.connection_mut());
+        match registry.relocate_project(&input.project_id, &input.project_path) {
+            Ok(result) => {
+                self.fs_service.sync_state(result.state.clone());
+                CommandResult {
+                    outputs: vec![
+                        response_ok(
+                            request.id,
+                            serde_json::to_value(&result)
+                                .expect("project relocate output serializes"),
+                        ),
+                        event(
+                            "project://updated",
+                            json!({
+                                "projectId": input.project_id.0.as_str(),
+                                "worktreeId": format!("{}:primary", input.project_id.0.as_str()),
+                                "reason": "project_relocate",
+                                "occurredAt": comando_persistence::store::now_rfc3339(),
+                            }),
+                        ),
+                    ],
+                    should_shutdown: false,
+                }
+            }
+            Err(error) => error_only(request.id, project_error(error)),
+        }
+    }
+
+    fn get_project_app_data_summary(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<native_projects::NativeProjectIdInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        let mut registry = ProjectRegistry::new(store.connection_mut());
+        match registry.get_project_app_data_summary(&input.project_id) {
+            Ok(summary) => response_only(
+                request.id,
+                serde_json::to_value(summary).expect("project app data summary serializes"),
+            ),
+            Err(error) => error_only(request.id, project_error(error)),
+        }
+    }
+
+    fn clear_project_app_data(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        if !matches!(store.mode(), NativePersistenceMode::Write) {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::PermissionDenied,
+                    "Native project_clear_app_data requires project registry write mode.",
+                ),
+            );
+        }
+        let input = match parse_args::<native_projects::NativeProjectIdInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        let mut registry = ProjectRegistry::new(store.connection_mut());
+        match registry.clear_project_app_data(&input.project_id) {
+            Ok(result) => {
+                self.fs_service.sync_state(result.state.clone());
+                CommandResult {
+                    outputs: vec![
+                        response_ok(
+                            request.id,
+                            serde_json::to_value(&result)
+                                .expect("project clear app data output serializes"),
+                        ),
+                        event(
+                            "project://updated",
+                            json!({
+                                "projectId": input.project_id.0.as_str(),
+                                "worktreeId": Value::Null,
+                                "reason": "project_clear_app_data",
+                                "occurredAt": comando_persistence::store::now_rfc3339(),
+                            }),
+                        ),
+                    ],
                     should_shutdown: false,
                 }
             }
@@ -2087,12 +2537,7 @@ impl NativeBackend {
         input: native_ai::NativeAiSetSessionPinnedInput,
     ) -> Result<(), NativeError> {
         let store = self.ai_history_store()?;
-        if !store.has_session(&input.session_id) {
-            return Err(comando_ai::AiError::SessionNotFound {
-                session_id: input.session_id.0,
-            }
-            .to_native_error());
-        }
+        self.ensure_ai_session_in_native_history(&store, &input.session_id)?;
         store
             .set_session_pinned(&input.session_id, input.pinned)
             .map_err(|error| error.to_native_error())
@@ -2103,12 +2548,7 @@ impl NativeBackend {
         session_id: comando_types::ids::SessionId,
     ) -> Result<(), NativeError> {
         let store = self.ai_history_store()?;
-        if !store.has_session(&session_id) {
-            return Err(comando_ai::AiError::SessionNotFound {
-                session_id: session_id.0,
-            }
-            .to_native_error());
-        }
+        self.ensure_ai_session_in_native_history(&store, &session_id)?;
         store
             .delete_session(&session_id)
             .map_err(|error| error.to_native_error())
@@ -2119,15 +2559,44 @@ impl NativeBackend {
         input: native_ai::NativeAiRenameSessionInput,
     ) -> Result<(), NativeError> {
         let store = self.ai_history_store()?;
-        if !store.has_session(&input.session_id) {
-            return Err(comando_ai::AiError::SessionNotFound {
-                session_id: input.session_id.0,
-            }
-            .to_native_error());
-        }
+        self.ensure_ai_session_in_native_history(&store, &input.session_id)?;
         self.ai_engine
             .rename_session(input)
             .map_err(|error| error.to_native_error())
+    }
+
+    fn ensure_ai_session_in_native_history(
+        &self,
+        store: &AiHistoryStore,
+        session_id: &comando_types::ids::SessionId,
+    ) -> Result<(), NativeError> {
+        if store.has_session(session_id) {
+            return Ok(());
+        }
+        let Some(persistence_store) = self.persistence_store.as_ref() else {
+            return Err(comando_ai::AiError::SessionNotFound {
+                session_id: session_id.0.clone(),
+            }
+            .to_native_error());
+        };
+        let migrator = AiHistoryMigrator::new(
+            store,
+            persistence_store.connection(),
+            Some(persistence_store.database_path().display().to_string()),
+        );
+        migrator
+            .copy_legacy_history_with_options(AiHistoryMigrationOptions {
+                mode: AiHistoryMigrationMode::Copy,
+                limit: None,
+            })
+            .map_err(|error| error.to_native_error())?;
+        if store.has_session(session_id) {
+            return Ok(());
+        }
+        Err(comando_ai::AiError::SessionNotFound {
+            session_id: session_id.0.clone(),
+        }
+        .to_native_error())
     }
 
     fn migrate_ai_session_history(
@@ -2523,9 +2992,6 @@ impl NativeBackend {
     }
 
     fn git_init_repository(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let scope = match parse_args::<native_git::NativeGitRepositoryScope>(&request) {
             Ok(scope) => scope,
             Err(error) => return error_only(request.id, error),
@@ -2535,6 +3001,41 @@ impl NativeBackend {
             request.id,
             init_repository(&self.git_runner, &scope),
             "git init result serializes",
+        )
+    }
+
+    fn git_clone_repository(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_git::NativeGitCloneRepositoryInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        if input.parent_directory.trim().is_empty()
+            || input.repository_url.trim().is_empty()
+            || input.target_path.trim().is_empty()
+        {
+            return error_only(
+                request.id,
+                NativeError::new(
+                    NativeErrorCode::InvalidArgs,
+                    "Repository URL and destination path are required.",
+                ),
+            );
+        }
+
+        git_response(
+            request.id,
+            self.git_runner
+                .run(
+                    input.parent_directory,
+                    &[
+                        "clone",
+                        input.repository_url.as_str(),
+                        input.target_path.as_str(),
+                    ],
+                    GitRunOptions::network(),
+                )
+                .map(|_| json!({ "ok": true })),
+            "git clone result serializes",
         )
     }
 
@@ -2551,9 +3052,6 @@ impl NativeBackend {
     }
 
     fn git_commit(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitCommitInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2573,9 +3071,6 @@ impl NativeBackend {
     }
 
     fn git_checkout_branch(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitCheckoutBranchInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2596,9 +3091,6 @@ impl NativeBackend {
     }
 
     fn git_create_branch(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitCheckoutBranchInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2620,9 +3112,6 @@ impl NativeBackend {
     }
 
     fn git_delete_local_branch(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitDeleteLocalBranchInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2641,9 +3130,6 @@ impl NativeBackend {
     }
 
     fn git_create_worktree(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitWorktreeMutationInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2673,9 +3159,6 @@ impl NativeBackend {
     }
 
     fn git_remove_worktree(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitWorktreeMutationInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2694,9 +3177,6 @@ impl NativeBackend {
     }
 
     fn git_fetch(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_network_enabled() {
-            return disabled_git_network_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitFetchInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2716,9 +3196,6 @@ impl NativeBackend {
     }
 
     fn git_pull(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_network_enabled() {
-            return disabled_git_network_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitPullInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2738,9 +3215,6 @@ impl NativeBackend {
     }
 
     fn git_push(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_network_enabled() {
-            return disabled_git_network_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitPushInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2762,9 +3236,6 @@ impl NativeBackend {
     }
 
     fn git_delete_remote_branch(&mut self, request: RpcRequest) -> CommandResult {
-        if !native_git_network_enabled() {
-            return disabled_git_network_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitDeleteRemoteBranchInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -2792,9 +3263,6 @@ impl NativeBackend {
         ) -> comando_git::GitResult<native_git::NativeGitOperationResult>,
         serialize_message: &'static str,
     ) -> CommandResult {
-        if !native_git_mutations_enabled() {
-            return disabled_git_operation(request);
-        }
         let input = match parse_args::<native_git::NativeGitPathsInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
@@ -3120,6 +3588,159 @@ fn backend_not_ready(id: RequestId) -> CommandResult {
     )
 }
 
+fn load_app_data_value(store: &SqlitePersistenceStore, key: &str) -> Result<Value, NativeError> {
+    let storage_key = app_data_storage_key(key)?;
+    let raw_value = store
+        .connection()
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = ?1",
+            params![storage_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(app_data_error)?;
+
+    let Some(raw) = raw_value else {
+        return Ok(Value::Null);
+    };
+    serde_json::from_str::<Value>(&raw).map_err(|error| {
+        NativeError::new(
+            NativeErrorCode::InvalidJson,
+            format!("Native app data JSON could not be parsed: {error}"),
+        )
+    })
+}
+
+fn save_app_data_value(
+    store: &mut SqlitePersistenceStore,
+    key: &str,
+    value: &Value,
+) -> Result<(), NativeError> {
+    let storage_key = app_data_storage_key(key)?;
+    if value.is_null() {
+        store
+            .connection_mut()
+            .execute(
+                "DELETE FROM app_settings WHERE key = ?1",
+                params![storage_key],
+            )
+            .map(|_| ())
+            .map_err(app_data_error)
+    } else {
+        let encoded = serde_json::to_string(value).map_err(|error| {
+            NativeError::new(
+                NativeErrorCode::InvalidJson,
+                format!("Native app data JSON could not be encoded: {error}"),
+            )
+        })?;
+        store
+            .connection_mut()
+            .execute(
+                "
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                ",
+                params![
+                    storage_key,
+                    encoded,
+                    comando_persistence::store::now_rfc3339()
+                ],
+            )
+            .map(|_| ())
+            .map_err(app_data_error)
+    }
+}
+
+fn settings_project_id(project_id: &str) -> Result<&str, NativeError> {
+    let project_id = project_id.trim();
+    if project_id.is_empty() {
+        return Err(NativeError::new(
+            NativeErrorCode::InvalidArgs,
+            "Project settings require a project id.",
+        ));
+    }
+    Ok(project_id)
+}
+
+fn app_data_storage_key(key: &str) -> Result<String, NativeError> {
+    let key = key.trim();
+    if key.is_empty() || key.len() > 160 {
+        return Err(NativeError::new(
+            NativeErrorCode::InvalidArgs,
+            "Native app data key must be a non-empty key up to 160 characters.",
+        ));
+    }
+    if !key
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        return Err(NativeError::new(
+            NativeErrorCode::InvalidArgs,
+            "Native app data key contains unsupported characters.",
+        ));
+    }
+    Ok(format!("native.appData.{key}"))
+}
+
+fn app_data_error(error: rusqlite::Error) -> NativeError {
+    NativeError::new(
+        NativeErrorCode::InternalError,
+        format!("Native app data storage failed: {error}"),
+    )
+}
+
+fn app_secret_account(namespace: &str, secret_id: &str) -> Result<String, NativeError> {
+    let namespace = namespace.trim();
+    let secret_id = secret_id.trim();
+    if namespace.is_empty() || secret_id.is_empty() {
+        return Err(NativeError::new(
+            NativeErrorCode::InvalidArgs,
+            "Native app secret namespace and id are required.",
+        ));
+    }
+    if namespace.len() > 80 || secret_id.len() > 120 {
+        return Err(NativeError::new(
+            NativeErrorCode::InvalidArgs,
+            "Native app secret namespace or id is too long.",
+        ));
+    }
+    if !namespace.chars().all(is_app_secret_key_char)
+        || !secret_id.chars().all(is_app_secret_key_char)
+    {
+        return Err(NativeError::new(
+            NativeErrorCode::InvalidArgs,
+            "Native app secret namespace or id contains unsupported characters.",
+        ));
+    }
+    Ok(format!("{namespace}:{secret_id}"))
+}
+
+fn is_app_secret_key_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | ':')
+}
+
+fn app_secret_entry(account: &str) -> Result<keyring::Entry, NativeError> {
+    keyring::Entry::new("Comando App Secrets", account)
+        .map_err(|error| app_secret_error("initialize", error))
+}
+
+fn delete_app_secret(account: &str) -> Result<(), NativeError> {
+    app_secret_entry(account).and_then(|entry| match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(app_secret_error("delete", error)),
+    })
+}
+
+fn app_secret_error(action: &str, error: keyring::Error) -> NativeError {
+    NativeError::new(
+        NativeErrorCode::InternalError,
+        format!("Native app secret {action} failed: {error}"),
+    )
+}
+
 fn project_error(error: ProjectRegistryError) -> NativeError {
     error.to_native_error()
 }
@@ -3322,43 +3943,6 @@ fn ai_error_runtime_outputs(
 
 fn ai_runtime_event_output(event_payload: AiRuntimeEvent) -> RpcOutput {
     event(event_payload.event_name, event_payload.payload)
-}
-
-fn disabled_git_operation(request: RpcRequest) -> CommandResult {
-    error_only(
-        request.id,
-        NativeError::new(
-            NativeErrorCode::PermissionDenied,
-            "Native Git operation is disabled by guardrails.",
-        )
-        .with_details(json!({ "gitCode": "operation_disabled" })),
-    )
-}
-
-fn disabled_git_network_operation(request: RpcRequest) -> CommandResult {
-    error_only(
-        request.id,
-        NativeError::new(
-            NativeErrorCode::PermissionDenied,
-            "Native Git network operation is disabled by guardrails.",
-        )
-        .with_details(json!({ "gitCode": "network_disabled" })),
-    )
-}
-
-fn native_git_mutations_enabled() -> bool {
-    native_git_write_mode_enabled()
-        && env::var("COMANDO_NATIVE_GIT_MUTATIONS").ok().as_deref() == Some("1")
-}
-
-fn native_git_network_enabled() -> bool {
-    native_git_mutations_enabled()
-        && env::var("COMANDO_NATIVE_GIT_NETWORK").ok().as_deref() == Some("1")
-}
-
-fn native_git_write_mode_enabled() -> bool {
-    env::var("COMANDO_NATIVE_GIT").ok().as_deref() == Some("1")
-        && env::var("COMANDO_NATIVE_GIT_MODE").ok().as_deref() == Some("write")
 }
 
 fn parse_args<T: DeserializeOwned>(request: &RpcRequest) -> Result<T, NativeError> {
@@ -3745,6 +4329,69 @@ mod tests {
             Value::Null
         );
         assert_eq!(response.result.as_ref().unwrap()["workspace"], Value::Null);
+    }
+
+    #[test]
+    fn app_data_and_settings_commands_round_trip_json() {
+        let (_temp_dir, mut backend) = backend_with_memory_runtime_setup();
+
+        let set_result = backend.handle_request(request(
+            "app_data_set_json",
+            json!({
+                "key": "test.roundTrip",
+                "value": {
+                    "enabled": true,
+                    "count": 2,
+                },
+            }),
+        ));
+        assert!(only_response(&set_result).ok);
+
+        let get_result = backend.handle_request(request(
+            "app_data_get_json",
+            json!({ "key": "test.roundTrip" }),
+        ));
+        let get_response = only_response(&get_result);
+        assert!(get_response.ok);
+        assert_eq!(
+            get_response.result.as_ref().unwrap()["value"]["enabled"],
+            true
+        );
+        assert_eq!(get_response.result.as_ref().unwrap()["value"]["count"], 2);
+
+        let save_settings = backend.handle_request(request(
+            "settings_save_snapshot",
+            json!({ "snapshot": { "appearance": { "themeMode": "system" } } }),
+        ));
+        assert!(only_response(&save_settings).ok);
+
+        let get_settings = backend.handle_request(request("settings_get_snapshot", json!({})));
+        let settings_response = only_response(&get_settings);
+        assert!(settings_response.ok);
+        assert_eq!(
+            settings_response.result.as_ref().unwrap()["snapshot"]["appearance"]["themeMode"],
+            "system"
+        );
+
+        let save_project = backend.handle_request(request(
+            "settings_save_project",
+            json!({
+                "projectId": "project-alpha",
+                "snapshot": { "editor": { "fontSize": 14 } },
+            }),
+        ));
+        assert!(only_response(&save_project).ok);
+
+        let get_project = backend.handle_request(request(
+            "settings_get_project",
+            json!({ "projectId": "project-alpha" }),
+        ));
+        let project_response = only_response(&get_project);
+        assert!(project_response.ok);
+        assert_eq!(
+            project_response.result.as_ref().unwrap()["snapshot"]["editor"]["fontSize"],
+            14
+        );
     }
 
     #[test]

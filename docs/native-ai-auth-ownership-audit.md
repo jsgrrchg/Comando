@@ -2,67 +2,33 @@
 
 Date: 2026-06-21
 
-This note captures the starting point for moving native runtime setup, auth,
-secret storage, env resolution, and auth terminal ownership into Rust.
+This audit now records the final ownership after the Rust native backend cutover.
 
-## Comando Ownership Today
+## Ownership
 
-| Area | Current owner | Key files | Notes |
-| --- | --- | --- | --- |
-| Secret persistence | Electron main / SQLite settings | `src/main/ai/secret-store.ts`, `src/main/settings/service.ts` | Secrets are stored as `electron-safe-storage-v1` records in `app_settings`. Rust cannot decrypt those payloads directly. |
-| Runtime PATH expansion | TypeScript | `src/main/ai/runtime-env.ts` | TS adds executable dir, user bins, Homebrew paths, system defaults, and inherited `PATH`. |
-| Auth terminals | TypeScript | `src/main/ai/auth/terminal-login.ts` | Login flows launch external terminals through temporary scripts. Native terminal sessions already support `purpose: auth`, but AI auth is not wired to them yet. |
-| Binary resolution | TypeScript | `src/main/ai/resolver/runtime-resolver.ts`, `src/main/ai/*/setup.ts` | Runtime-specific setup files resolve binaries, auth methods, readiness, credential source, and launch env. |
-| Native runtime status | Rust receives TS launch state | `crates/comando-ai/src/engine.rs`, `crates/comando-ai/src/runtime.rs` | `AiEngine::get_runtime_status` delegates to `RuntimeRegistry::status_from_launch`, which requires `launch.status` for native-ready runtimes. |
-| Native session launch | Mixed | `src/main/native-backend/ai.ts`, `crates/comando-ai/src/engine.rs`, `crates/comando-ai/src/acp.rs` | TS still builds `NativeAiLaunchSpec`, including env, before Rust spawns ACP. |
+| Area | Owner | Notes |
+| --- | --- | --- |
+| Secret persistence | Rust native backend | Runtime and app secrets are stored through the OS keyring. Electron main exposes only the UI-facing contract. |
+| Runtime setup | Rust native backend | Runtime settings, auth readiness, credential source, and launch env are resolved natively. |
+| Auth terminals | Rust native backend | Auth sessions use native terminal ownership and emit redacted status events. |
+| Native session launch | Rust native backend | Electron builds UI descriptors and DTOs; Rust owns process launch and ACP lifecycle. |
 
-The current split means a native session can still depend on TypeScript for
-auth readiness, executable selection, credential source, and final env. That is
-the split-brain PR 12 needs to remove for native sessions.
+## Final Invariants
 
-## Native Gaps To Close
-
-- `NativeAiRuntimeStatus` lacks several UI-compatible auth fields such as
-  credential source labels, auth session/storage messages, and disconnect/logout
-  capability flags.
-- `apps/native-backend/src/commands.rs` routes AI requests, but the PR 12
-  auth/secrets commands are not implemented there yet.
-- `comando-ai` has runtime descriptors and ACP launch, but no Rust-owned
-  runtime setup store, secret store, env resolver, or auth method matrix.
-- `comando-terminal` has the general PTY substrate needed for auth terminals,
-  but AI-specific `ai_launch_runtime_auth` behavior is not attached to it.
-- Electron main must migrate old `safeStorage` secrets by reading them in TS and
-  forwarding plaintext only in-memory to native `secret_set`.
+- Electron main must not persist secret payloads directly.
+- Secret values, tokens, auth headers, cookies, full env dumps, prompts, transcripts, and raw sensitive terminal output must not be logged.
+- Rollback is by shipping an earlier build or a hotfix, not by reactivating a TypeScript backend path inside the same build.
 
 ## NeverWrite Reference Patterns
 
 The required local reference is `/Users/jfg/Documents/DEVELOPMENT/NeverWrite`.
-Relevant patterns inspected for this PR:
+Relevant patterns inspected for this migration:
 
-- `apps/desktop/native-backend/src/ai.rs`: `RuntimeSetupStore`,
-  `RuntimeSecretStore`, `OsRuntimeSecretStore`, `InMemoryRuntimeSecretStore`,
-  `secret_env_keys`, auth terminal lifecycle, and no-leak tests.
-- `apps/desktop/native-backend/src/main.rs`: JSONL command routing for
-  `ai_start_auth_terminal_session`, terminal write/resize/close, and snapshot
-  commands.
-- `crates/ai/src/domain.rs`: AI runtime/auth DTO shape and runtime identifiers.
-- `crates/ai/src/events.rs`: event naming and payload conventions for runtime
-  and terminal auth updates.
-- `Cargo.toml`: `keyring` dependency features used by the native backend.
+- `apps/desktop/native-backend/src/ai.rs`: runtime setup store, native secret store, auth terminal lifecycle, and no-leak tests.
+- `apps/desktop/native-backend/src/main.rs`: JSONL command routing and terminal auth command ownership.
+- `crates/ai/src/domain.rs`: runtime/auth DTO shape.
+- `crates/ai/src/events.rs`: event naming and payload conventions.
+- `Cargo.toml`: `keyring` dependency usage for native secret storage.
 
-Comando should adapt the storage and lifecycle invariants, not the product
-names, vault concepts, `.neverwrite` paths, or `*-acp` runtime IDs.
-
-## Target Ownership
-
-For native sessions:
-
-1. Renderer keeps the existing Settings/UI behavior.
-2. Electron main chooses legacy, shadow, or native write mode.
-3. Rust loads runtime setup metadata.
-4. Rust reads secrets from native secret storage.
-5. Rust resolves the binary, auth method, credential source, readiness, and env.
-6. Rust spawns ACP using real env and emits only redacted diagnostics/status.
-
-Legacy TypeScript setup remains available behind flags until the old backend is
-removed in a later PR.
+Comando adapts the ownership and redaction invariants only; product names, paths,
+and runtime IDs remain Comando-specific.

@@ -71,10 +71,8 @@ impl SqlitePersistenceStore {
         if config.database_path.as_os_str().is_empty() {
             return Err(PersistenceError::EmptyDatabasePath);
         }
-        if !config.database_path.is_file() {
-            return Err(PersistenceError::DatabaseNotFound(
-                config.database_path.clone(),
-            ));
+        if let Some(parent) = config.database_path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
 
         let connection = Connection::open(&config.database_path).map_err(|source| {
@@ -84,6 +82,7 @@ impl SqlitePersistenceStore {
             }
         })?;
         configure_connection(&connection)?;
+        ensure_current_schema(&connection)?;
         validate_schema(&connection)?;
         crate::metadata::ensure_metadata(&connection, STORAGE_SCHEMA_VERSION, &config.mode)?;
 
@@ -127,6 +126,289 @@ impl SqlitePersistenceStore {
     pub fn mode(&self) -> &NativePersistenceMode {
         &self.mode
     }
+}
+
+fn ensure_current_schema(connection: &Connection) -> Result<(), PersistenceError> {
+    connection.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            id TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+        VALUES
+            ('app.name', 'Comando', CURRENT_TIMESTAMP),
+            ('app.bundle_id', 'io.github.jsgrrchg.comando', CURRENT_TIMESTAMP);
+
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            canonical_root_path TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            is_hidden INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS project_roots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            root_path TEXT NOT NULL UNIQUE,
+            is_primary INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS recent_projects (
+            project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            last_opened_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS project_worktrees (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            root_path TEXT NOT NULL UNIQUE,
+            branch_name TEXT,
+            head_sha TEXT,
+            is_primary INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS workspace_layouts (
+            id TEXT PRIMARY KEY,
+            root_node_json TEXT NOT NULL,
+            active_pane_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS workspace_tabs (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspace_layouts(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE SET NULL,
+            position INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS app_windows (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            x INTEGER,
+            y INTEGER,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            is_maximized INTEGER NOT NULL DEFAULT 0,
+            is_full_screen INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS workspace_sessions (
+            id TEXT PRIMARY KEY,
+            window_id TEXT REFERENCES app_windows(id) ON DELETE CASCADE,
+            workspace_id TEXT,
+            active_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+            active_worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE SET NULL,
+            shell_state_json TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_opened_at TEXT NOT NULL,
+            is_open INTEGER NOT NULL DEFAULT 1
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id TEXT PRIMARY KEY,
+            project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+            worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE SET NULL,
+            parent_session_id TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
+            title TEXT NOT NULL,
+            runtime TEXT NOT NULL DEFAULT 'pending',
+            runtime_session_id TEXT,
+            status TEXT NOT NULL DEFAULT 'idle',
+            draft TEXT NOT NULL DEFAULT '',
+            pinned_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_opened_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_transcripts (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL UNIQUE REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            transcript_json TEXT NOT NULL,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            preview TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_session_events (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            sequence INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(session_id, sequence)
+        );
+
+        CREATE TABLE IF NOT EXISTS review_artifacts (
+            id TEXT PRIMARY KEY,
+            session_id TEXT REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            artifact_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            path TEXT,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_session_runtime_links (
+            runtime_session_id TEXT PRIMARY KEY,
+            app_session_id TEXT NOT NULL UNIQUE REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            parent_runtime_session_id TEXT,
+            parent_app_session_id TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_transcript_messages (
+            session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            message_index INTEGER NOT NULL,
+            message_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            role TEXT,
+            payload_json TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (session_id, message_id),
+            UNIQUE(session_id, message_index)
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_session_runtime_state (
+            session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            state_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_session_review_state (
+            session_id TEXT PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            review_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS project_settings (
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, key)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_workspace_sessions_last_opened
+            ON workspace_sessions(last_opened_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_workspace_sessions_active_worktree_id
+            ON workspace_sessions(active_worktree_id);
+        CREATE INDEX IF NOT EXISTS idx_chat_sessions_last_opened
+            ON chat_sessions(last_opened_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_chat_sessions_project_worktree_updated_at
+            ON chat_sessions(project_id, worktree_id, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_chat_sessions_runtime_updated_at
+            ON chat_sessions(runtime, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_chat_sessions_project_worktree_pinned_at
+            ON chat_sessions(project_id, worktree_id, pinned_at DESC, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_chat_sessions_parent_session_id
+            ON chat_sessions(parent_session_id);
+        CREATE INDEX IF NOT EXISTS idx_chat_session_events_session_sequence
+            ON chat_session_events(session_id, sequence);
+        CREATE INDEX IF NOT EXISTS idx_chat_session_runtime_links_parent_runtime
+            ON chat_session_runtime_links(parent_runtime_session_id);
+        CREATE INDEX IF NOT EXISTS idx_chat_session_runtime_links_parent_app
+            ON chat_session_runtime_links(parent_app_session_id);
+        CREATE INDEX IF NOT EXISTS idx_chat_transcript_messages_session_index
+            ON chat_transcript_messages(session_id, message_index);
+        CREATE INDEX IF NOT EXISTS idx_project_roots_project_id
+            ON project_roots(project_id);
+        CREATE INDEX IF NOT EXISTS idx_project_roots_project_id_primary
+            ON project_roots(project_id, is_primary);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_project_roots_primary
+            ON project_roots(project_id)
+            WHERE is_primary = 1;
+        CREATE INDEX IF NOT EXISTS idx_projects_canonical_root_path
+            ON projects(canonical_root_path);
+        CREATE INDEX IF NOT EXISTS idx_projects_visibility
+            ON projects(is_hidden);
+        CREATE INDEX IF NOT EXISTS idx_project_worktrees_project_id
+            ON project_worktrees(project_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_project_worktrees_primary
+            ON project_worktrees(project_id)
+            WHERE is_primary = 1;
+        CREATE INDEX IF NOT EXISTS idx_workspace_tabs_worktree_id
+            ON workspace_tabs(worktree_id);
+        ",
+    )?;
+    ensure_column(connection, "workspace_sessions", "window_id", "TEXT")?;
+    ensure_column(connection, "workspace_sessions", "workspace_id", "TEXT")?;
+    ensure_column(connection, "workspace_sessions", "shell_state_json", "TEXT")?;
+    ensure_column(
+        connection,
+        "workspace_sessions",
+        "created_at",
+        "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'",
+    )?;
+    ensure_column(
+        connection,
+        "workspace_sessions",
+        "updated_at",
+        "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'",
+    )?;
+    ensure_column(
+        connection,
+        "workspace_sessions",
+        "is_open",
+        "INTEGER NOT NULL DEFAULT 1",
+    )?;
+
+    connection.execute_batch(
+        "
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_sessions_window_id
+            ON workspace_sessions(window_id);
+        ",
+    )?;
+
+    Ok(())
+}
+
+fn ensure_column(
+    connection: &Connection,
+    table: &'static str,
+    column: &'static str,
+    definition: &'static str,
+) -> Result<(), PersistenceError> {
+    if table_columns(connection, table)?
+        .iter()
+        .any(|existing| existing == column)
+    {
+        return Ok(());
+    }
+
+    connection.execute_batch(&format!(
+        "ALTER TABLE {table} ADD COLUMN {column} {definition};"
+    ))?;
+    Ok(())
 }
 
 pub fn validate_schema(connection: &Connection) -> Result<(), PersistenceError> {
@@ -251,34 +533,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_database_without_creating_file_or_leaking_path() {
+    fn creates_missing_database_with_current_schema() {
         let temp_dir = TempDir::new().expect("temp dir");
-        let database_path = temp_dir.path().join("missing.sqlite3");
+        let database_path = temp_dir.path().join("fresh.sqlite3");
 
-        let error = match SqlitePersistenceStore::open(NativeStorageConfig {
+        let (store, output) = SqlitePersistenceStore::open(NativeStorageConfig {
             app_data_dir: temp_dir.path().to_path_buf(),
             database_path: database_path.clone(),
             mode: NativePersistenceMode::Shadow,
-        }) {
-            Ok(_) => panic!("missing database should fail"),
-            Err(error) => error,
-        };
-        let native_error = error.to_native_error();
+        })
+        .expect("fresh database opens");
 
-        assert!(!database_path.exists());
-        assert_eq!(native_error.code.as_str(), "not_found");
-        assert!(
-            !native_error
-                .message
-                .contains(temp_dir.path().to_string_lossy().as_ref())
-        );
-        assert!(
-            native_error
-                .details
-                .as_ref()
-                .and_then(|details| details.get("databasePath"))
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|path| path.contains("<redacted>"))
+        assert!(database_path.exists());
+        assert!(output.opened);
+        assert!(output.metadata_ready);
+        assert_eq!(store.health().project_count, 0);
+        assert_eq!(
+            metadata_value(store.connection(), "native.schema_version"),
+            "1"
         );
     }
 

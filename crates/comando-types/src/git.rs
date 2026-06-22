@@ -12,6 +12,14 @@ pub struct NativeGitRepositoryScope {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeGitCloneRepositoryInput {
+    pub parent_directory: String,
+    pub repository_url: String,
+    pub target_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeGitRepositoryResolution {
     pub input_path: String,
     pub canonical_root_path: Option<String>,

@@ -454,6 +454,7 @@ dependencies = [
  "comando-settings",
  "comando-terminal",
  "comando-types",
+ "keyring",
  "rusqlite",
  "serde",
  "serde_json",

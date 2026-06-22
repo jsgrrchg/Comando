@@ -264,11 +264,8 @@ export function nativeAiCatalogPatchToIpc(
                   ),
               }
             : {}),
-        // `modeId` is tri-state: `undefined` means "leave untouched", `null`
-        // means "clear the active mode", a string means "set it". Rust always
-        // serializes the key (no skip_serializing_if), so a `null` here is an
-        // explicit clear signal — preserve it instead of collapsing it with
-        // `undefined`, otherwise the sidecar can never clear a selected mode.
+        // `modeId` is tri-state: `undefined` leaves the selection untouched,
+        // `null` clears it, and a string sets it.
         ...(payload.modeId !== undefined ? { modeId: payload.modeId } : {}),
     };
 }

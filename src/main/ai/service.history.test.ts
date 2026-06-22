@@ -105,7 +105,7 @@ describe("AiService history", () => {
 
         await service.deleteSession("session-1");
 
-        service.handleWorkerSessionSnapshot("window-1", {
+        service.handleNativeSessionSnapshot("window-1", {
             kind: "snapshot",
             snapshot: createSnapshot({
                 sessionId: "session-1",
@@ -115,6 +115,275 @@ describe("AiService history", () => {
 
         expect(saveSessionSnapshot).not.toHaveBeenCalled();
         expect(onSessionSnapshot).not.toHaveBeenCalled();
+    });
+
+    it("persists native catalog patches for runtime control rehydration", () => {
+        const onSessionSnapshot = vi.fn();
+        const saveSessionSnapshot = vi.fn();
+        const saveRuntimeCatalogPatch = vi.fn();
+        const service = createService({
+            onSessionSnapshot,
+            saveRuntimeCatalogPatch,
+            saveSessionSnapshot,
+        });
+        const configOptions = [
+            {
+                category: "model",
+                description: null,
+                id: "model",
+                label: "Model",
+                options: [
+                    {
+                        description: null,
+                        groupLabel: null,
+                        label: "GPT-5",
+                        value: "gpt-5",
+                    },
+                ],
+                type: "select",
+                value: "gpt-5",
+            },
+        ] satisfies AiSessionSnapshot["configOptions"];
+
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSnapshot(),
+        });
+        saveSessionSnapshot.mockClear();
+        saveRuntimeCatalogPatch.mockClear();
+
+        service.handleNativeSessionCatalogPatch(
+            "window-1",
+            "session-1",
+            {
+                configOptions,
+            },
+            "2026-04-16T12:05:00.000Z",
+        );
+
+        expect(saveRuntimeCatalogPatch).toHaveBeenCalledWith(
+            "codex",
+            expect.objectContaining({
+                configOptions,
+                modelId: "gpt-5",
+                models: [
+                    {
+                        description: null,
+                        id: "gpt-5",
+                        name: "GPT-5",
+                    },
+                ],
+            }),
+        );
+        expect(saveSessionSnapshot).not.toHaveBeenCalled();
+        expect(onSessionSnapshot).toHaveBeenLastCalledWith(
+            "window-1",
+            expect.objectContaining({
+                kind: "patch",
+            }),
+        );
+    });
+
+    it("preserves persisted controls when ACP sends a partial catalog patch", () => {
+        const saveSessionSnapshot = vi.fn();
+        const saveRuntimeCatalogPatch = vi.fn();
+        const onSessionSnapshot = vi.fn<
+            (ownerWindowId: string, update: AiSessionUpdate) => void
+        >();
+        const persistedCatalog = {
+            availableCommands: [],
+            configOptions: [
+                {
+                    category: "model",
+                    description: null,
+                    id: "model",
+                    label: "Model",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "GPT-5",
+                            value: "gpt-5",
+                        },
+                    ],
+                    type: "select",
+                    value: "gpt-5",
+                },
+            ],
+            modeId: "full-access",
+            modes: [
+                {
+                    description: "No prompts",
+                    id: "full-access",
+                    name: "Full Access",
+                },
+            ],
+            modelId: "gpt-5",
+            models: [
+                {
+                    description: "Frontier model",
+                    id: "gpt-5",
+                    name: "GPT-5",
+                },
+            ],
+        } satisfies Pick<
+            AiSessionSnapshot,
+            | "availableCommands"
+            | "configOptions"
+            | "modeId"
+            | "modes"
+            | "modelId"
+            | "models"
+        >;
+        const service = createService({
+            loadLatestRuntimeCatalog: vi.fn(() => persistedCatalog),
+            onSessionSnapshot,
+            saveRuntimeCatalogPatch,
+            saveSessionSnapshot,
+        });
+
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSnapshot(),
+        });
+        const initialUpdate = onSessionSnapshot.mock.lastCall?.[1];
+        expect(initialUpdate?.kind).toBe("snapshot");
+        if (initialUpdate?.kind !== "snapshot") {
+            throw new Error("Expected an initial snapshot update.");
+        }
+        expect(initialUpdate.snapshot.configOptions).toEqual(
+            persistedCatalog.configOptions,
+        );
+        expect(initialUpdate.snapshot.models).toEqual(persistedCatalog.models);
+        saveSessionSnapshot.mockClear();
+        saveRuntimeCatalogPatch.mockClear();
+
+        service.handleNativeSessionCatalogPatch(
+            "window-1",
+            "session-1",
+            {
+                availableCommands: [
+                    {
+                        description: "Review changes",
+                        id: "review",
+                        insertText: "/review ",
+                        label: "/review",
+                    },
+                ],
+            },
+            "2026-04-16T12:05:00.000Z",
+        );
+
+        expect(saveRuntimeCatalogPatch).toHaveBeenCalledWith(
+            "codex",
+            {
+                availableCommands: [
+                    {
+                        description: "Review changes",
+                        id: "review",
+                        insertText: "/review ",
+                        label: "/review",
+                    },
+                ],
+            },
+        );
+        expect(saveSessionSnapshot).not.toHaveBeenCalled();
+        const patchUpdate = onSessionSnapshot.mock.lastCall?.[1];
+        expect(patchUpdate?.kind).toBe("patch");
+        if (patchUpdate?.kind !== "patch") {
+            throw new Error("Expected a catalog patch update.");
+        }
+        expect(patchUpdate.patch.changes.availableCommands).toEqual([
+            {
+                description: "Review changes",
+                id: "review",
+                insertText: "/review ",
+                label: "/review",
+            },
+        ]);
+    });
+
+    it("clears stale model and mode ids when ACP clears config options", async () => {
+        const saveRuntimeCatalogPatch = vi.fn();
+        const persistedCatalog = {
+            availableCommands: [],
+            configOptions: [
+                {
+                    category: "model",
+                    description: null,
+                    id: "model",
+                    label: "Model",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "GPT-5",
+                            value: "gpt-5",
+                        },
+                    ],
+                    type: "select",
+                    value: "gpt-5",
+                },
+            ],
+            modeId: "full-access",
+            modes: [
+                {
+                    description: "No prompts",
+                    id: "full-access",
+                    name: "Full Access",
+                },
+            ],
+            modelId: "gpt-5",
+            models: [
+                {
+                    description: "Frontier model",
+                    id: "gpt-5",
+                    name: "GPT-5",
+                },
+            ],
+        } satisfies Pick<
+            AiSessionSnapshot,
+            | "availableCommands"
+            | "configOptions"
+            | "modeId"
+            | "modes"
+            | "modelId"
+            | "models"
+        >;
+        const service = createService({
+            loadLatestRuntimeCatalog: vi.fn(() => persistedCatalog),
+            saveRuntimeCatalogPatch,
+        });
+
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSnapshot(),
+        });
+        saveRuntimeCatalogPatch.mockClear();
+
+        service.handleNativeSessionCatalogPatch(
+            "window-1",
+            "session-1",
+            {
+                configOptions: [],
+            },
+            "2026-04-16T12:05:00.000Z",
+        );
+
+        expect(saveRuntimeCatalogPatch).toHaveBeenCalledWith("codex", {
+            configOptions: [],
+            modeId: null,
+            modes: [],
+            modelId: null,
+            models: [],
+        });
+        await expect(service.getSessionSnapshot("session-1")).resolves.toMatchObject({
+            configOptions: [],
+            modeId: null,
+            modes: [],
+            modelId: null,
+            models: [],
+        });
     });
 
     it("delegates pinning mutations to persistence", async () => {
@@ -145,8 +414,11 @@ describe("AiService history", () => {
                 worktreeId: "worktree-a",
             },
         ];
+        const nativeListSessionHistory = vi.fn(() =>
+            Promise.resolve(expectedHistory),
+        );
         const nativeAi = createNativeAiGateway({
-            listSessionHistory: vi.fn(() => Promise.resolve(expectedHistory)),
+            listSessionHistory: nativeListSessionHistory,
         });
         const persistenceList = vi.fn(() => []);
         const service = createService({
@@ -159,28 +431,33 @@ describe("AiService history", () => {
             worktreeId: "worktree-a",
         });
 
-        expect(nativeAi.listSessionHistory).toHaveBeenCalled();
+        expect(nativeListSessionHistory).toHaveBeenCalled();
         expect(persistenceList).not.toHaveBeenCalled();
         expect(history).toEqual(expectedHistory);
     });
 
-    it("falls back to persistence when native pinning cannot find a legacy session", async () => {
+    it("propagates native pinning failures without writing fallback persistence", async () => {
         const setSessionPinned = vi.fn();
+        const nativeSetSessionPinned = vi.fn(() =>
+            Promise.reject(new Error("missing")),
+        );
         const nativeAi = createNativeAiGateway({
-            setSessionPinned: vi.fn(() => Promise.reject(new Error("missing"))),
+            setSessionPinned: nativeSetSessionPinned,
         });
         const service = createService({
             nativeAi,
             setSessionPinned,
         });
 
-        await service.setSessionPinned({
-            pinned: true,
-            sessionId: "session-legacy",
-        });
+        await expect(
+            service.setSessionPinned({
+                pinned: true,
+                sessionId: "session-native",
+            }),
+        ).rejects.toThrow("missing");
 
-        expect(nativeAi.setSessionPinned).toHaveBeenCalled();
-        expect(setSessionPinned).toHaveBeenCalledWith("session-legacy", true);
+        expect(nativeSetSessionPinned).toHaveBeenCalled();
+        expect(setSessionPinned).not.toHaveBeenCalled();
     });
 });
 
@@ -216,6 +493,7 @@ function createSnapshot(
 
 function createService(overrides: {
     readonly deleteSession?: ReturnType<typeof vi.fn>;
+    readonly loadLatestRuntimeCatalog?: ReturnType<typeof vi.fn>;
     readonly listSessionHistory?: ReturnType<typeof vi.fn>;
     readonly loadSessionTranscriptPage?: ReturnType<typeof vi.fn>;
     readonly onSessionSnapshot?: (
@@ -226,6 +504,7 @@ function createService(overrides: {
         snapshot: AiSessionSnapshot,
         draft?: string,
     ) => void;
+    readonly saveRuntimeCatalogPatch?: ReturnType<typeof vi.fn>;
     readonly setSessionPinned?: ReturnType<typeof vi.fn>;
     readonly nativeAi?: NativeAiGateway | null;
 }) {
@@ -236,7 +515,8 @@ function createService(overrides: {
         persistence: {
             deleteSession: overrides.deleteSession ?? vi.fn(),
             listSessionHistory: overrides.listSessionHistory ?? vi.fn(() => []),
-            loadLatestRuntimeCatalog: vi.fn(() => null),
+            loadLatestRuntimeCatalog:
+                overrides.loadLatestRuntimeCatalog ?? vi.fn(() => null),
             loadRuntimeSelectionPreferences: vi.fn(() => ({
                 configOptions: {},
                 modeId: null,
@@ -248,6 +528,8 @@ function createService(overrides: {
             saveRuntimeSelectionPreferenceOption: vi.fn(),
             saveRuntimeModePreference: vi.fn(),
             saveRuntimeModelPreference: vi.fn(),
+            saveRuntimeCatalogPatch:
+                overrides.saveRuntimeCatalogPatch ?? vi.fn(),
             saveSessionSnapshot: overrides.saveSessionSnapshot ?? vi.fn(),
             setSessionPinned: overrides.setSessionPinned ?? vi.fn(),
         } as never,

@@ -963,6 +963,7 @@ struct LegacyHistoryRow {
     message_count: usize,
     preview: Option<String>,
     state_json: Option<String>,
+    review_json: Option<String>,
 }
 
 impl<'a> LegacyAiHistoryReader<'a> {
@@ -1018,6 +1019,11 @@ impl<'a> LegacyAiHistoryReader<'a> {
             .as_deref()
             .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
             .unwrap_or_else(|| json!({}));
+        let review = row
+            .review_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .unwrap_or_else(|| json!({}));
         let messages = self.load_all_messages(session_id)?;
 
         Ok(Some(NativeAiSessionSnapshot {
@@ -1070,7 +1076,7 @@ impl<'a> LegacyAiHistoryReader<'a> {
             modes: array_field(&state, "modes"),
             models: array_field(&state, "models"),
             tool_activity: array_field(&state, "toolActivity"),
-            tracked_files: Vec::new(),
+            tracked_files: array_field(&review, "trackedFiles"),
         }))
     }
 
@@ -1713,7 +1719,8 @@ fn legacy_history_select_sql() -> String {
         chat_sessions.pinned_at,
         COALESCE(chat_transcripts.message_count, 0) AS message_count,
         chat_transcripts.preview,
-        runtime_state.state_json
+        runtime_state.state_json,
+        review_state.review_json
     FROM chat_sessions
     LEFT JOIN chat_transcripts
         ON chat_transcripts.session_id = chat_sessions.id
@@ -1721,6 +1728,8 @@ fn legacy_history_select_sql() -> String {
         ON runtime_links.app_session_id = chat_sessions.id
     LEFT JOIN chat_session_runtime_state AS runtime_state
         ON runtime_state.session_id = chat_sessions.id
+    LEFT JOIN chat_session_review_state AS review_state
+        ON review_state.session_id = chat_sessions.id
     "
     .to_string()
 }
@@ -1742,6 +1751,7 @@ fn legacy_row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<LegacyHistor
         message_count: row.get::<_, i64>("message_count")?.max(0) as usize,
         preview: row.get("preview")?,
         state_json: row.get("state_json")?,
+        review_json: row.get("review_json")?,
     })
 }
 
@@ -2066,6 +2076,13 @@ mod tests {
                 CREATE TABLE chat_session_runtime_state (
                     session_id TEXT PRIMARY KEY,
                     state_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE chat_session_review_state (
+                    session_id TEXT PRIMARY KEY,
+                    review_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -2529,6 +2546,46 @@ mod tests {
             history[0].runtime_session_id.as_ref().unwrap().0,
             "runtime_legacy_1"
         );
+    }
+
+    #[test]
+    fn legacy_reader_loads_tracked_files_from_review_state() {
+        let connection = legacy_connection();
+        insert_legacy_session(&connection, "legacy_1", vec![message("message_1", "hello")]);
+        connection
+            .execute(
+                "
+                INSERT INTO chat_session_review_state (
+                    session_id,
+                    review_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES ('legacy_1', ?1, ?2, ?2)
+                ",
+                (
+                    serde_json::to_string(&json!({
+                        "trackedFiles": [
+                            {
+                                "path": "src/app.ts",
+                                "status": "modified"
+                            }
+                        ]
+                    }))
+                    .unwrap(),
+                    "2026-06-20T12:00:00.000Z",
+                ),
+            )
+            .unwrap();
+
+        let reader = LegacyAiHistoryReader::new(&connection);
+        let snapshot = reader
+            .load_session_snapshot(&SessionId("legacy_1".to_string()))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(snapshot.tracked_files.len(), 1);
+        assert_eq!(snapshot.tracked_files[0]["path"], "src/app.ts");
     }
 
     #[test]

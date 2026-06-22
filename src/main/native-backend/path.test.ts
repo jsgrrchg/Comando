@@ -5,46 +5,43 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
-    NATIVE_BACKEND_ENABLED_ENV,
     NATIVE_BACKEND_PATH_ENV,
-    NATIVE_BACKEND_STRICT_ENV,
     getNativeBackendExecutableName,
-    isNativeBackendEnabled,
-    isNativeBackendStrict,
     resolveNativeBackendPath,
 } from "./path";
 
-describe("native backend flags", () => {
-    it("requires explicit opt-in for the native backend", () => {
-        expect(isNativeBackendEnabled({})).toBe(false);
-        expect(isNativeBackendEnabled({ [NATIVE_BACKEND_ENABLED_ENV]: "1" })).toBe(
-            true,
-        );
-        expect(isNativeBackendEnabled({ COMANDO_NATIVE_TERMINAL: "1" })).toBe(
-            true,
-        );
-    });
-
-    it("supports strict mode as a separate opt-in", () => {
-        expect(isNativeBackendStrict({})).toBe(false);
-        expect(isNativeBackendStrict({ [NATIVE_BACKEND_STRICT_ENV]: "1" })).toBe(
-            true,
-        );
-    });
-});
-
 describe("resolveNativeBackendPath", () => {
-    it("prefers the environment override", () => {
+    it("prefers an existing environment override", () => {
+        const overridePath = path.join(
+            os.tmpdir(),
+            "comando-native-backend-override",
+        );
         const resolution = resolveNativeBackendPath({
             env: {
-                [NATIVE_BACKEND_PATH_ENV]: "/custom/comando-native-backend",
+                [NATIVE_BACKEND_PATH_ENV]: overridePath,
             },
+            exists: (candidate) => candidate === overridePath,
         });
 
         expect(resolution).toEqual({
-            attemptedPaths: ["/custom/comando-native-backend"],
-            binaryPath: "/custom/comando-native-backend",
+            attemptedPaths: [overridePath],
+            binaryPath: overridePath,
             source: "override",
+        });
+    });
+
+    it("reports a missing environment override as missing", () => {
+        const resolution = resolveNativeBackendPath({
+            env: {
+                [NATIVE_BACKEND_PATH_ENV]: "/custom/missing-backend",
+            },
+            exists: () => false,
+        });
+
+        expect(resolution).toEqual({
+            attemptedPaths: ["/custom/missing-backend"],
+            binaryPath: null,
+            source: "missing",
         });
     });
 

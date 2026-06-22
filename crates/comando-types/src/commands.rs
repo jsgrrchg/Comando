@@ -6,9 +6,23 @@ pub const BACKEND_EMIT_TEST_EVENT: &str = "backend_emit_test_event";
 pub const PERSISTENCE_OPEN_STORE: &str = "persistence_open_store";
 pub const PERSISTENCE_GET_STORAGE_HEALTH: &str = "persistence_get_storage_health";
 pub const PERSISTENCE_GET_SNAPSHOT: &str = "persistence_get_snapshot";
+pub const APP_DATA_GET_JSON: &str = "app_data_get_json";
+pub const APP_DATA_SET_JSON: &str = "app_data_set_json";
+pub const APP_SECRET_GET: &str = "app_secret_get";
+pub const APP_SECRET_SET: &str = "app_secret_set";
+pub const APP_SECRET_DELETE: &str = "app_secret_delete";
+pub const SETTINGS_GET_SNAPSHOT: &str = "settings_get_snapshot";
+pub const SETTINGS_SAVE_SNAPSHOT: &str = "settings_save_snapshot";
+pub const SETTINGS_GET_PROJECT: &str = "settings_get_project";
+pub const SETTINGS_SAVE_PROJECT: &str = "settings_save_project";
 pub const PROJECT_LIST: &str = "project_list";
 pub const PROJECT_ADD: &str = "project_add";
 pub const PROJECT_SYNC_WORKTREES: &str = "project_sync_worktrees";
+pub const PROJECT_REMOVE: &str = "project_remove";
+pub const PROJECT_TOUCH: &str = "project_touch";
+pub const PROJECT_RELOCATE: &str = "project_relocate";
+pub const PROJECT_GET_APP_DATA_SUMMARY: &str = "project_get_app_data_summary";
+pub const PROJECT_CLEAR_APP_DATA: &str = "project_clear_app_data";
 
 pub const BACKEND_COMMANDS: &[&str] = &[
     BACKEND_PING,
@@ -22,16 +36,22 @@ pub const PERSISTENCE_COMMANDS: &[&str] = &[
     PERSISTENCE_OPEN_STORE,
     PERSISTENCE_GET_STORAGE_HEALTH,
     PERSISTENCE_GET_SNAPSHOT,
-    "persistence_save_workspace",
-    "persistence_load_workspace",
-    "persistence_list_projects",
+    APP_DATA_GET_JSON,
+    APP_DATA_SET_JSON,
+    APP_SECRET_GET,
+    APP_SECRET_SET,
+    APP_SECRET_DELETE,
 ];
 
 pub const PROJECT_COMMANDS: &[&str] = &[
     PROJECT_LIST,
     PROJECT_ADD,
     PROJECT_SYNC_WORKTREES,
-    "project_remove",
+    PROJECT_REMOVE,
+    PROJECT_TOUCH,
+    PROJECT_RELOCATE,
+    PROJECT_GET_APP_DATA_SUMMARY,
+    PROJECT_CLEAR_APP_DATA,
     "project_open",
     "project_refresh",
     "project_list_tree_children",
@@ -80,6 +100,7 @@ pub const GIT_COMMANDS: &[&str] = &[
     "git_get_diff_stats",
     "git_list_worktree_diff",
     "git_init_repository",
+    "git_clone_repository",
     "git_stage_paths",
     "git_unstage_paths",
     "git_discard_paths",
@@ -106,10 +127,10 @@ pub const TERMINAL_COMMANDS: &[&str] = &[
 ];
 
 pub const SETTINGS_COMMANDS: &[&str] = &[
-    "settings_get_snapshot",
-    "settings_save_snapshot",
-    "settings_get_project",
-    "settings_save_project",
+    SETTINGS_GET_SNAPSHOT,
+    SETTINGS_SAVE_SNAPSHOT,
+    SETTINGS_GET_PROJECT,
+    SETTINGS_SAVE_PROJECT,
     "secret_set",
     "secret_delete",
     "secret_status",
@@ -126,7 +147,6 @@ pub const AI_COMMANDS: &[&str] = &[
     "ai_send_prompt",
     "ai_cancel_session",
     "ai_close_session",
-    "ai_freeze_session",
     "ai_respond_permission",
     "ai_respond_user_input",
     "ai_set_session_model",
@@ -152,18 +172,9 @@ pub const AI_COMMANDS: &[&str] = &[
     "ai_keep_all_tracked_files",
     "ai_reject_all_tracked_files",
     "ai_notify_file_buffer",
-    "ai_refresh_project_scopes",
 ];
 
-pub const REVIEW_COMMANDS: &[&str] = &[
-    "review_get_state",
-    "review_keep_file",
-    "review_reject_file",
-    "review_keep_hunks",
-    "review_reject_hunks",
-    "review_keep_all",
-    "review_reject_all",
-];
+pub const REVIEW_COMMANDS: &[&str] = &[];
 
 pub fn all_commands() -> Vec<&'static str> {
     [

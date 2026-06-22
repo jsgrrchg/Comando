@@ -72,7 +72,7 @@ Credential precedence is runtime-specific:
 | Kilo | `kilo-login` | External Kilo auth stores |
 | OpenCode | `opencode-login` | External OpenCode auth state, `OPENCODE_API_KEY`, provider env vars, project `.env`, or providers configured with `/connect` |
 
-Comando stores secrets through Electron `safeStorage`. On macOS this delegates protection to Keychain, on Windows to DPAPI, and on Linux to the selected keyring backend. Linux `basic_text` and `unknown` backends are treated as weak: Comando still reads existing secrets best-effort for compatibility, but blocks new secret writes and reports the storage warning through runtime status.
+Comando stores runtime secrets through the Rust native backend and the OS keyring. The Electron main process keeps only the UI-facing secret contract and does not persist secret payloads directly.
 
 ---
 
@@ -350,13 +350,13 @@ The packaging entrypoints are:
 
 ### Storage model
 
-- Runtime settings are stored in the app SQLite database via `SettingsService`
-- Secrets are stored in the same `app_settings` table but encrypted through Electron `safeStorage`
-- If `safeStorage.isEncryptionAvailable()` is false, saving secrets fails
+- Runtime settings are persisted by the Rust native backend and exposed to Electron through a thin settings facade.
+- Secrets are persisted by the Rust native backend through the OS keyring.
+- Secret values must never be logged by Electron or the sidecar.
 
 ### Claude
 
-Configured through SQLite settings keys under the `ai.claude.*` namespace.
+Configured through native runtime settings under the `ai.claude.*` namespace.
 
 Secrets stored by Comando:
 
@@ -409,7 +409,7 @@ Gateway validation rules:
 
 ### Codex
 
-Configured through SQLite settings keys under the `ai.codex.*` namespace.
+Configured through native runtime settings under the `ai.codex.*` namespace.
 
 Secrets stored by Comando:
 
@@ -432,7 +432,7 @@ Comando does **not** currently set `CODEX_HOME` or manage a Codex-specific app d
 
 ### Kilo
 
-Configured through SQLite settings keys under the `ai.kilo.*` namespace.
+Configured through native runtime settings under the `ai.kilo.*` namespace.
 
 Supported method:
 
@@ -465,7 +465,7 @@ For the SQLite store, Comando inspects `account_state`, `account`, and `control_
 
 ### Grok
 
-Configured through SQLite settings keys under the `ai.grok.*` namespace.
+Configured through native runtime settings under the `ai.grok.*` namespace.
 
 Secrets stored by Comando:
 
@@ -602,17 +602,14 @@ Instead:
 src/main/
 ├── ai/
 │   ├── ACP.md
-│   ├── client.ts                     # ACP client wrapper and connection utilities
 │   ├── contracts.ts                  # Runtime metadata keys and ACP compatibility constants
 │   ├── openFileBuffers.ts            # Tracked open buffers shared with AI sessions
-│   ├── persistence.ts                # Session history, runtime catalog and selection persistence
+│   ├── persistence.ts                # Legacy DTO helpers and persistence contracts
 │   ├── review-core.ts                # Review/change-tracking state helpers
 │   ├── runtime-env.ts                # Shared runtime environment construction
-│   ├── secret-store.ts               # Encrypted secret storage via Electron safeStorage
-│   ├── service.ts                    # AI service orchestration and runtime settings flows
+│   ├── secret-store.ts               # Secret store contract used by main-process facades
+│   ├── service.ts                    # Native AI facade and runtime settings flows
 │   ├── session-core.ts               # Session-level reducers and shared AI state helpers
-│   ├── worker-runtime.ts             # Live ACP session/runtime execution
-│   ├── worker.ts                     # AI worker bootstrap
 │   ├── resolver/
 │   │   └── runtime-resolver.ts       # Codex runtime discovery and compatibility checks
 │   ├── claude/
@@ -739,5 +736,5 @@ On Linux and Windows, Kilo and OpenCode paths can vary through `XDG_DATA_HOME` a
 - Claude runtime resolution still keeps a legacy standalone `claude-agent-acp` binary fallback even though the normal path prefers embedded Node + vendored JS.
 - Codex PATH fallback explicitly rejects plain `codex` because Comando still targets ACP, not the App Server / MCP surface.
 - The current vendored Codex runtime includes newer upstream support for MCP approval elicitation, `RequestUserInput`, guardian-assessment activity and cleaner shutdown handling, while Comando keeps legacy metadata fallbacks so older sessions can still be replayed safely.
-- Secret persistence depends on Electron `safeStorage`; if the OS secure storage is unavailable, API-key and gateway-secret writes will fail.
+- Secret persistence is owned by the Rust native backend through the OS keyring.
 - This document should be kept aligned with `src/main/ai/`, `scripts/ai/`, `resources/ai/` and related packaging logic whenever runtime behavior changes.

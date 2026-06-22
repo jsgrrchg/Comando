@@ -1,10 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export const NATIVE_BACKEND_ENABLED_ENV = "COMANDO_NATIVE_BACKEND";
 export const NATIVE_BACKEND_PATH_ENV = "COMANDO_NATIVE_BACKEND_PATH";
-export const NATIVE_BACKEND_STRICT_ENV = "COMANDO_NATIVE_BACKEND_STRICT";
-const NATIVE_TERMINAL_ENABLED_ENV = "COMANDO_NATIVE_TERMINAL";
 
 export type NativeBackendPathSource =
     | "override"
@@ -32,35 +29,21 @@ export type NativeBackendPathOptions = {
 
 const BASE_EXECUTABLE_NAME = "comando-native-backend";
 
-export function isNativeBackendEnabled(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return (
-        env[NATIVE_BACKEND_ENABLED_ENV] === "1" ||
-        env[NATIVE_TERMINAL_ENABLED_ENV] === "1"
-    );
-}
-
-export function isNativeBackendStrict(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return env[NATIVE_BACKEND_STRICT_ENV] === "1";
-}
-
 export function resolveNativeBackendPath(
     options: NativeBackendPathOptions = {},
 ): NativeBackendPathResolution {
     const env = options.env ?? process.env;
+    const exists = options.exists ?? fs.existsSync;
     const overridePath = env[NATIVE_BACKEND_PATH_ENV]?.trim();
     if (overridePath) {
+        const overrideExists = exists(overridePath);
         return {
             attemptedPaths: [overridePath],
-            binaryPath: overridePath,
-            source: "override",
+            binaryPath: overrideExists ? overridePath : null,
+            source: overrideExists ? "override" : "missing",
         };
     }
 
-    const exists = options.exists ?? fs.existsSync;
     const mtimeMs = options.mtimeMs ?? defaultMtimeMs;
     const cwd = options.cwd ?? process.cwd();
     const platform = options.platform ?? process.platform;

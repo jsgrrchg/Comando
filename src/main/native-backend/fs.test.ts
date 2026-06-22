@@ -1,74 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import {
-    NATIVE_FS_ENABLED_ENV,
-    NATIVE_FS_MODE_ENV,
-    NATIVE_PROJECT_TREE_ENABLED_ENV,
-    NativeFsGateway,
-    resolveNativeFsMode,
-    shouldUseNativeFsReads,
-    shouldUseNativeFsWrites,
-    shouldUseNativeProjectTree,
-} from "./fs";
+import { NativeFsGateway } from "./fs";
 import type { NativeBackendRequester } from "./persistence";
-
-describe("native filesystem flags", () => {
-    it("defaults off and defaults enabled mode to shadow", () => {
-        expect(resolveNativeFsMode({})).toBeNull();
-        expect(
-            resolveNativeFsMode({
-                [NATIVE_FS_ENABLED_ENV]: "1",
-            }),
-        ).toBe("shadow");
-        expect(
-            resolveNativeFsMode({
-                [NATIVE_FS_ENABLED_ENV]: "1",
-                [NATIVE_FS_MODE_ENV]: "read",
-            }),
-        ).toBe("read");
-        expect(
-            resolveNativeFsMode({
-                [NATIVE_FS_ENABLED_ENV]: "1",
-                [NATIVE_FS_MODE_ENV]: "write",
-            }),
-        ).toBe("write");
-    });
-
-    it("routes reads, writes, and tree only in explicit modes", () => {
-        expect(shouldUseNativeFsReads({})).toBe(false);
-        expect(
-            shouldUseNativeFsReads({
-                [NATIVE_FS_ENABLED_ENV]: "1",
-                [NATIVE_FS_MODE_ENV]: "read",
-            }),
-        ).toBe(true);
-        expect(
-            shouldUseNativeFsWrites({
-                [NATIVE_FS_ENABLED_ENV]: "1",
-                [NATIVE_FS_MODE_ENV]: "read",
-            }),
-        ).toBe(false);
-        expect(
-            shouldUseNativeFsWrites({
-                [NATIVE_FS_ENABLED_ENV]: "1",
-                [NATIVE_FS_MODE_ENV]: "write",
-            }),
-        ).toBe(true);
-        expect(
-            shouldUseNativeProjectTree({
-                [NATIVE_FS_ENABLED_ENV]: "1",
-                [NATIVE_FS_MODE_ENV]: "read",
-            }),
-        ).toBe(false);
-        expect(
-            shouldUseNativeProjectTree({
-                [NATIVE_FS_ENABLED_ENV]: "1",
-                [NATIVE_FS_MODE_ENV]: "read",
-                [NATIVE_PROJECT_TREE_ENABLED_ENV]: "1",
-            }),
-        ).toBe(true);
-    });
-});
 
 describe("NativeFsGateway", () => {
     it("adapts native tree and file reads to project IPC models", async () => {

@@ -388,10 +388,10 @@ export type NativeAiSessionSnapshot = {
     readonly lastError: string | null;
     readonly modeId: string | null;
     readonly modelId: string | null;
-    readonly pendingPermission: unknown | null;
-    readonly pendingUserInput: unknown | null;
-    readonly plan: unknown | null;
-    readonly tokenUsage: unknown | null;
+    readonly pendingPermission: unknown;
+    readonly pendingUserInput: unknown;
+    readonly plan: unknown;
+    readonly tokenUsage: unknown;
     readonly availableCommands: readonly unknown[];
     readonly configOptions: readonly unknown[];
     readonly messages: readonly unknown[];
@@ -479,9 +479,9 @@ export type NativeAiSubagentBreadcrumbPayload = NativeAiEventBase & {
 };
 
 export type NativeAiSessionCatalogUpdatedPayload = NativeAiEventBase & {
-    readonly availableCommands: readonly NativeAiAvailableCommandPayload[] | null;
-    readonly configOptions: readonly NativeAiSessionConfigOptionPayload[] | null;
-    readonly modeId: string | null;
+    readonly availableCommands?: readonly NativeAiAvailableCommandPayload[] | null;
+    readonly configOptions?: readonly NativeAiSessionConfigOptionPayload[] | null;
+    readonly modeId?: string | null;
 };
 
 export type NativeAiAvailableCommandPayload = {

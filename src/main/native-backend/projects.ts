@@ -1,7 +1,11 @@
 import type { ProjectAppDataSummary, ProjectSummary } from "@shared/ipc";
 import type {
+    NativeProjectAppDataSummary,
     NativeProjectAddResult,
+    NativeProjectClearAppDataResult,
     NativeProjectListResult,
+    NativeProjectMutationResult,
+    NativeProjectRelocateResult,
     NativeProjectState,
     NativeProjectSummary,
     NativeProjectSyncWorktree,
@@ -18,12 +22,6 @@ import type {
 } from "../projects/store";
 import type { NativeBackendRequester } from "./persistence";
 
-export const NATIVE_PROJECT_REGISTRY_ENABLED_ENV =
-    "COMANDO_NATIVE_PROJECT_REGISTRY";
-export const NATIVE_PROJECT_REGISTRY_MODE_ENV =
-    "COMANDO_NATIVE_PROJECT_REGISTRY_MODE";
-
-export type NativeProjectRegistryMode = "shadow" | "write";
 export type NativeProjectRegistryDiagnostic = (message: string) => void;
 
 export class NativeProjectRegistryGateway {
@@ -62,55 +60,68 @@ export class NativeProjectRegistryGateway {
             "project_sync_worktrees",
         );
     }
+
+    async removeProject(projectId: string): Promise<NativeProjectMutationResult> {
+        return parseNativeProjectMutationResult(
+            await this.#client.request("project_remove", {
+                projectId,
+            }),
+        );
+    }
+
+    async touchProject(projectId: string): Promise<NativeProjectMutationResult> {
+        return parseNativeProjectMutationResult(
+            await this.#client.request("project_touch", {
+                projectId,
+            }),
+        );
+    }
+
+    async relocateProject(
+        projectId: string,
+        projectPath: string,
+    ): Promise<NativeProjectRelocateResult> {
+        return parseNativeProjectRelocateResult(
+            await this.#client.request("project_relocate", {
+                projectId,
+                projectPath,
+            }),
+        );
+    }
+
+    async getProjectAppDataSummary(
+        projectId: string,
+    ): Promise<NativeProjectAppDataSummary> {
+        return parseNativeProjectAppDataSummary(
+            await this.#client.request("project_get_app_data_summary", {
+                projectId,
+            }),
+        );
+    }
+
+    async clearProjectAppData(
+        projectId: string,
+    ): Promise<NativeProjectClearAppDataResult> {
+        return parseNativeProjectClearAppDataResult(
+            await this.#client.request("project_clear_app_data", {
+                projectId,
+            }),
+        );
+    }
 }
 
 export async function createNativeProjectRegistryStore(options: {
-    readonly env?: NodeJS.ProcessEnv;
-    readonly legacyStore: ProjectStore;
-    readonly nativeClient: NativeBackendRequester | null;
+    readonly nativeClient: NativeBackendRequester;
     readonly onDiagnostic?: NativeProjectRegistryDiagnostic;
 }): Promise<ProjectStore> {
-    const mode = resolveNativeProjectRegistryMode(options.env);
-    if (!mode || !options.nativeClient) {
-        return options.legacyStore;
-    }
-
     const gateway = new NativeProjectRegistryGateway(options.nativeClient);
-    if (mode === "write") {
-        const state = nativeProjectStateToStoreSnapshot(
-            await gateway.listProjects(),
-        );
-        options.onDiagnostic?.(
-            `[native-projects] write mode active projects=${state.projects.length} worktrees=${state.worktrees.length}.`,
-        );
-        return new NativeWriteProjectStore(options.legacyStore, gateway, state);
-    }
-
-    const store = new NativeShadowProjectStore(
-        options.legacyStore,
-        gateway,
-        options.onDiagnostic,
+    const state = nativeProjectStateToStoreSnapshot(
+        await gateway.listProjects(),
     );
-    void store.checkParity("startup");
-    return store;
-}
-
-export function isNativeProjectRegistryEnabled(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return env[NATIVE_PROJECT_REGISTRY_ENABLED_ENV] === "1";
-}
-
-export function resolveNativeProjectRegistryMode(
-    env: NodeJS.ProcessEnv = process.env,
-): NativeProjectRegistryMode | null {
-    if (!isNativeProjectRegistryEnabled(env)) {
-        return null;
-    }
-
-    return env[NATIVE_PROJECT_REGISTRY_MODE_ENV] === "write"
-        ? "write"
-        : "shadow";
+    options.onDiagnostic?.(
+        `[native-projects] active projects=${state.projects.length} worktrees=${state.worktrees.length}.`,
+    );
+    return new NativeWriteProjectStore(gateway, state);
 }
 
 export function nativeProjectStateToStoreSnapshot(
@@ -132,216 +143,15 @@ export function nativeProjectAddResultToStoreResult(
     };
 }
 
-export function compareProjectRegistryStates(
-    nativeState: ProjectStoreStateSnapshot,
-    legacyState: ProjectStoreStateSnapshot,
-): ProjectRegistryParityReport {
-    const nativeProjectIds = nativeState.projects.map((project) => project.id);
-    const legacyProjectIds = legacyState.projects.map((project) => project.id);
-    const nativeWorktreeIds = nativeState.worktrees.map((worktree) => worktree.id);
-    const legacyWorktreeIds = legacyState.worktrees.map((worktree) => worktree.id);
-    const nativeProjectsById = new Map(
-        nativeState.projects.map((project) => [project.id, project]),
-    );
-    const legacyProjectsById = new Map(
-        legacyState.projects.map((project) => [project.id, project]),
-    );
-    const nativeWorktreesById = new Map(
-        nativeState.worktrees.map((worktree) => [worktree.id, worktree]),
-    );
-    const legacyWorktreesById = new Map(
-        legacyState.worktrees.map((worktree) => [worktree.id, worktree]),
-    );
-    const missingNativeProjectIds = difference(legacyProjectIds, nativeProjectIds);
-    const extraNativeProjectIds = difference(nativeProjectIds, legacyProjectIds);
-    const missingNativeWorktreeIds = difference(
-        legacyWorktreeIds,
-        nativeWorktreeIds,
-    );
-    const extraNativeWorktreeIds = difference(
-        nativeWorktreeIds,
-        legacyWorktreeIds,
-    );
-    const mismatchedProjectIds = intersection(nativeProjectIds, legacyProjectIds)
-        .filter((projectId) => {
-            const nativeProject = nativeProjectsById.get(projectId);
-            const legacyProject = legacyProjectsById.get(projectId);
-            return (
-                nativeProject &&
-                legacyProject &&
-                !sameProjectRecord(nativeProject, legacyProject)
-            );
-        });
-    const mismatchedWorktreeIds = intersection(nativeWorktreeIds, legacyWorktreeIds)
-        .filter((worktreeId) => {
-            const nativeWorktree = nativeWorktreesById.get(worktreeId);
-            const legacyWorktree = legacyWorktreesById.get(worktreeId);
-            return (
-                nativeWorktree &&
-                legacyWorktree &&
-                !sameWorktreeRecord(nativeWorktree, legacyWorktree)
-            );
-        });
-    const equal =
-        missingNativeProjectIds.length === 0 &&
-        extraNativeProjectIds.length === 0 &&
-        missingNativeWorktreeIds.length === 0 &&
-        extraNativeWorktreeIds.length === 0 &&
-        mismatchedProjectIds.length === 0 &&
-        mismatchedWorktreeIds.length === 0;
-
-    return {
-        equal,
-        extraNativeProjectIds,
-        extraNativeWorktreeIds,
-        legacyProjectCount: legacyState.projects.length,
-        legacyWorktreeCount: legacyState.worktrees.length,
-        mismatchedProjectIds,
-        mismatchedWorktreeIds,
-        missingNativeProjectIds,
-        missingNativeWorktreeIds,
-        nativeProjectCount: nativeState.projects.length,
-        nativeWorktreeCount: nativeState.worktrees.length,
-    };
-}
-
-export interface ProjectRegistryParityReport {
-    readonly equal: boolean;
-    readonly extraNativeProjectIds: readonly string[];
-    readonly extraNativeWorktreeIds: readonly string[];
-    readonly legacyProjectCount: number;
-    readonly legacyWorktreeCount: number;
-    readonly mismatchedProjectIds: readonly string[];
-    readonly mismatchedWorktreeIds: readonly string[];
-    readonly missingNativeProjectIds: readonly string[];
-    readonly missingNativeWorktreeIds: readonly string[];
-    readonly nativeProjectCount: number;
-    readonly nativeWorktreeCount: number;
-}
-
-class NativeShadowProjectStore implements ProjectStore {
-    readonly #gateway: NativeProjectRegistryGateway;
-    readonly #legacy: ProjectStore;
-    readonly #onDiagnostic?: NativeProjectRegistryDiagnostic;
-
-    constructor(
-        legacy: ProjectStore,
-        gateway: NativeProjectRegistryGateway,
-        onDiagnostic?: NativeProjectRegistryDiagnostic,
-    ) {
-        this.#gateway = gateway;
-        this.#legacy = legacy;
-        this.#onDiagnostic = onDiagnostic;
-    }
-
-    loadState(): ProjectStoreStateSnapshot {
-        return this.#legacy.loadState();
-    }
-
-    async checkParity(reason: string): Promise<void> {
-        try {
-            const nativeState = nativeProjectStateToStoreSnapshot(
-                await this.#gateway.listProjects(),
-            );
-            const report = compareProjectRegistryStates(
-                nativeState,
-                this.#legacy.loadState(),
-            );
-            this.#onDiagnostic?.(formatParityReport(reason, report));
-        } catch (error) {
-            this.#onDiagnostic?.(
-                `[native-projects] shadow parity ${reason} failed: ${formatError(error)}`,
-            );
-        }
-    }
-
-    async addProjectPaths(
-        projectPaths: readonly string[],
-    ): Promise<ProjectStoreAddPathsResult> {
-        const result = await this.#legacy.addProjectPaths(projectPaths);
-        await this.checkParity("after-add");
-        return result;
-    }
-
-    async clearProjectAppData(
-        projectId: string,
-    ): Promise<ProjectAppDataSummary> {
-        const result = await this.#legacy.clearProjectAppData(projectId);
-        await this.checkParity("after-clear-app-data");
-        return result;
-    }
-
-    getProject(projectId: string): ProjectRecord | null {
-        return this.#legacy.getProject(projectId);
-    }
-
-    async getProjectAppDataSummary(
-        projectId: string,
-    ): Promise<ProjectAppDataSummary> {
-        return await this.#legacy.getProjectAppDataSummary(projectId);
-    }
-
-    getProjectWorktree(worktreeId: string): ProjectStoreWorktreeRecord | null {
-        return this.#legacy.getProjectWorktree(worktreeId);
-    }
-
-    listProjects(): readonly ProjectSummary[] {
-        return this.#legacy.listProjects();
-    }
-
-    listProjectWorktrees(
-        projectId: string,
-    ): readonly ProjectStoreWorktreeRecord[] {
-        return this.#legacy.listProjectWorktrees(projectId);
-    }
-
-    removeProject(projectId: string): void {
-        this.#legacy.removeProject(projectId);
-        void this.checkParity("after-remove");
-    }
-
-    async relocateProject(
-        projectId: string,
-        projectPath: string,
-    ): Promise<ProjectSummary> {
-        const result = await this.#legacy.relocateProject(projectId, projectPath);
-        await this.checkParity("after-relocate");
-        return result;
-    }
-
-    async syncProjectWorktrees(
-        projectId: string,
-        worktrees: readonly {
-            readonly branchName: string | null;
-            readonly headSha: string | null;
-            readonly rootPath: string;
-        }[],
-    ): Promise<readonly ProjectStoreWorktreeRecord[]> {
-        const result = await this.#legacy.syncProjectWorktrees(
-            projectId,
-            worktrees,
-        );
-        await this.checkParity("after-sync-worktrees");
-        return result;
-    }
-
-    touchProject(projectId: string): void {
-        this.#legacy.touchProject(projectId);
-    }
-}
-
 class NativeWriteProjectStore implements ProjectStore {
     readonly #cache = new ProjectStateCache();
     readonly #gateway: NativeProjectRegistryGateway;
-    readonly #legacy: ProjectStore;
 
     constructor(
-        legacy: ProjectStore,
         gateway: NativeProjectRegistryGateway,
         initialState: ProjectStoreStateSnapshot,
     ) {
         this.#gateway = gateway;
-        this.#legacy = legacy;
         this.#cache.hydrate(initialState);
     }
 
@@ -366,9 +176,9 @@ class NativeWriteProjectStore implements ProjectStore {
     async clearProjectAppData(
         projectId: string,
     ): Promise<ProjectAppDataSummary> {
-        const summary = await this.#legacy.clearProjectAppData(projectId);
-        await this.#refresh();
-        return summary;
+        const result = await this.#gateway.clearProjectAppData(projectId);
+        this.#cache.hydrate(nativeProjectStateToStoreSnapshot(result.state));
+        return nativeProjectAppDataSummaryToIpc(result.cleared);
     }
 
     getProject(projectId: string): ProjectRecord | null {
@@ -378,7 +188,9 @@ class NativeWriteProjectStore implements ProjectStore {
     async getProjectAppDataSummary(
         projectId: string,
     ): Promise<ProjectAppDataSummary> {
-        return await this.#legacy.getProjectAppDataSummary(projectId);
+        return nativeProjectAppDataSummaryToIpc(
+            await this.#gateway.getProjectAppDataSummary(projectId),
+        );
     }
 
     getProjectWorktree(worktreeId: string): ProjectStoreWorktreeRecord | null {
@@ -391,18 +203,18 @@ class NativeWriteProjectStore implements ProjectStore {
         return this.#cache.listProjectWorktrees(projectId);
     }
 
-    removeProject(projectId: string): void {
-        this.#cache.removeProject(projectId);
-        this.#legacy.removeProject(projectId);
+    async removeProject(projectId: string): Promise<void> {
+        const result = await this.#gateway.removeProject(projectId);
+        this.#cache.hydrate(nativeProjectStateToStoreSnapshot(result.state));
     }
 
     async relocateProject(
         projectId: string,
         projectPath: string,
     ): Promise<ProjectSummary> {
-        const project = await this.#legacy.relocateProject(projectId, projectPath);
-        await this.#refresh();
-        return project;
+        const result = await this.#gateway.relocateProject(projectId, projectPath);
+        this.#cache.hydrate(nativeProjectStateToStoreSnapshot(result.state));
+        return nativeProjectSummaryToIpcProject(result.project);
     }
 
     async syncProjectWorktrees(
@@ -424,7 +236,14 @@ class NativeWriteProjectStore implements ProjectStore {
 
     touchProject(projectId: string): void {
         this.#cache.touchProject(projectId);
-        this.#legacy.touchProject(projectId);
+        void this.#gateway
+            .touchProject(projectId)
+            .then((result) => {
+                this.#cache.hydrate(
+                    nativeProjectStateToStoreSnapshot(result.state),
+                );
+            })
+            .catch(() => undefined);
     }
 
     async #refresh(): Promise<void> {
@@ -585,6 +404,19 @@ function nativeWorktreeSummaryToStoreWorktree(
     };
 }
 
+function nativeProjectAppDataSummaryToIpc(
+    summary: NativeProjectAppDataSummary,
+): ProjectAppDataSummary {
+    return {
+        chatSessionCount: summary.chatSessionCount,
+        projectSettingsCount: summary.projectSettingsCount,
+        recentProjectCount: summary.recentProjectCount,
+        workspaceLayoutCount: summary.workspaceLayoutCount,
+        workspaceSessionCount: summary.workspaceSessionCount,
+        workspaceTabCount: summary.workspaceTabCount,
+    };
+}
+
 function parseNativeProjectListResult(value: unknown): NativeProjectListResult {
     const state = parseNativeProjectState(value, "Native project list result");
     return {
@@ -607,6 +439,71 @@ function parseNativeProjectAddResult(value: unknown): NativeProjectAddResult {
             record.touchedRootPaths,
             "touchedRootPaths",
         ),
+    };
+}
+
+function parseNativeProjectMutationResult(
+    value: unknown,
+): NativeProjectMutationResult {
+    const record = requireRecord(value, "Native project mutation result");
+    return {
+        state: parseNativeProjectState(record.state, "Native project state"),
+    };
+}
+
+function parseNativeProjectRelocateResult(
+    value: unknown,
+): NativeProjectRelocateResult {
+    const record = requireRecord(value, "Native project relocate result");
+    return {
+        project: parseProjectSummary(record.project),
+        state: parseNativeProjectState(record.state, "Native project state"),
+        touchedRootPaths: parseStringArray(
+            record.touchedRootPaths,
+            "touchedRootPaths",
+        ),
+    };
+}
+
+function parseNativeProjectAppDataSummary(
+    value: unknown,
+): NativeProjectAppDataSummary {
+    const record = requireRecord(value, "Native project app data summary");
+    return {
+        chatSessionCount: requireNumber(
+            record.chatSessionCount,
+            "chatSessionCount",
+        ),
+        projectSettingsCount: requireNumber(
+            record.projectSettingsCount,
+            "projectSettingsCount",
+        ),
+        recentProjectCount: requireNumber(
+            record.recentProjectCount,
+            "recentProjectCount",
+        ),
+        workspaceLayoutCount: requireNumber(
+            record.workspaceLayoutCount,
+            "workspaceLayoutCount",
+        ),
+        workspaceSessionCount: requireNumber(
+            record.workspaceSessionCount,
+            "workspaceSessionCount",
+        ),
+        workspaceTabCount: requireNumber(
+            record.workspaceTabCount,
+            "workspaceTabCount",
+        ),
+    };
+}
+
+function parseNativeProjectClearAppDataResult(
+    value: unknown,
+): NativeProjectClearAppDataResult {
+    const record = requireRecord(value, "Native project clear app data result");
+    return {
+        cleared: parseNativeProjectAppDataSummary(record.cleared),
+        state: parseNativeProjectState(record.state, "Native project state"),
     };
 }
 
@@ -673,64 +570,6 @@ function parseWorktreeSummary(value: unknown): NativeWorktreeSummary {
     };
 }
 
-function sameProjectRecord(
-    nativeProject: ProjectStoreProjectRecord,
-    legacyProject: ProjectStoreProjectRecord,
-): boolean {
-    return (
-        nativeProject.name === legacyProject.name &&
-        nativeProject.rootPath === legacyProject.rootPath &&
-        nativeProject.canonicalRootPath === legacyProject.canonicalRootPath &&
-        nativeProject.lastOpenedAt === legacyProject.lastOpenedAt
-    );
-}
-
-function sameWorktreeRecord(
-    nativeWorktree: ProjectStoreWorktreeRecord,
-    legacyWorktree: ProjectStoreWorktreeRecord,
-): boolean {
-    return (
-        nativeWorktree.projectId === legacyWorktree.projectId &&
-        nativeWorktree.rootPath === legacyWorktree.rootPath &&
-        nativeWorktree.branchName === legacyWorktree.branchName &&
-        nativeWorktree.headSha === legacyWorktree.headSha &&
-        nativeWorktree.isPrimary === legacyWorktree.isPrimary
-    );
-}
-
-function formatParityReport(
-    reason: string,
-    report: ProjectRegistryParityReport,
-): string {
-    if (report.equal) {
-        return `[native-projects] shadow parity ${reason} ok projects=${report.nativeProjectCount} worktrees=${report.nativeWorktreeCount}.`;
-    }
-
-    return [
-        `[native-projects] shadow parity ${reason} mismatch`,
-        `nativeProjects=${report.nativeProjectCount}`,
-        `legacyProjects=${report.legacyProjectCount}`,
-        `nativeWorktrees=${report.nativeWorktreeCount}`,
-        `legacyWorktrees=${report.legacyWorktreeCount}`,
-        `missingProjectIds=${report.missingNativeProjectIds.join(",") || "-"}`,
-        `extraProjectIds=${report.extraNativeProjectIds.join(",") || "-"}`,
-        `mismatchedProjectIds=${report.mismatchedProjectIds.join(",") || "-"}`,
-        `missingWorktreeIds=${report.missingNativeWorktreeIds.join(",") || "-"}`,
-        `extraWorktreeIds=${report.extraNativeWorktreeIds.join(",") || "-"}`,
-        `mismatchedWorktreeIds=${report.mismatchedWorktreeIds.join(",") || "-"}`,
-    ].join(" ");
-}
-
-function difference(left: readonly string[], right: readonly string[]): string[] {
-    const rightSet = new Set(right);
-    return left.filter((value) => !rightSet.has(value));
-}
-
-function intersection(left: readonly string[], right: readonly string[]): string[] {
-    const rightSet = new Set(right);
-    return left.filter((value) => rightSet.has(value));
-}
-
 function parseStringArray(value: unknown, fieldName: string): readonly string[] {
     if (!Array.isArray(value)) {
         throw new Error(`Native project field ${fieldName} must be string[].`);
@@ -762,6 +601,13 @@ function requireBoolean(value: unknown, fieldName: string): boolean {
     return value;
 }
 
+function requireNumber(value: unknown, fieldName: string): number {
+    if (typeof value !== "number") {
+        throw new Error(`Native project field ${fieldName} must be a number.`);
+    }
+    return value;
+}
+
 function requireNullableString(
     value: unknown,
     fieldName: string,
@@ -777,8 +623,4 @@ function requireString(value: unknown, fieldName: string): string {
         throw new Error(`Native project field ${fieldName} must be a string.`);
     }
     return value;
-}
-
-function formatError(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
 }

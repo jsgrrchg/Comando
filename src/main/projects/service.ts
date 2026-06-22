@@ -28,32 +28,14 @@ import { mainProcessPerformance } from "../observability/performance";
 import { debugBenignError } from "../observability/logging";
 import {
     NativeFsGateway,
-    resolveNativeFsMode,
-    shouldUseNativeFsReads,
-    shouldUseNativeFsWrites,
-    shouldUseNativeProjectTree,
-    shouldUseNativeWatchers,
 } from "../native-backend/fs";
-import {
-    NativeSearchGateway,
-    resolveNativeSearchMode,
-    shouldFallbackFromNativeSearch,
-    type NativeSearchMode,
-} from "../native-backend/index-search";
+import { NativeSearchGateway } from "../native-backend/index-search";
 import {
     recordFilesystemAccessFailure,
     recordFilesystemAccessSuccess,
 } from "../privacy-access";
 import type { ProjectStore, ProjectStoreWorktreeRecord } from "./store";
-import {
-    createLocalProjectWorkerClient,
-    type ProjectWorkerGateway,
-} from "./client";
-import {
-    type ProjectRuntimeRegistrySnapshot,
-    type ProjectRuntimeSearchInput,
-    shouldIgnoreProjectWatchPath,
-} from "./runtime";
+import { shouldIgnoreProjectWatchPath } from "./runtime";
 import { resolveProjectPath } from "./tree";
 
 interface ResolvedProjectScope {
@@ -64,75 +46,34 @@ interface ResolvedProjectScope {
 }
 
 interface ProjectServiceOptions {
-    readonly env?: NodeJS.ProcessEnv;
-    readonly nativeFs?: NativeFsGateway | null;
-    readonly nativeSearch?: NativeSearchGateway | null;
+    readonly nativeFs: NativeFsGateway;
+    readonly nativeSearch: NativeSearchGateway;
     readonly onProjectTreeInvalidated: (
         payload: ProjectTreeInvalidation,
     ) => void;
     readonly onProjectTouched?: (projectPath: string) => void;
     readonly store: ProjectStore;
-    readonly worker?: ProjectWorkerGateway;
 }
 
 export class ProjectService {
     readonly #indexedRoots = new Set<string>();
-    readonly #nativeFs: NativeFsGateway | null;
-    readonly #nativeFsReadsEnabled: boolean;
-    readonly #nativeFsWritesEnabled: boolean;
-    readonly #nativeProjectTreeEnabled: boolean;
-    readonly #nativeSearch: NativeSearchGateway | null;
-    readonly #nativeSearchFallbackEnabled: boolean;
-    readonly #nativeSearchMode: NativeSearchMode | null;
-    readonly #nativeWatchersEnabled: boolean;
+    readonly #nativeFs: NativeFsGateway;
+    readonly #nativeSearch: NativeSearchGateway;
     readonly #onProjectTouched?: (projectPath: string) => void;
     readonly #onProjectTreeInvalidated: (
         payload: ProjectTreeInvalidation,
     ) => void;
     readonly #store: ProjectStore;
-    readonly #worker: ProjectWorkerGateway;
     #nativeWatcherRegistryVersion = 1;
     #pendingNativeWatcherRegistrySync: Promise<void> | null = null;
     #syncedNativeWatcherRegistryVersion = 0;
-    #pendingWorkerRegistrySync: Promise<void> | null = null;
-    #syncedWorkerRegistryVersion = 0;
-    #workerRegistryVersion = 1;
 
     constructor(options: ProjectServiceOptions) {
-        const env = options.env ?? process.env;
-        this.#nativeFs = options.nativeFs ?? null;
-        this.#nativeSearch = options.nativeSearch ?? null;
-        const nativeFsMode = resolveNativeFsMode(env);
-        if (nativeFsMode === "write" && this.#nativeFs === null) {
-            throw new Error(
-                "Native filesystem write mode requires the native backend sidecar.",
-            );
-        }
-        this.#nativeSearchMode = resolveNativeSearchMode(env);
-        if (this.#nativeSearchMode === "read" && this.#nativeSearch === null) {
-            throw new Error(
-                "Native search read mode requires the native backend sidecar.",
-            );
-        }
-        this.#nativeSearchFallbackEnabled = shouldFallbackFromNativeSearch(env);
-        this.#nativeFsReadsEnabled =
-            this.#nativeFs !== null && shouldUseNativeFsReads(env);
-        this.#nativeFsWritesEnabled =
-            this.#nativeFs !== null && shouldUseNativeFsWrites(env);
-        this.#nativeProjectTreeEnabled =
-            this.#nativeFs !== null && shouldUseNativeProjectTree(env);
-        this.#nativeWatchersEnabled =
-            this.#nativeFs !== null && shouldUseNativeWatchers(env);
+        this.#nativeFs = options.nativeFs;
+        this.#nativeSearch = options.nativeSearch;
         this.#onProjectTouched = options.onProjectTouched;
         this.#onProjectTreeInvalidated = options.onProjectTreeInvalidated;
         this.#store = options.store;
-        this.#worker =
-            options.worker ??
-            createLocalProjectWorkerClient({
-                onProjectTreeInvalidated: (payload) => {
-                    this.handleProjectTreeInvalidation(payload);
-                },
-            });
     }
 
     listProjects(): ProjectSummary[] {
@@ -150,7 +91,6 @@ export class ProjectService {
         projectPaths: readonly string[],
     ): Promise<ProjectAddResult> {
         const result = await this.#store.addProjectPaths(projectPaths);
-        this.#markWorkerRegistryDirty();
         this.#markNativeWatcherRegistryDirty();
         await this.#ensureActiveWatcherRegistry();
 
@@ -203,9 +143,7 @@ export class ProjectService {
             projectId,
             projectPath,
         );
-        await this.#worker.removeProject(projectId);
         this.#indexedRoots.delete(normalizeRootPathKey(project.rootPath));
-        this.#markWorkerRegistryDirty();
         this.#markNativeWatcherRegistryDirty();
         await this.#ensureActiveWatcherRegistry();
         this.#onProjectTouched?.(project.rootPath);
@@ -231,9 +169,7 @@ export class ProjectService {
             this.#indexedRoots.delete(normalizeRootPathKey(rootPath));
         }
 
-        this.#markWorkerRegistryDirty();
-        await this.#worker.removeProject(projectId);
-        this.#store.removeProject(projectId);
+        await this.#store.removeProject(projectId);
         this.#markNativeWatcherRegistryDirty();
         await this.#ensureActiveWatcherRegistry();
     }
@@ -251,11 +187,6 @@ export class ProjectService {
             input.projectId,
             input.worktreeId ?? null,
         );
-        const useNative = this.#nativeProjectTreeEnabled && this.#nativeFs;
-        if (!useNative) {
-            await this.#ensureWorkerRegistry();
-        }
-
         return await mainProcessPerformance
             .measureAsync(
                 "projects.listProjectTreeChildren",
@@ -266,26 +197,18 @@ export class ProjectService {
                             input.parentRelativePath,
                         ),
                         async () =>
-                            useNative
-                                ? await this.#nativeFs.listProjectTreeChildren({
-                                      parentRelativePath:
-                                          input.parentRelativePath,
-                                      projectId: input.projectId,
-                                      rootPath: project.rootPath,
-                                      worktreeId: project.worktreeId,
-                                  })
-                                : await this.#worker.listProjectTreeChildren({
-                                      parentRelativePath:
-                                          input.parentRelativePath,
-                                      projectId: input.projectId,
-                                      rootPath: project.rootPath,
-                                      worktreeId: project.worktreeId,
-                                  }),
+                            await this.#nativeFs.listProjectTreeChildren({
+                                parentRelativePath:
+                                    input.parentRelativePath,
+                                projectId: input.projectId,
+                                rootPath: project.rootPath,
+                                worktreeId: project.worktreeId,
+                            }),
                     ),
                 {
                     parentRelativePath: input.parentRelativePath ?? ".",
                     projectId: input.projectId,
-                    transport: useNative ? "native" : "worker",
+                    transport: "native",
                     worktreeId: input.worktreeId ?? "primary",
                 },
             )
@@ -299,42 +222,16 @@ export class ProjectService {
             input.projectId,
             input.worktreeId ?? null,
         );
-        const useNativeSearch =
-            this.#nativeSearchMode === "read" && this.#nativeSearch !== null;
-
-        if (!useNativeSearch) {
-            await this.#ensureWorkerRegistry();
-        }
         const rootPathKey = normalizeRootPathKey(project.rootPath);
         const listEntries = async () => {
-            try {
-                return useNativeSearch
-                    ? {
-                          nodes: await this.#nativeSearch.listProjectEntries({
-                              projectId: input.projectId,
-                              rootPath: project.rootPath,
-                              worktreeId: project.worktreeId,
-                          }),
-                          searchIndexCacheState: "hit" as const,
-                      }
-                    : await this.#worker.listProjectEntries({
-                          projectId: input.projectId,
-                          rootPath: project.rootPath,
-                          worktreeId: project.worktreeId,
-                      });
-            } catch (error) {
-                if (!useNativeSearch || !this.#nativeSearchFallbackEnabled) {
-                    throw error;
-                }
-
-                debugBenignError("projects.nativeSearch.listProjectEntries", error);
-                await this.#ensureWorkerRegistry();
-                return await this.#worker.listProjectEntries({
+            return {
+                nodes: await this.#nativeSearch.listProjectEntries({
                     projectId: input.projectId,
                     rootPath: project.rootPath,
                     worktreeId: project.worktreeId,
-                });
-            }
+                }),
+                searchIndexCacheState: "hit" as const,
+            };
         };
         const response = this.#indexedRoots.has(rootPathKey)
             ? await this.#trackFilesystemAccess(project.rootPath, listEntries)
@@ -348,7 +245,7 @@ export class ProjectService {
                   {
                       projectId: input.projectId,
                       rootPath: resolveRootPath(project.rootPath),
-                      transport: useNativeSearch ? "native" : "worker",
+                      transport: "native",
                       worktreeId: input.worktreeId ?? "primary",
                   },
               );
@@ -365,26 +262,16 @@ export class ProjectService {
             input.worktreeId ?? null,
         );
         this.touchProject(input.projectId);
-        if (!this.#nativeFsReadsEnabled) {
-            await this.#ensureWorkerRegistry();
-        }
 
         return await this.#trackFilesystemAccess(
             resolveProjectPath(project.rootPath, input.relativePath),
             async () =>
-                this.#nativeFsReadsEnabled && this.#nativeFs
-                    ? await this.#nativeFs.openProjectFile({
-                          projectId: input.projectId,
-                          relativePath: input.relativePath,
-                          rootPath: project.rootPath,
-                          worktreeId: project.worktreeId,
-                      })
-                    : await this.#worker.openProjectFile({
-                          projectId: input.projectId,
-                          relativePath: input.relativePath,
-                          rootPath: project.rootPath,
-                          worktreeId: project.worktreeId,
-                      }),
+                await this.#nativeFs.openProjectFile({
+                    projectId: input.projectId,
+                    relativePath: input.relativePath,
+                    rootPath: project.rootPath,
+                    worktreeId: project.worktreeId,
+                }),
         );
     }
 
@@ -400,15 +287,8 @@ export class ProjectService {
             input.projectId,
             input.worktreeId ?? null,
         );
-        const useNativeSearch =
-            this.#nativeSearchMode === "read" && this.#nativeSearch !== null;
-        const useNativeSearchShadow =
-            this.#nativeSearchMode === "shadow" && this.#nativeSearch !== null;
-        if (!useNativeSearch) {
-            await this.#ensureWorkerRegistry();
-        }
         const rootPathKey = normalizeRootPathKey(project.rootPath);
-        const workerSearchInput = {
+        const searchInput = {
             includeAncestorDirectories: input.includeAncestorDirectories,
             limit: input.limit,
             projectId: input.projectId,
@@ -418,34 +298,10 @@ export class ProjectService {
             worktreeId: project.worktreeId,
         };
         const search = async () => {
-            try {
-                if (useNativeSearch) {
-                    return {
-                        nodes: await this.#nativeSearch.searchProjectEntries(
-                            workerSearchInput,
-                        ),
-                        searchIndexCacheState: "hit" as const,
-                    };
-                }
-
-                const response =
-                    await this.#worker.searchProjectEntries(workerSearchInput);
-                if (useNativeSearchShadow) {
-                    this.#scheduleNativeSearchParityCheck(
-                        workerSearchInput,
-                        response.nodes,
-                    );
-                }
-                return response;
-            } catch (error) {
-                if (!useNativeSearch || !this.#nativeSearchFallbackEnabled) {
-                    throw error;
-                }
-
-                debugBenignError("projects.nativeSearch.searchProjectEntries", error);
-                await this.#ensureWorkerRegistry();
-                return await this.#worker.searchProjectEntries(workerSearchInput);
-            }
+            return {
+                nodes: await this.#nativeSearch.searchProjectEntries(searchInput),
+                searchIndexCacheState: "hit" as const,
+            };
         };
         const response = this.#indexedRoots.has(rootPathKey)
             ? await this.#trackFilesystemAccess(project.rootPath, search)
@@ -459,7 +315,7 @@ export class ProjectService {
                   {
                       projectId: input.projectId,
                       rootPath: resolveRootPath(project.rootPath),
-                      transport: useNativeSearch ? "native" : "worker",
+                      transport: "native",
                       worktreeId: input.worktreeId ?? "primary",
                   },
               );
@@ -476,32 +332,19 @@ export class ProjectService {
             input.worktreeId ?? null,
         );
         this.touchProject(input.projectId);
-        if (!this.#nativeFsWritesEnabled) {
-            await this.#ensureWorkerRegistry();
-        }
 
         return await this.#trackFilesystemAccess(
             resolveProjectPath(project.rootPath, input.relativePath),
             async () =>
-                this.#nativeFsWritesEnabled && this.#nativeFs
-                    ? await this.#nativeFs.saveProjectFile({
-                          content: input.content,
-                          expectedModifiedAtMs:
-                              input.expectedModifiedAtMs ?? null,
-                          projectId: input.projectId,
-                          relativePath: input.relativePath,
-                          rootPath: project.rootPath,
-                          worktreeId: project.worktreeId,
-                      })
-                    : await this.#worker.saveProjectFile({
-                          content: input.content,
-                          expectedModifiedAtMs:
-                              input.expectedModifiedAtMs ?? null,
-                          projectId: input.projectId,
-                          relativePath: input.relativePath,
-                          rootPath: project.rootPath,
-                          worktreeId: project.worktreeId,
-                      }),
+                await this.#nativeFs.saveProjectFile({
+                    content: input.content,
+                    expectedModifiedAtMs:
+                        input.expectedModifiedAtMs ?? null,
+                    projectId: input.projectId,
+                    relativePath: input.relativePath,
+                    rootPath: project.rootPath,
+                    worktreeId: project.worktreeId,
+                }),
         );
     }
 
@@ -513,30 +356,18 @@ export class ProjectService {
             input.worktreeId ?? null,
         );
         this.touchProject(input.projectId);
-        if (!this.#nativeFsWritesEnabled) {
-            await this.#ensureWorkerRegistry();
-        }
 
         return await this.#trackFilesystemAccess(
             resolveProjectPath(project.rootPath, input.parentRelativePath),
             async () =>
-                this.#nativeFsWritesEnabled && this.#nativeFs
-                    ? await this.#nativeFs.createProjectEntry({
-                          kind: input.kind,
-                          name: input.name,
-                          parentRelativePath: input.parentRelativePath,
-                          projectId: input.projectId,
-                          rootPath: project.rootPath,
-                          worktreeId: project.worktreeId,
-                      })
-                    : await this.#worker.createProjectEntry({
-                          kind: input.kind,
-                          name: input.name,
-                          parentRelativePath: input.parentRelativePath,
-                          projectId: input.projectId,
-                          rootPath: project.rootPath,
-                          worktreeId: project.worktreeId,
-                      }),
+                await this.#nativeFs.createProjectEntry({
+                    kind: input.kind,
+                    name: input.name,
+                    parentRelativePath: input.parentRelativePath,
+                    projectId: input.projectId,
+                    rootPath: project.rootPath,
+                    worktreeId: project.worktreeId,
+                }),
         );
     }
 
@@ -548,9 +379,6 @@ export class ProjectService {
             input.worktreeId ?? null,
         );
         this.touchProject(input.projectId);
-        if (!this.#nativeFsWritesEnabled) {
-            await this.#ensureWorkerRegistry();
-        }
 
         const entries = await this.#trackFilesystemAccess(
             resolveProjectPath(
@@ -558,23 +386,14 @@ export class ProjectService {
                 input.destinationParentRelativePath,
             ),
             async () =>
-                this.#nativeFsWritesEnabled && this.#nativeFs
-                    ? await this.#nativeFs.copyProjectEntries({
-                          destinationParentRelativePath:
-                              input.destinationParentRelativePath,
-                          projectId: input.projectId,
-                          rootPath: project.rootPath,
-                          sourceRelativePaths: input.sourceRelativePaths,
-                          worktreeId: project.worktreeId,
-                      })
-                    : await this.#worker.copyProjectEntries({
-                          destinationParentRelativePath:
-                              input.destinationParentRelativePath,
-                          projectId: input.projectId,
-                          rootPath: project.rootPath,
-                          sourceRelativePaths: input.sourceRelativePaths,
-                          worktreeId: project.worktreeId,
-                      }),
+                await this.#nativeFs.copyProjectEntries({
+                    destinationParentRelativePath:
+                        input.destinationParentRelativePath,
+                    projectId: input.projectId,
+                    rootPath: project.rootPath,
+                    sourceRelativePaths: input.sourceRelativePaths,
+                    worktreeId: project.worktreeId,
+                }),
         );
 
         return { entries: [...entries] };
@@ -588,9 +407,6 @@ export class ProjectService {
             input.worktreeId ?? null,
         );
         this.touchProject(input.projectId);
-        if (!this.#nativeFsWritesEnabled) {
-            await this.#ensureWorkerRegistry();
-        }
 
         const entries = await this.#trackFilesystemAccess(
             resolveProjectPath(
@@ -598,23 +414,14 @@ export class ProjectService {
                 input.destinationParentRelativePath,
             ),
             async () =>
-                this.#nativeFsWritesEnabled && this.#nativeFs
-                    ? await this.#nativeFs.copyExternalProjectEntries({
-                          destinationParentRelativePath:
-                              input.destinationParentRelativePath,
-                          projectId: input.projectId,
-                          rootPath: project.rootPath,
-                          sourcePaths: input.sourcePaths,
-                          worktreeId: project.worktreeId,
-                      })
-                    : await this.#worker.copyExternalProjectEntries({
-                          destinationParentRelativePath:
-                              input.destinationParentRelativePath,
-                          projectId: input.projectId,
-                          rootPath: project.rootPath,
-                          sourcePaths: input.sourcePaths,
-                          worktreeId: project.worktreeId,
-                      }),
+                await this.#nativeFs.copyExternalProjectEntries({
+                    destinationParentRelativePath:
+                        input.destinationParentRelativePath,
+                    projectId: input.projectId,
+                    rootPath: project.rootPath,
+                    sourcePaths: input.sourcePaths,
+                    worktreeId: project.worktreeId,
+                }),
         );
 
         return { entries: [...entries] };
@@ -628,30 +435,18 @@ export class ProjectService {
             input.worktreeId ?? null,
         );
         this.touchProject(input.projectId);
-        if (!this.#nativeFsWritesEnabled) {
-            await this.#ensureWorkerRegistry();
-        }
 
         return await this.#trackFilesystemAccess(
             resolveProjectPath(project.rootPath, input.relativePath),
             async () =>
-                this.#nativeFsWritesEnabled && this.#nativeFs
-                    ? await this.#nativeFs.renameProjectEntry({
-                          nextName: input.nextName,
-                          nextParentRelativePath: input.nextParentRelativePath,
-                          projectId: input.projectId,
-                          relativePath: input.relativePath,
-                          rootPath: project.rootPath,
-                          worktreeId: project.worktreeId,
-                      })
-                    : await this.#worker.renameProjectEntry({
-                          nextName: input.nextName,
-                          nextParentRelativePath: input.nextParentRelativePath,
-                          projectId: input.projectId,
-                          relativePath: input.relativePath,
-                          rootPath: project.rootPath,
-                          worktreeId: project.worktreeId,
-                      }),
+                await this.#nativeFs.renameProjectEntry({
+                    nextName: input.nextName,
+                    nextParentRelativePath: input.nextParentRelativePath,
+                    projectId: input.projectId,
+                    relativePath: input.relativePath,
+                    rootPath: project.rootPath,
+                    worktreeId: project.worktreeId,
+                }),
         );
     }
 
@@ -661,24 +456,11 @@ export class ProjectService {
             input.worktreeId ?? null,
         );
         this.touchProject(input.projectId);
-        if (!this.#nativeFsWritesEnabled) {
-            await this.#ensureWorkerRegistry();
-        }
 
         await this.#trackFilesystemAccess(
             resolveProjectPath(project.rootPath, input.relativePath),
             async () => {
-                if (this.#nativeFsWritesEnabled && this.#nativeFs) {
-                    await this.#nativeFs.deleteProjectEntry({
-                        projectId: input.projectId,
-                        relativePath: input.relativePath,
-                        rootPath: project.rootPath,
-                        worktreeId: project.worktreeId,
-                    });
-                    return;
-                }
-
-                await this.#worker.deleteProjectEntry({
+                await this.#nativeFs.deleteProjectEntry({
                     projectId: input.projectId,
                     relativePath: input.relativePath,
                     rootPath: project.rootPath,
@@ -695,18 +477,7 @@ export class ProjectService {
     ): Promise<void> {
         const project = this.#resolveProjectScope(projectId, worktreeId);
         this.touchProject(projectId);
-        if (this.#nativeFsWritesEnabled && this.#nativeFs) {
-            await this.#nativeFs.recordProjectEntryMutation({
-                projectId,
-                relativePaths: [relativePath],
-                rootPath: project.rootPath,
-                worktreeId: project.worktreeId,
-            });
-            return;
-        }
-
-        await this.#ensureWorkerRegistry();
-        await this.#worker.recordProjectEntryMutation({
+        await this.#nativeFs.recordProjectEntryMutation({
             projectId,
             relativePaths: [relativePath],
             rootPath: project.rootPath,
@@ -764,7 +535,6 @@ export class ProjectService {
             );
         }
 
-        this.#markWorkerRegistryDirty();
         this.#markNativeWatcherRegistryDirty();
         await this.#ensureActiveWatcherRegistry();
 
@@ -789,9 +559,9 @@ export class ProjectService {
         return resolveProjectPath(project.rootPath, relativePath);
     }
 
-    async close(): Promise<void> {
+    close(): Promise<void> {
         this.#indexedRoots.clear();
-        await this.#worker.close().catch(() => undefined);
+        return Promise.resolve();
     }
 
     handleProjectTreeInvalidation(payload: ProjectTreeInvalidation): void {
@@ -813,55 +583,7 @@ export class ProjectService {
         this.#onProjectTreeInvalidated(payload);
     }
 
-    handleProjectWorkerRestarted(): void {
-        this.#indexedRoots.clear();
-        this.#syncedWorkerRegistryVersion = 0;
-        this.#pendingWorkerRegistrySync = null;
-        void this.#worker
-            .refreshAfterRestart()
-            .then(() => {
-                this.#scheduleWorkerRegistrySync();
-            })
-                .catch(() => undefined);
-    }
-
-    #scheduleNativeSearchParityCheck(
-        input: ProjectRuntimeSearchInput,
-        legacyNodes: readonly ProjectTreeNode[],
-    ): void {
-        if (!this.#nativeSearch || legacyNodes.length > 80 || input.query.length > 120) {
-            return;
-        }
-
-        void this.#nativeSearch
-            .searchProjectEntries(input)
-            .then((nativeNodes) => {
-                const nativePaths = nativeNodes.map((node) => node.relativePath);
-                const legacyPaths = legacyNodes.map((node) => node.relativePath);
-                if (sameRelativePathOrder(nativePaths, legacyPaths)) {
-                    return;
-                }
-
-                debugBenignError(
-                    "projects.nativeSearch.parity",
-                    new Error(
-                        `Native search parity mismatch native=${nativePaths.slice(0, 8).join(",")} legacy=${legacyPaths.slice(0, 8).join(",")}`,
-                    ),
-                );
-            })
-            .catch((error: unknown) => {
-                debugBenignError("projects.nativeSearch.shadow", error);
-            });
-    }
-
     #recordNativeIndexInvalidation(payload: ProjectTreeInvalidation): void {
-        if (
-            !this.#nativeSearch ||
-            this.#nativeSearchMode === null
-        ) {
-            return;
-        }
-
         void this.#nativeSearch
             .updateProjectIndexEntries({
                 kind: payload.relativePaths === null ? "invalidated" : "updated",
@@ -942,45 +664,19 @@ export class ProjectService {
         return worktree;
     }
 
-    #markWorkerRegistryDirty(): void {
-        this.#workerRegistryVersion += 1;
-    }
-
     #markNativeWatcherRegistryDirty(): void {
-        if (!this.#nativeWatchersEnabled) {
-            return;
-        }
-
         this.#nativeWatcherRegistryVersion += 1;
     }
 
     #scheduleActiveWatcherRegistrySync(): void {
-        if (this.#nativeWatchersEnabled) {
-            void this.#ensureNativeWatcherRegistry().catch(() => undefined);
-            return;
-        }
-
-        this.#scheduleWorkerRegistrySync();
+        void this.#ensureNativeWatcherRegistry().catch(() => undefined);
     }
 
     async #ensureActiveWatcherRegistry(): Promise<void> {
-        if (this.#nativeWatchersEnabled) {
-            await this.#ensureNativeWatcherRegistry();
-            return;
-        }
-
-        await this.#ensureWorkerRegistry();
-    }
-
-    #scheduleWorkerRegistrySync(): void {
-        void this.#ensureWorkerRegistry().catch(() => undefined);
+        await this.#ensureNativeWatcherRegistry();
     }
 
     async #ensureNativeWatcherRegistry(): Promise<void> {
-        if (!this.#nativeWatchersEnabled || !this.#nativeFs) {
-            return;
-        }
-
         if (
             this.#syncedNativeWatcherRegistryVersion ===
             this.#nativeWatcherRegistryVersion
@@ -1019,61 +715,6 @@ export class ProjectService {
             await this.#ensureNativeWatcherRegistry();
         }
     }
-
-    async #ensureWorkerRegistry(): Promise<void> {
-        if (this.#syncedWorkerRegistryVersion === this.#workerRegistryVersion) {
-            return;
-        }
-
-        if (this.#pendingWorkerRegistrySync) {
-            await this.#pendingWorkerRegistrySync;
-            if (
-                this.#syncedWorkerRegistryVersion ===
-                this.#workerRegistryVersion
-            ) {
-                return;
-            }
-        }
-
-        const targetVersion = this.#workerRegistryVersion;
-        const snapshot = this.#buildWorkerRegistrySnapshot();
-        const syncPromise = this.#worker
-            .syncRegistry(snapshot)
-            .then(() => {
-                this.#syncedWorkerRegistryVersion = targetVersion;
-            })
-            .finally(() => {
-                if (this.#pendingWorkerRegistrySync === syncPromise) {
-                    this.#pendingWorkerRegistrySync = null;
-                }
-            });
-        this.#pendingWorkerRegistrySync = syncPromise;
-        await syncPromise;
-
-        if (this.#syncedWorkerRegistryVersion !== this.#workerRegistryVersion) {
-            await this.#ensureWorkerRegistry();
-        }
-    }
-
-    #buildWorkerRegistrySnapshot(): ProjectRuntimeRegistrySnapshot {
-        const projects = this.#store.listProjects().map((project) => ({
-            id: project.id,
-            rootPath: project.rootPath,
-        }));
-        const worktrees = projects.flatMap((project) =>
-            this.#store.listProjectWorktrees(project.id).map((worktree) => ({
-                id: worktree.id,
-                isPrimary: worktree.isPrimary,
-                projectId: worktree.projectId,
-                rootPath: worktree.rootPath,
-            })),
-        );
-
-        return {
-            projects,
-            worktrees,
-        };
-    }
 }
 
 function resolveRootPath(rootPath: string): string {
@@ -1084,17 +725,6 @@ function normalizeRootPathKey(rootPath: string): string {
     return normalizePathKey(resolveRootPath(rootPath), {
         platform: getNativePathIdentityPlatform(),
     });
-}
-
-function sameRelativePathOrder(
-    left: readonly string[],
-    right: readonly string[],
-): boolean {
-    if (left.length !== right.length) {
-        return false;
-    }
-
-    return left.every((value, index) => value === right[index]);
 }
 
 function getNativePathIdentityPlatform(): "posix" | "win32" {

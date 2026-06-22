@@ -2,10 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use comando_types::projects::{
-    NativeProjectAddResult, NativeProjectListResult, NativeProjectState, NativeProjectSummary,
+    NativeProjectAddResult, NativeProjectAppDataSummary, NativeProjectClearAppDataResult,
+    NativeProjectListResult, NativeProjectRelocateResult, NativeProjectState, NativeProjectSummary,
     NativeProjectSyncWorktree, NativeWorktreeSummary,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params, params_from_iter};
 use uuid::Uuid;
 
 use crate::error::ProjectRegistryError;
@@ -80,6 +81,293 @@ impl<'a> ProjectRegistry<'a> {
             projects: state.projects.clone(),
             state,
             touched_root_paths,
+        })
+    }
+
+    pub fn remove_project(
+        &mut self,
+        project_id: &comando_types::ids::ProjectId,
+    ) -> Result<NativeProjectState, ProjectRegistryError> {
+        let transaction = self.connection.transaction()?;
+        let updated = transaction.execute(
+            "
+            UPDATE projects
+            SET is_hidden = 1
+            WHERE id = ?1
+              AND is_hidden = 0
+            ",
+            [&project_id.0],
+        )?;
+        if updated == 0 {
+            return Err(ProjectRegistryError::ProjectNotFound);
+        }
+        transaction.execute(
+            "DELETE FROM recent_projects WHERE project_id = ?1",
+            [&project_id.0],
+        )?;
+        transaction.commit()?;
+
+        load_project_state(self.connection)
+    }
+
+    pub fn touch_project(
+        &mut self,
+        project_id: &comando_types::ids::ProjectId,
+    ) -> Result<NativeProjectState, ProjectRegistryError> {
+        if load_project_record(self.connection, &project_id.0)?.is_none() {
+            return Err(ProjectRegistryError::ProjectNotFound);
+        }
+
+        let now = comando_persistence::store::now_rfc3339();
+        let transaction = self.connection.transaction()?;
+        touch_recent_project(&transaction, &project_id.0, &now)?;
+        transaction.execute(
+            "UPDATE projects SET updated_at = ?1 WHERE id = ?2",
+            params![now, project_id.0],
+        )?;
+        transaction.commit()?;
+
+        load_project_state(self.connection)
+    }
+
+    pub fn relocate_project(
+        &mut self,
+        project_id: &comando_types::ids::ProjectId,
+        project_path: &str,
+    ) -> Result<NativeProjectRelocateResult, ProjectRegistryError> {
+        if load_project_record(self.connection, &project_id.0)?.is_none() {
+            return Err(ProjectRegistryError::ProjectNotFound);
+        }
+        let metadata = resolve_project_path_metadata(project_path)?;
+        assert_relocation_does_not_conflict(self.connection, &project_id.0, &metadata)?;
+        let now = comando_persistence::store::now_rfc3339();
+        let primary_worktree_id = format!("{}:primary", project_id.0);
+        let transaction = self.connection.transaction()?;
+
+        release_hidden_project_paths(&transaction, &project_id.0, &metadata)?;
+        transaction.execute(
+            "
+            UPDATE projects
+            SET canonical_root_path = 'hidden:' || id || ':' || canonical_root_path,
+                updated_at = ?1
+            WHERE canonical_root_path = ?2
+              AND id <> ?3
+              AND is_hidden = 1
+            ",
+            params![now, metadata.canonical_root_path, project_id.0],
+        )?;
+        transaction.execute(
+            "
+            UPDATE projects
+            SET name = ?1,
+                canonical_root_path = ?2,
+                updated_at = ?3,
+                is_hidden = 0
+            WHERE id = ?4
+            ",
+            params![
+                metadata.name,
+                metadata.canonical_root_path,
+                now,
+                project_id.0
+            ],
+        )?;
+        transaction.execute(
+            "DELETE FROM project_roots WHERE project_id = ?1",
+            [&project_id.0],
+        )?;
+        ensure_project_roots(&transaction, &project_id.0, &metadata)?;
+        transaction.execute(
+            "
+            DELETE FROM project_worktrees
+            WHERE project_id = ?1
+              AND root_path = ?2
+              AND id <> ?3
+            ",
+            params![
+                project_id.0,
+                metadata.canonical_root_path,
+                primary_worktree_id
+            ],
+        )?;
+        transaction.execute(
+            "
+            INSERT INTO project_worktrees (
+                id,
+                project_id,
+                root_path,
+                branch_name,
+                head_sha,
+                is_primary,
+                created_at,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, NULL, NULL, 1, ?4, ?5)
+            ON CONFLICT(id) DO UPDATE SET
+                root_path = excluded.root_path,
+                branch_name = excluded.branch_name,
+                head_sha = excluded.head_sha,
+                is_primary = 1,
+                updated_at = excluded.updated_at
+            ",
+            params![
+                primary_worktree_id,
+                project_id.0,
+                metadata.canonical_root_path,
+                now,
+                now
+            ],
+        )?;
+        if metadata.worktree_root_path != metadata.canonical_root_path {
+            ensure_secondary_worktree(
+                &transaction,
+                &project_id.0,
+                &metadata.worktree_root_path,
+                &now,
+            )?;
+        }
+        touch_recent_project(&transaction, &project_id.0, &now)?;
+        transaction.commit()?;
+
+        let state = load_project_state(self.connection)?;
+        let project = state
+            .projects
+            .iter()
+            .find(|candidate| candidate.id == *project_id)
+            .cloned()
+            .ok_or(ProjectRegistryError::ProjectNotFound)?;
+
+        Ok(NativeProjectRelocateResult {
+            project,
+            state,
+            touched_root_paths: vec![metadata.worktree_root_path],
+        })
+    }
+
+    pub fn get_project_app_data_summary(
+        &mut self,
+        project_id: &comando_types::ids::ProjectId,
+    ) -> Result<NativeProjectAppDataSummary, ProjectRegistryError> {
+        if load_project_record(self.connection, &project_id.0)?.is_none() {
+            return Err(ProjectRegistryError::ProjectNotFound);
+        }
+        project_app_data_summary(self.connection, &project_id.0)
+    }
+
+    pub fn clear_project_app_data(
+        &mut self,
+        project_id: &comando_types::ids::ProjectId,
+    ) -> Result<NativeProjectClearAppDataResult, ProjectRegistryError> {
+        if load_project_record(self.connection, &project_id.0)?.is_none() {
+            return Err(ProjectRegistryError::ProjectNotFound);
+        }
+        let cleared = project_app_data_summary(self.connection, &project_id.0)?;
+        let worktree_ids = list_project_worktree_ids(self.connection, &project_id.0)?;
+        let workspace_layout_ids =
+            list_project_workspace_layout_ids(self.connection, &project_id.0, &worktree_ids)?;
+        let transaction = self.connection.transaction()?;
+
+        transaction.execute(
+            "
+            DELETE FROM review_artifacts
+            WHERE session_id IN (
+                SELECT id
+                FROM chat_sessions
+                WHERE project_id = ?1
+            )
+            ",
+            [&project_id.0],
+        )?;
+        transaction.execute(
+            "
+            DELETE FROM chat_session_events
+            WHERE session_id IN (
+                SELECT id
+                FROM chat_sessions
+                WHERE project_id = ?1
+            )
+            ",
+            [&project_id.0],
+        )?;
+        transaction.execute(
+            "
+            DELETE FROM chat_transcripts
+            WHERE session_id IN (
+                SELECT id
+                FROM chat_sessions
+                WHERE project_id = ?1
+            )
+            ",
+            [&project_id.0],
+        )?;
+        transaction.execute(
+            "DELETE FROM chat_sessions WHERE project_id = ?1",
+            [&project_id.0],
+        )?;
+        transaction.execute(
+            "DELETE FROM project_settings WHERE project_id = ?1",
+            [&project_id.0],
+        )?;
+        transaction.execute(
+            "DELETE FROM recent_projects WHERE project_id = ?1",
+            [&project_id.0],
+        )?;
+        transaction.execute(
+            "
+            DELETE FROM workspace_tabs
+            WHERE json_valid(payload_json)
+              AND json_extract(payload_json, '$.projectId') = ?1
+            ",
+            [&project_id.0],
+        )?;
+        if !worktree_ids.is_empty() {
+            transaction.execute(
+                &format!(
+                    "DELETE FROM workspace_tabs WHERE worktree_id IN ({})",
+                    placeholders(worktree_ids.len())
+                ),
+                params_from_iter(worktree_ids.iter()),
+            )?;
+        }
+        if !workspace_layout_ids.is_empty() {
+            transaction.execute(
+                &format!(
+                    "DELETE FROM workspace_layouts WHERE id IN ({})",
+                    placeholders(workspace_layout_ids.len())
+                ),
+                params_from_iter(workspace_layout_ids.iter()),
+            )?;
+        }
+        transaction.execute(
+            "
+            UPDATE workspace_sessions
+            SET active_project_id = NULL,
+                active_worktree_id = NULL,
+                shell_state_json = NULL
+            WHERE active_project_id = ?1
+            ",
+            [&project_id.0],
+        )?;
+        if !worktree_ids.is_empty() {
+            transaction.execute(
+                &format!(
+                    "
+                    UPDATE workspace_sessions
+                    SET active_project_id = NULL,
+                        active_worktree_id = NULL,
+                        shell_state_json = NULL
+                    WHERE active_worktree_id IN ({})
+                    ",
+                    placeholders(worktree_ids.len())
+                ),
+                params_from_iter(worktree_ids.iter()),
+            )?;
+        }
+        transaction.commit()?;
+
+        Ok(NativeProjectClearAppDataResult {
+            cleared,
+            state: load_project_state(self.connection)?,
         })
     }
 
@@ -396,6 +684,97 @@ fn touch_recent_project(
     Ok(())
 }
 
+fn assert_relocation_does_not_conflict(
+    connection: &Connection,
+    project_id: &str,
+    metadata: &ProjectPathMetadata,
+) -> Result<(), ProjectRegistryError> {
+    let conflicting_project = connection
+        .query_row(
+            "
+            SELECT name
+            FROM projects
+            WHERE canonical_root_path = ?1
+              AND id <> ?2
+              AND is_hidden = 0
+            LIMIT 1
+            ",
+            params![metadata.canonical_root_path, project_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if let Some(name) = conflicting_project {
+        return Err(ProjectRegistryError::ProjectPathAlreadyRegistered { name });
+    }
+
+    for root_path in [&metadata.canonical_root_path, &metadata.worktree_root_path] {
+        let conflicting_worktree = connection
+            .query_row(
+                "
+                SELECT project_worktrees.project_id
+                FROM project_worktrees
+                INNER JOIN projects
+                    ON projects.id = project_worktrees.project_id
+                WHERE root_path = ?1
+                  AND project_worktrees.project_id <> ?2
+                  AND projects.is_hidden = 0
+                LIMIT 1
+                ",
+                params![root_path, project_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if conflicting_worktree.is_some() {
+            return Err(ProjectRegistryError::WorktreePathAlreadyRegistered);
+        }
+    }
+
+    Ok(())
+}
+
+fn release_hidden_project_paths(
+    transaction: &Transaction<'_>,
+    project_id: &str,
+    metadata: &ProjectPathMetadata,
+) -> Result<(), ProjectRegistryError> {
+    transaction.execute(
+        "
+        DELETE FROM project_roots
+        WHERE root_path IN (?1, ?2)
+          AND project_id IN (
+              SELECT id
+              FROM projects
+              WHERE is_hidden = 1
+                AND id <> ?3
+          )
+        ",
+        params![
+            metadata.canonical_root_path,
+            metadata.worktree_root_path,
+            project_id
+        ],
+    )?;
+    transaction.execute(
+        "
+        DELETE FROM project_worktrees
+        WHERE root_path IN (?1, ?2)
+          AND project_id IN (
+              SELECT id
+              FROM projects
+              WHERE is_hidden = 1
+                AND id <> ?3
+          )
+        ",
+        params![
+            metadata.canonical_root_path,
+            metadata.worktree_root_path,
+            project_id
+        ],
+    )?;
+
+    Ok(())
+}
+
 fn load_project_record(
     connection: &Connection,
     project_id: &str,
@@ -582,6 +961,174 @@ fn list_visible_worktrees(
     rows.map(|row| row.map(map_worktree_row))
         .collect::<Result<Vec<_>, _>>()
         .map_err(ProjectRegistryError::from)
+}
+
+fn project_app_data_summary(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<NativeProjectAppDataSummary, ProjectRegistryError> {
+    let worktree_ids = list_project_worktree_ids(connection, project_id)?;
+    let workspace_layout_count = u64::try_from(
+        list_project_workspace_layout_ids(connection, project_id, &worktree_ids)?.len(),
+    )
+    .unwrap_or(0);
+
+    Ok(NativeProjectAppDataSummary {
+        chat_session_count: count_project_rows(
+            connection,
+            "SELECT COUNT(*) FROM chat_sessions WHERE project_id = ?1",
+            project_id,
+        )?,
+        project_settings_count: count_project_rows(
+            connection,
+            "SELECT COUNT(*) FROM project_settings WHERE project_id = ?1",
+            project_id,
+        )?,
+        recent_project_count: count_project_rows(
+            connection,
+            "SELECT COUNT(*) FROM recent_projects WHERE project_id = ?1",
+            project_id,
+        )?,
+        workspace_layout_count,
+        workspace_session_count: count_workspace_sessions(connection, project_id, &worktree_ids)?,
+        workspace_tab_count: count_workspace_tabs(connection, project_id, &worktree_ids)?,
+    })
+}
+
+fn count_project_rows(
+    connection: &Connection,
+    sql: &str,
+    project_id: &str,
+) -> Result<u64, ProjectRegistryError> {
+    let count: i64 = connection.query_row(sql, [project_id], |row| row.get(0))?;
+    Ok(u64::try_from(count).unwrap_or(0))
+}
+
+fn count_workspace_sessions(
+    connection: &Connection,
+    project_id: &str,
+    worktree_ids: &[String],
+) -> Result<u64, ProjectRegistryError> {
+    let sql = if worktree_ids.is_empty() {
+        "SELECT COUNT(*) FROM workspace_sessions WHERE active_project_id = ?1".to_string()
+    } else {
+        format!(
+            "
+            SELECT COUNT(*)
+            FROM workspace_sessions
+            WHERE active_project_id = ?1
+               OR active_worktree_id IN ({})
+            ",
+            placeholders(worktree_ids.len())
+        )
+    };
+    let count: i64 = connection.query_row(
+        &sql,
+        params_from_iter(
+            std::iter::once(project_id).chain(worktree_ids.iter().map(String::as_str)),
+        ),
+        |row| row.get(0),
+    )?;
+    Ok(u64::try_from(count).unwrap_or(0))
+}
+
+fn count_workspace_tabs(
+    connection: &Connection,
+    project_id: &str,
+    worktree_ids: &[String],
+) -> Result<u64, ProjectRegistryError> {
+    let sql = if worktree_ids.is_empty() {
+        "
+        SELECT COUNT(*)
+        FROM workspace_tabs
+        WHERE json_valid(payload_json)
+          AND json_extract(payload_json, '$.projectId') = ?1
+        "
+        .to_string()
+    } else {
+        format!(
+            "
+            SELECT COUNT(*)
+            FROM workspace_tabs
+            WHERE (
+                json_valid(payload_json)
+                AND json_extract(payload_json, '$.projectId') = ?1
+            )
+            OR worktree_id IN ({})
+            ",
+            placeholders(worktree_ids.len())
+        )
+    };
+    let count: i64 = connection.query_row(
+        &sql,
+        params_from_iter(
+            std::iter::once(project_id).chain(worktree_ids.iter().map(String::as_str)),
+        ),
+        |row| row.get(0),
+    )?;
+    Ok(u64::try_from(count).unwrap_or(0))
+}
+
+fn list_project_workspace_layout_ids(
+    connection: &Connection,
+    project_id: &str,
+    worktree_ids: &[String],
+) -> Result<Vec<String>, ProjectRegistryError> {
+    let sql = if worktree_ids.is_empty() {
+        "
+        SELECT DISTINCT workspace_sessions.workspace_id
+        FROM workspace_sessions
+        INNER JOIN workspace_layouts
+            ON workspace_layouts.id = workspace_sessions.workspace_id
+        WHERE workspace_sessions.active_project_id = ?1
+        "
+        .to_string()
+    } else {
+        format!(
+            "
+            SELECT DISTINCT workspace_sessions.workspace_id
+            FROM workspace_sessions
+            INNER JOIN workspace_layouts
+                ON workspace_layouts.id = workspace_sessions.workspace_id
+            WHERE workspace_sessions.active_project_id = ?1
+               OR workspace_sessions.active_worktree_id IN ({})
+            ",
+            placeholders(worktree_ids.len())
+        )
+    };
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(
+        params_from_iter(
+            std::iter::once(project_id).chain(worktree_ids.iter().map(String::as_str)),
+        ),
+        |row| row.get::<_, String>(0),
+    )?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(ProjectRegistryError::from)
+}
+
+fn list_project_worktree_ids(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<Vec<String>, ProjectRegistryError> {
+    let mut statement = connection.prepare(
+        "
+        SELECT id
+        FROM project_worktrees
+        WHERE project_id = ?1
+        ",
+    )?;
+    let rows = statement.query_map([project_id], |row| row.get::<_, String>(0))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(ProjectRegistryError::from)
+}
+
+fn placeholders(count: usize) -> String {
+    std::iter::repeat_n("?", count)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn map_project_row(row: ProjectRow) -> NativeProjectSummary {

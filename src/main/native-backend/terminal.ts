@@ -21,9 +21,6 @@ import type { TerminalGateway } from "@main/terminals/service";
 
 import type { NativeBackendRequester } from "./persistence";
 
-export const NATIVE_TERMINAL_ENABLED_ENV = "COMANDO_NATIVE_TERMINAL";
-export const NATIVE_TERMINAL_MODE_ENV = "COMANDO_NATIVE_TERMINAL_MODE";
-
 type NativeTerminalClient = NativeBackendRequester & {
     onEvent(listener: (event: NativeBackendEvent) => void): () => void;
 };
@@ -199,17 +196,6 @@ export class NativeTerminalGateway implements TerminalGateway {
     #reportDiagnostic(message: string): void {
         this.#onDiagnostic?.(message);
     }
-}
-
-export function shouldUseNativeTerminal(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    if (env[NATIVE_TERMINAL_ENABLED_ENV] !== "1") {
-        return false;
-    }
-
-    const mode = env[NATIVE_TERMINAL_MODE_ENV];
-    return mode === undefined || mode === "" || mode === "native";
 }
 
 function nativeTerminalSessionToIpc(

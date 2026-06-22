@@ -4,6 +4,7 @@ import {
     MessageChannelMain,
     type MessagePortMain,
 } from "electron";
+import path from "node:path";
 
 import { APP_ZOOM_FACTOR_DEFAULT, stepAppZoomFactor } from "@shared/app-zoom";
 import {
@@ -27,15 +28,9 @@ import {
 } from "@shared/native-backend";
 
 import { appChannel, appIdentity, configureMainProcessApp } from "./app-runtime";
-import {
-    createAiWorkerClient,
-    type AiWorkerClient,
-} from "./ai/client";
 import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
 import type { NormalizedSessionCatalogPayload } from "./ai/session-core";
-import { createDbWorkerClient, type DbWorkerClient } from "./db/client";
-import { createGitWorkerClient, type GitWorkerClient } from "./git";
 import { GitHubService } from "./github/service";
 import {
     installFilePreviewProtocol,
@@ -47,33 +42,29 @@ import {
     parseNativeBackendCapabilitiesOutput,
 } from "./native-backend/client";
 import {
-    isNativeBackendEnabled,
-    isNativeBackendStrict,
     resolveNativeBackendPath,
 } from "./native-backend/path";
 import {
     NativePersistenceGateway,
-    isNativePersistenceEnabled,
-    isNativePersistenceStrict,
-    normalizeNativePersistenceMode,
 } from "./native-backend/persistence";
-import { NativeAiGateway, shouldUseNativeAi } from "./native-backend/ai";
+import { NativeAiGateway } from "./native-backend/ai";
+import {
+    createNativeAppDataClient,
+    type NativeAppDataClient,
+} from "./native-backend/app-data";
 import { NativeFsGateway } from "./native-backend/fs";
-import { NativeGitGateway, NativeGitRoutingGateway } from "./native-backend/git";
+import { NativeGitGateway, type ClosableGitGateway } from "./native-backend/git";
 import { NativeSearchGateway } from "./native-backend/index-search";
 import {
     NativeTerminalGateway,
-    shouldUseNativeTerminal,
 } from "./native-backend/terminal";
 import {
     createNativeProjectRegistryStore,
-    resolveNativeProjectRegistryMode,
 } from "./native-backend/projects";
 import type { NativeBackendEvent } from "./native-backend/protocol";
 import { debugBenignError } from "./observability/logging";
 import { mainProcessPerformance } from "./observability/performance";
 import type { PersistenceGateway } from "./persistence/service";
-import { createProjectWorkerClient } from "./projects/client";
 import { ProjectService } from "./projects/service";
 import { registerIpcHandlers } from "./ipc";
 import type { SettingsGateway } from "./settings/service";
@@ -82,7 +73,7 @@ import {
     broadcastSettingsUpdated,
 } from "./settings/window-zoom";
 import { openSettingsWindow } from "./settings/window";
-import { TerminalService, type TerminalGateway } from "./terminals/service";
+import type { TerminalGateway } from "./terminals/service";
 import { initializeAutoUpdates } from "./updater";
 import {
     createMainWindow,
@@ -92,13 +83,12 @@ import {
 import { windowRegistry } from "./windows/registry";
 import type { WorkspaceGateway } from "./workspace/service";
 
-let dbWorkerClient: DbWorkerClient | null = null;
+let nativeAppDataClient: NativeAppDataClient | null = null;
 let bootstrapSnapshot: AppBootstrapSnapshot | null = null;
 let aiService: AiService | null = null;
-let aiWorkerClient: AiWorkerClient | null = null;
 let persistenceService: PersistenceGateway | null = null;
 let projectService: ProjectService | null = null;
-let gitService: GitWorkerClient | null = null;
+let gitService: ClosableGitGateway | null = null;
 let githubService: GitHubService | null = null;
 let secretStore: SecretStoreGateway | null = null;
 let settingsService: SettingsGateway | null = null;
@@ -142,54 +132,36 @@ if (!hasSingleInstanceLock) {
         .then(async () => {
             mainProcessPerformance.markAppWhenReady();
             installFilePreviewProtocol();
-            dbWorkerClient = await createDbWorkerClient({
-                appWindowTitle: appIdentity.windowTitle,
-                dataDir: app.getPath("userData"),
+            await startNativeBackendRequired();
+            const databaseFile = path.join(
+                app.getPath("userData"),
+                "comando.sqlite3",
+            );
+            await openNativePersistenceRequired(databaseFile);
+            if (!nativeBackendClient) {
+                throw new Error(
+                    "Native backend client was not available after startup.",
+                );
+            }
+            const nativeClient = nativeBackendClient;
+            nativeAppDataClient = await createNativeAppDataClient({
+                client: nativeClient,
+                databaseFile,
             });
-            await startNativeBackendIfEnabled();
-            const nativePersistenceReady =
-                await openNativePersistenceIfEnabled();
-            persistenceService = dbWorkerClient.persistence;
-            secretStore = dbWorkerClient.secretStore;
+            persistenceService = nativeAppDataClient.persistence;
+            secretStore = nativeAppDataClient.secretStore;
             githubService = new GitHubService({ secretStore });
-            settingsService = dbWorkerClient.settings;
-            const gitWorker = await createGitWorkerClient();
-            gitService = nativeBackendClient
-                ? new NativeGitRoutingGateway({
-                      env: process.env,
-                      legacy: gitWorker,
-                      native: new NativeGitGateway(nativeBackendClient),
-                      onDiagnostic: (message) => {
-                          console.warn(message);
-                      },
-                  })
-                : gitWorker;
-            const projectWorker = await createProjectWorkerClient({
-                onProjectTreeInvalidated: (payload) => {
-                    projectService?.handleProjectTreeInvalidation(payload);
-                },
-                onWorkerRestarted: () => {
-                    projectService?.handleProjectWorkerRestarted();
-                },
-            });
+            settingsService = nativeAppDataClient.settings;
+            gitService = new NativeGitGateway(nativeClient);
             const projectStore = await createNativeProjectRegistryStore({
-                env: process.env,
-                legacyStore: dbWorkerClient.projectStore,
-                nativeClient: nativePersistenceReady ? nativeBackendClient : null,
+                nativeClient,
                 onDiagnostic: (message) => {
                     console.warn(message);
                 },
             });
             projectService = new ProjectService({
-                env: process.env,
-                nativeFs:
-                    nativePersistenceReady && nativeBackendClient
-                        ? new NativeFsGateway(nativeBackendClient)
-                        : null,
-                nativeSearch:
-                    nativePersistenceReady && nativeBackendClient
-                        ? new NativeSearchGateway(nativeBackendClient)
-                        : null,
+                nativeFs: new NativeFsGateway(nativeClient),
+                nativeSearch: new NativeSearchGateway(nativeClient),
                 onProjectTreeInvalidated: (payload) => {
                     broadcastProjectTreeInvalidation(payload);
                     broadcastProjectGitInvalidation(payload);
@@ -209,11 +181,10 @@ if (!hasSingleInstanceLock) {
                           }
                         : undefined,
                 store: projectStore,
-                worker: projectWorker,
             });
             aiService = new AiService({
                 nativeAi: createNativeAiGateway({
-                    nativeClient: nativeBackendClient,
+                    nativeClient,
                     onRuntimeStatus: broadcastAiRuntimeStatus,
                     onSessionCatalogPatch: (
                         ownerWindowId,
@@ -238,57 +209,23 @@ if (!hasSingleInstanceLock) {
                 onRuntimeStatus: broadcastAiRuntimeStatus,
                 onSessionEvent: broadcastAiSessionEvent,
                 onSessionSnapshot: broadcastAiSessionSnapshot,
-                persistence: dbWorkerClient.aiPersistence,
+                persistence: nativeAppDataClient.aiPersistence,
                 projectService,
                 secretStore,
                 settingsService,
             });
-            try {
-                aiWorkerClient = await createAiWorkerClient({
-                    onRuntimeStatus: (status) => {
-                        aiService?.handleWorkerRuntimeStatus(status);
-                    },
-                    onSessionClosed: (payload) => {
-                        aiService?.handleWorkerSessionClosed(payload);
-                    },
-                    onSessionEvent: (ownerWindowId, event) => {
-                        aiService?.handleWorkerSessionEvent(
-                            ownerWindowId,
-                            event,
-                        );
-                    },
-                    onSessionSnapshot: (ownerWindowId, update) => {
-                        aiService?.handleWorkerSessionSnapshot(
-                            ownerWindowId,
-                            update,
-                        );
-                    },
-                    onWorkerRestarted: async () => {
-                        await aiService?.handleWorkerRestarted();
-                    },
-                    shardCount: parseAiWorkerShardCount(
-                        process.env.COMANDO_AI_WORKER_SHARDS,
-                    ),
-                });
-                aiService.setWorker(aiWorkerClient);
-            } catch (error) {
-                console.error(
-                    "[main] Failed to initialize the AI worker",
-                    error,
-                );
-            }
             terminalService = createTerminalGateway({
-                nativeClient: nativeBackendClient,
+                nativeClient,
                 onData: broadcastTerminalData,
                 onExit: broadcastTerminalExit,
                 projectService,
                 settingsService,
             });
-            workspaceService = dbWorkerClient.workspace;
+            workspaceService = nativeAppDataClient.workspace;
 
             bootstrapSnapshot = {
                 app: appIdentity,
-                database: dbWorkerClient.status,
+                database: nativeAppDataClient.status,
                 platform: process.platform,
                 startedAt: new Date().toISOString(),
                 versions: {
@@ -303,7 +240,6 @@ if (!hasSingleInstanceLock) {
 
             registerIpcHandlers({
                 aiService,
-                aiWorker: aiWorkerClient,
                 getSnapshot: () => {
                     if (!bootstrapSnapshot) {
                         throw new Error(
@@ -435,16 +371,14 @@ async function shutdownApplication(): Promise<void> {
 
     aiService?.close();
 
-    const aiWorkerClientToClose = aiWorkerClient;
-    const dbWorkerClientToClose = dbWorkerClient;
+    const nativeAppDataClientToClose = nativeAppDataClient;
     const gitServiceToClose = gitService;
     const nativeBackendClientToClose = nativeBackendClient;
     const projectServiceToClose = projectService;
     const terminalServiceToClose = terminalService;
 
     aiService = null;
-    aiWorkerClient = null;
-    dbWorkerClient = null;
+    nativeAppDataClient = null;
     gitService = null;
     githubService = null;
     nativeBackendClient = null;
@@ -456,14 +390,13 @@ async function shutdownApplication(): Promise<void> {
     workspaceService = null;
 
     const shutdownResults = await Promise.allSettled([
-        aiWorkerClientToClose?.close(),
         gitServiceToClose?.close(),
         (async () => {
             await terminalServiceToClose?.close();
             await nativeBackendClientToClose?.dispose();
         })(),
         projectServiceToClose?.close(),
-        dbWorkerClientToClose?.close(),
+        nativeAppDataClientToClose?.close(),
     ]);
 
     for (const result of shutdownResults) {
@@ -473,17 +406,8 @@ async function shutdownApplication(): Promise<void> {
     }
 }
 
-function parseAiWorkerShardCount(value: string | undefined): number {
-    const parsed = Number.parseInt(value ?? "", 10);
-    if (!Number.isFinite(parsed)) {
-        return 1;
-    }
-
-    return Math.max(1, Math.min(8, parsed));
-}
-
 function createNativeAiGateway(input: {
-    readonly nativeClient: NativeBackendClient | null;
+    readonly nativeClient: NativeBackendClient;
     readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly onSessionCatalogPatch: (
         ownerWindowId: string,
@@ -495,86 +419,51 @@ function createNativeAiGateway(input: {
         ownerWindowId: string,
         event: AiSessionDomainEvent,
     ) => void;
-}): NativeAiGateway | null {
-    if (!shouldUseNativeAi()) {
-        return null;
-    }
-
-    if (input.nativeClient) {
-        console.info("[native-backend] Native AI backend enabled.");
-        return new NativeAiGateway({
-            client: input.nativeClient,
-            onDiagnostic: (message) => {
-                console.warn(`[native-ai] ${message}`);
-            },
-            onRuntimeStatus: input.onRuntimeStatus,
-            onSessionCatalogPatch: input.onSessionCatalogPatch,
-            onSessionEvent: input.onSessionEvent,
-        });
-    }
-
-    console.warn(
-        "[native-backend] Native AI backend is enabled but the native backend sidecar is not running; using the legacy AI worker.",
-    );
-    return null;
+}): NativeAiGateway {
+    console.info("[native-backend] Native AI backend enabled.");
+    return new NativeAiGateway({
+        client: input.nativeClient,
+        onDiagnostic: (message) => {
+            console.warn(`[native-ai] ${message}`);
+        },
+        onRuntimeStatus: input.onRuntimeStatus,
+        onSessionCatalogPatch: input.onSessionCatalogPatch,
+        onSessionEvent: input.onSessionEvent,
+    });
 }
 
 function createTerminalGateway(input: {
-    readonly nativeClient: NativeBackendClient | null;
+    readonly nativeClient: NativeBackendClient;
     readonly onData: (ownerWindowId: string, event: TerminalDataEvent) => void;
     readonly onExit: (ownerWindowId: string, event: TerminalExitEvent) => void;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsGateway;
 }): TerminalGateway {
-    if (shouldUseNativeTerminal()) {
-        if (input.nativeClient) {
-            console.info("[native-backend] Native terminal backend enabled.");
-            return new NativeTerminalGateway({
-                client: input.nativeClient,
-                onData: input.onData,
-                onDiagnostic: (message) => {
-                    console.warn(`[native-terminal] ${message}`);
-                },
-                onExit: input.onExit,
-                projectService: input.projectService,
-                settingsService: input.settingsService,
-            });
-        }
-
-        console.warn(
-            "[native-backend] Native terminal backend is enabled but the native backend sidecar is not running; using the legacy terminal backend.",
-        );
-    }
-
-    return new TerminalService({
+    console.info("[native-backend] Native terminal backend enabled.");
+    return new NativeTerminalGateway({
+        client: input.nativeClient,
         onData: input.onData,
+        onDiagnostic: (message) => {
+            console.warn(`[native-terminal] ${message}`);
+        },
         onExit: input.onExit,
         projectService: input.projectService,
         settingsService: input.settingsService,
     });
 }
 
-async function startNativeBackendIfEnabled(): Promise<void> {
-    if (!isNativeBackendEnabled()) {
-        return;
-    }
-
+async function startNativeBackendRequired(): Promise<void> {
     const resolution = resolveNativeBackendPath({
         isPackaged: app.isPackaged,
         resourcesPath: process.resourcesPath,
     });
     if (!resolution.binaryPath) {
         const message = [
-            "[native-backend] Native backend is enabled but no binary was found.",
+            "[native-backend] Native backend sidecar is required but no binary was found.",
             `Attempted: ${resolution.attemptedPaths.join(", ")}`,
         ].join(" ");
 
-        if (isNativeBackendStrict()) {
-            throw new Error(message);
-        }
-
-        console.warn(message);
-        return;
+        throw new Error(message);
     }
 
     const client = new NativeBackendClient({
@@ -599,76 +488,43 @@ async function startNativeBackendIfEnabled(): Promise<void> {
         nativeBackendClient = null;
         await client.dispose();
 
-        if (isNativeBackendStrict()) {
-            throw error;
-        }
-
-        console.warn(
+        throw new Error(
             `[native-backend] Native backend startup failed: ${formatError(error)}`,
+            { cause: error },
         );
     }
 }
 
-async function openNativePersistenceIfEnabled(): Promise<boolean> {
-    const projectRegistryMode = resolveNativeProjectRegistryMode();
-    const persistenceEnabled = isNativePersistenceEnabled();
-
-    if (!persistenceEnabled) {
-        if (projectRegistryMode === "write") {
-            throw new Error(
-                "Native project registry write mode requires COMANDO_NATIVE_PERSISTENCE=1.",
-            );
-        }
-
-        if (projectRegistryMode) {
-            console.warn(
-                "[native-backend] Native project registry is enabled but COMANDO_NATIVE_PERSISTENCE=1 is not set; using the legacy project store.",
-            );
-        }
-
-        return false;
-    }
-
+async function openNativePersistenceRequired(databaseFile: string): Promise<void> {
     if (!nativeBackendClient) {
-        const message =
-            "Native persistence is enabled but the native backend sidecar is not running.";
-
-        if (isNativePersistenceStrict() || projectRegistryMode === "write") {
-            throw new Error(message);
-        }
-
-        console.warn(`[native-backend] ${message}`);
-        return false;
+        throw new Error(
+            "Native persistence requires a running native backend sidecar.",
+        );
     }
 
-    if (!dbWorkerClient) {
-        throw new Error("The database worker must be ready before native persistence opens.");
-    }
-
-    const persistenceMode = normalizeNativePersistenceMode(projectRegistryMode);
     const gateway = new NativePersistenceGateway(nativeBackendClient);
 
     try {
         const opened = await gateway.openStore({
             appDataDir: app.getPath("userData"),
-            databasePath: dbWorkerClient.status.databaseFile,
-            mode: persistenceMode,
+            databasePath: databaseFile,
+            mode: "write",
         });
         const health = await gateway.getStorageHealth();
 
         console.info(
-            `[native-backend] Native persistence opened mode=${persistenceMode} schema=${opened.schemaVersion} projects=${health.projectCount} worktrees=${health.worktreeCount}.`,
+            `[native-backend] Native persistence opened mode=write schema=${opened.schemaVersion} projects=${health.projectCount} worktrees=${health.worktreeCount}.`,
         );
-        return opened.opened && health.opened && health.schemaCompatible;
-    } catch (error) {
-        if (isNativePersistenceStrict() || projectRegistryMode === "write") {
-            throw error;
+        if (!opened.opened || !health.opened || !health.schemaCompatible) {
+            throw new Error(
+                "Native persistence did not report a compatible open store.",
+            );
         }
-
-        console.warn(
+    } catch (error) {
+        throw new Error(
             `[native-backend] Native persistence startup failed: ${formatError(error)}`,
+            { cause: error },
         );
-        return false;
     }
 }
 

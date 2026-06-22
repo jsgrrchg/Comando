@@ -1,12 +1,8 @@
 import type {
-    NativePersistenceMode,
     NativePersistenceOpenStoreInput,
     NativePersistenceOpenStoreOutput,
     NativePersistenceStorageHealth,
 } from "@shared/native-backend";
-
-export const NATIVE_PERSISTENCE_ENABLED_ENV = "COMANDO_NATIVE_PERSISTENCE";
-export const NATIVE_PERSISTENCE_STRICT_ENV = "COMANDO_NATIVE_PERSISTENCE_STRICT";
 
 export interface NativeBackendRequester {
     request<T = unknown>(
@@ -39,24 +35,6 @@ export class NativePersistenceGateway {
             await this.#client.request("persistence_get_storage_health"),
         );
     }
-}
-
-export function isNativePersistenceEnabled(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return env[NATIVE_PERSISTENCE_ENABLED_ENV] === "1";
-}
-
-export function isNativePersistenceStrict(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return env[NATIVE_PERSISTENCE_STRICT_ENV] === "1";
-}
-
-export function normalizeNativePersistenceMode(
-    value: string | null | undefined,
-): NativePersistenceMode {
-    return value === "write" ? "write" : "shadow";
 }
 
 function parseNativePersistenceOpenStoreOutput(

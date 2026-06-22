@@ -31,13 +31,6 @@ import type {
 import { ProjectFileConflictError } from "../projects/tree";
 import type { NativeBackendRequester } from "./persistence";
 
-export const NATIVE_FS_ENABLED_ENV = "COMANDO_NATIVE_FS";
-export const NATIVE_FS_MODE_ENV = "COMANDO_NATIVE_FS_MODE";
-export const NATIVE_PROJECT_TREE_ENABLED_ENV = "COMANDO_NATIVE_PROJECT_TREE";
-export const NATIVE_WATCHERS_ENABLED_ENV = "COMANDO_NATIVE_WATCHERS";
-
-export type NativeFsMode = "read" | "shadow" | "write";
-
 export class NativeFsGateway {
     readonly #client: NativeBackendRequester;
 
@@ -69,7 +62,7 @@ export class NativeFsGateway {
         );
         if (result.truncated) {
             throw new Error(
-                "Native project entry listing was truncated; use the legacy search index for complete project file lists.",
+                "Native project entry listing was truncated before returning the complete project file list.",
             );
         }
         return nativeProjectTreeEntriesToIpc(result.entries);
@@ -215,51 +208,6 @@ export class NativeFsGateway {
     async watchSyncRegistry(): Promise<void> {
         await this.#client.request("fs_watch_sync_registry");
     }
-}
-
-export function resolveNativeFsMode(
-    env: NodeJS.ProcessEnv = process.env,
-): NativeFsMode | null {
-    if (env[NATIVE_FS_ENABLED_ENV] !== "1") {
-        return null;
-    }
-
-    const mode = env[NATIVE_FS_MODE_ENV];
-    if (mode === "read" || mode === "write") {
-        return mode;
-    }
-
-    return "shadow";
-}
-
-export function shouldUseNativeFsReads(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    const mode = resolveNativeFsMode(env);
-    return mode === "read" || mode === "write";
-}
-
-export function shouldUseNativeFsWrites(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return resolveNativeFsMode(env) === "write";
-}
-
-export function shouldUseNativeProjectTree(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return (
-        shouldUseNativeFsReads(env) &&
-        env[NATIVE_PROJECT_TREE_ENABLED_ENV] === "1"
-    );
-}
-
-export function shouldUseNativeWatchers(
-    env: NodeJS.ProcessEnv = process.env,
-): boolean {
-    return (
-        shouldUseNativeFsReads(env) && env[NATIVE_WATCHERS_ENABLED_ENV] === "1"
-    );
 }
 
 function parseNativeProjectTreeChildrenResult(

@@ -1,6 +1,5 @@
 import path from "node:path";
-import fs from "node:fs";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 
 import {
@@ -30,7 +29,6 @@ import type {
     AiSessionSnapshot,
     AiToolActivity,
     AiSessionTranscriptPage,
-    AiTrackedFile,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiUserInputResponseInput,
@@ -66,16 +64,15 @@ import { prepareCommandForSpawn } from "@main/shell/command-launch";
 import {
     createEmptyAiSessionSnapshot,
     type AiPersistenceGateway,
+    type PersistedRuntimeCatalogSnapshot,
 } from "./persistence";
 import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
 import { listOpenFileBuffers, readOpenFileBuffer } from "./openFileBuffers";
 import {
-    type AiWorkerGateway,
-    type AiWorkerRefreshProjectScopesRpcInput,
-    type AiWorkerReviewMutationResult,
-    type AiWorkerReviewSessionContext,
-    type AiWorkerRuntimeSessionMapping,
-    type AiWorkerSessionLaunchInput,
+    type AiReviewMutationResult,
+    type AiReviewSessionContext,
+    type AiRuntimeSessionMapping,
+    type AiSessionLaunchInput,
     type AiSchedulerConfig,
     type AiSessionFreezeReason,
     type AiSessionFreezeSkippedReason,
@@ -219,19 +216,24 @@ type LiveSessionContext = {
 
 interface NativeReviewBaseline {
     readonly cwd: string;
-    readonly files: ReadonlyMap<string, string | null>;
     readonly messageId: string;
     readonly turnStarted: boolean;
 }
 
-interface NativeGitStatusEntry {
-    readonly code: string;
-    readonly path: string;
-    readonly previousPath: string | null;
-}
-
-const NATIVE_REVIEW_MAX_FILE_BYTES = 5 * 1024 * 1024;
-const NATIVE_REVIEW_GIT_MAX_BUFFER = 16 * 1024 * 1024;
+type NativeAiReviewGateway = NativeAiGateway &
+    Required<
+        Pick<
+            NativeAiGateway,
+            | "captureReviewBaseline"
+            | "keepAllTrackedFiles"
+            | "keepTrackedFile"
+            | "keepTrackedFileHunks"
+            | "reconcileTrackedFiles"
+            | "rejectAllTrackedFiles"
+            | "rejectTrackedFile"
+            | "rejectTrackedFileHunks"
+        >
+    >;
 
 const DEFAULT_AI_SCHEDULER_CONFIG: AiSchedulerConfig = {
     maxColdStartsGlobal: 3,
@@ -435,7 +437,6 @@ class AiWorkScheduler {
 }
 
 export class AiService {
-    #aiWorker: AiWorkerGateway | null;
     readonly #deletedSessionIds = new Set<string>();
     readonly #freezingSessionIds = new Set<string>();
     readonly #lastRetentionCloseRecords: AiSessionRetentionCloseRecord[] = [];
@@ -475,7 +476,6 @@ export class AiService {
     #retentionTimer: ReturnType<typeof setTimeout> | null = null;
 
     constructor(options: AiServiceOptions) {
-        this.#aiWorker = options.aiWorker ?? null;
         this.#nativeAi = options.nativeAi ?? null;
         this.#onRuntimeStatus = options.onRuntimeStatus;
         this.#onSessionEvent = options.onSessionEvent ?? (() => undefined);
@@ -493,10 +493,6 @@ export class AiService {
         this.#scheduler = new AiWorkScheduler(options.aiScheduler);
         this.#secretStore = options.secretStore;
         this.#settingsService = options.settingsService;
-    }
-
-    setWorker(worker: AiWorkerGateway | null): void {
-        this.#aiWorker = worker;
     }
 
     setNativeAiGateway(nativeAi: NativeAiGateway | null): void {
@@ -550,18 +546,18 @@ export class AiService {
         };
     }
 
-    handleWorkerRuntimeStatus(status: AiRuntimeStatus): void {
+    handleNativeRuntimeStatus(status: AiRuntimeStatus): void {
         this.#onRuntimeStatus(status);
     }
 
-    handleWorkerSessionClosed(payload: {
+    handleNativeSessionClosed(payload: {
         readonly ownerWindowId: string;
         readonly sessionId: string;
     }): void {
         this.#clearLiveSession(payload.sessionId);
     }
 
-    handleWorkerSessionSnapshot(
+    handleNativeSessionSnapshot(
         ownerWindowId: string,
         update: AiSessionUpdate,
     ): void {
@@ -573,24 +569,25 @@ export class AiService {
             return;
         }
 
-        const snapshot = this.#resolveSnapshotFromWorkerUpdate(update);
+        const snapshot = this.#resolveSnapshotFromNativeUpdate(update);
         if (!snapshot) {
             return;
         }
 
-        this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
-        this.#persistence.saveSessionSnapshot(snapshot);
-        if (snapshot.lastError) {
-            this.#invalidateRuntimeAuthIfNeeded(snapshot.runtimeId, snapshot.lastError);
+        const nextSnapshot = this.#hydrateSnapshotRuntimeCatalog(snapshot);
+        const previousSnapshot = this.#liveSnapshots.get(sessionId) ?? null;
+        this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+        this.#persistence.saveSessionSnapshot(nextSnapshot);
+        if (nextSnapshot.lastError) {
+            this.#invalidateRuntimeAuthIfNeeded(
+                nextSnapshot.runtimeId,
+                nextSnapshot.lastError,
+            );
         }
-        this.#onSessionSnapshot(ownerWindowId, update);
-    }
-
-    handleWorkerSessionEvent(
-        ownerWindowId: string,
-        event: AiSessionDomainEvent,
-    ): void {
-        this.#onSessionEvent(ownerWindowId, event);
+        this.#onSessionSnapshot(
+            ownerWindowId,
+            buildAiSessionUpdate(previousSnapshot, nextSnapshot),
+        );
     }
 
     notifyFileBuffer(input: FileBufferNotificationInput): void {
@@ -693,77 +690,33 @@ export class AiService {
             return;
         }
 
+        const baseSnapshot = this.#hydrateSnapshotRuntimeCatalog(previousSnapshot);
         const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(
             {
-                ...previousSnapshot,
+                ...baseSnapshot,
                 updatedAt,
             },
             patch,
         );
         this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+        this.#persistNativeCatalogPatch(nextSnapshot, patch);
         this.#onSessionSnapshot(
             ownerWindowId,
             buildAiSessionUpdate(previousSnapshot, nextSnapshot),
         );
     }
 
-    async handleWorkerRestarted(): Promise<void> {
-        const worker = this.#requireAiWorker();
+    async handleNativeRestarted(): Promise<void> {
+        const nativeAi = this.#requireNativeAiGateway();
+        if (!nativeAi.notifyFileBuffer) {
+            return;
+        }
+
         await Promise.all(
             listOpenFileBuffers().map(async (buffer) => {
-                await worker.notifyFileBuffer(buffer);
+                await nativeAi.notifyFileBuffer?.(buffer);
             }),
         );
-        const relaunches = this.#listRelaunchableLiveSessionContexts().map(
-            async (context) => {
-                const snapshot =
-                    this.#liveSnapshots.get(context.sessionId) ??
-                    (await this.#persistence.loadSessionSnapshot(
-                        context.sessionId,
-                    ));
-                if (!snapshot) {
-                    return;
-                }
-
-                const input = {
-                    projectId: context.projectId,
-                    runtimeId: context.runtimeId,
-                    sessionId: context.sessionId,
-                    title: snapshot.title,
-                    worktreeId: context.worktreeId,
-                } satisfies PrepareAiSessionInput;
-                const launch = await this.#buildWorkerSessionLaunchInput(
-                    {
-                        additionalRoots: context.additionalRoots,
-                        projectId: context.projectId,
-                        runtimeId: context.runtimeId,
-                        sessionId: context.sessionId,
-                        title: snapshot.title,
-                        worktreeId: context.worktreeId,
-                    },
-                    context.ownerWindowId,
-                    snapshot,
-                );
-                const relaunchedSnapshot =
-                    await this.#scheduleWorkerSessionStartup(
-                        launch,
-                        3,
-                        () =>
-                            worker.prepareSession({
-                                input,
-                                launch,
-                            }),
-                        { forceColdStart: true },
-                    );
-                this.#acceptPreparedLiveSnapshot(
-                    relaunchedSnapshot,
-                    context.ownerWindowId,
-                );
-                void this.#enforceSessionRetention();
-            },
-        );
-
-        await Promise.allSettled(relaunches);
     }
 
     async getRuntimeStatus(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus> {
@@ -1107,14 +1060,18 @@ export class AiService {
             const nativeSnapshot =
                 await this.#nativeAi.loadSessionSnapshot(sessionId);
             if (nativeSnapshot) {
-                return await this.#reconcilePersistedTrackedFiles(nativeSnapshot);
+                return this.#hydrateSnapshotRuntimeCatalog(
+                    await this.#reconcilePersistedTrackedFiles(nativeSnapshot),
+                );
             }
         }
 
         const persistedSnapshot =
             await this.#persistence.loadSessionSnapshot(sessionId);
         return persistedSnapshot
-            ? await this.#reconcilePersistedTrackedFiles(persistedSnapshot)
+            ? this.#hydrateSnapshotRuntimeCatalog(
+                  await this.#reconcilePersistedTrackedFiles(persistedSnapshot),
+              )
             : null;
     }
 
@@ -1131,12 +1088,8 @@ export class AiService {
         input: AiSessionPinnedMutationInput,
     ): Promise<void> {
         if (this.#nativeAi?.shouldHandleHistory()) {
-            try {
-                await this.#nativeAi.setSessionPinned(input);
-                return;
-            } catch (error) {
-                debugBenignError("ai.service.setSessionPinned.native", error);
-            }
+            await this.#nativeAi.setSessionPinned(input);
+            return;
         }
         await this.#persistence.setSessionPinned(
             input.sessionId,
@@ -1153,6 +1106,7 @@ export class AiService {
             if (nativePage) {
                 return nativePage;
             }
+            throw new Error("The session could not be found.");
         }
         const page = await this.#persistence.loadSessionTranscriptPage(input);
         if (!page) {
@@ -1166,11 +1120,13 @@ export class AiService {
         input: PrepareAiSessionInput,
         ownerWindowId: string,
     ): Promise<AiSessionSnapshot> {
-        const launch = await this.#buildWorkerSessionLaunchInput(
+        const launch = await this.#buildNativeSessionLaunchInput(
             input,
             ownerWindowId,
         );
-        const nativeAi = this.#selectNativeAiGateway(input.runtimeId);
+        const nativeAi = this.#requireNativeAiGatewayForRuntime(
+            input.runtimeId,
+        );
         this.#rememberLiveSessionContext(
             input,
             ownerWindowId,
@@ -1178,80 +1134,16 @@ export class AiService {
             launch.persistedSnapshot.parentSessionId ?? null,
         );
 
-        if (nativeAi) {
-            const nativePrepareLaunch =
-                await this.#buildNativePrepareLaunchForSession(
-                    input,
-                    ownerWindowId,
-                    launch,
-                );
-            const isSubagentPrepare =
-                nativePrepareLaunch.input.sessionId !== input.sessionId;
-            try {
-                const snapshot = await this.#scheduleWorkerSessionStartup(
-                    launch,
-                    1,
-                    async () => {
-                        this.#assertScheduledSessionContextActive(
-                            input.sessionId,
-                            ownerWindowId,
-                            input.runtimeId,
-                        );
-                        if (isSubagentPrepare) {
-                            if (
-                                !this.#nativeSessionIds.has(
-                                    nativePrepareLaunch.input.sessionId,
-                                )
-                            ) {
-                                this.#rememberLiveSessionContext(
-                                    nativePrepareLaunch.input,
-                                    ownerWindowId,
-                                    nativePrepareLaunch.launch.additionalRoots,
-                                    nativePrepareLaunch.launch.persistedSnapshot
-                                        .parentSessionId ?? null,
-                                );
-                                const parentSnapshot =
-                                    await nativeAi.prepareSession({
-                                        input: nativePrepareLaunch.input,
-                                        launch: nativePrepareLaunch.launch,
-                                    });
-                                this.#nativeSessionIds.add(
-                                    parentSnapshot.sessionId,
-                                );
-                                this.#acceptPreparedLiveSnapshot(
-                                    parentSnapshot,
-                                    ownerWindowId,
-                                );
-                            }
-                            this.#adoptNativeSubagentSnapshot(
-                                launch.persistedSnapshot,
-                                ownerWindowId,
-                            );
-                            return launch.persistedSnapshot;
-                        }
-
-                        return await nativeAi.prepareSession({ input, launch });
-                    },
-                );
-                this.#nativeSessionIds.add(snapshot.sessionId);
-                this.#acceptPreparedLiveSnapshot(snapshot, ownerWindowId);
-                void this.#enforceSessionRetention();
-                return snapshot;
-            } catch (error) {
-                this.#nativeSessionIds.delete(input.sessionId);
-                this.#discardPreparedSessionContextOnFailure(
-                    input.sessionId,
-                    ownerWindowId,
-                    input.runtimeId,
-                );
-                throw error;
-            }
-        }
-
-        const worker = this.#requireAiWorker();
-        this.#nativeSessionIds.delete(input.sessionId);
+        const nativePrepareLaunch =
+            await this.#buildNativePrepareLaunchForSession(
+                input,
+                ownerWindowId,
+                launch,
+            );
+        const isSubagentPrepare =
+            nativePrepareLaunch.input.sessionId !== input.sessionId;
         try {
-            const snapshot = await this.#scheduleWorkerSessionStartup(
+            const snapshot = await this.#scheduleNativeSessionStartup(
                 launch,
                 1,
                 async () => {
@@ -1260,96 +1152,7 @@ export class AiService {
                         ownerWindowId,
                         input.runtimeId,
                     );
-                    return await worker.prepareSession({
-                        input,
-                        launch,
-                    });
-                },
-            );
-            this.#acceptPreparedLiveSnapshot(snapshot, ownerWindowId);
-            void this.#enforceSessionRetention();
-            return snapshot;
-        } catch (error) {
-            this.#discardPreparedSessionContextOnFailure(
-                input.sessionId,
-                ownerWindowId,
-                input.runtimeId,
-            );
-            throw error;
-        }
-    }
-
-    async refreshProjectScopes(projectId: string): Promise<void> {
-        const worker = this.#requireAiWorker();
-        const sessions = await this.#buildWorkerScopeRefreshInputs(projectId);
-        if (sessions.length === 0) {
-            return;
-        }
-
-        await this.#scheduler.schedule(
-            {
-                coldStart: true,
-                priority: 3,
-                runtimeId: null,
-            },
-            async () => {
-                await worker.refreshProjectScopes({
-                    projectId,
-                    sessions,
-                } satisfies AiWorkerRefreshProjectScopesRpcInput);
-            },
-        );
-    }
-
-    async sendPrompt(
-        input: SendAiPromptInput,
-        ownerWindowId: string,
-    ): Promise<AiPromptResult> {
-        const launch = await this.#buildWorkerSessionLaunchInput(
-            input,
-            ownerWindowId,
-        );
-        if (
-            launch.persistedSnapshot.parentSessionId &&
-            launch.persistedSnapshot.closedAt
-        ) {
-            throw new Error(
-                "This subagent was closed by its parent thread and can’t receive new messages.",
-            );
-        }
-        const nativeAi = this.#selectNativeAiGateway(input.runtimeId);
-        this.#rememberLiveSessionContext(
-            input,
-            ownerWindowId,
-            launch.additionalRoots,
-            launch.persistedSnapshot.parentSessionId ?? null,
-        );
-
-        if (nativeAi) {
-            const nativeSendState = {
-                capturedReviewBaseline: false,
-                preparedSessionContext: null as {
-                    readonly ownerWindowId: string;
-                    readonly runtimeId: AiRuntimeId;
-                    readonly sessionId: string;
-                } | null,
-            };
-            const nativePrepareLaunch =
-                await this.#buildNativePrepareLaunchForSession(
-                    input,
-                    ownerWindowId,
-                    launch,
-                );
-            try {
-                const result = await this.#scheduleWorkerSessionStartup(
-                    launch,
-                    0,
-                    async () => {
-                        this.#assertScheduledSessionContextActive(
-                            input.sessionId,
-                            ownerWindowId,
-                            input.runtimeId,
-                        );
+                    if (isSubagentPrepare) {
                         if (
                             !this.#nativeSessionIds.has(
                                 nativePrepareLaunch.input.sessionId,
@@ -1362,18 +1165,16 @@ export class AiService {
                                 nativePrepareLaunch.launch.persistedSnapshot
                                     .parentSessionId ?? null,
                             );
-                            const snapshot = await nativeAi.prepareSession({
-                                input: nativePrepareLaunch.input,
-                                launch: nativePrepareLaunch.launch,
-                            });
-                            this.#nativeSessionIds.add(snapshot.sessionId);
-                            nativeSendState.preparedSessionContext = {
-                                ownerWindowId,
-                                runtimeId: nativePrepareLaunch.input.runtimeId,
-                                sessionId: snapshot.sessionId,
-                            };
+                            const parentSnapshot =
+                                await nativeAi.prepareSession({
+                                    input: nativePrepareLaunch.input,
+                                    launch: nativePrepareLaunch.launch,
+                                });
+                            this.#nativeSessionIds.add(
+                                parentSnapshot.sessionId,
+                            );
                             this.#acceptPreparedLiveSnapshot(
-                                snapshot,
+                                parentSnapshot,
                                 ownerWindowId,
                             );
                         }
@@ -1381,46 +1182,76 @@ export class AiService {
                             launch.persistedSnapshot,
                             ownerWindowId,
                         );
-                        if (
-                            !this.#nativeReviewBaselines.has(input.sessionId)
-                        ) {
-                            nativeSendState.capturedReviewBaseline =
-                                await this.#captureNativeReviewBaseline(
-                                    input.sessionId,
-                                    launch,
-                                    input.messageId,
-                                );
-                        }
-                        return await nativeAi.sendPrompt({
-                            input,
-                            launch,
-                        });
-                    },
-                );
-                void this.#enforceSessionRetention();
-                return result;
-            } catch (error) {
-                if (nativeSendState.capturedReviewBaseline) {
-                    this.#nativeReviewBaselines.delete(input.sessionId);
-                }
-                if (nativeSendState.preparedSessionContext) {
-                    this.#nativeSessionIds.delete(
-                        nativeSendState.preparedSessionContext.sessionId,
-                    );
-                    this.#discardPreparedSessionContextOnFailure(
-                        nativeSendState.preparedSessionContext.sessionId,
-                        nativeSendState.preparedSessionContext.ownerWindowId,
-                        nativeSendState.preparedSessionContext.runtimeId,
-                    );
-                }
-                throw error;
-            }
-        }
+                        return launch.persistedSnapshot;
+                    }
 
-        const worker = this.#requireAiWorker();
-        this.#nativeSessionIds.delete(input.sessionId);
+                    return await nativeAi.prepareSession({ input, launch });
+                },
+            );
+            this.#nativeSessionIds.add(snapshot.sessionId);
+            const acceptedSnapshot = this.#acceptPreparedLiveSnapshot(
+                snapshot,
+                ownerWindowId,
+            );
+            void this.#enforceSessionRetention();
+            return acceptedSnapshot;
+        } catch (error) {
+            this.#nativeSessionIds.delete(input.sessionId);
+            this.#discardPreparedSessionContextOnFailure(
+                input.sessionId,
+                ownerWindowId,
+                input.runtimeId,
+            );
+            throw error;
+        }
+    }
+
+    refreshProjectScopes(projectId: string): void {
+        void projectId;
+    }
+
+    async sendPrompt(
+        input: SendAiPromptInput,
+        ownerWindowId: string,
+    ): Promise<AiPromptResult> {
+        const launch = await this.#buildNativeSessionLaunchInput(
+            input,
+            ownerWindowId,
+        );
+        if (
+            launch.persistedSnapshot.parentSessionId &&
+            launch.persistedSnapshot.closedAt
+        ) {
+            throw new Error(
+                "This subagent was closed by its parent thread and can’t receive new messages.",
+            );
+        }
+        const nativeAi = this.#requireNativeAiGatewayForRuntime(
+            input.runtimeId,
+        );
+        this.#rememberLiveSessionContext(
+            input,
+            ownerWindowId,
+            launch.additionalRoots,
+            launch.persistedSnapshot.parentSessionId ?? null,
+        );
+
+        const nativeSendState = {
+            capturedReviewBaseline: false,
+            preparedSessionContext: null as {
+                readonly ownerWindowId: string;
+                readonly runtimeId: AiRuntimeId;
+                readonly sessionId: string;
+            } | null,
+        };
+        const nativePrepareLaunch =
+            await this.#buildNativePrepareLaunchForSession(
+                input,
+                ownerWindowId,
+                launch,
+            );
         try {
-            const result = await this.#scheduleWorkerSessionStartup(
+            const result = await this.#scheduleNativeSessionStartup(
                 launch,
                 0,
                 async () => {
@@ -1429,7 +1260,46 @@ export class AiService {
                         ownerWindowId,
                         input.runtimeId,
                     );
-                    return await worker.sendPrompt({
+                    if (
+                        !this.#nativeSessionIds.has(
+                            nativePrepareLaunch.input.sessionId,
+                        )
+                    ) {
+                        this.#rememberLiveSessionContext(
+                            nativePrepareLaunch.input,
+                            ownerWindowId,
+                            nativePrepareLaunch.launch.additionalRoots,
+                            nativePrepareLaunch.launch.persistedSnapshot
+                                .parentSessionId ?? null,
+                        );
+                        const snapshot = await nativeAi.prepareSession({
+                            input: nativePrepareLaunch.input,
+                            launch: nativePrepareLaunch.launch,
+                        });
+                        this.#nativeSessionIds.add(snapshot.sessionId);
+                        nativeSendState.preparedSessionContext = {
+                            ownerWindowId,
+                            runtimeId: nativePrepareLaunch.input.runtimeId,
+                            sessionId: snapshot.sessionId,
+                        };
+                        this.#acceptPreparedLiveSnapshot(
+                            snapshot,
+                            ownerWindowId,
+                        );
+                    }
+                    this.#adoptNativeSubagentSnapshot(
+                        launch.persistedSnapshot,
+                        ownerWindowId,
+                    );
+                    if (!this.#nativeReviewBaselines.has(input.sessionId)) {
+                        nativeSendState.capturedReviewBaseline =
+                            await this.#captureNativeReviewBaseline(
+                                input.sessionId,
+                                launch,
+                                input.messageId,
+                            );
+                    }
+                    return await nativeAi.sendPrompt({
                         input,
                         launch,
                     });
@@ -1438,11 +1308,19 @@ export class AiService {
             void this.#enforceSessionRetention();
             return result;
         } catch (error) {
-            this.#discardPreparedSessionContextOnFailure(
-                input.sessionId,
-                ownerWindowId,
-                input.runtimeId,
-            );
+            if (nativeSendState.capturedReviewBaseline) {
+                this.#nativeReviewBaselines.delete(input.sessionId);
+            }
+            if (nativeSendState.preparedSessionContext) {
+                this.#nativeSessionIds.delete(
+                    nativeSendState.preparedSessionContext.sessionId,
+                );
+                this.#discardPreparedSessionContextOnFailure(
+                    nativeSendState.preparedSessionContext.sessionId,
+                    nativeSendState.preparedSessionContext.ownerWindowId,
+                    nativeSendState.preparedSessionContext.runtimeId,
+                );
+            }
             throw error;
         }
     }
@@ -1476,11 +1354,7 @@ export class AiService {
             return;
         }
 
-        if (this.#isNativeAiSession(input.sessionId)) {
-            await this.#requireNativeAiGateway().setSessionMode(input);
-        } else {
-            await this.#requireAiWorker().setSessionMode(input);
-        }
+        await this.#requireNativeAiGateway().setSessionMode(input);
         this.#persistence.saveRuntimeModePreference(
             this.#getLiveSessionRuntimeId(input.sessionId),
             input.modeId,
@@ -1501,11 +1375,7 @@ export class AiService {
             return;
         }
 
-        if (this.#isNativeAiSession(input.sessionId)) {
-            await this.#requireNativeAiGateway().setSessionModel(input);
-        } else {
-            await this.#requireAiWorker().setSessionModel(input);
-        }
+        await this.#requireNativeAiGateway().setSessionModel(input);
         this.#persistence.saveRuntimeModelPreference(
             this.#getLiveSessionRuntimeId(input.sessionId),
             input.modelId,
@@ -1536,11 +1406,7 @@ export class AiService {
 
         const runtimeId = this.#getLiveSessionRuntimeId(input.sessionId);
         const snapshot = this.#liveSnapshots.get(input.sessionId) ?? null;
-        if (this.#isNativeAiSession(input.sessionId)) {
-            await this.#requireNativeAiGateway().setSessionConfigOption(input);
-        } else {
-            await this.#requireAiWorker().setSessionConfigOption(input);
-        }
+        await this.#requireNativeAiGateway().setSessionConfigOption(input);
         this.#persistRuntimeConfigOptionSelection(
             runtimeId,
             snapshot,
@@ -1551,24 +1417,16 @@ export class AiService {
 
     async renameSession(input: AiSessionRenameMutationInput): Promise<void> {
         if (this.#liveSessionContexts.has(input.sessionId)) {
-            if (this.#isNativeAiSession(input.sessionId)) {
-                await this.#requireNativeAiGateway().renameSession(input);
-                await this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
-                    setTitleOnSnapshot(snapshot, input.title),
-                );
-                return;
-            }
-            await this.#requireAiWorker().renameSession(input);
+            await this.#requireNativeAiGateway().renameSession(input);
+            await this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
+                setTitleOnSnapshot(snapshot, input.title),
+            );
             return;
         }
 
         if (this.#nativeAi?.shouldHandleHistory()) {
-            try {
-                await this.#nativeAi.renameSession(input);
-                return;
-            } catch (error) {
-                debugBenignError("ai.service.renameSession.native", error);
-            }
+            await this.#nativeAi.renameSession(input);
+            return;
         }
 
         await this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
@@ -1581,12 +1439,7 @@ export class AiService {
             return;
         }
 
-        if (this.#isNativeAiSession(sessionId)) {
-            await this.#requireNativeAiGateway().cancelSession(sessionId);
-            return;
-        }
-
-        await this.#requireAiWorker().cancelSession(sessionId);
+        await this.#requireNativeAiGateway().cancelSession(sessionId);
     }
 
     async closeSession(sessionId: string): Promise<void> {
@@ -1594,11 +1447,7 @@ export class AiService {
             return;
         }
 
-        if (this.#isNativeAiSession(sessionId)) {
-            await this.#requireNativeAiGateway().closeSession(sessionId);
-        } else {
-            await this.#requireAiWorker().closeSession(sessionId);
-        }
+        await this.#requireNativeAiGateway().closeSession(sessionId);
         this.#clearLiveSession(sessionId);
     }
 
@@ -1618,12 +1467,8 @@ export class AiService {
 
             this.#clearLiveSession(sessionId);
             if (this.#nativeAi?.shouldHandleHistory()) {
-                try {
-                    await this.#nativeAi.deleteSession(sessionId);
-                    return;
-                } catch (error) {
-                    debugBenignError("ai.service.deleteSession.native", error);
-                }
+                await this.#nativeAi.deleteSession(sessionId);
+                return;
             }
             await this.#persistence.deleteSession(sessionId);
         } catch (error) {
@@ -1639,11 +1484,6 @@ export class AiService {
             )
             .map(([sessionId]) => sessionId);
 
-        void this.#aiWorker
-            ?.closeOwnedByWindow(ownerWindowId)
-            .catch((error: unknown) => {
-                debugBenignError("ai.service.closeOwnedByWindow", error);
-            });
         Promise.resolve(this.#nativeAi?.closeOwnedByWindow(ownerWindowId)).catch(
             (error: unknown) => {
                 debugBenignError("ai.service.closeOwnedByWindow.native", error);
@@ -1657,11 +1497,7 @@ export class AiService {
 
     async launchRuntimeAuth(input: AiRuntimeAuthLaunchInput): Promise<void> {
         const nativeAi = this.#nativeAuthGateway(input.runtimeId);
-        if (
-            nativeAi?.launchRuntimeAuth &&
-            process.env.COMANDO_NATIVE_AUTH_TERMINAL === "1" &&
-            input.runtimeId !== "codex"
-        ) {
+        if (nativeAi?.launchRuntimeAuth) {
             await nativeAi.launchRuntimeAuth(input);
             return;
         }
@@ -1854,7 +1690,7 @@ export class AiService {
         input: AiRuntimeAuthLogoutInput,
     ): Promise<AiRuntimeStatus> {
         const nativeAi = this.#nativeAuthGateway(input.runtimeId);
-        if (nativeAi?.logoutRuntimeAuth && input.runtimeId !== "codex") {
+        if (nativeAi?.logoutRuntimeAuth) {
             const status = await nativeAi.logoutRuntimeAuth(input);
             this.#onRuntimeStatus(status);
             return status;
@@ -2046,20 +1882,11 @@ export class AiService {
     }
 
     respondPermission(input: AiPermissionResponseInput): Promise<void> {
-        if (this.#isNativeAiSession(input.sessionId)) {
-            return this.#requireNativeAiGateway().respondPermission(input);
-        }
-
-        return this.#requireAiWorker().respondPermission(input);
+        return this.#requireNativeAiGateway().respondPermission(input);
     }
 
     async respondUserInput(input: AiUserInputResponseInput): Promise<void> {
-        if (this.#isNativeAiSession(input.sessionId)) {
-            await this.#requireNativeAiGateway().respondUserInput(input);
-            return;
-        }
-
-        await this.#requireAiWorker().respondUserInput(input);
+        await this.#requireNativeAiGateway().respondUserInput(input);
     }
 
     #selectNativeAiGateway(runtimeId: AiRuntimeId): NativeAiGateway | null {
@@ -2071,10 +1898,6 @@ export class AiService {
     }
 
     #nativeAuthGateway(runtimeId: AiRuntimeId): NativeAiGateway | null {
-        if (!shouldUseNativeAuthWrite(process.env)) {
-            return null;
-        }
-
         return this.#selectNativeAiGateway(runtimeId);
     }
 
@@ -2234,12 +2057,31 @@ export class AiService {
         return this.#nativeAi;
     }
 
-    #requireAiWorker(): AiWorkerGateway {
-        if (!this.#aiWorker) {
-            throw new Error("The AI worker is not available.");
+    #requireNativeAiGatewayForRuntime(runtimeId: AiRuntimeId): NativeAiGateway {
+        this.#rejectGeminiRuntime(runtimeId);
+        const nativeAi = this.#selectNativeAiGateway(runtimeId);
+        if (!nativeAi) {
+            throw new Error(
+                `${getRuntimeDisplayName(runtimeId)} is not supported by the native AI backend.`,
+            );
         }
 
-        return this.#aiWorker;
+        return nativeAi;
+    }
+
+    #requireNativeReviewGateway(
+        methodName: keyof NativeAiReviewGateway,
+    ): NativeAiReviewGateway {
+        const nativeAi = this.#requireNativeAiGateway();
+        const method = nativeAi[methodName];
+        if (
+            nativeAi.shouldHandleReview?.() !== true ||
+            typeof method !== "function"
+        ) {
+            throw new Error("The native AI review backend is not available.");
+        }
+
+        return nativeAi as NativeAiReviewGateway;
     }
 
     #rememberLiveSessionContext(
@@ -2433,47 +2275,14 @@ export class AiService {
             return;
         }
 
-        if (this.#isNativeAiSession(sessionId)) {
-            this.#freezingSessionIds.add(sessionId);
-            try {
-                await this.#requireNativeAiGateway().closeSession(sessionId);
-                this.#recordRetentionClose(sessionId, reason);
-                this.#clearLiveSession(sessionId);
-            } catch (error) {
-                this.#deferSessionRetentionRetry(sessionId);
-                debugBenignError("ai.service.freezeNativeSession", error);
-            } finally {
-                this.#freezingSessionIds.delete(sessionId);
-            }
-            return;
-        }
-
         this.#freezingSessionIds.add(sessionId);
         try {
-            const result = await this.#requireAiWorker().freezeSession({
-                reason,
-                sessionId,
-            });
-            if (result.frozen) {
-                this.#recordRetentionClose(sessionId, reason);
-                this.#clearLiveSession(sessionId);
-                return;
-            }
-
-            if (result.skippedReason) {
-                this.#recordRetentionSkipped(
-                    sessionId,
-                    reason,
-                    result.skippedReason,
-                );
-                this.#deferSessionRetentionRetry(sessionId);
-                return;
-            }
-
-            this.#deferSessionRetentionRetry(sessionId);
+            await this.#requireNativeAiGateway().closeSession(sessionId);
+            this.#recordRetentionClose(sessionId, reason);
+            this.#clearLiveSession(sessionId);
         } catch (error) {
             this.#deferSessionRetentionRetry(sessionId);
-            debugBenignError("ai.service.freezeSession", error);
+            debugBenignError("ai.service.freezeNativeSession", error);
         } finally {
             this.#freezingSessionIds.delete(sessionId);
         }
@@ -2573,12 +2382,12 @@ export class AiService {
         return nextDueAtMs === null ? null : Math.max(0, nextDueAtMs - now);
     }
 
-    #isColdSessionLaunch(launch: AiWorkerSessionLaunchInput): boolean {
+    #isColdNativeSessionLaunch(launch: AiSessionLaunchInput): boolean {
         return !this.#liveSnapshots.has(launch.input.sessionId);
     }
 
-    async #scheduleWorkerSessionStartup<T>(
-        launch: AiWorkerSessionLaunchInput,
+    async #scheduleNativeSessionStartup<T>(
+        launch: AiSessionLaunchInput,
         priority: AiSchedulerPriority,
         run: () => Promise<T>,
         options: { readonly forceColdStart?: boolean } = {},
@@ -2586,7 +2395,7 @@ export class AiService {
         return await this.#scheduler.schedule(
             {
                 coldStart:
-                    options.forceColdStart ?? this.#isColdSessionLaunch(launch),
+                    options.forceColdStart ?? this.#isColdNativeSessionLaunch(launch),
                 priority,
                 runtimeId: launch.input.runtimeId,
             },
@@ -2619,11 +2428,13 @@ export class AiService {
     #acceptPreparedLiveSnapshot(
         snapshot: AiSessionSnapshot,
         ownerWindowId: string,
-    ): void {
-        this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
-        if (!this.#isNativeAiSession(snapshot.sessionId)) {
-            this.#persistence.saveSessionSnapshot(snapshot);
+    ): AiSessionSnapshot {
+        const nextSnapshot = this.#hydrateSnapshotRuntimeCatalog(snapshot);
+        this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+        if (!this.#isNativeAiSession(nextSnapshot.sessionId)) {
+            this.#persistence.saveSessionSnapshot(nextSnapshot);
         }
+        return nextSnapshot;
     }
 
     #applyNativeSessionEvent(
@@ -2794,64 +2605,21 @@ export class AiService {
 
     async #captureNativeReviewBaseline(
         sessionId: string,
-        launch: AiWorkerSessionLaunchInput,
+        launch: AiSessionLaunchInput,
         messageId: string,
     ): Promise<boolean> {
-        if (
-            this.#nativeAi?.shouldHandleReview?.() === true &&
-            this.#isNativeAiSession(sessionId) &&
-            this.#nativeAi.captureReviewBaseline
-        ) {
-            const captured = await this.#nativeAi.captureReviewBaseline(sessionId);
-            if (captured) {
-                this.#nativeReviewBaselines.set(sessionId, {
-                    cwd: launch.cwd,
-                    files: new Map(),
-                    messageId,
-                    turnStarted: false,
-                });
-            } else {
-                this.#nativeReviewBaselines.delete(sessionId);
-            }
-            return captured;
-        }
-
-        try {
-            const statusEntries = await listNativeGitStatusEntries(launch.cwd);
-            const files = new Map<string, string | null>();
-            for (const entry of statusEntries) {
-                if (!files.has(entry.path)) {
-                    files.set(
-                        entry.path,
-                        await readNativeReviewWorkingTreeText(
-                            launch.cwd,
-                            entry.path,
-                        ),
-                    );
-                }
-                if (entry.previousPath && !files.has(entry.previousPath)) {
-                    files.set(
-                        entry.previousPath,
-                        await readNativeReviewWorkingTreeText(
-                            launch.cwd,
-                            entry.previousPath,
-                        ),
-                    );
-                }
-            }
-
+        const nativeAi = this.#requireNativeReviewGateway("captureReviewBaseline");
+        const captured = await nativeAi.captureReviewBaseline(sessionId);
+        if (captured) {
             this.#nativeReviewBaselines.set(sessionId, {
                 cwd: launch.cwd,
-                files,
                 messageId,
                 turnStarted: false,
             });
-            return true;
-        } catch (error) {
+        } else {
             this.#nativeReviewBaselines.delete(sessionId);
-            debugBenignError("ai.service.nativeReviewBaseline", error);
-            return false;
         }
+        return captured;
     }
 
     #markNativeReviewTurnStarted(sessionId: string): void {
@@ -2905,36 +2673,14 @@ export class AiService {
             }
 
             const trackedFiles =
-                this.#nativeAi?.shouldHandleReview?.() === true &&
-                this.#isNativeAiSession(sessionId) &&
-                this.#nativeAi.reconcileTrackedFiles
-                    ? await this.#nativeAi.reconcileTrackedFiles(sessionId)
-                    : await buildNativeReviewTrackedFiles(
-                          snapshot.sessionId,
-                          baseline,
-                      );
+                await this.#requireNativeReviewGateway(
+                    "reconcileTrackedFiles",
+                ).reconcileTrackedFiles(sessionId);
             if (trackedFiles.length === 0) {
                 return;
             }
 
-            let nextTrackedFiles =
-                this.#nativeAi?.shouldHandleReview?.() === true &&
-                this.#isNativeAiSession(sessionId)
-                    ? trackedFiles
-                    : snapshot.trackedFiles;
-            if (
-                !(
-                    this.#nativeAi?.shouldHandleReview?.() === true &&
-                    this.#isNativeAiSession(sessionId)
-                )
-            ) {
-                for (const trackedFile of trackedFiles) {
-                    nextTrackedFiles = upsertTrackedFile(
-                        nextTrackedFiles,
-                        trackedFile,
-                    );
-                }
-            }
+            const nextTrackedFiles = trackedFiles;
             if (nextTrackedFiles === snapshot.trackedFiles) {
                 return;
             }
@@ -3065,7 +2811,7 @@ export class AiService {
         return runtimeId;
     }
 
-    #resolveSnapshotFromWorkerUpdate(
+    #resolveSnapshotFromNativeUpdate(
         update: AiSessionUpdate,
     ): AiSessionSnapshot | null {
         if (update.kind === "snapshot") {
@@ -3089,18 +2835,7 @@ export class AiService {
         sessionId: string,
     ): Promise<AiSessionSnapshot | null> {
         if (this.#nativeAi?.shouldHandleHistory()) {
-            try {
-                const snapshot =
-                    await this.#nativeAi.loadSessionSnapshot(sessionId);
-                if (snapshot) {
-                    return snapshot;
-                }
-            } catch (error) {
-                debugBenignError(
-                    "ai.service.loadPersistedSessionSnapshot.native",
-                    error,
-                );
-            }
+            return await this.#nativeAi.loadSessionSnapshot(sessionId);
         }
 
         return await this.#persistence.loadSessionSnapshot(sessionId);
@@ -3108,11 +2843,11 @@ export class AiService {
 
     async #listPersistedRuntimeMappingsForParent(
         parentSessionId: string,
-    ): Promise<readonly AiWorkerRuntimeSessionMapping[]> {
-        const mappings: AiWorkerRuntimeSessionMapping[] = [];
+    ): Promise<readonly AiRuntimeSessionMapping[]> {
+        const mappings: AiRuntimeSessionMapping[] = [];
         const seen = new Set<string>();
         const append = (
-            entries: readonly AiWorkerRuntimeSessionMapping[],
+            entries: readonly AiRuntimeSessionMapping[],
         ): void => {
             for (const entry of entries) {
                 const key = `${entry.appSessionId}\0${entry.runtimeSessionId}`;
@@ -3128,18 +2863,12 @@ export class AiService {
             this.#nativeAi?.shouldHandleHistory() &&
             this.#nativeAi.listSessionRuntimeMappingsForParent
         ) {
-            try {
-                append(
-                    await this.#nativeAi.listSessionRuntimeMappingsForParent(
-                        parentSessionId,
-                    ),
-                );
-            } catch (error) {
-                debugBenignError(
-                    "ai.service.listRuntimeMappings.native",
-                    error,
-                );
-            }
+            append(
+                await this.#nativeAi.listSessionRuntimeMappingsForParent(
+                    parentSessionId,
+                ),
+            );
+            return mappings;
         }
         append(
             (await this.#persistence.listSessionRuntimeMappingsForParent?.(
@@ -3153,10 +2882,10 @@ export class AiService {
     async #buildNativePrepareLaunchForSession(
         input: SessionDescriptor,
         ownerWindowId: string,
-        launch: AiWorkerSessionLaunchInput,
+        launch: AiSessionLaunchInput,
     ): Promise<{
         readonly input: SessionDescriptor;
-        readonly launch: AiWorkerSessionLaunchInput;
+        readonly launch: AiSessionLaunchInput;
     }> {
         const parentSessionId = launch.persistedSnapshot.parentSessionId ?? null;
         if (!parentSessionId) {
@@ -3183,7 +2912,7 @@ export class AiService {
 
         return {
             input: parentInput,
-            launch: await this.#buildWorkerSessionLaunchInput(
+            launch: await this.#buildNativeSessionLaunchInput(
                 parentInput,
                 ownerWindowId,
                 parentSnapshot,
@@ -3209,11 +2938,11 @@ export class AiService {
         });
     }
 
-    async #buildWorkerSessionLaunchInput(
+    async #buildNativeSessionLaunchInput(
         input: SessionDescriptor,
         ownerWindowId: string,
         snapshotOverride?: AiSessionSnapshot | null,
-    ): Promise<AiWorkerSessionLaunchInput> {
+    ): Promise<AiSessionLaunchInput> {
         const projectRoot = input.projectId
             ? this.#projectService.getProjectRootPath(
                   input.projectId,
@@ -3237,17 +2966,18 @@ export class AiService {
             );
         }
 
-        const persistedSnapshot =
+        const persistedSnapshot = this.#hydrateSnapshotRuntimeCatalog(
             snapshotOverride ??
-            this.#liveSnapshots.get(input.sessionId) ??
-            (await this.#loadPersistedSessionSnapshot(input.sessionId)) ??
-            createEmptyAiSessionSnapshot({
-                projectId: input.projectId,
-                runtimeId: input.runtimeId,
-                sessionId: input.sessionId,
-                title: input.title,
-                worktreeId: input.worktreeId ?? null,
-            });
+                this.#liveSnapshots.get(input.sessionId) ??
+                (await this.#loadPersistedSessionSnapshot(input.sessionId)) ??
+                createEmptyAiSessionSnapshot({
+                    projectId: input.projectId,
+                    runtimeId: input.runtimeId,
+                    sessionId: input.sessionId,
+                    title: input.title,
+                    worktreeId: input.worktreeId ?? null,
+                }),
+        );
         const persistedSubagentSessionMappings =
             await this.#listPersistedRuntimeMappingsForParent(
                 persistedSnapshot.sessionId,
@@ -3273,57 +3003,10 @@ export class AiService {
         };
     }
 
-    async #buildWorkerScopeRefreshInputs(
-        projectId: string,
-    ): Promise<readonly AiWorkerSessionLaunchInput[]> {
-        const launches = await Promise.all(
-            this.#listRelaunchableLiveSessionContexts()
-                .filter((context) => context.projectId === projectId)
-                .map(async (context) => {
-                    const snapshot =
-                        this.#liveSnapshots.get(context.sessionId) ??
-                        (await this.#persistence.loadSessionSnapshot(
-                            context.sessionId,
-                        ));
-                    if (!snapshot) {
-                        return null;
-                    }
-
-                    return await this.#buildWorkerSessionLaunchInput(
-                        {
-                            additionalRoots: context.additionalRoots,
-                            projectId: context.projectId,
-                            runtimeId: context.runtimeId,
-                            sessionId: context.sessionId,
-                            title: snapshot.title,
-                            worktreeId: context.worktreeId,
-                        },
-                        context.ownerWindowId,
-                        snapshot,
-                    );
-                }),
-        );
-
-        return launches.filter(
-            (
-                launch,
-            ): launch is AiWorkerSessionLaunchInput => launch !== null,
-        );
-    }
-
-    #listRelaunchableLiveSessionContexts(): readonly LiveSessionContext[] {
-        return [...this.#liveSessionContexts.values()].filter(
-            (context) =>
-                !this.#isNativeAiSession(context.sessionId) &&
-                (!context.parentSessionId ||
-                    !this.#liveSessionContexts.has(context.parentSessionId)),
-        );
-    }
-
-    async #buildWorkerReviewContext(
+    async #buildNativeReviewContext(
         sessionId: string,
     ): Promise<{
-        readonly context: AiWorkerReviewSessionContext;
+        readonly context: AiReviewSessionContext;
         readonly snapshot: AiSessionSnapshot;
     }> {
         const liveContext = this.#liveSessionContexts.get(sessionId);
@@ -3366,7 +3049,7 @@ export class AiService {
 
     #persistReviewMutation(
         previousSnapshot: AiSessionSnapshot,
-        result: AiWorkerReviewMutationResult,
+        result: AiReviewMutationResult,
     ): void {
         if (!this.#isNativeAiSession(result.snapshot.sessionId)) {
             this.#persistence.saveSessionSnapshot(result.snapshot);
@@ -3383,116 +3066,80 @@ export class AiService {
     }
 
     async keepTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
-        const reviewSession = await this.#buildWorkerReviewContext(
+        const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
-        const result =
-            this.#nativeAi?.shouldHandleReview?.() === true &&
-            this.#isNativeAiSession(input.sessionId) &&
-            this.#nativeAi.keepTrackedFile
-                ? await this.#nativeAi.keepTrackedFile({
-                      context: reviewSession.context,
-                      input,
-                  })
-                : await this.#requireAiWorker().keepTrackedFile({
+        const result = await this.#requireNativeReviewGateway(
+            "keepTrackedFile",
+        ).keepTrackedFile({
             context: reviewSession.context,
             input,
-                  });
+        });
         this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async rejectTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
-        const reviewSession = await this.#buildWorkerReviewContext(
+        const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
-        const result =
-            this.#nativeAi?.shouldHandleReview?.() === true &&
-            this.#isNativeAiSession(input.sessionId) &&
-            this.#nativeAi.rejectTrackedFile
-                ? await this.#nativeAi.rejectTrackedFile({
-                      context: reviewSession.context,
-                      input,
-                  })
-                : await this.#requireAiWorker().rejectTrackedFile({
+        const result = await this.#requireNativeReviewGateway(
+            "rejectTrackedFile",
+        ).rejectTrackedFile({
             context: reviewSession.context,
             input,
-                  });
+        });
         this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async keepTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
-        const reviewSession = await this.#buildWorkerReviewContext(
+        const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
-        const result =
-            this.#nativeAi?.shouldHandleReview?.() === true &&
-            this.#isNativeAiSession(input.sessionId) &&
-            this.#nativeAi.keepTrackedFileHunks
-                ? await this.#nativeAi.keepTrackedFileHunks({
-                      context: reviewSession.context,
-                      input,
-                  })
-                : await this.#requireAiWorker().keepTrackedFileHunks({
+        const result = await this.#requireNativeReviewGateway(
+            "keepTrackedFileHunks",
+        ).keepTrackedFileHunks({
             context: reviewSession.context,
             input,
-                  });
+        });
         this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async rejectTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
-        const reviewSession = await this.#buildWorkerReviewContext(
+        const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
-        const result =
-            this.#nativeAi?.shouldHandleReview?.() === true &&
-            this.#isNativeAiSession(input.sessionId) &&
-            this.#nativeAi.rejectTrackedFileHunks
-                ? await this.#nativeAi.rejectTrackedFileHunks({
-                      context: reviewSession.context,
-                      input,
-                  })
-                : await this.#requireAiWorker().rejectTrackedFileHunks({
+        const result = await this.#requireNativeReviewGateway(
+            "rejectTrackedFileHunks",
+        ).rejectTrackedFileHunks({
             context: reviewSession.context,
             input,
-                  });
+        });
         this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async keepAllTrackedFiles(sessionId: string): Promise<void> {
-        const reviewSession = await this.#buildWorkerReviewContext(sessionId);
-        const result =
-            this.#nativeAi?.shouldHandleReview?.() === true &&
-            this.#isNativeAiSession(sessionId) &&
-            this.#nativeAi.keepAllTrackedFiles
-                ? await this.#nativeAi.keepAllTrackedFiles({
-                      context: reviewSession.context,
-                      input: sessionId,
-                  })
-                : await this.#requireAiWorker().keepAllTrackedFiles({
+        const reviewSession = await this.#buildNativeReviewContext(sessionId);
+        const result = await this.#requireNativeReviewGateway(
+            "keepAllTrackedFiles",
+        ).keepAllTrackedFiles({
             context: reviewSession.context,
             input: sessionId,
-                  });
+        });
         this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async rejectAllTrackedFiles(sessionId: string): Promise<void> {
-        const reviewSession = await this.#buildWorkerReviewContext(sessionId);
-        const result =
-            this.#nativeAi?.shouldHandleReview?.() === true &&
-            this.#isNativeAiSession(sessionId) &&
-            this.#nativeAi.rejectAllTrackedFiles
-                ? await this.#nativeAi.rejectAllTrackedFiles({
-                      context: reviewSession.context,
-                      input: sessionId,
-                  })
-                : await this.#requireAiWorker().rejectAllTrackedFiles({
+        const reviewSession = await this.#buildNativeReviewContext(sessionId);
+        const result = await this.#requireNativeReviewGateway(
+            "rejectAllTrackedFiles",
+        ).rejectAllTrackedFiles({
             context: reviewSession.context,
             input: sessionId,
-                  });
+        });
         this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
@@ -3753,15 +3400,35 @@ export class AiService {
             return status;
         }
 
-        return {
-            ...status,
-            availableCommands: catalog.availableCommands,
-            configOptions: catalog.configOptions,
-            modeId: catalog.modeId,
-            modes: catalog.modes,
-            modelId: catalog.modelId,
-            models: catalog.models,
-        };
+        return mergePersistedCatalogIntoRuntimeStatus(status, catalog);
+    }
+
+    #hydrateSnapshotRuntimeCatalog(snapshot: AiSessionSnapshot): AiSessionSnapshot {
+        const catalog = this.#persistence.loadLatestRuntimeCatalog(
+            snapshot.runtimeId,
+        );
+
+        if (!catalog) {
+            return snapshot;
+        }
+
+        return mergePersistedCatalogIntoSessionSnapshot(snapshot, catalog);
+    }
+
+    #persistNativeCatalogPatch(
+        snapshot: AiSessionSnapshot,
+        patch: NormalizedSessionCatalogPayload,
+    ): void {
+        const catalogPatch = buildPersistedRuntimeCatalogPatch(snapshot, patch);
+        if (this.#persistence.saveRuntimeCatalogPatch) {
+            this.#persistence.saveRuntimeCatalogPatch(
+                snapshot.runtimeId,
+                catalogPatch,
+            );
+            return;
+        }
+
+        this.#persistence.saveSessionSnapshot(snapshot);
     }
 
     async #resolveGrokRuntimeStatusWithProbe(
@@ -4122,304 +3789,10 @@ export class AiService {
     }
 }
 
-async function buildNativeReviewTrackedFiles(
-    sessionId: string,
-    baseline: NativeReviewBaseline,
-): Promise<readonly AiTrackedFile[]> {
-    const statusEntries = mergeNativeReviewCandidateEntries(
-        await listNativeGitStatusEntries(baseline.cwd),
-        baseline,
-    );
-    const trackedFiles: AiTrackedFile[] = [];
-    const updatedAt = new Date().toISOString();
-
-    for (const entry of statusEntries) {
-        const baselineText = getNativeReviewBaselineText(baseline, entry);
-        const deleted = isNativeGitDeleted(entry);
-        const currentText = deleted
-            ? null
-            : await readNativeReviewWorkingTreeText(
-                  baseline.cwd,
-                  entry.path,
-              );
-        if (
-            !deleted &&
-            currentText === null &&
-            (!baselineText.known || baselineText.text === null)
-        ) {
-            continue;
-        }
-
-        const oldText = baselineText.known
-            ? baselineText.text
-            : await readNativeReviewHeadText(
-                  baseline.cwd,
-                  entry.previousPath ?? entry.path,
-              );
-        const previousPath =
-            entry.previousPath && entry.previousPath !== entry.path
-                ? entry.previousPath
-                : null;
-        if (
-            oldText === null &&
-            currentText === null &&
-            previousPath === null
-        ) {
-            continue;
-        }
-        if (
-            previousPath === null &&
-            oldText !== null &&
-            currentText !== null &&
-            oldText === currentText
-        ) {
-            continue;
-        }
-
-        const diffBase = oldText ?? "";
-        const currentReviewText = currentText ?? "";
-        const kind = inferNativeTrackedFileKind(
-            previousPath,
-            oldText,
-            currentText,
-        );
-
-        trackedFiles.push({
-            currentText: currentReviewText,
-            diffBase,
-            hunks: computeDiffHunks(diffBase, currentReviewText, entry.path),
-            identityKey: `native:${sessionId}:${previousPath ?? ""}:${entry.path}`,
-            isText: true,
-            kind,
-            newText: currentText,
-            oldText,
-            path: entry.path,
-            previousPath,
-            reviewState: "pending",
-            reversible: kind === "create" || oldText !== null,
-            sessionId,
-            toolCallId: null,
-            updatedAt,
-            version: 1,
-        });
-    }
-
-    return trackedFiles;
-}
-
-function mergeNativeReviewCandidateEntries(
-    statusEntries: readonly NativeGitStatusEntry[],
-    baseline: NativeReviewBaseline,
-): readonly NativeGitStatusEntry[] {
-    const coveredPaths = new Set<string>();
-    for (const entry of statusEntries) {
-        coveredPaths.add(entry.path);
-        if (entry.previousPath) {
-            coveredPaths.add(entry.previousPath);
-        }
-    }
-
-    const baselineOnlyEntries = [...baseline.files.keys()]
-        .filter((baselinePath) => !coveredPaths.has(baselinePath))
-        .map((baselinePath) => ({
-            code: "  ",
-            path: baselinePath,
-            previousPath: null,
-        }));
-
-    return [...statusEntries, ...baselineOnlyEntries];
-}
-
-function getNativeReviewBaselineText(
-    baseline: NativeReviewBaseline,
-    entry: NativeGitStatusEntry,
-): {
-    readonly known: boolean;
-    readonly text: string | null;
-} {
-    if (baseline.files.has(entry.path)) {
-        return {
-            known: true,
-            text: baseline.files.get(entry.path) ?? null,
-        };
-    }
-
-    if (entry.previousPath && baseline.files.has(entry.previousPath)) {
-        return {
-            known: true,
-            text: baseline.files.get(entry.previousPath) ?? null,
-        };
-    }
-
-    return {
-        known: false,
-        text: null,
-    };
-}
-
-async function listNativeGitStatusEntries(
-    cwd: string,
-): Promise<readonly NativeGitStatusEntry[]> {
-    const output = await execNativeGit(cwd, [
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--untracked-files=all",
-    ]);
-
-    return parseNativeGitStatusOutput(output);
-}
-
-function parseNativeGitStatusOutput(
-    output: string,
-): readonly NativeGitStatusEntry[] {
-    const entries: NativeGitStatusEntry[] = [];
-    const tokens = output.split("\0");
-
-    for (let index = 0; index < tokens.length; index += 1) {
-        const token = tokens[index];
-        if (!token || token.length < 4 || token[2] !== " ") {
-            continue;
-        }
-
-        const code = token.slice(0, 2);
-        if (code === "!!") {
-            continue;
-        }
-
-        let entryPath = token.slice(3);
-        let previousPath: string | null = null;
-        if (code.includes("R") || code.includes("C")) {
-            const secondaryPath = tokens[index + 1];
-            if (secondaryPath) {
-                previousPath = secondaryPath;
-                index += 1;
-            } else {
-                const arrowIndex = entryPath.indexOf(" -> ");
-                if (arrowIndex >= 0) {
-                    previousPath = entryPath.slice(0, arrowIndex);
-                    entryPath = entryPath.slice(arrowIndex + 4);
-                }
-            }
-        }
-
-        if (entryPath.length === 0) {
-            continue;
-        }
-
-        entries.push({
-            code,
-            path: entryPath,
-            previousPath,
-        });
-    }
-
-    return entries;
-}
-
-async function readNativeReviewWorkingTreeText(
-    cwd: string,
-    relativePath: string,
-): Promise<string | null> {
-    const resolvedPath = resolveSessionScopedPath(cwd, relativePath);
-    if (!resolvedPath.insideRoot) {
-        return null;
-    }
-
-    const openBufferText = readOpenFileBuffer(resolvedPath.absolutePath);
-    if (openBufferText !== null) {
-        return isNativeReviewText(openBufferText) ? openBufferText : null;
-    }
-
-    try {
-        const stat = await fs.promises.stat(resolvedPath.absolutePath);
-        if (!stat.isFile() || stat.size > NATIVE_REVIEW_MAX_FILE_BYTES) {
-            return null;
-        }
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            return null;
-        }
-        throw error;
-    }
-
-    const text = await readTextIfExists(resolvedPath.absolutePath);
-    return text !== null && isNativeReviewText(text) ? text : null;
-}
-
-async function readNativeReviewHeadText(
-    cwd: string,
-    relativePath: string,
-): Promise<string | null> {
-    try {
-        const text = await execNativeGit(cwd, ["show", `HEAD:${relativePath}`]);
-        return isNativeReviewText(text) ? text : null;
-    } catch {
-        return null;
-    }
-}
-
-function execNativeGit(cwd: string, args: readonly string[]): Promise<string> {
-    return new Promise((resolve, reject) => {
-        execFile(
-            "git",
-            ["-C", cwd, ...args],
-            {
-                encoding: "utf8",
-                maxBuffer: NATIVE_REVIEW_GIT_MAX_BUFFER,
-            },
-            (error, stdout, stderr) => {
-                if (error) {
-                    reject(
-                        new Error(
-                            String(stderr || error.message || "git failed"),
-                            { cause: error },
-                        ),
-                    );
-                    return;
-                }
-
-                resolve(String(stdout));
-            },
-        );
-    });
-}
-
-function isNativeGitDeleted(entry: NativeGitStatusEntry): boolean {
-    return entry.code[0] === "D" || entry.code[1] === "D";
-}
-
-function inferNativeTrackedFileKind(
-    previousPath: string | null,
-    oldText: string | null,
-    newText: string | null,
-): AiTrackedFile["kind"] {
-    if (previousPath) {
-        return "move";
-    }
-
-    if (oldText === null) {
-        return "create";
-    }
-
-    if (newText === null) {
-        return "delete";
-    }
-
-    return "update";
-}
-
 function isTerminalNativeReviewActivityStatus(
     status: AiToolActivity["status"],
 ): boolean {
     return status === "completed" || status === "failed";
-}
-
-function isNativeReviewText(text: string): boolean {
-    return (
-        text.length <= NATIVE_REVIEW_MAX_FILE_BYTES &&
-        !text.includes("\u0000")
-    );
 }
 
 function normalizeOptionalText(value: string | null): string | null {
@@ -4546,6 +3919,75 @@ function upsertNativeToolActivity(
     );
 }
 
+function mergePersistedCatalogIntoSessionSnapshot(
+    snapshot: AiSessionSnapshot,
+    catalog: PersistedRuntimeCatalogSnapshot,
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        availableCommands:
+            snapshot.availableCommands.length > 0
+                ? snapshot.availableCommands
+                : catalog.availableCommands,
+        configOptions:
+            snapshot.configOptions.length > 0
+                ? snapshot.configOptions
+                : catalog.configOptions,
+        modeId: snapshot.modeId ?? catalog.modeId,
+        modes: snapshot.modes.length > 0 ? snapshot.modes : catalog.modes,
+        modelId: snapshot.modelId ?? catalog.modelId,
+        models: snapshot.models.length > 0 ? snapshot.models : catalog.models,
+    };
+}
+
+function mergePersistedCatalogIntoRuntimeStatus(
+    status: AiRuntimeStatus,
+    catalog: PersistedRuntimeCatalogSnapshot,
+): AiRuntimeStatus {
+    return {
+        ...status,
+        availableCommands:
+            status.availableCommands && status.availableCommands.length > 0
+                ? status.availableCommands
+                : catalog.availableCommands,
+        configOptions:
+            status.configOptions && status.configOptions.length > 0
+                ? status.configOptions
+                : catalog.configOptions,
+        modeId: status.modeId ?? catalog.modeId,
+        modes:
+            status.modes && status.modes.length > 0
+                ? status.modes
+                : catalog.modes,
+        modelId: status.modelId ?? catalog.modelId,
+        models:
+            status.models && status.models.length > 0
+                ? status.models
+                : catalog.models,
+    };
+}
+
+function buildPersistedRuntimeCatalogPatch(
+    snapshot: AiSessionSnapshot,
+    patch: NormalizedSessionCatalogPayload,
+): Partial<PersistedRuntimeCatalogSnapshot> {
+    return {
+        ...(patch.availableCommands !== undefined
+            ? { availableCommands: snapshot.availableCommands }
+            : {}),
+        ...(patch.configOptions !== undefined
+            ? {
+                  configOptions: snapshot.configOptions,
+                  modeId: snapshot.modeId,
+                  modes: snapshot.modes,
+                  modelId: snapshot.modelId,
+                  models: snapshot.models,
+              }
+            : {}),
+        ...(patch.modeId !== undefined ? { modeId: snapshot.modeId } : {}),
+    };
+}
+
 function parseSecretStorageKey(key: string): {
     readonly namespace: string;
     readonly secretId: string;
@@ -4602,13 +4044,6 @@ function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
     if (typeof timer.unref === "function") {
         timer.unref();
     }
-}
-
-function shouldUseNativeAuthWrite(env: NodeJS.ProcessEnv): boolean {
-    return (
-        env.COMANDO_NATIVE_AUTH === "1" &&
-        (env.COMANDO_NATIVE_AUTH_MODE ?? "shadow") === "write"
-    );
 }
 
 function nativeSecretPatchesFromValuePatch(

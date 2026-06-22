@@ -27,10 +27,6 @@ pub enum GitError {
     Conflict,
     #[error("{0}")]
     InvalidOperation(String),
-    #[error("Git operation is disabled by native Git guardrails.")]
-    OperationDisabled,
-    #[error("Git network operation is disabled by native Git guardrails.")]
-    NetworkDisabled,
     #[error("Permission denied.")]
     PermissionDenied,
     #[error("Git IO error: {0}")]
@@ -52,8 +48,6 @@ impl GitError {
             Self::PathEscape => "path_escape",
             Self::Conflict => "conflict",
             Self::InvalidOperation(_) => "invalid_operation",
-            Self::OperationDisabled => "operation_disabled",
-            Self::NetworkDisabled => "network_disabled",
             Self::PermissionDenied => "permission_denied",
             Self::Io(_) => "io_error",
         }
@@ -65,11 +59,9 @@ impl GitError {
             Self::BareRepository | Self::InvalidPath | Self::InvalidOperation(_) => {
                 NativeErrorCode::InvalidArgs
             }
-            Self::PathEscape
-            | Self::Conflict
-            | Self::OperationDisabled
-            | Self::NetworkDisabled
-            | Self::PermissionDenied => NativeErrorCode::PermissionDenied,
+            Self::PathEscape | Self::Conflict | Self::PermissionDenied => {
+                NativeErrorCode::PermissionDenied
+            }
             Self::CommandFailed { .. } => NativeErrorCode::InternalError,
             Self::CommandTimedOut => NativeErrorCode::OperationTimeout,
             Self::OutputTooLarge { .. } => NativeErrorCode::TooLarge,

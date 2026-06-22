@@ -84,51 +84,6 @@ impl Drop for BackendProcess {
 }
 
 #[test]
-fn git_mutations_require_native_write_mode_guardrails() {
-    let mut backend = BackendProcess::spawn_with_env([
-        ("COMANDO_NATIVE_GIT", "1"),
-        ("COMANDO_NATIVE_GIT_MODE", "read"),
-        ("COMANDO_NATIVE_GIT_MUTATIONS", "1"),
-    ]);
-
-    backend.send(json!({
-        "id": "stage",
-        "command": "git_stage_paths",
-        "args": {},
-    }));
-    let response = backend.read_json();
-
-    assert_eq!(response["type"], "response");
-    assert_eq!(response["id"], "stage");
-    assert_eq!(response["ok"], false);
-    assert_eq!(
-        response["error"]["details"]["gitCode"],
-        "operation_disabled"
-    );
-}
-
-#[test]
-fn git_network_requires_the_network_guardrail() {
-    let mut backend = BackendProcess::spawn_with_env([
-        ("COMANDO_NATIVE_GIT", "1"),
-        ("COMANDO_NATIVE_GIT_MODE", "write"),
-        ("COMANDO_NATIVE_GIT_MUTATIONS", "1"),
-    ]);
-
-    backend.send(json!({
-        "id": "fetch",
-        "command": "git_fetch",
-        "args": {},
-    }));
-    let response = backend.read_json();
-
-    assert_eq!(response["type"], "response");
-    assert_eq!(response["id"], "fetch");
-    assert_eq!(response["ok"], false);
-    assert_eq!(response["error"]["details"]["gitCode"], "network_disabled");
-}
-
-#[test]
 fn ping_over_stdio() {
     let mut backend = BackendProcess::spawn();
 

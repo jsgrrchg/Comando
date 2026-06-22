@@ -11,71 +11,12 @@ import type {
 } from "@shared/native-backend";
 
 import { createEmptyAiSessionSnapshot } from "@main/ai/persistence";
-import type { AiWorkerSessionLaunchInput } from "@main/ai/contracts";
+import type { AiSessionLaunchInput } from "@main/ai/contracts";
 
 import {
-    NATIVE_AI_ENABLED_ENV,
-    NATIVE_AI_HISTORY_ENABLED_ENV,
-    NATIVE_AI_REVIEW_ENABLED_ENV,
-    NATIVE_AI_RUNTIMES_ENV,
     NativeAiGateway,
     type NativeAiGatewayOptions,
-    shouldUseNativeAi,
-    shouldUseNativeAiHistory,
-    shouldUseNativeAiRuntime,
 } from "./ai";
-
-describe("native AI flags", () => {
-    it("requires explicit opt-in and defaults to the full PR 9 runtime matrix", () => {
-        expect(shouldUseNativeAi({})).toBe(false);
-        expect(
-            shouldUseNativeAi({ [NATIVE_AI_ENABLED_ENV]: "1" }),
-        ).toBe(true);
-        expect(
-            shouldUseNativeAiRuntime("opencode", {
-                [NATIVE_AI_ENABLED_ENV]: "1",
-            }),
-        ).toBe(true);
-        expect(
-            shouldUseNativeAiRuntime("codex", {
-                [NATIVE_AI_ENABLED_ENV]: "1",
-            }),
-        ).toBe(true);
-        expect(
-            shouldUseNativeAiRuntime("claude", {
-                [NATIVE_AI_ENABLED_ENV]: "1",
-            }),
-        ).toBe(true);
-        expect(
-            shouldUseNativeAiRuntime("grok", {
-                [NATIVE_AI_ENABLED_ENV]: "1",
-            }),
-        ).toBe(true);
-        expect(
-            shouldUseNativeAiRuntime("kilo", {
-                [NATIVE_AI_ENABLED_ENV]: "1",
-            }),
-        ).toBe(true);
-        expect(
-            shouldUseNativeAiRuntime("opencode", {
-                [NATIVE_AI_ENABLED_ENV]: "1",
-                [NATIVE_AI_RUNTIMES_ENV]: "codex",
-            }),
-        ).toBe(false);
-        expect(
-            shouldUseNativeAiRuntime("opencode", {
-                [NATIVE_AI_ENABLED_ENV]: "1",
-                [NATIVE_AI_RUNTIMES_ENV]: "opencode",
-            }),
-        ).toBe(true);
-        expect(
-            shouldUseNativeAiHistory({
-                [NATIVE_AI_ENABLED_ENV]: "1",
-                [NATIVE_AI_HISTORY_ENABLED_ENV]: "1",
-            }),
-        ).toBe(true);
-    });
-});
 
 describe("NativeAiGateway", () => {
     it("prepares native sessions with launch context and returns a live snapshot", async () => {
@@ -111,39 +52,12 @@ describe("NativeAiGateway", () => {
             sessionId: "session-1",
             windowId: "window-1",
         });
-        expect(payload.launch).toMatchObject({
-            additionalRoots: ["/workspace/other"],
-            args: ["acp"],
-            authCredentialSource: "external-runtime",
-            authHandshake: null,
-            authMethod: "opencode-login",
-            cwd: "/workspace/project",
-            desiredSelections: {
-                configOptions: { model: "gpt-5" },
-                modeId: "build",
-                modelId: "gpt-5",
-            },
-            env: { PATH: "/bin", TOKEN: "secret" },
-            executable: "opencode",
-            ownerWindowId: "window-1",
-            persistedRuntimeSessionId: null,
-            persistedSubagentSessionMappings: [],
-            projectId: "project-1",
-            projectRoot: "/workspace/project",
-            runtimeId: "opencode",
-            worktreeId: "worktree-1",
-        });
+        expect(payload.launch).toBeNull();
     });
 
     it("passes persisted history links when Rust owns runtime launch resolution", async () => {
         const client = createClient();
-        const gateway = createGateway(client, {
-            env: {
-                COMANDO_NATIVE_AUTH: "1",
-                COMANDO_NATIVE_AUTH_MODE: "write",
-                [NATIVE_AI_ENABLED_ENV]: "1",
-            },
-        });
+        const gateway = createGateway(client);
         const launch = {
             ...createLaunch(),
             persistedSnapshot: {
@@ -478,9 +392,9 @@ describe("NativeAiGateway", () => {
     it("requests and adapts native history payloads when history is enabled", async () => {
         const client = createClient();
         client.request.mockImplementation(
-            async <T = unknown>(command: string): Promise<T> => {
+            <T = unknown>(command: string): Promise<T> => {
                 if (command === "ai_list_session_history") {
-                    return [
+                    return Promise.resolve([
                         {
                             createdAt: "2026-06-20T00:00:00.000Z",
                             messageCount: 1,
@@ -495,10 +409,10 @@ describe("NativeAiGateway", () => {
                             updatedAt: "2026-06-20T00:00:01.000Z",
                             worktreeId: "worktree-1",
                         },
-                    ] as T;
+                    ] as T);
                 }
                 if (command === "ai_load_session_transcript_page") {
-                    return {
+                    return Promise.resolve({
                         messages: [
                             {
                                 attachments: [],
@@ -512,10 +426,10 @@ describe("NativeAiGateway", () => {
                         offset: 0,
                         sessionId: "session-1",
                         totalMessages: 1,
-                    } as T;
+                    } as T);
                 }
                 if (command === "ai_load_session_snapshot") {
-                    return {
+                    return Promise.resolve({
                         activeTurnStartedAt: null,
                         availableCommands: [],
                         closedAt: null,
@@ -541,10 +455,10 @@ describe("NativeAiGateway", () => {
                         trackedFiles: [],
                         updatedAt: "2026-06-20T00:00:01.000Z",
                         worktreeId: "worktree-1",
-                    } as T;
+                    } as T);
                 }
                 if (command === "ai_load_review_state") {
-                    return {
+                    return Promise.resolve({
                         changedFiles: [],
                         conflicts: [],
                         sessionId: "session-1",
@@ -569,28 +483,22 @@ describe("NativeAiGateway", () => {
                             },
                         ],
                         updatedAt: "2026-06-20T00:00:02.000Z",
-                    } as T;
+                    } as T);
                 }
                 if (command === "ai_list_session_runtime_mappings") {
-                    return [
+                    return Promise.resolve([
                         {
                             appSessionId: "session-child",
                             parentAppSessionId: "session-1",
                             parentRuntimeSessionId: "runtime-session-1",
                             runtimeSessionId: "runtime-child",
                         },
-                    ] as T;
+                    ] as T);
                 }
-                return { ok: true } as T;
+                return Promise.resolve({ ok: true } as T);
             },
         );
-        const gateway = createGateway(client, {
-            env: {
-                [NATIVE_AI_ENABLED_ENV]: "1",
-                [NATIVE_AI_HISTORY_ENABLED_ENV]: "1",
-                [NATIVE_AI_REVIEW_ENABLED_ENV]: "1",
-            },
-        });
+        const gateway = createGateway(client);
 
         await expect(
             gateway.listSessionHistory({
@@ -680,12 +588,7 @@ describe("NativeAiGateway", () => {
                 return Promise.resolve({ ok: true } as T);
             },
         );
-        const gateway = createGateway(client, {
-            env: {
-                [NATIVE_AI_ENABLED_ENV]: "1",
-                [NATIVE_AI_REVIEW_ENABLED_ENV]: "1",
-            },
-        });
+        const gateway = createGateway(client);
 
         await expect(gateway.reconcileTrackedFiles("session-1")).resolves.toEqual([
             expect.objectContaining({
@@ -783,7 +686,6 @@ function createGateway(
     options: Partial<
         Pick<
             NativeAiGatewayOptions,
-            | "env"
             | "onDiagnostic"
             | "onRuntimeStatus"
             | "onSessionCatalogPatch"
@@ -793,7 +695,6 @@ function createGateway(
 ) {
     return new NativeAiGateway({
         client,
-        env: options.env ?? { [NATIVE_AI_ENABLED_ENV]: "1" },
         onDiagnostic: options.onDiagnostic,
         onRuntimeStatus: options.onRuntimeStatus ?? vi.fn(),
         onSessionCatalogPatch: options.onSessionCatalogPatch,
@@ -872,7 +773,7 @@ function createPromptInput(): SendAiPromptInput {
     };
 }
 
-function createLaunch(): AiWorkerSessionLaunchInput {
+function createLaunch(): AiSessionLaunchInput {
     const status: AiRuntimeStatus = {
         authMethod: "opencode-login",
         authMethods: [],
