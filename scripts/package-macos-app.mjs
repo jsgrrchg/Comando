@@ -707,6 +707,7 @@ function writeStandaloneProjectPackageJson(copiedPackages) {
         private: true,
         description: rootPackageJson.description,
         type: rootPackageJson.type,
+        packageManager: "npm@10.0.0",
         main: rootPackageJson.main,
         devDependencies: {
             electron: electronVersion,

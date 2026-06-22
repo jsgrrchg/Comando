@@ -74,16 +74,12 @@ function main() {
         repoRoot,
         targetArch,
     });
-    const toolchainEnv = preflight.toolchainEnv;
 
     console.log(`[package:win] Preflight passed for ${targetArch}.`);
 
     console.log("[package:win] Building Electron production bundles.");
     prepareWorkspace();
     run(preflight.pnpmCommand, ["run", "build"]);
-
-    console.log(`[package:win] Rebuilding native modules for ${targetArch}.`);
-    rebuildNativeModules(targetArch, toolchainEnv, preflight);
 
     console.log(`[package:win] Staging Windows AI payload for ${targetArch}.`);
     stageWindowsAiPayload(targetArch);
@@ -93,13 +89,12 @@ function main() {
     console.log(
         `[package:win] Packaging Windows app with ${electronBuilderArgs.join(" ")}.`,
     );
-    packageWindowsApp(electronBuilderArgs, targetArch, toolchainEnv, preflight);
+    packageWindowsApp(electronBuilderArgs, targetArch, preflight);
 }
 
 function packageWindowsApp(
     electronBuilderArgs,
     targetArch,
-    toolchainEnv,
     preflight,
 ) {
     const unpackedAppDir = resolveUnpackedAppDir(targetArch);
@@ -108,9 +103,7 @@ function packageWindowsApp(
         "--dir",
     ]);
 
-    run(process.execPath, [preflight.electronBuilderCli, ...dirArgs], {
-        env: toolchainEnv,
-    });
+    run(process.execPath, [preflight.electronBuilderCli, ...dirArgs]);
 
     const appUpdateConfigPath = path.join(
         unpackedAppDir,
@@ -150,7 +143,7 @@ function packageWindowsApp(
             unpackedAppDir,
         ],
         {
-            env: toolchainEnv,
+        env: process.env,
         },
     );
 
@@ -270,18 +263,6 @@ function setAndVerifyWindowsExecutableMetadata(unpackedAppDir, preflight) {
             ? `[package:win] Verified executable metadata, icon, and signature for ${relativeToRepo(executablePath)}.`
             : `[package:win] Verified executable metadata and icon for ${relativeToRepo(executablePath)}.`,
     );
-}
-
-function rebuildNativeModules(targetArch, extraEnv, preflight) {
-    run(process.execPath, [
-        preflight.electronBuilderInstallAppDepsCli,
-        "--platform",
-        "win32",
-        "--arch",
-        targetArch,
-    ], {
-        env: extraEnv,
-    });
 }
 
 function stageWindowsAiPayload(targetArch) {

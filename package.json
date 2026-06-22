@@ -164,7 +164,7 @@
             "entitlementsInherit": "resources/entitlements.mac.inherit.plist",
             "hardenedRuntime": true,
             "icon": "resources/icons/macos.icon",
-            "x64ArchFiles": "{Contents/Resources/ai/**/*,Contents/Resources/native/**/*,Contents/Resources/app.asar.unpacked/node_modules/**/*}",
+            "x64ArchFiles": "{Contents/Resources/ai/**/*,Contents/Resources/native/**/*}",
             "target": [
                 {
                     "target": "dmg",

@@ -79,33 +79,19 @@ describe("Windows packaging preflight", () => {
     it("validates all early Windows packaging inputs", () => {
         const repoRoot = createTempDir();
         const nodeBinDir = path.join(repoRoot, "node-bin");
-        const pythonDir = path.join(repoRoot, "python");
         const powerShellDir = path.join(repoRoot, "powershell");
-        const vsDir = path.join(repoRoot, "vs");
-        const programFilesX86 = path.join(repoRoot, "Program Files (x86)");
 
         writeExecutable(nodeBinDir, "pnpm.cmd");
-        writeExecutable(pythonDir, "python.exe");
         writeExecutable(powerShellDir, "pwsh.exe");
-        writeExecutable(vsDir, "vswhere.exe");
         writeFile(path.join(repoRoot, "node_modules", "electron-builder", "cli.js"));
-        writeFile(
-            path.join(
-                repoRoot,
-                "node_modules",
-                "electron-builder",
-                "install-app-deps.js",
-            ),
-        );
         writeFile(path.join(repoRoot, "resources", "icons", "windows.ico"));
         createDirectRceditDependency(repoRoot);
         createWindowsAcpPayload(repoRoot, "x64");
 
         const preflight = resolveWindowsPackagingPreflight({
             env: {
-                PATH: [pythonDir, powerShellDir, vsDir].join(";"),
+                PATH: powerShellDir,
                 PATHEXT: ".EXE;.CMD",
-                "ProgramFiles(x86)": programFilesX86,
             },
             nodeBinDir,
             platform: "win32",
@@ -123,41 +109,23 @@ describe("Windows packaging preflight", () => {
         expect(preflight.aiPayload.sourceRoot).toBe(
             path.join(repoRoot, "build", "windows-acp", "win-x64", "ai"),
         );
-        expect(preflight.toolchainEnv).toMatchObject({
-            GYP_MSVS_VERSION: "2022",
-            PYTHON: path.join(pythonDir, "python.exe"),
-            npm_config_python: path.join(pythonDir, "python.exe"),
-        });
-        expect(preflight.visualStudioToolchain.source).toBe("vswhere.exe");
     });
 
     it("fails before building when the target Windows ACP payload is missing", () => {
         const repoRoot = createTempDir();
         const nodeBinDir = path.join(repoRoot, "node-bin");
-        const pythonDir = path.join(repoRoot, "python");
         const powerShellDir = path.join(repoRoot, "powershell");
-        const vsDir = path.join(repoRoot, "vs");
 
         writeExecutable(nodeBinDir, "pnpm.cmd");
-        writeExecutable(pythonDir, "python.exe");
         writeExecutable(powerShellDir, "powershell.exe");
-        writeExecutable(vsDir, "vswhere.exe");
         writeFile(path.join(repoRoot, "node_modules", "electron-builder", "cli.js"));
-        writeFile(
-            path.join(
-                repoRoot,
-                "node_modules",
-                "electron-builder",
-                "install-app-deps.js",
-            ),
-        );
         writeFile(path.join(repoRoot, "resources", "icons", "windows.ico"));
         createDirectRceditDependency(repoRoot);
 
         expect(() =>
             resolveWindowsPackagingPreflight({
                 env: {
-                    PATH: [pythonDir, powerShellDir, vsDir].join(";"),
+                    PATH: powerShellDir,
                     PATHEXT: ".EXE;.CMD",
                 },
                 nodeBinDir,
@@ -166,42 +134,6 @@ describe("Windows packaging preflight", () => {
                 targetArch: "arm64",
             }),
         ).toThrow(/build:windows-acp:arm64/u);
-    });
-
-    it("rejects missing Visual Studio Build Tools signals", () => {
-        const repoRoot = createTempDir();
-        const nodeBinDir = path.join(repoRoot, "node-bin");
-        const pythonDir = path.join(repoRoot, "python");
-        const powerShellDir = path.join(repoRoot, "powershell");
-
-        writeExecutable(nodeBinDir, "pnpm.cmd");
-        writeExecutable(pythonDir, "python.exe");
-        writeExecutable(powerShellDir, "pwsh.exe");
-        writeFile(path.join(repoRoot, "node_modules", "electron-builder", "cli.js"));
-        writeFile(
-            path.join(
-                repoRoot,
-                "node_modules",
-                "electron-builder",
-                "install-app-deps.js",
-            ),
-        );
-        writeFile(path.join(repoRoot, "resources", "icons", "windows.ico"));
-        createDirectRceditDependency(repoRoot);
-        createWindowsAcpPayload(repoRoot, "x64");
-
-        expect(() =>
-            resolveWindowsPackagingPreflight({
-                env: {
-                    PATH: [pythonDir, powerShellDir].join(";"),
-                    PATHEXT: ".EXE;.CMD",
-                },
-                nodeBinDir,
-                platform: "win32",
-                repoRoot,
-                targetArch: "x64",
-            }),
-        ).toThrow(/Visual Studio Build Tools/u);
     });
 });
 

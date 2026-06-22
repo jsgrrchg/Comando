@@ -64,7 +64,7 @@ use crate::review::{
 };
 
 const SETTINGS_SNAPSHOT_KEY: &str = "settings.snapshot";
-const SETTINGS_PROJECT_KEY_PREFIX: &str = "settings.project.";
+const PROJECT_SETTINGS_KEY: &str = "settings.projects";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandResult {
@@ -538,14 +538,25 @@ impl NativeBackend {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
         };
-        let key = match settings_project_key(&input.project_id) {
-            Ok(key) => key,
+        let project_id = match settings_project_id(&input.project_id) {
+            Ok(project_id) => project_id,
             Err(error) => return error_only(request.id, error),
         };
-        let value = match load_app_data_value(store, &key) {
-            Ok(value) => value,
+        let projects = match load_app_data_value(store, PROJECT_SETTINGS_KEY) {
+            Ok(Value::Object(projects)) => projects,
+            Ok(Value::Null) => serde_json::Map::new(),
+            Ok(_) => {
+                return error_only(
+                    request.id,
+                    NativeError::new(
+                        NativeErrorCode::InvalidJson,
+                        "Native project settings storage must be a JSON object.",
+                    ),
+                );
+            }
             Err(error) => return error_only(request.id, error),
         };
+        let value = projects.get(project_id).cloned().unwrap_or(Value::Null);
         response_only(
             request.id,
             json!({ "snapshot": value.clone(), "value": value }),
@@ -560,11 +571,30 @@ impl NativeBackend {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
         };
-        let key = match settings_project_key(&input.project_id) {
-            Ok(key) => key,
+        let project_id = match settings_project_id(&input.project_id) {
+            Ok(project_id) => project_id,
             Err(error) => return error_only(request.id, error),
         };
-        match save_app_data_value(store, &key, &input.snapshot) {
+        let mut projects = match load_app_data_value(store, PROJECT_SETTINGS_KEY) {
+            Ok(Value::Object(projects)) => projects,
+            Ok(Value::Null) => serde_json::Map::new(),
+            Ok(_) => {
+                return error_only(
+                    request.id,
+                    NativeError::new(
+                        NativeErrorCode::InvalidJson,
+                        "Native project settings storage must be a JSON object.",
+                    ),
+                );
+            }
+            Err(error) => return error_only(request.id, error),
+        };
+        if input.snapshot.is_null() {
+            projects.remove(project_id);
+        } else {
+            projects.insert(project_id.to_string(), input.snapshot);
+        }
+        match save_app_data_value(store, PROJECT_SETTINGS_KEY, &Value::Object(projects)) {
             Ok(()) => response_only(request.id, json!({ "ok": true })),
             Err(error) => error_only(request.id, error),
         }
@@ -2507,12 +2537,7 @@ impl NativeBackend {
         input: native_ai::NativeAiSetSessionPinnedInput,
     ) -> Result<(), NativeError> {
         let store = self.ai_history_store()?;
-        if !store.has_session(&input.session_id) {
-            return Err(comando_ai::AiError::SessionNotFound {
-                session_id: input.session_id.0,
-            }
-            .to_native_error());
-        }
+        self.ensure_ai_session_in_native_history(&store, &input.session_id)?;
         store
             .set_session_pinned(&input.session_id, input.pinned)
             .map_err(|error| error.to_native_error())
@@ -2523,12 +2548,7 @@ impl NativeBackend {
         session_id: comando_types::ids::SessionId,
     ) -> Result<(), NativeError> {
         let store = self.ai_history_store()?;
-        if !store.has_session(&session_id) {
-            return Err(comando_ai::AiError::SessionNotFound {
-                session_id: session_id.0,
-            }
-            .to_native_error());
-        }
+        self.ensure_ai_session_in_native_history(&store, &session_id)?;
         store
             .delete_session(&session_id)
             .map_err(|error| error.to_native_error())
@@ -2539,15 +2559,44 @@ impl NativeBackend {
         input: native_ai::NativeAiRenameSessionInput,
     ) -> Result<(), NativeError> {
         let store = self.ai_history_store()?;
-        if !store.has_session(&input.session_id) {
-            return Err(comando_ai::AiError::SessionNotFound {
-                session_id: input.session_id.0,
-            }
-            .to_native_error());
-        }
+        self.ensure_ai_session_in_native_history(&store, &input.session_id)?;
         self.ai_engine
             .rename_session(input)
             .map_err(|error| error.to_native_error())
+    }
+
+    fn ensure_ai_session_in_native_history(
+        &self,
+        store: &AiHistoryStore,
+        session_id: &comando_types::ids::SessionId,
+    ) -> Result<(), NativeError> {
+        if store.has_session(session_id) {
+            return Ok(());
+        }
+        let Some(persistence_store) = self.persistence_store.as_ref() else {
+            return Err(comando_ai::AiError::SessionNotFound {
+                session_id: session_id.0.clone(),
+            }
+            .to_native_error());
+        };
+        let migrator = AiHistoryMigrator::new(
+            store,
+            persistence_store.connection(),
+            Some(persistence_store.database_path().display().to_string()),
+        );
+        migrator
+            .copy_legacy_history_with_options(AiHistoryMigrationOptions {
+                mode: AiHistoryMigrationMode::Copy,
+                limit: None,
+            })
+            .map_err(|error| error.to_native_error())?;
+        if store.has_session(session_id) {
+            return Ok(());
+        }
+        Err(comando_ai::AiError::SessionNotFound {
+            session_id: session_id.0.clone(),
+        }
+        .to_native_error())
     }
 
     fn migrate_ai_session_history(
@@ -3605,7 +3654,7 @@ fn save_app_data_value(
     }
 }
 
-fn settings_project_key(project_id: &str) -> Result<String, NativeError> {
+fn settings_project_id(project_id: &str) -> Result<&str, NativeError> {
     let project_id = project_id.trim();
     if project_id.is_empty() {
         return Err(NativeError::new(
@@ -3613,7 +3662,7 @@ fn settings_project_key(project_id: &str) -> Result<String, NativeError> {
             "Project settings require a project id.",
         ));
     }
-    Ok(format!("{SETTINGS_PROJECT_KEY_PREFIX}{project_id}"))
+    Ok(project_id)
 }
 
 fn app_data_storage_key(key: &str) -> Result<String, NativeError> {

@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+
+import { safeStorage } from "electron";
 
 import { APP_ZOOM_FACTOR_DEFAULT } from "@shared/app-zoom";
 import { AGENTS_SIDEBAR_SCALE_DEFAULT } from "@shared/agents-sidebar-scale";
 import { FILE_TREE_SCALE_DEFAULT } from "@shared/file-tree-scale";
-import { DEFAULT_APP_TERMINAL_SETTINGS } from "@shared/terminal-settings";
+import {
+    DEFAULT_APP_TERMINAL_SETTINGS,
+    normalizeWindowsTerminalShell,
+} from "@shared/terminal-settings";
 import {
     DEFAULT_AI_CHAT_FONT_FAMILY,
     DEFAULT_AI_CHAT_FONT_SIZE,
@@ -11,8 +18,10 @@ import {
     DEFAULT_AI_COMPOSER_FONT_SIZE,
     DEFAULT_EDITOR_FONT_FAMILY,
     DEFAULT_EDITOR_FONT_SIZE,
+    EDITOR_FONT_FAMILY_IDS,
 } from "@shared/typography";
 import type {
+    AiToolCardExpansionMode,
     AiHistorySessionSummary,
     AiRuntimeId,
     AiSessionSnapshot,
@@ -34,6 +43,8 @@ import type {
     PersistenceSnapshot,
     ProjectSettingsSnapshot,
     SettingsSnapshot,
+    ThemeMode,
+    ThemePreset,
     WorkspaceNode,
     WorkspaceSnapshot,
 } from "@shared/ipc";
@@ -56,6 +67,8 @@ import type {
 import type { SettingsGateway } from "@main/settings/service";
 import type { WorkspaceGateway } from "@main/workspace/service";
 
+import { debugBenignError } from "@main/observability/logging";
+
 import type { NativeBackendRequester } from "./persistence";
 
 const SETTINGS_KEY = "settings.snapshot";
@@ -63,6 +76,29 @@ const PROJECT_SETTINGS_KEY = "settings.projects";
 const PERSISTENCE_KEY = "persistence.windows";
 const AI_PREFERENCES_KEY = "ai.runtimePreferences";
 const WORKSPACE_KEY_PREFIX = "workspace.";
+const THEME_PRESETS = [
+    "default",
+    "ocean",
+    "forest",
+    "amber",
+    "rose",
+    "lavender",
+    "nord",
+    "sunset",
+    "catppuccin",
+    "solarized",
+    "tokyoNight",
+    "gruvbox",
+    "ayu",
+    "nightOwl",
+    "vesper",
+    "rosePine",
+    "kanagawa",
+    "everforest",
+    "synthwave84",
+    "claude",
+    "codex",
+] as const satisfies readonly ThemePreset[];
 
 const DEFAULT_MAIN_WINDOW_HEIGHT = 960;
 const DEFAULT_MAIN_WINDOW_WIDTH = 1480;
@@ -97,38 +133,106 @@ interface AppDataEnvelope<T> {
     readonly value: T | null;
 }
 
+type CompleteSettingsSnapshot = SettingsSnapshot & {
+    readonly ai: NonNullable<SettingsSnapshot["ai"]>;
+    readonly aiChat: NonNullable<SettingsSnapshot["aiChat"]>;
+    readonly appearance: NonNullable<SettingsSnapshot["appearance"]>;
+    readonly editor: NonNullable<SettingsSnapshot["editor"]>;
+    readonly terminal: NonNullable<SettingsSnapshot["terminal"]>;
+};
+
 interface PersistedWindowRecord {
     readonly isOpen: boolean;
     readonly lastOpenedAt: string;
     readonly snapshot: PersistenceSnapshot;
 }
 
+interface LegacySettingRow {
+    readonly key: string;
+    readonly value: string;
+}
+
+interface LegacyWindowSessionRow {
+    readonly active_project_id: string | null;
+    readonly active_worktree_id: string | null;
+    readonly height: number;
+    readonly is_full_screen: number;
+    readonly is_maximized: number;
+    readonly is_open: number | null;
+    readonly last_opened_at: string | null;
+    readonly shell_state_json: string | null;
+    readonly window_id: string;
+    readonly window_kind: string;
+    readonly workspace_id: string;
+    readonly workspace_session_id: string;
+    readonly width: number;
+    readonly x: number | null;
+    readonly y: number | null;
+}
+
+interface LegacyWorkspaceLayoutRow {
+    readonly active_pane_id: string;
+    readonly id: string;
+    readonly root_node_json: string;
+}
+
+interface LegacyWorkspaceTabRow {
+    readonly created_at: string;
+    readonly id: string;
+    readonly kind: string;
+    readonly payload_json: string;
+    readonly title: string;
+    readonly worktree_id: string | null;
+}
+
+interface LegacyProjectSettingRow {
+    readonly key: string;
+    readonly project_id: string;
+    readonly value: string;
+}
+
 class NativeJsonStore {
     readonly #client: NativeBackendRequester;
+    readonly #pendingWrites = new Set<Promise<void>>();
 
     constructor(client: NativeBackendRequester) {
         this.#client = client;
     }
 
     async load<T>(key: string, fallback: T): Promise<T> {
+        const value = await this.loadNullable<T>(key);
+        return value === null ? fallback : value;
+    }
+
+    async loadNullable<T>(key: string): Promise<T | null> {
         const output = await this.#client.request<AppDataEnvelope<unknown>>(
             "app_data_get_json",
             { key },
         );
         if (!isRecord(output) || !("value" in output) || output.value === null) {
-            return fallback;
+            return null;
         }
         return output.value as T;
     }
 
     save(key: string, value: unknown): void {
-        void this.#client
-            .request("app_data_set_json", { key, value })
-            .catch(() => undefined);
+        const write = this.saveNow(key, value)
+            .catch((error: unknown) => {
+                debugBenignError(`nativeAppData.save.${key}`, error);
+            })
+            .finally(() => {
+                this.#pendingWrites.delete(write);
+            });
+        this.#pendingWrites.add(write);
     }
 
     async saveNow(key: string, value: unknown): Promise<void> {
         await this.#client.request("app_data_set_json", { key, value });
+    }
+
+    async flush(): Promise<void> {
+        const pendingWrites = [...this.#pendingWrites];
+        await Promise.all(pendingWrites);
     }
 }
 
@@ -754,11 +858,732 @@ class NativeAiPersistenceClient implements AiPersistenceGateway {
     }
 }
 
+async function migrateLegacyAppData(input: {
+    readonly databaseFile: string;
+    readonly secretStore: SecretStoreGateway;
+    readonly store: NativeJsonStore;
+}): Promise<void> {
+    if (!fs.existsSync(input.databaseFile)) {
+        return;
+    }
+
+    let database: DatabaseSync | null = null;
+    try {
+        database = new DatabaseSync(input.databaseFile, { readOnly: true });
+        const settings = readLegacySettings(database);
+        if (settings.size === 0) {
+            return;
+        }
+
+        if ((await input.store.loadNullable<SettingsSnapshot>(SETTINGS_KEY)) === null) {
+            await input.store.saveNow(
+                SETTINGS_KEY,
+                createLegacySettingsSnapshot(settings),
+            );
+        }
+        if (
+            (await input.store.loadNullable<readonly PersistedWindowRecord[]>(
+                PERSISTENCE_KEY,
+            )) === null
+        ) {
+            const windows = readLegacyWindowRecords(database);
+            if (windows.length > 0) {
+                await input.store.saveNow(PERSISTENCE_KEY, windows);
+            }
+        }
+        await migrateLegacyWorkspaces(database, input.store);
+        await migrateLegacyProjectSettings(database, input.store);
+        await migrateLegacyRuntimePreferences(settings, input.store);
+        await migrateLegacySecrets(settings, input.store, input.secretStore);
+    } catch (error) {
+        debugBenignError("nativeAppData.legacyMigration", error);
+    } finally {
+        database?.close();
+    }
+}
+
+function readLegacySettings(database: DatabaseSync): Map<string, string> {
+    if (!tableExists(database, "app_settings")) {
+        return new Map();
+    }
+    const rows = database
+        .prepare("SELECT key, value FROM app_settings")
+        .all() as unknown as LegacySettingRow[];
+    return new Map(rows.map((row) => [row.key, row.value]));
+}
+
+function createLegacySettingsSnapshot(
+    settings: ReadonlyMap<string, string>,
+): SettingsSnapshot {
+    const defaults = createDefaultSettingsSnapshot();
+    return normalizeSettingsSnapshot({
+        ...defaults,
+        ai: {
+            ...defaults.ai,
+            claude: {
+                ...defaults.ai.claude,
+                authInvalidatedAtMs: readLegacyNumberSetting(
+                    settings,
+                    "ai.claude.auth_invalidated_at_ms",
+                ),
+                authMethod: readLegacyStringSetting(
+                    settings,
+                    "ai.claude.auth_method",
+                ) as ClaudeRuntimeSettings["authMethod"],
+                bedrockGatewayBaseUrl: readLegacyStringSetting(
+                    settings,
+                    "ai.claude.bedrock_gateway_base_url",
+                ),
+                binaryPath: readLegacyStringSetting(
+                    settings,
+                    "ai.claude.binary_path",
+                ),
+                gatewayBaseUrl: readLegacyStringSetting(
+                    settings,
+                    "ai.claude.gateway_base_url",
+                ),
+                hasAnthropicApiKey:
+                    readLegacyBooleanSetting(
+                        settings,
+                        "ai.claude.has_anthropic_api_key",
+                    ) ?? false,
+                hasGatewayAuthToken:
+                    readLegacyBooleanSetting(
+                        settings,
+                        "ai.claude.has_gateway_auth_token",
+                    ) ?? false,
+                hasGatewayCustomHeaders:
+                    readLegacyBooleanSetting(
+                        settings,
+                        "ai.claude.has_gateway_custom_headers",
+                    ) ?? false,
+            },
+            codex: {
+                ...defaults.ai.codex,
+                authMethod: readLegacyStringSetting(
+                    settings,
+                    "ai.codex.auth_method",
+                ) as CodexRuntimeSettings["authMethod"],
+                binaryPath: readLegacyStringSetting(
+                    settings,
+                    "ai.codex.binary_path",
+                ),
+                hasCodexApiKey:
+                    readLegacyBooleanSetting(
+                        settings,
+                        "ai.codex.has_codex_api_key",
+                    ) ?? false,
+                hasOpenAiApiKey:
+                    readLegacyBooleanSetting(
+                        settings,
+                        "ai.codex.has_openai_api_key",
+                    ) ?? false,
+            },
+            grok: {
+                ...defaults.ai.grok,
+                authInvalidatedAtMs: readLegacyNumberSetting(
+                    settings,
+                    "ai.grok.auth_invalidated_at_ms",
+                ),
+                authMethod: readLegacyStringSetting(
+                    settings,
+                    "ai.grok.auth_method",
+                ) as GrokRuntimeSettings["authMethod"],
+                binaryPath: readLegacyStringSetting(
+                    settings,
+                    "ai.grok.binary_path",
+                ),
+                hasXaiApiKey:
+                    readLegacyBooleanSetting(
+                        settings,
+                        "ai.grok.has_xai_api_key",
+                    ) ?? false,
+            },
+            kilo: {
+                ...defaults.ai.kilo,
+                authInvalidatedAtMs: readLegacyNumberSetting(
+                    settings,
+                    "ai.kilo.auth_invalidated_at_ms",
+                ),
+                authMethod: readLegacyStringSetting(
+                    settings,
+                    "ai.kilo.auth_method",
+                ) as KiloRuntimeSettings["authMethod"],
+                binaryPath: readLegacyStringSetting(
+                    settings,
+                    "ai.kilo.binary_path",
+                ),
+                hasKiloApiKey:
+                    readLegacyBooleanSetting(
+                        settings,
+                        "ai.kilo.has_kilo_api_key",
+                    ) ?? false,
+            },
+            opencode: {
+                ...defaults.ai.opencode,
+                authInvalidatedAtMs: readLegacyNumberSetting(
+                    settings,
+                    "ai.opencode.auth_invalidated_at_ms",
+                ),
+                authMethod: readLegacyStringSetting(
+                    settings,
+                    "ai.opencode.auth_method",
+                ) as OpenCodeRuntimeSettings["authMethod"],
+                binaryPath: readLegacyStringSetting(
+                    settings,
+                    "ai.opencode.binary_path",
+                ),
+            },
+        },
+        aiChat: {
+            ...defaults.aiChat,
+            chatFontFamily:
+                normalizeLegacyFontFamily(
+                    readLegacyStringSetting(settings, "ai.chat.font_family"),
+                ) ??
+                defaults.aiChat.chatFontFamily,
+            chatFontSize:
+                readLegacyNumberSetting(settings, "ai.chat.font_size") ??
+                defaults.aiChat.chatFontSize,
+            composerFontFamily:
+                normalizeLegacyFontFamily(
+                    readLegacyStringSetting(settings, "ai.composer.font_family"),
+                ) ??
+                defaults.aiChat.composerFontFamily,
+            composerFontSize:
+                readLegacyNumberSetting(settings, "ai.composer.font_size") ??
+                defaults.aiChat.composerFontSize,
+            contextUsageBarEnabled:
+                readLegacyBooleanSetting(
+                    settings,
+                    "ai.composer.context_usage_bar_enabled",
+                ) ?? defaults.aiChat.contextUsageBarEnabled,
+            historyRetentionDays:
+                readLegacyNumberSetting(
+                    settings,
+                    "ai.chat.history_retention_days",
+                ) ?? defaults.aiChat.historyRetentionDays,
+            requireCmdEnterToSend:
+                readLegacyBooleanSetting(
+                    settings,
+                    "ai.composer.require_cmd_enter",
+                ) ?? defaults.aiChat.requireCmdEnterToSend,
+            reviewDiffZoom:
+                readLegacyNumberSetting(settings, "ai.review.diff_zoom") ??
+                defaults.aiChat.reviewDiffZoom,
+            screenshotRetentionSeconds:
+                readLegacyNumberSetting(
+                    settings,
+                    "ai.composer.screenshot_retention_seconds",
+                ) ?? defaults.aiChat.screenshotRetentionSeconds,
+            toolCardExpansionMode:
+                parseLegacyToolCardExpansionMode(
+                    readLegacyStringSetting(
+                        settings,
+                        "ai.chat.tool_card_expansion_mode",
+                    ),
+                ) ?? defaults.aiChat.toolCardExpansionMode,
+        },
+        appearance: {
+            ...defaults.appearance,
+            agentsSidebarScale:
+                readLegacyNumberSetting(
+                    settings,
+                    "appearance.agents_sidebar_scale",
+                ) ?? defaults.appearance.agentsSidebarScale,
+            boostCodeContrast:
+                readLegacyBooleanSetting(
+                    settings,
+                    "appearance.boost_code_contrast",
+                ) ?? defaults.appearance.boostCodeContrast,
+            fileTreeScale:
+                readLegacyNumberSetting(settings, "appearance.file_tree_scale") ??
+                defaults.appearance.fileTreeScale,
+            stickyFoldersEnabled:
+                readLegacyBooleanSetting(
+                    settings,
+                    "appearance.sticky_folders_enabled",
+                ) ?? defaults.appearance.stickyFoldersEnabled,
+            themeMode:
+                parseLegacyThemeMode(
+                    readLegacyStringSetting(settings, "appearance.theme_mode"),
+                ) ??
+                defaults.appearance.themeMode,
+            themePreset:
+                parseLegacyThemePreset(
+                    readLegacyStringSetting(settings, "appearance.theme_preset"),
+                ) ??
+                defaults.appearance.themePreset,
+            zoomFactor:
+                readLegacyNumberSetting(settings, "appearance.zoom_factor") ??
+                defaults.appearance.zoomFactor,
+        },
+        editor: {
+            ...defaults.editor,
+            autoSaveDelayMs:
+                readLegacyNumberSetting(
+                    settings,
+                    "editor.autosave_delay_ms",
+                ) ?? defaults.editor.autoSaveDelayMs,
+            fontFamily:
+                normalizeLegacyFontFamily(
+                    readLegacyStringSetting(settings, "editor.font_family"),
+                ) ?? defaults.editor.fontFamily,
+            fontSize:
+                readLegacyNumberSetting(settings, "editor.font_size") ??
+                defaults.editor.fontSize,
+            lineHeight:
+                readLegacyNumberSetting(settings, "editor.line_height") ??
+                defaults.editor.lineHeight,
+            minimapEnabled:
+                readLegacyBooleanSetting(settings, "editor.minimap_enabled") ??
+                defaults.editor.minimapEnabled,
+            relativeLineNumbersEnabled:
+                readLegacyBooleanSetting(
+                    settings,
+                    "editor.relative_line_numbers_enabled",
+                ) ?? defaults.editor.relativeLineNumbersEnabled,
+            suggestionsEnabled:
+                readLegacyBooleanSetting(
+                    settings,
+                    "editor.suggestions_enabled",
+                ) ?? defaults.editor.suggestionsEnabled,
+            vimModeEnabled:
+                readLegacyBooleanSetting(settings, "editor.vim_mode_enabled") ??
+                defaults.editor.vimModeEnabled,
+        },
+        shellState:
+            readLegacyJsonSetting<PersistedShellState>(settings, "shell.state") ??
+            defaults.shellState,
+        terminal: {
+            ...defaults.terminal,
+            claudeCodeContinueSession:
+                readLegacyBooleanSetting(
+                    settings,
+                    "terminal.claude_code_continue_session",
+                ) ?? defaults.terminal.claudeCodeContinueSession,
+            claudeCodeMaxTurns:
+                readLegacyNumberSetting(
+                    settings,
+                    "terminal.claude_code_max_turns",
+                ) ?? defaults.terminal.claudeCodeMaxTurns,
+            claudeCodeModel:
+                readLegacyStringSetting(
+                    settings,
+                    "terminal.claude_code_model",
+                ) ?? defaults.terminal.claudeCodeModel,
+            claudeCodeOptimized:
+                readLegacyBooleanSetting(
+                    settings,
+                    "terminal.claude_code_optimized",
+                ) ?? defaults.terminal.claudeCodeOptimized,
+            claudeCodeSkipPermissions:
+                readLegacyBooleanSetting(
+                    settings,
+                    "terminal.claude_code_skip_permissions",
+                ) ?? defaults.terminal.claudeCodeSkipPermissions,
+            terminalFontFamily:
+                readLegacyStringSetting(settings, "terminal.font_family") ??
+                defaults.terminal.terminalFontFamily,
+            terminalFontSize:
+                readLegacyNumberSetting(settings, "terminal.font_size") ??
+                defaults.terminal.terminalFontSize,
+            windowsShell:
+                normalizeWindowsTerminalShell(
+                    readLegacyStringSetting(settings, "terminal.windows_shell"),
+                ),
+        },
+    });
+}
+
+function readLegacyWindowRecords(
+    database: DatabaseSync,
+): readonly PersistedWindowRecord[] {
+    if (
+        !tableExists(database, "workspace_sessions") ||
+        !tableExists(database, "app_windows")
+    ) {
+        return [];
+    }
+    const rows = database
+        .prepare(
+            `
+            SELECT
+                app_windows.id AS window_id,
+                app_windows.kind AS window_kind,
+                app_windows.x,
+                app_windows.y,
+                app_windows.width,
+                app_windows.height,
+                app_windows.is_maximized,
+                app_windows.is_full_screen,
+                workspace_sessions.id AS workspace_session_id,
+                workspace_sessions.workspace_id,
+                workspace_sessions.active_project_id,
+                workspace_sessions.active_worktree_id,
+                workspace_sessions.shell_state_json,
+                workspace_sessions.is_open,
+                workspace_sessions.last_opened_at
+            FROM workspace_sessions
+            INNER JOIN app_windows
+                ON app_windows.id = workspace_sessions.window_id
+            WHERE app_windows.kind = 'main'
+            ORDER BY workspace_sessions.last_opened_at ASC
+            `,
+        )
+        .all() as unknown as LegacyWindowSessionRow[];
+
+    return rows.map((row) => ({
+        isOpen: row.is_open !== 0,
+        lastOpenedAt: row.last_opened_at ?? new Date().toISOString(),
+        snapshot: {
+            activeProjectId: row.active_project_id,
+            activeWorktreeId: row.active_worktree_id,
+            shellState: parseLegacyJson<PersistedShellState | null>(
+                row.shell_state_json,
+                null,
+            ),
+            windowContext: {
+                projectId: row.active_project_id,
+                windowId: row.window_id,
+                windowKind: "main",
+                workspaceId: row.workspace_id,
+                workspaceSessionId: row.workspace_session_id,
+                worktreeId: row.active_worktree_id,
+            },
+            windowState: {
+                height: row.height,
+                id: row.window_id,
+                isFullScreen: row.is_full_screen === 1,
+                isMaximized: row.is_maximized === 1,
+                width: row.width,
+                x: row.x,
+                y: row.y,
+            },
+        },
+    }));
+}
+
+async function migrateLegacyWorkspaces(
+    database: DatabaseSync,
+    store: NativeJsonStore,
+): Promise<void> {
+    if (
+        !tableExists(database, "workspace_layouts") ||
+        !tableExists(database, "workspace_tabs")
+    ) {
+        return;
+    }
+    const layouts = database
+        .prepare(
+            `
+            SELECT id, active_pane_id, root_node_json
+            FROM workspace_layouts
+            `,
+        )
+        .all() as unknown as LegacyWorkspaceLayoutRow[];
+    for (const layout of layouts) {
+        const key = workspaceKey(layout.id);
+        if ((await store.loadNullable<WorkspaceSnapshot>(key)) !== null) {
+            continue;
+        }
+        const tabs = database
+            .prepare(
+                `
+                SELECT id, kind, title, payload_json, created_at, worktree_id
+                FROM workspace_tabs
+                WHERE workspace_id = ?
+                ORDER BY position ASC
+                `,
+            )
+            .all(layout.id) as unknown as LegacyWorkspaceTabRow[];
+        await store.saveNow(key, {
+            activePaneId: layout.active_pane_id,
+            rootNode: parseLegacyJson<WorkspaceNode>(
+                layout.root_node_json,
+                createDefaultWorkspaceSnapshot().rootNode,
+            ),
+            tabs: tabs
+                .map(legacyWorkspaceTabToSnapshotTab)
+                .filter(
+                    (tab): tab is WorkspaceSnapshot["tabs"][number] =>
+                        tab !== null,
+                ),
+        } satisfies WorkspaceSnapshot);
+    }
+}
+
+function legacyWorkspaceTabToSnapshotTab(
+    row: LegacyWorkspaceTabRow,
+): WorkspaceSnapshot["tabs"][number] | null {
+    const payload = parseLegacyJson<Record<string, unknown>>(
+        row.payload_json,
+        {},
+    );
+    if (!isRecord(payload)) {
+        return null;
+    }
+    return {
+        ...payload,
+        createdAt: row.created_at,
+        id: row.id,
+        kind: row.kind,
+        title: row.title,
+        worktreeId:
+            row.worktree_id ??
+            (typeof payload.worktreeId === "string" ? payload.worktreeId : null),
+    } as WorkspaceSnapshot["tabs"][number];
+}
+
+async function migrateLegacyProjectSettings(
+    database: DatabaseSync,
+    store: NativeJsonStore,
+): Promise<void> {
+    if (!tableExists(database, "project_settings")) {
+        return;
+    }
+    if (
+        (await store.loadNullable<Record<string, ProjectSettingsSnapshot>>(
+            PROJECT_SETTINGS_KEY,
+        )) !== null
+    ) {
+        return;
+    }
+    const rows = database
+        .prepare("SELECT project_id, key, value FROM project_settings")
+        .all() as unknown as LegacyProjectSettingRow[];
+    const byProjectId = new Map<string, Record<string, string>>();
+    for (const row of rows) {
+        const settings = byProjectId.get(row.project_id) ?? {};
+        settings[row.key] = row.value;
+        byProjectId.set(row.project_id, settings);
+    }
+    const migrated: Record<string, ProjectSettingsSnapshot> = {};
+    for (const [projectId, values] of byProjectId) {
+        migrated[projectId] = {
+            editor: {
+                fontFamily: normalizeLegacyFontFamily(
+                    values["editor.font_family"],
+                ),
+                fontSize: parseFiniteNumber(values["editor.font_size"]),
+                lineHeight: parseFiniteNumber(values["editor.line_height"]),
+                minimapEnabled: parseLegacyBoolean(values["editor.minimap_enabled"]),
+                suggestionsEnabled: parseLegacyBoolean(
+                    values["editor.suggestions_enabled"],
+                ),
+            },
+            appearance: {
+                themeMode: parseLegacyThemeMode(values["appearance.theme_mode"]),
+                themePreset: parseLegacyThemePreset(
+                    values["appearance.theme_preset"],
+                ),
+            },
+            projectId,
+        };
+    }
+    if (Object.keys(migrated).length > 0) {
+        await store.saveNow(PROJECT_SETTINGS_KEY, migrated);
+    }
+}
+
+async function migrateLegacyRuntimePreferences(
+    settings: ReadonlyMap<string, string>,
+    store: NativeJsonStore,
+): Promise<void> {
+    if (
+        (await store.loadNullable<Record<string, PersistedRuntimeSelectionPreferences>>(
+            AI_PREFERENCES_KEY,
+        )) !== null
+    ) {
+        return;
+    }
+    const preferences: Record<string, PersistedRuntimeSelectionPreferences> = {};
+    for (const runtimeId of ["claude", "codex", "grok", "kilo", "opencode"]) {
+        const value = readLegacyJsonSetting<PersistedRuntimeSelectionPreferences>(
+            settings,
+            `ai.runtime_preferences.${runtimeId}`,
+        );
+        if (value) {
+            preferences[runtimeId] = value;
+        }
+    }
+    if (Object.keys(preferences).length > 0) {
+        await store.saveNow(AI_PREFERENCES_KEY, preferences);
+    }
+}
+
+async function migrateLegacySecrets(
+    settings: ReadonlyMap<string, string>,
+    store: NativeJsonStore,
+    secretStore: SecretStoreGateway,
+): Promise<void> {
+    if ((await store.loadNullable<boolean>("legacy.secretsMigrated.v1")) === true) {
+        return;
+    }
+    let ok = true;
+    for (const key of KNOWN_SECRET_KEYS) {
+        const value = deserializeLegacySecret(settings.get(key) ?? null);
+        if (!value) {
+            continue;
+        }
+        const parsed = parseSecretStorageKey(key);
+        try {
+            await secretStore.saveSecret(parsed.namespace, parsed.secretId, value);
+        } catch (error) {
+            ok = false;
+            debugBenignError(`nativeAppData.migrateSecret.${key}`, error);
+        }
+    }
+    if (ok) {
+        await store.saveNow("legacy.secretsMigrated.v1", true);
+    }
+}
+
+function deserializeLegacySecret(storedValue: string | null): string | null {
+    if (!storedValue) {
+        return null;
+    }
+    try {
+        const stored = JSON.parse(storedValue) as {
+            readonly scheme?: string;
+            readonly value?: string;
+        };
+        switch (stored.scheme) {
+            case "electron-safe-storage-v1":
+                if (typeof stored.value !== "string") {
+                    return null;
+                }
+                return safeStorage
+                    .decryptString(Buffer.from(stored.value, "base64"))
+                    .trim() || null;
+            case "plain-text-v1":
+                return stored.value?.trim() || null;
+            default:
+                return null;
+        }
+    } catch (error) {
+        debugBenignError("nativeAppData.deserializeLegacySecret", error);
+        return null;
+    }
+}
+
+function tableExists(database: DatabaseSync, tableName: string): boolean {
+    const row = database
+        .prepare(
+            `
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table' AND name = ?
+            LIMIT 1
+            `,
+        )
+        .get(tableName) as { readonly name?: string } | undefined;
+    return row?.name === tableName;
+}
+
+function readLegacyStringSetting(
+    settings: ReadonlyMap<string, string>,
+    key: string,
+): string | null {
+    return settings.get(key)?.trim() || null;
+}
+
+function readLegacyBooleanSetting(
+    settings: ReadonlyMap<string, string>,
+    key: string,
+): boolean | null {
+    return parseLegacyBoolean(settings.get(key));
+}
+
+function readLegacyNumberSetting(
+    settings: ReadonlyMap<string, string>,
+    key: string,
+): number | null {
+    return parseFiniteNumber(settings.get(key));
+}
+
+function readLegacyJsonSetting<T>(
+    settings: ReadonlyMap<string, string>,
+    key: string,
+): T | null {
+    return parseLegacyJson<T | null>(settings.get(key) ?? null, null);
+}
+
+function parseLegacyBoolean(value: string | null | undefined): boolean | null {
+    if (value === "1" || value === "true") {
+        return true;
+    }
+    if (value === "0" || value === "false") {
+        return false;
+    }
+    return null;
+}
+
+function parseFiniteNumber(value: string | null | undefined): number | null {
+    if (value === null || value === undefined || value.trim() === "") {
+        return null;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseLegacyJson<T>(value: string | null, fallback: T): T {
+    if (!value) {
+        return fallback;
+    }
+    try {
+        return JSON.parse(value) as T;
+    } catch (error) {
+        debugBenignError("nativeAppData.parseLegacyJson", error);
+        return fallback;
+    }
+}
+
+function parseLegacyThemeMode(value: string | null | undefined): ThemeMode | null {
+    if (value === "system" || value === "light" || value === "dark") {
+        return value;
+    }
+    return null;
+}
+
+function parseLegacyThemePreset(
+    value: string | null | undefined,
+): ThemePreset | null {
+    return THEME_PRESETS.includes(value as ThemePreset)
+        ? (value as ThemePreset)
+        : null;
+}
+
+function parseLegacyToolCardExpansionMode(
+    value: string | null | undefined,
+): AiToolCardExpansionMode | null {
+    if (value === "collapsed" || value === "latest" || value === "expanded") {
+        return value;
+    }
+    return null;
+}
+
+function normalizeLegacyFontFamily(
+    value: string | null | undefined,
+): (typeof EDITOR_FONT_FAMILY_IDS)[number] | null {
+    const normalized = value === "jetbrains-mono" ? "jetbrains" : value?.trim();
+    return EDITOR_FONT_FAMILY_IDS.includes(
+        normalized as (typeof EDITOR_FONT_FAMILY_IDS)[number],
+    )
+        ? (normalized as (typeof EDITOR_FONT_FAMILY_IDS)[number])
+        : null;
+}
+
 export async function createNativeAppDataClient(
     options: NativeAppDataClientOptions,
 ): Promise<NativeAppDataClient> {
     const store = new NativeJsonStore(options.client);
     const secretStore = new NativeSecretStore(options.client);
+    await migrateLegacyAppData({
+        databaseFile: options.databaseFile,
+        secretStore,
+        store,
+    });
     await secretStore.hydrate(KNOWN_SECRET_KEYS);
 
     const settings = new NativeSettingsClient(
@@ -786,7 +1611,7 @@ export async function createNativeAppDataClient(
             databaseFile: options.databaseFile,
         },
         workspace: new NativeWorkspaceClient(store),
-        close: () => Promise.resolve(),
+        close: () => store.flush(),
     };
 }
 
@@ -814,7 +1639,7 @@ function createDefaultWorkspaceSnapshot(): WorkspaceSnapshot {
     };
 }
 
-function createDefaultSettingsSnapshot(): SettingsSnapshot {
+function createDefaultSettingsSnapshot(): CompleteSettingsSnapshot {
     return {
         ai: {
             claude: {

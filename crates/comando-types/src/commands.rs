@@ -174,15 +174,7 @@ pub const AI_COMMANDS: &[&str] = &[
     "ai_notify_file_buffer",
 ];
 
-pub const REVIEW_COMMANDS: &[&str] = &[
-    "review_get_state",
-    "review_keep_file",
-    "review_reject_file",
-    "review_keep_hunks",
-    "review_reject_hunks",
-    "review_keep_all",
-    "review_reject_all",
-];
+pub const REVIEW_COMMANDS: &[&str] = &[];
 
 pub fn all_commands() -> Vec<&'static str> {
     [

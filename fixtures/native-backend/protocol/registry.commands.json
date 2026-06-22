@@ -121,12 +121,5 @@
   "ai_reject_tracked_file_hunks",
   "ai_keep_all_tracked_files",
   "ai_reject_all_tracked_files",
-  "ai_notify_file_buffer",
-  "review_get_state",
-  "review_keep_file",
-  "review_reject_file",
-  "review_keep_hunks",
-  "review_reject_hunks",
-  "review_keep_all",
-  "review_reject_all"
+  "ai_notify_file_buffer"
 ]

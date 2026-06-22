@@ -148,15 +148,7 @@ export const NATIVE_AI_COMMANDS = [
     "ai_notify_file_buffer",
 ] as const;
 
-export const NATIVE_REVIEW_COMMANDS = [
-    "review_get_state",
-    "review_keep_file",
-    "review_reject_file",
-    "review_keep_hunks",
-    "review_reject_hunks",
-    "review_keep_all",
-    "review_reject_all",
-] as const;
+export const NATIVE_REVIEW_COMMANDS = [] as const;
 
 export const NATIVE_COMMANDS = [
     ...NATIVE_BACKEND_COMMANDS,
