@@ -39,6 +39,7 @@ use crate::runtime_setup::{
     RuntimeAuthTerminalLaunch, invalidate_grok_auth_on_error, prepare_auth_terminal_launch,
     prepare_runtime_auth_connection, prepare_runtime_launch, runtime_status,
 };
+use crate::scope::SessionScope;
 use crate::session::{NativeAiSession, SessionRegistry};
 
 #[derive(Debug, Clone)]
@@ -553,7 +554,52 @@ impl AiEngine {
         &self,
         session_id: &comando_types::ids::SessionId,
     ) -> AiResult<crate::session::NativeAiSession> {
-        Ok(self.lock_sessions()?.get(session_id)?.session.clone())
+        {
+            let sessions = self.lock_sessions()?;
+            if let Ok(session) = sessions.get(session_id) {
+                return Ok(session.session.clone());
+            }
+        }
+
+        let Some(store) = self.history_store()? else {
+            return Err(AiError::SessionNotFound {
+                session_id: session_id.0.clone(),
+            });
+        };
+        if !store.has_session(session_id) {
+            return Err(AiError::SessionNotFound {
+                session_id: session_id.0.clone(),
+            });
+        }
+
+        let metadata = store.load_metadata(session_id)?;
+        let Some(cwd) = metadata
+            .cwd
+            .clone()
+            .filter(|candidate| !candidate.trim().is_empty())
+        else {
+            return Err(AiError::InvalidInput(format!(
+                "AI session `{}` does not have a review cwd.",
+                session_id.0
+            )));
+        };
+        let scope = SessionScope::new(
+            metadata.project_id.clone(),
+            metadata.worktree_id.clone(),
+            cwd,
+            metadata.additional_roots.clone(),
+        )?;
+
+        Ok(NativeAiSession {
+            owner_window_id: String::new(),
+            runtime_id: metadata.runtime_id,
+            runtime_session_id: metadata.runtime_session_id,
+            scope,
+            session_id: metadata.session_id,
+            status: metadata.status,
+            title: metadata.title,
+            updated_at: metadata.updated_at,
+        })
     }
 
     fn set_session_config_value(
@@ -1519,6 +1565,48 @@ mod tests {
 
         assert_eq!(summary.session_id, SessionId("s1".to_string()));
         assert_eq!(summary.runtime_id, RuntimeId("opencode".to_string()));
+    }
+
+    #[test]
+    fn review_session_can_be_rebuilt_from_history_metadata() {
+        let app_data = tempfile::tempdir().expect("app data");
+        let project = tempfile::tempdir().expect("project");
+        let store = AiHistoryStore::new(app_data.path()).expect("history store");
+        let metadata = AiHistorySessionMetadata::new_native(AiHistorySessionMetadataInput {
+            session_id: SessionId("s-history".to_string()),
+            runtime_id: RuntimeId("opencode".to_string()),
+            runtime_session_id: Some(RuntimeSessionId("runtime-history".to_string())),
+            parent_session_id: None,
+            project_id: None,
+            worktree_id: None,
+            title: "Historical session".to_string(),
+            status: NativeAiSessionStatus::Idle,
+            model_id: None,
+            mode_id: None,
+            config_values: BTreeMap::new(),
+            cwd: project.path().to_string_lossy().to_string(),
+            additional_roots: vec!["/tmp/extra-root".to_string()],
+        });
+        store
+            .create_session(metadata)
+            .expect("create history session");
+        let engine = AiEngine::default();
+        engine
+            .set_history_store(Some(store))
+            .expect("install history store");
+
+        let session = engine
+            .session_for_review(&SessionId("s-history".to_string()))
+            .expect("review session");
+
+        assert_eq!(session.session_id, SessionId("s-history".to_string()));
+        assert_eq!(session.runtime_id, RuntimeId("opencode".to_string()));
+        assert_eq!(
+            session.runtime_session_id,
+            Some(RuntimeSessionId("runtime-history".to_string()))
+        );
+        assert_eq!(session.scope.cwd, project.path().to_string_lossy());
+        assert_eq!(session.scope.additional_roots, vec!["/tmp/extra-root"]);
     }
 
     #[test]

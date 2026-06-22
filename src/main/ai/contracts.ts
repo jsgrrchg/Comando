@@ -146,6 +146,10 @@ export interface NativeAiGateway {
     closeSession(sessionId: string): Promise<void>;
     deleteSession(sessionId: string): Promise<void>;
     keepAllTrackedFiles?(input: AiReviewSessionRpcInput<string>): Promise<AiReviewMutationResult>;
+    importReviewState?(
+        sessionId: string,
+        trackedFiles: readonly AiTrackedFile[],
+    ): Promise<readonly AiTrackedFile[]>;
     keepTrackedFile?(
         input: AiReviewSessionRpcInput<AiTrackedFileMutationInput>,
     ): Promise<AiReviewMutationResult>;

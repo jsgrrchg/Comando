@@ -246,11 +246,31 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         if (!this.#reviewEnabled) {
             return [];
         }
+        const output = await this.#loadReviewStateOutput(sessionId);
+        return nativeReviewCommandTrackedFiles(output);
+    }
+
+    async importReviewState(
+        sessionId: string,
+        trackedFiles: readonly AiTrackedFile[],
+    ): Promise<readonly AiTrackedFile[]> {
+        if (!this.#reviewEnabled || trackedFiles.length === 0) {
+            return [];
+        }
         const output = await this.#client.request<NativeAiReviewCommandOutput>(
+            "ai_import_review_state",
+            { sessionId, trackedFiles },
+        );
+        return nativeReviewCommandTrackedFiles(output);
+    }
+
+    async #loadReviewStateOutput(
+        sessionId: string,
+    ): Promise<NativeAiReviewCommandOutput> {
+        return await this.#client.request<NativeAiReviewCommandOutput>(
             "ai_load_review_state",
             { sessionId },
         );
-        return nativeReviewCommandTrackedFiles(output);
     }
 
     async keepTrackedFile(
@@ -411,11 +431,39 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         if (!this.#reviewEnabled) {
             return snapshot;
         }
+        return await this.#hydrateSnapshotReviewState(snapshot);
+    }
+
+    async #hydrateSnapshotReviewState(
+        snapshot: AiSessionSnapshot,
+    ): Promise<AiSessionSnapshot> {
+        if (!this.#reviewEnabled) {
+            return snapshot;
+        }
         try {
-            const trackedFiles = await this.loadReviewState(sessionId);
+            const reviewOutput = await this.#loadReviewStateOutput(
+                snapshot.sessionId,
+            );
+            if (
+                reviewOutput.stateFound === false &&
+                snapshot.trackedFiles.length > 0
+            ) {
+                const importOutput =
+                    await this.#client.request<NativeAiReviewCommandOutput>(
+                        "ai_import_review_state",
+                        {
+                            sessionId: snapshot.sessionId,
+                            trackedFiles: snapshot.trackedFiles,
+                        },
+                    );
+                return {
+                    ...snapshot,
+                    trackedFiles: nativeReviewCommandTrackedFiles(importOutput),
+                };
+            }
             return {
                 ...snapshot,
-                trackedFiles,
+                trackedFiles: nativeReviewCommandTrackedFiles(reviewOutput),
             };
         } catch (error) {
             this.#reportDiagnostic(
@@ -467,7 +515,11 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             );
             this.#rememberSummary(summary, request.launch.ownerWindowId);
 
-            return nativeSummaryToSnapshot(summary, request.launch);
+            const snapshot = nativeSummaryToSnapshot(summary, request.launch);
+            if (snapshot.trackedFiles.length === 0) {
+                return snapshot;
+            }
+            return await this.#hydrateSnapshotReviewState(snapshot);
         } catch (error) {
             this.#restoreOwner(request.input.sessionId, previousOwner);
             throw error;

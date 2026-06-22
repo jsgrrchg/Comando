@@ -7,6 +7,7 @@ use std::time::UNIX_EPOCH;
 
 use comando_ai::history::AiHistoryStore;
 use comando_ai::session::NativeAiSession;
+use comando_diff::review::tracked_diff_base;
 use comando_diff::{
     ReviewDecision, ReviewTrackedFile, ReviewTrackedFileKind, ReviewTrackedFileStatus,
     compute_tracked_file_patch, resolve_tracked_file_hunks, tracked_current_text,
@@ -69,6 +70,13 @@ pub struct NativeReviewFileBufferInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeReviewImportStateInput {
+    pub session_id: SessionId,
+    pub tracked_files: Vec<ReviewTrackedFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeReviewCaptureOutput {
     pub captured: bool,
     pub session_id: SessionId,
@@ -83,6 +91,7 @@ pub struct NativeReviewCommandOutput {
     pub changed_files: Vec<String>,
     pub conflicts: Vec<NativeReviewConflict>,
     pub updated_at: String,
+    pub state_found: bool,
     #[serde(skip)]
     pub tracked_file_events: Vec<NativeTrackedFileUpdatedPayload>,
 }
@@ -162,6 +171,12 @@ struct RollbackBackup {
     content: Option<Vec<u8>>,
     had_open_buffer: bool,
     open_buffer_content: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct NativeReviewLoadedState {
+    state: NativeReviewSessionState,
+    found: bool,
 }
 
 impl NativeReviewService {
@@ -263,13 +278,15 @@ impl NativeReviewService {
         session: &NativeAiSession,
     ) -> Result<NativeReviewCommandOutput, NativeError> {
         let Some(baseline) = self.baselines.remove(&session.session_id.0) else {
-            let state = self.load_or_empty_state(session)?;
+            let loaded = self.load_or_empty_state_entry(session)?;
+            let state = loaded.state;
             return Ok(command_output(
                 session.session_id.clone(),
                 state.tracked_files,
                 Vec::new(),
                 state.conflicts,
                 now(),
+                loaded.found,
                 Vec::new(),
             ));
         };
@@ -277,12 +294,9 @@ impl NativeReviewService {
         let status_entries = list_git_status_entries(&baseline.cwd)?;
         let status_entries = merge_candidate_entries(status_entries, &baseline);
         let updated_at = now();
-        let mut tracked_files = self
-            .states
-            .get(&session.session_id.0)
-            .map(|state| state.tracked_files.clone())
-            .unwrap_or_default();
-        let mut conflicts = Vec::new();
+        let loaded = self.load_or_empty_state_entry(session)?;
+        let mut tracked_files = loaded.state.tracked_files;
+        let mut conflicts = loaded.state.conflicts;
         let mut tracked_file_events = Vec::new();
 
         for entry in status_entries {
@@ -406,6 +420,7 @@ impl NativeReviewService {
             Vec::new(),
             state.conflicts,
             updated_at,
+            true,
             tracked_file_events,
         ))
     }
@@ -414,13 +429,57 @@ impl NativeReviewService {
         &mut self,
         session: &NativeAiSession,
     ) -> Result<NativeReviewCommandOutput, NativeError> {
-        let state = self.load_or_empty_state(session)?;
+        let loaded = self.load_or_empty_state_entry(session)?;
+        let state = loaded.state;
         Ok(command_output(
             session.session_id.clone(),
             state.tracked_files,
             Vec::new(),
             state.conflicts,
             state.updated_at,
+            loaded.found,
+            Vec::new(),
+        ))
+    }
+
+    pub fn import_state_if_missing(
+        &mut self,
+        session: &NativeAiSession,
+        input: NativeReviewImportStateInput,
+    ) -> Result<NativeReviewCommandOutput, NativeError> {
+        let loaded = self.load_or_empty_state_entry(session)?;
+        if input.tracked_files.is_empty() {
+            let state = loaded.state;
+            return Ok(command_output(
+                session.session_id.clone(),
+                state.tracked_files,
+                Vec::new(),
+                state.conflicts,
+                state.updated_at,
+                loaded.found,
+                Vec::new(),
+            ));
+        }
+
+        let session_id = session.session_id.0.clone();
+        let mut tracked_files = loaded.state.tracked_files;
+        for mut file in input.tracked_files {
+            // Legacy snapshots may omit the session id on old review entries.
+            if file.session_id.trim().is_empty() {
+                file.session_id = session_id.clone();
+            }
+            upsert_tracked_file(&mut tracked_files, file);
+        }
+        let updated_at = now();
+        let state =
+            self.replace_state(session, tracked_files, loaded.state.conflicts, updated_at.clone())?;
+        Ok(command_output(
+            session.session_id.clone(),
+            state.tracked_files,
+            Vec::new(),
+            state.conflicts,
+            updated_at,
+            true,
             Vec::new(),
         ))
     }
@@ -452,6 +511,7 @@ impl NativeReviewService {
             Vec::new(),
             state.conflicts,
             updated_at,
+            true,
             vec![event_payload],
         ))
     }
@@ -485,6 +545,7 @@ impl NativeReviewService {
             changed_files,
             state.conflicts,
             updated_at,
+            true,
             vec![event_payload],
         ))
     }
@@ -538,6 +599,7 @@ impl NativeReviewService {
             Vec::new(),
             state.conflicts,
             updated_at,
+            true,
             events,
         ))
     }
@@ -596,6 +658,7 @@ impl NativeReviewService {
             changed_files,
             state.conflicts,
             updated_at,
+            true,
             events,
         ))
     }
@@ -693,6 +756,7 @@ impl NativeReviewService {
             changed_files,
             state.conflicts,
             updated_at,
+            true,
             vec![event_payload],
         ))
     }
@@ -701,8 +765,18 @@ impl NativeReviewService {
         &mut self,
         session: &NativeAiSession,
     ) -> Result<NativeReviewSessionState, NativeError> {
+        Ok(self.load_or_empty_state_entry(session)?.state)
+    }
+
+    fn load_or_empty_state_entry(
+        &mut self,
+        session: &NativeAiSession,
+    ) -> Result<NativeReviewLoadedState, NativeError> {
         if let Some(state) = self.states.get(&session.session_id.0) {
-            return Ok(state.clone());
+            return Ok(NativeReviewLoadedState {
+                state: state.clone(),
+                found: true,
+            });
         }
         if let Some(path) = self.review_state_path(&session.session_id)
             && path.exists()
@@ -718,9 +792,12 @@ impl NativeReviewService {
                 })?;
             self.states
                 .insert(session.session_id.0.clone(), state.clone());
-            return Ok(state);
+            return Ok(NativeReviewLoadedState { state, found: true });
         }
-        Ok(empty_state(session, now()))
+        Ok(NativeReviewLoadedState {
+            state: empty_state(session, now()),
+            found: false,
+        })
     }
 
     fn replace_state(
@@ -1057,6 +1134,7 @@ fn command_output(
     changed_files: Vec<String>,
     conflicts: Vec<NativeReviewConflict>,
     updated_at: String,
+    state_found: bool,
     tracked_file_events: Vec<NativeTrackedFileUpdatedPayload>,
 ) -> NativeReviewCommandOutput {
     NativeReviewCommandOutput {
@@ -1065,6 +1143,7 @@ fn command_output(
         changed_files,
         conflicts,
         updated_at,
+        state_found,
         tracked_file_events,
     }
 }
@@ -1308,6 +1387,13 @@ fn find_tracked_file_index(files: &[ReviewTrackedFile], path: &str) -> Option<us
 fn upsert_tracked_file(files: &mut Vec<ReviewTrackedFile>, file: ReviewTrackedFile) {
     if let Some(index) = find_tracked_file_index(files, &file.path) {
         let mut next = file;
+        if files[index].previous_path.is_none()
+            && next.previous_path.is_none()
+            && tracked_diff_base(&files[index]) == tracked_current_text(&next)
+        {
+            files.remove(index);
+            return;
+        }
         next.version = Some(files[index].version.unwrap_or(1).saturating_add(1));
         files[index] = next;
     } else {
@@ -1622,6 +1708,113 @@ mod tests {
         assert_eq!(second.conflicts.len(), 1);
         assert_eq!(second.conflicts[0].path, "a.txt");
         assert_eq!(second.conflicts[0].reason, "binary_file");
+    }
+
+    #[test]
+    fn reconcile_removes_pending_file_when_later_turn_restores_base() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("a.txt"), "base\n").expect("write text");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+
+        let session = test_session(repo.path(), "s-net-zero");
+        let mut service = service_with_app_data(repo.path());
+        service.capture_baseline(&session).expect("baseline");
+        fs::write(repo.path().join("a.txt"), "agent\n").expect("modify text");
+        let first = service
+            .reconcile_tracked_files(&session)
+            .expect("first reconcile");
+        assert_eq!(first.tracked_files.len(), 1);
+        assert_eq!(first.tracked_files[0].old_text.as_deref(), Some("base\n"));
+        assert_eq!(first.tracked_files[0].new_text.as_deref(), Some("agent\n"));
+
+        service.capture_baseline(&session).expect("second baseline");
+        fs::write(repo.path().join("a.txt"), "base\n").expect("restore text");
+        let second = service
+            .reconcile_tracked_files(&session)
+            .expect("second reconcile");
+
+        assert!(second.tracked_files.is_empty());
+        assert!(second.conflicts.is_empty());
+        assert!(second.state_found);
+    }
+
+    #[test]
+    fn reconcile_preserves_pending_file_when_later_turn_leaves_it_unchanged() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("a.txt"), "base\n").expect("write text");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+
+        let session = test_session(repo.path(), "s-preserve-pending");
+        let mut service = service_with_app_data(repo.path());
+        service.capture_baseline(&session).expect("baseline");
+        fs::write(repo.path().join("a.txt"), "agent\n").expect("modify text");
+        let first = service
+            .reconcile_tracked_files(&session)
+            .expect("first reconcile");
+        assert_eq!(first.tracked_files.len(), 1);
+
+        service.capture_baseline(&session).expect("second baseline");
+        let second = service
+            .reconcile_tracked_files(&session)
+            .expect("second reconcile");
+
+        assert_eq!(second.tracked_files.len(), 1);
+        assert_eq!(second.tracked_files[0].path, "a.txt");
+        assert_eq!(second.tracked_files[0].old_text.as_deref(), Some("base\n"));
+        assert_eq!(second.tracked_files[0].new_text.as_deref(), Some("agent\n"));
+        assert!(second.conflicts.is_empty());
+        assert!(second.state_found);
+    }
+
+    #[test]
+    fn imported_legacy_review_state_survives_empty_later_reconcile() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("a.txt"), "base\n").expect("write text");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+        fs::write(repo.path().join("a.txt"), "agent\n").expect("modify text");
+
+        let session = test_session(repo.path(), "s-imported-legacy");
+        let mut service = service_with_app_data(repo.path());
+        let tracked_file = compute_tracked_file_patch(
+            &session.session_id.0,
+            "a.txt",
+            None,
+            Some("base\n".to_string()),
+            Some("agent\n".to_string()),
+            now(),
+        )
+        .expect("tracked file");
+        let imported = service
+            .import_state_if_missing(
+                &session,
+                NativeReviewImportStateInput {
+                    session_id: session.session_id.clone(),
+                    tracked_files: vec![tracked_file],
+                },
+            )
+            .expect("import review state");
+        assert_eq!(imported.tracked_files.len(), 1);
+        assert!(imported.state_found);
+
+        service.capture_baseline(&session).expect("baseline");
+        let reconciled = service
+            .reconcile_tracked_files(&session)
+            .expect("reconcile imported state");
+
+        assert_eq!(reconciled.tracked_files.len(), 1);
+        assert_eq!(reconciled.tracked_files[0].path, "a.txt");
+        assert_eq!(
+            reconciled.tracked_files[0].review_state,
+            ReviewTrackedFileStatus::Pending
+        );
+        assert!(reconciled.conflicts.is_empty());
+        assert!(reconciled.state_found);
     }
 
     #[test]

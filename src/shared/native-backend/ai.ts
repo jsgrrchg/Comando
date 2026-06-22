@@ -658,6 +658,7 @@ export type NativeAiReviewCommandOutput = {
     readonly changedFiles: readonly string[];
     readonly conflicts: readonly unknown[];
     readonly updatedAt: string;
+    readonly stateFound?: boolean;
 };
 
 export type NativeAiErrorPayload = {

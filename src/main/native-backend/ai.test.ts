@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type {
     AiRuntimeStatus,
+    AiTrackedFile,
     PrepareAiSessionInput,
     SendAiPromptInput,
 } from "@shared/ipc";
@@ -54,6 +55,36 @@ describe("NativeAiGateway", () => {
             windowId: "window-1",
         });
         expect(payload.launch).toBeNull();
+    });
+
+    it("imports persisted review files when native review state is missing during prepare", async () => {
+        const client = createClient();
+        const gateway = createGateway(client);
+        const legacyFile = createNativeTrackedFile({
+            path: "src/legacy.ts",
+        }) as unknown as AiTrackedFile;
+        const launch = {
+            ...createLaunch(),
+            persistedSnapshot: {
+                ...createLaunch().persistedSnapshot,
+                trackedFiles: [legacyFile],
+            },
+        };
+
+        await expect(
+            gateway.prepareSession({
+                input: createPrepareInput(),
+                launch,
+            }),
+        ).resolves.toMatchObject({
+            sessionId: "session-1",
+            trackedFiles: [{ path: "src/legacy.ts" }],
+        });
+
+        expect(client.request).toHaveBeenCalledWith("ai_import_review_state", {
+            sessionId: "session-1",
+            trackedFiles: [legacyFile],
+        });
     });
 
     it("passes persisted history links when Rust owns runtime launch resolution", async () => {
@@ -592,6 +623,96 @@ describe("NativeAiGateway", () => {
         });
     });
 
+    it("imports historical tracked files when no native review state exists", async () => {
+        const client = createClient();
+        const legacyFile = createNativeTrackedFile({
+            path: "src/legacy.ts",
+        });
+        client.request.mockImplementation(
+            <T = unknown>(command: string, _args?: unknown): Promise<T> => {
+                if (command === "ai_load_session_snapshot") {
+                    return Promise.resolve(
+                        createNativeSnapshotOutput({
+                            trackedFiles: [legacyFile],
+                        }) as T,
+                    );
+                }
+                if (command === "ai_load_review_state") {
+                    return Promise.resolve({
+                        changedFiles: [],
+                        conflicts: [],
+                        sessionId: "session-1",
+                        stateFound: false,
+                        trackedFiles: [],
+                        updatedAt: "2026-06-20T00:00:03.000Z",
+                    } as T);
+                }
+                if (command === "ai_import_review_state") {
+                    const args = _args as {
+                        sessionId: string;
+                        trackedFiles: readonly unknown[];
+                    };
+                    return Promise.resolve({
+                        changedFiles: [],
+                        conflicts: [],
+                        sessionId: args.sessionId,
+                        stateFound: true,
+                        trackedFiles: args.trackedFiles,
+                        updatedAt: "2026-06-20T00:00:04.000Z",
+                    } as T);
+                }
+                return Promise.resolve({ ok: true } as T);
+            },
+        );
+        const gateway = createGateway(client);
+
+        await expect(gateway.loadSessionSnapshot("session-1")).resolves.toMatchObject({
+            sessionId: "session-1",
+            trackedFiles: [{ path: "src/legacy.ts" }],
+        });
+        expect(client.request).toHaveBeenCalledWith("ai_import_review_state", {
+            sessionId: "session-1",
+            trackedFiles: [legacyFile],
+        });
+    });
+
+    it("clears tracked files when native review state is explicitly empty", async () => {
+        const client = createClient();
+        client.request.mockImplementation(
+            <T = unknown>(command: string, _args?: unknown): Promise<T> => {
+                void _args;
+                if (command === "ai_load_session_snapshot") {
+                    return Promise.resolve(
+                        createNativeSnapshotOutput({
+                            trackedFiles: [
+                                createNativeTrackedFile({
+                                    path: "src/stale.ts",
+                                }),
+                            ],
+                        }) as T,
+                    );
+                }
+                if (command === "ai_load_review_state") {
+                    return Promise.resolve({
+                        changedFiles: [],
+                        conflicts: [],
+                        sessionId: "session-1",
+                        stateFound: true,
+                        trackedFiles: [],
+                        updatedAt: "2026-06-20T00:00:03.000Z",
+                    } as T);
+                }
+                return Promise.resolve({ ok: true } as T);
+            },
+        );
+        const gateway = createGateway(client);
+
+        await expect(gateway.loadSessionSnapshot("session-1")).resolves.toMatchObject({
+            sessionId: "session-1",
+            trackedFiles: [],
+        });
+    });
+
     it("surfaces review conflicts over stale tracked files", async () => {
         const client = createClient();
         client.request.mockImplementation(
@@ -753,8 +874,6 @@ function createClient() {
     let listener: ((event: NativeBackendEvent) => void) | null = null;
     const request = vi.fn(
         <T = unknown>(command: string, _args?: unknown): Promise<T> => {
-            void _args;
-
             if (command === "ai_prepare_session") {
                 return Promise.resolve({
                     projectId: "project-1",
@@ -765,6 +884,32 @@ function createClient() {
                     title: "Native session",
                     updatedAt: "2026-06-20T00:00:00.000Z",
                     worktreeId: "worktree-1",
+                } as T);
+            }
+
+            if (command === "ai_load_review_state") {
+                const args = _args as { sessionId?: string } | undefined;
+                return Promise.resolve({
+                    changedFiles: [],
+                    conflicts: [],
+                    sessionId: args?.sessionId ?? "session-1",
+                    stateFound: false,
+                    trackedFiles: [],
+                    updatedAt: "2026-06-20T00:00:00.000Z",
+                } as T);
+            }
+
+            if (command === "ai_import_review_state") {
+                const args = _args as
+                    | { sessionId?: string; trackedFiles?: readonly unknown[] }
+                    | undefined;
+                return Promise.resolve({
+                    changedFiles: [],
+                    conflicts: [],
+                    sessionId: args?.sessionId ?? "session-1",
+                    stateFound: true,
+                    trackedFiles: args?.trackedFiles ?? [],
+                    updatedAt: "2026-06-20T00:00:00.000Z",
                 } as T);
             }
 
@@ -793,6 +938,64 @@ function createClient() {
     } as NativeAiGatewayOptions["client"] & {
         readonly emit: (event: NativeBackendEvent) => void;
         readonly request: typeof request;
+    };
+}
+
+function createNativeSnapshotOutput(
+    overrides: Partial<Record<string, unknown>> = {},
+): Record<string, unknown> {
+    return {
+        activeTurnStartedAt: null,
+        availableCommands: [],
+        closedAt: null,
+        configOptions: [],
+        lastError: null,
+        messages: [],
+        modeId: null,
+        modes: [],
+        modelId: null,
+        models: [],
+        parentSessionId: null,
+        pendingPermission: null,
+        pendingUserInput: null,
+        plan: null,
+        projectId: "project-1",
+        runtimeId: "opencode",
+        runtimeSessionId: "runtime-session-1",
+        sessionId: "session-1",
+        status: "idle",
+        title: "Native session",
+        tokenUsage: null,
+        toolActivity: [],
+        trackedFiles: [],
+        updatedAt: "2026-06-20T00:00:01.000Z",
+        worktreeId: "worktree-1",
+        ...overrides,
+    };
+}
+
+function createNativeTrackedFile(
+    overrides: Partial<Record<string, unknown>> = {},
+): Record<string, unknown> {
+    const path = typeof overrides.path === "string" ? overrides.path : "src/main.rs";
+    return {
+        currentText: "new\n",
+        diffBase: "old\n",
+        hunks: [],
+        identityKey: `native:session-1::${path}`,
+        isText: true,
+        kind: "update",
+        newText: "new\n",
+        oldText: "old\n",
+        path,
+        previousPath: null,
+        reviewState: "pending",
+        reversible: true,
+        sessionId: "session-1",
+        toolCallId: null,
+        updatedAt: "2026-06-20T00:00:02.000Z",
+        version: 1,
+        ...overrides,
     };
 }
 

@@ -10,6 +10,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import type {
     AiHistorySessionSummary,
+    AiFileDiff,
     AiMessage,
     AiPermissionResponseInput,
     AiPromptResult,
@@ -31,6 +32,7 @@ import type {
     AiSessionTranscriptPage,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
+    AiTrackedFile,
     AiUserInputResponseInput,
     ClaudeRuntimeSettingsInput,
     CodexRuntimeSettingsInput,
@@ -48,6 +50,7 @@ import type {
 import {
     computeDiffHunks,
     isAiTrackedFileUnresolved,
+    normalizeReviewText,
     resolveTrackedFileHunks,
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
@@ -218,6 +221,9 @@ type LiveSessionContext = {
 interface NativeReviewBaseline {
     readonly cwd: string;
     readonly messageId: string;
+    readonly nativeCaptured: boolean;
+    readonly promptAccepted: boolean;
+    readonly terminalStatusSeen: boolean;
     readonly turnStarted: boolean;
 }
 
@@ -636,9 +642,21 @@ export class AiService {
                     nextSnapshot.lastError,
                 );
             }
+            if (this.#shouldImportNativeReviewToolDiffs(event)) {
+                void this.#importNativeReviewState(
+                    event.sessionId,
+                    nextSnapshot.trackedFiles,
+                );
+            }
             if (this.#isNativeAiSession(event.sessionId)) {
                 if (event.kind === "status" && event.status === "streaming") {
                     this.#markNativeReviewTurnStarted(event.sessionId);
+                }
+                if (
+                    event.kind === "status" &&
+                    (event.status === "idle" || event.status === "error")
+                ) {
+                    this.#markNativeReviewTerminalStatusSeen(event.sessionId);
                 }
             }
             if (this.#shouldReconcileNativeReviewFiles(event)) {
@@ -1307,10 +1325,28 @@ export class AiService {
                                 input.messageId,
                             );
                     }
-                    return await nativeAi.sendPrompt({
+                    const promptResult = await nativeAi.sendPrompt({
                         input,
                         launch,
                     });
+                    if (promptResult.stopReason === "accepted") {
+                        const terminalStatusAlreadySeen =
+                            this.#markNativeReviewPromptAccepted(
+                                input.sessionId,
+                            );
+                        if (terminalStatusAlreadySeen) {
+                            void this.#reconcileNativeReviewFiles(
+                                input.sessionId,
+                                ownerWindowId,
+                            ).catch((error: unknown) => {
+                                debugBenignError(
+                                    "ai.service.nativeReviewReconcile",
+                                    error,
+                                );
+                            });
+                        }
+                    }
+                    return promptResult;
                 },
             );
             void this.#enforceSessionRetention();
@@ -2601,13 +2637,17 @@ export class AiService {
         }
 
         if (event.kind === "tool-activity") {
-            return {
+            const nextSnapshot = {
                 ...base,
                 toolActivity: upsertNativeToolActivity(
                     snapshot.toolActivity,
                     event.activity,
                 ),
             };
+            return this.#applyNativeToolActivityReviewDiffs(
+                nextSnapshot,
+                event.activity,
+            );
         }
 
         if (event.kind === "review") {
@@ -2673,17 +2713,16 @@ export class AiService {
         messageId: string,
     ): Promise<boolean> {
         const nativeAi = this.#requireNativeReviewGateway("captureReviewBaseline");
-        const captured = await nativeAi.captureReviewBaseline(sessionId);
-        if (captured) {
-            this.#nativeReviewBaselines.set(sessionId, {
-                cwd: launch.cwd,
-                messageId,
-                turnStarted: false,
-            });
-        } else {
-            this.#nativeReviewBaselines.delete(sessionId);
-        }
-        return captured;
+        const nativeCaptured = await nativeAi.captureReviewBaseline(sessionId);
+        this.#nativeReviewBaselines.set(sessionId, {
+            cwd: launch.cwd,
+            messageId,
+            nativeCaptured,
+            promptAccepted: false,
+            terminalStatusSeen: false,
+            turnStarted: false,
+        });
+        return true;
     }
 
     #markNativeReviewTurnStarted(sessionId: string): void {
@@ -2698,6 +2737,92 @@ export class AiService {
         });
     }
 
+    #markNativeReviewPromptAccepted(sessionId: string): boolean {
+        const baseline = this.#nativeReviewBaselines.get(sessionId);
+        if (!baseline) {
+            return false;
+        }
+
+        this.#nativeReviewBaselines.set(sessionId, {
+            ...baseline,
+            promptAccepted: true,
+        });
+        return baseline.terminalStatusSeen;
+    }
+
+    #markNativeReviewTerminalStatusSeen(sessionId: string): void {
+        const baseline = this.#nativeReviewBaselines.get(sessionId);
+        if (!baseline || baseline.terminalStatusSeen) {
+            return;
+        }
+
+        this.#nativeReviewBaselines.set(sessionId, {
+            ...baseline,
+            terminalStatusSeen: true,
+        });
+    }
+
+    #applyNativeToolActivityReviewDiffs(
+        snapshot: AiSessionSnapshot,
+        activity: AiToolActivity,
+    ): AiSessionSnapshot {
+        if (
+            !this.#nativeReviewBaselines.has(snapshot.sessionId) ||
+            !isTerminalNativeReviewActivityStatus(activity.status) ||
+            activity.diffs.length === 0
+        ) {
+            return snapshot;
+        }
+
+        let trackedFiles = snapshot.trackedFiles;
+        for (const diff of activity.diffs) {
+            const trackedFile = trackedFileFromToolActivityDiff(
+                diff,
+                snapshot.sessionId,
+                activity.id,
+                activity.updatedAt,
+            );
+            if (!trackedFile) {
+                continue;
+            }
+            trackedFiles = upsertTrackedFile(trackedFiles, trackedFile);
+        }
+
+        return trackedFiles === snapshot.trackedFiles
+            ? snapshot
+            : {
+                  ...snapshot,
+                  trackedFiles,
+              };
+    }
+
+    #shouldImportNativeReviewToolDiffs(event: AiSessionDomainEvent): boolean {
+        return (
+            event.kind === "tool-activity" &&
+            this.#nativeReviewBaselines.has(event.sessionId) &&
+            isTerminalNativeReviewActivityStatus(event.activity.status) &&
+            event.activity.diffs.length > 0
+        );
+    }
+
+    async #importNativeReviewState(
+        sessionId: string,
+        trackedFiles: readonly AiTrackedFile[],
+    ): Promise<void> {
+        if (trackedFiles.length === 0) {
+            return;
+        }
+        const nativeAi = this.#nativeAi;
+        if (!nativeAi?.importReviewState) {
+            return;
+        }
+        try {
+            await nativeAi.importReviewState(sessionId, trackedFiles);
+        } catch (error) {
+            debugBenignError("ai.service.nativeReviewImport", error);
+        }
+    }
+
     #shouldReconcileNativeReviewFiles(event: AiSessionDomainEvent): boolean {
         const baseline = this.#nativeReviewBaselines.get(event.sessionId);
         if (!baseline || !this.#isNativeAiSession(event.sessionId)) {
@@ -2705,6 +2830,7 @@ export class AiService {
         }
 
         if (
+            baseline.nativeCaptured &&
             event.kind === "tool-activity" &&
             event.activity.id === `acp:turn:${baseline.messageId}` &&
             isTerminalNativeReviewActivityStatus(event.activity.status)
@@ -2713,8 +2839,9 @@ export class AiService {
         }
 
         return (
+            baseline.nativeCaptured &&
             event.kind === "status" &&
-            baseline.turnStarted &&
+            (baseline.turnStarted || baseline.promptAccepted) &&
             (event.status === "idle" || event.status === "error")
         );
     }
@@ -2740,7 +2867,7 @@ export class AiService {
                 await this.#requireNativeReviewGateway(
                     "reconcileTrackedFiles",
                 ).reconcileTrackedFiles(sessionId);
-            if (trackedFiles.length === 0) {
+            if (trackedFiles.length === 0 && snapshot.trackedFiles.length === 0) {
                 return;
             }
 
@@ -3857,6 +3984,51 @@ function isTerminalNativeReviewActivityStatus(
     status: AiToolActivity["status"],
 ): boolean {
     return status === "completed" || status === "failed";
+}
+
+function trackedFileFromToolActivityDiff(
+    diff: AiFileDiff,
+    sessionId: string,
+    toolCallId: string,
+    updatedAt: string,
+): AiTrackedFile | null {
+    if (!diff.isText) {
+        return null;
+    }
+
+    const diffBase = diff.oldText ?? "";
+    const currentText = diff.newText ?? "";
+    if (
+        diff.previousPath === null &&
+        normalizeReviewText(diffBase) === normalizeReviewText(currentText)
+    ) {
+        return null;
+    }
+
+    return {
+        currentText,
+        diffBase,
+        hunks:
+            diff.hunks.length > 0
+                ? diff.hunks
+                : computeDiffHunks(diffBase, currentText, diff.path),
+        identityKey: `tool:${sessionId}:${toolCallId}:${diff.previousPath ?? ""}:${diff.path}`,
+        isText: true,
+        kind: diff.kind,
+        newText: diff.newText,
+        oldText: diff.oldText,
+        path: diff.path,
+        previousPath:
+            diff.previousPath && diff.previousPath !== diff.path
+                ? diff.previousPath
+                : null,
+        reviewState: "pending",
+        reversible: diff.reversible,
+        sessionId,
+        toolCallId,
+        updatedAt,
+        version: 1,
+    };
 }
 
 function normalizeOptionalText(value: string | null): string | null {
