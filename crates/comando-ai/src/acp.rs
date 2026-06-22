@@ -108,6 +108,7 @@ pub struct AcpProcessSpec {
     pub auth_handshake: Option<comando_types::ai::NativeAiAuthHandshakeSpec>,
     pub persisted_runtime_session_id: Option<RuntimeSessionId>,
     pub persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
+    pub supports_subagents: bool,
 }
 
 impl AcpProcessSpec {
@@ -129,6 +130,7 @@ impl AcpProcessSpec {
             auth_handshake: launch.auth_handshake.clone(),
             persisted_runtime_session_id: launch.persisted_runtime_session_id.clone(),
             persisted_subagent_session_mappings: launch.persisted_subagent_session_mappings.clone(),
+            supports_subagents: definition.capabilities.subagents,
         })
     }
 
@@ -679,6 +681,7 @@ async fn run_acp_session(
         session.clone(),
         event_sender.clone(),
         spec.persisted_subagent_session_mappings.clone(),
+        spec.supports_subagents,
     );
     let notification_context_for_handler = notification_context.clone();
     let permission_event_sender = event_sender.clone();
@@ -1637,11 +1640,13 @@ impl NotificationContext {
         session: NativeAiSession,
         event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
         persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
+        supports_subagents: bool,
     ) -> Self {
         let inner = NotificationContextInner::new(
             session,
             event_sender,
             persisted_subagent_session_mappings,
+            supports_subagents,
         );
         Self {
             inner: Arc::new(Mutex::new(inner)),
@@ -1701,6 +1706,7 @@ struct NotificationContextInner {
     runtime_session_id: Option<RuntimeSessionId>,
     session: NativeAiSession,
     subagents_by_runtime_session_id: HashMap<String, SubagentRuntimeSession>,
+    supports_subagents: bool,
     synthetic_message_ids: HashMap<String, String>,
     synthetic_message_next_id: usize,
     tool_calls: HashMap<String, ToolCall>,
@@ -1724,29 +1730,32 @@ impl NotificationContextInner {
         session: NativeAiSession,
         event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
         persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
+        supports_subagents: bool,
     ) -> Self {
         let mut app_session_id_by_runtime_session_id = HashMap::new();
         let mut subagents_by_runtime_session_id = HashMap::new();
 
-        for mapping in persisted_subagent_session_mappings {
-            app_session_id_by_runtime_session_id.insert(
-                mapping.runtime_session_id.0.clone(),
-                mapping.app_session_id.clone(),
-            );
-            if mapping
-                .parent_app_session_id
-                .as_ref()
-                .is_some_and(|parent_session_id| parent_session_id == &session.session_id)
-            {
-                subagents_by_runtime_session_id.insert(
+        if supports_subagents {
+            for mapping in persisted_subagent_session_mappings {
+                app_session_id_by_runtime_session_id.insert(
                     mapping.runtime_session_id.0.clone(),
-                    SubagentRuntimeSession {
-                        parent_session_id: session.session_id.clone(),
-                        runtime_session_id: mapping.runtime_session_id.clone(),
-                        session_id: mapping.app_session_id,
-                        title: "Subagent".to_string(),
-                    },
+                    mapping.app_session_id.clone(),
                 );
+                if mapping
+                    .parent_app_session_id
+                    .as_ref()
+                    .is_some_and(|parent_session_id| parent_session_id == &session.session_id)
+                {
+                    subagents_by_runtime_session_id.insert(
+                        mapping.runtime_session_id.0.clone(),
+                        SubagentRuntimeSession {
+                            parent_session_id: session.session_id.clone(),
+                            runtime_session_id: mapping.runtime_session_id.clone(),
+                            session_id: mapping.app_session_id,
+                            title: "Subagent".to_string(),
+                        },
+                    );
+                }
             }
         }
 
@@ -1763,6 +1772,7 @@ impl NotificationContextInner {
             runtime_session_id: session.runtime_session_id.clone(),
             session,
             subagents_by_runtime_session_id,
+            supports_subagents,
             synthetic_message_ids: HashMap::new(),
             synthetic_message_next_id: 1,
             tool_calls: HashMap::new(),
@@ -1881,14 +1891,17 @@ impl NotificationContextInner {
         chunk: ContentChunk,
     ) {
         if !self.is_known_runtime_session(runtime_session_id) {
-            self.pending_content_chunks
-                .entry(runtime_session_id.0.clone())
-                .or_default()
-                .push(PendingContentChunk {
-                    chunk,
-                    message_kind,
-                });
-            return;
+            self.ensure_known_runtime_session(runtime_session_id, None);
+            if !self.is_known_runtime_session(runtime_session_id) {
+                self.pending_content_chunks
+                    .entry(runtime_session_id.0.clone())
+                    .or_default()
+                    .push(PendingContentChunk {
+                        chunk,
+                        message_kind,
+                    });
+                return;
+            }
         }
 
         let delta = content_block_text(&chunk.content);
@@ -2161,6 +2174,10 @@ impl NotificationContextInner {
         meta: &Meta,
         fallback_title: Option<&str>,
     ) -> Option<SubagentRuntimeSession> {
+        if !self.supports_subagents {
+            return None;
+        }
+
         let child_runtime_session_id = meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY)
             .map(RuntimeSessionId)
             .unwrap_or_else(|| notification_runtime_session_id.clone());
@@ -2359,17 +2376,19 @@ impl NotificationContextInner {
     fn ensure_known_runtime_session(
         &mut self,
         runtime_session_id: &RuntimeSessionId,
-        fallback_title: Option<&str>,
+        _fallback_title: Option<&str>,
     ) {
         if self.is_known_runtime_session(runtime_session_id) {
             return;
         }
 
-        self.ensure_subagent_runtime_session_from_meta(
-            runtime_session_id,
-            &Meta::default(),
-            fallback_title.or(Some("Subagent")),
-        );
+        if !self.supports_subagents {
+            self.app_session_id_by_runtime_session_id.insert(
+                runtime_session_id.0.clone(),
+                self.session.session_id.clone(),
+            );
+            self.replay_pending_content_chunks(runtime_session_id);
+        }
     }
 
     fn is_known_runtime_session(&self, runtime_session_id: &RuntimeSessionId) -> bool {
@@ -2377,6 +2396,11 @@ impl NotificationContextInner {
             || self
                 .subagents_by_runtime_session_id
                 .contains_key(&runtime_session_id.0)
+            || (!self.supports_subagents
+                && self
+                    .app_session_id_by_runtime_session_id
+                    .get(&runtime_session_id.0)
+                    == Some(&self.session.session_id))
     }
 
     fn replay_pending_content_chunks(&mut self, runtime_session_id: &RuntimeSessionId) {
@@ -2865,10 +2889,14 @@ mod tests {
     }
 
     fn native_test_session() -> NativeAiSession {
+        native_test_session_for_runtime("codex")
+    }
+
+    fn native_test_session_for_runtime(runtime_id: &str) -> NativeAiSession {
         NativeAiSession::from_prepare_input(NativeAiPrepareSessionInput {
             window_id: "window-1".to_string(),
             session_id: SessionId("session-1".to_string()),
-            runtime_id: RuntimeId("codex".to_string()),
+            runtime_id: RuntimeId(runtime_id.to_string()),
             project_id: None,
             worktree_id: None,
             cwd: "/tmp".to_string(),
@@ -2930,7 +2958,8 @@ mod tests {
     #[test]
     fn notification_context_projects_catalog_updates() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
-        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
         context.handle(SessionNotification::new(
@@ -2975,7 +3004,8 @@ mod tests {
     #[test]
     fn notification_context_keeps_synthetic_message_id_stable_for_chunks_without_ids() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
-        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
         context.handle(SessionNotification::new(
@@ -3015,7 +3045,8 @@ mod tests {
     #[test]
     fn notification_context_separates_thinking_and_assistant_chunks_with_shared_message_id() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
-        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
         // OpenCode can reuse one ACP messageId for thought and assistant streams.
@@ -3057,7 +3088,8 @@ mod tests {
     #[test]
     fn notification_context_projects_subagent_sessions_and_breadcrumbs() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
-        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
         let created_meta = test_meta(&[
@@ -3126,7 +3158,8 @@ mod tests {
     #[test]
     fn notification_context_does_not_rename_root_session_to_generic_subagent() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
-        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
         context.handle(SessionNotification::new(
@@ -3147,7 +3180,8 @@ mod tests {
     #[test]
     fn notification_context_projects_tool_diffs() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
-        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
         context.handle(SessionNotification::new(
@@ -3173,7 +3207,8 @@ mod tests {
     #[test]
     fn notification_context_merges_partial_tool_updates_before_emitting_activity() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
-        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
         context.handle(SessionNotification::new(
@@ -3210,7 +3245,8 @@ mod tests {
     #[test]
     fn notification_context_projects_tool_raw_input_and_output() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
-        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
         context.handle(SessionNotification::new(
@@ -3244,7 +3280,8 @@ mod tests {
     #[test]
     fn notification_context_completes_text_segments_before_tool_activity() {
         let (sender, receiver) = std_mpsc::sync_channel(16);
-        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
         context.handle(SessionNotification::new(
@@ -3277,7 +3314,8 @@ mod tests {
     #[test]
     fn notification_context_suppresses_internal_status_tool_activity() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
-        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
         let status_meta = test_meta(&[(CODEX_ACP_STATUS_EVENT_TYPE_KEY, "status")]);
@@ -3316,7 +3354,8 @@ mod tests {
     #[test]
     fn notification_context_projects_tool_activity_summary() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
-        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
         context.handle(SessionNotification::new(
@@ -3334,7 +3373,8 @@ mod tests {
     #[test]
     fn notification_context_projects_current_mode_updates() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
-        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
         context.handle(SessionNotification::new(
@@ -3350,9 +3390,10 @@ mod tests {
     }
 
     #[test]
-    fn notification_context_buffers_unknown_child_until_mapping_exists() {
+    fn notification_context_buffers_unknown_child_until_explicit_subagent_metadata() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
-        let context = NotificationContext::new(native_test_session(), Some(sender), Vec::new());
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
         context.handle(SessionNotification::new(
@@ -3361,10 +3402,24 @@ mod tests {
         ));
         assert!(receiver.try_recv().is_err());
 
-        context.handle(SessionNotification::new(
-            "runtime-child-late",
-            SessionUpdate::ToolCall(ToolCall::new("tool-child-1", "Read file")),
-        ));
+        let created_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-late"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-late",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .meta(created_meta.clone()),
+                ),
+            )
+            .meta(created_meta),
+        );
 
         let created_event = receiver.recv().unwrap();
         assert_eq!(created_event.event_name, AI_SUBAGENT_CREATED_EVENT);
@@ -3387,20 +3442,60 @@ mod tests {
             "session-1:subagent:runtime-child-late"
         );
         assert_eq!(delta_event.payload["delta"], "Child output");
+        assert!(receiver.try_recv().is_err());
+    }
 
-        let completed_event = receiver.recv().unwrap();
-        assert_eq!(completed_event.event_name, AI_MESSAGE_COMPLETED_EVENT);
-        assert_eq!(
-            completed_event.payload["sessionId"],
-            "session-1:subagent:runtime-child-late"
-        );
+    #[test]
+    fn notification_context_does_not_create_subagent_from_unknown_tool_without_metadata() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-child-without-meta",
+            SessionUpdate::ToolCall(ToolCall::new("tool-child-1", "Read file")),
+        ));
 
         let tool_event = receiver.recv().unwrap();
         assert_eq!(tool_event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(tool_event.payload["sessionId"], "session-1");
         assert_eq!(
-            tool_event.payload["sessionId"],
-            "session-1:subagent:runtime-child-late"
+            tool_event.payload["runtimeSessionId"],
+            "runtime-child-without-meta"
         );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn notification_context_routes_unknown_runtime_sessions_to_root_without_subagent_support() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new(
+            native_test_session_for_runtime("opencode"),
+            Some(sender),
+            Vec::new(),
+            false,
+        );
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-opencode-alias",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new("Root output".into())),
+        ));
+
+        let started_event = receiver.recv().unwrap();
+        assert_eq!(started_event.event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(started_event.payload["sessionId"], "session-1");
+        assert_eq!(
+            started_event.payload["runtimeSessionId"],
+            "runtime-opencode-alias"
+        );
+
+        let delta_event = receiver.recv().unwrap();
+        assert_eq!(delta_event.event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(delta_event.payload["sessionId"], "session-1");
+        assert_eq!(delta_event.payload["delta"], "Root output");
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
