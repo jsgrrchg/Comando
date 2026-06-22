@@ -192,7 +192,7 @@ impl RuntimeCapabilitiesPreset {
             permissions: true,
             user_input: true,
             subagents: true,
-            resume_session: false,
+            resume_session: true,
             load_session: true,
             auth_terminal: false,
             image_input: true,

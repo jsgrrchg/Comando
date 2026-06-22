@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import type {
     AiAuthCredentialSource,
     AiAuthMethod,
@@ -445,6 +449,10 @@ export function detectCodexAuthMethod(
         return OPENAI_API_KEY_AUTH_METHOD_ID;
     }
 
+    if (codexChatGptAuthAvailable(env)) {
+        return CHATGPT_AUTH_METHOD_ID;
+    }
+
     return null;
 }
 
@@ -483,6 +491,47 @@ function envSecretPresent(
     key: "CODEX_API_KEY" | "OPENAI_API_KEY",
 ): boolean {
     return Boolean(env[key]?.trim());
+}
+
+function codexChatGptAuthAvailable(env: NodeJS.ProcessEnv): boolean {
+    const authPath = codexAuthFilePath(env);
+    if (!authPath) {
+        return false;
+    }
+
+    try {
+        const raw = fs.readFileSync(authPath, "utf8");
+        const value = JSON.parse(raw) as unknown;
+        if (!isRecord(value)) {
+            return false;
+        }
+        const tokens = value.tokens;
+        return (
+            isRecord(tokens) &&
+            nonEmptyString(tokens.access_token) &&
+            nonEmptyString(tokens.refresh_token)
+        );
+    } catch {
+        return false;
+    }
+}
+
+function codexAuthFilePath(env: NodeJS.ProcessEnv): string | null {
+    const codexHome = normalizeOptionalText(env.CODEX_HOME);
+    if (codexHome) {
+        return path.join(codexHome, "auth.json");
+    }
+
+    const home = normalizeOptionalText(env.HOME) ?? os.homedir();
+    return home ? path.join(home, ".codex", "auth.json") : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown): value is string {
+    return typeof value === "string" && value.trim().length > 0;
 }
 
 function getCredentialSourceLabel(source: AiAuthCredentialSource): string {

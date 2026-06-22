@@ -12,10 +12,10 @@ use agent_client_protocol::schema::{
     ElicitationPropertySchema, InitializeRequest, InitializeResponse, LoadSessionRequest,
     LogoutRequest, Meta, MultiSelectItems, NewSessionRequest, PermissionOption, PromptRequest,
     ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigOptionValue, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall, ToolCallContent,
-    ToolCallUpdate,
+    ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
+    SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOptions,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent,
+    ToolCall, ToolCallContent, ToolCallUpdate,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use comando_types::ai::{
@@ -88,6 +88,12 @@ enum ElicitationAnswerKind {
     String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistedSessionStartMethod {
+    Load,
+    Resume,
+}
+
 #[derive(Debug, Clone)]
 pub enum NativeAiConfigValue {
     Boolean(bool),
@@ -108,6 +114,7 @@ pub struct AcpProcessSpec {
     pub auth_handshake: Option<comando_types::ai::NativeAiAuthHandshakeSpec>,
     pub persisted_runtime_session_id: Option<RuntimeSessionId>,
     pub persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
+    pub supports_resume_session: bool,
     pub supports_subagents: bool,
 }
 
@@ -130,6 +137,7 @@ impl AcpProcessSpec {
             auth_handshake: launch.auth_handshake.clone(),
             persisted_runtime_session_id: launch.persisted_runtime_session_id.clone(),
             persisted_subagent_session_mappings: launch.persisted_subagent_session_mappings.clone(),
+            supports_resume_session: definition.capabilities.resume_session,
             supports_subagents: definition.capabilities.subagents,
         })
     }
@@ -223,6 +231,14 @@ fn acp_client_capabilities() -> ClientCapabilities {
 fn protocol_version_for_flavor(flavor: AcpProtocolFlavor) -> ProtocolVersion {
     match flavor {
         AcpProtocolFlavor::Current14 | AcpProtocolFlavor::Legacy12 => ProtocolVersion::V1,
+    }
+}
+
+fn persisted_session_start_method(spec: &AcpProcessSpec) -> PersistedSessionStartMethod {
+    if spec.supports_resume_session {
+        PersistedSessionStartMethod::Resume
+    } else {
+        PersistedSessionStartMethod::Load
     }
 }
 
@@ -758,16 +774,37 @@ async fn run_acp_session(
                     .collect::<Vec<_>>();
                 let (runtime_session_id, initial_config_options) =
                     if let Some(runtime_session_id) = spec.persisted_runtime_session_id.clone() {
-                        let load_session = LoadSessionRequest::new(
-                            agent_client_protocol::schema::SessionId::from(
-                                runtime_session_id.0.clone(),
-                            ),
-                            PathBuf::from(&session.scope.cwd),
-                        )
-                        .additional_directories(additional_directories);
-                        let load_session_response =
-                            connection.send_request(load_session).block_task().await?;
-                        (runtime_session_id, load_session_response.config_options)
+                        let config_options = match persisted_session_start_method(&spec) {
+                            PersistedSessionStartMethod::Resume => {
+                                let resume_session = ResumeSessionRequest::new(
+                                    agent_client_protocol::schema::SessionId::from(
+                                        runtime_session_id.0.clone(),
+                                    ),
+                                    PathBuf::from(&session.scope.cwd),
+                                )
+                                .additional_directories(additional_directories);
+                                connection
+                                    .send_request(resume_session)
+                                    .block_task()
+                                    .await?
+                                    .config_options
+                            }
+                            PersistedSessionStartMethod::Load => {
+                                let load_session = LoadSessionRequest::new(
+                                    agent_client_protocol::schema::SessionId::from(
+                                        runtime_session_id.0.clone(),
+                                    ),
+                                    PathBuf::from(&session.scope.cwd),
+                                )
+                                .additional_directories(additional_directories);
+                                connection
+                                    .send_request(load_session)
+                                    .block_task()
+                                    .await?
+                                    .config_options
+                            }
+                        };
+                        (runtime_session_id, config_options)
                     } else {
                         let new_session = NewSessionRequest::new(PathBuf::from(&session.scope.cwd))
                             .additional_directories(additional_directories);
@@ -2886,6 +2923,36 @@ mod tests {
                 config_options: BTreeMap::new(),
             },
         }
+    }
+
+    #[test]
+    fn persisted_codex_sessions_use_resume_start_method() {
+        let registry = RuntimeRegistry::default();
+
+        let mut codex_launch = launch_spec("codex", "codex-acp", vec![]);
+        codex_launch.persisted_runtime_session_id =
+            Some(RuntimeSessionId("runtime-codex".to_string()));
+        let codex_spec =
+            AcpProcessSpec::from_launch(registry.get("codex").unwrap(), &codex_launch).unwrap();
+
+        assert!(codex_spec.supports_resume_session);
+        assert_eq!(
+            persisted_session_start_method(&codex_spec),
+            PersistedSessionStartMethod::Resume
+        );
+
+        let mut opencode_launch = launch_spec("opencode", "opencode", vec!["acp"]);
+        opencode_launch.persisted_runtime_session_id =
+            Some(RuntimeSessionId("runtime-opencode".to_string()));
+        let opencode_spec =
+            AcpProcessSpec::from_launch(registry.get("opencode").unwrap(), &opencode_launch)
+                .unwrap();
+
+        assert!(!opencode_spec.supports_resume_session);
+        assert_eq!(
+            persisted_session_start_method(&opencode_spec),
+            PersistedSessionStartMethod::Load
+        );
     }
 
     fn native_test_session() -> NativeAiSession {

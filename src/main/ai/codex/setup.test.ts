@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import type { CodexRuntimeSettings } from "@shared/ipc";
@@ -16,6 +20,61 @@ describe("Codex auth helpers", () => {
                 {},
             ),
         ).toBe("codex-api-key");
+    });
+
+    it("detects a local ChatGPT login when no method or API key is selected", () => {
+        const codexHome = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-codex-auth-"),
+        );
+        fs.writeFileSync(
+            path.join(codexHome, "auth.json"),
+            JSON.stringify({
+                tokens: {
+                    access_token: "access-token",
+                    refresh_token: "refresh-token",
+                },
+            }),
+        );
+
+        expect(
+            detectCodexAuthMethod(
+                createSettings({ authMethod: null }),
+                {
+                    codexApiKey: null,
+                    openaiApiKey: null,
+                },
+                {
+                    CODEX_HOME: codexHome,
+                },
+            ),
+        ).toBe("chatgpt");
+    });
+
+    it("ignores incomplete local ChatGPT auth files", () => {
+        const codexHome = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-codex-auth-"),
+        );
+        fs.writeFileSync(
+            path.join(codexHome, "auth.json"),
+            JSON.stringify({
+                tokens: {
+                    access_token: "access-token",
+                },
+            }),
+        );
+
+        expect(
+            detectCodexAuthMethod(
+                createSettings({ authMethod: null }),
+                {
+                    codexApiKey: null,
+                    openaiApiKey: null,
+                },
+                {
+                    CODEX_HOME: codexHome,
+                },
+            ),
+        ).toBeNull();
     });
 
     it("preserves environment credentials even when another method is selected", () => {
