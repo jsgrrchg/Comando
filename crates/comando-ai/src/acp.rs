@@ -1813,6 +1813,7 @@ impl NotificationContext {
 }
 
 struct NotificationContextInner {
+    active_subagent_runtime_session_ids: HashSet<String>,
     app_session_id_by_runtime_session_id: HashMap<String, SessionId>,
     event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
     image_generation_created_at: HashMap<String, String>,
@@ -1881,6 +1882,7 @@ impl NotificationContextInner {
         }
 
         Self {
+            active_subagent_runtime_session_ids: HashSet::new(),
             app_session_id_by_runtime_session_id,
             event_sender,
             image_generation_created_at: HashMap::new(),
@@ -2031,6 +2033,8 @@ impl NotificationContextInner {
         if delta.is_empty() {
             return;
         }
+
+        self.mark_subagent_active(runtime_session_id);
 
         let message_id = self.resolve_stream_message_id(runtime_session_id, message_kind, &chunk);
         let stream_key = stream_message_key(runtime_session_id, message_kind, &message_id);
@@ -2273,6 +2277,7 @@ impl NotificationContextInner {
             }
         }
         self.synthetic_message_ids.clear();
+        self.emit_active_subagent_idle_updates();
     }
 
     fn handle_session_info_update(
@@ -2567,6 +2572,33 @@ impl NotificationContextInner {
         }
 
         self.clear_synthetic_message_ids_for_runtime(runtime_session_id);
+    }
+
+    fn mark_subagent_active(&mut self, runtime_session_id: &RuntimeSessionId) {
+        if self
+            .subagents_by_runtime_session_id
+            .contains_key(&runtime_session_id.0)
+        {
+            self.active_subagent_runtime_session_ids
+                .insert(runtime_session_id.0.clone());
+        }
+    }
+
+    fn emit_active_subagent_idle_updates(&mut self) {
+        let runtime_session_ids = std::mem::take(&mut self.active_subagent_runtime_session_ids);
+        for runtime_session_id in runtime_session_ids {
+            if !self
+                .subagents_by_runtime_session_id
+                .contains_key(&runtime_session_id)
+            {
+                continue;
+            }
+            let mut summary =
+                self.summary_for_runtime_session(&RuntimeSessionId(runtime_session_id));
+            summary.status = NativeAiSessionStatus::Idle;
+            summary.updated_at = now_iso8601();
+            self.emit(AI_SESSION_UPDATED_EVENT, &session_updated(&summary));
+        }
     }
 
     fn prepare_runtime_session_event(
@@ -3789,13 +3821,19 @@ mod tests {
             )
             .meta(created_meta),
         );
-        assert_eq!(receiver.recv().unwrap().event_name, AI_SUBAGENT_CREATED_EVENT);
+        assert_eq!(
+            receiver.recv().unwrap().event_name,
+            AI_SUBAGENT_CREATED_EVENT
+        );
 
         context.handle(SessionNotification::new(
             "runtime-child-1",
             SessionUpdate::AgentMessageChunk(ContentChunk::new("Child output".into())),
         ));
-        assert_eq!(receiver.recv().unwrap().event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(
+            receiver.recv().unwrap().event_name,
+            AI_MESSAGE_STARTED_EVENT
+        );
         assert_eq!(receiver.recv().unwrap().event_name, AI_MESSAGE_DELTA_EVENT);
 
         context.complete_open_messages();
