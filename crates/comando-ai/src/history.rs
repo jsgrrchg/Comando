@@ -1138,7 +1138,9 @@ impl<'a> LegacyAiHistoryReader<'a> {
             return Ok(shadow);
         }
         if let Some(messages) = self.load_runtime_state_messages(session_id)? {
-            return Ok(messages);
+            if !messages.is_empty() {
+                return Ok(messages);
+            }
         }
         Ok(self
             .load_transcript_json_messages(session_id)?
@@ -2525,6 +2527,47 @@ mod tests {
             .unwrap();
 
         assert_eq!(page.messages, vec![shadow_message]);
+    }
+
+    #[test]
+    fn legacy_reader_falls_back_to_transcript_when_runtime_state_messages_empty() {
+        let connection = legacy_connection();
+        let transcript_message = message("message_transcript", "from transcript");
+        insert_legacy_session(&connection, "legacy_1", vec![transcript_message.clone()]);
+        connection
+            .execute(
+                "
+                INSERT INTO chat_session_runtime_state (
+                    session_id,
+                    state_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES ('legacy_1', ?1, ?2, ?2)
+                ",
+                (
+                    serde_json::to_string(&json!({ "messages": [] })).unwrap(),
+                    "2026-06-20T12:00:00.000Z",
+                ),
+            )
+            .unwrap();
+
+        let reader = LegacyAiHistoryReader::new(&connection);
+        let page = reader
+            .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                session_id: SessionId("legacy_1".to_string()),
+                offset: 0,
+                limit: 10,
+            })
+            .unwrap()
+            .unwrap();
+        let snapshot = reader
+            .load_session_snapshot(&SessionId("legacy_1".to_string()))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(page.messages, vec![transcript_message.clone()]);
+        assert_eq!(snapshot.messages, vec![transcript_message]);
     }
 
     #[test]

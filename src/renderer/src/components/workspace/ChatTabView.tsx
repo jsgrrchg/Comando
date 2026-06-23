@@ -509,6 +509,7 @@ export const ChatTabView = memo(function ChatTabView({
                     snapshot?.runtimeId ??
                     session?.meta?.runtimeId ??
                     tab.runtimeId,
+                sessionOpenMode: tab.sessionOpenMode,
                 sessionId,
                 title: snapshot?.title ?? session?.meta?.title ?? "Chat",
                 worktreeId:
