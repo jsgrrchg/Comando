@@ -57,6 +57,7 @@ export const NATIVE_AI_EVENTS = [
     "ai://thinking-started",
     "ai://thinking-delta",
     "ai://thinking-completed",
+    "ai://image-generation",
     "ai://tool-activity",
     "ai://status-event",
     "ai://plan-updated",

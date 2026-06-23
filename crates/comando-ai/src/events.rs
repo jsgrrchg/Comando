@@ -23,6 +23,7 @@ pub const AI_MESSAGE_COMPLETED_EVENT: &str = "ai://message-completed";
 pub const AI_THINKING_STARTED_EVENT: &str = "ai://thinking-started";
 pub const AI_THINKING_DELTA_EVENT: &str = "ai://thinking-delta";
 pub const AI_THINKING_COMPLETED_EVENT: &str = "ai://thinking-completed";
+pub const AI_IMAGE_GENERATION_EVENT: &str = "ai://image-generation";
 pub const AI_TOOL_ACTIVITY_EVENT: &str = "ai://tool-activity";
 pub const AI_STATUS_EVENT: &str = "ai://status-event";
 pub const AI_PLAN_UPDATED_EVENT: &str = "ai://plan-updated";

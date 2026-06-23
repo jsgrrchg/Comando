@@ -169,6 +169,17 @@ describe("native backend fixtures", () => {
             kind: "thinking-delta",
             messageId: "thinking_1",
         });
+        expect(aiEvent("ai/event.image_generation.json")).toMatchObject({
+            kind: "image-generation",
+            message: {
+                generatedImage: {
+                    path: "/Users/example/.codex/generated_images/image.png",
+                    status: "completed",
+                },
+                id: "image:codex-acp:image:image-1",
+                kind: "image",
+            },
+        });
         expect(aiEvent("ai/event.tool_activity.json")).toMatchObject({
             activity: {
                 id: "tool_1",

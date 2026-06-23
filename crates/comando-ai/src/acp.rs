@@ -9,18 +9,20 @@ use agent_client_protocol::schema::{
     ClientCapabilities, ConfigOptionUpdate, ContentBlock, ContentChunk, CreateElicitationRequest,
     CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities,
     ElicitationContentValue, ElicitationFormCapabilities, ElicitationMode,
-    ElicitationPropertySchema, InitializeRequest, InitializeResponse, LoadSessionRequest,
-    LogoutRequest, Meta, MultiSelectItems, NewSessionRequest, PermissionOption, PromptRequest,
-    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption,
-    SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOptions,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest, StopReason, TextContent,
-    ToolCall, ToolCallContent, ToolCallUpdate,
+    ElicitationPropertySchema, ImageContent, InitializeRequest, InitializeResponse,
+    LoadSessionRequest, LogoutRequest, Meta, MultiSelectItems, NewSessionRequest, PermissionOption,
+    PromptCapabilities, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
+    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
+    SessionConfigOptionValue, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall, ToolCallContent,
+    ToolCallUpdate,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use comando_types::ai::{
-    NativeAiAvailableCommandPayload, NativeAiErrorPayload, NativeAiLaunchSpec,
-    NativeAiPermissionOptionPayload, NativeAiPermissionRequestPayload,
+    NativeAiAvailableCommandPayload, NativeAiErrorPayload, NativeAiGeneratedImage,
+    NativeAiImageAttachment, NativeAiImageGenerationPayload, NativeAiImageMessage,
+    NativeAiLaunchSpec, NativeAiPermissionOptionPayload, NativeAiPermissionRequestPayload,
     NativeAiPermissionResponseInput, NativeAiPlanEntryPayload, NativeAiPlanUpdatedPayload,
     NativeAiRuntimeConnectionPayload, NativeAiRuntimeSessionMapping,
     NativeAiSessionCatalogUpdatedPayload, NativeAiSessionConfigOptionPayload,
@@ -41,13 +43,13 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::error::{AiError, AiResult};
 use crate::events::{
-    AI_ERROR_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT,
-    AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT, AI_RUNTIME_CONNECTION_EVENT,
-    AI_SESSION_CATALOG_UPDATED_EVENT, AI_SESSION_UPDATED_EVENT, AI_SUBAGENT_BREADCRUMB_EVENT,
-    AI_SUBAGENT_CREATED_EVENT, AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT,
-    AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT,
-    AI_USER_INPUT_REQUEST_EVENT, AiRuntimeEvent, message_completed, message_delta, message_started,
-    now_iso8601, session_updated,
+    AI_ERROR_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT,
+    AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT,
+    AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CATALOG_UPDATED_EVENT, AI_SESSION_UPDATED_EVENT,
+    AI_SUBAGENT_BREADCRUMB_EVENT, AI_SUBAGENT_CREATED_EVENT, AI_THINKING_COMPLETED_EVENT,
+    AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
+    AI_TOOL_ACTIVITY_EVENT, AI_USER_INPUT_REQUEST_EVENT, AiRuntimeEvent, message_completed,
+    message_delta, message_started, now_iso8601, session_updated,
 };
 use crate::redaction::redact_env_key_value;
 use crate::runtime::{AcpProtocolFlavor, RuntimeDefinition};
@@ -55,6 +57,8 @@ use crate::session::{NativeAiSession, SessionRegistry};
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 const CODEX_ACP_STATUS_EVENT_TYPE_KEY: &str = "codexAcpEventType";
+const CODEX_ACP_IMAGE_GENERATION_EVENT_TYPE: &str = "image_generation";
+const CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX: &str = "codex-acp:image:";
 const CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE: &str = "subagent_session_created";
 const CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE: &str = "subagent_breadcrumb";
 const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
@@ -62,6 +66,7 @@ const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
 
 type PermissionWaiterMap = Arc<Mutex<HashMap<String, PendingPermissionRequest>>>;
+type PromptCapabilitiesState = Arc<Mutex<AcpPromptCapabilities>>;
 type UserInputWaiterMap = Arc<Mutex<HashMap<String, PendingUserInputRequest>>>;
 
 #[derive(Debug)]
@@ -77,6 +82,17 @@ struct PendingUserInputRequest {
     schema: BTreeMap<String, ElicitationAnswerKind>,
     sender: oneshot::Sender<CreateElicitationResponse>,
     target_session_id: SessionId,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct AcpPromptCapabilities {
+    image: bool,
+}
+
+impl From<&PromptCapabilities> for AcpPromptCapabilities {
+    fn from(value: &PromptCapabilities) -> Self {
+        Self { image: value.image }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -228,6 +244,18 @@ fn acp_client_capabilities() -> ClientCapabilities {
         .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()))
 }
 
+fn set_prompt_capabilities(
+    state: &PromptCapabilitiesState,
+    initialize_response: &InitializeResponse,
+) -> Result<(), String> {
+    let mut capabilities = state
+        .lock()
+        .map_err(|error| format!("ACP prompt capabilities lock failed: {error}"))?;
+    *capabilities =
+        AcpPromptCapabilities::from(&initialize_response.agent_capabilities.prompt_capabilities);
+    Ok(())
+}
+
 fn protocol_version_for_flavor(flavor: AcpProtocolFlavor) -> ProtocolVersion {
     match flavor {
         AcpProtocolFlavor::Current14 | AcpProtocolFlavor::Legacy12 => ProtocolVersion::V1,
@@ -322,6 +350,7 @@ fn acp_auth_handshake_request(
 #[derive(Debug, Clone)]
 pub struct AcpSessionController {
     permission_waiters: PermissionWaiterMap,
+    prompt_capabilities: PromptCapabilitiesState,
     sender: tokio_mpsc::UnboundedSender<AcpSessionCommand>,
     user_input_waiters: UserInputWaiterMap,
 }
@@ -333,9 +362,22 @@ impl AcpSessionController {
         target_session_id: SessionId,
         message_id: MessageId,
         prompt: String,
+        attachments: Vec<NativeAiImageAttachment>,
     ) -> AiResult<()> {
+        if !attachments.is_empty() {
+            let capabilities = self.prompt_capabilities.lock().map_err(|error| {
+                AiError::Internal(format!("ACP prompt capabilities lock failed: {error}"))
+            })?;
+            if !capabilities.image {
+                return Err(AiError::Unsupported(
+                    "This AI runtime does not support image attachments.".to_string(),
+                ));
+            }
+        }
+
         self.sender
             .send(AcpSessionCommand::Prompt {
+                attachments,
                 message_id,
                 prompt,
                 runtime_session_id,
@@ -488,6 +530,7 @@ impl AcpSessionController {
 #[derive(Debug)]
 enum AcpSessionCommand {
     Prompt {
+        attachments: Vec<NativeAiImageAttachment>,
         message_id: MessageId,
         prompt: String,
         runtime_session_id: RuntimeSessionId,
@@ -514,9 +557,11 @@ pub fn start_acp_session(
 ) -> AiResult<(NativeAiSession, AcpSessionController)> {
     let (command_sender, command_receiver) = tokio_mpsc::unbounded_channel();
     let permission_waiters = Arc::new(Mutex::new(HashMap::new()));
+    let prompt_capabilities = Arc::new(Mutex::new(AcpPromptCapabilities::default()));
     let user_input_waiters = Arc::new(Mutex::new(HashMap::new()));
     let controller = AcpSessionController {
         permission_waiters: Arc::clone(&permission_waiters),
+        prompt_capabilities: Arc::clone(&prompt_capabilities),
         sender: command_sender,
         user_input_waiters: Arc::clone(&user_input_waiters),
     };
@@ -535,6 +580,7 @@ pub fn start_acp_session(
             command_receiver,
             Arc::clone(&task_started_sender),
             permission_waiters,
+            prompt_capabilities,
             user_input_waiters,
         )
         .await;
@@ -665,6 +711,7 @@ async fn run_acp_session(
     mut command_receiver: tokio_mpsc::UnboundedReceiver<AcpSessionCommand>,
     started_sender: Arc<Mutex<Option<oneshot::Sender<Result<RuntimeSessionId, String>>>>>,
     permission_waiters: PermissionWaiterMap,
+    prompt_capabilities: PromptCapabilitiesState,
     user_input_waiters: UserInputWaiterMap,
 ) -> Result<(), String> {
     let mut command = Command::new(&spec.executable);
@@ -755,6 +802,7 @@ async fn run_acp_session(
             let sessions = Arc::clone(&sessions);
             let event_sender = event_sender.clone();
             let notification_context = notification_context.clone();
+            let prompt_capabilities = Arc::clone(&prompt_capabilities);
             let started_sender = Arc::clone(&started_sender);
             async move {
                 let initialize_response = connection
@@ -764,6 +812,9 @@ async fn run_acp_session(
                     )
                     .block_task()
                     .await?;
+                set_prompt_capabilities(&prompt_capabilities, &initialize_response).map_err(
+                    |message| agent_client_protocol::Error::internal_error().data(message),
+                )?;
                 run_acp_auth_handshake(&connection, &spec, &initialize_response).await?;
 
                 let additional_directories = session
@@ -837,6 +888,7 @@ async fn run_acp_session(
                 while let Some(command) = command_receiver.recv().await {
                     match command {
                         AcpSessionCommand::Prompt {
+                            attachments,
                             message_id,
                             prompt,
                             runtime_session_id,
@@ -857,6 +909,7 @@ async fn run_acp_session(
                                     &runtime_session_id,
                                     message_id,
                                     prompt,
+                                    attachments,
                                     &sessions,
                                     event_sender.as_ref(),
                                     &notification_context,
@@ -916,16 +969,15 @@ async fn run_prompt(
     runtime_session_id: &RuntimeSessionId,
     message_id: MessageId,
     prompt: String,
+    attachments: Vec<NativeAiImageAttachment>,
     sessions: &Arc<Mutex<SessionRegistry>>,
     event_sender: Option<&std_mpsc::SyncSender<AiRuntimeEvent>>,
     notification_context: &NotificationContext,
 ) {
     let runtime_session =
         agent_client_protocol::schema::SessionId::from(runtime_session_id.0.clone());
-    let prompt_request = PromptRequest::new(
-        runtime_session,
-        vec![ContentBlock::Text(TextContent::new(prompt))],
-    );
+    let prompt_request =
+        PromptRequest::new(runtime_session, prompt_content_blocks(prompt, attachments));
 
     let response = connection.send_request(prompt_request).block_task().await;
     notification_context.complete_open_messages();
@@ -989,6 +1041,25 @@ async fn run_prompt(
             }
         }
     }
+}
+
+fn prompt_content_blocks(
+    prompt: String,
+    attachments: Vec<NativeAiImageAttachment>,
+) -> Vec<ContentBlock> {
+    let text = prompt.trim();
+    let text_block_count = if text.is_empty() { 0 } else { 1 };
+    let mut blocks = Vec::with_capacity(text_block_count + attachments.len());
+    if !text.is_empty() {
+        blocks.push(ContentBlock::Text(TextContent::new(text.to_string())));
+    }
+    blocks.extend(attachments.into_iter().map(|attachment| {
+        ContentBlock::Image(ImageContent::new(
+            attachment.data_base64,
+            attachment.mime_type,
+        ))
+    }));
+    blocks
 }
 
 async fn handle_permission_request(
@@ -1738,6 +1809,7 @@ impl NotificationContext {
 struct NotificationContextInner {
     app_session_id_by_runtime_session_id: HashMap<String, SessionId>,
     event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
+    image_generation_created_at: HashMap<String, String>,
     open_messages: HashMap<String, StreamedMessage>,
     pending_content_chunks: HashMap<String, Vec<PendingContentChunk>>,
     runtime_session_id: Option<RuntimeSessionId>,
@@ -1804,6 +1876,7 @@ impl NotificationContextInner {
         Self {
             app_session_id_by_runtime_session_id,
             event_sender,
+            image_generation_created_at: HashMap::new(),
             open_messages: HashMap::new(),
             pending_content_chunks: HashMap::new(),
             runtime_session_id: session.runtime_session_id.clone(),
@@ -1994,6 +2067,10 @@ impl NotificationContextInner {
 
         let tool_call = self.upsert_tool_call(runtime_session_id, tool_call, meta);
         let tool_call_id = NativeToolCallId(tool_call.tool_call_id.to_string());
+        if is_image_generation_tool_update(&tool_call_id, meta) {
+            self.emit_image_generation(runtime_session_id, &tool_call_id, &tool_call);
+            return;
+        }
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
             &NativeAiToolActivityPayload {
@@ -2028,6 +2105,10 @@ impl NotificationContextInner {
         };
 
         let tool_call_id = NativeToolCallId(tool_call.tool_call_id.to_string());
+        if is_image_generation_tool_update(&tool_call_id, meta) {
+            self.emit_image_generation(runtime_session_id, &tool_call_id, &tool_call);
+            return;
+        }
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
             &NativeAiToolActivityPayload {
@@ -2043,6 +2124,28 @@ impl NotificationContextInner {
             },
         );
         self.emit_subagent_breadcrumb(runtime_session_id, tool_call_id, meta);
+    }
+
+    fn emit_image_generation(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        tool_call_id: &NativeToolCallId,
+        tool_call: &ToolCall,
+    ) {
+        let base = self.event_base_for_runtime_session(runtime_session_id);
+        let created_at = self
+            .image_generation_created_at
+            .entry(tool_call_id.0.clone())
+            .or_insert_with(|| base.updated_at.clone())
+            .clone();
+        let message = image_generation_message(tool_call_id, tool_call, created_at);
+        if message.status == "completed" {
+            self.image_generation_created_at.remove(&tool_call_id.0);
+        }
+        self.emit(
+            AI_IMAGE_GENERATION_EVENT,
+            &NativeAiImageGenerationPayload { base, message },
+        );
     }
 
     fn upsert_tool_call(
@@ -2778,6 +2881,129 @@ fn raw_tool_output_summary(raw_output: Option<&serde_json::Value>) -> Option<Str
     ))
 }
 
+fn is_image_generation_tool_update(tool_call_id: &NativeToolCallId, meta: &Meta) -> bool {
+    tool_call_id
+        .0
+        .starts_with(CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX)
+        || meta
+            .get(CODEX_ACP_STATUS_EVENT_TYPE_KEY)
+            .and_then(serde_json::Value::as_str)
+            == Some(CODEX_ACP_IMAGE_GENERATION_EVENT_TYPE)
+}
+
+fn image_generation_message(
+    tool_call_id: &NativeToolCallId,
+    tool_call: &ToolCall,
+    created_at: String,
+) -> NativeAiImageMessage {
+    let raw_input = tool_call.raw_input.as_ref();
+    let raw_status =
+        read_json_string(raw_input, "status").unwrap_or_else(|| serde_label(&tool_call.status));
+    let image_status = normalize_image_generation_status(&raw_status);
+    let image_path = read_json_string(raw_input, "path");
+    let result = read_json_string(raw_input, "result");
+    let revised_prompt = read_json_string(raw_input, "revised_prompt")
+        .or_else(|| read_json_string(raw_input, "revisedPrompt"));
+    let mime_type = read_json_string(raw_input, "mime_type")
+        .or_else(|| read_json_string(raw_input, "mimeType"))
+        .or_else(|| {
+            image_path
+                .as_deref()
+                .and_then(infer_generated_image_mime_type)
+        });
+    let is_failure = is_terminal_image_generation_status(&image_status);
+    let error = read_json_string(raw_input, "error")
+        .or_else(|| is_failure.then(|| result.clone()).flatten());
+    let title = if tool_call.title.trim().is_empty() {
+        image_generation_title(&image_status, error.as_deref())
+    } else {
+        tool_call.title.trim().to_string()
+    };
+    let generated_image = NativeAiGeneratedImage {
+        error,
+        mime_type,
+        path: image_path,
+        result,
+        revised_prompt,
+        status: image_status.clone(),
+        title,
+    };
+    let message_status = if is_active_image_generation_status(&image_status) {
+        "streaming"
+    } else {
+        "completed"
+    };
+
+    NativeAiImageMessage {
+        attachments: Vec::new(),
+        content: image_generation_content(&generated_image),
+        created_at,
+        generated_image,
+        id: format!("image:{}", tool_call_id.0),
+        kind: "image".to_string(),
+        status: message_status.to_string(),
+    }
+}
+
+fn read_json_string(value: Option<&serde_json::Value>, key: &str) -> Option<String> {
+    value?
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+fn normalize_image_generation_status(status: &str) -> String {
+    let normalized = status.trim().to_lowercase();
+    if normalized.is_empty() {
+        "in_progress".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn is_active_image_generation_status(status: &str) -> bool {
+    matches!(status, "pending" | "in_progress" | "running")
+}
+
+fn is_terminal_image_generation_status(status: &str) -> bool {
+    matches!(status, "failed" | "error" | "cancelled" | "canceled")
+}
+
+fn image_generation_title(status: &str, error: Option<&str>) -> String {
+    if is_active_image_generation_status(status) {
+        return "Generating image".to_string();
+    }
+    if is_terminal_image_generation_status(status) || error.is_some() {
+        return "Image generation failed".to_string();
+    }
+    "Generated image".to_string()
+}
+
+fn image_generation_content(image: &NativeAiGeneratedImage) -> String {
+    if is_active_image_generation_status(&image.status) {
+        return "Generating image...".to_string();
+    }
+    if is_terminal_image_generation_status(&image.status) || image.error.is_some() {
+        return "Image generation failed".to_string();
+    }
+    "Generated image".to_string()
+}
+
+fn infer_generated_image_mime_type(path: &str) -> Option<String> {
+    let pathname = path.split(['?', '#']).next().unwrap_or(path);
+    let extension = pathname.rsplit_once('.')?.1.to_lowercase();
+    let mime_type = match extension.as_str() {
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "gif" => "image/gif",
+        "jpe" | "jpeg" | "jfif" | "jpg" => "image/jpeg",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        _ => return None,
+    };
+    Some(mime_type.to_string())
+}
+
 fn tool_call_content_diffs(content: &[ToolCallContent]) -> Vec<serde_json::Value> {
     content
         .iter()
@@ -2840,8 +3066,8 @@ mod tests {
     use crate::runtime::RuntimeRegistry;
     use agent_client_protocol::schema::{ToolCallStatus, ToolCallUpdateFields, ToolKind};
     use comando_types::ai::{
-        NativeAiAuthHandshakeSpec, NativeAiDesiredSelections, NativeAiPrepareSessionInput,
-        NativeAiRuntimeStatus, NativeAiUserInputAnswer,
+        NativeAiAuthHandshakeSpec, NativeAiDesiredSelections, NativeAiImageAttachment,
+        NativeAiPrepareSessionInput, NativeAiRuntimeStatus, NativeAiUserInputAnswer,
     };
 
     fn initialize_response_with_auth(method_id: &str) -> InitializeResponse {
@@ -2988,6 +3214,63 @@ mod tests {
             );
         }
         meta
+    }
+
+    #[test]
+    fn prompt_content_blocks_include_image_attachments() {
+        let blocks = prompt_content_blocks(
+            "  describe this  ".to_string(),
+            vec![NativeAiImageAttachment {
+                id: "image-1".to_string(),
+                data_base64: "aGVsbG8=".to_string(),
+                mime_type: "image/png".to_string(),
+                name: Some("capture.png".to_string()),
+                size_bytes: Some(5),
+            }],
+        );
+
+        assert_eq!(blocks.len(), 2);
+        match &blocks[0] {
+            ContentBlock::Text(text) => assert_eq!(text.text, "describe this"),
+            other => panic!("expected text block, got {other:?}"),
+        }
+        match &blocks[1] {
+            ContentBlock::Image(image) => {
+                assert_eq!(image.data, "aGVsbG8=");
+                assert_eq!(image.mime_type, "image/png");
+            }
+            other => panic!("expected image block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn image_generation_tool_call_maps_to_image_message() {
+        let message = image_generation_message(
+            &NativeToolCallId("codex-acp:image:ig-1".to_string()),
+            &ToolCall::new("codex-acp:image:ig-1", "Generated image")
+                .kind(ToolKind::Other)
+                .status(ToolCallStatus::Completed)
+                .raw_input(serde_json::json!({
+                    "path": "/Users/example/.codex/generated_images/image.png",
+                    "result": "created image",
+                    "revised_prompt": "A tiny brass robot",
+                    "status": "completed"
+                })),
+            "2026-06-20T00:00:00.000Z".to_string(),
+        );
+
+        assert_eq!(message.id, "image:codex-acp:image:ig-1");
+        assert_eq!(message.kind, "image");
+        assert_eq!(message.status, "completed");
+        assert_eq!(message.content, "Generated image");
+        assert_eq!(
+            message.generated_image.mime_type.as_deref(),
+            Some("image/png")
+        );
+        assert_eq!(
+            message.generated_image.revised_prompt.as_deref(),
+            Some("A tiny brass robot")
+        );
     }
 
     #[test]
@@ -3150,6 +3433,66 @@ mod tests {
         );
         assert_eq!(thinking_delta.payload["content"], "Reasoning");
         assert_eq!(message_delta.payload["content"], "Visible answer");
+    }
+
+    #[test]
+    fn notification_context_emits_image_generation_messages() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(
+                ToolCall::new("codex-acp:image:ig-1", "Generating image")
+                    .kind(ToolKind::Other)
+                    .status(ToolCallStatus::InProgress)
+                    .raw_input(serde_json::json!({ "status": "in_progress" })),
+            ),
+        ));
+
+        let started = receiver.recv().unwrap();
+        assert_eq!(started.event_name, AI_IMAGE_GENERATION_EVENT);
+        assert_eq!(
+            started.payload["message"]["id"],
+            "image:codex-acp:image:ig-1"
+        );
+        assert_eq!(started.payload["message"]["kind"], "image");
+        assert_eq!(started.payload["message"]["status"], "streaming");
+        assert_eq!(
+            started.payload["message"]["generatedImage"]["status"],
+            "in_progress"
+        );
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "codex-acp:image:ig-1",
+                ToolCallUpdateFields::new()
+                    .title("Generated image".to_string())
+                    .status(ToolCallStatus::Completed)
+                    .raw_input(serde_json::json!({
+                        "path": "/Users/example/.codex/generated_images/image.png",
+                        "result": "created image",
+                        "revised_prompt": "A tiny brass robot",
+                        "status": "completed"
+                    })),
+            )),
+        ));
+
+        let completed = receiver.recv().unwrap();
+        assert_eq!(completed.event_name, AI_IMAGE_GENERATION_EVENT);
+        assert_eq!(completed.payload["message"]["status"], "completed");
+        assert_eq!(completed.payload["message"]["content"], "Generated image");
+        assert_eq!(
+            completed.payload["message"]["createdAt"],
+            started.payload["message"]["createdAt"]
+        );
+        assert_eq!(
+            completed.payload["message"]["generatedImage"]["path"],
+            "/Users/example/.codex/generated_images/image.png"
+        );
     }
 
     #[test]

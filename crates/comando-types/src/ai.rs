@@ -325,12 +325,22 @@ pub struct NativeAiPrepareSessionInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeAiImageAttachment {
+    pub id: String,
+    pub data_base64: String,
+    pub mime_type: String,
+    pub name: Option<String>,
+    pub size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeAiPromptInput {
     pub text: String,
     #[serde(default)]
     pub display_text: Option<String>,
     #[serde(default)]
-    pub attachments: Vec<serde_json::Value>,
+    pub attachments: Vec<NativeAiImageAttachment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -757,6 +767,38 @@ pub struct NativeAiMessageStartedPayload {
     pub message_id: MessageId,
     pub message_kind: String,
     pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiGeneratedImage {
+    pub error: Option<String>,
+    pub mime_type: Option<String>,
+    pub path: Option<String>,
+    pub result: Option<String>,
+    pub revised_prompt: Option<String>,
+    pub status: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiImageMessage {
+    pub attachments: Vec<NativeAiImageAttachment>,
+    pub content: String,
+    pub created_at: String,
+    pub generated_image: NativeAiGeneratedImage,
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiImageGenerationPayload {
+    #[serde(flatten)]
+    pub base: NativeAiEventBase,
+    pub message: NativeAiImageMessage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

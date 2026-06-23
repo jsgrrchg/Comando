@@ -146,7 +146,7 @@ describe("NativeAiGateway", () => {
                 new NativeBackendError({
                     code: "ai_runtime_exited",
                     details: null,
-                    message: "AI runtime process exited: Resource not found: stale",
+                    message: "AI runtime process exited: Resource not found",
                     retryable: false,
                 }),
             ),
@@ -796,7 +796,8 @@ describe("NativeAiGateway", () => {
 
     it("emits the local user message and sends prompts to the native backend", async () => {
         const client = createClient();
-        const onSessionEvent = vi.fn();
+        const onSessionEvent =
+            vi.fn<NativeAiGatewayOptions["onSessionEvent"]>();
         const gateway = createGateway(client, { onSessionEvent });
         const launch = createLaunch();
 
@@ -804,8 +805,16 @@ describe("NativeAiGateway", () => {
             input: createPrepareInput(),
             launch,
         });
+        const attachment = {
+            dataBase64: "aGVsbG8=",
+            id: "image-1",
+            mimeType: "image/png",
+            name: "capture.png",
+            sizeBytes: 5,
+        };
         const promptInput = {
             ...createPromptInput(),
+            attachments: [attachment],
             composerParts: [
                 { text: "Review ", type: "text" as const },
                 {
@@ -828,6 +837,16 @@ describe("NativeAiGateway", () => {
             stopReason: "accepted",
         });
 
+        const startedEvent = onSessionEvent.mock.calls
+            .map(([, event]) => event)
+            .find((event) => event.kind === "message-started");
+        expect(startedEvent?.kind).toBe("message-started");
+        if (!startedEvent || startedEvent.kind !== "message-started") {
+            throw new Error("Expected a local user message-started event.");
+        }
+        expect(startedEvent.message.attachments).toEqual([attachment]);
+        expect(startedEvent.message.id).toBe("user-message-1");
+        expect(startedEvent.message.kind).toBe("user");
         expect(onSessionEvent).toHaveBeenCalledWith(
             "window-1",
             expect.objectContaining({
@@ -841,7 +860,7 @@ describe("NativeAiGateway", () => {
         expect(client.request).toHaveBeenCalledWith("ai_send_prompt", {
             messageId: "user-message-1",
             prompt: {
-                attachments: [],
+                attachments: [attachment],
                 displayText: "Review \u200B«@new-note.md»\u200B",
                 text: "Implement the feature.",
             },

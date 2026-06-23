@@ -27,6 +27,7 @@ import { resolveEditorLanguage } from "../editor-language";
 import type {
     NativeAiErrorPayload,
     NativeAiEventBase,
+    NativeAiImageGenerationPayload,
     NativeAiMessageCompletedPayload,
     NativeAiMessageDeltaPayload,
     NativeAiMessageStartedPayload,
@@ -157,6 +158,12 @@ export function nativeAiEventToIpc(
     if (event.eventName === "ai://thinking-completed") {
         return nativeAiThinkingCompletedToIpc(
             requireRecord(event.payload) as unknown as NativeAiThinkingCompletedPayload,
+        );
+    }
+
+    if (event.eventName === "ai://image-generation") {
+        return nativeAiImageGenerationToIpc(
+            requireRecord(event.payload) as unknown as NativeAiImageGenerationPayload,
         );
     }
 
@@ -544,6 +551,16 @@ function nativeAiThinkingCompletedToIpc(
         ...nativeAiEventBase(payload),
         kind: "thinking-completed",
         messageId: payload.messageId,
+    };
+}
+
+function nativeAiImageGenerationToIpc(
+    payload: NativeAiImageGenerationPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        kind: "image-generation",
+        message: payload.message,
     };
 }
 

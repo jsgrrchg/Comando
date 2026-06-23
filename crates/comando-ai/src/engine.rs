@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex, mpsc};
 use comando_settings::RuntimeSetupStore;
 use comando_types::ai::{
     NativeAiCancelSessionOutput, NativeAiCloseSessionOutput, NativeAiGetRuntimeStatusInput,
-    NativeAiListRuntimesOutput, NativeAiPermissionResponseInput, NativeAiPrepareSessionInput,
-    NativeAiRuntimeStatus, NativeAiSendPromptInput, NativeAiSendPromptOutput,
-    NativeAiSessionIdInput, NativeAiSessionStatus, NativeAiSessionSummary,
-    NativeAiSetSessionConfigOptionInput, NativeAiSetSessionModeInput, NativeAiSetSessionModelInput,
-    NativeAiUserInputResponseInput,
+    NativeAiImageAttachment, NativeAiListRuntimesOutput, NativeAiPermissionResponseInput,
+    NativeAiPrepareSessionInput, NativeAiRuntimeStatus, NativeAiSendPromptInput,
+    NativeAiSendPromptOutput, NativeAiSessionIdInput, NativeAiSessionStatus,
+    NativeAiSessionSummary, NativeAiSetSessionConfigOptionInput, NativeAiSetSessionModeInput,
+    NativeAiSetSessionModelInput, NativeAiUserInputResponseInput,
 };
 use comando_types::ids::{ProjectId, RuntimeSessionId, WorktreeId};
 use serde_json::{Value, json};
@@ -23,12 +23,13 @@ use crate::commands::{
 };
 use crate::error::{AiError, AiResult};
 use crate::events::{
-    AI_ERROR_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT, AI_MESSAGE_STARTED_EVENT,
-    AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT, AI_SESSION_CATALOG_UPDATED_EVENT,
-    AI_SESSION_CLOSED_EVENT, AI_SESSION_UPDATED_EVENT, AI_STATUS_EVENT,
-    AI_SUBAGENT_BREADCRUMB_EVENT, AI_SUBAGENT_CREATED_EVENT, AI_THINKING_COMPLETED_EVENT,
-    AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
-    AI_TOOL_ACTIVITY_EVENT, AI_USER_INPUT_REQUEST_EVENT, AiRuntimeEvent, now_iso8601,
+    AI_ERROR_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT,
+    AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT,
+    AI_SESSION_CATALOG_UPDATED_EVENT, AI_SESSION_CLOSED_EVENT, AI_SESSION_UPDATED_EVENT,
+    AI_STATUS_EVENT, AI_SUBAGENT_BREADCRUMB_EVENT, AI_SUBAGENT_CREATED_EVENT,
+    AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
+    AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, AI_USER_INPUT_REQUEST_EVENT, AiRuntimeEvent,
+    now_iso8601,
 };
 use crate::history::{
     AiHistorySessionMetadata, AiHistorySessionMetadataInput, AiHistoryStore,
@@ -46,6 +47,9 @@ use crate::session::{NativeAiSession, SessionRegistry};
 pub struct AiEngineConfig {
     pub selected_native_runtime: String,
 }
+
+const MAX_IMAGE_ATTACHMENTS: usize = 12;
+const MAX_IMAGE_ATTACHMENT_BYTES: u64 = 10 * 1024 * 1024;
 
 impl Default for AiEngineConfig {
     fn default() -> Self {
@@ -303,11 +307,7 @@ impl AiEngine {
                 message: "Type a prompt before sending it.".to_string(),
             });
         }
-        if !input.prompt.attachments.is_empty() {
-            return Err(AiError::Unsupported(
-                "Native AI image attachments are not supported in this rollout yet.".to_string(),
-            ));
-        }
+        validate_image_attachments(&input.prompt.attachments)?;
 
         let root_session_id = input.session_id.clone();
         let target_session_id = input
@@ -342,6 +342,7 @@ impl AiEngine {
             target_session_id.clone(),
             input.message_id.clone(),
             input.prompt.text.clone(),
+            input.prompt.attachments.clone(),
         ) {
             session.prompt_in_flight = false;
             session.active_message_id = None;
@@ -365,6 +366,7 @@ impl AiEngine {
             &target_session_id,
             &input.message_id.0,
             display_text,
+            &input.prompt.attachments,
         )?;
         Ok((send_prompt_output(target_session_id), summary))
     }
@@ -520,6 +522,7 @@ impl AiEngine {
             AI_MESSAGE_COMPLETED_EVENT | AI_THINKING_COMPLETED_EVENT => {
                 self.record_history_message_completed(&event.payload)
             }
+            AI_IMAGE_GENERATION_EVENT => self.record_history_image_generation(&event.payload),
             AI_SESSION_CATALOG_UPDATED_EVENT => self.record_history_catalog_updated(&event.payload),
             AI_TOOL_ACTIVITY_EVENT | AI_STATUS_EVENT => {
                 self.record_history_tool_activity(&event.payload, event.event_name.as_str())
@@ -751,9 +754,10 @@ impl AiEngine {
         session_id: &comando_types::ids::SessionId,
         message_id: &str,
         content: &str,
+        attachments: &[NativeAiImageAttachment],
     ) -> AiResult<()> {
         let message = json!({
-            "attachments": [],
+            "attachments": attachments,
             "content": content,
             "createdAt": now_iso8601(),
             "id": message_id,
@@ -769,6 +773,21 @@ impl AiEngine {
             .or_default()
             .push(message);
         self.flush_history_messages(session_id)
+    }
+
+    fn record_history_image_generation(&self, payload: &Value) -> AiResult<()> {
+        let Some(session_id) = payload_session_id(payload) else {
+            return Ok(());
+        };
+        let Some(message) = payload.get("message").cloned() else {
+            return Ok(());
+        };
+        let mut messages = self.history_messages.lock().map_err(|error| {
+            AiError::Internal(format!("AI history messages lock failed: {error}"))
+        })?;
+        upsert_history_message(messages.entry(session_id.0.clone()).or_default(), message);
+        drop(messages);
+        self.flush_history_messages(&session_id)
     }
 
     fn record_history_message_started(&self, payload: &Value) -> AiResult<()> {
@@ -1277,6 +1296,55 @@ trait Pipe: Sized {
 
 impl<T> Pipe for T {}
 
+fn validate_image_attachments(attachments: &[NativeAiImageAttachment]) -> AiResult<()> {
+    if attachments.len() > MAX_IMAGE_ATTACHMENTS {
+        return Err(AiError::InvalidInput(format!(
+            "You can attach up to {MAX_IMAGE_ATTACHMENTS} images per message."
+        )));
+    }
+
+    for attachment in attachments {
+        if attachment.id.trim().is_empty() {
+            return Err(AiError::InvalidInput(
+                "Image attachments require an id.".to_string(),
+            ));
+        }
+        if !attachment.mime_type.starts_with("image/") {
+            return Err(AiError::InvalidInput(
+                "Only image attachments are supported.".to_string(),
+            ));
+        }
+        if attachment.data_base64.trim().is_empty() {
+            return Err(AiError::InvalidInput(
+                "Image attachments require base64 data.".to_string(),
+            ));
+        }
+
+        let estimated_size = estimate_base64_size(&attachment.data_base64);
+        let size = attachment.size_bytes.unwrap_or(estimated_size);
+        if size > MAX_IMAGE_ATTACHMENT_BYTES || estimated_size > MAX_IMAGE_ATTACHMENT_BYTES {
+            return Err(AiError::InvalidInput(format!(
+                "Image attachments must be {} MiB or smaller.",
+                MAX_IMAGE_ATTACHMENT_BYTES / (1024 * 1024)
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn estimate_base64_size(data_base64: &str) -> u64 {
+    let data = data_base64.trim();
+    let padding = if data.ends_with("==") {
+        2
+    } else if data.ends_with('=') {
+        1
+    } else {
+        0
+    };
+    ((data.len() as u64 * 3) / 4).saturating_sub(padding)
+}
+
 fn history_message_identity(
     payload: &Value,
 ) -> Option<(comando_types::ids::SessionId, String, String, String)> {
@@ -1452,7 +1520,10 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    use comando_types::ai::{NativeAiDesiredSelections, NativeAiLaunchSpec, NativeAiRuntimeStatus};
+    use comando_types::ai::{
+        NativeAiDesiredSelections, NativeAiImageAttachment, NativeAiLaunchSpec,
+        NativeAiRuntimeStatus,
+    };
     use comando_types::ids::{RuntimeId, SessionId};
 
     fn prepare_input(session_id: &str, runtime_id: &str) -> NativeAiPrepareSessionInput {
@@ -1530,6 +1601,16 @@ mod tests {
             },
         });
         input
+    }
+
+    fn image_attachment(id: &str) -> NativeAiImageAttachment {
+        NativeAiImageAttachment {
+            id: id.to_string(),
+            data_base64: "aGVsbG8=".to_string(),
+            mime_type: "image/png".to_string(),
+            name: Some("capture.png".to_string()),
+            size_bytes: Some(5),
+        }
     }
 
     #[test]
@@ -1612,6 +1693,56 @@ mod tests {
         );
         assert_eq!(session.scope.cwd, project.path().to_string_lossy());
         assert_eq!(session.scope.additional_roots, vec!["/tmp/extra-root"]);
+    }
+
+    #[test]
+    fn prompt_rejects_too_many_image_attachments() {
+        let engine = AiEngine::default();
+        let input = NativeAiSendPromptInput {
+            session_id: SessionId("s1".to_string()),
+            target_session_id: None,
+            runtime_session_id: None,
+            message_id: comando_types::ids::MessageId("m1".to_string()),
+            prompt: comando_types::ai::NativeAiPromptInput {
+                text: String::new(),
+                display_text: None,
+                attachments: (0..=MAX_IMAGE_ATTACHMENTS)
+                    .map(|index| image_attachment(&format!("image-{index}")))
+                    .collect(),
+            },
+        };
+
+        assert!(matches!(
+            engine.send_prompt(input),
+            Err(AiError::InvalidInput(message)) if message.contains("attach up to")
+        ));
+    }
+
+    #[test]
+    fn prompt_allows_image_only_input_until_acp_dispatch() {
+        let engine = AiEngine::default();
+        {
+            let mut sessions = engine.lock_sessions().unwrap();
+            sessions
+                .insert(NativeAiSession::from_prepare_input(prepare_input("s1", "codex")).unwrap())
+                .unwrap();
+        }
+        let input = NativeAiSendPromptInput {
+            session_id: SessionId("s1".to_string()),
+            target_session_id: None,
+            runtime_session_id: None,
+            message_id: comando_types::ids::MessageId("m1".to_string()),
+            prompt: comando_types::ai::NativeAiPromptInput {
+                text: String::new(),
+                display_text: None,
+                attachments: vec![image_attachment("image-1")],
+            },
+        };
+
+        assert!(matches!(
+            engine.send_prompt(input),
+            Err(AiError::Unsupported(message)) if message.contains("ACP-backed session")
+        ));
     }
 
     #[test]

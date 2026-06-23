@@ -234,7 +234,15 @@ export type NativeAiPrepareSessionInput = {
 export type NativeAiPromptInput = {
     readonly text: string;
     readonly displayText?: string | null;
-    readonly attachments: readonly unknown[];
+    readonly attachments: readonly NativeAiImageAttachment[];
+};
+
+export type NativeAiImageAttachment = {
+    readonly id: string;
+    readonly dataBase64: string;
+    readonly mimeType: string;
+    readonly name: string | null;
+    readonly sizeBytes: number | null;
 };
 
 export type NativeAiSendPromptInput = {
@@ -542,6 +550,30 @@ export type NativeAiMessageStartedPayload = NativeAiEventBase & {
     readonly messageId: NativeMessageId;
     readonly messageKind: string;
     readonly content: string;
+};
+
+export type NativeAiGeneratedImage = {
+    readonly error: string | null;
+    readonly mimeType: string | null;
+    readonly path: string | null;
+    readonly result: string | null;
+    readonly revisedPrompt: string | null;
+    readonly status: string;
+    readonly title: string;
+};
+
+export type NativeAiImageMessage = {
+    readonly attachments: readonly NativeAiImageAttachment[];
+    readonly content: string;
+    readonly createdAt: string;
+    readonly generatedImage: NativeAiGeneratedImage;
+    readonly id: string;
+    readonly kind: "image";
+    readonly status: "completed" | "streaming";
+};
+
+export type NativeAiImageGenerationPayload = NativeAiEventBase & {
+    readonly message: NativeAiImageMessage;
 };
 
 export type NativeAiMessageDeltaPayload = NativeAiEventBase & {

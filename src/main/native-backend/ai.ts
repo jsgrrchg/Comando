@@ -582,12 +582,6 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     async sendPrompt(
         request: NativeAiSendPromptRpcInput,
     ): Promise<AiPromptResult> {
-        if (request.input.attachments.length > 0) {
-            throw new Error(
-                "Native AI image attachments are not supported in this rollout yet.",
-            );
-        }
-
         this.#rememberPersistedSubagentMappings(request.launch);
         const target = this.#resolveSessionTarget(request.input.sessionId);
         if (target.targetSessionId) {
@@ -1298,11 +1292,17 @@ function requireNumber(value: unknown, label: string): number {
 }
 
 function isStalePersistedRuntimeSessionError(error: unknown): boolean {
+    if (!(error instanceof NativeBackendError)) {
+        return false;
+    }
+
+    const message = error.message;
     return (
-        error instanceof NativeBackendError &&
-        (error.code === "not_found" ||
-            error.message === "Resource not found" ||
-            error.message.includes("Resource not found:"))
+        error.code === "not_found" ||
+        message === "Resource not found" ||
+        message.includes("Resource not found:") ||
+        (error.code === "ai_runtime_exited" &&
+            message.includes("Resource not found"))
     );
 }
 

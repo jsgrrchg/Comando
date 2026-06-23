@@ -2637,6 +2637,16 @@ export class AiService {
             };
         }
 
+        if (event.kind === "image-generation") {
+            return {
+                ...base,
+                messages: upsertNativeMessage(
+                    snapshot.messages,
+                    event.message,
+                ),
+            };
+        }
+
         if (event.kind === "tool-activity") {
             const nextSnapshot = {
                 ...base,
