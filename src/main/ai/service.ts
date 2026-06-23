@@ -219,6 +219,7 @@ type LiveSessionContext = {
 };
 
 interface NativeReviewBaseline {
+    readonly additionalRoots: readonly string[];
     readonly cwd: string;
     readonly messageId: string;
     readonly nativeCaptured: boolean;
@@ -2715,6 +2716,7 @@ export class AiService {
         const nativeAi = this.#requireNativeReviewGateway("captureReviewBaseline");
         const nativeCaptured = await nativeAi.captureReviewBaseline(sessionId);
         this.#nativeReviewBaselines.set(sessionId, {
+            additionalRoots: launch.additionalRoots,
             cwd: launch.cwd,
             messageId,
             nativeCaptured,
@@ -2766,14 +2768,40 @@ export class AiService {
         snapshot: AiSessionSnapshot,
         activity: AiToolActivity,
     ): AiSessionSnapshot {
+        const baseline = this.#nativeReviewBaselines.get(snapshot.sessionId);
         if (
-            !this.#nativeReviewBaselines.has(snapshot.sessionId) ||
+            !baseline ||
             !isTerminalNativeReviewActivityStatus(activity.status) ||
             activity.diffs.length === 0
         ) {
             return snapshot;
         }
 
+        const projectRoot = this.#resolveNativeReviewProjectRoot(snapshot);
+        const scopeRoot = projectRoot ?? baseline.cwd;
+        const normalizeDiffPath = (candidatePath: string): string | null => {
+            const normalizedPath = normalizeTrackedDiffPath(
+                {
+                    cwd: baseline.cwd,
+                    projectRoot,
+                },
+                candidatePath,
+            );
+            const resolvedPath = resolveSessionScopedPath(
+                scopeRoot,
+                normalizedPath,
+            );
+            const insideAdditionalRoot = baseline.additionalRoots.some(
+                (rootPath) => isPathInsideRoot(resolvedPath.absolutePath, rootPath),
+            );
+            if (resolvedPath.insideRoot && resolvedPath.relativePath) {
+                return normalizedPath;
+            }
+            if (insideAdditionalRoot) {
+                return resolvedPath.absolutePath;
+            }
+            return null;
+        };
         let trackedFiles = snapshot.trackedFiles;
         for (const diff of activity.diffs) {
             const trackedFile = trackedFileFromToolActivityDiff(
@@ -2781,6 +2809,7 @@ export class AiService {
                 snapshot.sessionId,
                 activity.id,
                 activity.updatedAt,
+                normalizeDiffPath,
             );
             if (!trackedFile) {
                 continue;
@@ -2794,6 +2823,22 @@ export class AiService {
                   ...snapshot,
                   trackedFiles,
               };
+    }
+
+    #resolveNativeReviewProjectRoot(
+        snapshot: Pick<AiSessionSnapshot, "projectId" | "worktreeId">,
+    ): string | null {
+        try {
+            return snapshot.projectId
+                ? this.#projectService.getProjectRootPath(
+                      snapshot.projectId,
+                      snapshot.worktreeId ?? null,
+                  )
+                : null;
+        } catch (error) {
+            debugBenignError("ai.service.resolveNativeReviewProjectRoot", error);
+            return null;
+        }
     }
 
     #shouldImportNativeReviewToolDiffs(event: AiSessionDomainEvent): boolean {
@@ -3991,15 +4036,27 @@ function trackedFileFromToolActivityDiff(
     sessionId: string,
     toolCallId: string,
     updatedAt: string,
+    normalizePath: (candidatePath: string) => string | null = (candidatePath) =>
+        candidatePath,
 ): AiTrackedFile | null {
     if (!diff.isText) {
         return null;
     }
 
+    const normalizedPath = normalizePath(diff.path);
+    if (!normalizedPath) {
+        return null;
+    }
+    const normalizedPreviousPath = diff.previousPath
+        ? normalizePath(diff.previousPath)
+        : null;
+    if (diff.previousPath && !normalizedPreviousPath) {
+        return null;
+    }
     const diffBase = diff.oldText ?? "";
     const currentText = diff.newText ?? "";
     if (
-        diff.previousPath === null &&
+        normalizedPreviousPath === null &&
         normalizeReviewText(diffBase) === normalizeReviewText(currentText)
     ) {
         return null;
@@ -4009,18 +4066,18 @@ function trackedFileFromToolActivityDiff(
         currentText,
         diffBase,
         hunks:
-            diff.hunks.length > 0
+            diff.hunks.length > 0 && normalizedPath === diff.path
                 ? diff.hunks
-                : computeDiffHunks(diffBase, currentText, diff.path),
-        identityKey: `tool:${sessionId}:${toolCallId}:${diff.previousPath ?? ""}:${diff.path}`,
+                : computeDiffHunks(diffBase, currentText, normalizedPath),
+        identityKey: `tool:${sessionId}:${toolCallId}:${normalizedPreviousPath ?? ""}:${normalizedPath}`,
         isText: true,
         kind: diff.kind,
         newText: diff.newText,
         oldText: diff.oldText,
-        path: diff.path,
+        path: normalizedPath,
         previousPath:
-            diff.previousPath && diff.previousPath !== diff.path
-                ? diff.previousPath
+            normalizedPreviousPath && normalizedPreviousPath !== normalizedPath
+                ? normalizedPreviousPath
                 : null,
         reviewState: "pending",
         reversible: diff.reversible,

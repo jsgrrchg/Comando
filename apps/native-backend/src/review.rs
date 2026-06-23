@@ -7,13 +7,13 @@ use std::time::UNIX_EPOCH;
 
 use comando_ai::history::AiHistoryStore;
 use comando_ai::session::NativeAiSession;
-use comando_diff::review::tracked_diff_base;
+use comando_diff::review::{sync_tracked_file, tracked_diff_base};
 use comando_diff::{
     ReviewDecision, ReviewTrackedFile, ReviewTrackedFileKind, ReviewTrackedFileStatus,
     compute_tracked_file_patch, resolve_tracked_file_hunks, tracked_current_text,
 };
 use comando_fs::WriteTracker;
-use comando_fs::path::{ScopedPathIntent, resolve_scoped_path};
+use comando_fs::path::{ScopedPathIntent, normalize_relative_path, resolve_scoped_path};
 use comando_fs::read::hash_content_bytes;
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::ids::SessionId;
@@ -213,7 +213,7 @@ impl NativeReviewService {
         let mut unsupported_files = HashMap::new();
         for entry in entries {
             if !files.contains_key(&entry.path) {
-                match self.read_working_tree_text(&session.scope.cwd, &entry.path) {
+                match self.read_working_tree_text(session, &entry.path) {
                     Ok(text) => {
                         files.insert(entry.path.clone(), text);
                     }
@@ -223,7 +223,7 @@ impl NativeReviewService {
                             UnsupportedReviewBaseline {
                                 reason: content_error_reason(&error).to_string(),
                                 fingerprint: self
-                                    .read_working_tree_fingerprint(&session.scope.cwd, &entry.path)
+                                    .read_working_tree_fingerprint(session, &entry.path)
                                     .ok()
                                     .flatten(),
                             },
@@ -235,7 +235,7 @@ impl NativeReviewService {
             if let Some(previous_path) = entry.previous_path
                 && !files.contains_key(&previous_path)
             {
-                match self.read_working_tree_text(&session.scope.cwd, &previous_path) {
+                match self.read_working_tree_text(session, &previous_path) {
                     Ok(text) => {
                         files.insert(previous_path.clone(), text);
                     }
@@ -245,10 +245,7 @@ impl NativeReviewService {
                             UnsupportedReviewBaseline {
                                 reason: content_error_reason(&error).to_string(),
                                 fingerprint: self
-                                    .read_working_tree_fingerprint(
-                                        &session.scope.cwd,
-                                        &previous_path,
-                                    )
+                                    .read_working_tree_fingerprint(session, &previous_path)
                                     .ok()
                                     .flatten(),
                             },
@@ -306,12 +303,12 @@ impl NativeReviewService {
             let current_text = if deleted {
                 None
             } else {
-                match self.read_working_tree_text(&session.scope.cwd, &entry.path) {
+                match self.read_working_tree_text(session, &entry.path) {
                     Ok(text) => text,
                     Err(error) if is_review_content_error(&error) => {
                         if let Some(unsupported) = unsupported_baseline
                             && self
-                                .read_working_tree_fingerprint(&session.scope.cwd, &entry.path)
+                                .read_working_tree_fingerprint(session, &entry.path)
                                 .ok()
                                 .flatten()
                                 == unsupported.fingerprint
@@ -464,6 +461,7 @@ impl NativeReviewService {
         let session_id = session.session_id.0.clone();
         let mut tracked_files = loaded.state.tracked_files;
         for mut file in input.tracked_files {
+            normalize_imported_tracked_file_paths(session, &mut file)?;
             // Legacy snapshots may omit the session id on old review entries.
             if file.session_id.trim().is_empty() {
                 file.session_id = session_id.clone();
@@ -471,8 +469,12 @@ impl NativeReviewService {
             upsert_tracked_file(&mut tracked_files, file);
         }
         let updated_at = now();
-        let state =
-            self.replace_state(session, tracked_files, loaded.state.conflicts, updated_at.clone())?;
+        let state = self.replace_state(
+            session,
+            tracked_files,
+            loaded.state.conflicts,
+            updated_at.clone(),
+        )?;
         Ok(command_output(
             session.session_id.clone(),
             state.tracked_files,
@@ -490,7 +492,7 @@ impl NativeReviewService {
         input: NativeReviewFileMutationInput,
     ) -> Result<NativeReviewCommandOutput, NativeError> {
         let mut state = self.load_or_empty_state(session)?;
-        let index = find_tracked_file_index(&state.tracked_files, &input.path)
+        let index = find_tracked_file_index_for_input(session, &state.tracked_files, &input.path)?
             .ok_or_else(|| review_not_found(&input.path))?;
         validate_version(&state.tracked_files[index], input.expected_version)?;
         self.assert_current_matches(session, &state.tracked_files[index])?;
@@ -523,7 +525,7 @@ impl NativeReviewService {
         write_tracker: &WriteTracker,
     ) -> Result<NativeReviewCommandOutput, NativeError> {
         let mut state = self.load_or_empty_state(session)?;
-        let index = find_tracked_file_index(&state.tracked_files, &input.path)
+        let index = find_tracked_file_index_for_input(session, &state.tracked_files, &input.path)?
             .ok_or_else(|| review_not_found(&input.path))?;
         validate_version(&state.tracked_files[index], input.expected_version)?;
         let tracked_file = state.tracked_files.remove(index);
@@ -694,15 +696,16 @@ impl NativeReviewService {
         write_tracker: Option<&WriteTracker>,
     ) -> Result<NativeReviewCommandOutput, NativeError> {
         let mut state = self.load_or_empty_state(session)?;
-        let index = find_tracked_file_index(&state.tracked_files, &input.path)
+        let index = find_tracked_file_index_for_input(session, &state.tracked_files, &input.path)?
             .ok_or_else(|| review_not_found(&input.path))?;
         validate_version(&state.tracked_files[index], input.expected_version)?;
         let tracked_file = state.tracked_files[index].clone();
         self.assert_current_matches(session, &tracked_file)?;
         let updated_at = now();
+        let hunk_ids = normalize_review_hunk_ids(session, &input.hunk_ids, &tracked_file.path);
         let next = resolve_tracked_file_hunks(
             &tracked_file,
-            &input.hunk_ids,
+            &hunk_ids,
             decision.clone(),
             updated_at.clone(),
         );
@@ -772,11 +775,14 @@ impl NativeReviewService {
         &mut self,
         session: &NativeAiSession,
     ) -> Result<NativeReviewLoadedState, NativeError> {
-        if let Some(state) = self.states.get(&session.session_id.0) {
-            return Ok(NativeReviewLoadedState {
-                state: state.clone(),
-                found: true,
-            });
+        if let Some(state) = self.states.get(&session.session_id.0).cloned() {
+            let (state, migrated) = normalize_review_state(session, state)?;
+            if migrated {
+                self.save_state(&state)?;
+                self.states
+                    .insert(session.session_id.0.clone(), state.clone());
+            }
+            return Ok(NativeReviewLoadedState { state, found: true });
         }
         if let Some(path) = self.review_state_path(&session.session_id)
             && path.exists()
@@ -790,6 +796,10 @@ impl NativeReviewService {
                         format!("Native review state is invalid: {error}"),
                     )
                 })?;
+            let (state, migrated) = normalize_review_state(session, state)?;
+            if migrated {
+                self.save_state(&state)?;
+            }
             self.states
                 .insert(session.session_id.0.clone(), state.clone());
             return Ok(NativeReviewLoadedState { state, found: true });
@@ -849,32 +859,32 @@ impl NativeReviewService {
 
     fn read_working_tree_text(
         &self,
-        cwd: &str,
-        relative_path: &str,
+        session: &NativeAiSession,
+        review_path: &str,
     ) -> Result<Option<String>, NativeError> {
-        let resolved = match resolve_review_path(cwd, relative_path, ScopedPathIntent::ReadExisting)
-        {
-            Ok(path) => path,
-            Err(error) if error.code == NativeErrorCode::NotFound => return Ok(None),
-            Err(error) => return Err(error),
-        };
+        let resolved =
+            match resolve_review_path(session, review_path, ScopedPathIntent::ReadExisting) {
+                Ok(path) => path,
+                Err(error) if error.code == NativeErrorCode::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            };
         if let Some(buffer) = self.open_buffers.get(&resolved) {
-            return ensure_review_text(buffer.clone(), relative_path);
+            return ensure_review_text(buffer.clone(), review_path);
         }
-        read_text_file_for_review(&resolved, relative_path)
+        read_text_file_for_review(&resolved, review_path)
     }
 
     fn read_working_tree_fingerprint(
         &self,
-        cwd: &str,
-        relative_path: &str,
+        session: &NativeAiSession,
+        review_path: &str,
     ) -> Result<Option<String>, NativeError> {
-        let resolved = match resolve_review_path(cwd, relative_path, ScopedPathIntent::ReadExisting)
-        {
-            Ok(path) => path,
-            Err(error) if error.code == NativeErrorCode::NotFound => return Ok(None),
-            Err(error) => return Err(error),
-        };
+        let resolved =
+            match resolve_review_path(session, review_path, ScopedPathIntent::ReadExisting) {
+                Ok(path) => path,
+                Err(error) if error.code == NativeErrorCode::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            };
         if let Some(buffer) = self.open_buffers.get(&resolved) {
             return Ok(Some(format!(
                 "buffer:{}:{}",
@@ -914,7 +924,7 @@ impl NativeReviewService {
             ReviewTrackedFileKind::Delete => None,
             _ => Some(tracked_current_text(tracked_file)),
         };
-        let current = self.read_working_tree_text(&session.scope.cwd, &tracked_file.path)?;
+        let current = self.read_working_tree_text(session, &tracked_file.path)?;
         match (expected, current) {
             (None, None) => Ok(()),
             (Some(expected), Some(current)) if expected == current => Ok(()),
@@ -944,7 +954,7 @@ impl NativeReviewService {
             return Ok(());
         };
         if self
-            .read_working_tree_text(&session.scope.cwd, previous_path)?
+            .read_working_tree_text(session, previous_path)?
             .is_some()
         {
             return Err(review_conflict(previous_path, "path_exists", None));
@@ -999,11 +1009,7 @@ impl NativeReviewService {
         text: &str,
         write_tracker: &WriteTracker,
     ) -> Result<(), NativeError> {
-        let resolved = resolve_review_path(
-            &session.scope.cwd,
-            relative_path,
-            ScopedPathIntent::CreateTarget,
-        )?;
+        let resolved = resolve_review_path(session, relative_path, ScopedPathIntent::CreateTarget)?;
         if let Some(parent) = resolved.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| review_io("create review parent directory", parent, error))?;
@@ -1023,11 +1029,7 @@ impl NativeReviewService {
         relative_path: &str,
         write_tracker: &WriteTracker,
     ) -> Result<(), NativeError> {
-        let resolved = resolve_review_path(
-            &session.scope.cwd,
-            relative_path,
-            ScopedPathIntent::ReadExisting,
-        )?;
+        let resolved = resolve_review_path(session, relative_path, ScopedPathIntent::ReadExisting)?;
         match fs::remove_file(&resolved) {
             Ok(()) => {
                 write_tracker.track_any(resolved.clone());
@@ -1048,11 +1050,8 @@ impl NativeReviewService {
         let mut backups = Vec::new();
         for tracked_file in tracked_files {
             for relative_path in revert_paths(tracked_file) {
-                let resolved = resolve_review_path(
-                    &session.scope.cwd,
-                    &relative_path,
-                    ScopedPathIntent::CreateTarget,
-                )?;
+                let resolved =
+                    resolve_review_path(session, &relative_path, ScopedPathIntent::CreateTarget)?;
                 if !paths.insert(resolved.clone()) {
                     continue;
                 }
@@ -1384,6 +1383,58 @@ fn find_tracked_file_index(files: &[ReviewTrackedFile], path: &str) -> Option<us
     })
 }
 
+fn find_tracked_file_index_for_input(
+    session: &NativeAiSession,
+    files: &[ReviewTrackedFile],
+    input_path: &str,
+) -> Result<Option<usize>, NativeError> {
+    if let Some(index) = find_tracked_file_index(files, input_path) {
+        return Ok(Some(index));
+    }
+
+    let normalized =
+        normalize_review_path(session, input_path, ScopedPathIntent::CreateTarget)?.state_path;
+    Ok(find_tracked_file_index(files, &normalized))
+}
+
+fn normalize_review_hunk_ids(
+    session: &NativeAiSession,
+    hunk_ids: &[String],
+    tracked_path: &str,
+) -> Vec<String> {
+    let mut normalized = Vec::with_capacity(hunk_ids.len() * 2);
+    for hunk_id in hunk_ids {
+        normalized.push(hunk_id.clone());
+        if let Some(rewritten) = rewrite_review_hunk_id(session, hunk_id, tracked_path)
+            && rewritten != *hunk_id
+        {
+            normalized.push(rewritten);
+        }
+    }
+    normalized
+}
+
+fn rewrite_review_hunk_id(
+    session: &NativeAiSession,
+    hunk_id: &str,
+    tracked_path: &str,
+) -> Option<String> {
+    let mut parts = hunk_id.rsplitn(4, ':');
+    let hunk_index = parts.next()?;
+    let new_start = parts.next()?;
+    let old_start = parts.next()?;
+    let seed = parts.next()?;
+    let normalized_seed = normalize_review_path(session, seed, ScopedPathIntent::CreateTarget)
+        .ok()?
+        .state_path;
+    if normalized_seed != tracked_path {
+        return None;
+    }
+    Some(format!(
+        "{tracked_path}:{old_start}:{new_start}:{hunk_index}"
+    ))
+}
+
 fn upsert_tracked_file(files: &mut Vec<ReviewTrackedFile>, file: ReviewTrackedFile) {
     if let Some(index) = find_tracked_file_index(files, &file.path) {
         let mut next = file;
@@ -1463,27 +1514,188 @@ fn revert_paths(tracked_file: &ReviewTrackedFile) -> Vec<String> {
     paths
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedReviewPath {
+    absolute_path: PathBuf,
+    state_path: String,
+}
+
 fn resolve_review_path(
-    cwd: &str,
-    relative_path: &str,
+    session: &NativeAiSession,
+    review_path: &str,
     intent: ScopedPathIntent,
 ) -> Result<PathBuf, NativeError> {
-    resolve_scoped_path(Path::new(cwd), Some(relative_path), false, intent)
-        .map(|resolved| resolved.absolute_path)
-        .map_err(|error| match error {
-            comando_fs::FsError::NotFound => {
-                NativeError::new(NativeErrorCode::NotFound, "Review file was not found.")
-            }
-            comando_fs::FsError::PathEscape => NativeError::new(
-                NativeErrorCode::PermissionDenied,
-                "Cannot safely apply this review change because the path is outside the project.",
-            ),
-            comando_fs::FsError::InvalidPath => NativeError::new(
-                NativeErrorCode::InvalidArgs,
-                "Cannot safely apply this review change because the path is invalid.",
-            ),
-            _ => error.to_native_error(),
-        })
+    normalize_review_path(session, review_path, intent).map(|resolved| resolved.absolute_path)
+}
+
+fn normalize_imported_tracked_file_paths(
+    session: &NativeAiSession,
+    tracked_file: &mut ReviewTrackedFile,
+) -> Result<(), NativeError> {
+    normalize_tracked_file_paths(session, tracked_file).map(|_| ())
+}
+
+fn normalize_review_state(
+    session: &NativeAiSession,
+    mut state: NativeReviewSessionState,
+) -> Result<(NativeReviewSessionState, bool), NativeError> {
+    let mut migrated = false;
+    for tracked_file in &mut state.tracked_files {
+        migrated |= normalize_tracked_file_paths(session, tracked_file)?;
+    }
+    for conflict in &mut state.conflicts {
+        let normalized =
+            normalize_review_path(session, &conflict.path, ScopedPathIntent::CreateTarget)?;
+        if conflict.path != normalized.state_path {
+            conflict.path = normalized.state_path;
+            migrated = true;
+        }
+    }
+    if migrated {
+        state.version = state.version.saturating_add(1);
+        state.updated_at = now();
+    }
+    Ok((state, migrated))
+}
+
+fn normalize_tracked_file_paths(
+    session: &NativeAiSession,
+    tracked_file: &mut ReviewTrackedFile,
+) -> Result<bool, NativeError> {
+    let original_path = tracked_file.path.clone();
+    let normalized =
+        normalize_review_path(session, &original_path, ScopedPathIntent::CreateTarget)?;
+    let mut changed = original_path != normalized.state_path;
+    tracked_file.path = normalized.state_path;
+
+    if let Some(previous_path) = tracked_file.previous_path.as_deref() {
+        let original_previous_path = previous_path.to_string();
+        let normalized_previous_path = normalize_review_path(
+            session,
+            &original_previous_path,
+            ScopedPathIntent::CreateTarget,
+        )?;
+        changed |= original_previous_path != normalized_previous_path.state_path;
+        tracked_file.previous_path = Some(normalized_previous_path.state_path);
+    }
+
+    if changed {
+        *tracked_file = sync_tracked_file(tracked_file);
+    }
+    Ok(changed)
+}
+
+fn normalize_review_path(
+    session: &NativeAiSession,
+    candidate: &str,
+    intent: ScopedPathIntent,
+) -> Result<NormalizedReviewPath, NativeError> {
+    let candidate_path = Path::new(candidate);
+    if candidate_path.is_absolute() {
+        return normalize_absolute_review_path(session, candidate_path, candidate, intent);
+    }
+
+    let resolved = resolve_scoped_path(
+        Path::new(&session.scope.cwd),
+        Some(candidate),
+        false,
+        intent,
+    )
+    .map_err(review_path_error)?;
+    let Some(state_path) = resolved.relative_path else {
+        return Err(invalid_review_path());
+    };
+    Ok(NormalizedReviewPath {
+        absolute_path: resolved.absolute_path,
+        state_path,
+    })
+}
+
+fn normalize_absolute_review_path(
+    session: &NativeAiSession,
+    candidate_path: &Path,
+    candidate_display: &str,
+    intent: ScopedPathIntent,
+) -> Result<NormalizedReviewPath, NativeError> {
+    if let Some(normalized) = normalize_absolute_path_inside_root(
+        Path::new(&session.scope.cwd),
+        candidate_path,
+        intent,
+        AbsoluteReviewPathMode::ProjectRelative,
+    )? {
+        return Ok(normalized);
+    }
+
+    for root in &session.scope.additional_roots {
+        if let Some(normalized) = normalize_absolute_path_inside_root(
+            Path::new(root),
+            candidate_path,
+            intent,
+            AbsoluteReviewPathMode::KeepAbsolute(candidate_display),
+        )? {
+            return Ok(normalized);
+        }
+    }
+
+    Err(NativeError::new(
+        NativeErrorCode::PermissionDenied,
+        "Cannot safely apply this review change because the path is outside the project.",
+    ))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AbsoluteReviewPathMode<'a> {
+    ProjectRelative,
+    KeepAbsolute(&'a str),
+}
+
+fn normalize_absolute_path_inside_root(
+    root: &Path,
+    candidate_path: &Path,
+    intent: ScopedPathIntent,
+    mode: AbsoluteReviewPathMode<'_>,
+) -> Result<Option<NormalizedReviewPath>, NativeError> {
+    let Ok(relative) = candidate_path.strip_prefix(root) else {
+        return Ok(None);
+    };
+    let relative_path = normalize_relative_path(relative);
+    let resolved = resolve_scoped_path(root, Some(&relative_path), false, intent)
+        .map_err(review_path_error)?;
+    let Some(resolved_relative_path) = resolved.relative_path else {
+        return Err(invalid_review_path());
+    };
+    let state_path = match mode {
+        AbsoluteReviewPathMode::ProjectRelative => resolved_relative_path,
+        AbsoluteReviewPathMode::KeepAbsolute(candidate_display) => candidate_display.to_string(),
+    };
+    Ok(Some(NormalizedReviewPath {
+        absolute_path: resolved.absolute_path,
+        state_path,
+    }))
+}
+
+fn invalid_review_path() -> NativeError {
+    NativeError::new(
+        NativeErrorCode::InvalidArgs,
+        "Cannot safely apply this review change because the path is invalid.",
+    )
+}
+
+fn review_path_error(error: comando_fs::FsError) -> NativeError {
+    match error {
+        comando_fs::FsError::NotFound => {
+            NativeError::new(NativeErrorCode::NotFound, "Review file was not found.")
+        }
+        comando_fs::FsError::PathEscape => NativeError::new(
+            NativeErrorCode::PermissionDenied,
+            "Cannot safely apply this review change because the path is outside the project.",
+        ),
+        comando_fs::FsError::InvalidPath => NativeError::new(
+            NativeErrorCode::InvalidArgs,
+            "Cannot safely apply this review change because the path is invalid.",
+        ),
+        _ => error.to_native_error(),
+    }
 }
 
 fn review_not_found(path: &str) -> NativeError {
@@ -1818,6 +2030,210 @@ mod tests {
     }
 
     #[test]
+    fn import_review_state_normalizes_absolute_paths_before_keep_all() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        fs::write(repo.path().join("a.txt"), "agent\n").expect("write text");
+
+        let session = test_session(repo.path(), "s-import-absolute");
+        let mut service = service_with_app_data(repo.path());
+        let absolute_path = repo.path().join("a.txt").to_string_lossy().to_string();
+        let tracked_file = compute_tracked_file_patch(
+            &session.session_id.0,
+            &absolute_path,
+            None,
+            Some("base\n".to_string()),
+            Some("agent\n".to_string()),
+            now(),
+        )
+        .expect("tracked file");
+        let imported = service
+            .import_state_if_missing(
+                &session,
+                NativeReviewImportStateInput {
+                    session_id: session.session_id.clone(),
+                    tracked_files: vec![tracked_file],
+                },
+            )
+            .expect("import review state");
+        assert_eq!(imported.tracked_files.len(), 1);
+        assert_eq!(imported.tracked_files[0].path, "a.txt");
+
+        let kept = service.keep_all(&session).expect("keep all");
+        assert!(kept.tracked_files.is_empty());
+        assert_eq!(kept.tracked_file_events.len(), 1);
+        assert_eq!(kept.tracked_file_events[0].tracked_file.path, "a.txt");
+    }
+
+    #[test]
+    fn legacy_absolute_review_state_accepts_hunk_mutation_after_load() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        fs::write(repo.path().join("Fliege font.md"), "agent\n").expect("write text");
+
+        let session = test_session(repo.path(), "s-legacy-absolute-hunk");
+        let service = service_with_app_data(repo.path());
+        let absolute_path = repo
+            .path()
+            .join("Fliege font.md")
+            .to_string_lossy()
+            .to_string();
+        let tracked_file = compute_tracked_file_patch(
+            &session.session_id.0,
+            &absolute_path,
+            None,
+            Some("base\n".to_string()),
+            Some("agent\n".to_string()),
+            now(),
+        )
+        .expect("tracked file");
+        let legacy_hunk_id = tracked_file.hunks[0].id.clone();
+        let mut legacy_state = empty_state(&session, now());
+        legacy_state.tracked_files = vec![tracked_file];
+        let state_path = service
+            .review_state_path(&session.session_id)
+            .expect("state path");
+        fs::create_dir_all(state_path.parent().expect("state parent"))
+            .expect("create state parent");
+        fs::write(
+            &state_path,
+            serde_json::to_vec_pretty(&legacy_state).expect("serialize state"),
+        )
+        .expect("write legacy state");
+
+        let mut service = service_with_app_data(repo.path());
+        let loaded = service
+            .list_tracked_files(&session)
+            .expect("load migrated state");
+        assert_eq!(loaded.tracked_files.len(), 1);
+        assert_eq!(loaded.tracked_files[0].path, "Fliege font.md");
+        assert!(
+            loaded.tracked_files[0].hunks[0]
+                .id
+                .starts_with("Fliege font.md:")
+        );
+
+        let kept = service
+            .keep_hunks(
+                &session,
+                NativeReviewHunkMutationInput {
+                    session_id: session.session_id.clone(),
+                    path: absolute_path,
+                    hunk_ids: vec![legacy_hunk_id],
+                    tracked_file_id: None,
+                    expected_version: None,
+                },
+            )
+            .expect("keep legacy hunk");
+
+        assert!(kept.tracked_files.is_empty());
+    }
+
+    #[test]
+    fn legacy_absolute_review_state_rejects_hunk_after_load() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let file_path = repo.path().join("a.txt");
+        fs::write(&file_path, "agent\n").expect("write text");
+
+        let session = test_session(repo.path(), "s-legacy-absolute-reject-hunk");
+        let service = service_with_app_data(repo.path());
+        let absolute_path = file_path.to_string_lossy().to_string();
+        let tracked_file = compute_tracked_file_patch(
+            &session.session_id.0,
+            &absolute_path,
+            None,
+            Some("base\n".to_string()),
+            Some("agent\n".to_string()),
+            now(),
+        )
+        .expect("tracked file");
+        let legacy_hunk_id = tracked_file.hunks[0].id.clone();
+        let mut legacy_state = empty_state(&session, now());
+        legacy_state.tracked_files = vec![tracked_file];
+        let state_path = service
+            .review_state_path(&session.session_id)
+            .expect("state path");
+        fs::create_dir_all(state_path.parent().expect("state parent"))
+            .expect("create state parent");
+        fs::write(
+            &state_path,
+            serde_json::to_vec_pretty(&legacy_state).expect("serialize state"),
+        )
+        .expect("write legacy state");
+
+        let mut service = service_with_app_data(repo.path());
+        let tracker = WriteTracker::new();
+        let rejected = service
+            .reject_hunks(
+                &session,
+                NativeReviewHunkMutationInput {
+                    session_id: session.session_id.clone(),
+                    path: absolute_path,
+                    hunk_ids: vec![legacy_hunk_id],
+                    tracked_file_id: None,
+                    expected_version: None,
+                },
+                &tracker,
+            )
+            .expect("reject legacy hunk");
+
+        assert!(rejected.tracked_files.is_empty());
+        assert_eq!(fs::read_to_string(file_path).expect("read text"), "base\n");
+    }
+
+    #[test]
+    fn absolute_additional_root_review_state_rejects_hunk() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let external = tempfile::tempdir().expect("external tempdir");
+        let file_path = external.path().join("external.txt");
+        fs::write(&file_path, "agent\n").expect("write text");
+
+        let session = test_session_with_additional_roots(
+            repo.path(),
+            "s-additional-root-hunk",
+            vec![external.path().to_string_lossy().to_string()],
+        );
+        let mut service = service_with_app_data(repo.path());
+        let absolute_path = file_path.to_string_lossy().to_string();
+        let tracked_file = compute_tracked_file_patch(
+            &session.session_id.0,
+            &absolute_path,
+            None,
+            Some("base\n".to_string()),
+            Some("agent\n".to_string()),
+            now(),
+        )
+        .expect("tracked file");
+        let hunk_id = tracked_file.hunks[0].id.clone();
+        let imported = service
+            .import_state_if_missing(
+                &session,
+                NativeReviewImportStateInput {
+                    session_id: session.session_id.clone(),
+                    tracked_files: vec![tracked_file],
+                },
+            )
+            .expect("import review state");
+        assert_eq!(imported.tracked_files[0].path, absolute_path);
+
+        let tracker = WriteTracker::new();
+        let rejected = service
+            .reject_hunks(
+                &session,
+                NativeReviewHunkMutationInput {
+                    session_id: session.session_id.clone(),
+                    path: absolute_path,
+                    hunk_ids: vec![hunk_id],
+                    tracked_file_id: None,
+                    expected_version: None,
+                },
+                &tracker,
+            )
+            .expect("reject additional root hunk");
+
+        assert!(rejected.tracked_files.is_empty());
+        assert_eq!(fs::read_to_string(file_path).expect("read text"), "base\n");
+    }
+
+    #[test]
     fn reconcile_reports_invalid_head_utf8_as_conflict() {
         let repo = tempfile::tempdir().expect("tempdir");
         init_git_repo(repo.path());
@@ -1848,6 +2264,14 @@ mod tests {
     }
 
     fn test_session(repo_path: &Path, session_id: &str) -> NativeAiSession {
+        test_session_with_additional_roots(repo_path, session_id, Vec::new())
+    }
+
+    fn test_session_with_additional_roots(
+        repo_path: &Path,
+        session_id: &str,
+        additional_roots: Vec<String>,
+    ) -> NativeAiSession {
         NativeAiSession {
             owner_window_id: "window-1".to_string(),
             runtime_id: "codex".into(),
@@ -1856,7 +2280,7 @@ mod tests {
                 None,
                 None,
                 repo_path.to_string_lossy().to_string(),
-                Vec::new(),
+                additional_roots,
             )
             .expect("scope"),
             session_id: session_id.into(),

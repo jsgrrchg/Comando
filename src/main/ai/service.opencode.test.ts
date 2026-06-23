@@ -1169,6 +1169,7 @@ describe("AiService OpenCode branch", () => {
             const service = createService({
                 nativeAi,
                 onSessionSnapshot,
+                projectRootPath: tempDir,
                 settingsService: createSettingsService({
                     loadOpenCodeRuntimeSettings: vi.fn(() =>
                         createOpenCodeSettings({
@@ -1203,7 +1204,7 @@ describe("AiService OpenCode branch", () => {
                             kind: "update",
                             newText: "new text\n",
                             oldText: "old text\n",
-                            path: "Fliege font.md",
+                            path: path.join(tempDir, "Fliege font.md"),
                             previousPath: null,
                             reversible: true,
                         },
@@ -1256,6 +1257,142 @@ describe("AiService OpenCode branch", () => {
                     [
                         expect.objectContaining({
                             path: "Fliege font.md",
+                            reviewState: "pending",
+                        }),
+                    ],
+                );
+                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
+            });
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("keeps pending review from terminal tool diffs inside additional roots", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-review-additional-root-"),
+        );
+        try {
+            const projectDir = path.join(tempDir, "project");
+            const additionalRoot = path.join(tempDir, "external");
+            fs.mkdirSync(projectDir, { recursive: true });
+            fs.mkdirSync(additionalRoot, { recursive: true });
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            const onSessionSnapshot =
+                vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
+            const importReviewState = vi.fn(() => Promise.resolve([]));
+            const reconcileTrackedFiles = vi.fn(() => Promise.resolve([]));
+            const nativeAi = createNativeAi({
+                captureReviewBaseline: vi.fn(() => Promise.resolve(false)),
+                importReviewState,
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-opencode",
+                            status: "idle",
+                            updatedAt: "2026-06-20T00:00:00.000Z",
+                        }),
+                ),
+                reconcileTrackedFiles,
+                sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
+                    Promise.resolve({
+                        sessionId: input.sessionId,
+                        stopReason: "accepted",
+                    }),
+                ),
+            });
+            const service = createService({
+                nativeAi,
+                onSessionSnapshot,
+                projectRootPath: projectDir,
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+
+            await service.sendPrompt(
+                {
+                    additionalRoots: [additionalRoot],
+                    attachments: [],
+                    messageId: "user-message-1",
+                    projectId: "project-1",
+                    prompt: "Edit the external file.",
+                    runtimeId: "opencode",
+                    sessionId: "session-opencode",
+                    title: "OpenCode 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            const externalPath = path.join(additionalRoot, "External.md");
+            service.handleNativeSessionEvent("window-1", {
+                activity: {
+                    createdAt: "2026-06-20T00:00:01.000Z",
+                    diffs: [
+                        {
+                            hunks: [],
+                            isText: true,
+                            kind: "update",
+                            newText: "new text\n",
+                            oldText: "old text\n",
+                            path: externalPath,
+                            previousPath: null,
+                            reversible: true,
+                        },
+                    ],
+                    exitCode: 0,
+                    id: "tool-write-external",
+                    kind: "edit",
+                    locations: [],
+                    rawInputJson: null,
+                    rawOutputJson: null,
+                    sessionId: "session-opencode",
+                    status: "completed",
+                    summary: "Edited External.md",
+                    terminalOutput: null,
+                    title: "Edited External.md",
+                    updatedAt: "2026-06-20T00:00:01.000Z",
+                },
+                kind: "tool-activity",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-opencode",
+                sessionId: "session-opencode",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            });
+
+            await waitForAssertion(() => {
+                const updates = onSessionSnapshot.mock.calls.map(
+                    ([, update]) => update,
+                );
+                const latestSnapshot = updates
+                    .map((update) =>
+                        update.kind === "snapshot"
+                            ? update.snapshot
+                            : update.patch.changes,
+                    )
+                    .findLast(
+                        (snapshot) => snapshot.trackedFiles !== undefined,
+                    );
+                expect(latestSnapshot?.trackedFiles).toEqual([
+                    expect.objectContaining({
+                        path: externalPath,
+                        reviewState: "pending",
+                    }),
+                ]);
+                expect(importReviewState).toHaveBeenCalledWith(
+                    "session-opencode",
+                    [
+                        expect.objectContaining({
+                            path: externalPath,
                             reviewState: "pending",
                         }),
                     ],
