@@ -233,6 +233,7 @@ export type NativeAiPrepareSessionInput = {
 
 export type NativeAiPromptInput = {
     readonly text: string;
+    readonly displayText?: string | null;
     readonly attachments: readonly unknown[];
 };
 

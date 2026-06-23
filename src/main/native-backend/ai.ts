@@ -58,6 +58,7 @@ import type {
     NativeAiRuntimeSettingsRpcInput,
     NativeAiSendPromptRpcInput,
 } from "@main/ai/contracts";
+import { serializeComposerPartsForDisplay } from "@main/ai/session-core";
 import { NativeBackendError } from "./client";
 import type { NativeBackendRequester } from "./persistence";
 
@@ -601,6 +602,10 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 messageId: request.input.messageId,
                 prompt: {
                     attachments: request.input.attachments,
+                    displayText: serializeComposerPartsForDisplay(
+                        request.input.composerParts,
+                        request.input.prompt,
+                    ),
                     text: request.input.prompt,
                 },
                 runtimeSessionId: target.runtimeSessionId,
@@ -842,6 +847,10 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         launch: NativeAiSendPromptRpcInput["launch"],
     ): void {
         const now = new Date().toISOString();
+        const displayContent = serializeComposerPartsForDisplay(
+            input.composerParts,
+            input.prompt,
+        );
         const runtimeSessionId =
             this.#runtimeSessionIds.get(input.sessionId) ??
             launch.persistedSnapshot.runtimeSessionId ??
@@ -871,8 +880,8 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         });
         this.#onSessionEvent(launch.ownerWindowId, {
             ...base,
-            content: input.prompt,
-            delta: input.prompt,
+            content: displayContent,
+            delta: displayContent,
             kind: "message-delta",
             messageId: input.messageId,
             messageKind: "user",

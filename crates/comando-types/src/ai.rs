@@ -328,6 +328,8 @@ pub struct NativeAiPrepareSessionInput {
 pub struct NativeAiPromptInput {
     pub text: String,
     #[serde(default)]
+    pub display_text: Option<String>,
+    #[serde(default)]
     pub attachments: Vec<serde_json::Value>,
 }
 

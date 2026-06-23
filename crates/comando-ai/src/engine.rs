@@ -356,10 +356,15 @@ impl AiEngine {
         }
         drop(sessions);
         self.update_history_status(&summary)?;
+        let display_text = input
+            .prompt
+            .display_text
+            .as_deref()
+            .unwrap_or(&input.prompt.text);
         self.push_history_user_message(
             &target_session_id,
             &input.message_id.0,
-            &input.prompt.text,
+            display_text,
         )?;
         Ok((send_prompt_output(target_session_id), summary))
     }
@@ -1627,6 +1632,7 @@ mod tests {
             message_id: comando_types::ids::MessageId("m1".to_string()),
             prompt: comando_types::ai::NativeAiPromptInput {
                 text: "hello".to_string(),
+                display_text: None,
                 attachments: Vec::new(),
             },
         };

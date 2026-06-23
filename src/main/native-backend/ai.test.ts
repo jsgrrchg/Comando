@@ -369,6 +369,7 @@ describe("NativeAiGateway", () => {
             messageId: "user-message-child-1",
             prompt: {
                 attachments: [],
+                displayText: "Implement the feature.",
                 text: "Implement the feature.",
             },
             runtimeSessionId: "runtime-child-1",
@@ -459,6 +460,7 @@ describe("NativeAiGateway", () => {
             messageId: "user-message-child-1",
             prompt: {
                 attachments: [],
+                displayText: "Implement the feature.",
                 text: "Implement the feature.",
             },
             runtimeSessionId: "runtime-child-1",
@@ -802,9 +804,23 @@ describe("NativeAiGateway", () => {
             input: createPrepareInput(),
             launch,
         });
+        const promptInput = {
+            ...createPromptInput(),
+            composerParts: [
+                { text: "Review ", type: "text" as const },
+                {
+                    label: "new-note.md",
+                    languageId: "markdown",
+                    path: "/workspace/new-note.md",
+                    relativePath: "new-note.md",
+                    type: "file_mention" as const,
+                },
+            ],
+        };
+
         await expect(
             gateway.sendPrompt({
-                input: createPromptInput(),
+                input: promptInput,
                 launch,
             }),
         ).resolves.toEqual({
@@ -816,6 +832,8 @@ describe("NativeAiGateway", () => {
             "window-1",
             expect.objectContaining({
                 kind: "message-delta",
+                content: "Review \u200B«@new-note.md»\u200B",
+                delta: "Review \u200B«@new-note.md»\u200B",
                 messageId: "user-message-1",
                 messageKind: "user",
             }),
@@ -824,6 +842,7 @@ describe("NativeAiGateway", () => {
             messageId: "user-message-1",
             prompt: {
                 attachments: [],
+                displayText: "Review \u200B«@new-note.md»\u200B",
                 text: "Implement the feature.",
             },
             runtimeSessionId: null,
