@@ -847,6 +847,65 @@ describe("AiService prepareSession", () => {
         ).toBe("medium");
     });
 
+    it("applies saved reasoning preferences after a fresh prepare discovers config options", async () => {
+        const preparedSnapshot = createSnapshot({
+            configOptions: [createReasoningConfig("low")],
+        });
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(() =>
+            Promise.resolve(preparedSnapshot),
+        );
+        const setSessionConfigOption = vi.fn<
+            NativeAiGateway["setSessionConfigOption"]
+        >(() => Promise.resolve());
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession,
+                setSessionConfigOption,
+            }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {
+                        reasoning_effort: "medium",
+                    },
+                    modeId: null,
+                    modelId: null,
+                })),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+        });
+
+        const snapshot = await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        expect(
+            prepareSession.mock.calls[0]?.[0].launch.desiredSelections
+                .configOptions,
+        ).toEqual([]);
+        expect(setSessionConfigOption).toHaveBeenCalledWith({
+            optionId: "reasoning_effort",
+            sessionId: "session-1",
+            value: "medium",
+        });
+        expect(
+            snapshot.configOptions.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("medium");
+    });
+
     it("prefers runtime model preferences over stale persisted selections when preparing", async () => {
         const persistedSnapshot = createSnapshot({
             configOptions: [createModelConfig("gpt-5.4-mini")],

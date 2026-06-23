@@ -721,6 +721,10 @@ export class AiService {
             updatedAt,
             { emitUpdate: true },
         );
+        this.#scheduleLiveSelectionPreferenceReconciliation(
+            ownerWindowId,
+            sessionId,
+        );
     }
 
     async handleNativeRestarted(): Promise<void> {
@@ -1199,8 +1203,13 @@ export class AiService {
                 snapshot,
                 ownerWindowId,
             );
+            const reconciledSnapshot =
+                await this.#reconcileLiveSelectionPreferences(
+                    acceptedSnapshot.sessionId,
+                    ownerWindowId,
+                );
             void this.#enforceSessionRetention();
-            return acceptedSnapshot;
+            return reconciledSnapshot ?? acceptedSnapshot;
         } catch (error) {
             this.#nativeSessionIds.delete(input.sessionId);
             this.#discardPreparedSessionContextOnFailure(
@@ -1290,6 +1299,10 @@ export class AiService {
                         };
                         this.#acceptPreparedLiveSnapshot(
                             snapshot,
+                            ownerWindowId,
+                        );
+                        await this.#reconcileLiveSelectionPreferences(
+                            snapshot.sessionId,
                             ownerWindowId,
                         );
                     }
@@ -2479,6 +2492,75 @@ export class AiService {
             this.#persistence.saveSessionSnapshot(nextSnapshot);
         }
         return nextSnapshot;
+    }
+
+    async #reconcileLiveSelectionPreferences(
+        sessionId: string,
+        ownerWindowId: string,
+    ): Promise<AiSessionSnapshot | null> {
+        void ownerWindowId;
+        let snapshot = this.#liveSnapshots.get(sessionId) ?? null;
+        if (!snapshot || this.#deletedSessionIds.has(sessionId)) {
+            return snapshot;
+        }
+
+        const preferences = this.#persistence.loadRuntimeSelectionPreferences(
+            snapshot.runtimeId,
+        );
+        const modelConfig = getModelConfigOption(snapshot.configOptions);
+        if (
+            !modelConfig &&
+            preferences.modelId &&
+            preferences.modelId !== snapshot.modelId &&
+            snapshot.models.some((model) => model.id === preferences.modelId)
+        ) {
+            await this.setSessionModel({
+                modelId: preferences.modelId,
+                sessionId,
+            });
+            snapshot = this.#liveSnapshots.get(sessionId) ?? snapshot;
+        }
+
+        const modeConfig = getModeConfigOption(snapshot.configOptions);
+        if (
+            !modeConfig &&
+            preferences.modeId &&
+            preferences.modeId !== snapshot.modeId &&
+            snapshot.modes.some((mode) => mode.id === preferences.modeId)
+        ) {
+            await this.setSessionMode({
+                modeId: preferences.modeId,
+                sessionId,
+            });
+            snapshot = this.#liveSnapshots.get(sessionId) ?? snapshot;
+        }
+
+        const mutations = getPreferredConfigOptionMutations(
+            snapshot,
+            preferences,
+        );
+        for (const mutation of mutations) {
+            await this.setSessionConfigOption({
+                optionId: mutation.optionId,
+                sessionId,
+                value: mutation.value,
+            });
+            snapshot = this.#liveSnapshots.get(sessionId) ?? snapshot;
+        }
+
+        return snapshot;
+    }
+
+    #scheduleLiveSelectionPreferenceReconciliation(
+        ownerWindowId: string,
+        sessionId: string,
+    ): void {
+        void this.#reconcileLiveSelectionPreferences(
+            sessionId,
+            ownerWindowId,
+        ).catch((error: unknown) => {
+            debugBenignError("ai.service.selectionPreferenceReconcile", error);
+        });
     }
 
     #applyNativeCatalogPatchToLiveSnapshot(
@@ -4840,6 +4922,87 @@ function getPreferredConfigSelectionId(
         hasSelectConfigValue(option, preferredValue)
         ? preferredValue
         : null;
+}
+
+interface PreferredConfigOptionMutation {
+    readonly optionId: string;
+    readonly priority: number;
+    readonly value: boolean | string;
+}
+
+function getPreferredConfigOptionMutations(
+    snapshot: Pick<
+        AiSessionSnapshot,
+        "configOptions" | "modeId" | "modelId"
+    >,
+    preferences: {
+        readonly configOptions: Record<string, boolean | string>;
+        readonly modeId: string | null;
+        readonly modelId: string | null;
+    },
+): readonly PreferredConfigOptionMutation[] {
+    return snapshot.configOptions
+        .map((option) => {
+            const savedValue = getRuntimeSelectionPreferenceValue(
+                preferences.configOptions,
+                option.id,
+            );
+            const preferredValue = savedValue ?? getTopLevelSelectionPreference(
+                option,
+                preferences.modeId,
+                preferences.modelId,
+            );
+            if (
+                preferredValue === undefined ||
+                option.value === preferredValue
+            ) {
+                return null;
+            }
+
+            if (
+                option.type === "boolean" &&
+                typeof preferredValue === "boolean"
+            ) {
+                return {
+                    optionId: option.id,
+                    priority: getConfigOptionPreferencePriority(option),
+                    value: preferredValue,
+                };
+            }
+
+            if (
+                option.type === "select" &&
+                typeof preferredValue === "string" &&
+                hasSelectConfigValue(option, preferredValue)
+            ) {
+                return {
+                    optionId: option.id,
+                    priority: getConfigOptionPreferencePriority(option),
+                    value: preferredValue,
+                };
+            }
+
+            return null;
+        })
+        .filter(
+            (mutation): mutation is PreferredConfigOptionMutation =>
+                mutation !== null,
+        )
+        .sort((left, right) => left.priority - right.priority);
+}
+
+function getConfigOptionPreferencePriority(
+    option: AiSessionConfigOption,
+): number {
+    if (isModelConfigOption(option)) {
+        return 0;
+    }
+
+    if (isModeConfigOption(option)) {
+        return 1;
+    }
+
+    return 2;
 }
 
 function getRuntimeSelectionPreferenceValue(
