@@ -3764,6 +3764,61 @@ mod tests {
     }
 
     #[test]
+    fn notification_context_marks_active_subagents_idle_at_turn_end() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let created_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-1"),
+            (CODEX_ACP_AGENT_NICKNAME_KEY, "Galileo"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-1",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .meta(created_meta.clone()),
+                ),
+            )
+            .meta(created_meta),
+        );
+        assert_eq!(receiver.recv().unwrap().event_name, AI_SUBAGENT_CREATED_EVENT);
+
+        context.handle(SessionNotification::new(
+            "runtime-child-1",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new("Child output".into())),
+        ));
+        assert_eq!(receiver.recv().unwrap().event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(receiver.recv().unwrap().event_name, AI_MESSAGE_DELTA_EVENT);
+
+        context.complete_open_messages();
+
+        let completed_event = receiver.recv().unwrap();
+        assert_eq!(completed_event.event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(
+            completed_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-1"
+        );
+
+        let idle_event = receiver
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .expect("expected subagent idle session update at turn end");
+        assert_eq!(idle_event.event_name, AI_SESSION_UPDATED_EVENT);
+        assert_eq!(
+            idle_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-1"
+        );
+        assert_eq!(idle_event.payload["status"], "idle");
+    }
+
+    #[test]
     fn notification_context_does_not_rename_root_session_to_generic_subagent() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
         let context =
