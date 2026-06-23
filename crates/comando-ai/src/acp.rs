@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,7 +16,7 @@ use agent_client_protocol::schema::{
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigOptionValue, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall, ToolCallContent,
-    ToolCallUpdate,
+    ToolCallStatus, ToolCallUpdate, ToolKind,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use comando_types::ai::{
@@ -2179,6 +2179,9 @@ impl NotificationContextInner {
         mut tool_call_update: ToolCallUpdate,
         meta: &Meta,
     ) -> Option<ToolCall> {
+        let resolved_tool_call_id =
+            self.resolve_tool_call_id_for_update(runtime_session_id, &tool_call_update);
+        tool_call_update.tool_call_id = resolved_tool_call_id.into();
         let key = tool_call_state_key(
             runtime_session_id,
             &tool_call_update.tool_call_id.to_string(),
@@ -2193,6 +2196,63 @@ impl NotificationContextInner {
         let tool_call = ToolCall::try_from(tool_call_update).ok()?;
         self.upsert_tool_call(runtime_session_id, tool_call, meta);
         self.tool_calls.get(&key).cloned()
+    }
+
+    fn resolve_tool_call_id_for_update(
+        &self,
+        runtime_session_id: &RuntimeSessionId,
+        tool_call_update: &ToolCallUpdate,
+    ) -> String {
+        let incoming_id = tool_call_update.tool_call_id.to_string();
+        if self
+            .tool_calls
+            .contains_key(&tool_call_state_key(runtime_session_id, &incoming_id))
+        {
+            return incoming_id;
+        }
+
+        let candidates = self
+            .tool_calls
+            .iter()
+            .filter_map(|(key, candidate)| {
+                let expected_key =
+                    tool_call_state_key(runtime_session_id, &candidate.tool_call_id.to_string());
+                if key == &expected_key && is_canonical_tool_call_candidate(candidate) {
+                    Some(candidate)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if let Some(raw_input) = tool_call_update.fields.raw_input.as_ref() {
+            let raw_input_matches = candidates
+                .iter()
+                .copied()
+                .filter(|candidate| {
+                    candidate.raw_input.as_ref() == Some(raw_input)
+                        && has_same_tool_action_shape(candidate, tool_call_update)
+                })
+                .collect::<Vec<_>>();
+            if raw_input_matches.len() == 1 {
+                return raw_input_matches[0].tool_call_id.to_string();
+            }
+        }
+
+        if !has_weak_tool_action_signal(tool_call_update) {
+            return incoming_id;
+        }
+
+        let weak_matches = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| has_same_tool_action_shape(candidate, tool_call_update))
+            .collect::<Vec<_>>();
+        if weak_matches.len() == 1 {
+            weak_matches[0].tool_call_id.to_string()
+        } else {
+            incoming_id
+        }
     }
 
     fn complete_open_messages(&mut self) {
@@ -2822,6 +2882,69 @@ fn merge_tool_call_meta(tool_call: &mut ToolCall, meta: Meta) {
         .extend(meta);
 }
 
+fn is_canonical_tool_call_candidate(tool_call: &ToolCall) -> bool {
+    matches!(
+        tool_call.status,
+        ToolCallStatus::Pending | ToolCallStatus::InProgress
+    )
+}
+
+fn has_same_tool_action_shape(tool_call: &ToolCall, update: &ToolCallUpdate) -> bool {
+    let update_kind = update
+        .fields
+        .kind
+        .as_ref()
+        .and_then(normalize_tool_kind_token);
+    let tool_kind = normalize_tool_kind_token(&tool_call.kind);
+    if let (Some(update_kind), Some(tool_kind)) = (update_kind.as_deref(), tool_kind.as_deref())
+        && update_kind != tool_kind
+    {
+        return false;
+    }
+
+    let update_title = update
+        .fields
+        .title
+        .as_ref()
+        .and_then(|title| normalize_tool_action_token(title));
+    let tool_title = normalize_tool_action_token(&tool_call.title);
+    if let (Some(update_title), Some(tool_title)) = (update_title.as_deref(), tool_title.as_deref())
+        && update_title != tool_title
+    {
+        return false;
+    }
+
+    update_kind.is_some() || tool_kind.is_some() || update_title.is_some() || tool_title.is_some()
+}
+
+fn has_weak_tool_action_signal(update: &ToolCallUpdate) -> bool {
+    matches!(
+        update.fields.status,
+        Some(ToolCallStatus::Completed | ToolCallStatus::Failed)
+    ) || update.fields.raw_output.is_some()
+        || update
+            .fields
+            .content
+            .as_ref()
+            .is_some_and(|content| !content.is_empty())
+}
+
+fn normalize_tool_kind_token(kind: &ToolKind) -> Option<String> {
+    if matches!(kind, ToolKind::Other) {
+        return None;
+    }
+    normalize_tool_action_token(&serde_label(kind))
+}
+
+fn normalize_tool_action_token(value: &str) -> Option<String> {
+    let normalized = value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
 fn tool_call_state_key(runtime_session_id: &RuntimeSessionId, tool_call_id: &str) -> String {
     format!("{}::{tool_call_id}", runtime_session_id.0)
 }
@@ -3031,6 +3154,7 @@ fn infer_generated_image_mime_type(path: &str) -> Option<String> {
 }
 
 fn tool_call_content_diffs(content: &[ToolCallContent]) -> Vec<serde_json::Value> {
+    let mut seen = HashSet::new();
     content
         .iter()
         .filter_map(|item| {
@@ -3039,6 +3163,10 @@ fn tool_call_content_diffs(content: &[ToolCallContent]) -> Vec<serde_json::Value
             };
             let path = diff.path.to_string_lossy().to_string();
             let old_text = diff.old_text.clone();
+            let dedupe_key = (path.clone(), old_text.clone(), diff.new_text.clone());
+            if !seen.insert(dedupe_key) {
+                return None;
+            }
             let hunks = comando_diff::compute_diff_hunks(
                 old_text.as_deref().unwrap_or_default(),
                 &diff.new_text,
@@ -3720,6 +3848,75 @@ mod tests {
         assert_eq!(update_event.payload["kind"], "edit");
         assert_eq!(update_event.payload["status"], "completed");
         assert_eq!(update_event.payload["diffs"][0]["path"], "src/main.rs");
+    }
+
+    #[test]
+    fn notification_context_canonicalizes_tool_update_with_new_id() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(
+                ToolCall::new("edit-start", "Edit cuento.md")
+                    .kind(ToolKind::Edit)
+                    .status(ToolCallStatus::InProgress)
+                    .raw_input(serde_json::json!({ "file_path": "cuento.md" })),
+            ),
+        ));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "edit-complete",
+                ToolCallUpdateFields::new()
+                    .kind(ToolKind::Edit)
+                    .status(ToolCallStatus::Completed)
+                    .raw_input(serde_json::json!({ "file_path": "cuento.md" }))
+                    .raw_output(serde_json::json!("done")),
+            )),
+        ));
+
+        let initial_event = receiver.recv().unwrap();
+        assert_eq!(initial_event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(initial_event.payload["toolCallId"], "edit-start");
+
+        let update_event = receiver.recv().unwrap();
+        assert_eq!(update_event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(update_event.payload["toolCallId"], "edit-start");
+        assert_eq!(update_event.payload["title"], "Edit cuento.md");
+        assert_eq!(update_event.payload["status"], "completed");
+        assert_eq!(update_event.payload["rawOutput"], "done");
+    }
+
+    #[test]
+    fn notification_context_deduplicates_exact_repeated_tool_diffs() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let diff = agent_client_protocol::schema::Diff::new("cuento.md", "line one\nline two\n")
+            .old_text("line one\n");
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(
+                ToolCall::new("edit-1", "Edit cuento.md")
+                    .kind(ToolKind::Edit)
+                    .status(ToolCallStatus::Completed)
+                    .content(vec![
+                        ToolCallContent::Diff(diff.clone()),
+                        ToolCallContent::Diff(diff),
+                    ]),
+            ),
+        ));
+
+        let event = receiver.recv().unwrap();
+        assert_eq!(event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(event.payload["diffs"].as_array().map(Vec::len), Some(1));
+        assert_eq!(event.payload["diffs"][0]["path"], "cuento.md");
     }
 
     #[test]
