@@ -800,6 +800,53 @@ describe("AiService prepareSession", () => {
         expect(onSessionSnapshot.mock.lastCall?.[0]).toBe("window-1");
     });
 
+    it("keeps live reasoning config option changes in the main snapshot", async () => {
+        const snapshot = createSnapshot({
+            configOptions: [createReasoningConfig("low")],
+        });
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(() =>
+            Promise.resolve(snapshot),
+        );
+        const setSessionConfigOption = vi.fn<
+            NativeAiGateway["setSessionConfigOption"]
+        >(() => Promise.resolve());
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession,
+                setSessionConfigOption,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        await service.setSessionConfigOption({
+            optionId: "reasoning_effort",
+            sessionId: "session-1",
+            value: "medium",
+        });
+
+        expect(setSessionConfigOption).toHaveBeenCalledWith({
+            optionId: "reasoning_effort",
+            sessionId: "session-1",
+            value: "medium",
+        });
+        const updatedSnapshot = await service.getSessionSnapshot("session-1");
+        expect(
+            updatedSnapshot?.configOptions.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("medium");
+    });
+
     it("prefers runtime model preferences over stale persisted selections when preparing", async () => {
         const persistedSnapshot = createSnapshot({
             configOptions: [createModelConfig("gpt-5.4-mini")],
@@ -931,6 +978,37 @@ function createModelConfig(value: string): AiSessionConfigOption {
                 groupLabel: null,
                 label: "GPT 5.5",
                 value: "gpt-5.5",
+            },
+        ],
+        type: "select",
+        value,
+    };
+}
+
+function createReasoningConfig(value: string): AiSessionConfigOption {
+    return {
+        category: "reasoning",
+        description: null,
+        id: "reasoning_effort",
+        label: "Effort",
+        options: [
+            {
+                description: null,
+                groupLabel: null,
+                label: "Low",
+                value: "low",
+            },
+            {
+                description: null,
+                groupLabel: null,
+                label: "Medium",
+                value: "medium",
+            },
+            {
+                description: null,
+                groupLabel: null,
+                label: "High",
+                value: "high",
             },
         ],
         type: "select",
