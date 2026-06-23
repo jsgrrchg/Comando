@@ -21,6 +21,7 @@ import type {
     AiSessionUpdate,
     AiSettingsSnapshot,
     AiToolActivity,
+    AiTrackedFile,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiUserInputResponseInput,
@@ -83,6 +84,7 @@ interface RegisteredSessionMeta {
 
 interface ResolveIncomingSnapshotOptions {
     readonly changedKeys?: ReadonlySet<keyof AiSessionPatch["changes"]> | null;
+    readonly preserveCurrentReviewState?: boolean;
 }
 
 interface ResolvedIncomingSessionSnapshot {
@@ -840,6 +842,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
             const resolved = resolveIncomingSessionSnapshot(
                 nextSnapshot,
                 session,
+                {
+                    preserveCurrentReviewState: true,
+                },
             );
             const resolvedSnapshot = resolved.snapshot;
             const resolvedTranscript = resolved.transcript;
@@ -1735,6 +1740,9 @@ async function executeSessionPrepare(
             const resolved = resolveIncomingSessionSnapshot(
                 incomingSnapshot,
                 currentSession,
+                {
+                    preserveCurrentReviewState: true,
+                },
             );
             const nextSnapshot = resolved.snapshot;
             const nextTranscript = resolved.transcript;
@@ -2475,18 +2483,24 @@ function resolveIncomingSessionSnapshot(
     currentSession: AiSessionClientState | null | undefined,
     options: ResolveIncomingSnapshotOptions = {},
 ): ResolvedIncomingSessionSnapshot {
-    const incomingTranscript =
-        buildAiSessionTranscriptModelFromSnapshot(incomingSnapshot);
     const session = currentSession ?? null;
     const currentSnapshot = session?.snapshot ?? null;
+    const effectiveIncomingSnapshot = options.preserveCurrentReviewState
+        ? preserveCurrentReviewTrackedFiles(
+              incomingSnapshot,
+              currentSnapshot,
+          )
+        : incomingSnapshot;
+    const incomingTranscript =
+        buildAiSessionTranscriptModelFromSnapshot(effectiveIncomingSnapshot);
     if (
         !session ||
         !currentSnapshot ||
-        currentSnapshot.sessionId !== incomingSnapshot.sessionId
+        currentSnapshot.sessionId !== effectiveIncomingSnapshot.sessionId
     ) {
         return {
             snapshot: writeAiSessionTranscriptToSnapshot(
-                incomingSnapshot,
+                effectiveIncomingSnapshot,
                 incomingTranscript,
             ),
             transcript: incomingTranscript,
@@ -2502,7 +2516,7 @@ function resolveIncomingSessionSnapshot(
         session.lastIncomingSnapshotUpdatedAt !== null;
     const incomingIsFreshEnough = isUpdatedAtAtLeast(
         session.lastIncomingSnapshotUpdatedAt ?? currentSnapshot.updatedAt,
-        incomingSnapshot.updatedAt,
+        effectiveIncomingSnapshot.updatedAt,
     );
 
     if (
@@ -2513,7 +2527,10 @@ function resolveIncomingSessionSnapshot(
     ) {
         return {
             snapshot: writeAiSessionTranscriptToSnapshot(
-                mergeHydrationMetadataIntoCurrent(currentSnapshot, incomingSnapshot),
+                mergeHydrationMetadataIntoCurrent(
+                    currentSnapshot,
+                    effectiveIncomingSnapshot,
+                ),
                 currentTranscript,
             ),
             transcript: currentTranscript,
@@ -2527,7 +2544,7 @@ function resolveIncomingSessionSnapshot(
     if (!shouldPreserveCurrent) {
         return {
             snapshot: writeAiSessionTranscriptToSnapshot(
-                incomingSnapshot,
+                effectiveIncomingSnapshot,
                 incomingTranscript,
             ),
             transcript: incomingTranscript,
@@ -2542,7 +2559,7 @@ function resolveIncomingSessionSnapshot(
         );
         return {
             snapshot: writeAiSessionTranscriptToSnapshot(
-                incomingSnapshot,
+                effectiveIncomingSnapshot,
                 nextTranscript,
             ),
             transcript: nextTranscript,
@@ -2551,11 +2568,47 @@ function resolveIncomingSessionSnapshot(
 
     return {
         snapshot: writeAiSessionTranscriptToSnapshot(
-            mergeHydrationMetadataIntoCurrent(currentSnapshot, incomingSnapshot),
+            mergeHydrationMetadataIntoCurrent(
+                currentSnapshot,
+                effectiveIncomingSnapshot,
+            ),
             currentTranscript,
         ),
         transcript: currentTranscript,
     };
+}
+
+function preserveCurrentReviewTrackedFiles(
+    incomingSnapshot: AiSessionSnapshot,
+    currentSnapshot: AiSessionSnapshot | null,
+): AiSessionSnapshot {
+    if (
+        !currentSnapshot ||
+        currentSnapshot.sessionId !== incomingSnapshot.sessionId ||
+        incomingSnapshot.trackedFiles.length > 0 ||
+        currentSnapshot.trackedFiles.length === 0
+    ) {
+        return incomingSnapshot;
+    }
+
+    const pendingTrackedFiles = currentSnapshot.trackedFiles.filter(
+        isTrackedFileUnresolved,
+    );
+    if (pendingTrackedFiles.length === 0) {
+        return incomingSnapshot;
+    }
+
+    return {
+        ...incomingSnapshot,
+        trackedFiles: pendingTrackedFiles,
+    };
+}
+
+function isTrackedFileUnresolved(trackedFile: AiTrackedFile): boolean {
+    return (
+        trackedFile.reviewState === "pending" ||
+        trackedFile.reviewState === "conflict"
+    );
 }
 
 function mergeHydrationMetadataIntoCurrent(

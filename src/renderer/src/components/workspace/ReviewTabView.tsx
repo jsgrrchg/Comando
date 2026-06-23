@@ -501,10 +501,15 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
             tab.worktreeId,
         ],
     );
+    const hasLiveSnapshot =
+        sessionState?.runtimeState === "live" && !!sessionState.snapshot;
 
     useEffect(() => {
+        if (hasLiveSnapshot) {
+            return;
+        }
         void ensureSession(sessionTab);
-    }, [ensureSession, sessionTab]);
+    }, [ensureSession, hasLiveSnapshot, sessionTab]);
 
     const snapshot = sessionState?.snapshot ?? createEmptySnapshot(tab);
     const currentError = sessionState?.localError ?? snapshot.lastError;

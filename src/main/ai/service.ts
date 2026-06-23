@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 import { spawn } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 
@@ -49,6 +50,8 @@ import type {
 } from "@shared/ipc";
 import {
     computeDiffHunks,
+    getTrackedFileCurrentText,
+    getTrackedFileDiffBase,
     isAiTrackedFileUnresolved,
     normalizeReviewText,
     resolveTrackedFileHunks,
@@ -194,6 +197,12 @@ interface NativeReviewBaseline {
     readonly turnStarted: boolean;
 }
 
+interface RecentNativeReviewContext {
+    readonly additionalRoots: readonly string[];
+    readonly cwd: string;
+    readonly expiresAtMs: number;
+}
+
 type NativeAiReviewGateway = NativeAiGateway &
     Required<
         Pick<
@@ -218,6 +227,7 @@ const DEFAULT_AI_SESSION_RETENTION_CONFIG: AiSessionRetentionConfig = {
     idleTtlMs: 15 * 60 * 1000,
     maxHotSessionsPerWindow: 6,
 };
+const RECENT_NATIVE_REVIEW_CONTEXT_TTL_MS = 60_000;
 
 type AiSchedulerPriority = 0 | 1 | 2 | 3;
 
@@ -438,6 +448,10 @@ export class AiService {
         PendingNativeCatalogPatch[]
     >();
     readonly #nativeReviewBaselines = new Map<string, NativeReviewBaseline>();
+    readonly #recentNativeReviewContexts = new Map<
+        string,
+        RecentNativeReviewContext
+    >();
     readonly #nativeReviewReconciliations = new Set<string>();
     readonly #nativeSessionIds = new Set<string>();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
@@ -489,6 +503,7 @@ export class AiService {
             debugBenignError("ai.service.close.native", error);
         });
         this.#nativeReviewBaselines.clear();
+        this.#recentNativeReviewContexts.clear();
         this.#nativeReviewReconciliations.clear();
         this.#nativeSessionIds.clear();
         this.#pendingNativeCatalogPatches.clear();
@@ -559,11 +574,14 @@ export class AiService {
             return;
         }
 
+        const previousSnapshot = this.#liveSnapshots.get(sessionId) ?? null;
         const nextSnapshot = this.#drainPendingNativeCatalogPatches(
-            this.#hydrateSnapshotRuntimeCatalog(snapshot),
+            this.#preservePassiveNativeSnapshotTrackedFiles(
+                this.#hydrateSnapshotRuntimeCatalog(snapshot),
+                previousSnapshot,
+            ),
             ownerWindowId,
         );
-        const previousSnapshot = this.#liveSnapshots.get(sessionId) ?? null;
         this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
         this.#persistence.saveSessionSnapshot(nextSnapshot);
         if (nextSnapshot.lastError) {
@@ -1314,6 +1332,7 @@ export class AiService {
         } catch (error) {
             if (nativeSendState.capturedReviewBaseline) {
                 this.#nativeReviewBaselines.delete(input.sessionId);
+                this.#recentNativeReviewContexts.delete(input.sessionId);
             }
             if (nativeSendState.preparedSessionContext) {
                 this.#nativeSessionIds.delete(
@@ -2161,6 +2180,7 @@ export class AiService {
         this.#liveSessionTouches.delete(sessionId);
         this.#freezingSessionIds.delete(sessionId);
         this.#nativeReviewBaselines.delete(sessionId);
+        this.#recentNativeReviewContexts.delete(sessionId);
         this.#nativeReviewReconciliations.delete(sessionId);
         this.#nativeSessionIds.delete(sessionId);
         this.#scheduleSessionRetentionTimer();
@@ -2426,8 +2446,13 @@ export class AiService {
         snapshot: AiSessionSnapshot,
         ownerWindowId: string,
     ): AiSessionSnapshot {
+        const previousSnapshot =
+            this.#liveSnapshots.get(snapshot.sessionId) ?? null;
         const nextSnapshot = this.#drainPendingNativeCatalogPatches(
-            this.#hydrateSnapshotRuntimeCatalog(snapshot),
+            this.#preservePassiveNativeSnapshotTrackedFiles(
+                this.#hydrateSnapshotRuntimeCatalog(snapshot),
+                previousSnapshot,
+            ),
             ownerWindowId,
         );
         this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
@@ -2616,7 +2641,10 @@ export class AiService {
         if (event.kind === "review") {
             return {
                 ...base,
-                trackedFiles: event.trackedFiles,
+                trackedFiles: this.#preserveNativeReviewFallbackTrackedFiles(
+                    event.trackedFiles,
+                    snapshot,
+                ),
             };
         }
 
@@ -2677,6 +2705,7 @@ export class AiService {
     ): Promise<boolean> {
         const nativeAi = this.#requireNativeReviewGateway("captureReviewBaseline");
         const nativeCaptured = await nativeAi.captureReviewBaseline(sessionId);
+        this.#recentNativeReviewContexts.delete(sessionId);
         this.#nativeReviewBaselines.set(sessionId, {
             additionalRoots: launch.additionalRoots,
             cwd: launch.cwd,
@@ -2726,13 +2755,45 @@ export class AiService {
         });
     }
 
+    #nativeReviewDiffContext(
+        sessionId: string,
+    ): NativeReviewBaseline | RecentNativeReviewContext | null {
+        const baseline = this.#nativeReviewBaselines.get(sessionId);
+        if (baseline) {
+            return baseline;
+        }
+
+        const recentContext = this.#recentNativeReviewContexts.get(sessionId);
+        if (!recentContext) {
+            return null;
+        }
+
+        if (recentContext.expiresAtMs <= Date.now()) {
+            this.#recentNativeReviewContexts.delete(sessionId);
+            return null;
+        }
+
+        return recentContext;
+    }
+
+    #rememberRecentNativeReviewContext(
+        sessionId: string,
+        baseline: NativeReviewBaseline,
+    ): void {
+        this.#recentNativeReviewContexts.set(sessionId, {
+            additionalRoots: baseline.additionalRoots,
+            cwd: baseline.cwd,
+            expiresAtMs: Date.now() + RECENT_NATIVE_REVIEW_CONTEXT_TTL_MS,
+        });
+    }
+
     #applyNativeToolActivityReviewDiffs(
         snapshot: AiSessionSnapshot,
         activity: AiToolActivity,
     ): AiSessionSnapshot {
-        const baseline = this.#nativeReviewBaselines.get(snapshot.sessionId);
+        const reviewContext = this.#nativeReviewDiffContext(snapshot.sessionId);
         if (
-            !baseline ||
+            !reviewContext ||
             !isTerminalNativeReviewActivityStatus(activity.status) ||
             activity.diffs.length === 0
         ) {
@@ -2740,11 +2801,11 @@ export class AiService {
         }
 
         const projectRoot = this.#resolveNativeReviewProjectRoot(snapshot);
-        const scopeRoot = projectRoot ?? baseline.cwd;
+        const scopeRoot = projectRoot ?? reviewContext.cwd;
         const normalizeDiffPath = (candidatePath: string): string | null => {
             const normalizedPath = normalizeTrackedDiffPath(
                 {
-                    cwd: baseline.cwd,
+                    cwd: reviewContext.cwd,
                     projectRoot,
                 },
                 candidatePath,
@@ -2753,7 +2814,7 @@ export class AiService {
                 scopeRoot,
                 normalizedPath,
             );
-            const insideAdditionalRoot = baseline.additionalRoots.some(
+            const insideAdditionalRoot = reviewContext.additionalRoots.some(
                 (rootPath) => isPathInsideRoot(resolvedPath.absolutePath, rootPath),
             );
             if (resolvedPath.insideRoot && resolvedPath.relativePath) {
@@ -2803,19 +2864,54 @@ export class AiService {
         }
     }
 
+    #preserveNativeReviewFallbackTrackedFiles(
+        nativeTrackedFiles: readonly AiTrackedFile[],
+        previousSnapshot: AiSessionSnapshot,
+    ): readonly AiTrackedFile[] {
+        return preserveFallbackTrackedFiles(
+            nativeTrackedFiles,
+            previousSnapshot.trackedFiles,
+            this.#createNativeReviewPathMatcher(previousSnapshot),
+        );
+    }
+
+    #preservePassiveNativeSnapshotTrackedFiles(
+        incomingSnapshot: AiSessionSnapshot,
+        previousSnapshot: AiSessionSnapshot | null,
+    ): AiSessionSnapshot {
+        return preservePassiveSnapshotTrackedFiles(
+            incomingSnapshot,
+            previousSnapshot,
+            this.#createNativeReviewPathMatcher(
+                previousSnapshot ?? incomingSnapshot,
+            ),
+        );
+    }
+
+    #createNativeReviewPathMatcher(
+        snapshot: Pick<
+            AiSessionSnapshot,
+            "projectId" | "sessionId" | "worktreeId"
+        >,
+    ): TrackedFilePathMatcher | undefined {
+        const projectRoot = this.#resolveNativeReviewProjectRoot(snapshot);
+        const reviewContext = this.#nativeReviewDiffContext(snapshot.sessionId);
+        const scopeRoot = projectRoot ?? reviewContext?.cwd ?? null;
+        if (!scopeRoot) {
+            return undefined;
+        }
+
+        return (leftPath, rightPath) =>
+            isSamePath(
+                resolveSessionScopedPath(scopeRoot, leftPath).absolutePath,
+                resolveSessionScopedPath(scopeRoot, rightPath).absolutePath,
+            );
+    }
+
     #shouldReconcileNativeReviewFiles(event: AiSessionDomainEvent): boolean {
         const baseline = this.#nativeReviewBaselines.get(event.sessionId);
         if (!baseline || !this.#isNativeAiSession(event.sessionId)) {
             return false;
-        }
-
-        if (
-            baseline.nativeCaptured &&
-            event.kind === "tool-activity" &&
-            event.activity.id === `acp:turn:${baseline.messageId}` &&
-            isTerminalNativeReviewActivityStatus(event.activity.status)
-        ) {
-            return true;
         }
 
         return (
@@ -2835,11 +2931,10 @@ export class AiService {
             return;
         }
 
-        this.#nativeReviewBaselines.delete(sessionId);
         this.#nativeReviewReconciliations.add(sessionId);
         try {
-            const snapshot = this.#liveSnapshots.get(sessionId);
-            if (!snapshot) {
+            const initialSnapshot = this.#liveSnapshots.get(sessionId);
+            if (!initialSnapshot) {
                 return;
             }
 
@@ -2847,11 +2942,16 @@ export class AiService {
                 await this.#requireNativeReviewGateway(
                     "reconcileTrackedFiles",
                 ).reconcileTrackedFiles(sessionId);
+            const snapshot =
+                this.#liveSnapshots.get(sessionId) ?? initialSnapshot;
             if (trackedFiles.length === 0 && snapshot.trackedFiles.length === 0) {
                 return;
             }
 
-            const nextTrackedFiles = trackedFiles;
+            const nextTrackedFiles = this.#preserveNativeReviewFallbackTrackedFiles(
+                trackedFiles,
+                snapshot,
+            );
             if (nextTrackedFiles === snapshot.trackedFiles) {
                 return;
             }
@@ -2868,6 +2968,10 @@ export class AiService {
             );
             void this.#enforceSessionRetention();
         } finally {
+            if (this.#liveSessionContexts.has(sessionId)) {
+                this.#rememberRecentNativeReviewContext(sessionId, baseline);
+            }
+            this.#nativeReviewBaselines.delete(sessionId);
             this.#nativeReviewReconciliations.delete(sessionId);
         }
     }
@@ -3236,7 +3340,222 @@ export class AiService {
         void this.#enforceSessionRetention();
     }
 
+    async #tryApplyFallbackTrackedFileMutation(
+        input: AiTrackedFileMutationInput,
+        decision: "keep" | "reject",
+    ): Promise<boolean> {
+        const reviewSession = await this.#buildNativeReviewContext(
+            input.sessionId,
+        );
+        const trackedFile = findFallbackTrackedFile(
+            reviewSession.snapshot.trackedFiles,
+            input.path,
+        );
+        if (!trackedFile) {
+            return false;
+        }
+
+        if (decision === "reject") {
+            this.#rejectFallbackTrackedFile(reviewSession.context, trackedFile);
+        }
+
+        const nextSnapshot = {
+            ...reviewSession.snapshot,
+            trackedFiles: removeTrackedFileByIdentity(
+                reviewSession.snapshot.trackedFiles,
+                trackedFile.identityKey,
+            ),
+            updatedAt: new Date().toISOString(),
+        };
+        this.#persistReviewMutation(reviewSession.snapshot, {
+            ownerWindowId: reviewSession.context.ownerWindowId,
+            snapshot: nextSnapshot,
+        });
+        return true;
+    }
+
+    async #tryApplyFallbackTrackedFileHunkMutation(
+        input: AiTrackedFileHunkMutationInput,
+        decision: "keep" | "reject",
+    ): Promise<boolean> {
+        const reviewSession = await this.#buildNativeReviewContext(
+            input.sessionId,
+        );
+        const trackedFile = findFallbackTrackedFile(
+            reviewSession.snapshot.trackedFiles,
+            input.path,
+        );
+        if (!trackedFile) {
+            return false;
+        }
+
+        const nextTrackedFile = resolveTrackedFileHunks(
+            trackedFile,
+            input.hunkIds,
+            decision,
+        );
+        if (decision === "reject") {
+            this.#writeFallbackTrackedFileCurrentText(
+                reviewSession.context,
+                trackedFile,
+                nextTrackedFile,
+            );
+        }
+
+        const nextSnapshot = {
+            ...reviewSession.snapshot,
+            trackedFiles: replaceTrackedFileByIdentity(
+                reviewSession.snapshot.trackedFiles,
+                trackedFile.identityKey,
+                nextTrackedFile,
+            ),
+            updatedAt: new Date().toISOString(),
+        };
+        this.#persistReviewMutation(reviewSession.snapshot, {
+            ownerWindowId: reviewSession.context.ownerWindowId,
+            snapshot: nextSnapshot,
+        });
+        return true;
+    }
+
+    async #tryApplyAllFallbackTrackedFileMutations(
+        sessionId: string,
+        decision: "keep" | "reject",
+    ): Promise<boolean> {
+        const reviewSession = await this.#buildNativeReviewContext(sessionId);
+        const pendingFallbackFiles = reviewSession.snapshot.trackedFiles.filter(
+            (trackedFile) =>
+                isFallbackTrackedFile(trackedFile) &&
+                isAiTrackedFileUnresolved(trackedFile),
+        );
+        if (pendingFallbackFiles.length === 0) {
+            return false;
+        }
+
+        const hasNativePendingFiles = reviewSession.snapshot.trackedFiles.some(
+            (trackedFile) =>
+                !isFallbackTrackedFile(trackedFile) &&
+                isAiTrackedFileUnresolved(trackedFile),
+        );
+
+        if (decision === "reject") {
+            for (const trackedFile of pendingFallbackFiles) {
+                this.#rejectFallbackTrackedFile(
+                    reviewSession.context,
+                    trackedFile,
+                );
+            }
+        }
+
+        const fallbackIdentityKeys = new Set(
+            pendingFallbackFiles.map((trackedFile) => trackedFile.identityKey),
+        );
+        const nextSnapshot = {
+            ...reviewSession.snapshot,
+            trackedFiles: reviewSession.snapshot.trackedFiles.filter(
+                (trackedFile) =>
+                    !fallbackIdentityKeys.has(trackedFile.identityKey),
+            ),
+            updatedAt: new Date().toISOString(),
+        };
+        this.#persistReviewMutation(reviewSession.snapshot, {
+            ownerWindowId: reviewSession.context.ownerWindowId,
+            snapshot: nextSnapshot,
+        });
+        return !hasNativePendingFiles;
+    }
+
+    #rejectFallbackTrackedFile(
+        context: AiReviewSessionContext,
+        trackedFile: AiTrackedFile,
+    ): void {
+        if (trackedFile.kind === "create" && !trackedFile.previousPath) {
+            this.#removeFallbackReviewPath(context, trackedFile.path);
+            return;
+        }
+
+        if (trackedFile.previousPath) {
+            this.#removeFallbackReviewPath(context, trackedFile.path);
+            this.#writeFallbackReviewText(
+                context,
+                trackedFile.previousPath,
+                getTrackedFileDiffBase(trackedFile),
+            );
+            return;
+        }
+
+        this.#writeFallbackReviewText(
+            context,
+            trackedFile.path,
+            getTrackedFileDiffBase(trackedFile),
+        );
+    }
+
+    #writeFallbackTrackedFileCurrentText(
+        context: AiReviewSessionContext,
+        originalTrackedFile: AiTrackedFile,
+        nextTrackedFile: AiTrackedFile | null,
+    ): void {
+        if (!nextTrackedFile) {
+            this.#rejectFallbackTrackedFile(context, originalTrackedFile);
+            return;
+        }
+
+        this.#writeFallbackReviewText(
+            context,
+            nextTrackedFile.path,
+            getTrackedFileCurrentText(nextTrackedFile),
+        );
+    }
+
+    #writeFallbackReviewText(
+        context: AiReviewSessionContext,
+        trackedPath: string,
+        text: string,
+    ): void {
+        const absolutePath = this.#resolveFallbackReviewPath(
+            context,
+            trackedPath,
+        );
+        fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+        fs.writeFileSync(absolutePath, text, "utf8");
+    }
+
+    #removeFallbackReviewPath(
+        context: AiReviewSessionContext,
+        trackedPath: string,
+    ): void {
+        fs.rmSync(this.#resolveFallbackReviewPath(context, trackedPath), {
+            force: true,
+        });
+    }
+
+    #resolveFallbackReviewPath(
+        context: AiReviewSessionContext,
+        trackedPath: string,
+    ): string {
+        const baseline = this.#nativeReviewBaselines.get(
+            context.snapshot.sessionId,
+        );
+        const scopeRoot = baseline?.cwd ?? context.projectRoot ?? context.cwd;
+        const absolutePath = path.isAbsolute(trackedPath)
+            ? path.resolve(trackedPath)
+            : path.resolve(scopeRoot, trackedPath);
+        const insideScope = isPathInsideRoot(absolutePath, scopeRoot);
+        const insideAdditionalRoot = context.additionalRoots.some((rootPath) =>
+            isPathInsideRoot(absolutePath, rootPath),
+        );
+        if (!insideScope && !insideAdditionalRoot) {
+            throw new Error("The review path is outside the session scope.");
+        }
+        return absolutePath;
+    }
+
     async keepTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
+        if (await this.#tryApplyFallbackTrackedFileMutation(input, "keep")) {
+            return;
+        }
+
         const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
@@ -3250,6 +3569,10 @@ export class AiService {
     }
 
     async rejectTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
+        if (await this.#tryApplyFallbackTrackedFileMutation(input, "reject")) {
+            return;
+        }
+
         const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
@@ -3265,6 +3588,12 @@ export class AiService {
     async keepTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
+        if (
+            await this.#tryApplyFallbackTrackedFileHunkMutation(input, "keep")
+        ) {
+            return;
+        }
+
         const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
@@ -3280,6 +3609,12 @@ export class AiService {
     async rejectTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
+        if (
+            await this.#tryApplyFallbackTrackedFileHunkMutation(input, "reject")
+        ) {
+            return;
+        }
+
         const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
@@ -3293,6 +3628,15 @@ export class AiService {
     }
 
     async keepAllTrackedFiles(sessionId: string): Promise<void> {
+        if (
+            await this.#tryApplyAllFallbackTrackedFileMutations(
+                sessionId,
+                "keep",
+            )
+        ) {
+            return;
+        }
+
         const reviewSession = await this.#buildNativeReviewContext(sessionId);
         const result = await this.#requireNativeReviewGateway(
             "keepAllTrackedFiles",
@@ -3304,6 +3648,15 @@ export class AiService {
     }
 
     async rejectAllTrackedFiles(sessionId: string): Promise<void> {
+        if (
+            await this.#tryApplyAllFallbackTrackedFileMutations(
+                sessionId,
+                "reject",
+            )
+        ) {
+            return;
+        }
+
         const reviewSession = await this.#buildNativeReviewContext(sessionId);
         const result = await this.#requireNativeReviewGateway(
             "rejectAllTrackedFiles",
@@ -4006,6 +4359,150 @@ function trackedFileFromToolActivityDiff(
         updatedAt,
         version: 1,
     };
+}
+
+function isFallbackTrackedFile(trackedFile: AiTrackedFile): boolean {
+    return trackedFile.identityKey.startsWith("tool:");
+}
+
+function findFallbackTrackedFile(
+    trackedFiles: readonly AiTrackedFile[],
+    reviewPath: string,
+): AiTrackedFile | null {
+    return (
+        trackedFiles.find(
+            (trackedFile) =>
+                isFallbackTrackedFile(trackedFile) &&
+                (trackedFile.path === reviewPath ||
+                    trackedFile.previousPath === reviewPath ||
+                    trackedFile.identityKey === reviewPath),
+        ) ?? null
+    );
+}
+
+type TrackedFilePathMatcher = (leftPath: string, rightPath: string) => boolean;
+
+function preserveFallbackTrackedFiles(
+    nativeTrackedFiles: readonly AiTrackedFile[],
+    previousTrackedFiles: readonly AiTrackedFile[],
+    pathMatcher?: TrackedFilePathMatcher,
+): readonly AiTrackedFile[] {
+    const fallbackTrackedFiles = previousTrackedFiles.filter(
+        (trackedFile) =>
+            isFallbackTrackedFile(trackedFile) &&
+            !isTrackedFileRepresented(
+                nativeTrackedFiles,
+                trackedFile,
+                pathMatcher,
+            ),
+    );
+    if (fallbackTrackedFiles.length === 0) {
+        return nativeTrackedFiles;
+    }
+    if (
+        nativeTrackedFiles.length === 0 &&
+        fallbackTrackedFiles.length === previousTrackedFiles.length
+    ) {
+        return previousTrackedFiles;
+    }
+    return [...nativeTrackedFiles, ...fallbackTrackedFiles];
+}
+
+function preservePassiveSnapshotTrackedFiles(
+    incomingSnapshot: AiSessionSnapshot,
+    previousSnapshot: AiSessionSnapshot | null,
+    pathMatcher?: TrackedFilePathMatcher,
+): AiSessionSnapshot {
+    if (
+        !previousSnapshot ||
+        previousSnapshot.sessionId !== incomingSnapshot.sessionId ||
+        previousSnapshot.trackedFiles.length === 0
+    ) {
+        return incomingSnapshot;
+    }
+
+    if (incomingSnapshot.trackedFiles.length > 0) {
+        const trackedFiles = preserveFallbackTrackedFiles(
+            incomingSnapshot.trackedFiles,
+            previousSnapshot.trackedFiles,
+            pathMatcher,
+        );
+        return trackedFiles === incomingSnapshot.trackedFiles
+            ? incomingSnapshot
+            : {
+                  ...incomingSnapshot,
+                  trackedFiles,
+              };
+    }
+
+    const pendingTrackedFiles = previousSnapshot.trackedFiles.filter(
+        isAiTrackedFileUnresolved,
+    );
+    if (pendingTrackedFiles.length === 0) {
+        return incomingSnapshot;
+    }
+
+    return {
+        ...incomingSnapshot,
+        trackedFiles: pendingTrackedFiles,
+    };
+}
+
+function isTrackedFileRepresented(
+    trackedFiles: readonly AiTrackedFile[],
+    candidate: AiTrackedFile,
+    pathMatcher?: TrackedFilePathMatcher,
+): boolean {
+    return trackedFiles.some(
+        (trackedFile) =>
+            trackedFile.identityKey === candidate.identityKey ||
+            trackedFilesSharePath(trackedFile, candidate, pathMatcher),
+    );
+}
+
+function trackedFilesSharePath(
+    left: AiTrackedFile,
+    right: AiTrackedFile,
+    pathMatcher?: TrackedFilePathMatcher,
+): boolean {
+    const leftPaths = getTrackedFileIdentityPaths(left);
+    const rightPaths = getTrackedFileIdentityPaths(right);
+    return leftPaths.some((leftPath) =>
+        rightPaths.some((rightPath) =>
+            leftPath === rightPath || pathMatcher?.(leftPath, rightPath),
+        ),
+    );
+}
+
+function getTrackedFileIdentityPaths(
+    trackedFile: AiTrackedFile,
+): readonly string[] {
+    return trackedFile.previousPath
+        ? [trackedFile.path, trackedFile.previousPath]
+        : [trackedFile.path];
+}
+
+function removeTrackedFileByIdentity(
+    trackedFiles: readonly AiTrackedFile[],
+    identityKey: string,
+): readonly AiTrackedFile[] {
+    return trackedFiles.filter(
+        (trackedFile) => trackedFile.identityKey !== identityKey,
+    );
+}
+
+function replaceTrackedFileByIdentity(
+    trackedFiles: readonly AiTrackedFile[],
+    identityKey: string,
+    nextTrackedFile: AiTrackedFile | null,
+): readonly AiTrackedFile[] {
+    const nextTrackedFiles = removeTrackedFileByIdentity(
+        trackedFiles,
+        identityKey,
+    );
+    return nextTrackedFile
+        ? [...nextTrackedFiles, nextTrackedFile]
+        : nextTrackedFiles;
 }
 
 function normalizeOptionalText(value: string | null): string | null {

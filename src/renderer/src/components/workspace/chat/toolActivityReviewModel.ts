@@ -94,7 +94,7 @@ export function deriveTrackedFilesForToolActivity(
         const pathMatches = trackedFiles.filter(
             (trackedFile) =>
                 trackedFile.toolCallId === null &&
-                matchesTrackedFilePath(trackedFile, candidatePath),
+                matchesTrackedFilePathReference(trackedFile, candidatePath),
         );
 
         if (pathMatches.length === 1) {
@@ -300,7 +300,7 @@ function scoreTrackedFileMatch(
     trackedFile: AiTrackedFile,
 ): number {
     if (
-        areTrackedFilePathsEquivalent(trackedFile.path, diff.path) &&
+        areTrackedFilePathReferencesEquivalent(trackedFile.path, diff.path) &&
         areOptionalTrackedFilePathsEquivalent(
             trackedFile.previousPath,
             diff.previousPath,
@@ -309,25 +309,86 @@ function scoreTrackedFileMatch(
         return 4;
     }
 
-    if (areTrackedFilePathsEquivalent(trackedFile.path, diff.path)) {
+    if (areTrackedFilePathReferencesEquivalent(trackedFile.path, diff.path)) {
         return 3;
     }
 
     if (
         diff.previousPath &&
-        areTrackedFilePathsEquivalent(trackedFile.previousPath, diff.previousPath)
+        areTrackedFilePathReferencesEquivalent(
+            trackedFile.previousPath,
+            diff.previousPath,
+        )
     ) {
         return 2;
     }
 
     if (
         diff.previousPath &&
-        areTrackedFilePathsEquivalent(trackedFile.path, diff.previousPath)
+        areTrackedFilePathReferencesEquivalent(
+            trackedFile.path,
+            diff.previousPath,
+        )
     ) {
         return 1;
     }
 
     return -1;
+}
+
+function matchesTrackedFilePathReference(
+    trackedFile: AiTrackedFile,
+    candidatePath: string,
+): boolean {
+    return (
+        matchesTrackedFilePath(trackedFile, candidatePath) ||
+        [trackedFile.path, trackedFile.previousPath].some((path) =>
+            areTrackedFilePathReferencesEquivalent(path, candidatePath),
+        )
+    );
+}
+
+function areTrackedFilePathReferencesEquivalent(
+    leftPath: string | null | undefined,
+    rightPath: string | null | undefined,
+): boolean {
+    if (!leftPath || !rightPath) {
+        return false;
+    }
+
+    return (
+        areTrackedFilePathsEquivalent(leftPath, rightPath) ||
+        isScopedPathSuffix(leftPath, rightPath) ||
+        isScopedPathSuffix(rightPath, leftPath)
+    );
+}
+
+function isScopedPathSuffix(
+    candidatePath: string,
+    scopedPath: string,
+): boolean {
+    if (!looksAbsolutePath(candidatePath) || looksAbsolutePath(scopedPath)) {
+        return false;
+    }
+
+    const usesWindowsPath =
+        candidatePath.includes("\\") || scopedPath.includes("\\");
+    const candidate = normalizePathForSuffix(candidatePath, usesWindowsPath);
+    const scoped = normalizePathForSuffix(scopedPath, usesWindowsPath);
+    return candidate.endsWith(`/${scoped}`);
+}
+
+function looksAbsolutePath(candidatePath: string): boolean {
+    return (
+        candidatePath.startsWith("/") ||
+        /^[a-zA-Z]:[\\/]/.test(candidatePath) ||
+        /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(candidatePath)
+    );
+}
+
+function normalizePathForSuffix(path: string, caseInsensitive: boolean): string {
+    const normalized = path.replace(/\\/g, "/").replace(/\/+/g, "/");
+    return caseInsensitive ? normalized.toLowerCase() : normalized;
 }
 
 function areOptionalTrackedFilePathsEquivalent(

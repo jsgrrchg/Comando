@@ -298,6 +298,67 @@ describe("ai-store queue", () => {
         );
     });
 
+    it("preserves pending review files when live session prepare returns an empty review", async () => {
+        const trackedFile = createTrackedFile({ path: "cuento.md" });
+        const prepareAiSession = vi
+            .fn()
+            .mockResolvedValueOnce(
+                createSnapshot({
+                    trackedFiles: [trackedFile],
+                    updatedAt: "2026-04-14T00:00:01.000Z",
+                }),
+            )
+            .mockResolvedValueOnce(
+                createSnapshot({
+                    trackedFiles: [],
+                    updatedAt: "2026-04-14T00:00:02.000Z",
+                }),
+            );
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    prepareAiSession,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(TAB);
+        await useAiStore.getState().ensureSession(TAB);
+
+        expect(prepareAiSession).toHaveBeenCalledTimes(2);
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.trackedFiles,
+        ).toEqual([trackedFile]);
+    });
+
+    it("preserves pending review files when a full incoming snapshot is empty", () => {
+        const trackedFile = createTrackedFile({ path: "cuento.md" });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                trackedFiles: [trackedFile],
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                trackedFiles: [],
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.trackedFiles,
+        ).toEqual([trackedFile]);
+    });
+
     it("hydrates history chat tabs without preparing the runtime session", async () => {
         const historyTab: WorkspaceChatTab = {
             ...TAB,

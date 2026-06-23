@@ -143,6 +143,67 @@ describe("toolActivityReviewModel", () => {
         ).toEqual(["tracked-1"]);
     });
 
+    it("matches absolute activity paths to relative native review paths", () => {
+        const activity = createActivity({
+            diffs: [
+                {
+                    hunks: [],
+                    isText: true,
+                    kind: "update",
+                    newText: "next",
+                    oldText: "prev",
+                    path: "/Users/example/project/cuento.md",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            id: "tool-without-link",
+        });
+        const trackedFile = createTrackedFile({
+            path: "cuento.md",
+            toolCallId: null,
+        });
+
+        expect(
+            deriveTrackedFilesForToolActivity(activity, [trackedFile]).map(
+                (candidate) => candidate.identityKey,
+            ),
+        ).toEqual(["tracked-1"]);
+
+        const items = deriveChangeReviewItems(activity, [trackedFile]);
+        expect(items).toHaveLength(1);
+        expect(items[0]?.file?.identityKey).toBe("tracked-1");
+    });
+
+    it("matches Windows absolute activity paths to relative native review paths", () => {
+        setRendererPlatform("win32");
+
+        const activity = createActivity({
+            diffs: [
+                {
+                    hunks: [],
+                    isText: true,
+                    kind: "update",
+                    newText: "next",
+                    oldText: "prev",
+                    path: "C:\\Users\\example\\project\\src\\App.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            id: "tool-without-link",
+        });
+        const trackedFile = createTrackedFile({
+            path: "src/app.ts",
+            toolCallId: null,
+        });
+
+        const items = deriveChangeReviewItems(activity, [trackedFile]);
+
+        expect(items).toHaveLength(1);
+        expect(items[0]?.file?.identityKey).toBe("tracked-1");
+    });
+
     it("does not use path fallback for tracked files owned by another tool call", () => {
         const activity = createActivity({
             diffs: [

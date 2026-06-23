@@ -2347,7 +2347,7 @@ impl NativeBackend {
                     Err(error) => return error_only(request.id, error.to_native_error()),
                 };
                 match self.review_service.list_tracked_files(&session) {
-                    Ok(output) => self.review_response(request.id, &session, output),
+                    Ok(output) => review_read_response(request.id, output),
                     Err(error) => error_only(request.id, error),
                 }
             }
@@ -3651,6 +3651,13 @@ fn response_only(id: RequestId, payload: Value) -> CommandResult {
     }
 }
 
+fn review_read_response(id: RequestId, output: NativeReviewCommandOutput) -> CommandResult {
+    response_only(
+        id,
+        serde_json::to_value(output).expect("review command output serializes"),
+    )
+}
+
 fn error_only(id: RequestId, error: NativeError) -> CommandResult {
     CommandResult {
         outputs: vec![error_response(Some(id), error)],
@@ -4348,6 +4355,33 @@ mod tests {
                 event(BACKEND_TEST_EVENT, json!({"message": "hola"})),
             ]
         );
+    }
+
+    #[test]
+    fn review_read_response_does_not_emit_update_event() {
+        let result = review_read_response(
+            RequestId::Number(1),
+            NativeReviewCommandOutput {
+                session_id: "session-1".into(),
+                tracked_files: Vec::new(),
+                changed_files: Vec::new(),
+                conflicts: Vec::new(),
+                updated_at: "2026-04-14T00:00:00.000Z".to_string(),
+                state_found: false,
+                tracked_file_events: Vec::new(),
+            },
+        );
+
+        let [RpcOutput::Response(response)] = result.outputs.as_slice() else {
+            panic!("expected only one response");
+        };
+        assert!(response.ok);
+        assert!(result.outputs.iter().all(|output| {
+            !matches!(
+                output,
+                RpcOutput::Event(event) if event.event_name == "ai://review-updated"
+            )
+        }));
     }
 
     #[test]
