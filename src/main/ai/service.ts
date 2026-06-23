@@ -2775,7 +2775,6 @@ export class AiService {
         const baseline = this.#nativeReviewBaselines.get(snapshot.sessionId);
         if (
             !baseline ||
-            !baseline.nativeCaptured ||
             !isTerminalNativeReviewActivityStatus(activity.status) ||
             activity.diffs.length === 0
         ) {

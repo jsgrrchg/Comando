@@ -1679,10 +1679,6 @@ export const ToolActivityItem = memo(function ToolActivityItem({
         return <TurnStartedDivider activity={activity} />;
     }
 
-    if (isTerminalToolActivity(activity)) {
-        return <TerminalToolMessage activity={activity} />;
-    }
-
     if (isFileToolActivity(activity, trackedFiles)) {
         const fileToolExpansionMode = isEditedFileToolActivity(
             activity,
@@ -1697,8 +1693,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
                 expansionMode: fileToolExpansionMode,
                 isLatestStreamingTool,
             });
-
-            return (
+            const reviewPanel = (
                 <ChangeReviewPanel
                     activity={activity}
                     defaultExpanded={reviewExpansionState.defaultExpanded}
@@ -1710,6 +1705,21 @@ export const ToolActivityItem = memo(function ToolActivityItem({
                     worktreeId={worktreeId}
                 />
             );
+
+            if (isTerminalToolActivity(activity)) {
+                return (
+                    <div className="min-w-0 space-y-2">
+                        <TerminalToolMessage activity={activity} />
+                        {reviewPanel}
+                    </div>
+                );
+            }
+
+            return reviewPanel;
+        }
+
+        if (isTerminalToolActivity(activity)) {
+            return <TerminalToolMessage activity={activity} />;
         }
 
         return (
@@ -1726,6 +1736,10 @@ export const ToolActivityItem = memo(function ToolActivityItem({
                 worktreeId={worktreeId}
             />
         );
+    }
+
+    if (isTerminalToolActivity(activity)) {
+        return <TerminalToolMessage activity={activity} />;
     }
 
     return (

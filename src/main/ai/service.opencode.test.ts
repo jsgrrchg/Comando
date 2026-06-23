@@ -1135,7 +1135,7 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
-    it("does not show pending review from terminal tool diffs when native baseline capture is unavailable", async () => {
+    it("creates pending review from scoped tool diffs when native baseline capture is unavailable", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-review-diff-fallback-"),
         );
@@ -1243,7 +1243,19 @@ describe("AiService OpenCode branch", () => {
                         (file) => file.reviewState === "pending",
                     ),
                 );
-            expect(pendingReviewUpdates).toEqual([]);
+            expect(pendingReviewUpdates).toEqual([
+                expect.objectContaining({
+                    trackedFiles: [
+                        expect.objectContaining({
+                            newText: "new text\n",
+                            oldText: "old text\n",
+                            path: "Fliege font.md",
+                            reviewState: "pending",
+                            toolCallId: "tool-write-1",
+                        }),
+                    ],
+                }),
+            ]);
             expect(reconcileTrackedFiles).not.toHaveBeenCalled();
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
