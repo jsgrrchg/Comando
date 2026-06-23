@@ -210,7 +210,6 @@ describe("SidebarAgentsPanel new agent menu", () => {
             "New OpenCode thread",
             "New Claude Code Terminal",
         ]);
-        expect(labels).not.toContain("New Gemini thread");
 
         const claudeEntry = entries.find(
             (entry) =>

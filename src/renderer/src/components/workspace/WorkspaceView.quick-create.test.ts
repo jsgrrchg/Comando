@@ -29,7 +29,6 @@ describe("WorkspaceView quick create agents menu", () => {
             "Kilo",
             "OpenCode",
         ]);
-        expect(labels).not.toContain("Gemini");
 
         const claudeEntry = entries.find(
             (entry) => entry.type !== "separator" && entry.label === "Claude",

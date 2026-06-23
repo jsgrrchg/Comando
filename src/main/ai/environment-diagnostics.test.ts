@@ -40,7 +40,7 @@ describe("AI environment diagnostics", () => {
                     COMANDO_GROK_ACP_BIN: grokPath,
                     COMANDO_KILO_ACP_BIN: kiloPath,
                     COMANDO_OPENCODE_ACP_BIN: opencodePath,
-                    GEMINI_API_KEY: "gemini-secret-value",
+                    GEMINI_API_KEY: "provider-secret-value",
                     HOME: homeDir,
                     OPENAI_API_KEY: "openai-secret-value",
                     PATH: binDir,
@@ -157,7 +157,7 @@ describe("AI environment diagnostics", () => {
                 "codex-secret-value",
             );
             expect(JSON.stringify(diagnostics)).not.toContain(
-                "gemini-secret-value",
+                "provider-secret-value",
             );
             expect(JSON.stringify(diagnostics)).not.toContain(
                 "openai-secret-value",
@@ -307,15 +307,6 @@ function createSettings(
             binaryPath: null,
             hasCodexApiKey: false,
             hasOpenAiApiKey: false,
-        },
-        gemini: {
-            authInvalidatedAtMs: null,
-            authMethod: null,
-            binaryPath: null,
-            googleCloudLocation: null,
-            googleCloudProject: null,
-            hasGeminiApiKey: false,
-            hasGoogleApiKey: false,
         },
         grok: {
             authInvalidatedAtMs: null,

@@ -167,39 +167,6 @@ import {
     resolveOpenCodeRuntime,
 } from "./opencode/setup";
 
-const GEMINI_ACP_REMOVED_MESSAGE =
-    "Gemini ACP support has been removed. Use Kilo or OpenCode with a Gemini API key instead.";
-
-function createRemovedGeminiRuntimeSettings() {
-    return {
-        authInvalidatedAtMs: null,
-        authMethod: null,
-        binaryPath: null,
-        googleCloudLocation: null,
-        googleCloudProject: null,
-        hasGeminiApiKey: false,
-        hasGoogleApiKey: false,
-    };
-}
-
-function createRemovedGeminiRuntimeStatus(): AiRuntimeStatus {
-    return {
-        authMethod: null,
-        authMethods: [],
-        authReady: false,
-        checkedAt: new Date().toISOString(),
-        command: null,
-        hasCustomBinaryPath: false,
-        hasGatewayConfig: false,
-        hasGatewayUrl: false,
-        message: GEMINI_ACP_REMOVED_MESSAGE,
-        onboardingRequired: true,
-        runtimeId: "gemini",
-        source: null,
-        state: "error",
-    };
-}
-
 function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
     return Writable.toWeb(stream) as WritableStream<Uint8Array>;
 }
@@ -778,7 +745,6 @@ export class AiService {
             settings: {
                 claude: this.#settingsService.loadClaudeRuntimeSettings(),
                 codex: this.#settingsService.loadCodexRuntimeSettings(),
-                gemini: createRemovedGeminiRuntimeSettings(),
                 grok: this.#settingsService.loadGrokRuntimeSettings(),
                 kilo: this.#settingsService.loadKiloRuntimeSettings(),
                 opencode: this.#settingsService.loadOpenCodeRuntimeSettings(),
@@ -1584,8 +1550,6 @@ export class AiService {
             return;
         }
 
-        this.#rejectGeminiRuntime(input.runtimeId);
-
         if (input.runtimeId === "kilo") {
             if (input.methodId === "kilo-api-key") {
                 throw new Error(
@@ -1867,8 +1831,6 @@ export class AiService {
             return status;
         }
 
-        this.#rejectGeminiRuntime(input.runtimeId);
-
         if (input.runtimeId === "opencode") {
             const nextSettings = {
                 ...markOpenCodeAuthInvalidated(
@@ -2079,8 +2041,6 @@ export class AiService {
                     },
                 };
             }
-            case "gemini":
-                return null;
         }
     }
 
@@ -2097,7 +2057,6 @@ export class AiService {
     }
 
     #requireNativeAiGatewayForRuntime(runtimeId: AiRuntimeId): NativeAiGateway {
-        this.#rejectGeminiRuntime(runtimeId);
         const nativeAi = this.#selectNativeAiGateway(runtimeId);
         if (!nativeAi) {
             throw new Error(
@@ -3481,10 +3440,6 @@ export class AiService {
             );
         }
 
-        if (runtimeId === "gemini") {
-            return createRemovedGeminiRuntimeStatus();
-        }
-
         if (runtimeId === "grok") {
             return getGrokRuntimeStatus(
                 this.#settingsService.loadGrokRuntimeSettings(),
@@ -3510,15 +3465,6 @@ export class AiService {
             this.#settingsService.loadCodexRuntimeSettings(),
             loadCodexSecretBundle(this.#secretStore),
         );
-    }
-
-    #rejectGeminiRuntime(runtimeId: AiRuntimeId): void {
-        if (runtimeId !== "gemini") {
-            return;
-        }
-
-        this.#onRuntimeStatus(createRemovedGeminiRuntimeStatus());
-        throw new Error(GEMINI_ACP_REMOVED_MESSAGE);
     }
 
     async #saveCodexAuthSettings(
@@ -3709,8 +3655,6 @@ export class AiService {
                 status: resolved.status,
             };
         }
-
-        this.#rejectGeminiRuntime(runtimeId);
 
         if (runtimeId === "grok") {
             const settings = this.#settingsService.loadGrokRuntimeSettings();

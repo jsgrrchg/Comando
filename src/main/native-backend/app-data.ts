@@ -80,7 +80,6 @@ const WORKSPACE_KEY_PREFIX = "workspace.";
 const AI_RUNTIME_IDS = [
     "claude",
     "codex",
-    "gemini",
     "grok",
     "kilo",
     "opencode",
@@ -1743,15 +1742,6 @@ function createDefaultSettingsSnapshot(): CompleteSettingsSnapshot {
                 binaryPath: null,
                 hasCodexApiKey: false,
                 hasOpenAiApiKey: false,
-            },
-            gemini: {
-                authInvalidatedAtMs: null,
-                authMethod: null,
-                binaryPath: null,
-                googleCloudLocation: null,
-                googleCloudProject: null,
-                hasGeminiApiKey: false,
-                hasGoogleApiKey: false,
             },
             grok: {
                 authInvalidatedAtMs: null,

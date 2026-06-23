@@ -504,65 +504,6 @@ describe("AiService prepareSession", () => {
         });
     });
 
-    it("rejects legacy Gemini sessions before native startup", async () => {
-        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>();
-        const runtimeStatusEvents: AiRuntimeStatus[] = [];
-        const service = new AiService({
-            nativeAi: createNativeAi({
-                prepareSession,
-            }),
-            onRuntimeStatus: (status) => runtimeStatusEvents.push(status),
-            onSessionSnapshot: vi.fn(),
-            persistence: {
-                loadLatestRuntimeCatalog: vi.fn(() => null),
-                loadRuntimeSelectionPreferences: vi.fn(() => ({
-                    configOptions: {},
-                    modeId: null,
-                    modelId: null,
-                })),
-            } as never,
-            projectService: {
-                getProjectRootPath: vi.fn(() => process.cwd()),
-                listProjectWorktrees: vi.fn(() => []),
-            } as never,
-            secretStore: {
-                loadSecret: vi.fn(() => null),
-                saveSecret: vi.fn(),
-            },
-            settingsService: {
-                loadCodexRuntimeSettings: vi.fn(() => ({
-                    authMethod: "chatgpt",
-                    binaryPath: null,
-                    hasCodexApiKey: false,
-                    hasOpenAiApiKey: false,
-                })),
-            } as never,
-        });
-
-        await expect(
-            service.prepareSession(
-                {
-                    projectId: null,
-                    runtimeId: "gemini",
-                    sessionId: "session-gemini",
-                    title: "Gemini 1",
-                    worktreeId: null,
-                },
-                "window-1",
-            ),
-        ).rejects.toThrow(
-            "Gemini ACP support has been removed. Use Kilo or OpenCode with a Gemini API key instead.",
-        );
-
-        expect(prepareSession).not.toHaveBeenCalled();
-        expect(runtimeStatusEvents.at(-1)).toMatchObject({
-            message:
-                "Gemini ACP support has been removed. Use Kilo or OpenCode with a Gemini API key instead.",
-            runtimeId: "gemini",
-            state: "error",
-        });
-    });
-
     it("clears the live context when native startup fails", async () => {
         const persistedSnapshot: AiSessionSnapshot = {
             availableCommands: [],

@@ -19,7 +19,7 @@ describe("buildRuntimeSpawnEnv", () => {
             {
                 PATH: ["/custom/bin", "/usr/bin"].join(path.delimiter),
             },
-            "/opt/homebrew/bin/gemini",
+            "/opt/homebrew/bin/opencode",
         );
 
         expect(env.PATH?.split(path.delimiter)).toEqual([

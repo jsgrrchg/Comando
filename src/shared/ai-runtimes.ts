@@ -1,6 +1,6 @@
 import type { AiRuntimeId } from "./ipc";
 
-export type ActiveAiRuntimeId = Exclude<AiRuntimeId, "gemini">;
+export type ActiveAiRuntimeId = AiRuntimeId;
 
 export const ACTIVE_AI_RUNTIME_IDS = [
     "codex",
@@ -12,7 +12,6 @@ export const ACTIVE_AI_RUNTIME_IDS = [
 
 export const LEGACY_AI_RUNTIME_IDS = [
     ...ACTIVE_AI_RUNTIME_IDS,
-    "gemini",
 ] as const satisfies readonly AiRuntimeId[];
 
 const ACTIVE_AI_RUNTIME_ID_SET = new Set<AiRuntimeId>(
@@ -40,8 +39,6 @@ export function getAiRuntimeDisplayName(runtimeId: AiRuntimeId): string {
     switch (runtimeId) {
         case "claude":
             return "Claude";
-        case "gemini":
-            return "Gemini";
         case "grok":
             return "Grok";
         case "kilo":

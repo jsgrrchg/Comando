@@ -75,7 +75,7 @@ function createWorkspaceFileTab(id: string, relativePath: string) {
 function createWorkspaceChatTab(
     id: string,
     sessionId: string,
-    runtimeId: "claude" | "codex" | "gemini" | "grok" | "kilo" | "opencode",
+    runtimeId: "claude" | "codex" | "grok" | "kilo" | "opencode",
 ) {
     return {
         createdAt: "2026-04-14T00:00:00.000Z",
@@ -1757,9 +1757,9 @@ describe("workspace file opening", () => {
     it("creates a chat tab and hydrates it when opening a persisted session that is not open yet", async () => {
         await useWorkspaceStore.getState().openChatSessionTab({
             projectId: "project-1",
-            runtimeId: "gemini",
+            runtimeId: "grok",
             sessionId: "session-new-history",
-            title: "Recovered Gemini session",
+            title: "Recovered Grok session",
             worktreeId: "worktree-9",
         });
 
@@ -1777,9 +1777,9 @@ describe("workspace file opening", () => {
         expect(openedTabId ? state.tabsById[openedTabId] : null).toMatchObject({
             kind: "chat",
             projectId: "project-1",
-            runtimeId: "gemini",
+            runtimeId: "grok",
             sessionId: "session-new-history",
-            title: "Recovered Gemini session",
+            title: "Recovered Grok session",
             worktreeId: "worktree-9",
         });
         expect(ensureSessionMock).toHaveBeenCalledTimes(1);
@@ -1787,9 +1787,9 @@ describe("workspace file opening", () => {
             expect.objectContaining({
                 kind: "chat",
                 projectId: "project-1",
-                runtimeId: "gemini",
+                runtimeId: "grok",
                 sessionId: "session-new-history",
-                title: "Recovered Gemini session",
+                title: "Recovered Grok session",
                 worktreeId: "worktree-9",
             }),
         );
@@ -1916,12 +1916,12 @@ describe("workspace runtime focus helpers", () => {
                 id: "review-1",
                 kind: "review",
                 projectId: null,
-                runtimeId: "gemini",
+                runtimeId: "grok",
                 sessionId: "session-2",
                 title: "Review",
                 worktreeId: null,
             }),
-        ).toBe("gemini");
+        ).toBe("grok");
 
         expect(
             getWorkspaceTabRuntimeId({
@@ -1967,7 +1967,7 @@ describe("workspace runtime focus helpers", () => {
                 id: "review-1",
                 kind: "review",
                 projectId: null,
-                runtimeId: "gemini",
+                runtimeId: "grok",
                 sessionId: "session-2",
                 title: "Review",
                 worktreeId: null,

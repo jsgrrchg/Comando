@@ -1658,7 +1658,7 @@ mod tests {
         let engine = AiEngine::default();
 
         assert!(matches!(
-            engine.prepare_session(prepare_input("s1", "gemini")),
+            engine.prepare_session(prepare_input("s1", "unknown-runtime")),
             Err(AiError::RuntimeMissing { .. })
         ));
     }

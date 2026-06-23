@@ -104,7 +104,6 @@ describe("AIProvidersSettings", () => {
 
         expect(markup).toContain("Codex");
         expect(markup).toContain("Claude");
-        expect(markup).not.toContain("Gemini");
         expect(markup).toContain("Grok");
         expect(markup).toContain("Kilo");
         expect(markup).toContain("OpenCode");
@@ -112,7 +111,6 @@ describe("AIProvidersSettings", () => {
         expect(markup).toContain("Bedrock gateway");
         expect(markup).toContain("Custom headers JSON");
         expect(markup).not.toContain("Auth token");
-        expect(markup).not.toContain("Gemini API key");
         expect(markup).not.toContain("Google Cloud project");
         expect(markup).toContain("Grok login");
         expect(markup).toContain("xAI API key");

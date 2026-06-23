@@ -7035,20 +7035,6 @@ function ChatProviderIcon({ runtimeId }: { readonly runtimeId: AiRuntimeId }) {
         );
     }
 
-    if (runtimeId === "gemini") {
-        return (
-            <svg
-                className="shrink-0 opacity-55"
-                fill="currentColor"
-                height={12}
-                viewBox="0 0 16 16"
-                width={12}
-            >
-                <path d="M8 1.2c.25 3.55 1.6 5.35 6.8 6.8-5.2 1.45-6.55 3.25-6.8 6.8-.25-3.55-1.6-5.35-6.8-6.8C6.4 6.55 7.75 4.75 8 1.2Z" />
-            </svg>
-        );
-    }
-
     if (runtimeId === "opencode") {
         return (
             <svg

@@ -321,7 +321,6 @@ export interface ReadClaudeCodeTranscriptResult {
 export type AiRuntimeId =
     | "claude"
     | "codex"
-    | "gemini"
     | "grok"
     | "kilo"
     | "opencode";
@@ -339,8 +338,6 @@ export type ClaudeAuthMethodId =
     | "console-login"
     | "gateway"
     | "gateway-bedrock";
-
-export type GeminiAuthMethodId = "login_with_google" | "use_gemini";
 
 export type GrokAuthMethodId = "grok-login" | "xai-api-key";
 
@@ -397,16 +394,6 @@ export interface ClaudeRuntimeSettingsInput {
     readonly gatewayCustomHeaders: SecretValuePatch;
 }
 
-export interface GeminiRuntimeSettings {
-    readonly authInvalidatedAtMs: number | null;
-    readonly authMethod: GeminiAuthMethodId | null;
-    readonly binaryPath: string | null;
-    readonly googleCloudLocation: string | null;
-    readonly googleCloudProject: string | null;
-    readonly hasGeminiApiKey: boolean;
-    readonly hasGoogleApiKey: boolean;
-}
-
 export interface GrokRuntimeSettings {
     readonly authInvalidatedAtMs: number | null;
     readonly authMethod: GrokAuthMethodId | null;
@@ -447,7 +434,6 @@ export interface OpenCodeRuntimeSettingsInput {
 export interface AiSettingsSnapshot {
     readonly claude: ClaudeRuntimeSettings;
     readonly codex: CodexRuntimeSettings;
-    readonly gemini: GeminiRuntimeSettings;
     readonly grok: GrokRuntimeSettings;
     readonly kilo: KiloRuntimeSettings;
     readonly opencode: OpenCodeRuntimeSettings;

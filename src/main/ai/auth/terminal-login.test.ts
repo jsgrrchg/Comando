@@ -31,7 +31,7 @@ describe("terminal login helpers", () => {
 
     it("builds POSIX login scripts with a unique provider prefix", () => {
         const scriptPath = buildPosixLoginScript({
-            commandParts: ["/usr/local/bin/gemini", "auth"],
+            commandParts: ["/usr/local/bin/opencode", "auth"],
             cwd: "/tmp/project with spaces",
             scriptPrefix: "comando-test-login",
         });
@@ -40,7 +40,7 @@ describe("terminal login helpers", () => {
             expect(scriptPath).toContain("comando-test-login-");
             expect(scriptPath).toMatch(/\.sh$/);
             expect(fs.readFileSync(scriptPath, "utf8")).toContain(
-                "cd '/tmp/project with spaces'\n'/usr/local/bin/gemini' 'auth'",
+                "cd '/tmp/project with spaces'\n'/usr/local/bin/opencode' 'auth'",
             );
         } finally {
             fs.rmSync(scriptPath, {

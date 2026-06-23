@@ -10,13 +10,6 @@ Comando currently integrates five active AI runtimes through the Agent Client Pr
 
 All five communicate with the app over ACP / JSON-RPC on stdio.
 
-Legacy Gemini sessions can still appear in history and workspace snapshots, but
-Comando no longer launches `gemini --acp` or exposes Gemini as a configurable
-provider. Users who want Gemini models should configure a Gemini API key through
-a compatible external runtime such as Kilo or OpenCode.
-
----
-
 ## Runtimes at a Glance
 
 | | Claude | Codex | Grok | Kilo | OpenCode |

@@ -17,7 +17,6 @@ function pill(label: string): string {
 describe("isDefaultChatTitle", () => {
     it("matches the runtime-generated defaults", () => {
         expect(isDefaultChatTitle("Claude 1")).toBe(true);
-        expect(isDefaultChatTitle("Gemini 12")).toBe(true);
         expect(isDefaultChatTitle("Grok 1")).toBe(true);
         expect(isDefaultChatTitle("Codex 3")).toBe(true);
         expect(isDefaultChatTitle("Kilo 4")).toBe(true);

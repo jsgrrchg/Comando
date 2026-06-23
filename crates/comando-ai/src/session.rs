@@ -10,9 +10,8 @@ use crate::error::{AiError, AiResult};
 use crate::events::now_iso8601;
 use crate::scope::SessionScope;
 
-const DEFAULT_CHAT_TITLE_RUNTIMES: &[&str] = &[
-    "Claude", "Gemini", "Grok", "Codex", "Kilo", "OpenCode", "Agent",
-];
+const DEFAULT_CHAT_TITLE_RUNTIMES: &[&str] =
+    &["Claude", "Grok", "Codex", "Kilo", "OpenCode", "Agent"];
 const CHAT_TITLE_STORED_MAX_CHARS: usize = 100;
 const MAX_TITLE_WORDS: usize = 12;
 const PILL_OPEN: &str = "\u{200B}\u{00AB}";

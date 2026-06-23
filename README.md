@@ -65,7 +65,6 @@ Comando implements the [Agent Client Protocol (ACP)](https://github.com/agentcli
 
 Credentials are stored in the native OS credential store through the Rust sidecar.
 The `stage:ai` flow currently bundles and packages the Claude and Codex runtimes; Grok, Kilo, and OpenCode are configured as external runtimes.
-Comando no longer launches a dedicated Gemini ACP runtime. To use a Gemini API key, configure it through a compatible external runtime such as Kilo or OpenCode instead of the Gemini CLI ACP path.
 The bundled Codex runtime is vendored from Zed's `codex-acp`, pinned to OpenAI Codex Rust `rust-v0.133.0`, and carries Comando-specific patches for Fast mode, subagent session projection, generated-image rendering, custom prompt expansion, and ACP metadata compatibility.
 
 ## Requirements

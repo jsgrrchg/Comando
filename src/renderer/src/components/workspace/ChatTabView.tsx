@@ -3207,8 +3207,6 @@ function getRuntimeDisplayName(
     switch (runtimeId) {
         case "claude":
             return "Claude";
-        case "gemini":
-            return "Gemini";
         case "grok":
             return "Grok";
         case "kilo":

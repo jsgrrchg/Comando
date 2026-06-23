@@ -299,8 +299,6 @@ function resolveRuntimeExecutable(
                     input.settings.codex,
                     input.codexResolveOptions,
                 ).executable;
-            case "gemini":
-                return null;
             case "grok":
                 return resolveGrokRuntime(
                     input.settings.grok,
