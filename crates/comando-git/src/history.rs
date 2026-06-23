@@ -35,7 +35,7 @@ pub fn list_history(
             GitRunOptions::read_only(),
         ) {
             Ok(output) => output,
-            Err(error) if is_empty_history_error(&error) => return Ok(empty_history()),
+            Err(error) if is_expected_empty_history_error(&error) => return Ok(empty_history()),
             Err(error) => return Err(error),
         };
         let commits = parse_history(&output.stdout);
@@ -62,7 +62,7 @@ pub fn list_history(
         GitRunOptions::read_only(),
     ) {
         Ok(output) => output,
-        Err(error) if is_empty_history_error(&error) => return Ok(empty_history()),
+        Err(error) if is_expected_empty_history_error(&error) => return Ok(empty_history()),
         Err(error) => return Err(error),
     };
     let total_count = count_commits(runner, root_path)?;
@@ -232,7 +232,7 @@ fn count_commits(runner: &GitRunner, root_path: impl AsRef<Path>) -> GitResult<u
         GitRunOptions::read_only(),
     ) {
         Ok(output) => Ok(output.stdout.trim().parse::<u32>().unwrap_or(0)),
-        Err(error) if is_empty_history_error(&error) => Ok(0),
+        Err(error) if is_expected_empty_history_error(&error) => Ok(0),
         Err(error) => Err(error),
     }
 }
@@ -357,7 +357,7 @@ fn empty_history() -> NativeGitHistoryListResult {
     }
 }
 
-fn is_empty_history_error(error: &GitError) -> bool {
+fn is_expected_empty_history_error(error: &GitError) -> bool {
     let GitError::CommandFailed { stderr, .. } = error else {
         return false;
     };
@@ -366,6 +366,7 @@ fn is_empty_history_error(error: &GitError) -> bool {
         || stderr.contains("your current branch")
         || stderr.contains("ambiguous argument 'HEAD'")
         || stderr.contains("bad default revision")
+        || stderr.contains("not a git repository")
 }
 
 #[cfg(test)]
@@ -389,6 +390,24 @@ mod tests {
 
         assert!(history.commits.is_empty());
         assert_eq!(history.total_count, 0);
+    }
+
+    #[test]
+    fn returns_empty_history_for_plain_directory() {
+        let temp = TempDir::new().expect("temp");
+
+        let history =
+            list_history(&GitRunner::new(), temp.path(), None, false, None).expect("history");
+        let filtered_history =
+            list_history(&GitRunner::new(), temp.path(), Some("init"), false, None)
+                .expect("filtered history");
+
+        assert!(history.commits.is_empty());
+        assert_eq!(history.matched_count, 0);
+        assert_eq!(history.total_count, 0);
+        assert!(filtered_history.commits.is_empty());
+        assert_eq!(filtered_history.matched_count, 0);
+        assert_eq!(filtered_history.total_count, 0);
     }
 
     #[test]
