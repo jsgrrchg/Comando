@@ -12,6 +12,9 @@ members = [
     "crates/comando-terminal",
     "crates/comando-types",
 ]
+exclude = [
+    "vendor/codex-acp",
+]
 resolver = "3"
 
 [workspace.package]
