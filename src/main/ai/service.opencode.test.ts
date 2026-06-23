@@ -1135,7 +1135,7 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
-    it("shows pending review from terminal tool diffs when native baseline capture is unavailable", async () => {
+    it("does not show pending review from terminal tool diffs when native baseline capture is unavailable", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-review-diff-fallback-"),
         );
@@ -1144,11 +1144,9 @@ describe("AiService OpenCode branch", () => {
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
-            const importReviewState = vi.fn(() => Promise.resolve([]));
             const reconcileTrackedFiles = vi.fn(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
                 captureReviewBaseline: vi.fn(() => Promise.resolve(false)),
-                importReviewState,
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -1231,38 +1229,22 @@ describe("AiService OpenCode branch", () => {
                 updatedAt: "2026-06-20T00:00:01.000Z",
             });
 
-            await waitForAssertion(() => {
-                const updates = onSessionSnapshot.mock.calls.map(
-                    ([, update]) => update,
+            const updates = onSessionSnapshot.mock.calls.map(
+                ([, update]) => update,
+            );
+            const pendingReviewUpdates = updates
+                .map((update) =>
+                    update.kind === "snapshot"
+                        ? update.snapshot
+                        : update.patch.changes,
+                )
+                .filter((snapshot) =>
+                    snapshot.trackedFiles?.some(
+                        (file) => file.reviewState === "pending",
+                    ),
                 );
-                const latestSnapshot = updates
-                    .map((update) =>
-                        update.kind === "snapshot"
-                            ? update.snapshot
-                            : update.patch.changes,
-                    )
-                    .findLast(
-                        (snapshot) => snapshot.trackedFiles !== undefined,
-                    );
-                expect(latestSnapshot?.trackedFiles).toEqual([
-                    expect.objectContaining({
-                        currentText: "new text\n",
-                        diffBase: "old text\n",
-                        path: "Fliege font.md",
-                        reviewState: "pending",
-                    }),
-                ]);
-                expect(importReviewState).toHaveBeenCalledWith(
-                    "session-opencode",
-                    [
-                        expect.objectContaining({
-                            path: "Fliege font.md",
-                            reviewState: "pending",
-                        }),
-                    ],
-                );
-                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
-            });
+            expect(pendingReviewUpdates).toEqual([]);
+            expect(reconcileTrackedFiles).not.toHaveBeenCalled();
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -1281,11 +1263,8 @@ describe("AiService OpenCode branch", () => {
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
-            const importReviewState = vi.fn(() => Promise.resolve([]));
             const reconcileTrackedFiles = vi.fn(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
-                captureReviewBaseline: vi.fn(() => Promise.resolve(false)),
-                importReviewState,
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -1388,15 +1367,6 @@ describe("AiService OpenCode branch", () => {
                         reviewState: "pending",
                     }),
                 ]);
-                expect(importReviewState).toHaveBeenCalledWith(
-                    "session-opencode",
-                    [
-                        expect.objectContaining({
-                            path: externalPath,
-                            reviewState: "pending",
-                        }),
-                    ],
-                );
                 expect(reconcileTrackedFiles).not.toHaveBeenCalled();
             });
         } finally {
@@ -1502,7 +1472,6 @@ function createNativeAi(
         closeOwnedByWindow: vi.fn(),
         closeSession: vi.fn(),
         deleteSession: vi.fn(),
-        importReviewState: vi.fn(() => Promise.resolve([])),
         listSessionHistory: vi.fn(() => Promise.resolve([])),
         loadSessionSnapshot: vi.fn(() => Promise.resolve(null)),
         loadSessionTranscriptPage: vi.fn(() => Promise.resolve(null)),

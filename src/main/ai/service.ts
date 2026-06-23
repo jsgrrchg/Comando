@@ -643,12 +643,6 @@ export class AiService {
                     nextSnapshot.lastError,
                 );
             }
-            if (this.#shouldImportNativeReviewToolDiffs(event)) {
-                void this.#importNativeReviewState(
-                    event.sessionId,
-                    nextSnapshot.trackedFiles,
-                );
-            }
             if (this.#isNativeAiSession(event.sessionId)) {
                 if (event.kind === "status" && event.status === "streaming") {
                     this.#markNativeReviewTurnStarted(event.sessionId);
@@ -2781,6 +2775,7 @@ export class AiService {
         const baseline = this.#nativeReviewBaselines.get(snapshot.sessionId);
         if (
             !baseline ||
+            !baseline.nativeCaptured ||
             !isTerminalNativeReviewActivityStatus(activity.status) ||
             activity.diffs.length === 0
         ) {
@@ -2848,33 +2843,6 @@ export class AiService {
         } catch (error) {
             debugBenignError("ai.service.resolveNativeReviewProjectRoot", error);
             return null;
-        }
-    }
-
-    #shouldImportNativeReviewToolDiffs(event: AiSessionDomainEvent): boolean {
-        return (
-            event.kind === "tool-activity" &&
-            this.#nativeReviewBaselines.has(event.sessionId) &&
-            isTerminalNativeReviewActivityStatus(event.activity.status) &&
-            event.activity.diffs.length > 0
-        );
-    }
-
-    async #importNativeReviewState(
-        sessionId: string,
-        trackedFiles: readonly AiTrackedFile[],
-    ): Promise<void> {
-        if (trackedFiles.length === 0) {
-            return;
-        }
-        const nativeAi = this.#nativeAi;
-        if (!nativeAi?.importReviewState) {
-            return;
-        }
-        try {
-            await nativeAi.importReviewState(sessionId, trackedFiles);
-        } catch (error) {
-            debugBenignError("ai.service.nativeReviewImport", error);
         }
     }
 

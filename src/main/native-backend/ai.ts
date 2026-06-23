@@ -251,20 +251,6 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         return nativeReviewCommandTrackedFiles(output);
     }
 
-    async importReviewState(
-        sessionId: string,
-        trackedFiles: readonly AiTrackedFile[],
-    ): Promise<readonly AiTrackedFile[]> {
-        if (!this.#reviewEnabled || trackedFiles.length === 0) {
-            return [];
-        }
-        const output = await this.#client.request<NativeAiReviewCommandOutput>(
-            "ai_import_review_state",
-            { sessionId, trackedFiles },
-        );
-        return nativeReviewCommandTrackedFiles(output);
-    }
-
     async #loadReviewStateOutput(
         sessionId: string,
     ): Promise<NativeAiReviewCommandOutput> {
@@ -445,23 +431,6 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             const reviewOutput = await this.#loadReviewStateOutput(
                 snapshot.sessionId,
             );
-            if (
-                reviewOutput.stateFound === false &&
-                snapshot.trackedFiles.length > 0
-            ) {
-                const importOutput =
-                    await this.#client.request<NativeAiReviewCommandOutput>(
-                        "ai_import_review_state",
-                        {
-                            sessionId: snapshot.sessionId,
-                            trackedFiles: snapshot.trackedFiles,
-                        },
-                    );
-                return {
-                    ...snapshot,
-                    trackedFiles: nativeReviewCommandTrackedFiles(importOutput),
-                };
-            }
             return {
                 ...snapshot,
                 trackedFiles: nativeReviewCommandTrackedFiles(reviewOutput),

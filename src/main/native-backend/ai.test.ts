@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import type {
     AiRuntimeStatus,
-    AiTrackedFile,
     PrepareAiSessionInput,
     SendAiPromptInput,
 } from "@shared/ipc";
@@ -55,36 +54,6 @@ describe("NativeAiGateway", () => {
             windowId: "window-1",
         });
         expect(payload.launch).toBeNull();
-    });
-
-    it("imports persisted review files when native review state is missing during prepare", async () => {
-        const client = createClient();
-        const gateway = createGateway(client);
-        const legacyFile = createNativeTrackedFile({
-            path: "src/legacy.ts",
-        }) as unknown as AiTrackedFile;
-        const launch = {
-            ...createLaunch(),
-            persistedSnapshot: {
-                ...createLaunch().persistedSnapshot,
-                trackedFiles: [legacyFile],
-            },
-        };
-
-        await expect(
-            gateway.prepareSession({
-                input: createPrepareInput(),
-                launch,
-            }),
-        ).resolves.toMatchObject({
-            sessionId: "session-1",
-            trackedFiles: [{ path: "src/legacy.ts" }],
-        });
-
-        expect(client.request).toHaveBeenCalledWith("ai_import_review_state", {
-            sessionId: "session-1",
-            trackedFiles: [legacyFile],
-        });
     });
 
     it("passes persisted history links when Rust owns runtime launch resolution", async () => {
@@ -625,7 +594,7 @@ describe("NativeAiGateway", () => {
         });
     });
 
-    it("imports historical tracked files when no native review state exists", async () => {
+    it("uses native review state when loading historical snapshots", async () => {
         const client = createClient();
         const legacyFile = createNativeTrackedFile({
             path: "src/legacy.ts",
@@ -649,20 +618,6 @@ describe("NativeAiGateway", () => {
                         updatedAt: "2026-06-20T00:00:03.000Z",
                     } as T);
                 }
-                if (command === "ai_import_review_state") {
-                    const args = _args as {
-                        sessionId: string;
-                        trackedFiles: readonly unknown[];
-                    };
-                    return Promise.resolve({
-                        changedFiles: [],
-                        conflicts: [],
-                        sessionId: args.sessionId,
-                        stateFound: true,
-                        trackedFiles: args.trackedFiles,
-                        updatedAt: "2026-06-20T00:00:04.000Z",
-                    } as T);
-                }
                 return Promise.resolve({ ok: true } as T);
             },
         );
@@ -670,11 +625,10 @@ describe("NativeAiGateway", () => {
 
         await expect(gateway.loadSessionSnapshot("session-1")).resolves.toMatchObject({
             sessionId: "session-1",
-            trackedFiles: [{ path: "src/legacy.ts" }],
+            trackedFiles: [],
         });
-        expect(client.request).toHaveBeenCalledWith("ai_import_review_state", {
+        expect(client.request).toHaveBeenCalledWith("ai_load_review_state", {
             sessionId: "session-1",
-            trackedFiles: [legacyFile],
         });
     });
 
@@ -960,20 +914,6 @@ function createClient() {
                     sessionId: args?.sessionId ?? "session-1",
                     stateFound: false,
                     trackedFiles: [],
-                    updatedAt: "2026-06-20T00:00:00.000Z",
-                } as T);
-            }
-
-            if (command === "ai_import_review_state") {
-                const args = _args as
-                    | { sessionId?: string; trackedFiles?: readonly unknown[] }
-                    | undefined;
-                return Promise.resolve({
-                    changedFiles: [],
-                    conflicts: [],
-                    sessionId: args?.sessionId ?? "session-1",
-                    stateFound: true,
-                    trackedFiles: args?.trackedFiles ?? [],
                     updatedAt: "2026-06-20T00:00:00.000Z",
                 } as T);
             }

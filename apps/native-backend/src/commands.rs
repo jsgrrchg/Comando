@@ -60,8 +60,7 @@ use serde_json::{Value, json};
 use crate::protocol::{RpcOutput, RpcRequest, error_response, event, response_ok};
 use crate::review::{
     NativeReviewCommandOutput, NativeReviewFileBufferInput, NativeReviewFileMutationInput,
-    NativeReviewHunkMutationInput, NativeReviewImportStateInput, NativeReviewService,
-    NativeReviewSessionInput,
+    NativeReviewHunkMutationInput, NativeReviewService, NativeReviewSessionInput,
 };
 
 const SETTINGS_SNAPSHOT_KEY: &str = "settings.snapshot";
@@ -216,7 +215,6 @@ impl NativeBackend {
             | "ai_reconcile_tracked_files"
             | "ai_list_tracked_files"
             | "ai_load_review_state"
-            | "ai_import_review_state"
             | "ai_keep_tracked_file"
             | "ai_reject_tracked_file"
             | "ai_keep_tracked_file_hunks"
@@ -346,7 +344,6 @@ impl NativeBackend {
             | "ai_reconcile_tracked_files"
             | "ai_list_tracked_files"
             | "ai_load_review_state"
-            | "ai_import_review_state"
             | "ai_keep_tracked_file"
             | "ai_reject_tracked_file"
             | "ai_keep_tracked_file_hunks"
@@ -2350,20 +2347,6 @@ impl NativeBackend {
                     Err(error) => return error_only(request.id, error.to_native_error()),
                 };
                 match self.review_service.list_tracked_files(&session) {
-                    Ok(output) => self.review_response(request.id, &session, output),
-                    Err(error) => error_only(request.id, error),
-                }
-            }
-            "ai_import_review_state" => {
-                let input = match parse_args::<NativeReviewImportStateInput>(&request) {
-                    Ok(input) => input,
-                    Err(error) => return error_only(request.id, error),
-                };
-                let session = match self.ai_engine.session_for_review(&input.session_id) {
-                    Ok(session) => session,
-                    Err(error) => return error_only(request.id, error.to_native_error()),
-                };
-                match self.review_service.import_state_if_missing(&session, input) {
                     Ok(output) => self.review_response(request.id, &session, output),
                     Err(error) => error_only(request.id, error),
                 }

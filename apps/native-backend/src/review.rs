@@ -70,13 +70,6 @@ pub struct NativeReviewFileBufferInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct NativeReviewImportStateInput {
-    pub session_id: SessionId,
-    pub tracked_files: Vec<ReviewTrackedFile>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct NativeReviewCaptureOutput {
     pub captured: bool,
     pub session_id: SessionId,
@@ -435,53 +428,6 @@ impl NativeReviewService {
             state.conflicts,
             state.updated_at,
             loaded.found,
-            Vec::new(),
-        ))
-    }
-
-    pub fn import_state_if_missing(
-        &mut self,
-        session: &NativeAiSession,
-        input: NativeReviewImportStateInput,
-    ) -> Result<NativeReviewCommandOutput, NativeError> {
-        let loaded = self.load_or_empty_state_entry(session)?;
-        if input.tracked_files.is_empty() {
-            let state = loaded.state;
-            return Ok(command_output(
-                session.session_id.clone(),
-                state.tracked_files,
-                Vec::new(),
-                state.conflicts,
-                state.updated_at,
-                loaded.found,
-                Vec::new(),
-            ));
-        }
-
-        let session_id = session.session_id.0.clone();
-        let mut tracked_files = loaded.state.tracked_files;
-        for mut file in input.tracked_files {
-            normalize_imported_tracked_file_paths(session, &mut file)?;
-            // Legacy snapshots may omit the session id on old review entries.
-            if file.session_id.trim().is_empty() {
-                file.session_id = session_id.clone();
-            }
-            upsert_tracked_file(&mut tracked_files, file);
-        }
-        let updated_at = now();
-        let state = self.replace_state(
-            session,
-            tracked_files,
-            loaded.state.conflicts,
-            updated_at.clone(),
-        )?;
-        Ok(command_output(
-            session.session_id.clone(),
-            state.tracked_files,
-            Vec::new(),
-            state.conflicts,
-            updated_at,
-            true,
             Vec::new(),
         ))
     }
@@ -1528,13 +1474,6 @@ fn resolve_review_path(
     normalize_review_path(session, review_path, intent).map(|resolved| resolved.absolute_path)
 }
 
-fn normalize_imported_tracked_file_paths(
-    session: &NativeAiSession,
-    tracked_file: &mut ReviewTrackedFile,
-) -> Result<(), NativeError> {
-    normalize_tracked_file_paths(session, tracked_file).map(|_| ())
-}
-
 fn normalize_review_state(
     session: &NativeAiSession,
     mut state: NativeReviewSessionState,
@@ -1983,88 +1922,6 @@ mod tests {
     }
 
     #[test]
-    fn imported_legacy_review_state_survives_empty_later_reconcile() {
-        let repo = tempfile::tempdir().expect("tempdir");
-        init_git_repo(repo.path());
-        fs::write(repo.path().join("a.txt"), "base\n").expect("write text");
-        git(repo.path(), &["add", "."]);
-        git(repo.path(), &["commit", "-m", "initial"]);
-        fs::write(repo.path().join("a.txt"), "agent\n").expect("modify text");
-
-        let session = test_session(repo.path(), "s-imported-legacy");
-        let mut service = service_with_app_data(repo.path());
-        let tracked_file = compute_tracked_file_patch(
-            &session.session_id.0,
-            "a.txt",
-            None,
-            Some("base\n".to_string()),
-            Some("agent\n".to_string()),
-            now(),
-        )
-        .expect("tracked file");
-        let imported = service
-            .import_state_if_missing(
-                &session,
-                NativeReviewImportStateInput {
-                    session_id: session.session_id.clone(),
-                    tracked_files: vec![tracked_file],
-                },
-            )
-            .expect("import review state");
-        assert_eq!(imported.tracked_files.len(), 1);
-        assert!(imported.state_found);
-
-        service.capture_baseline(&session).expect("baseline");
-        let reconciled = service
-            .reconcile_tracked_files(&session)
-            .expect("reconcile imported state");
-
-        assert_eq!(reconciled.tracked_files.len(), 1);
-        assert_eq!(reconciled.tracked_files[0].path, "a.txt");
-        assert_eq!(
-            reconciled.tracked_files[0].review_state,
-            ReviewTrackedFileStatus::Pending
-        );
-        assert!(reconciled.conflicts.is_empty());
-        assert!(reconciled.state_found);
-    }
-
-    #[test]
-    fn import_review_state_normalizes_absolute_paths_before_keep_all() {
-        let repo = tempfile::tempdir().expect("tempdir");
-        fs::write(repo.path().join("a.txt"), "agent\n").expect("write text");
-
-        let session = test_session(repo.path(), "s-import-absolute");
-        let mut service = service_with_app_data(repo.path());
-        let absolute_path = repo.path().join("a.txt").to_string_lossy().to_string();
-        let tracked_file = compute_tracked_file_patch(
-            &session.session_id.0,
-            &absolute_path,
-            None,
-            Some("base\n".to_string()),
-            Some("agent\n".to_string()),
-            now(),
-        )
-        .expect("tracked file");
-        let imported = service
-            .import_state_if_missing(
-                &session,
-                NativeReviewImportStateInput {
-                    session_id: session.session_id.clone(),
-                    tracked_files: vec![tracked_file],
-                },
-            )
-            .expect("import review state");
-        assert_eq!(imported.tracked_files.len(), 1);
-        assert_eq!(imported.tracked_files[0].path, "a.txt");
-
-        let kept = service.keep_all(&session).expect("keep all");
-        assert!(kept.tracked_files.is_empty());
-        assert_eq!(kept.tracked_file_events.len(), 1);
-        assert_eq!(kept.tracked_file_events[0].tracked_file.path, "a.txt");
-    }
-
-    #[test]
     fn legacy_absolute_review_state_accepts_hunk_mutation_after_load() {
         let repo = tempfile::tempdir().expect("tempdir");
         fs::write(repo.path().join("Fliege font.md"), "agent\n").expect("write text");
@@ -2174,60 +2031,6 @@ mod tests {
                 &tracker,
             )
             .expect("reject legacy hunk");
-
-        assert!(rejected.tracked_files.is_empty());
-        assert_eq!(fs::read_to_string(file_path).expect("read text"), "base\n");
-    }
-
-    #[test]
-    fn absolute_additional_root_review_state_rejects_hunk() {
-        let repo = tempfile::tempdir().expect("tempdir");
-        let external = tempfile::tempdir().expect("external tempdir");
-        let file_path = external.path().join("external.txt");
-        fs::write(&file_path, "agent\n").expect("write text");
-
-        let session = test_session_with_additional_roots(
-            repo.path(),
-            "s-additional-root-hunk",
-            vec![external.path().to_string_lossy().to_string()],
-        );
-        let mut service = service_with_app_data(repo.path());
-        let absolute_path = file_path.to_string_lossy().to_string();
-        let tracked_file = compute_tracked_file_patch(
-            &session.session_id.0,
-            &absolute_path,
-            None,
-            Some("base\n".to_string()),
-            Some("agent\n".to_string()),
-            now(),
-        )
-        .expect("tracked file");
-        let hunk_id = tracked_file.hunks[0].id.clone();
-        let imported = service
-            .import_state_if_missing(
-                &session,
-                NativeReviewImportStateInput {
-                    session_id: session.session_id.clone(),
-                    tracked_files: vec![tracked_file],
-                },
-            )
-            .expect("import review state");
-        assert_eq!(imported.tracked_files[0].path, absolute_path);
-
-        let tracker = WriteTracker::new();
-        let rejected = service
-            .reject_hunks(
-                &session,
-                NativeReviewHunkMutationInput {
-                    session_id: session.session_id.clone(),
-                    path: absolute_path,
-                    hunk_ids: vec![hunk_id],
-                    tracked_file_id: None,
-                    expected_version: None,
-                },
-                &tracker,
-            )
-            .expect("reject additional root hunk");
 
         assert!(rejected.tracked_files.is_empty());
         assert_eq!(fs::read_to_string(file_path).expect("read text"), "base\n");
