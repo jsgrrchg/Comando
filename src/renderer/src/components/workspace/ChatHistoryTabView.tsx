@@ -664,6 +664,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
             await openChatSessionTab({
                 projectId: session.projectId,
                 runtimeId: session.runtimeId,
+                sessionOpenMode: "history",
                 sessionId: session.sessionId,
                 title: session.title,
                 worktreeId: session.worktreeId ?? null,
@@ -691,6 +692,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
             await openChatSessionTab({
                 projectId: snapshot.projectId,
                 runtimeId: snapshot.runtimeId,
+                sessionOpenMode: "history",
                 sessionId: snapshot.sessionId,
                 title: snapshot.title,
                 worktreeId: snapshot.worktreeId ?? null,

@@ -298,6 +298,73 @@ describe("ai-store queue", () => {
         );
     });
 
+    it("hydrates history chat tabs without preparing the runtime session", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            sessionOpenMode: "history",
+        };
+        const getAiSessionSnapshot = vi.fn().mockResolvedValue(
+            createSnapshot({
+                activeTurnStartedAt: "2026-04-14T00:00:01.000Z",
+                messages: [
+                    {
+                        attachments: [],
+                        content: "Working",
+                        createdAt: "2026-04-14T00:00:02.000Z",
+                        id: "assistant-1",
+                        kind: "assistant",
+                        status: "streaming",
+                    },
+                ],
+                status: "streaming",
+                toolActivity: [
+                    {
+                        createdAt: "2026-04-14T00:00:03.000Z",
+                        diffs: [],
+                        exitCode: null,
+                        id: "tool-1",
+                        kind: "shell",
+                        locations: [],
+                        rawInputJson: null,
+                        rawOutputJson: null,
+                        sessionId: TAB.sessionId,
+                        status: "in_progress",
+                        summary: "Running",
+                        terminalOutput: null,
+                        title: "Run command",
+                        updatedAt: "2026-04-14T00:00:04.000Z",
+                    },
+                ],
+            }),
+        );
+        const getAiRuntimeStatus = vi.fn().mockResolvedValue(createRuntimeStatus());
+        const prepareAiSession = vi.fn().mockResolvedValue(createSnapshot());
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus,
+                    getAiSessionSnapshot,
+                    prepareAiSession,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(historyTab);
+
+        expect(getAiSessionSnapshot).toHaveBeenCalledWith(TAB.sessionId);
+        expect(prepareAiSession).not.toHaveBeenCalled();
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.status,
+        ).toBe("idle");
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(session?.snapshot?.activeTurnStartedAt).toBeNull();
+        expect(session?.snapshot?.messages[0]?.status).toBe("completed");
+        expect(session?.snapshot?.toolActivity[0]?.status).toBe("failed");
+        expect(session?.transcript.lastTurnStartedMessageId).toBeNull();
+    });
+
     it("dispatches a prompt immediately when the backend snapshot is idle", async () => {
         const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
         Object.defineProperty(globalThis, "window", {

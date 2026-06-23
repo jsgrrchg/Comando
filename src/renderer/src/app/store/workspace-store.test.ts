@@ -1662,6 +1662,50 @@ describe("workspace file opening", () => {
         });
     });
 
+    it("marks an existing chat tab as history when opened from session history", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "chat-existing",
+                id: "pane-root",
+                tabIds: ["chat-existing"],
+                type: "pane",
+            },
+            tabsById: {
+                "chat-existing": createWorkspaceChatTab(
+                    "chat-existing",
+                    "session-history",
+                    "opencode",
+                ),
+            },
+        }));
+
+        await useWorkspaceStore.getState().openChatSessionTab({
+            projectId: "project-1",
+            runtimeId: "opencode",
+            sessionOpenMode: "history",
+            sessionId: "session-history",
+            title: "Recovered OpenCode session",
+            worktreeId: null,
+        });
+
+        expect(
+            useWorkspaceStore.getState().tabsById["chat-existing"],
+        ).toMatchObject({
+            kind: "chat",
+            sessionOpenMode: "history",
+            sessionId: "session-history",
+        });
+        expect(ensureSessionMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                id: "chat-existing",
+                sessionOpenMode: "history",
+                sessionId: "session-history",
+            }),
+        );
+    });
+
     it("moves an existing chat tab to a split target without duplicating it", async () => {
         useWorkspaceStore.setState((state) => ({
             ...state,

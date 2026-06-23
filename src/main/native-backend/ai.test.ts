@@ -794,6 +794,33 @@ describe("NativeAiGateway", () => {
         );
     });
 
+    it("ignores missing sessions during shutdown cleanup", async () => {
+        const client = createClient();
+        const onDiagnostic = vi.fn();
+        const gateway = createGateway(client, { onDiagnostic });
+
+        await gateway.prepareSession({
+            input: createPrepareInput(),
+            launch: createLaunch(),
+        });
+        client.request.mockRejectedValueOnce(
+            new NativeBackendError({
+                code: "ai_session_not_found",
+                details: null,
+                message: "AI session `session-1` was not found.",
+                retryable: false,
+            }),
+        );
+
+        gateway.close();
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(onDiagnostic).not.toHaveBeenCalledWith(
+            expect.stringContaining("shutdown cleanup failed"),
+        );
+    });
+
     it("emits the local user message and sends prompts to the native backend", async () => {
         const client = createClient();
         const onSessionEvent =

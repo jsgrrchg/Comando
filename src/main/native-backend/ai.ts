@@ -660,6 +660,9 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             .map(([sessionId]) => sessionId);
         for (const sessionId of sessionIds) {
             void this.closeSession(sessionId).catch((error: unknown) => {
+                if (isCleanupSessionNotFoundError(error)) {
+                    return;
+                }
                 this.#reportDiagnostic(
                     `Native AI window cleanup failed: ${formatError(error)}`,
                 );
@@ -721,6 +724,9 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         this.#disposeEventListener();
         for (const sessionId of this.#sessionOwners.keys()) {
             void this.closeSession(sessionId).catch((error: unknown) => {
+                if (isCleanupSessionNotFoundError(error)) {
+                    return;
+                }
                 this.#reportDiagnostic(
                     `Native AI shutdown cleanup failed: ${formatError(error)}`,
                 );
@@ -1303,6 +1309,14 @@ function isStalePersistedRuntimeSessionError(error: unknown): boolean {
         message.includes("Resource not found:") ||
         (error.code === "ai_runtime_exited" &&
             message.includes("Resource not found"))
+    );
+}
+
+function isCleanupSessionNotFoundError(error: unknown): boolean {
+    return (
+        error instanceof NativeBackendError &&
+        (error.code === "ai_session_not_found" ||
+            error.message.includes("was not found"))
     );
 }
 

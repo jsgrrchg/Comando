@@ -72,6 +72,7 @@ import type {
 import { useWorkspaceStore } from "./workspace-store";
 
 type RuntimeAiSessionTab = RuntimeWorkspaceChatTab | RuntimeWorkspaceReviewTab;
+type AiSessionRuntimeState = "history" | "live";
 
 interface RegisteredSessionMeta {
     readonly projectId: string | null;
@@ -133,6 +134,7 @@ interface AiSessionClientState {
     // a queued item), at which point that prompt dispatches and the rest of
     // the queue resumes draining when its turn completes.
     readonly queuePaused: boolean;
+    readonly runtimeState: AiSessionRuntimeState;
     readonly snapshot: AiSessionSnapshot | null;
     readonly transcript: AiSessionTranscriptModel;
 }
@@ -624,6 +626,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         ),
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
+                        runtimeState: "live",
                         snapshot: nextSnapshot,
                         transcript: nextTranscript,
                     },
@@ -728,6 +731,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                                 ),
                                 localError: nextSnapshot.lastError,
                                 meta: nextMeta,
+                                runtimeState: "live",
                                 snapshot: nextSnapshot,
                                 transcript: nextTranscript,
                             },
@@ -801,6 +805,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         ),
                         localError: nextSnapshot.lastError,
                         meta: nextMeta,
+                        runtimeState: "live",
                         snapshot: nextSnapshot,
                         transcript: nextTranscript,
                     },
@@ -869,6 +874,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         ),
                         localError: resolvedSnapshot.lastError,
                         meta: nextMeta,
+                        runtimeState: "live",
                         snapshot: resolvedSnapshot,
                         transcript: resolvedTranscript,
                     },
@@ -915,6 +921,15 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     ensureSession: async (tab, options) => {
         void options;
+        const currentSession = get().sessions[tab.sessionId] ?? null;
+        if (
+            getSessionRuntimeStateForTab(tab) === "history" &&
+            currentSession?.runtimeState !== "live"
+        ) {
+            await executePassiveSessionHydration(tab, get, set);
+            return;
+        }
+
         await executeSessionPrepare(tab, get, set);
     },
 
@@ -977,7 +992,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 ...state.sessions,
                 [tab.sessionId]: {
                     ...(state.sessions[tab.sessionId] ??
-                        createSessionState(persistedPreferences)),
+                        createSessionState(
+                            persistedPreferences,
+                            getSessionRuntimeStateForTab(tab),
+                        )),
                     draftComposerParts:
                         state.sessions[tab.sessionId]?.draftComposerParts ??
                         (tab.kind === "chat" && tab.draft.trim().length > 0
@@ -990,6 +1008,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             tab,
                             state.runtimeCatalogById[tab.runtimeId] ?? null,
                         ),
+                    runtimeState: resolveRegisteredRuntimeState(
+                        state.sessions[tab.sessionId]?.runtimeState,
+                        getSessionRuntimeStateForTab(tab),
+                    ),
                 },
             },
         }));
@@ -1625,6 +1647,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
 function createSessionState(
     preferences?: SessionReviewPreferences | null,
+    runtimeState: AiSessionRuntimeState = "live",
 ): AiSessionClientState {
     return {
         activeDispatchToken: null,
@@ -1643,6 +1666,7 @@ function createSessionState(
         meta: null,
         queue: [],
         queuePaused: false,
+        runtimeState,
         snapshot: null,
         transcript: createEmptyAiSessionTranscriptModel(),
     };
@@ -1780,6 +1804,124 @@ async function executeSessionPrepare(
                 },
             },
         }));
+    }
+}
+
+async function executePassiveSessionHydration(
+    tab: RuntimeAiSessionTab,
+    get: GetAiState,
+    set: SetAiState,
+): Promise<void> {
+    get().registerSessionTab(tab);
+
+    try {
+        const runtimeStatusPromise = getComandoApi().getAiRuntimeStatus(
+            tab.runtimeId,
+        );
+        const snapshotPromise = getComandoApi().getAiSessionSnapshot(
+            tab.sessionId,
+        );
+        const [runtimeStatus, snapshot] = await Promise.all([
+            runtimeStatusPromise,
+            snapshotPromise,
+        ]);
+        const resolvedSnapshot =
+            snapshot ??
+            createEmptySessionSnapshot(
+                tab,
+                get().runtimeCatalogById[tab.runtimeId] ?? null,
+            );
+
+        set((state) => {
+            const runtimeCatalog = extractRuntimeCatalogFromStatus(runtimeStatus);
+            const nextCatalog =
+                runtimeCatalog && hasRuntimeCatalog(runtimeCatalog)
+                    ? runtimeCatalog
+                    : (state.runtimeCatalogById[tab.runtimeId] ??
+                      extractRuntimeCatalog(resolvedSnapshot));
+            const incomingSnapshot = sanitizeSnapshotForHistoryMode(
+                hasRuntimeCatalog(nextCatalog)
+                    ? mergeRuntimeCatalogIntoSnapshot(resolvedSnapshot, nextCatalog)
+                    : resolvedSnapshot,
+            );
+            const currentSession = state.sessions[tab.sessionId];
+            const resolved = resolveIncomingSessionSnapshot(
+                incomingSnapshot,
+                currentSession,
+            );
+            const nextRuntimeCatalogById = hasRuntimeCatalog(nextCatalog)
+                ? {
+                      ...state.runtimeCatalogById,
+                      [tab.runtimeId]: nextCatalog,
+                  }
+                : state.runtimeCatalogById;
+            const nextRuntimeStatusById = {
+                ...state.runtimeStatusById,
+                [runtimeStatus.runtimeId]: runtimeStatus,
+            };
+
+            if (currentSession?.runtimeState === "live") {
+                return {
+                    runtimeCatalogById: nextRuntimeCatalogById,
+                    runtimeStatusById: nextRuntimeStatusById,
+                };
+            }
+
+            return {
+                runtimeCatalogById: nextRuntimeCatalogById,
+                runtimeStatusById: nextRuntimeStatusById,
+                sessions: {
+                    ...state.sessions,
+                    [tab.sessionId]: {
+                        ...(currentSession ?? createSessionState(null, "history")),
+                        ...(snapshot
+                            ? resolveIncomingSnapshotProgress(
+                                  currentSession,
+                                  incomingSnapshot.updatedAt,
+                              )
+                            : {
+                                  incomingSnapshotVersion:
+                                      currentSession?.incomingSnapshotVersion ??
+                                      0,
+                                  lastIncomingSnapshotUpdatedAt:
+                                      currentSession?.lastIncomingSnapshotUpdatedAt ??
+                                      null,
+                              }),
+                        localError: null,
+                        meta: buildSessionMeta(tab),
+                        runtimeState: "history",
+                        snapshot: resolved.snapshot,
+                        transcript: resolved.transcript,
+                    },
+                },
+            };
+        });
+    } catch (error) {
+        set((state) => {
+            const currentSession = state.sessions[tab.sessionId] ?? null;
+            if (currentSession?.runtimeState === "live") {
+                return state;
+            }
+
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [tab.sessionId]: {
+                        ...(currentSession ?? createSessionState(null, "history")),
+                        localError:
+                            error instanceof Error
+                                ? error.message
+                                : "Could not load this saved chat.",
+                        meta: buildSessionMeta(tab),
+                        runtimeState: "history",
+                        snapshot: createEmptySessionSnapshot(
+                            tab,
+                            state.runtimeCatalogById[tab.runtimeId] ?? null,
+                        ),
+                    },
+                },
+            };
+        });
     }
 }
 
@@ -2542,6 +2684,61 @@ function buildSessionMeta(tab: RuntimeAiSessionTab): RegisteredSessionMeta {
     };
 }
 
+function getSessionRuntimeStateForTab(
+    tab: RuntimeAiSessionTab,
+): AiSessionRuntimeState {
+    return tab.kind === "chat" && tab.sessionOpenMode === "history"
+        ? "history"
+        : "live";
+}
+
+function resolveRegisteredRuntimeState(
+    current: AiSessionRuntimeState | null | undefined,
+    incoming: AiSessionRuntimeState,
+): AiSessionRuntimeState {
+    if (incoming === "live" || current === "live") {
+        return "live";
+    }
+    return "history";
+}
+
+function sanitizeSnapshotForHistoryMode(
+    snapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        activeTurnStartedAt: null,
+        messages: snapshot.messages.map((message) =>
+            message.status === "streaming"
+                ? { ...message, status: "completed" as const }
+                : message,
+        ),
+        pendingPermission: null,
+        pendingUserInput: null,
+        status: isActiveSessionStatus(snapshot.status) ? "idle" : snapshot.status,
+        toolActivity: snapshot.toolActivity.map((activity) =>
+            isActiveToolActivityStatus(activity.status)
+                ? { ...activity, status: "failed" as const }
+                : activity,
+        ),
+    };
+}
+
+function isActiveSessionStatus(status: AiSessionSnapshot["status"]): boolean {
+    return (
+        status === "starting" ||
+        status === "streaming" ||
+        status === "waiting_permission" ||
+        status === "waiting_user_input"
+    );
+}
+
+function isActiveToolActivityStatus(
+    status: AiToolActivity["status"],
+): boolean {
+    return status === "pending" || status === "in_progress";
+}
+
 async function dispatchPrompt(
     meta: {
         readonly additionalRoots?: readonly string[];
@@ -2570,6 +2767,7 @@ async function dispatchPrompt(
                     activeDispatchToken: dispatchToken,
                     isDispatching: true,
                     localError: null,
+                    runtimeState: "live",
                 },
             },
         };

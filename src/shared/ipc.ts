@@ -1936,6 +1936,7 @@ export interface WorkspaceChatTab {
     readonly title: string;
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
+    readonly sessionOpenMode?: "history" | "live";
     readonly sessionId: string;
     readonly draft: string;
     readonly createdAt: string;

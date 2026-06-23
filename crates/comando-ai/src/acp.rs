@@ -823,49 +823,49 @@ async fn run_acp_session(
                     .iter()
                     .map(PathBuf::from)
                     .collect::<Vec<_>>();
-                let (runtime_session_id, initial_config_options) =
-                    if let Some(runtime_session_id) = spec.persisted_runtime_session_id.clone() {
-                        let config_options = match persisted_session_start_method(&spec) {
-                            PersistedSessionStartMethod::Resume => {
-                                let resume_session = ResumeSessionRequest::new(
-                                    agent_client_protocol::schema::SessionId::from(
-                                        runtime_session_id.0.clone(),
-                                    ),
-                                    PathBuf::from(&session.scope.cwd),
-                                )
-                                .additional_directories(additional_directories);
-                                connection
-                                    .send_request(resume_session)
-                                    .block_task()
-                                    .await?
-                                    .config_options
-                            }
-                            PersistedSessionStartMethod::Load => {
-                                let load_session = LoadSessionRequest::new(
-                                    agent_client_protocol::schema::SessionId::from(
-                                        runtime_session_id.0.clone(),
-                                    ),
-                                    PathBuf::from(&session.scope.cwd),
-                                )
-                                .additional_directories(additional_directories);
-                                connection
-                                    .send_request(load_session)
-                                    .block_task()
-                                    .await?
-                                    .config_options
-                            }
-                        };
-                        (runtime_session_id, config_options)
-                    } else {
-                        let new_session = NewSessionRequest::new(PathBuf::from(&session.scope.cwd))
+                let (runtime_session_id, initial_config_options) = if let Some(runtime_session_id) =
+                    spec.persisted_runtime_session_id.clone()
+                {
+                    let config_options = match persisted_session_start_method(&spec) {
+                        PersistedSessionStartMethod::Resume => {
+                            let resume_session = ResumeSessionRequest::new(
+                                agent_client_protocol::schema::SessionId::from(
+                                    runtime_session_id.0.clone(),
+                                ),
+                                PathBuf::from(&session.scope.cwd),
+                            )
                             .additional_directories(additional_directories);
-                        let new_session_response =
-                            connection.send_request(new_session).block_task().await?;
-                        (
-                            RuntimeSessionId(new_session_response.session_id.to_string()),
-                            new_session_response.config_options,
-                        )
+                            connection
+                                .send_request(resume_session)
+                                .block_task()
+                                .await?
+                                .config_options
+                        }
+                        PersistedSessionStartMethod::Load => {
+                            let load_session = LoadSessionRequest::new(
+                                agent_client_protocol::schema::SessionId::from(
+                                    runtime_session_id.0.clone(),
+                                ),
+                                PathBuf::from(&session.scope.cwd),
+                            )
+                            .additional_directories(additional_directories);
+                            notification_context.set_loading_persisted_session(true);
+                            let response = connection.send_request(load_session).block_task().await;
+                            notification_context.set_loading_persisted_session(false);
+                            response?.config_options
+                        }
                     };
+                    (runtime_session_id, config_options)
+                } else {
+                    let new_session = NewSessionRequest::new(PathBuf::from(&session.scope.cwd))
+                        .additional_directories(additional_directories);
+                    let new_session_response =
+                        connection.send_request(new_session).block_task().await?;
+                    (
+                        RuntimeSessionId(new_session_response.session_id.to_string()),
+                        new_session_response.config_options,
+                    )
+                };
                 notification_context.set_runtime_session_id(runtime_session_id.clone());
                 emit_initial_config_options(
                     event_sender.as_ref(),
@@ -1767,6 +1767,12 @@ impl NotificationContext {
         }
     }
 
+    fn set_loading_persisted_session(&self, loading: bool) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.loading_persisted_session = loading;
+        }
+    }
+
     fn handle(&self, notification: SessionNotification) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.handle(notification);
@@ -1810,6 +1816,7 @@ struct NotificationContextInner {
     app_session_id_by_runtime_session_id: HashMap<String, SessionId>,
     event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
     image_generation_created_at: HashMap<String, String>,
+    loading_persisted_session: bool,
     open_messages: HashMap<String, StreamedMessage>,
     pending_content_chunks: HashMap<String, Vec<PendingContentChunk>>,
     runtime_session_id: Option<RuntimeSessionId>,
@@ -1877,6 +1884,7 @@ impl NotificationContextInner {
             app_session_id_by_runtime_session_id,
             event_sender,
             image_generation_created_at: HashMap::new(),
+            loading_persisted_session: false,
             open_messages: HashMap::new(),
             pending_content_chunks: HashMap::new(),
             runtime_session_id: session.runtime_session_id.clone(),
@@ -1900,6 +1908,11 @@ impl NotificationContextInner {
     fn handle(&mut self, notification: SessionNotification) {
         let runtime_session_id = RuntimeSessionId(notification.session_id.to_string());
         let notification_meta = notification.meta;
+        if self.loading_persisted_session
+            && should_suppress_persisted_load_notification(&notification.update)
+        {
+            return;
+        }
         match notification.update {
             SessionUpdate::AgentMessageChunk(chunk) => {
                 let meta = merged_meta(notification_meta.as_ref(), chunk.meta.as_ref());
@@ -2663,6 +2676,19 @@ impl NotificationContextInner {
     }
 }
 
+fn should_suppress_persisted_load_notification(update: &SessionUpdate) -> bool {
+    matches!(
+        update,
+        SessionUpdate::AgentMessageChunk(_)
+            | SessionUpdate::AgentThoughtChunk(_)
+            | SessionUpdate::ToolCall(_)
+            | SessionUpdate::ToolCallUpdate(_)
+            | SessionUpdate::Plan(_)
+            | SessionUpdate::UsageUpdate(_)
+            | SessionUpdate::UserMessageChunk(_)
+    )
+}
+
 struct StreamedMessage {
     content: String,
     kind: &'static str,
@@ -3390,6 +3416,50 @@ mod tests {
         assert_eq!(first_delta.payload["delta"], "Hello ");
         assert_eq!(second_delta.payload["content"], "Hello world");
         assert_eq!(second_delta.payload["delta"], "world");
+    }
+
+    #[test]
+    fn notification_context_suppresses_replayed_load_session_activity() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+        context.set_loading_persisted_session(true);
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AgentThoughtChunk(ContentChunk::new("Old reasoning".into())),
+        ));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new("Old answer".into())),
+        ));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(ToolCall::new("tool-1", "Read file")),
+        ));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+                AvailableCommand::new("plan", "Create a plan"),
+            ])),
+        ));
+
+        let catalog_event = receiver.recv().unwrap();
+        assert_eq!(catalog_event.event_name, AI_SESSION_CATALOG_UPDATED_EVENT);
+        assert!(receiver.try_recv().is_err());
+
+        context.set_loading_persisted_session(false);
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new("Live answer".into())),
+        ));
+
+        let started = receiver.recv().unwrap();
+        let delta = receiver.recv().unwrap();
+        assert_eq!(started.event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(delta.event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(delta.payload["content"], "Live answer");
     }
 
     #[test]

@@ -134,6 +134,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
         readonly preserveSourcePaneOnMove?: boolean;
         readonly projectId: string | null;
         readonly runtimeId: AiRuntimeId;
+        readonly sessionOpenMode?: "history" | "live";
         readonly sessionId: string;
         readonly targetIndex?: number;
         readonly targetPaneId?: string | null;
@@ -143,6 +144,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     openChatSessionTabAtTarget: (input: {
         readonly projectId: string | null;
         readonly runtimeId: AiRuntimeId;
+        readonly sessionOpenMode?: "history" | "live";
         readonly sessionId: string;
         readonly target: WorkspaceOpenTarget;
         readonly title: string;
@@ -559,6 +561,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 ...existingTab,
                 projectId: input.projectId,
                 runtimeId: input.runtimeId,
+                sessionOpenMode:
+                    input.sessionOpenMode ?? existingTab.sessionOpenMode,
                 title: input.title,
                 worktreeId: input.worktreeId ?? null,
             };
@@ -633,6 +637,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             kind: "chat",
             projectId: input.projectId,
             runtimeId: input.runtimeId,
+            sessionOpenMode: input.sessionOpenMode,
             sessionId: input.sessionId,
             title: input.title,
             worktreeId: input.worktreeId ?? null,
@@ -672,6 +677,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         await get().openChatSessionTab({
             projectId: input.projectId,
             runtimeId: input.runtimeId,
+            sessionOpenMode: input.sessionOpenMode,
             sessionId: input.sessionId,
             preserveSourcePaneOnMove: input.target.type === "split",
             targetIndex: getWorkspaceOpenTargetInsertIndex(input.target),
