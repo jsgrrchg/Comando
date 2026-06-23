@@ -107,7 +107,6 @@ import {
 } from "./session-core";
 import {
     diffToAiFileDiff,
-    mapToolCallUpdate,
     normalizeTrackedDiffPath,
     parseCompleteNumberedFileOutput,
     readTextIfExists,
@@ -4300,7 +4299,6 @@ function nativeSetSecretPatch(
 export const __testing = {
     computeDiffHunks,
     diffToAiFileDiff,
-    mapToolCallUpdate,
     normalizeTrackedDiffPath,
     parseCompleteNumberedFileOutput,
     resolveDiffToFullTexts,

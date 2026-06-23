@@ -63,7 +63,6 @@ export const CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE = "shutdown_complete";
 export const CODEX_ACP_IMAGE_GENERATION_EVENT_TYPE = "image_generation";
 export const CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE =
     "subagent_session_created";
-export const CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE = "subagent_breadcrumb";
 export const CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY =
     "codexAcpSubagentEventType";
 export const CODEX_ACP_PARENT_SESSION_ID_KEY = "codexAcpParentSessionId";
@@ -84,7 +83,6 @@ export const COMANDO_STATUS_EVENT_ID_PREFIX = "comando:status:";
 export const CODEX_ACP_STATUS_TURN_EVENT_ID_PREFIX =
     "codex-acp:status:turn:";
 export const COMANDO_STATUS_TURN_EVENT_ID_PREFIX = "comando:status:turn:";
-export const CODEX_ACP_USER_INPUT_EVENT_TYPE = "user_input_request";
 export const CODEX_ACP_USER_INPUT_RESPONSE_PREFIX =
     "__codex_acp_user_input_response__:";
 export const SUPPRESSED_STATUS_TITLES = new Set([
