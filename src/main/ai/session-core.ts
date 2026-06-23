@@ -731,13 +731,15 @@ export function setConfigOptionOnSnapshot(
         configOptions: nextConfigOptions,
         modeId:
             updatedOption?.type === "select" &&
-            updatedOption.category === "mode" &&
+            (updatedOption.category === "mode" ||
+                updatedOption.id.toLowerCase() === "mode") &&
             typeof value === "string"
                 ? value
                 : snapshot.modeId,
         modelId:
             updatedOption?.type === "select" &&
-            updatedOption.category === "model" &&
+            (updatedOption.category === "model" ||
+                updatedOption.id.toLowerCase() === "model") &&
             typeof value === "string"
                 ? value
                 : snapshot.modelId,

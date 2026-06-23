@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
     AiRuntimeStatus,
+    AiSessionConfigOption,
     AiSessionSnapshot,
     AiSessionUpdate,
 } from "@shared/ipc";
@@ -741,9 +742,114 @@ describe("AiService prepareSession", () => {
             },
         });
         expect(await service.getSessionSnapshot("session-1")).toMatchObject({
-                sessionId: "session-1",
-                title: "Manual title",
+            sessionId: "session-1",
+            title: "Manual title",
         });
+    });
+
+    it("keeps live model config option changes in the main snapshot", async () => {
+        const snapshot = createSnapshot({
+            configOptions: [createModelConfig("gpt-5.4-mini")],
+            modelId: "gpt-5.4-mini",
+        });
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(() =>
+            Promise.resolve(snapshot),
+        );
+        const setSessionConfigOption = vi.fn<
+            NativeAiGateway["setSessionConfigOption"]
+        >(() => Promise.resolve());
+        const onSessionSnapshot = vi.fn<
+            (ownerWindowId: string, update: AiSessionUpdate) => void
+        >();
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession,
+                setSessionConfigOption,
+            }),
+            onSessionSnapshot,
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        await service.setSessionConfigOption({
+            optionId: "model",
+            sessionId: "session-1",
+            value: "gpt-5.5",
+        });
+
+        expect(setSessionConfigOption).toHaveBeenCalledWith({
+            optionId: "model",
+            sessionId: "session-1",
+            value: "gpt-5.5",
+        });
+        const updatedSnapshot = await service.getSessionSnapshot("session-1");
+        expect(updatedSnapshot?.modelId).toBe("gpt-5.5");
+        expect(
+            updatedSnapshot?.configOptions.find((option) => option.id === "model")
+                ?.value,
+        ).toBe("gpt-5.5");
+        expect(onSessionSnapshot.mock.lastCall?.[0]).toBe("window-1");
+    });
+
+    it("prefers runtime model preferences over stale persisted selections when preparing", async () => {
+        const persistedSnapshot = createSnapshot({
+            configOptions: [createModelConfig("gpt-5.4-mini")],
+            modelId: "gpt-5.4-mini",
+        });
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(() =>
+            Promise.resolve(persistedSnapshot),
+        );
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                loadSessionSnapshot: vi.fn(() =>
+                    Promise.resolve(persistedSnapshot),
+                ),
+                prepareSession,
+            }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {},
+                    modeId: null,
+                    modelId: "gpt-5.5",
+                })),
+                loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        const desiredSelections =
+            prepareSession.mock.calls[0]?.[0].launch.desiredSelections;
+        expect(desiredSelections).toMatchObject({
+            modelId: "gpt-5.5",
+        });
+        expect(
+            desiredSelections?.configOptions.find((option) => option.id === "model")
+                ?.value,
+        ).toBe("gpt-5.5");
     });
 });
 
@@ -807,6 +913,31 @@ function createSnapshot(
     };
 }
 
+function createModelConfig(value: string): AiSessionConfigOption {
+    return {
+        category: "model",
+        description: null,
+        id: "model",
+        label: "Model",
+        options: [
+            {
+                description: null,
+                groupLabel: null,
+                label: "GPT 5.4 Mini",
+                value: "gpt-5.4-mini",
+            },
+            {
+                description: null,
+                groupLabel: null,
+                label: "GPT 5.5",
+                value: "gpt-5.5",
+            },
+        ],
+        type: "select",
+        value,
+    };
+}
+
 function createPrepareService(
     options: {
         readonly nativeAi?: NativeAiGateway;
@@ -814,25 +945,30 @@ function createPrepareService(
             ownerWindowId: string,
             update: AiSessionUpdate,
         ) => void;
+        readonly persistence?: ConstructorParameters<
+            typeof AiService
+        >[0]["persistence"];
     } = {},
 ): InstanceType<typeof AiService> {
     return new AiService({
         nativeAi: options.nativeAi ?? createNativeAi(),
         onRuntimeStatus: vi.fn(),
         onSessionSnapshot: options.onSessionSnapshot ?? vi.fn(),
-        persistence: {
-            loadLatestRuntimeCatalog: vi.fn(() => null),
-            loadRuntimeSelectionPreferences: vi.fn(() => ({
-                configOptions: {},
-                modeId: null,
-                modelId: null,
-            })),
-            loadSessionSnapshot: vi.fn(() => null),
-            saveRuntimeSelectionPreferenceOption: vi.fn(),
-            saveRuntimeModePreference: vi.fn(),
-            saveRuntimeModelPreference: vi.fn(),
-            saveSessionSnapshot: vi.fn(),
-        } as never,
+        persistence:
+            options.persistence ??
+            ({
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {},
+                    modeId: null,
+                    modelId: null,
+                })),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never),
         projectService: {
             getProjectRootPath: vi.fn(() => process.cwd()),
             listProjectWorktrees: vi.fn(() => []),
