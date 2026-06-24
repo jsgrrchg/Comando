@@ -697,8 +697,7 @@ fn grok_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Runt
     let selected =
         normalize_auth_method(setup.auth_method.as_deref(), &["grok-login", "xai-api-key"]);
     let auth_invalidated = setup.auth_invalidated_at_ms.is_some();
-    let login_ready =
-        external_auth_dir_available(grok_auth_dir_path(), setup.auth_invalidated_at_ms);
+    let login_ready = grok_login_auth_available(setup.auth_invalidated_at_ms);
     let method = if env_ready && !auth_invalidated {
         Some("xai-api-key".to_string())
     } else if selected.as_deref() == Some("xai-api-key") && stored_ready && !auth_invalidated {
@@ -1716,8 +1715,29 @@ fn claude_auth_file_path() -> Option<PathBuf> {
     home_dir().map(|home| home.join(".claude.json"))
 }
 
+fn grok_auth_file_path() -> Option<PathBuf> {
+    home_dir().map(|home| home.join(".grok").join("auth.json"))
+}
+
 fn grok_auth_dir_path() -> Option<PathBuf> {
     home_dir().map(|home| home.join(".grok").join("auth"))
+}
+
+fn grok_login_auth_available(invalidated_at_ms: Option<u64>) -> bool {
+    grok_login_auth_available_at(
+        grok_auth_file_path(),
+        grok_auth_dir_path(),
+        invalidated_at_ms,
+    )
+}
+
+fn grok_login_auth_available_at(
+    auth_file_path: Option<PathBuf>,
+    auth_dir_path: Option<PathBuf>,
+    invalidated_at_ms: Option<u64>,
+) -> bool {
+    external_auth_available(auth_file_path, invalidated_at_ms)
+        || external_auth_dir_available(auth_dir_path, invalidated_at_ms)
 }
 
 fn kilo_auth_file_path() -> Option<PathBuf> {
@@ -1970,6 +1990,45 @@ mod tests {
             status.message.as_deref(),
             Some("Run Grok login or add an xAI API key to finish setup.")
         );
+    }
+
+    #[test]
+    fn grok_login_auth_detects_current_auth_file() {
+        let temp = tempdir().expect("temp");
+        let auth_file = temp.path().join(".grok").join("auth.json");
+        write_file(&auth_file, r#"{"token":"test"}"#);
+
+        assert!(grok_login_auth_available_at(
+            Some(auth_file),
+            Some(temp.path().join(".grok").join("auth")),
+            None,
+        ));
+    }
+
+    #[test]
+    fn grok_login_auth_keeps_legacy_auth_dir_fallback() {
+        let temp = tempdir().expect("temp");
+        let auth_dir_file = temp.path().join(".grok").join("auth").join("token.json");
+        write_file(&auth_dir_file, r#"{"token":"test"}"#);
+
+        assert!(grok_login_auth_available_at(
+            Some(temp.path().join(".grok").join("auth.json")),
+            Some(temp.path().join(".grok").join("auth")),
+            None,
+        ));
+    }
+
+    #[test]
+    fn grok_login_auth_respects_invalidated_timestamp() {
+        let temp = tempdir().expect("temp");
+        let auth_file = temp.path().join(".grok").join("auth.json");
+        write_file(&auth_file, r#"{"token":"test"}"#);
+
+        assert!(!grok_login_auth_available_at(
+            Some(auth_file),
+            Some(temp.path().join(".grok").join("auth")),
+            Some(u64::MAX),
+        ));
     }
 
     #[test]
