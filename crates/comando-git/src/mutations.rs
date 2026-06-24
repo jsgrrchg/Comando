@@ -11,6 +11,7 @@ use crate::snapshot::get_repository_snapshot;
 use crate::status::get_status;
 
 const MUTATION_TIMEOUT: Duration = Duration::from_secs(30);
+const NETWORK_TIMEOUT: Duration = Duration::from_secs(90);
 
 pub fn init_repository(
     runner: &GitRunner,
@@ -493,7 +494,7 @@ fn mutation_options() -> GitRunOptions {
 
 fn network_options() -> GitRunOptions {
     GitRunOptions {
-        timeout: MUTATION_TIMEOUT,
+        timeout: NETWORK_TIMEOUT,
         ..GitRunOptions::network()
     }
 }

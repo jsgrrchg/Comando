@@ -134,12 +134,17 @@ export function GitCommitFooter({
                                 style={{
                                     fontSize: 10,
                                     fontWeight: 500,
-                                    flexShrink: 0,
+                                    flexShrink: 1,
+                                    maxWidth: 180,
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
                                     color:
                                         syncStatus.tone === "success"
                                             ? "var(--diff-add)"
                                             : "var(--diff-remove)",
                                 }}
+                                title={syncStatus.message}
                             >
                                 {syncStatus.message}
                             </span>

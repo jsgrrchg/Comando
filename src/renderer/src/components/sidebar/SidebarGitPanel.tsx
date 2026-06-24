@@ -17,6 +17,8 @@ import {
     type GitTreeNode,
 } from "@renderer/components/git";
 
+const ANSI_ESCAPE_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "gu");
+
 function getContextKey(projectId: string, worktreeId: string | null): string {
     return getGitContextKey(projectId, worktreeId);
 }
@@ -77,9 +79,9 @@ export function SidebarGitPanel({
                     const msg = describeSyncResult(label, snap);
                     setSyncStatus({ message: msg, tone: "success" });
                 })
-                .catch(() => {
+                .catch((error: unknown) => {
                     setSyncStatus({
-                        message: `${label} failed`,
+                        message: formatSyncActionError(label, error),
                         tone: "error",
                     });
                 })
@@ -443,6 +445,45 @@ export function SidebarGitPanel({
             />
         </div>
     );
+}
+
+function formatSyncActionError(label: string, error: unknown): string {
+    const stderr = extractGitStderr(error);
+    if (stderr) {
+        return `${label} failed: ${truncateSyncError(stderr)}`;
+    }
+
+    const message = error instanceof Error ? error.message : null;
+    if (message) {
+        return `${label} failed: ${truncateSyncError(message)}`;
+    }
+
+    return `${label} failed`;
+}
+
+function extractGitStderr(error: unknown): string | null {
+    if (!isRecord(error) || !isRecord(error.details)) {
+        return null;
+    }
+
+    const stderr = error.details.stderr;
+    return typeof stderr === "string" && stderr.trim().length > 0
+        ? stderr.trim()
+        : null;
+}
+
+function truncateSyncError(message: string): string {
+    const singleLine = message
+        .replace(ANSI_ESCAPE_PATTERN, "")
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .join(" ");
+    return singleLine.length > 180 ? `${singleLine.slice(0, 177)}...` : singleLine;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function describeSyncResult(

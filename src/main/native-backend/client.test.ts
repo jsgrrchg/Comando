@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -286,6 +287,34 @@ describe("NativeBackendClient", () => {
         } satisfies Partial<NativeBackendError>);
     });
 
+    it("includes backend stderr details in the rejected error message", async () => {
+        const { child, client } = createClient();
+        const linePromise = readStdinLine(child);
+
+        const requestPromise = client.request("git_push");
+        const request = parseRequestLine(await linePromise);
+        child.stdout.write(
+            `${JSON.stringify({
+                type: "response",
+                id: request.id,
+                ok: false,
+                error: {
+                    code: "internal_error",
+                    message: "Git command failed with exit code Some(1).",
+                    details: {
+                        gitCode: "git_command_failed",
+                        stderr: "fatal: could not read Username",
+                    },
+                    retryable: false,
+                },
+            })}\n`,
+        );
+
+        await expect(requestPromise).rejects.toThrow(
+            "fatal: could not read Username",
+        );
+    });
+
     it("disposes idempotently after graceful shutdown", async () => {
         const { child, client } = createClient({ shutdownTimeoutMs: 50 });
         const linePromise = readStdinLine(child);
@@ -334,6 +363,32 @@ describe("NativeBackendClient", () => {
         expect(spawnCall?.[2].env?.COMANDO_ELECTRON_AI_RESOURCE_DIR).toBe(
             "/tmp/Comando.app/Contents/Resources/ai",
         );
+    });
+
+    it("enriches the sidecar PATH for git helper commands", () => {
+        const previousPath = process.env.PATH;
+        process.env.PATH = "/custom/bin";
+        try {
+            const { spawnProcess } = createClient();
+            const spawnCall = vi.mocked(spawnProcess).mock.calls[0];
+            const pathEntries = String(spawnCall?.[2].env?.PATH ?? "").split(
+                path.delimiter,
+            );
+
+            expect(pathEntries).toContain("/custom/bin");
+            expect(pathEntries).toContain("/usr/bin");
+            expect(pathEntries).toContain("/bin");
+            if (process.platform === "darwin") {
+                expect(pathEntries).toContain("/opt/homebrew/bin");
+                expect(pathEntries).toContain("/usr/local/bin");
+            }
+        } finally {
+            if (previousPath === undefined) {
+                delete process.env.PATH;
+            } else {
+                process.env.PATH = previousPath;
+            }
+        }
     });
 });
 

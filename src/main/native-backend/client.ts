@@ -5,6 +5,8 @@ import type {
 } from "node:child_process";
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 
+import { buildRuntimeSpawnEnv } from "../ai/runtime-env";
+
 import {
     createNativeHandshakeInput,
     createNativeRequestMeta,
@@ -28,12 +30,32 @@ export class NativeBackendError extends Error {
     readonly retryable: boolean;
 
     constructor(payload: NativeBackendErrorPayload) {
-        super(payload.message);
+        super(formatNativeBackendErrorMessage(payload));
         this.name = "NativeBackendError";
         this.code = payload.code;
         this.details = payload.details;
         this.retryable = payload.retryable;
     }
+}
+
+function formatNativeBackendErrorMessage(
+    payload: NativeBackendErrorPayload,
+): string {
+    const stderr = nativeBackendErrorStderr(payload.details);
+    if (!stderr) {
+        return payload.message;
+    }
+
+    return `${payload.message}: ${stderr}`;
+}
+
+function nativeBackendErrorStderr(details: unknown): string | null {
+    if (!isRecord(details) || typeof details.stderr !== "string") {
+        return null;
+    }
+
+    const stderr = details.stderr.trim();
+    return stderr.length > 0 ? stderr : null;
 }
 
 export type NativeBackendEventListener = (event: NativeBackendEvent) => void;
@@ -60,7 +82,7 @@ type PendingRequest = {
     readonly timeout: NodeJS.Timeout;
 };
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 45_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 1_500;
 
 export class NativeBackendClient {
@@ -84,9 +106,10 @@ export class NativeBackendClient {
             options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
         const spawnProcess: NativeBackendSpawn = options.spawnProcess ?? spawn;
         const aiResourceDir = options.aiResourceDir?.trim();
+        const spawnEnv = buildRuntimeSpawnEnv(process.env, "git");
         this.child = spawnProcess(options.binaryPath, [], {
             env: {
-                ...process.env,
+                ...spawnEnv,
                 ...(aiResourceDir
                     ? { COMANDO_ELECTRON_AI_RESOURCE_DIR: aiResourceDir }
                     : {}),
@@ -394,6 +417,10 @@ export class NativeBackendClient {
 
 function requestKey(id: NativeBackendRequestId | null): string {
     return JSON.stringify(id);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function formatError(error: unknown): string {

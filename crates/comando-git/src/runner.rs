@@ -9,6 +9,7 @@ use crate::env::GitEnvironment;
 use crate::error::{GitError, GitResult};
 
 const DEFAULT_TIMEOUT_MS: u64 = 10_000;
+const DEFAULT_NETWORK_TIMEOUT_MS: u64 = 90_000;
 const DEFAULT_STDOUT_LIMIT_BYTES: usize = 20 * 1024 * 1024;
 const DEFAULT_STDERR_LIMIT_BYTES: usize = 256 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -50,7 +51,7 @@ impl GitRunOptions {
     pub fn network() -> Self {
         Self {
             command_kind: GitCommandKind::Network,
-            timeout: Duration::from_millis(30_000),
+            timeout: Duration::from_millis(DEFAULT_NETWORK_TIMEOUT_MS),
             ..Self::read_only()
         }
     }
@@ -315,6 +316,11 @@ mod tests {
             .expect("shell");
 
         assert_eq!(output.stdout, "0::");
+    }
+
+    #[test]
+    fn network_commands_have_a_longer_timeout_budget() {
+        assert_eq!(GitRunOptions::network().timeout, Duration::from_secs(90));
     }
 
     #[test]
