@@ -354,24 +354,23 @@ function parseToolRawInputJson(
 }
 
 function getStructuredToolTarget(activity: AiToolActivity): string | null {
+    const rawInput = parseToolRawInputJson(activity.rawInputJson);
+    const rawInputPath = rawInput
+        ? (readRecordString(rawInput, "file_path") ??
+          readRecordString(rawInput, "filePath") ??
+          readRecordString(rawInput, "path") ??
+          readRecordString(rawInput, "target"))
+        : null;
     const locationPath = activity.locations.find(
         (location) => location.path.trim().length > 0,
     )?.path;
-    if (locationPath) {
+    if (locationPath && hasPathSeparator(locationPath)) {
         return locationPath.trim();
     }
-
-    const rawInput = parseToolRawInputJson(activity.rawInputJson);
-    if (!rawInput) {
-        return null;
+    if (rawInputPath) {
+        return rawInputPath;
     }
-
-    return (
-        readRecordString(rawInput, "file_path") ??
-        readRecordString(rawInput, "filePath") ??
-        readRecordString(rawInput, "path") ??
-        readRecordString(rawInput, "target")
-    );
+    return locationPath?.trim() ?? null;
 }
 
 function getToolTitleReference(
@@ -434,7 +433,12 @@ function canOpenToolFileReference({
     }
 
     const parsedReference = parseProjectFileReference(target);
-    return !!parsedReference && !parsedReference.isAbsolute && !!projectId;
+    return (
+        !!parsedReference &&
+        !parsedReference.isAbsolute &&
+        hasPathSeparator(parsedReference.path) &&
+        !!projectId
+    );
 }
 
 function getOpenLocationFromFileReference(reference: {
@@ -506,7 +510,12 @@ function openToolFileReference({
     }
 
     const parsedReference = parseProjectFileReference(target);
-    if (!parsedReference || parsedReference.isAbsolute || !projectId) {
+    if (
+        !parsedReference ||
+        parsedReference.isAbsolute ||
+        !hasPathSeparator(parsedReference.path) ||
+        !projectId
+    ) {
         return;
     }
 
@@ -523,6 +532,10 @@ function openToolFileReference({
     }
 
     void onOpenFile(projectId, parsedReference.path, worktreeId);
+}
+
+function hasPathSeparator(pathValue: string): boolean {
+    return pathValue.includes("/") || pathValue.includes("\\");
 }
 
 function formatToolLocationReference(
