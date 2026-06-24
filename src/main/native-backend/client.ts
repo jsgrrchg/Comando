@@ -46,6 +46,7 @@ export type NativeBackendSpawn = (
 ) => ChildProcessWithoutNullStreams;
 
 export type NativeBackendClientOptions = {
+    readonly aiResourceDir?: string | null;
     readonly binaryPath: string;
     readonly onDiagnostic?: NativeBackendDiagnosticListener;
     readonly requestTimeoutMs?: number;
@@ -82,7 +83,14 @@ export class NativeBackendClient {
         this.shutdownTimeoutMs =
             options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
         const spawnProcess: NativeBackendSpawn = options.spawnProcess ?? spawn;
+        const aiResourceDir = options.aiResourceDir?.trim();
         this.child = spawnProcess(options.binaryPath, [], {
+            env: {
+                ...process.env,
+                ...(aiResourceDir
+                    ? { COMANDO_ELECTRON_AI_RESOURCE_DIR: aiResourceDir }
+                    : {}),
+            },
             stdio: "pipe",
             windowsHide: true,
         });

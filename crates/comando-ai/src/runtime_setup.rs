@@ -20,6 +20,7 @@ use crate::runtime::RuntimeDefinition;
 
 const SESSION_AUTH_MESSAGE: &str =
     "This affects new sessions. Active sessions may keep using credentials loaded at launch.";
+const ELECTRON_AI_RESOURCE_DIR_ENV: &str = "COMANDO_ELECTRON_AI_RESOURCE_DIR";
 
 #[derive(Debug, Clone)]
 pub struct RuntimeResolvedSetup {
@@ -330,12 +331,17 @@ fn resolve_runtime_command(
         }
     }
     if definition.id == "claude" {
+        if let Some(command) = find_explicit_ai_resource_runtime(definition) {
+            return command;
+        }
         if let Some(command) = find_claude_vendor_command(definition) {
             return command;
         }
         if let Some(command) = find_claude_embedded_node_command() {
             return command;
         }
+    } else if let Some(candidate) = find_explicit_ai_resource_binary(definition) {
+        return command_from_existing_path(definition, candidate, "bundled");
     }
     if let Some(candidate) = find_bundled_runtime(definition) {
         return command_from_existing_path(definition, candidate, "bundled");
@@ -1176,12 +1182,65 @@ fn missing_binary_message(runtime_id: &str) -> &'static str {
     }
 }
 
+fn explicit_ai_resource_dir() -> Option<PathBuf> {
+    env::var_os(ELECTRON_AI_RESOURCE_DIR_ENV)
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir())
+}
+
 fn runtime_binary_name(name: &str) -> String {
     if cfg!(windows) {
         format!("{name}.exe")
     } else {
         name.to_string()
     }
+}
+
+fn packaged_darwin_arch() -> &'static str {
+    match env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        arch => arch,
+    }
+}
+
+fn find_explicit_ai_resource_runtime(definition: RuntimeDefinition) -> Option<ResolvedCommand> {
+    let resource_dir = explicit_ai_resource_dir()?;
+    if definition.id == "claude" {
+        if let Some(command) =
+            claude_embedded_node_command_from_ai_resource_dir(&resource_dir, "bundled")
+        {
+            return Some(command);
+        }
+    }
+    find_ai_resource_binary(definition, &resource_dir)
+        .map(|candidate| command_from_existing_path(definition, candidate, "bundled"))
+}
+
+fn find_explicit_ai_resource_binary(definition: RuntimeDefinition) -> Option<PathBuf> {
+    let resource_dir = explicit_ai_resource_dir()?;
+    find_ai_resource_binary(definition, &resource_dir)
+}
+
+fn find_ai_resource_binary(definition: RuntimeDefinition, resource_dir: &Path) -> Option<PathBuf> {
+    let name = runtime_binary_name(definition.default_executable);
+    ai_resource_binary_candidates(resource_dir, &name)
+        .into_iter()
+        .find(|candidate| is_executable_or_script(candidate))
+}
+
+fn ai_resource_binary_candidates(resource_dir: &Path, name: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if cfg!(target_os = "macos") {
+        candidates.push(
+            resource_dir
+                .join("binaries")
+                .join(format!("darwin-{}", packaged_darwin_arch()))
+                .join(name),
+        );
+    }
+    candidates.push(resource_dir.join("binaries").join(name));
+    candidates
 }
 
 fn find_bundled_runtime(definition: RuntimeDefinition) -> Option<PathBuf> {
@@ -1197,7 +1256,11 @@ fn find_bundled_runtime(definition: RuntimeDefinition) -> Option<PathBuf> {
             .join("resources")
             .join("ai")
             .join("binaries")
-            .join(format!("{}-{}", env::consts::OS, env::consts::ARCH))
+            .join(if cfg!(target_os = "macos") {
+                format!("darwin-{}", packaged_darwin_arch())
+            } else {
+                format!("{}-{}", env::consts::OS, env::consts::ARCH)
+            })
             .join(&name),
     ]
     .into_iter()
@@ -1232,8 +1295,14 @@ fn claude_embedded_node_command_from_resources(
     resources_root: &Path,
     source: &str,
 ) -> Option<ResolvedCommand> {
-    let entry = resources_root
-        .join("ai")
+    claude_embedded_node_command_from_ai_resource_dir(&resources_root.join("ai"), source)
+}
+
+fn claude_embedded_node_command_from_ai_resource_dir(
+    resource_dir: &Path,
+    source: &str,
+) -> Option<ResolvedCommand> {
+    let entry = resource_dir
         .join("embedded")
         .join("claude-agent-acp")
         .join("dist")
@@ -1241,7 +1310,7 @@ fn claude_embedded_node_command_from_resources(
     if !is_file(&entry) {
         return None;
     }
-    let node = embedded_node_candidates(resources_root)
+    let node = embedded_node_candidates(resource_dir)
         .into_iter()
         .find(|candidate| is_executable_or_script(candidate))?;
     Some(command_from_embedded_node(node, entry, source, false))
@@ -1271,27 +1340,26 @@ fn claude_resource_roots(app_root: &Path) -> Vec<PathBuf> {
     dedupe_paths(roots)
 }
 
-fn embedded_node_candidates(resources_root: &Path) -> Vec<PathBuf> {
+fn embedded_node_candidates(resource_dir: &Path) -> Vec<PathBuf> {
     let executable_name = if cfg!(windows) { "node.exe" } else { "node" };
-    let mut candidates = vec![
-        resources_root
-            .join("ai")
-            .join("embedded")
-            .join("node")
-            .join("bin")
-            .join(executable_name),
-    ];
+    let mut candidates = Vec::new();
     if cfg!(target_os = "macos") {
         candidates.push(
-            resources_root
-                .join("ai")
+            resource_dir
                 .join("embedded")
                 .join("node")
-                .join(format!("darwin-{}", env::consts::ARCH))
+                .join(format!("darwin-{}", packaged_darwin_arch()))
                 .join("bin")
                 .join(executable_name),
         );
     }
+    candidates.push(
+        resource_dir
+            .join("embedded")
+            .join("node")
+            .join("bin")
+            .join(executable_name),
+    );
     candidates
 }
 
@@ -1799,6 +1867,81 @@ mod tests {
         );
         assert_eq!(command.source.as_deref(), Some("bundled"));
         assert_eq!(command.state, "ready");
+    }
+
+    #[test]
+    fn packaged_darwin_arch_matches_packaged_resource_names() {
+        match std::env::consts::ARCH {
+            "aarch64" => assert_eq!(packaged_darwin_arch(), "arm64"),
+            "x86_64" => assert_eq!(packaged_darwin_arch(), "x64"),
+            arch => assert_eq!(packaged_darwin_arch(), arch),
+        }
+    }
+
+    #[test]
+    fn claude_packaged_resource_dir_uses_arch_node_entrypoint() {
+        let temp = tempdir().expect("temp");
+        let resource_dir = temp.path().join("ai");
+        let node_name = if cfg!(windows) { "node.exe" } else { "node" };
+        let node = if cfg!(target_os = "macos") {
+            resource_dir
+                .join("embedded")
+                .join("node")
+                .join(format!("darwin-{}", packaged_darwin_arch()))
+                .join("bin")
+                .join(node_name)
+        } else {
+            resource_dir
+                .join("embedded")
+                .join("node")
+                .join("bin")
+                .join(node_name)
+        };
+        let entry = resource_dir
+            .join("embedded")
+            .join("claude-agent-acp")
+            .join("dist")
+            .join("index.js");
+        write_executable(&node);
+        write_file(&entry, "console.log('claude');");
+
+        let command = claude_embedded_node_command_from_ai_resource_dir(&resource_dir, "bundled")
+            .expect("command");
+
+        assert_eq!(command.executable, node.display().to_string());
+        assert_eq!(command.args, vec![entry.display().to_string()]);
+        assert_eq!(command.source.as_deref(), Some("bundled"));
+        assert_eq!(command.state, "ready");
+    }
+
+    #[test]
+    fn codex_packaged_resource_dir_uses_arch_binary() {
+        let temp = tempdir().expect("temp");
+        let resource_dir = temp.path().join("ai");
+        let binary = if cfg!(target_os = "macos") {
+            resource_dir
+                .join("binaries")
+                .join(format!("darwin-{}", packaged_darwin_arch()))
+                .join(if cfg!(windows) {
+                    "codex-acp.exe"
+                } else {
+                    "codex-acp"
+                })
+        } else {
+            resource_dir.join("binaries").join(if cfg!(windows) {
+                "codex-acp.exe"
+            } else {
+                "codex-acp"
+            })
+        };
+        write_executable(&binary);
+        let definition = crate::runtime::RuntimeRegistry::default()
+            .get("codex")
+            .unwrap();
+
+        let resolved = find_ai_resource_binary(definition, &resource_dir).expect("binary");
+
+        assert_eq!(resolved, binary);
     }
 
     #[test]

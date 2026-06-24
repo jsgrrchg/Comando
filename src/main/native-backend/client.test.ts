@@ -322,9 +322,23 @@ describe("NativeBackendClient", () => {
 
         expect(child.kill).toHaveBeenCalled();
     });
+
+    it("passes the packaged AI resource directory to the sidecar", () => {
+        const { spawnProcess } = createClient({
+            aiResourceDir: "/tmp/Comando.app/Contents/Resources/ai",
+        });
+        const spawnCall = vi.mocked(spawnProcess).mock.calls[0];
+
+        expect(spawnCall?.[0]).toBe("/tmp/comando-native-backend");
+        expect(spawnCall?.[1]).toEqual([]);
+        expect(spawnCall?.[2].env?.COMANDO_ELECTRON_AI_RESOURCE_DIR).toBe(
+            "/tmp/Comando.app/Contents/Resources/ai",
+        );
+    });
 });
 
 type CreateClientOptions = {
+    readonly aiResourceDir?: string | null;
     readonly onDiagnostic?: (message: string) => void;
     readonly requestTimeoutMs?: number;
     readonly shutdownTimeoutMs?: number;
@@ -334,6 +348,7 @@ function createClient(options: CreateClientOptions = {}) {
     const child = createMockChildProcess();
     const spawnProcess = vi.fn(() => child) as unknown as NativeBackendSpawn;
     const client = new NativeBackendClient({
+        aiResourceDir: options.aiResourceDir,
         binaryPath: "/tmp/comando-native-backend",
         onDiagnostic: options.onDiagnostic,
         requestTimeoutMs: options.requestTimeoutMs,

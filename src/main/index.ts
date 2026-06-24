@@ -467,6 +467,7 @@ async function startNativeBackendRequired(): Promise<void> {
     }
 
     const client = new NativeBackendClient({
+        aiResourceDir: path.join(process.resourcesPath, "ai"),
         binaryPath: resolution.binaryPath,
         onDiagnostic: (message) => {
             console.warn(`[native-backend] ${message}`);
