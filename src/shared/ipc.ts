@@ -2461,6 +2461,7 @@ export interface AiSessionDomainEventBase {
         | "review"
         | "session-info"
         | "status"
+        | "session-closed"
         | "subagent-breadcrumb"
         | "subagent-created"
         | "thinking-completed"
@@ -2532,6 +2533,11 @@ export interface AiSessionStatusEvent extends AiSessionDomainEventBase {
     readonly title?: string | null;
 }
 
+export interface AiSessionClosedEvent extends AiSessionDomainEventBase {
+    readonly closedAt: string;
+    readonly kind: "session-closed";
+}
+
 export interface AiSessionPlanEvent extends AiSessionDomainEventBase {
     readonly kind: "plan";
     readonly plan: AiPlan | null;
@@ -2598,6 +2604,7 @@ export type AiSessionDomainEvent =
     | AiSessionPermissionRequestEvent
     | AiSessionPlanEvent
     | AiSessionReviewEvent
+    | AiSessionClosedEvent
     | AiSessionStatusEvent
     | AiSessionSubagentBreadcrumbEvent
     | AiSessionSubagentCreatedEvent

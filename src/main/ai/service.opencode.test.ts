@@ -353,6 +353,76 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
+    it("marks native sessions closed from session-closed events", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-native-closed-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            const onSessionSnapshot = vi.fn<
+                (ownerWindowId: string, update: AiSessionUpdate) => void
+            >();
+            const nativeAi = createNativeAi({
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-native-1",
+                            status: "streaming",
+                            updatedAt: "2026-06-20T00:00:00.000Z",
+                        }),
+                ),
+            });
+            const service = createService({
+                nativeAi,
+                onSessionSnapshot,
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+
+            await service.prepareSession(
+                {
+                    projectId: null,
+                    runtimeId: "opencode",
+                    sessionId: "session-opencode",
+                    title: "OpenCode 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            service.handleNativeSessionEvent("window-1", {
+                closedAt: "2026-06-20T00:00:03.000Z",
+                kind: "session-closed",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-native-1",
+                sessionId: "session-opencode",
+                updatedAt: "2026-06-20T00:00:03.000Z",
+            });
+
+            const update = onSessionSnapshot.mock.calls.at(-1)?.[1];
+            expect(update?.kind).toBe("patch");
+            if (update?.kind !== "patch") {
+                throw new Error("Expected a patch update.");
+            }
+            expect(update.patch.changes).toMatchObject({
+                closedAt: "2026-06-20T00:00:03.000Z",
+                status: "idle",
+            });
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("tracks native working tree edits after a turn for review", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-native-review-"),

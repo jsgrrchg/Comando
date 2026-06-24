@@ -45,11 +45,12 @@ use crate::error::{AiError, AiResult};
 use crate::events::{
     AI_ERROR_EVENT, AI_IMAGE_GENERATION_EVENT, AI_MESSAGE_COMPLETED_EVENT, AI_MESSAGE_DELTA_EVENT,
     AI_MESSAGE_STARTED_EVENT, AI_PERMISSION_REQUEST_EVENT, AI_PLAN_UPDATED_EVENT,
-    AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CATALOG_UPDATED_EVENT, AI_SESSION_UPDATED_EVENT,
-    AI_SUBAGENT_BREADCRUMB_EVENT, AI_SUBAGENT_CREATED_EVENT, AI_THINKING_COMPLETED_EVENT,
-    AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT, AI_TOKEN_USAGE_EVENT,
-    AI_TOOL_ACTIVITY_EVENT, AI_USER_INPUT_REQUEST_EVENT, AiRuntimeEvent, message_completed,
-    message_delta, message_started, now_iso8601, session_updated,
+    AI_RUNTIME_CONNECTION_EVENT, AI_SESSION_CATALOG_UPDATED_EVENT, AI_SESSION_CLOSED_EVENT,
+    AI_SESSION_UPDATED_EVENT, AI_SUBAGENT_BREADCRUMB_EVENT, AI_SUBAGENT_CREATED_EVENT,
+    AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
+    AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, AI_USER_INPUT_REQUEST_EVENT, AiRuntimeEvent,
+    message_completed, message_delta, message_started, now_iso8601, session_closed,
+    session_updated,
 };
 use crate::redaction::redact_env_key_value;
 use crate::runtime::{AcpProtocolFlavor, RuntimeDefinition};
@@ -57,13 +58,23 @@ use crate::session::{NativeAiSession, SessionRegistry};
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 const CODEX_ACP_STATUS_EVENT_TYPE_KEY: &str = "codexAcpEventType";
+const CODEX_ACP_TURN_EVENT_TYPE_KEY: &str = "codexAcpTurnEventType";
+const CODEX_ACP_TURN_ID_KEY: &str = "codexAcpTurnId";
+const CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE: &str = "turn_lifecycle";
+const CODEX_ACP_TURN_STARTED_EVENT_TYPE: &str = "turn_started";
+const CODEX_ACP_TURN_COMPLETE_EVENT_TYPE: &str = "turn_complete";
+const CODEX_ACP_TURN_ABORTED_EVENT_TYPE: &str = "turn_aborted";
+const CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE: &str = "shutdown_complete";
 const CODEX_ACP_IMAGE_GENERATION_EVENT_TYPE: &str = "image_generation";
 const CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX: &str = "codex-acp:image:";
 const CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE: &str = "subagent_session_created";
 const CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE: &str = "subagent_breadcrumb";
+const CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY: &str = "codexAcpSubagentEventType";
 const CODEX_ACP_PARENT_SESSION_ID_KEY: &str = "codexAcpParentSessionId";
 const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
+const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
+const CODEX_ACP_AGENT_STATUSES_KEY: &str = "codexAcpAgentStatuses";
 
 type PermissionWaiterMap = Arc<Mutex<HashMap<String, PendingPermissionRequest>>>;
 type PromptCapabilitiesState = Arc<Mutex<AcpPromptCapabilities>>;
@@ -1823,6 +1834,8 @@ struct NotificationContextInner {
     runtime_session_id: Option<RuntimeSessionId>,
     session: NativeAiSession,
     subagents_by_runtime_session_id: HashMap<String, SubagentRuntimeSession>,
+    structured_subagent_runtime_session_ids: HashSet<String>,
+    subagent_active_turn_ids: HashMap<String, String>,
     supports_subagents: bool,
     synthetic_message_ids: HashMap<String, String>,
     synthetic_message_next_id: usize,
@@ -1892,6 +1905,8 @@ impl NotificationContextInner {
             runtime_session_id: session.runtime_session_id.clone(),
             session,
             subagents_by_runtime_session_id,
+            structured_subagent_runtime_session_ids: HashSet::new(),
+            subagent_active_turn_ids: HashMap::new(),
             supports_subagents,
             synthetic_message_ids: HashMap::new(),
             synthetic_message_next_id: 1,
@@ -1942,12 +1957,14 @@ impl NotificationContextInner {
                 let meta = merged_meta(notification_meta.as_ref(), tool_call.meta.as_ref());
                 self.prepare_runtime_session_event(&runtime_session_id, Some(&meta), None);
                 self.complete_runtime_messages(&runtime_session_id);
+                self.handle_subagent_lifecycle_from_meta(&runtime_session_id, &meta);
                 self.handle_tool_call(&runtime_session_id, tool_call, &meta);
             }
             SessionUpdate::ToolCallUpdate(tool_call_update) => {
                 let meta = merged_meta(notification_meta.as_ref(), tool_call_update.meta.as_ref());
                 self.prepare_runtime_session_event(&runtime_session_id, Some(&meta), None);
                 self.complete_runtime_messages(&runtime_session_id);
+                self.handle_subagent_lifecycle_from_meta(&runtime_session_id, &meta);
                 self.handle_tool_call_update(&runtime_session_id, tool_call_update, &meta);
             }
             SessionUpdate::Plan(plan) => {
@@ -2004,7 +2021,13 @@ impl NotificationContextInner {
                     update.current_mode_id.0.to_string(),
                 );
             }
-            SessionUpdate::UserMessageChunk(_) => {}
+            SessionUpdate::UserMessageChunk(chunk) => {
+                if self.supports_subagents
+                    && self.runtime_session_id.as_ref() != Some(&runtime_session_id)
+                {
+                    self.handle_content_chunk(&runtime_session_id, "user", chunk);
+                }
+            }
             _ => {}
         }
     }
@@ -2316,6 +2339,9 @@ impl NotificationContextInner {
             .title
             .into_option()
             .filter(|title| !title.trim().is_empty());
+        if self.handle_turn_lifecycle_update(runtime_session_id, meta) {
+            return;
+        }
         if meta_string(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY).as_deref()
             == Some(CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE)
             || meta_references_subagent(meta)
@@ -2412,6 +2438,196 @@ impl NotificationContextInner {
         );
     }
 
+    fn handle_turn_lifecycle_update(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        meta: &Meta,
+    ) -> bool {
+        if meta_string(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY).as_deref()
+            != Some(CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE)
+        {
+            return false;
+        }
+
+        let Some(event_type) = meta_string(meta, CODEX_ACP_TURN_EVENT_TYPE_KEY) else {
+            return true;
+        };
+        let turn_id = meta_string(meta, CODEX_ACP_TURN_ID_KEY);
+
+        match event_type.as_str() {
+            CODEX_ACP_TURN_STARTED_EVENT_TYPE => {
+                if let Some(turn_id) = turn_id {
+                    self.subagent_active_turn_ids
+                        .insert(runtime_session_id.0.clone(), turn_id);
+                }
+                self.mark_runtime_session_streaming(runtime_session_id, true);
+            }
+            CODEX_ACP_TURN_COMPLETE_EVENT_TYPE
+            | CODEX_ACP_TURN_ABORTED_EVENT_TYPE
+            | CODEX_ACP_SHUTDOWN_COMPLETE_EVENT_TYPE => {
+                if self.is_stale_turn_lifecycle(runtime_session_id, turn_id.as_deref()) {
+                    return true;
+                }
+                self.subagent_active_turn_ids.remove(&runtime_session_id.0);
+                self.emit_runtime_session_status(runtime_session_id, NativeAiSessionStatus::Idle);
+            }
+            _ => {}
+        }
+
+        true
+    }
+
+    fn is_stale_turn_lifecycle(
+        &self,
+        runtime_session_id: &RuntimeSessionId,
+        turn_id: Option<&str>,
+    ) -> bool {
+        let Some(turn_id) = turn_id else {
+            return false;
+        };
+        self.subagent_active_turn_ids
+            .get(&runtime_session_id.0)
+            .is_some_and(|active_turn_id| active_turn_id != turn_id)
+    }
+
+    fn has_active_turn_lifecycle(&self, runtime_session_id: &RuntimeSessionId) -> bool {
+        self.subagent_active_turn_ids
+            .contains_key(&runtime_session_id.0)
+    }
+
+    fn handle_subagent_lifecycle_from_meta(
+        &mut self,
+        notification_runtime_session_id: &RuntimeSessionId,
+        meta: &Meta,
+    ) {
+        if meta_string(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY).as_deref()
+            != Some(CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE)
+        {
+            return;
+        }
+
+        match meta_string(meta, CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY).as_deref() {
+            Some("interaction_begin" | "resume_begin" | "close_begin") => {
+                if let Some(child_runtime_session_id) =
+                    self.child_runtime_session_from_meta(notification_runtime_session_id, meta)
+                {
+                    self.mark_runtime_session_streaming(&child_runtime_session_id, true);
+                }
+            }
+            Some("interaction_end" | "resume_end" | "close_end") => {
+                if let Some(child_runtime_session_id) =
+                    self.child_runtime_session_from_meta(notification_runtime_session_id, meta)
+                {
+                    self.apply_subagent_agent_status_from_meta(
+                        &child_runtime_session_id,
+                        meta,
+                        meta_string(meta, CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY).as_deref()
+                            == Some("close_end"),
+                    );
+                }
+            }
+            Some("waiting_end") => {
+                self.apply_waiting_end_agent_statuses(notification_runtime_session_id, meta);
+            }
+            _ => {}
+        }
+    }
+
+    fn child_runtime_session_from_meta(
+        &mut self,
+        notification_runtime_session_id: &RuntimeSessionId,
+        meta: &Meta,
+    ) -> Option<RuntimeSessionId> {
+        self.ensure_subagent_runtime_session_from_meta(notification_runtime_session_id, meta, None)
+            .map(|subagent| subagent.runtime_session_id)
+    }
+
+    fn apply_subagent_agent_status_from_meta(
+        &mut self,
+        child_runtime_session_id: &RuntimeSessionId,
+        meta: &Meta,
+        close_on_terminal: bool,
+    ) {
+        let Some(status) = meta.get(CODEX_ACP_AGENT_STATUS_KEY) else {
+            return;
+        };
+        self.apply_subagent_agent_status(child_runtime_session_id, status, close_on_terminal);
+    }
+
+    fn apply_waiting_end_agent_statuses(
+        &mut self,
+        notification_runtime_session_id: &RuntimeSessionId,
+        meta: &Meta,
+    ) {
+        let Some(statuses) = meta
+            .get(CODEX_ACP_AGENT_STATUSES_KEY)
+            .and_then(|value| value.as_array())
+            .cloned()
+        else {
+            return;
+        };
+
+        for status_entry in statuses {
+            let Some(entry) = status_entry.as_object() else {
+                continue;
+            };
+            let Some(child_runtime_session_id) = entry
+                .get(CODEX_ACP_CHILD_SESSION_ID_KEY)
+                .and_then(|value| value.as_str())
+                .map(|value| RuntimeSessionId(value.to_string()))
+            else {
+                continue;
+            };
+            self.ensure_subagent_runtime_session_from_meta(
+                notification_runtime_session_id,
+                &entry
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+                None,
+            );
+            if !self
+                .subagents_by_runtime_session_id
+                .contains_key(&child_runtime_session_id.0)
+            {
+                continue;
+            }
+            let Some(status) = entry.get(CODEX_ACP_AGENT_STATUS_KEY) else {
+                continue;
+            };
+            self.apply_subagent_agent_status(&child_runtime_session_id, status, false);
+        }
+    }
+
+    fn apply_subagent_agent_status(
+        &mut self,
+        child_runtime_session_id: &RuntimeSessionId,
+        status: &serde_json::Value,
+        close_on_terminal: bool,
+    ) {
+        if agent_status_is_running(status) {
+            self.mark_runtime_session_streaming(child_runtime_session_id, true);
+            return;
+        }
+        if agent_status_is_closed(status) || close_on_terminal && agent_status_is_terminal(status) {
+            self.emit_runtime_session_closed(child_runtime_session_id);
+            return;
+        }
+        if self.has_active_turn_lifecycle(child_runtime_session_id) {
+            return;
+        }
+        if agent_status_is_error(status) {
+            self.emit_runtime_session_status(
+                child_runtime_session_id,
+                NativeAiSessionStatus::Error,
+            );
+            return;
+        }
+        if agent_status_is_terminal(status) {
+            self.emit_runtime_session_status(child_runtime_session_id, NativeAiSessionStatus::Idle);
+        }
+    }
+
     fn ensure_subagent_runtime_session_from_meta(
         &mut self,
         notification_runtime_session_id: &RuntimeSessionId,
@@ -2501,6 +2717,12 @@ impl NotificationContextInner {
             },
         );
         self.replay_pending_content_chunks(&child_runtime_session_id);
+        if self
+            .subagent_active_turn_ids
+            .contains_key(&child_runtime_session_id.0)
+        {
+            self.mark_runtime_session_streaming(&child_runtime_session_id, true);
+        }
         Some(subagent)
     }
 
@@ -2601,30 +2823,113 @@ impl NotificationContextInner {
     }
 
     fn mark_subagent_active(&mut self, runtime_session_id: &RuntimeSessionId) {
+        self.mark_runtime_session_streaming(runtime_session_id, false);
+    }
+
+    fn mark_runtime_session_streaming(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        structured: bool,
+    ) {
         if self
             .subagents_by_runtime_session_id
             .contains_key(&runtime_session_id.0)
         {
-            self.active_subagent_runtime_session_ids
+            let became_active = self
+                .active_subagent_runtime_session_ids
                 .insert(runtime_session_id.0.clone());
+            if structured {
+                self.structured_subagent_runtime_session_ids
+                    .insert(runtime_session_id.0.clone());
+            }
+            if became_active {
+                self.emit_runtime_session_status(
+                    runtime_session_id,
+                    NativeAiSessionStatus::Streaming,
+                );
+            }
         }
     }
 
     fn emit_active_subagent_idle_updates(&mut self) {
         let runtime_session_ids = std::mem::take(&mut self.active_subagent_runtime_session_ids);
         for runtime_session_id in runtime_session_ids {
+            if self
+                .structured_subagent_runtime_session_ids
+                .contains(&runtime_session_id)
+                && self
+                    .subagent_active_turn_ids
+                    .contains_key(&runtime_session_id)
+            {
+                self.active_subagent_runtime_session_ids
+                    .insert(runtime_session_id);
+                continue;
+            }
             if !self
                 .subagents_by_runtime_session_id
                 .contains_key(&runtime_session_id)
             {
                 continue;
             }
-            let mut summary =
-                self.summary_for_runtime_session(&RuntimeSessionId(runtime_session_id));
-            summary.status = NativeAiSessionStatus::Idle;
-            summary.updated_at = now_iso8601();
-            self.emit(AI_SESSION_UPDATED_EVENT, &session_updated(&summary));
+            self.emit_runtime_session_status(
+                &RuntimeSessionId(runtime_session_id),
+                NativeAiSessionStatus::Idle,
+            );
         }
+    }
+
+    fn emit_runtime_session_status(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        status: NativeAiSessionStatus,
+    ) {
+        match status {
+            NativeAiSessionStatus::Streaming => {
+                if self
+                    .subagents_by_runtime_session_id
+                    .contains_key(&runtime_session_id.0)
+                {
+                    self.active_subagent_runtime_session_ids
+                        .insert(runtime_session_id.0.clone());
+                }
+            }
+            NativeAiSessionStatus::Idle
+            | NativeAiSessionStatus::Error
+            | NativeAiSessionStatus::Closed => {
+                self.active_subagent_runtime_session_ids
+                    .remove(&runtime_session_id.0);
+                self.structured_subagent_runtime_session_ids
+                    .remove(&runtime_session_id.0);
+                self.subagent_active_turn_ids.remove(&runtime_session_id.0);
+            }
+            _ => {}
+        }
+
+        if !self.is_known_runtime_session(runtime_session_id) {
+            return;
+        }
+
+        let mut summary = self.summary_for_runtime_session(runtime_session_id);
+        summary.status = status;
+        summary.updated_at = now_iso8601();
+        self.emit(AI_SESSION_UPDATED_EVENT, &session_updated(&summary));
+    }
+
+    fn emit_runtime_session_closed(&mut self, runtime_session_id: &RuntimeSessionId) {
+        self.active_subagent_runtime_session_ids
+            .remove(&runtime_session_id.0);
+        self.structured_subagent_runtime_session_ids
+            .remove(&runtime_session_id.0);
+        self.subagent_active_turn_ids.remove(&runtime_session_id.0);
+
+        if !self.is_known_runtime_session(runtime_session_id) {
+            return;
+        }
+
+        let mut summary = self.summary_for_runtime_session(runtime_session_id);
+        summary.status = NativeAiSessionStatus::Closed;
+        summary.updated_at = now_iso8601();
+        self.emit(AI_SESSION_CLOSED_EVENT, &session_closed(&summary));
     }
 
     fn prepare_runtime_session_event(
@@ -3015,15 +3320,52 @@ fn meta_string(meta: &Meta, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn agent_status_is_running(status: &serde_json::Value) -> bool {
+    agent_status_has_variant(status, &["pendinginit", "running"])
+}
+
+fn agent_status_is_error(status: &serde_json::Value) -> bool {
+    agent_status_has_variant(status, &["errored"])
+}
+
+fn agent_status_is_closed(status: &serde_json::Value) -> bool {
+    agent_status_has_variant(status, &["notfound"])
+}
+
+fn agent_status_is_terminal(status: &serde_json::Value) -> bool {
+    agent_status_has_variant(
+        status,
+        &["completed", "interrupted", "shutdown", "notfound"],
+    )
+}
+
+fn agent_status_has_variant(status: &serde_json::Value, expected: &[&str]) -> bool {
+    if let Some(status) = status.as_str() {
+        return expected.contains(&normalized_status_variant(status).as_str());
+    }
+
+    let Some(object) = status.as_object() else {
+        return false;
+    };
+
+    object
+        .keys()
+        .any(|key| expected.contains(&normalized_status_variant(key).as_str()))
+}
+
+fn normalized_status_variant(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 fn meta_references_subagent(meta: &Meta) -> bool {
     meta_string(meta, CODEX_ACP_CHILD_SESSION_ID_KEY).is_some()
-        || meta_string(meta, CODEX_ACP_PARENT_SESSION_ID_KEY).is_some()
         || matches!(
             meta_string(meta, CODEX_ACP_STATUS_EVENT_TYPE_KEY).as_deref(),
-            Some(
-                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE
-                    | CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE
-            )
+            Some(CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE)
         )
 }
 
@@ -3859,6 +4201,13 @@ mod tests {
             "runtime-child-1",
             SessionUpdate::AgentMessageChunk(ContentChunk::new("Child output".into())),
         ));
+        let streaming_event = receiver.recv().unwrap();
+        assert_eq!(streaming_event.event_name, AI_SESSION_UPDATED_EVENT);
+        assert_eq!(
+            streaming_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-1"
+        );
+        assert_eq!(streaming_event.payload["status"], "streaming");
         assert_eq!(
             receiver.recv().unwrap().event_name,
             AI_MESSAGE_STARTED_EVENT
@@ -3883,6 +4232,545 @@ mod tests {
             "session-1:subagent:runtime-child-1"
         );
         assert_eq!(idle_event.payload["status"], "idle");
+    }
+
+    #[test]
+    fn notification_context_applies_waiting_end_statuses_per_subagent() {
+        let (sender, receiver) = std_mpsc::sync_channel(16);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        for child in ["runtime-child-1", "runtime-child-2"] {
+            let created_meta = test_meta(&[
+                (
+                    CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                    CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+                ),
+                (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+                (CODEX_ACP_CHILD_SESSION_ID_KEY, child),
+            ]);
+            context.handle(
+                SessionNotification::new(
+                    child,
+                    SessionUpdate::SessionInfoUpdate(
+                        agent_client_protocol::schema::SessionInfoUpdate::new()
+                            .meta(created_meta.clone()),
+                    ),
+                )
+                .meta(created_meta),
+            );
+            assert_eq!(
+                receiver.recv().unwrap().event_name,
+                AI_SUBAGENT_CREATED_EVENT
+            );
+
+            context.handle(SessionNotification::new(
+                child,
+                SessionUpdate::AgentMessageChunk(ContentChunk::new("Child output".into())),
+            ));
+            assert_eq!(
+                receiver.recv().unwrap().event_name,
+                AI_SESSION_UPDATED_EVENT
+            );
+            assert_eq!(
+                receiver.recv().unwrap().event_name,
+                AI_MESSAGE_STARTED_EVENT
+            );
+            assert_eq!(receiver.recv().unwrap().event_name, AI_MESSAGE_DELTA_EVENT);
+        }
+
+        let mut waiting_end_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE,
+            ),
+            (CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY, "waiting_end"),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+        ]);
+        waiting_end_meta.insert(
+            CODEX_ACP_AGENT_STATUSES_KEY.to_string(),
+            serde_json::json!([
+                {
+                    "codexAcpChildSessionId": "runtime-child-1",
+                    "codexAcpAgentStatus": { "completed": "done" }
+                },
+                {
+                    "codexAcpChildSessionId": "runtime-child-2",
+                    "codexAcpAgentStatus": "running"
+                }
+            ]),
+        );
+        context.handle(
+            SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCallUpdate(
+                    ToolCallUpdate::new(
+                        "codex-acp:subagent:waiting-1",
+                        ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+                    )
+                    .meta(waiting_end_meta.clone()),
+                ),
+            )
+            .meta(waiting_end_meta),
+        );
+
+        let idle_event = receiver.recv().unwrap();
+        assert_eq!(idle_event.event_name, AI_SESSION_UPDATED_EVENT);
+        assert_eq!(
+            idle_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-1"
+        );
+        assert_eq!(idle_event.payload["status"], "idle");
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn notification_context_ignores_stale_waiting_end_while_turn_is_active() {
+        let (sender, receiver) = std_mpsc::sync_channel(16);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let created_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-1"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-1",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .meta(created_meta.clone()),
+                ),
+            )
+            .meta(created_meta),
+        );
+        assert_eq!(
+            receiver.recv().unwrap().event_name,
+            AI_SUBAGENT_CREATED_EVENT
+        );
+
+        let turn_started_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE,
+            ),
+            (
+                CODEX_ACP_TURN_EVENT_TYPE_KEY,
+                CODEX_ACP_TURN_STARTED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_TURN_ID_KEY, "turn-2"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-1",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .meta(turn_started_meta.clone()),
+                ),
+            )
+            .meta(turn_started_meta),
+        );
+        assert_eq!(
+            receiver.recv().unwrap().event_name,
+            AI_SESSION_UPDATED_EVENT
+        );
+
+        let mut waiting_end_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE,
+            ),
+            (CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY, "waiting_end"),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+        ]);
+        waiting_end_meta.insert(
+            CODEX_ACP_AGENT_STATUSES_KEY.to_string(),
+            serde_json::json!([
+                {
+                    "codexAcpChildSessionId": "runtime-child-1",
+                    "codexAcpAgentStatus": { "completed": "old result" }
+                }
+            ]),
+        );
+        context.handle(
+            SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCallUpdate(
+                    ToolCallUpdate::new(
+                        "codex-acp:subagent:waiting-old",
+                        ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+                    )
+                    .meta(waiting_end_meta.clone()),
+                ),
+            )
+            .meta(waiting_end_meta),
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn notification_context_closes_subagent_on_close_end_terminal_status() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let created_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-1"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-1",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .meta(created_meta.clone()),
+                ),
+            )
+            .meta(created_meta),
+        );
+        assert_eq!(
+            receiver.recv().unwrap().event_name,
+            AI_SUBAGENT_CREATED_EVENT
+        );
+
+        let mut close_end_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE,
+            ),
+            (CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY, "close_end"),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-1"),
+        ]);
+        close_end_meta.insert(
+            CODEX_ACP_AGENT_STATUS_KEY.to_string(),
+            serde_json::json!("shutdown"),
+        );
+        context.handle(
+            SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCallUpdate(
+                    ToolCallUpdate::new(
+                        "codex-acp:subagent:close-1",
+                        ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+                    )
+                    .meta(close_end_meta.clone()),
+                ),
+            )
+            .meta(close_end_meta),
+        );
+
+        let closed_event = receiver.recv().unwrap();
+        assert_eq!(closed_event.event_name, AI_SESSION_CLOSED_EVENT);
+        assert_eq!(
+            closed_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-1"
+        );
+    }
+
+    #[test]
+    fn notification_context_fallback_idles_structured_subagent_without_active_turn() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let created_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-1"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-1",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .meta(created_meta.clone()),
+                ),
+            )
+            .meta(created_meta),
+        );
+        assert_eq!(
+            receiver.recv().unwrap().event_name,
+            AI_SUBAGENT_CREATED_EVENT
+        );
+
+        let interaction_begin_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_BREADCRUMB_EVENT_TYPE,
+            ),
+            (CODEX_ACP_SUBAGENT_EVENT_TYPE_KEY, "interaction_begin"),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-1"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCall(
+                    ToolCall::new("codex-acp:subagent:interaction-1", "Contacting subagent")
+                        .meta(interaction_begin_meta.clone()),
+                ),
+            )
+            .meta(interaction_begin_meta),
+        );
+        assert_eq!(
+            receiver.recv().unwrap().event_name,
+            AI_SESSION_UPDATED_EVENT
+        );
+        assert_eq!(receiver.recv().unwrap().event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(
+            receiver.recv().unwrap().event_name,
+            AI_SUBAGENT_BREADCRUMB_EVENT
+        );
+
+        context.complete_open_messages();
+        let idle_event = receiver.recv().unwrap();
+        assert_eq!(idle_event.event_name, AI_SESSION_UPDATED_EVENT);
+        assert_eq!(idle_event.payload["status"], "idle");
+    }
+
+    #[test]
+    fn notification_context_projects_subagent_user_message_chunks() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let created_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-1"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-1",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .meta(created_meta.clone()),
+                ),
+            )
+            .meta(created_meta),
+        );
+        assert_eq!(
+            receiver.recv().unwrap().event_name,
+            AI_SUBAGENT_CREATED_EVENT
+        );
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::UserMessageChunk(ContentChunk::new("Root prompt".into())),
+        ));
+        assert!(receiver.try_recv().is_err());
+
+        context.handle(SessionNotification::new(
+            "runtime-child-1",
+            SessionUpdate::UserMessageChunk(ContentChunk::new("Child prompt".into())),
+        ));
+
+        assert_eq!(
+            receiver.recv().unwrap().event_name,
+            AI_SESSION_UPDATED_EVENT
+        );
+        let started_event = receiver.recv().unwrap();
+        assert_eq!(started_event.event_name, AI_MESSAGE_STARTED_EVENT);
+        assert_eq!(started_event.payload["messageKind"], "user");
+        assert_eq!(
+            started_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-1"
+        );
+        let delta_event = receiver.recv().unwrap();
+        assert_eq!(delta_event.event_name, AI_MESSAGE_DELTA_EVENT);
+        assert_eq!(delta_event.payload["messageKind"], "user");
+        assert_eq!(delta_event.payload["delta"], "Child prompt");
+    }
+
+    #[test]
+    fn notification_context_ignores_stale_subagent_turn_completion() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let created_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-1"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-1",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .meta(created_meta.clone()),
+                ),
+            )
+            .meta(created_meta),
+        );
+        assert_eq!(
+            receiver.recv().unwrap().event_name,
+            AI_SUBAGENT_CREATED_EVENT
+        );
+
+        for turn_id in ["turn-1", "turn-2"] {
+            let turn_started_meta = test_meta(&[
+                (
+                    CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                    CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE,
+                ),
+                (
+                    CODEX_ACP_TURN_EVENT_TYPE_KEY,
+                    CODEX_ACP_TURN_STARTED_EVENT_TYPE,
+                ),
+                (CODEX_ACP_TURN_ID_KEY, turn_id),
+            ]);
+            context.handle(
+                SessionNotification::new(
+                    "runtime-child-1",
+                    SessionUpdate::SessionInfoUpdate(
+                        agent_client_protocol::schema::SessionInfoUpdate::new()
+                            .meta(turn_started_meta.clone()),
+                    ),
+                )
+                .meta(turn_started_meta),
+            );
+        }
+
+        let streaming_event = receiver.recv().unwrap();
+        assert_eq!(streaming_event.event_name, AI_SESSION_UPDATED_EVENT);
+        assert_eq!(streaming_event.payload["status"], "streaming");
+        assert!(receiver.try_recv().is_err());
+
+        let stale_complete_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE,
+            ),
+            (
+                CODEX_ACP_TURN_EVENT_TYPE_KEY,
+                CODEX_ACP_TURN_COMPLETE_EVENT_TYPE,
+            ),
+            (CODEX_ACP_TURN_ID_KEY, "turn-1"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-1",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .meta(stale_complete_meta.clone()),
+                ),
+            )
+            .meta(stale_complete_meta),
+        );
+        assert!(receiver.try_recv().is_err());
+
+        let current_complete_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE,
+            ),
+            (
+                CODEX_ACP_TURN_EVENT_TYPE_KEY,
+                CODEX_ACP_TURN_COMPLETE_EVENT_TYPE,
+            ),
+            (CODEX_ACP_TURN_ID_KEY, "turn-2"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-1",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .meta(current_complete_meta.clone()),
+                ),
+            )
+            .meta(current_complete_meta),
+        );
+
+        let idle_event = receiver.recv().unwrap();
+        assert_eq!(idle_event.event_name, AI_SESSION_UPDATED_EVENT);
+        assert_eq!(idle_event.payload["status"], "idle");
+    }
+
+    #[test]
+    fn notification_context_replays_early_turn_started_when_subagent_is_created() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let turn_started_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_TURN_LIFECYCLE_EVENT_TYPE,
+            ),
+            (
+                CODEX_ACP_TURN_EVENT_TYPE_KEY,
+                CODEX_ACP_TURN_STARTED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_TURN_ID_KEY, "turn-early"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-early",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .meta(turn_started_meta.clone()),
+                ),
+            )
+            .meta(turn_started_meta),
+        );
+        assert!(receiver.try_recv().is_err());
+
+        let created_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-early"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-early",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .meta(created_meta.clone()),
+                ),
+            )
+            .meta(created_meta),
+        );
+
+        assert_eq!(
+            receiver.recv().unwrap().event_name,
+            AI_SUBAGENT_CREATED_EVENT
+        );
+        let streaming_event = receiver.recv().unwrap();
+        assert_eq!(streaming_event.event_name, AI_SESSION_UPDATED_EVENT);
+        assert_eq!(
+            streaming_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-early"
+        );
+        assert_eq!(streaming_event.payload["status"], "streaming");
     }
 
     #[test]
@@ -4230,6 +5118,14 @@ mod tests {
             created_event.payload["sessionId"],
             "session-1:subagent:runtime-child-late"
         );
+
+        let streaming_event = receiver.recv().unwrap();
+        assert_eq!(streaming_event.event_name, AI_SESSION_UPDATED_EVENT);
+        assert_eq!(
+            streaming_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-late"
+        );
+        assert_eq!(streaming_event.payload["status"], "streaming");
 
         let started_event = receiver.recv().unwrap();
         assert_eq!(started_event.event_name, AI_MESSAGE_STARTED_EVENT);

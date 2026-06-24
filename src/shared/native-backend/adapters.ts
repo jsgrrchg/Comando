@@ -37,6 +37,7 @@ import type {
     NativeAiReviewCommandOutput,
     NativeAiRuntimeStatus,
     NativeAiSessionCatalogUpdatedPayload,
+    NativeAiSessionClosedPayload,
     NativeAiSessionCreatedPayload,
     NativeAiSessionUpdatedPayload,
     NativeAiStatusEventPayload,
@@ -110,6 +111,12 @@ export function nativeAiEventToIpc(
     if (event.eventName === "ai://session-updated") {
         return nativeAiSessionUpdatedToIpc(
             requireRecord(event.payload) as unknown as NativeAiSessionUpdatedPayload,
+        );
+    }
+
+    if (event.eventName === "ai://session-closed") {
+        return nativeAiSessionClosedToIpc(
+            requireRecord(event.payload) as unknown as NativeAiSessionClosedPayload,
         );
     }
 
@@ -446,6 +453,21 @@ function nativeAiSessionUpdatedToIpc(
         sessionId: payload.sessionId,
         status: nativeAiSessionStatusToIpc(payload.status),
         title: payload.title,
+        updatedAt: payload.updatedAt,
+    };
+}
+
+function nativeAiSessionClosedToIpc(
+    payload: NativeAiSessionClosedPayload,
+): AiSessionDomainEvent {
+    return {
+        closedAt: payload.updatedAt,
+        kind: "session-closed",
+        origin: "live",
+        parentSessionId: null,
+        runtimeId: payload.runtimeId as AiSessionDomainEvent["runtimeId"],
+        runtimeSessionId: payload.runtimeSessionId,
+        sessionId: payload.sessionId,
         updatedAt: payload.updatedAt,
     };
 }

@@ -2655,6 +2655,18 @@ export class AiService {
             };
         }
 
+        if (event.kind === "session-closed") {
+            return {
+                ...base,
+                activeTurnStartedAt: null,
+                closedAt: event.closedAt,
+                lastError: null,
+                pendingPermission: null,
+                pendingUserInput: null,
+                status: "idle",
+            };
+        }
+
         if (event.kind === "message-started") {
             return {
                 ...base,
