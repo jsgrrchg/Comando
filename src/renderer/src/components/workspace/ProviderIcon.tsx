@@ -1,5 +1,3 @@
-import type { CSSProperties } from "react";
-
 import {
     ACTIVE_AI_RUNTIME_IDS,
     getAiRuntimeDisplayName,
@@ -16,14 +14,6 @@ type ProviderIconProps = {
     readonly size?: number;
 };
 
-const PROVIDER_ICON_ACCENTS: Record<ActiveAiRuntimeId, string> = {
-    claude: "#d97757",
-    codex: "#38bdf8",
-    grok: "#f8fafc",
-    kilo: "#a78bfa",
-    opencode: "#22c55e",
-};
-
 function resolveProviderRuntimeId(runtimeId: AiRuntimeId): ActiveAiRuntimeId {
     return PROVIDER_ICON_RUNTIME_IDS.includes(runtimeId as ActiveAiRuntimeId)
         ? (runtimeId as ActiveAiRuntimeId)
@@ -32,16 +22,11 @@ function resolveProviderRuntimeId(runtimeId: AiRuntimeId): ActiveAiRuntimeId {
 
 export function ProviderIcon({
     className = "shrink-0",
-    opacity = 0.9,
+    opacity = 0.55,
     runtimeId,
     size = 12,
 }: ProviderIconProps) {
     const resolvedRuntimeId = resolveProviderRuntimeId(runtimeId);
-    const accent = PROVIDER_ICON_ACCENTS[resolvedRuntimeId];
-    const style: CSSProperties = {
-        "--provider-icon-accent": accent,
-        opacity,
-    } as CSSProperties;
     const label = `${getAiRuntimeDisplayName(resolvedRuntimeId)} provider`;
 
     if (resolvedRuntimeId === "claude") {
@@ -53,21 +38,39 @@ export function ProviderIcon({
                 fill="none"
                 height={size}
                 role="img"
-                style={style}
+                stroke="currentColor"
+                strokeLinecap="round"
+                style={{ opacity }}
                 viewBox="0 0 16 16"
                 width={size}
             >
-                <circle
-                    cx="8"
-                    cy="8"
-                    fill="color-mix(in srgb, var(--provider-icon-accent) 18%, transparent)"
-                    r="5.8"
+                <line
+                    strokeWidth="1.35"
+                    x1="8"
+                    x2="8"
+                    y1="2"
+                    y2="14"
                 />
-                <path
-                    d="M8 2.15v11.7M2.15 8h11.7M3.85 3.85l8.3 8.3M12.15 3.85l-8.3 8.3"
-                    stroke="var(--provider-icon-accent)"
-                    strokeLinecap="round"
-                    strokeWidth="1.25"
+                <line
+                    strokeWidth="1.35"
+                    x1="2"
+                    x2="14"
+                    y1="8"
+                    y2="8"
+                />
+                <line
+                    strokeWidth="1.35"
+                    x1="3.75"
+                    x2="12.25"
+                    y1="3.75"
+                    y2="12.25"
+                />
+                <line
+                    strokeWidth="1.35"
+                    x1="12.25"
+                    x2="3.75"
+                    y1="3.75"
+                    y2="12.25"
                 />
             </svg>
         );
@@ -82,59 +85,19 @@ export function ProviderIcon({
                 fill="none"
                 height={size}
                 role="img"
-                style={style}
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ opacity }}
                 viewBox="0 0 16 16"
                 width={size}
             >
-                <circle
-                    cx="8"
-                    cy="8"
-                    fill="color-mix(in srgb, var(--provider-icon-accent) 10%, transparent)"
-                    r="5.4"
-                    stroke="var(--provider-icon-accent)"
-                    strokeWidth="1"
-                />
                 <path
-                    d="M11.7 4.3 4.3 11.7M5.1 4.7h5.45c.4 0 .72.32.72.72v5.45"
-                    stroke="var(--provider-icon-accent)"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="1.25"
+                    d="M3.25 8a4.75 4.75 0 1 1 4.75 4.75"
+                    strokeWidth="1.1"
                 />
-            </svg>
-        );
-    }
-
-    if (resolvedRuntimeId === "kilo") {
-        return (
-            <svg
-                aria-label={label}
-                className={className}
-                data-provider-icon={resolvedRuntimeId}
-                fill="none"
-                height={size}
-                role="img"
-                style={style}
-                viewBox="0 0 16 16"
-                width={size}
-            >
-                <rect
-                    fill="color-mix(in srgb, var(--provider-icon-accent) 14%, transparent)"
-                    height="11"
-                    rx="2.2"
-                    stroke="var(--provider-icon-accent)"
-                    strokeWidth="1"
-                    width="11"
-                    x="2.5"
-                    y="2.5"
-                />
-                <path
-                    d="M5.35 4.75v6.5M5.45 8l5.2-3.25M5.45 8l5.2 3.25"
-                    stroke="var(--provider-icon-accent)"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="1.35"
-                />
+                <path d="M8 3.25v4.75h4.75" strokeWidth="1.1" />
+                <path d="M4.4 11.6 11.6 4.4" strokeWidth="1" />
             </svg>
         );
     }
@@ -148,24 +111,63 @@ export function ProviderIcon({
                 fill="none"
                 height={size}
                 role="img"
-                style={style}
+                style={{ opacity }}
+                viewBox="0 0 300 300"
+                width={size}
+            >
+                <path
+                    d="M210 240H90V120H210V240Z"
+                    fill="currentColor"
+                    opacity="0.38"
+                />
+                <path
+                    d="M210 60H90V240H210V60ZM270 300H30V0H270V300Z"
+                    fill="currentColor"
+                />
+            </svg>
+        );
+    }
+
+    if (resolvedRuntimeId === "codex") {
+        return (
+            <svg
+                aria-label={label}
+                className={className}
+                data-provider-icon={resolvedRuntimeId}
+                fill="none"
+                height={size}
+                role="img"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ opacity }}
                 viewBox="0 0 16 16"
                 width={size}
             >
-                <circle
-                    cx="8"
-                    cy="8"
-                    fill="color-mix(in srgb, var(--provider-icon-accent) 12%, transparent)"
-                    r="5.4"
-                    stroke="var(--provider-icon-accent)"
-                    strokeWidth="1"
+                <polygon
+                    points="8,2.3 13.4,5.4 13.4,10.6 8,13.7 2.6,10.6 2.6,5.4"
+                    strokeWidth="1.1"
                 />
-                <path
-                    d="M5.1 6.35 3.45 8l1.65 1.65M10.9 6.35 12.55 8l-1.65 1.65M9 4.85 7 11.15"
-                    stroke="var(--provider-icon-accent)"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="1.15"
+                <line
+                    strokeWidth="1"
+                    x1="8"
+                    x2="8"
+                    y1="2.3"
+                    y2="13.7"
+                />
+                <line
+                    strokeWidth="1"
+                    x1="2.6"
+                    x2="13.4"
+                    y1="5.4"
+                    y2="10.6"
+                />
+                <line
+                    strokeWidth="1"
+                    x1="13.4"
+                    x2="2.6"
+                    y1="5.4"
+                    y2="10.6"
                 />
             </svg>
         );
@@ -179,25 +181,34 @@ export function ProviderIcon({
             fill="none"
             height={size}
             role="img"
-            style={style}
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            style={{ opacity }}
             viewBox="0 0 16 16"
             width={size}
         >
-            <path
-                d="M8 2.2 13.2 5.2v5.6L8 13.8 2.8 10.8V5.2L8 2.2Z"
-                fill="color-mix(in srgb, var(--provider-icon-accent) 14%, transparent)"
-                stroke="var(--provider-icon-accent)"
-                strokeLinejoin="round"
-                strokeWidth="1.05"
+            <line
+                strokeWidth="1.5"
+                x1="4.75"
+                x2="4.75"
+                y1="2.75"
+                y2="13.25"
             />
-            <path
-                d="M8 2.2v11.6M2.8 5.2l10.4 5.6M13.2 5.2 2.8 10.8"
-                stroke="var(--provider-icon-accent)"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="0.9"
+            <line
+                strokeWidth="1.5"
+                x1="4.75"
+                x2="11.25"
+                y1="8"
+                y2="2.75"
             />
-            <circle cx="8" cy="8" fill="var(--provider-icon-accent)" r="1.05" />
+            <line
+                strokeWidth="1.5"
+                x1="4.75"
+                x2="11.25"
+                y1="8"
+                y2="13.25"
+            />
         </svg>
     );
 }

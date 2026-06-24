@@ -6643,7 +6643,7 @@ function TabIcon({
     readonly title?: string;
 }) {
     if ((kind === "chat" || kind === "review") && runtimeId) {
-        return <ProviderIcon opacity={0.9} runtimeId={runtimeId} size={12} />;
+        return <ProviderIcon runtimeId={runtimeId} size={12} />;
     }
 
     if (kind === "terminal") {
