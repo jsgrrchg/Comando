@@ -367,7 +367,7 @@ describe("toolActivityReviewModel", () => {
         expect(item?.file?.identityKey).toBe("tracked-1");
     });
 
-    it("prefers the matched tracked file diff for chat review rendering", () => {
+    it("keeps activity diffs immutable when a tracked file is matched", () => {
         const activity = createActivity({
             diffs: [
                 {
@@ -436,8 +436,9 @@ describe("toolActivityReviewModel", () => {
 
         expect(item).toBeDefined();
         expect(item?.file?.identityKey).toBe("tracked-1");
-        expect(item?.diff.hunks[0]?.oldStart).toBe(1502);
-        expect(item?.diff.hunks[0]?.newStart).toBe(1502);
+        expect(item?.diff.hunks[0]?.id).toBe("snippet-hunk");
+        expect(item?.diff.hunks[0]?.oldStart).toBe(4);
+        expect(item?.diff.hunks[0]?.newStart).toBe(4);
     });
 
     it("marks preview-only when only activity diff exists", () => {

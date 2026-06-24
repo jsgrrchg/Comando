@@ -130,11 +130,7 @@ export function deriveChangeReviewItems(
             unmatchedTrackedFiles.delete(file.identityKey);
         }
 
-        return createChangeReviewItem(
-            file ? createDiffFromTrackedFile(file) : diff,
-            file,
-            index,
-        );
+        return createChangeReviewItem(diff, file, index);
     });
 
     const fallbackItems = sortTrackedFiles([
