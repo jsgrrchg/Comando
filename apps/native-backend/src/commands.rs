@@ -3402,6 +3402,12 @@ impl NativeBackend {
                 serde_json::to_value(invalidation).expect("invalidation event serializes"),
             ));
         }
+        for invalidation in drain.git_invalidations {
+            outputs.push(event(
+                "git://repository-invalidated",
+                serde_json::to_value(invalidation).expect("git invalidation event serializes"),
+            ));
+        }
         for (event_name, payload) in drain.fs_events {
             outputs.push(event(
                 &event_name,
@@ -3413,13 +3419,19 @@ impl NativeBackend {
 
     #[cfg(test)]
     fn queue_test_fs_event(&mut self, request: RpcRequest) -> CommandResult {
+        let relative_path = request
+            .args
+            .get("relativePath")
+            .and_then(Value::as_str)
+            .unwrap_or("src/idle.txt")
+            .to_string();
         self.fs_service.queue_test_invalidation_after_delay(
             comando_fs::ProjectRoot {
                 project_id: "project_test".into(),
                 worktree_id: Some("project_test:primary".into()),
                 root_path: "/tmp/project-test".into(),
             },
-            "src/idle.txt".to_string(),
+            relative_path,
             std::time::Duration::from_millis(200),
         );
 

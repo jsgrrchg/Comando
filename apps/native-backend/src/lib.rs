@@ -246,6 +246,55 @@ mod tests {
         handle.join().expect("stdio thread");
     }
 
+    #[test]
+    fn emits_git_invalidations_from_git_metadata_watch_events() {
+        let (sender, receiver) = mpsc::channel();
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer = SharedWriter {
+            output: Arc::clone(&output),
+        };
+        let handle = thread::spawn(move || {
+            run_stdio(BufReader::new(ChannelRead::new(receiver)), writer).expect("stdio");
+        });
+
+        send_request(
+            &sender,
+            json!({
+                "id": "queue",
+                "command": "backend_queue_test_fs_event",
+                "args": {
+                    "relativePath": ".git/HEAD"
+                }
+            }),
+        );
+        assert!(wait_for_output(
+            &output,
+            "\"id\":\"queue\"",
+            Duration::from_secs(2)
+        ));
+
+        assert!(
+            wait_for_output(
+                &output,
+                "git://repository-invalidated",
+                Duration::from_secs(3)
+            ),
+            "{}",
+            String::from_utf8_lossy(&output.lock().expect("output lock"))
+        );
+
+        send_request(
+            &sender,
+            json!({
+                "id": "shutdown",
+                "command": "backend_shutdown",
+                "args": {}
+            }),
+        );
+        drop(sender);
+        handle.join().expect("stdio thread");
+    }
+
     fn send_request(sender: &mpsc::Sender<Vec<u8>>, value: serde_json::Value) {
         let mut line = serde_json::to_vec(&value).expect("json");
         line.push(b'\n');

@@ -458,11 +458,11 @@ export class NativeGitGateway implements ClosableGitGateway {
 
     invalidate(inputPath?: string): void {
         void inputPath;
-        // The Rust sidecar owns Git invalidation state. This gateway is stateless.
+        // Filesystem-driven Git invalidations are emitted by the Rust watcher.
     }
 
     clear(): void {
-        // The Rust sidecar owns Git invalidation state. This gateway is stateless.
+        // This gateway has no local Git cache to clear.
     }
 
     async close(): Promise<void> {

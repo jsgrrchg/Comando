@@ -1216,6 +1216,7 @@ function applySnapshotState(
 ): void {
     void resolveGitHubAvatars(snapshot.remotes);
     const contextKey = getContextKey(projectId, snapshot.currentWorktreeId);
+    const hasWorktreeChanges = snapshot.changedPaths.length > 0;
 
     set((state) => ({
         activeWorktreeIds: {
@@ -1274,6 +1275,26 @@ function applySnapshotState(
             ...state.snapshots,
             [contextKey]: snapshot,
         },
+        ...(hasWorktreeChanges
+            ? {}
+            : {
+                  collapsedWorktreeDiffFileIds: {
+                      ...state.collapsedWorktreeDiffFileIds,
+                      [contextKey]: [],
+                  },
+                  diffsByContext: {
+                      ...state.diffsByContext,
+                      [contextKey]: {},
+                  },
+                  selectedWorktreeDiffFileIds: {
+                      ...state.selectedWorktreeDiffFileIds,
+                      [contextKey]: null,
+                  },
+                  worktreeDiffsByContext: {
+                      ...state.worktreeDiffsByContext,
+                      [contextKey]: null,
+                  },
+              }),
     }));
 }
 

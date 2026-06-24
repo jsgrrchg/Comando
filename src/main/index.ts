@@ -23,7 +23,9 @@ import {
     type WindowContextSnapshot,
 } from "@shared/ipc";
 import {
+    nativeGitInvalidationToIpc,
     nativeProjectTreeInvalidationToIpc,
+    type NativeGitRepositoryInvalidation,
     type NativeProjectTreeInvalidation,
 } from "@shared/native-backend";
 
@@ -998,6 +1000,18 @@ function broadcastNativeBackendEvent(event: NativeBackendEvent): void {
             projectService?.handleProjectTreeInvalidation(invalidation);
         } catch (error) {
             debugBenignError("nativeBackend.projectTreeInvalidation", error);
+        }
+    }
+
+    if (event.eventName === "git://repository-invalidated") {
+        try {
+            broadcastGitRepositoryInvalidated(
+                nativeGitInvalidationToIpc(
+                    event.payload as NativeGitRepositoryInvalidation,
+                ),
+            );
+        } catch (error) {
+            debugBenignError("nativeBackend.gitInvalidation", error);
         }
     }
 
