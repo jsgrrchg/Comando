@@ -12,6 +12,7 @@ import {
     type AppBootstrapSnapshot,
     type AiHistorySessionSummary,
     type AiSessionDomainEvent,
+    type AiSessionStreamAckMessage,
     type AiSessionStreamMessage,
     type AiSessionUpdate,
     type AiPermissionResponseInput,
@@ -336,7 +337,11 @@ function notifyAiSessionSnapshotListeners(update: unknown): void {
         return;
     }
     for (const listener of aiSessionSnapshotListeners) {
-        listener(update);
+        try {
+            listener(update);
+        } catch (error) {
+            console.error("[comando] AiSessionUpdate listener failed.", error);
+        }
     }
 }
 
@@ -348,12 +353,18 @@ function notifyAiSessionEventListeners(event: unknown): void {
         return;
     }
     for (const listener of aiSessionEventListeners) {
-        listener(event);
+        try {
+            listener(event);
+        } catch (error) {
+            console.error(
+                "[comando] AiSessionDomainEvent listener failed.",
+                error,
+            );
+        }
     }
 }
 
-function notifyAiSessionStreamListeners(message: unknown): void {
-    const payload = message as AiSessionStreamMessage;
+function notifyAiSessionStreamPayload(payload: unknown): void {
     if (isAiSessionUpdate(payload)) {
         notifyAiSessionSnapshotListeners(payload);
         return;
@@ -365,6 +376,60 @@ function notifyAiSessionStreamListeners(message: unknown): void {
     }
 
     console.warn("[comando] Dropped AI session stream payload.");
+}
+
+function isAiSessionStreamMessage(
+    message: unknown,
+): message is AiSessionStreamMessage {
+    if (typeof message !== "object" || message === null) {
+        return false;
+    }
+
+    const candidate = message as {
+        readonly payload?: unknown;
+        readonly sentAt?: unknown;
+        readonly seq?: unknown;
+        readonly type?: unknown;
+    };
+    if (typeof candidate.seq !== "number") {
+        return false;
+    }
+    if (candidate.type === "payload") {
+        return candidate.payload !== undefined;
+    }
+    return candidate.type === "ping" && typeof candidate.sentAt === "number";
+}
+
+function acknowledgeAiSessionStreamPort(seq: number): void {
+    const port = aiSessionSnapshotPort;
+    if (!port) {
+        return;
+    }
+
+    const message: AiSessionStreamAckMessage = {
+        seq,
+        type: "ack",
+    };
+    try {
+        port.postMessage(message);
+    } catch (error) {
+        console.warn("[comando] Failed to acknowledge AI session stream.", error);
+    }
+}
+
+function notifyAiSessionStreamListeners(message: unknown): void {
+    if (!isAiSessionStreamMessage(message)) {
+        console.warn("[comando] Dropped AI session stream envelope.");
+        return;
+    }
+
+    try {
+        if (message.type === "payload") {
+            notifyAiSessionStreamPayload(message.payload);
+        }
+    } finally {
+        acknowledgeAiSessionStreamPort(message.seq);
+    }
 }
 
 function bindAiSessionSnapshotPort(port: MessagePort): void {

@@ -2607,7 +2607,24 @@ export type AiSessionDomainEvent =
     | AiSessionToolActivityEvent
     | AiSessionUserInputRequestEvent;
 
-export type AiSessionStreamMessage = AiSessionDomainEvent | AiSessionUpdate;
+export type AiSessionStreamPayload = AiSessionDomainEvent | AiSessionUpdate;
+
+export type AiSessionStreamMessage =
+    | {
+          readonly payload: AiSessionStreamPayload;
+          readonly seq: number;
+          readonly type: "payload";
+      }
+    | {
+          readonly sentAt: number;
+          readonly seq: number;
+          readonly type: "ping";
+      };
+
+export interface AiSessionStreamAckMessage {
+    readonly seq: number;
+    readonly type: "ack";
+}
 
 export interface SendAiPromptInput {
     readonly additionalRoots?: readonly string[];
