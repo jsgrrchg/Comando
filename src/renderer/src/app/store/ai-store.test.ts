@@ -266,6 +266,64 @@ describe("ai-store queue", () => {
         ).toEqual(availableCommands);
     });
 
+    it("applies subagent-created model ids over the runtime catalog model", () => {
+        useAiStore.getState().applyRuntimeStatus(
+            createRuntimeStatus({
+                configOptions: [
+                    {
+                        category: "model",
+                        description: null,
+                        id: "model",
+                        label: "Model",
+                        options: [
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "Default",
+                                value: "gpt-4o",
+                            },
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "Subagent",
+                                value: "gpt-5",
+                            },
+                        ],
+                        type: "select",
+                        value: "gpt-4o",
+                    },
+                ],
+                modelId: "gpt-4o",
+                models: [
+                    { description: null, id: "gpt-4o", name: "GPT-4o" },
+                    { description: null, id: "gpt-5", name: "GPT-5" },
+                ],
+            }),
+        );
+
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                childRuntimeSessionId: "runtime-child-1",
+                childSessionId: "session-1:subagent:runtime-child-1",
+                kind: "subagent-created",
+                modelId: "gpt-5",
+                parentSessionId: "session-1",
+                runtimeSessionId: "runtime-child-1",
+                sessionId: "session-1:subagent:runtime-child-1",
+                title: "Galileo",
+            }),
+        );
+
+        const snapshot =
+            useAiStore.getState().sessions["session-1:subagent:runtime-child-1"]
+                ?.snapshot;
+        const modelConfig = snapshot?.configOptions.find(
+            (option) => option.id === "model",
+        );
+        expect(snapshot?.modelId).toBe("gpt-5");
+        expect(modelConfig).toMatchObject({ value: "gpt-5" });
+    });
+
     it("applies inferred titles from status events", () => {
         useAiStore.getState().applySessionSnapshot(
             createSnapshot({ title: "Codex 1" }),

@@ -75,6 +75,7 @@ const CODEX_ACP_CHILD_SESSION_ID_KEY: &str = "codexAcpChildSessionId";
 const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
 const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
 const CODEX_ACP_AGENT_STATUSES_KEY: &str = "codexAcpAgentStatuses";
+const CODEX_ACP_MODEL_KEY: &str = "codexAcpModel";
 
 type PermissionWaiterMap = Arc<Mutex<HashMap<String, PendingPermissionRequest>>>;
 type PromptCapabilitiesState = Arc<Mutex<AcpPromptCapabilities>>;
@@ -1852,6 +1853,7 @@ struct SubagentRuntimeSession {
     parent_session_id: SessionId,
     runtime_session_id: RuntimeSessionId,
     session_id: SessionId,
+    model_id: Option<String>,
     title: String,
 }
 
@@ -1882,6 +1884,7 @@ impl NotificationContextInner {
                             parent_session_id: session.session_id.clone(),
                             runtime_session_id: mapping.runtime_session_id.clone(),
                             session_id: mapping.app_session_id,
+                            model_id: None,
                             title: "Subagent".to_string(),
                         },
                     );
@@ -2734,6 +2737,8 @@ impl NotificationContextInner {
             .or_else(|| fallback_title.map(ToOwned::to_owned))
             .filter(|title| !title.trim().is_empty())
             .unwrap_or_else(|| "Subagent".to_string());
+        let model_id =
+            meta_string(meta, CODEX_ACP_MODEL_KEY).filter(|model_id| !model_id.trim().is_empty());
         let session_id = self
             .app_session_id_by_runtime_session_id
             .get(&child_runtime_session_id.0)
@@ -2748,6 +2753,7 @@ impl NotificationContextInner {
             parent_session_id,
             runtime_session_id: child_runtime_session_id.clone(),
             session_id: session_id.clone(),
+            model_id,
             title,
         };
         self.app_session_id_by_runtime_session_id
@@ -2762,6 +2768,7 @@ impl NotificationContextInner {
                 child_session_id: session_id,
                 parent_runtime_session_id,
                 parent_session_id: subagent.parent_session_id.clone(),
+                model_id: subagent.model_id.clone(),
                 title: subagent.title.clone(),
             },
         );
@@ -4173,6 +4180,7 @@ mod tests {
             (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
             (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-1"),
             (CODEX_ACP_AGENT_NICKNAME_KEY, "Galileo"),
+            (CODEX_ACP_MODEL_KEY, "gpt-5"),
         ]);
         context.handle(
             SessionNotification::new(
@@ -4192,6 +4200,7 @@ mod tests {
             "session-1:subagent:runtime-child-1"
         );
         assert_eq!(created_event.payload["parentSessionId"], "session-1");
+        assert_eq!(created_event.payload["modelId"], "gpt-5");
         assert_eq!(created_event.payload["title"], "Galileo");
 
         let breadcrumb_meta = test_meta(&[

@@ -10,6 +10,7 @@
     "childRuntimeSessionId": "runtime_child_1",
     "parentSessionId": "session_1",
     "parentRuntimeSessionId": "runtime_session_1",
+    "modelId": "gpt-5",
     "title": "Aristotle"
   },
   "meta": {

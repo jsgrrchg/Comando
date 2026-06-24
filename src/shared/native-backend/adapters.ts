@@ -480,6 +480,7 @@ function nativeAiSubagentCreatedToIpc(
         childSessionId: payload.childSessionId,
         childRuntimeSessionId: payload.childRuntimeSessionId,
         kind: "subagent-created",
+        modelId: payload.modelId ?? null,
         parentSessionId: payload.parentSessionId,
         runtimeSessionId: payload.childRuntimeSessionId,
         sessionId: payload.childSessionId,

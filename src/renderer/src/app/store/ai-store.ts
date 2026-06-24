@@ -2106,18 +2106,25 @@ function createSessionSnapshotFromEvent(
             : event.kind === "status"
               ? (normalizeSessionStatusTitle(event.title) ?? "AI Session")
             : "AI Session";
+    const modelId =
+        event.kind === "subagent-created"
+            ? (event.modelId ?? catalog?.modelId ?? null)
+            : (catalog?.modelId ?? null);
 
     return {
         activeTurnStartedAt:
             event.kind === "status" ? event.activeTurnStartedAt : null,
         availableCommands: catalog?.availableCommands ?? [],
         closedAt: event.kind === "session-closed" ? event.closedAt : null,
-        configOptions: catalog?.configOptions ?? [],
+        configOptions: applyModelIdToConfigOptions(
+            catalog?.configOptions ?? [],
+            modelId,
+        ),
         lastError: event.kind === "status" ? event.lastError : null,
         messages: [],
         modeId: catalog?.modeId ?? null,
         modes: catalog?.modes ?? [],
-        modelId: catalog?.modelId ?? null,
+        modelId,
         models: catalog?.models ?? [],
         pendingPermission:
             event.kind === "permission-request" ? event.request : null,
@@ -2300,6 +2307,11 @@ function applySessionDomainEventToSnapshot(
         case "subagent-created":
             return {
                 ...snapshot,
+                configOptions: applyModelIdToConfigOptions(
+                    snapshot.configOptions,
+                    event.modelId,
+                ),
+                modelId: event.modelId ?? snapshot.modelId,
                 parentSessionId: event.parentSessionId,
                 runtimeSessionId:
                     event.runtimeSessionId ?? snapshot.runtimeSessionId,
@@ -2489,19 +2501,22 @@ function mergeRuntimeCatalogIntoSnapshot(
     snapshot: AiSessionSnapshot,
     catalog: AiRuntimeCatalog,
 ): AiSessionSnapshot {
+    const modelId = snapshot.modelId ?? catalog.modelId;
     return {
         ...snapshot,
         availableCommands:
             snapshot.availableCommands.length > 0
                 ? snapshot.availableCommands
                 : catalog.availableCommands,
-        configOptions:
+        configOptions: applyModelIdToConfigOptions(
             snapshot.configOptions.length > 0
                 ? snapshot.configOptions
                 : catalog.configOptions,
+            modelId,
+        ),
         modeId: snapshot.modeId ?? catalog.modeId,
         modes: snapshot.modes.length > 0 ? snapshot.modes : catalog.modes,
-        modelId: snapshot.modelId ?? catalog.modelId,
+        modelId,
         models: snapshot.models.length > 0 ? snapshot.models : catalog.models,
     };
 }
@@ -3674,6 +3689,26 @@ function hasSelectConfigValue(
     return (
         option.type === "select" &&
         option.options.some((candidate) => candidate.value === value)
+    );
+}
+
+function applyModelIdToConfigOptions(
+    configOptions: readonly AiSessionConfigOption[],
+    modelId: string | null,
+): readonly AiSessionConfigOption[] {
+    if (!modelId) {
+        return configOptions;
+    }
+
+    return configOptions.map((option) =>
+        option.type === "select" &&
+        (option.category === "model" || option.id.toLowerCase() === "model") &&
+        hasSelectConfigValue(option, modelId)
+            ? {
+                  ...option,
+                  value: modelId,
+              }
+            : option,
     );
 }
 

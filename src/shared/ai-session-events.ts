@@ -86,6 +86,7 @@ function appendSessionInfoEvents(
             childRuntimeSessionId: nextSnapshot.runtimeSessionId ?? null,
             childSessionId: nextSnapshot.sessionId,
             kind: "subagent-created",
+            modelId: nextSnapshot.modelId,
             parentSessionId: nextSnapshot.parentSessionId,
             title: nextSnapshot.title,
         });

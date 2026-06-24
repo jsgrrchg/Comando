@@ -163,6 +163,7 @@ fn ai_fixtures_deserialize() {
     };
     let payload: NativeAiSubagentCreatedPayload =
         serde_json::from_value(subagent_created.payload).expect("payload should deserialize");
+    assert_eq!(payload.model_id.as_deref(), Some("gpt-5"));
     assert_eq!(payload.title, "Aristotle");
 
     let subagent_breadcrumb: NativeRpcOutput = fixture("ai/event.subagent_breadcrumb.json");

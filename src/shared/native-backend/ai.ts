@@ -478,6 +478,7 @@ export type NativeAiSubagentCreatedPayload = NativeAiEventBase & {
     readonly childRuntimeSessionId: NativeRuntimeSessionId;
     readonly parentSessionId: NativeSessionId;
     readonly parentRuntimeSessionId: NativeRuntimeSessionId | null;
+    readonly modelId?: string | null;
     readonly title: string;
 };
 

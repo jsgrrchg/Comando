@@ -1194,9 +1194,16 @@ impl AiEngine {
                 .and_then(|metadata| metadata.worktree_id.clone()),
             title: title.to_string(),
             status: NativeAiSessionStatus::Idle,
-            model_id: parent_metadata
-                .as_ref()
-                .and_then(|metadata| metadata.model_id.clone()),
+            model_id: payload
+                .get("modelId")
+                .and_then(Value::as_str)
+                .filter(|model_id| !model_id.trim().is_empty())
+                .map(ToOwned::to_owned)
+                .or_else(|| {
+                    parent_metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.model_id.clone())
+                }),
             mode_id: parent_metadata
                 .as_ref()
                 .and_then(|metadata| metadata.mode_id.clone()),

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+    AiSessionClosedEvent,
     AiRuntimeStatus,
     PrepareAiSessionInput,
     SendAiPromptInput,
@@ -145,7 +146,7 @@ describe("NativeAiGateway", () => {
 
     it("routes native AI events through the owning window", async () => {
         const client = createClient();
-        const onSessionEvent = vi.fn();
+        const onSessionEvent = vi.fn<NativeAiGatewayOptions["onSessionEvent"]>();
         const gateway = createGateway(client, { onSessionEvent });
 
         await gateway.prepareSession({
@@ -261,7 +262,7 @@ describe("NativeAiGateway", () => {
 
     it("routes native subagent events by parent ownership and remembers the child", async () => {
         const client = createClient();
-        const onSessionEvent = vi.fn();
+        const onSessionEvent = vi.fn<NativeAiGatewayOptions["onSessionEvent"]>();
         const gateway = createGateway(client, { onSessionEvent });
 
         await gateway.prepareSession({
@@ -275,6 +276,7 @@ describe("NativeAiGateway", () => {
                 childSessionId: "session-1:subagent:runtime-child-1",
                 parentRuntimeSessionId: "runtime-session-1",
                 parentSessionId: "session-1",
+                modelId: "gpt-5",
                 runtimeId: "opencode",
                 runtimeSessionId: "runtime-child-1",
                 sessionId: "session-1:subagent:runtime-child-1",
@@ -303,6 +305,7 @@ describe("NativeAiGateway", () => {
             expect.objectContaining({
                 childSessionId: "session-1:subagent:runtime-child-1",
                 kind: "subagent-created",
+                modelId: "gpt-5",
                 parentSessionId: "session-1",
                 sessionId: "session-1:subagent:runtime-child-1",
                 title: "Galileo",
@@ -362,21 +365,18 @@ describe("NativeAiGateway", () => {
         const closedEvent = onSessionEvent.mock.calls
             .map(([, event]) => event)
             .find(
-                (event) =>
+                (event): event is AiSessionClosedEvent =>
                     event.kind === "session-closed" &&
                     event.sessionId === "session-1:subagent:runtime-child-1",
             );
-        expect(closedEvent).toEqual(
-            expect.objectContaining({
-                closedAt: expect.any(String),
-                updatedAt: expect.any(String),
-            }),
-        );
+        expect(closedEvent?.kind).toBe("session-closed");
+        expect(typeof closedEvent?.closedAt).toBe("string");
+        expect(typeof closedEvent?.updatedAt).toBe("string");
     });
 
     it("hydrates persisted subagent mappings before child events arrive", async () => {
         const client = createClient();
-        const onSessionEvent = vi.fn();
+        const onSessionEvent = vi.fn<NativeAiGatewayOptions["onSessionEvent"]>();
         const gateway = createGateway(client, { onSessionEvent });
         const childSessionId = "session-1:subagent:runtime-child-1";
         const launch = {
@@ -623,7 +623,7 @@ describe("NativeAiGateway", () => {
             path: "src/legacy.ts",
         });
         client.request.mockImplementation(
-            <T = unknown>(command: string, _args?: unknown): Promise<T> => {
+            <T = unknown>(command: string): Promise<T> => {
                 if (command === "ai_load_session_snapshot") {
                     return Promise.resolve(
                         createNativeSnapshotOutput({
@@ -877,7 +877,7 @@ describe("NativeAiGateway", () => {
     it("does not emit a local user message when the native backend rejects the prompt", async () => {
         const client = createClient();
         client.request.mockRejectedValueOnce(new Error("session busy"));
-        const onSessionEvent = vi.fn();
+        const onSessionEvent = vi.fn<NativeAiGatewayOptions["onSessionEvent"]>();
         const gateway = createGateway(client, { onSessionEvent });
 
         await expect(

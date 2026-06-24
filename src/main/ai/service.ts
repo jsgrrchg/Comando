@@ -653,7 +653,7 @@ export class AiService {
         if (!previousSnapshot && event.kind === "subagent-created") {
             const parentSnapshot = this.#liveSnapshots.get(event.parentSessionId);
             if (parentSnapshot) {
-                const childSnapshot: AiSessionSnapshot = {
+                const baseChildSnapshot: AiSessionSnapshot = {
                     ...parentSnapshot,
                     activeTurnStartedAt: null,
                     closedAt: null,
@@ -673,6 +673,13 @@ export class AiService {
                     trackedFiles: [],
                     updatedAt: event.updatedAt,
                 };
+                const childSnapshot = event.modelId
+                    ? setModelOnSnapshot(
+                          baseChildSnapshot,
+                          event.modelId,
+                          event.updatedAt,
+                      )
+                    : baseChildSnapshot;
                 this.#cacheLiveSessionSnapshot(childSnapshot, ownerWindowId);
                 this.#nativeSessionIds.add(event.childSessionId);
                 this.#nativeChildParentSessionIds.set(
@@ -4882,7 +4889,8 @@ function mergePersistedCatalogIntoSessionSnapshot(
     snapshot: AiSessionSnapshot,
     catalog: PersistedRuntimeCatalogSnapshot,
 ): AiSessionSnapshot {
-    return {
+    const modelId = snapshot.modelId ?? catalog.modelId;
+    const merged = {
         ...snapshot,
         availableCommands:
             snapshot.availableCommands.length > 0
@@ -4894,9 +4902,10 @@ function mergePersistedCatalogIntoSessionSnapshot(
                 : catalog.configOptions,
         modeId: snapshot.modeId ?? catalog.modeId,
         modes: snapshot.modes.length > 0 ? snapshot.modes : catalog.modes,
-        modelId: snapshot.modelId ?? catalog.modelId,
+        modelId,
         models: snapshot.models.length > 0 ? snapshot.models : catalog.models,
     };
+    return modelId ? setModelOnSnapshot(merged, modelId, merged.updatedAt) : merged;
 }
 
 function mergePersistedCatalogIntoRuntimeStatus(

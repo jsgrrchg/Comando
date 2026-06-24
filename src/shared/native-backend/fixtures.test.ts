@@ -330,6 +330,7 @@ describe("native backend fixtures", () => {
         expect(aiEvent("ai/event.subagent_created.json")).toMatchObject({
             childSessionId: "session_1:subagent:runtime_child_1",
             kind: "subagent-created",
+            modelId: "gpt-5",
             parentSessionId: "session_1",
             title: "Aristotle",
         });

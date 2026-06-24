@@ -2584,6 +2584,7 @@ export interface AiSessionSubagentCreatedEvent
     readonly childRuntimeSessionId: string | null;
     readonly childSessionId: string;
     readonly kind: "subagent-created";
+    readonly modelId: string | null;
     readonly parentSessionId: string;
     readonly title: string;
 }
