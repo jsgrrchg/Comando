@@ -445,6 +445,7 @@ function nativeAiSessionUpdatedToIpc(
         runtimeSessionId: payload.runtimeSessionId,
         sessionId: payload.sessionId,
         status: nativeAiSessionStatusToIpc(payload.status),
+        title: payload.title,
         updatedAt: payload.updatedAt,
     };
 }

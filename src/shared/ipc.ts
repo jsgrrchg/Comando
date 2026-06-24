@@ -2529,6 +2529,7 @@ export interface AiSessionStatusEvent extends AiSessionDomainEventBase {
     readonly kind: "status";
     readonly lastError: string | null;
     readonly status: AiSessionStatus;
+    readonly title?: string | null;
 }
 
 export interface AiSessionPlanEvent extends AiSessionDomainEventBase {

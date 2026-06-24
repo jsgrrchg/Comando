@@ -2103,6 +2103,8 @@ function createSessionSnapshotFromEvent(
     const title =
         event.kind === "session-info" || event.kind === "subagent-created"
             ? event.title
+            : event.kind === "status"
+              ? (normalizeSessionStatusTitle(event.title) ?? "AI Session")
             : "AI Session";
 
     return {
@@ -2135,6 +2137,16 @@ function createSessionSnapshotFromEvent(
         updatedAt: event.updatedAt,
         worktreeId: event.kind === "session-info" ? event.worktreeId : null,
     };
+}
+
+function normalizeSessionStatusTitle(
+    title: string | null | undefined,
+): string | null {
+    if (typeof title !== "string") {
+        return null;
+    }
+    const trimmed = title.trim();
+    return trimmed.length > 0 ? trimmed : null;
 }
 
 function applySessionDomainEventToSnapshot(
@@ -2212,7 +2224,8 @@ function applySessionDomainEventToSnapshot(
                 ),
                 updatedAt: event.updatedAt,
             };
-        case "status":
+        case "status": {
+            const title = normalizeSessionStatusTitle(event.title);
             return {
                 ...snapshot,
                 activeTurnStartedAt: event.activeTurnStartedAt,
@@ -2220,8 +2233,10 @@ function applySessionDomainEventToSnapshot(
                 runtimeSessionId:
                     event.runtimeSessionId ?? snapshot.runtimeSessionId,
                 status: event.status,
+                title: title ?? snapshot.title,
                 updatedAt: event.updatedAt,
             };
+        }
         case "plan":
             return {
                 ...snapshot,

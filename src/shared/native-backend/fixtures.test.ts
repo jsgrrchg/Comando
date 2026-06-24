@@ -152,6 +152,24 @@ describe("native backend fixtures", () => {
             kind: "status",
             status: "streaming",
         });
+        expect(
+            nativeAiEventToIpc({
+                eventName: "ai://session-updated",
+                payload: {
+                    runtimeId: "opencode",
+                    runtimeSessionId: "runtime_session_1",
+                    sessionId: "session_1",
+                    status: "streaming",
+                    title: "Revisa login",
+                    updatedAt: "2026-06-20T00:00:01.000Z",
+                },
+                type: "event",
+            }),
+        ).toMatchObject({
+            kind: "status",
+            status: "streaming",
+            title: "Revisa login",
+        });
         expect(aiEvent("ai/event.message_started.json")).toMatchObject({
             kind: "message-started",
             message: { id: "message_1", kind: "assistant" },

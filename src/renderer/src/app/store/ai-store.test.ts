@@ -266,6 +266,25 @@ describe("ai-store queue", () => {
         ).toEqual(availableCommands);
     });
 
+    it("applies inferred titles from status events", () => {
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({ title: "Codex 1" }),
+        );
+
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "status",
+                status: "streaming",
+                title: "Revisa login",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.title,
+        ).toBe("Revisa login");
+    });
+
     it("applies a prepared runtime session snapshot from the backend", async () => {
         const prepareAiSession = vi.fn().mockResolvedValue(createSnapshot());
         const sendAiPrompt = vi.fn().mockResolvedValue(undefined);

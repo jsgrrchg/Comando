@@ -2637,6 +2637,7 @@ export class AiService {
         }
 
         if (event.kind === "status") {
+            const title = normalizeSessionStatusTitle(event.title);
             return {
                 ...base,
                 activeTurnStartedAt: event.activeTurnStartedAt,
@@ -2650,6 +2651,7 @@ export class AiService {
                         ? snapshot.pendingUserInput
                         : null,
                 status: event.status,
+                title: title ?? snapshot.title,
             };
         }
 
@@ -4521,6 +4523,16 @@ function isTerminalNativeReviewActivityStatus(
     status: AiToolActivity["status"],
 ): boolean {
     return status === "completed" || status === "failed";
+}
+
+function normalizeSessionStatusTitle(
+    title: string | null | undefined,
+): string | null {
+    if (typeof title !== "string") {
+        return null;
+    }
+    const trimmed = title.trim();
+    return trimmed.length > 0 ? trimmed : null;
 }
 
 function trackedFileFromToolActivityDiff(
