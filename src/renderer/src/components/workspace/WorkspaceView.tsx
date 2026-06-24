@@ -121,6 +121,7 @@ import { GitHubPullRequestTabView } from "@renderer/components/workspace/GitHubP
 import { GitCommitTabView } from "@renderer/components/workspace/GitCommitTabView";
 import { GitWorktreeDiffTabView } from "@renderer/components/workspace/GitWorktreeDiffTabView";
 import { GitTabView } from "@renderer/components/workspace/GitTabView";
+import { ProviderIcon } from "@renderer/components/workspace/ProviderIcon";
 import { ReviewTabView } from "@renderer/components/workspace/ReviewTabView";
 import { WorkspacePaneEmptyState } from "@renderer/components/workspace/WorkspacePaneEmptyState";
 import { persistChatDraftForTab } from "@renderer/components/workspace/chatDraftPersistence";
@@ -2371,7 +2372,8 @@ function WorkspacePaneView({
                                         <TabIcon
                                             kind={tab.kind}
                                             runtimeId={
-                                                tab.kind === "chat"
+                                                tab.kind === "chat" ||
+                                                tab.kind === "review"
                                                     ? tab.runtimeId
                                                     : undefined
                                             }
@@ -6640,6 +6642,10 @@ function TabIcon({
     readonly runtimeId?: AiRuntimeId;
     readonly title?: string;
 }) {
+    if ((kind === "chat" || kind === "review") && runtimeId) {
+        return <ProviderIcon opacity={0.9} runtimeId={runtimeId} size={12} />;
+    }
+
     if (kind === "terminal") {
         return (
             <svg
@@ -6747,10 +6753,6 @@ function TabIcon({
     }
 
     if (kind === "chat") {
-        if (runtimeId) {
-            return <ChatProviderIcon runtimeId={runtimeId} />;
-        }
-
         return (
             <svg
                 className="shrink-0 opacity-55"
@@ -6819,106 +6821,6 @@ function TabIcon({
             />
             <path d="M9.5 2.5V5a.5.5 0 0 0 .5.5h2.5" strokeWidth="0.8" />
             <path d="M6 8.5h4M6 10.5h2.5" strokeWidth="0.8" />
-        </svg>
-    );
-}
-
-function ChatProviderIcon({ runtimeId }: { readonly runtimeId: AiRuntimeId }) {
-    if (runtimeId === "claude") {
-        return (
-            <svg
-                className="shrink-0 opacity-55"
-                fill="none"
-                height={12}
-                stroke="currentColor"
-                strokeLinecap="round"
-                viewBox="0 0 16 16"
-                width={12}
-            >
-                <line strokeWidth="1.35" x1="8" x2="8" y1="2" y2="14" />
-                <line strokeWidth="1.35" x1="2" x2="14" y1="8" y2="8" />
-                <line strokeWidth="1.35" x1="3.75" x2="12.25" y1="3.75" y2="12.25" />
-                <line strokeWidth="1.35" x1="12.25" x2="3.75" y1="3.75" y2="12.25" />
-            </svg>
-        );
-    }
-
-    if (runtimeId === "codex") {
-        return (
-            <svg
-                className="shrink-0 opacity-55"
-                fill="none"
-                height={12}
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                viewBox="0 0 16 16"
-                width={12}
-            >
-                <polygon
-                    points="8,2.3 13.4,5.4 13.4,10.6 8,13.7 2.6,10.6 2.6,5.4"
-                    strokeWidth="1.1"
-                />
-                <line strokeWidth="1" x1="8" x2="8" y1="2.3" y2="13.7" />
-                <line strokeWidth="1" x1="2.6" x2="13.4" y1="5.4" y2="10.6" />
-                <line strokeWidth="1" x1="13.4" x2="2.6" y1="5.4" y2="10.6" />
-            </svg>
-        );
-    }
-
-    if (runtimeId === "opencode") {
-        return (
-            <svg
-                className="shrink-0 opacity-55"
-                fill="none"
-                height={12}
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                viewBox="0 0 16 16"
-                width={12}
-            >
-                <circle cx="8" cy="8" r="5.25" strokeWidth="1.1" />
-                <path d="M4.9 8h6.2M8 4.9v6.2" strokeWidth="1.1" />
-                <path d="M11.1 4.9 4.9 11.1" strokeWidth="0.9" />
-            </svg>
-        );
-    }
-
-    if (runtimeId === "grok") {
-        return (
-            <svg
-                className="shrink-0 opacity-55"
-                fill="none"
-                height={12}
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                viewBox="0 0 16 16"
-                width={12}
-            >
-                <path d="M3.25 8a4.75 4.75 0 1 1 4.75 4.75" strokeWidth="1.1" />
-                <path d="M8 3.25v4.75h4.75" strokeWidth="1.1" />
-                <path d="M4.4 11.6 11.6 4.4" strokeWidth="1" />
-            </svg>
-        );
-    }
-
-    // kilo
-    return (
-        <svg
-            className="shrink-0 opacity-55"
-            fill="none"
-            height={12}
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            viewBox="0 0 16 16"
-            width={12}
-        >
-            <line strokeWidth="1.5" x1="4.75" x2="4.75" y1="2.75" y2="13.25" />
-            <line strokeWidth="1.5" x1="4.75" x2="11.25" y1="8" y2="2.75" />
-            <line strokeWidth="1.5" x1="4.75" x2="11.25" y1="8" y2="13.25" />
         </svg>
     );
 }
