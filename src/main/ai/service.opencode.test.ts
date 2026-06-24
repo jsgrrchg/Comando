@@ -1311,6 +1311,312 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
+    it("blocks fallback reject when the file drifted after review", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-review-fallback-drift-"),
+        );
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            const editedPath = path.join(tempDir, "cuento.md");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            const onSessionSnapshot =
+                vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
+            const rejectTrackedFile = vi.fn();
+            const nativeAi = createNativeAi({
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-opencode",
+                            status: "idle",
+                            updatedAt: "2026-06-20T00:00:01.000Z",
+                        }),
+                ),
+                rejectTrackedFile,
+            });
+            const service = createService({
+                nativeAi,
+                onSessionSnapshot,
+                projectRootPath: tempDir,
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+            const pendingFile = createTrackedFile({
+                currentText: "agent\n",
+                diffBase: "base\n",
+                identityKey: "tool:session-opencode:tool-write-1::cuento.md",
+                newText: "agent\n",
+                oldText: "base\n",
+                path: "cuento.md",
+                sessionId: "session-opencode",
+                toolCallId: "tool-write-1",
+            });
+
+            await service.prepareSession(
+                {
+                    projectId: "project-1",
+                    runtimeId: "opencode",
+                    sessionId: "session-opencode",
+                    title: "OpenCode 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            service.handleNativeSessionEvent("window-1", {
+                conflicts: [],
+                kind: "review",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-opencode",
+                sessionId: "session-opencode",
+                trackedFiles: [pendingFile],
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
+            fs.writeFileSync(editedPath, "agent + user\n", "utf8");
+
+            await expect(
+                service.rejectTrackedFile({
+                    path: "cuento.md",
+                    sessionId: "session-opencode",
+                }),
+            ).rejects.toThrow("no longer matches");
+
+            expect(fs.readFileSync(editedPath, "utf8")).toBe(
+                "agent + user\n",
+            );
+            expect(rejectTrackedFile).not.toHaveBeenCalled();
+            const latestTrackedFiles = onSessionSnapshot.mock.calls
+                .map(([, update]) =>
+                    update.kind === "snapshot"
+                        ? update.snapshot.trackedFiles
+                        : update.patch.changes.trackedFiles,
+                )
+                .findLast((trackedFiles) => trackedFiles !== undefined);
+            expect(latestTrackedFiles).toEqual([
+                expect.objectContaining({
+                    path: "cuento.md",
+                    reviewState: "pending",
+                }),
+            ]);
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("keeps fallback review with drift without writing the file", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-review-fallback-keep-drift-"),
+        );
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            const editedPath = path.join(tempDir, "cuento.md");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            const onSessionSnapshot =
+                vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
+            const keepTrackedFile = vi.fn();
+            const nativeAi = createNativeAi({
+                keepTrackedFile,
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-opencode",
+                            status: "idle",
+                            updatedAt: "2026-06-20T00:00:01.000Z",
+                        }),
+                ),
+            });
+            const service = createService({
+                nativeAi,
+                onSessionSnapshot,
+                projectRootPath: tempDir,
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+            const pendingFile = createTrackedFile({
+                currentText: "agent\n",
+                diffBase: "base\n",
+                identityKey: "tool:session-opencode:tool-write-1::cuento.md",
+                newText: "agent\n",
+                oldText: "base\n",
+                path: "cuento.md",
+                sessionId: "session-opencode",
+                toolCallId: "tool-write-1",
+            });
+
+            await service.prepareSession(
+                {
+                    projectId: "project-1",
+                    runtimeId: "opencode",
+                    sessionId: "session-opencode",
+                    title: "OpenCode 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            service.handleNativeSessionEvent("window-1", {
+                conflicts: [],
+                kind: "review",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-opencode",
+                sessionId: "session-opencode",
+                trackedFiles: [pendingFile],
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
+            fs.writeFileSync(editedPath, "agent + user\n", "utf8");
+
+            await service.keepTrackedFile({
+                path: "cuento.md",
+                sessionId: "session-opencode",
+            });
+
+            expect(fs.readFileSync(editedPath, "utf8")).toBe(
+                "agent + user\n",
+            );
+            expect(keepTrackedFile).not.toHaveBeenCalled();
+            const latestTrackedFiles = onSessionSnapshot.mock.calls
+                .map(([, update]) =>
+                    update.kind === "snapshot"
+                        ? update.snapshot.trackedFiles
+                        : update.patch.changes.trackedFiles,
+                )
+                .findLast((trackedFiles) => trackedFiles !== undefined);
+            expect(latestTrackedFiles).toEqual([]);
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("rolls back fallback reject all when a later write fails", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-review-fallback-rollback-"),
+        );
+        const originalWriteFileSync = fs.writeFileSync.bind(fs);
+        const writeFileSyncSpy = vi.spyOn(fs, "writeFileSync");
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            const firstPath = path.join(tempDir, "a.txt");
+            const secondPath = path.join(tempDir, "b.txt");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            const onSessionSnapshot =
+                vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
+            const nativeAi = createNativeAi({
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-opencode",
+                            status: "idle",
+                            updatedAt: "2026-06-20T00:00:01.000Z",
+                        }),
+                ),
+            });
+            const service = createService({
+                nativeAi,
+                onSessionSnapshot,
+                projectRootPath: tempDir,
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+            const firstFile = createTrackedFile({
+                currentText: "agent a\n",
+                diffBase: "base a\n",
+                identityKey: "tool:session-opencode:tool-write-1::a.txt",
+                newText: "agent a\n",
+                oldText: "base a\n",
+                path: "a.txt",
+                sessionId: "session-opencode",
+                toolCallId: "tool-write-1",
+            });
+            const secondFile = createTrackedFile({
+                currentText: "agent b\n",
+                diffBase: "base b\n",
+                identityKey: "tool:session-opencode:tool-write-2::b.txt",
+                newText: "agent b\n",
+                oldText: "base b\n",
+                path: "b.txt",
+                sessionId: "session-opencode",
+                toolCallId: "tool-write-2",
+            });
+            writeFileSyncSpy.mockImplementation((file, data, options) => {
+                if (
+                    String(file) === secondPath &&
+                    typeof data === "string" &&
+                    data === "base b\n"
+                ) {
+                    throw new Error("simulated write failure");
+                }
+                return originalWriteFileSync(file, data, options);
+            });
+
+            await service.prepareSession(
+                {
+                    projectId: "project-1",
+                    runtimeId: "opencode",
+                    sessionId: "session-opencode",
+                    title: "OpenCode 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            service.handleNativeSessionEvent("window-1", {
+                conflicts: [],
+                kind: "review",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-opencode",
+                sessionId: "session-opencode",
+                trackedFiles: [firstFile, secondFile],
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
+            originalWriteFileSync(firstPath, "agent a\n", "utf8");
+            originalWriteFileSync(secondPath, "agent b\n", "utf8");
+
+            await expect(
+                service.rejectAllTrackedFiles("session-opencode"),
+            ).rejects.toThrow("simulated write failure");
+
+            expect(fs.readFileSync(firstPath, "utf8")).toBe("agent a\n");
+            expect(fs.readFileSync(secondPath, "utf8")).toBe("agent b\n");
+            const latestTrackedFiles = onSessionSnapshot.mock.calls
+                .map(([, update]) =>
+                    update.kind === "snapshot"
+                        ? update.snapshot.trackedFiles
+                        : update.patch.changes.trackedFiles,
+                )
+                .findLast((trackedFiles) => trackedFiles !== undefined);
+            expect(latestTrackedFiles).toEqual([
+                expect.objectContaining({ path: "a.txt" }),
+                expect.objectContaining({ path: "b.txt" }),
+            ]);
+        } finally {
+            writeFileSyncSpy.mockRestore();
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("creates pending review from scoped tool diffs when native baseline capture is unavailable", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-review-diff-fallback-"),
@@ -1371,6 +1677,7 @@ describe("AiService OpenCode branch", () => {
                 },
                 "window-1",
             );
+            fs.writeFileSync(editedPath, "new text\n", "utf8");
             service.handleNativeSessionEvent("window-1", {
                 activity: {
                     createdAt: "2026-06-20T00:00:01.000Z",

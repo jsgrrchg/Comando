@@ -454,14 +454,34 @@ impl NativeReviewService {
         input: NativeReviewFileMutationInput,
     ) -> Result<NativeReviewCommandOutput, NativeError> {
         let mut state = self.load_or_empty_state(session)?;
-        let index = find_tracked_file_index_for_input(session, &state.tracked_files, &input.path)?
-            .ok_or_else(|| review_not_found(&input.path))?;
+        let Some(index) =
+            find_tracked_file_index_for_input(session, &state.tracked_files, &input.path)?
+        else {
+            let conflict_index =
+                find_review_conflict_index_for_input(session, &state.conflicts, &input.path)?
+                    .ok_or_else(|| review_not_found(&input.path))?;
+            state.conflicts.remove(conflict_index);
+            let updated_at = now();
+            self.save_replaced_state(session, &mut state, updated_at.clone())?;
+            return Ok(command_output(
+                session.session_id.clone(),
+                state.tracked_files,
+                Vec::new(),
+                state.conflicts,
+                updated_at,
+                true,
+                Vec::new(),
+            ));
+        };
         validate_version(&state.tracked_files[index], input.expected_version)?;
-        self.assert_current_matches(session, &state.tracked_files[index])?;
         let mut tracked_file = state.tracked_files.remove(index);
         tracked_file.review_state = ReviewTrackedFileStatus::Kept;
         tracked_file.updated_at = now();
         let updated_at = tracked_file.updated_at.clone();
+        let accepted_paths = revert_paths(&tracked_file);
+        state
+            .conflicts
+            .retain(|conflict| !accepted_paths.contains(&conflict.path));
         let event_payload = NativeTrackedFileUpdatedPayload {
             session_id: session.session_id.clone(),
             tracked_file,
@@ -536,9 +556,6 @@ impl NativeReviewService {
         session: &NativeAiSession,
     ) -> Result<NativeReviewCommandOutput, NativeError> {
         let mut state = self.load_or_empty_state(session)?;
-        for tracked_file in &state.tracked_files {
-            self.assert_current_matches(session, tracked_file)?;
-        }
         let updated_at = now();
         let events = state
             .tracked_files
@@ -556,6 +573,7 @@ impl NativeReviewService {
             })
             .collect::<Vec<_>>();
         state.tracked_files.clear();
+        state.conflicts.clear();
         self.save_replaced_state(session, &mut state, updated_at.clone())?;
         Ok(command_output(
             session.session_id.clone(),
@@ -662,7 +680,9 @@ impl NativeReviewService {
             .ok_or_else(|| review_not_found(&input.path))?;
         validate_version(&state.tracked_files[index], input.expected_version)?;
         let tracked_file = state.tracked_files[index].clone();
-        self.assert_current_matches(session, &tracked_file)?;
+        if decision == ReviewDecision::Reject {
+            self.assert_current_matches(session, &tracked_file)?;
+        }
         let updated_at = now();
         let hunk_ids = normalize_review_hunk_ids(session, &input.hunk_ids, &tracked_file.path);
         let next = resolve_tracked_file_hunks(
@@ -674,6 +694,12 @@ impl NativeReviewService {
         let mut changed_files = Vec::new();
         match decision {
             ReviewDecision::Keep => {
+                if next.is_none() {
+                    let accepted_paths = revert_paths(&tracked_file);
+                    state
+                        .conflicts
+                        .retain(|conflict| !accepted_paths.contains(&conflict.path));
+                }
                 replace_or_remove_tracked_file(&mut state.tracked_files, index, next.clone());
             }
             ReviewDecision::Reject => {
@@ -1371,6 +1397,25 @@ fn find_tracked_file_index_for_input(
     Ok(find_tracked_file_index(files, &normalized))
 }
 
+fn find_review_conflict_index_for_input(
+    session: &NativeAiSession,
+    conflicts: &[NativeReviewConflict],
+    input_path: &str,
+) -> Result<Option<usize>, NativeError> {
+    if let Some(index) = conflicts
+        .iter()
+        .position(|conflict| conflict.path == input_path)
+    {
+        return Ok(Some(index));
+    }
+
+    let normalized =
+        normalize_review_path(session, input_path, ScopedPathIntent::CreateTarget)?.state_path;
+    Ok(conflicts
+        .iter()
+        .position(|conflict| conflict.path == normalized))
+}
+
 fn normalize_review_hunk_ids(
     session: &NativeAiSession,
     hunk_ids: &[String],
@@ -1805,6 +1850,307 @@ mod tests {
             )
             .expect("reject create");
         assert!(!file_path.exists());
+    }
+
+    #[test]
+    fn keep_file_accepts_drift_without_writing_disk() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("a.txt"), "base\n").expect("write base");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+
+        let session = test_session(repo.path(), "s-keep-drift");
+        let mut service = service_with_app_data(repo.path());
+        service.capture_baseline(&session).expect("baseline");
+        fs::write(repo.path().join("a.txt"), "agent\n").expect("write agent");
+        let output = service
+            .reconcile_tracked_files(&session)
+            .expect("reconcile");
+        assert_eq!(output.tracked_files.len(), 1);
+
+        fs::write(repo.path().join("a.txt"), "agent + user\n").expect("write drift");
+        let kept = service
+            .keep_file(
+                &session,
+                NativeReviewFileMutationInput {
+                    session_id: session.session_id.clone(),
+                    path: "a.txt".to_string(),
+                    tracked_file_id: None,
+                    expected_version: None,
+                },
+            )
+            .expect("keep drifted file");
+
+        assert!(kept.tracked_files.is_empty());
+        assert_eq!(
+            fs::read_to_string(repo.path().join("a.txt")).expect("read file"),
+            "agent + user\n"
+        );
+    }
+
+    #[test]
+    fn keep_all_accepts_drift_without_writing_disk() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("a.txt"), "base a\n").expect("write base a");
+        fs::write(repo.path().join("b.txt"), "base b\n").expect("write base b");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+
+        let session = test_session(repo.path(), "s-keep-all-drift");
+        let mut service = service_with_app_data(repo.path());
+        service.capture_baseline(&session).expect("baseline");
+        fs::write(repo.path().join("a.txt"), "agent a\n").expect("write agent a");
+        fs::write(repo.path().join("b.txt"), "agent b\n").expect("write agent b");
+        let output = service
+            .reconcile_tracked_files(&session)
+            .expect("reconcile");
+        assert_eq!(output.tracked_files.len(), 2);
+
+        fs::write(repo.path().join("a.txt"), "agent a + user\n").expect("write drift a");
+        fs::write(repo.path().join("b.txt"), "agent b + user\n").expect("write drift b");
+        let kept = service.keep_all(&session).expect("keep all drifted files");
+
+        assert!(kept.tracked_files.is_empty());
+        assert_eq!(
+            fs::read_to_string(repo.path().join("a.txt")).expect("read a"),
+            "agent a + user\n"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.path().join("b.txt")).expect("read b"),
+            "agent b + user\n"
+        );
+    }
+
+    #[test]
+    fn keep_file_clears_standalone_conflict() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let session = test_session(repo.path(), "s-keep-conflict");
+        let mut service = service_with_app_data(repo.path());
+        service
+            .replace_state(
+                &session,
+                Vec::new(),
+                vec![NativeReviewConflict {
+                    path: "a.txt".to_string(),
+                    reason: "content_hash_mismatch".to_string(),
+                    external_change_hash: None,
+                }],
+                now(),
+            )
+            .expect("seed conflict");
+
+        let kept = service
+            .keep_file(
+                &session,
+                NativeReviewFileMutationInput {
+                    session_id: session.session_id.clone(),
+                    path: "a.txt".to_string(),
+                    tracked_file_id: None,
+                    expected_version: None,
+                },
+            )
+            .expect("keep standalone conflict");
+
+        assert!(kept.tracked_files.is_empty());
+        assert!(kept.conflicts.is_empty());
+    }
+
+    #[test]
+    fn keep_all_clears_standalone_conflicts() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let session = test_session(repo.path(), "s-keep-all-conflicts");
+        let mut service = service_with_app_data(repo.path());
+        service
+            .replace_state(
+                &session,
+                Vec::new(),
+                vec![
+                    NativeReviewConflict {
+                        path: "a.txt".to_string(),
+                        reason: "content_hash_mismatch".to_string(),
+                        external_change_hash: None,
+                    },
+                    NativeReviewConflict {
+                        path: "b.txt".to_string(),
+                        reason: "binary_file".to_string(),
+                        external_change_hash: None,
+                    },
+                ],
+                now(),
+            )
+            .expect("seed conflicts");
+
+        let kept = service.keep_all(&session).expect("keep all conflicts");
+
+        assert!(kept.tracked_files.is_empty());
+        assert!(kept.conflicts.is_empty());
+    }
+
+    #[test]
+    fn keep_hunks_accepts_drift_without_writing_disk() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("a.txt"), "base\n").expect("write base");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+
+        let session = test_session(repo.path(), "s-keep-hunks-drift");
+        let mut service = service_with_app_data(repo.path());
+        service.capture_baseline(&session).expect("baseline");
+        fs::write(repo.path().join("a.txt"), "agent\n").expect("write agent");
+        let output = service
+            .reconcile_tracked_files(&session)
+            .expect("reconcile");
+        let hunk_id = output.tracked_files[0].hunks[0].id.clone();
+
+        fs::write(repo.path().join("a.txt"), "agent + user\n").expect("write drift");
+        let kept = service
+            .keep_hunks(
+                &session,
+                NativeReviewHunkMutationInput {
+                    session_id: session.session_id.clone(),
+                    path: "a.txt".to_string(),
+                    hunk_ids: vec![hunk_id],
+                    tracked_file_id: None,
+                    expected_version: None,
+                },
+            )
+            .expect("keep drifted hunk");
+
+        assert!(kept.tracked_files.is_empty());
+        assert_eq!(
+            fs::read_to_string(repo.path().join("a.txt")).expect("read file"),
+            "agent + user\n"
+        );
+    }
+
+    #[test]
+    fn reject_file_still_blocks_drift() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("a.txt"), "base\n").expect("write base");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+
+        let session = test_session(repo.path(), "s-reject-drift");
+        let mut service = service_with_app_data(repo.path());
+        service.capture_baseline(&session).expect("baseline");
+        fs::write(repo.path().join("a.txt"), "agent\n").expect("write agent");
+        let output = service
+            .reconcile_tracked_files(&session)
+            .expect("reconcile");
+        assert_eq!(output.tracked_files.len(), 1);
+
+        fs::write(repo.path().join("a.txt"), "agent + user\n").expect("write drift");
+        let tracker = WriteTracker::new();
+        let error = service
+            .reject_file(
+                &session,
+                NativeReviewFileMutationInput {
+                    session_id: session.session_id.clone(),
+                    path: "a.txt".to_string(),
+                    tracked_file_id: None,
+                    expected_version: None,
+                },
+                &tracker,
+            )
+            .expect_err("reject should block drift");
+
+        assert_eq!(error.code, NativeErrorCode::Conflict);
+        assert_eq!(
+            fs::read_to_string(repo.path().join("a.txt")).expect("read file"),
+            "agent + user\n"
+        );
+        let loaded = service
+            .list_tracked_files(&session)
+            .expect("load state after reject conflict");
+        assert_eq!(loaded.tracked_files.len(), 1);
+    }
+
+    #[test]
+    fn reject_all_still_blocks_drift_without_partial_writes() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("a.txt"), "base a\n").expect("write base a");
+        fs::write(repo.path().join("b.txt"), "base b\n").expect("write base b");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+
+        let session = test_session(repo.path(), "s-reject-all-drift");
+        let mut service = service_with_app_data(repo.path());
+        service.capture_baseline(&session).expect("baseline");
+        fs::write(repo.path().join("a.txt"), "agent a\n").expect("write agent a");
+        fs::write(repo.path().join("b.txt"), "agent b\n").expect("write agent b");
+        let output = service
+            .reconcile_tracked_files(&session)
+            .expect("reconcile");
+        assert_eq!(output.tracked_files.len(), 2);
+
+        fs::write(repo.path().join("b.txt"), "agent b + user\n").expect("write drift b");
+        let tracker = WriteTracker::new();
+        let error = service
+            .reject_all(&session, &tracker)
+            .expect_err("reject all should block drift");
+
+        assert_eq!(error.code, NativeErrorCode::Conflict);
+        assert_eq!(
+            fs::read_to_string(repo.path().join("a.txt")).expect("read a"),
+            "agent a\n"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.path().join("b.txt")).expect("read b"),
+            "agent b + user\n"
+        );
+        let loaded = service
+            .list_tracked_files(&session)
+            .expect("load state after reject all conflict");
+        assert_eq!(loaded.tracked_files.len(), 2);
+    }
+
+    #[test]
+    fn reject_hunks_still_blocks_drift() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("a.txt"), "base\n").expect("write base");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+
+        let session = test_session(repo.path(), "s-reject-hunks-drift");
+        let mut service = service_with_app_data(repo.path());
+        service.capture_baseline(&session).expect("baseline");
+        fs::write(repo.path().join("a.txt"), "agent\n").expect("write agent");
+        let output = service
+            .reconcile_tracked_files(&session)
+            .expect("reconcile");
+        let hunk_id = output.tracked_files[0].hunks[0].id.clone();
+
+        fs::write(repo.path().join("a.txt"), "agent + user\n").expect("write drift");
+        let tracker = WriteTracker::new();
+        let error = service
+            .reject_hunks(
+                &session,
+                NativeReviewHunkMutationInput {
+                    session_id: session.session_id.clone(),
+                    path: "a.txt".to_string(),
+                    hunk_ids: vec![hunk_id],
+                    tracked_file_id: None,
+                    expected_version: None,
+                },
+                &tracker,
+            )
+            .expect_err("reject hunk should block drift");
+
+        assert_eq!(error.code, NativeErrorCode::Conflict);
+        assert_eq!(
+            fs::read_to_string(repo.path().join("a.txt")).expect("read file"),
+            "agent + user\n"
+        );
+        let loaded = service
+            .list_tracked_files(&session)
+            .expect("load state after reject hunk conflict");
+        assert_eq!(loaded.tracked_files.len(), 1);
     }
 
     #[test]

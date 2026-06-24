@@ -3448,6 +3448,10 @@ export class AiService {
         }
 
         if (decision === "reject") {
+            this.#assertFallbackTrackedFileCurrentMatches(
+                reviewSession.context,
+                trackedFile,
+            );
             this.#rejectFallbackTrackedFile(reviewSession.context, trackedFile);
         }
 
@@ -3487,6 +3491,10 @@ export class AiService {
             decision,
         );
         if (decision === "reject") {
+            this.#assertFallbackTrackedFileCurrentMatches(
+                reviewSession.context,
+                trackedFile,
+            );
             this.#writeFallbackTrackedFileCurrentText(
                 reviewSession.context,
                 trackedFile,
@@ -3532,10 +3540,25 @@ export class AiService {
 
         if (decision === "reject") {
             for (const trackedFile of pendingFallbackFiles) {
-                this.#rejectFallbackTrackedFile(
+                this.#assertFallbackTrackedFileCurrentMatches(
                     reviewSession.context,
                     trackedFile,
                 );
+            }
+            const backups = this.#createFallbackReviewBackups(
+                reviewSession.context,
+                pendingFallbackFiles,
+            );
+            try {
+                for (const trackedFile of pendingFallbackFiles) {
+                    this.#rejectFallbackTrackedFile(
+                        reviewSession.context,
+                        trackedFile,
+                    );
+                }
+            } catch (error) {
+                this.#restoreFallbackReviewBackups(backups);
+                throw error;
             }
         }
 
@@ -3555,6 +3578,77 @@ export class AiService {
             snapshot: nextSnapshot,
         });
         return !hasNativePendingFiles;
+    }
+
+    #createFallbackReviewBackups(
+        context: AiReviewSessionContext,
+        trackedFiles: readonly AiTrackedFile[],
+    ): Map<string, Buffer | null> {
+        const backups = new Map<string, Buffer | null>();
+        for (const trackedFile of trackedFiles) {
+            for (const trackedPath of fallbackReviewMutationPaths(
+                trackedFile,
+            )) {
+                const absolutePath = this.#resolveFallbackReviewPath(
+                    context,
+                    trackedPath,
+                );
+                if (backups.has(absolutePath)) {
+                    continue;
+                }
+                backups.set(
+                    absolutePath,
+                    fs.existsSync(absolutePath)
+                        ? fs.readFileSync(absolutePath)
+                        : null,
+                );
+            }
+        }
+        return backups;
+    }
+
+    #restoreFallbackReviewBackups(backups: Map<string, Buffer | null>): void {
+        for (const [absolutePath, content] of backups) {
+            if (content === null) {
+                fs.rmSync(absolutePath, { force: true });
+                continue;
+            }
+            fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+            fs.writeFileSync(absolutePath, content);
+        }
+    }
+
+    #assertFallbackTrackedFileCurrentMatches(
+        context: AiReviewSessionContext,
+        trackedFile: AiTrackedFile,
+    ): void {
+        const expected =
+            trackedFile.kind === "delete"
+                ? null
+                : getTrackedFileCurrentText(trackedFile);
+        const current = this.#readFallbackReviewTextIfExists(
+            context,
+            trackedFile.path,
+        );
+        if (current !== expected) {
+            throw new Error(
+                "Cannot safely reject this review change because the file no longer matches the reviewed content.",
+            );
+        }
+
+        if (!trackedFile.previousPath) {
+            return;
+        }
+
+        const previous = this.#readFallbackReviewTextIfExists(
+            context,
+            trackedFile.previousPath,
+        );
+        if (previous !== null) {
+            throw new Error(
+                "Cannot safely reject this review change because the previous path is no longer available.",
+            );
+        }
     }
 
     #rejectFallbackTrackedFile(
@@ -3611,6 +3705,20 @@ export class AiService {
         );
         fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
         fs.writeFileSync(absolutePath, text, "utf8");
+    }
+
+    #readFallbackReviewTextIfExists(
+        context: AiReviewSessionContext,
+        trackedPath: string,
+    ): string | null {
+        const absolutePath = this.#resolveFallbackReviewPath(
+            context,
+            trackedPath,
+        );
+        if (!fs.existsSync(absolutePath)) {
+            return null;
+        }
+        return fs.readFileSync(absolutePath, "utf8");
     }
 
     #removeFallbackReviewPath(
@@ -4489,6 +4597,12 @@ function findFallbackTrackedFile(
                     trackedFile.identityKey === reviewPath),
         ) ?? null
     );
+}
+
+function fallbackReviewMutationPaths(trackedFile: AiTrackedFile): readonly string[] {
+    return trackedFile.previousPath
+        ? [trackedFile.path, trackedFile.previousPath]
+        : [trackedFile.path];
 }
 
 type TrackedFilePathMatcher = (leftPath: string, rightPath: string) => boolean;
