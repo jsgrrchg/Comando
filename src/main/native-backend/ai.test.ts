@@ -750,6 +750,55 @@ describe("NativeAiGateway", () => {
         ]);
     });
 
+    it("records exact review diffs through the native backend", async () => {
+        const client = createClient();
+        const gateway = createGateway(client);
+
+        await expect(
+            gateway.recordReviewDiffs({
+                diffs: [
+                    {
+                        hunks: [],
+                        isText: true,
+                        kind: "update",
+                        newText: "new\n",
+                        oldText: "old\n",
+                        path: "src/main.rs",
+                        previousPath: null,
+                        reversible: true,
+                    },
+                ],
+                reviewRoot: "/workspace/project",
+                sessionId: "session-1",
+                toolCallId: "tool-1",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            }),
+        ).resolves.toEqual([
+            expect.objectContaining({
+                newText: "new\n",
+                oldText: "old\n",
+                path: "src/main.rs",
+                toolCallId: "tool-1",
+            }),
+        ]);
+
+        expect(client.request).toHaveBeenCalledWith("ai_record_review_diffs", {
+            diffs: [
+                {
+                    isText: true,
+                    newText: "new\n",
+                    oldText: "old\n",
+                    path: "src/main.rs",
+                    previousPath: null,
+                },
+            ],
+            reviewRoot: "/workspace/project",
+            sessionId: "session-1",
+            toolCallId: "tool-1",
+            updatedAt: "2026-06-20T00:00:02.000Z",
+        });
+    });
+
     it("reports runtime connection events as diagnostics", () => {
         const client = createClient();
         const onDiagnostic = vi.fn();
@@ -938,6 +987,27 @@ function createClient() {
                     stateFound: false,
                     trackedFiles: [],
                     updatedAt: "2026-06-20T00:00:00.000Z",
+                } as T);
+            }
+
+            if (command === "ai_record_review_diffs") {
+                const args = _args as {
+                    sessionId?: string;
+                    toolCallId?: string | null;
+                } | undefined;
+                return Promise.resolve({
+                    changedFiles: [],
+                    conflicts: [],
+                    sessionId: args?.sessionId ?? "session-1",
+                    stateFound: true,
+                    trackedFiles: [
+                        createNativeTrackedFile({
+                            identityKey: "tool:session-1:tool-1::src/main.rs",
+                            sessionId: args?.sessionId ?? "session-1",
+                            toolCallId: args?.toolCallId ?? null,
+                        }),
+                    ],
+                    updatedAt: "2026-06-20T00:00:02.000Z",
                 } as T);
             }
 

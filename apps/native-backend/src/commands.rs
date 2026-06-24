@@ -60,7 +60,8 @@ use serde_json::{Value, json};
 use crate::protocol::{RpcOutput, RpcRequest, error_response, event, response_ok};
 use crate::review::{
     NativeReviewCommandOutput, NativeReviewFileBufferInput, NativeReviewFileMutationInput,
-    NativeReviewHunkMutationInput, NativeReviewService, NativeReviewSessionInput,
+    NativeReviewHunkMutationInput, NativeReviewRecordDiffsInput, NativeReviewService,
+    NativeReviewSessionInput,
 };
 
 const SETTINGS_SNAPSHOT_KEY: &str = "settings.snapshot";
@@ -211,6 +212,7 @@ impl NativeBackend {
             | "ai_delete_session"
             | "ai_migrate_session_history"
             | "ai_get_history_storage_health"
+            | "ai_record_review_diffs"
             | "ai_capture_review_baseline"
             | "ai_reconcile_tracked_files"
             | "ai_list_tracked_files"
@@ -340,6 +342,7 @@ impl NativeBackend {
             | "ai_delete_session"
             | "ai_migrate_session_history"
             | "ai_get_history_storage_health"
+            | "ai_record_review_diffs"
             | "ai_capture_review_baseline"
             | "ai_reconcile_tracked_files"
             | "ai_list_tracked_files"
@@ -2306,6 +2309,20 @@ impl NativeBackend {
                 ),
                 Err(error) => error_only(request.id, error),
             },
+            "ai_record_review_diffs" => {
+                let input = match parse_args::<NativeReviewRecordDiffsInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                let session = match self.ai_engine.session_for_review(&input.session_id) {
+                    Ok(session) => session,
+                    Err(error) => return error_only(request.id, error.to_native_error()),
+                };
+                match self.review_service.record_diffs(&session, input) {
+                    Ok(output) => self.review_response(request.id, &session, output),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
             "ai_capture_review_baseline" => {
                 let input = match parse_args::<NativeReviewSessionInput>(&request) {
                     Ok(input) => input,

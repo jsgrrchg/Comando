@@ -1698,6 +1698,9 @@ describe("AiService OpenCode branch", () => {
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
             const reconcileTrackedFiles = vi.fn(() => Promise.resolve([]));
+            const recordReviewDiffs = vi.fn<
+                NonNullable<NativeAiGateway["recordReviewDiffs"]>
+            >(() => Promise.resolve([]));
             const rejectTrackedFile = vi.fn();
             const nativeAi = createNativeAi({
                 captureReviewBaseline: vi.fn(() => Promise.resolve(false)),
@@ -1711,6 +1714,7 @@ describe("AiService OpenCode branch", () => {
                         }),
                 ),
                 reconcileTrackedFiles,
+                recordReviewDiffs,
                 rejectTrackedFile,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
@@ -1812,6 +1816,21 @@ describe("AiService OpenCode branch", () => {
                     ],
                 }),
             ]);
+            expect(recordReviewDiffs).toHaveBeenCalledWith({
+                diffs: [
+                    expect.objectContaining({
+                        isText: true,
+                        newText: "new text\n",
+                        oldText: "old text\n",
+                        path: "Fliege font.md",
+                        previousPath: null,
+                    }),
+                ],
+                reviewRoot: tempDir,
+                sessionId: "session-opencode",
+                toolCallId: "tool-write-1",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            });
             expect(reconcileTrackedFiles).not.toHaveBeenCalled();
 
             service.handleNativeSessionEvent("window-1", {
@@ -1853,6 +1872,131 @@ describe("AiService OpenCode branch", () => {
 
             expect(fs.readFileSync(editedPath, "utf8")).toBe("old text\n");
             expect(rejectTrackedFile).not.toHaveBeenCalled();
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("records flushed subagent tool diffs with inherited native review context", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-review-subagent-diff-"),
+        );
+        try {
+            const editedPath = path.join(tempDir, "child.ts");
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            const recordReviewDiffs = vi.fn<
+                NonNullable<NativeAiGateway["recordReviewDiffs"]>
+            >(() => Promise.resolve([]));
+            const nativeAi = createNativeAi({
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-parent",
+                            status: "idle",
+                            updatedAt: "2026-06-20T00:00:00.000Z",
+                        }),
+                ),
+                recordReviewDiffs,
+                sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
+                    Promise.resolve({
+                        sessionId: input.sessionId,
+                        stopReason: "accepted",
+                    }),
+                ),
+            });
+            const service = createService({
+                nativeAi,
+                projectRootPath: tempDir,
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+
+            await service.sendPrompt(
+                {
+                    additionalRoots: [],
+                    attachments: [],
+                    messageId: "user-message-1",
+                    projectId: "project-1",
+                    prompt: "Delegate the edit.",
+                    runtimeId: "opencode",
+                    sessionId: "session-parent",
+                    title: "Parent",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            service.handleNativeSessionEvent("window-1", {
+                childRuntimeSessionId: "runtime-child",
+                childSessionId: "session-parent:subagent:runtime-child",
+                kind: "subagent-created",
+                modelId: null,
+                origin: "live",
+                parentSessionId: "session-parent",
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-child",
+                sessionId: "session-parent:subagent:runtime-child",
+                title: "Child",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            });
+            service.handleNativeSessionEvent("window-1", {
+                activity: {
+                    createdAt: "2026-06-20T00:00:02.000Z",
+                    diffs: [
+                        {
+                            hunks: [],
+                            isText: true,
+                            kind: "update",
+                            newText: "child agent\n",
+                            oldText: "child base\n",
+                            path: editedPath,
+                            previousPath: null,
+                            reversible: true,
+                        },
+                    ],
+                    exitCode: 0,
+                    id: "tool-child-write-1",
+                    kind: "edit",
+                    locations: [],
+                    rawInputJson: null,
+                    rawOutputJson: null,
+                    sessionId: "session-parent:subagent:runtime-child",
+                    status: "completed",
+                    summary: "Edited child.ts",
+                    terminalOutput: null,
+                    title: "Edited child.ts",
+                    updatedAt: "2026-06-20T00:00:02.000Z",
+                },
+                kind: "tool-activity",
+                origin: "live",
+                parentSessionId: "session-parent",
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-child",
+                sessionId: "session-parent:subagent:runtime-child",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
+
+            expect(recordReviewDiffs).toHaveBeenCalledWith({
+                diffs: [
+                    expect.objectContaining({
+                        newText: "child agent\n",
+                        oldText: "child base\n",
+                        path: "child.ts",
+                        previousPath: null,
+                    }),
+                ],
+                reviewRoot: tempDir,
+                sessionId: "session-parent:subagent:runtime-child",
+                toolCallId: "tool-child-write-1",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -2659,6 +2803,7 @@ function createNativeAi(
         loadSessionSnapshot: vi.fn(() => Promise.resolve(null)),
         loadSessionTranscriptPage: vi.fn(() => Promise.resolve(null)),
         prepareSession: vi.fn(),
+        recordReviewDiffs: vi.fn(() => Promise.resolve([])),
         reconcileTrackedFiles: vi.fn(() => Promise.resolve([])),
         renameSession: vi.fn(),
         respondPermission: vi.fn(),

@@ -38,6 +38,7 @@ import {
     type NativeAiLaunchRuntimeAuthOutput,
     type NativeAiReviewCaptureOutput,
     type NativeAiReviewCommandOutput,
+    type NativeAiReviewRecordDiffsInput,
     type NativeAiRuntimeSessionMapping,
     type NativeAiSessionSnapshot,
     type NativeAiSessionTranscriptPage,
@@ -55,6 +56,7 @@ import type {
     AiRuntimeSessionMapping,
     NativeAiGateway as NativeAiGatewayContract,
     NativeAiPrepareSessionRpcInput,
+    NativeAiReviewDiffsRpcInput,
     NativeAiRuntimeSettingsRpcInput,
     NativeAiSendPromptRpcInput,
 } from "@main/ai/contracts";
@@ -230,6 +232,31 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             { sessionId },
         );
         return output.captured === true;
+    }
+
+    async recordReviewDiffs(
+        input: NativeAiReviewDiffsRpcInput,
+    ): Promise<readonly AiTrackedFile[]> {
+        if (!this.#reviewEnabled || input.diffs.length === 0) {
+            return [];
+        }
+        const output = await this.#client.request<NativeAiReviewCommandOutput>(
+            "ai_record_review_diffs",
+            {
+                diffs: input.diffs.map((diff) => ({
+                    isText: diff.isText,
+                    newText: diff.newText,
+                    oldText: diff.oldText,
+                    path: diff.path,
+                    previousPath: diff.previousPath,
+                })),
+                reviewRoot: input.reviewRoot ?? null,
+                sessionId: input.sessionId,
+                toolCallId: input.toolCallId,
+                updatedAt: input.updatedAt,
+            } satisfies NativeAiReviewRecordDiffsInput,
+        );
+        return nativeReviewCommandTrackedFiles(output);
     }
 
     async reconcileTrackedFiles(sessionId: string): Promise<readonly AiTrackedFile[]> {

@@ -92,6 +92,10 @@ export function findBestPendingTrackedFile(input: {
         return reviewContextMatch;
     }
 
+    if (input.reviewContext) {
+        return null;
+    }
+
     const matchingTrackedFiles = pendingTrackedFiles
         .filter((trackedFile) =>
             candidatePaths.some((path) =>
@@ -116,6 +120,17 @@ export function findBestPendingTrackedFile(input: {
 
             return right.updatedAt.localeCompare(left.updatedAt);
         });
+
+    if (
+        !input.reviewContext &&
+        hasAmbiguousBestMatch(
+            matchingTrackedFiles,
+            candidatePaths,
+            input.preferInlineReview ?? false,
+        )
+    ) {
+        return null;
+    }
 
     return matchingTrackedFiles[0] ?? null;
 }
@@ -175,4 +190,32 @@ function getTrackedFilePriority(
     }
 
     return score;
+}
+
+function hasAmbiguousBestMatch(
+    trackedFiles: readonly AiTrackedFile[],
+    candidatePaths: readonly string[],
+    preferInlineReview: boolean,
+): boolean {
+    let bestScore: number | null = null;
+    const sessionIds = new Set<string>();
+
+    for (const trackedFile of trackedFiles) {
+        const score = getTrackedFilePriority(
+            trackedFile,
+            candidatePaths,
+            preferInlineReview,
+        );
+
+        if (bestScore === null || score > bestScore) {
+            bestScore = score;
+            sessionIds.clear();
+        }
+
+        if (score === bestScore) {
+            sessionIds.add(trackedFile.sessionId);
+        }
+    }
+
+    return sessionIds.size > 1;
 }

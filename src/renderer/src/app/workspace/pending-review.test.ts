@@ -216,6 +216,66 @@ describe("pending review helpers", () => {
         });
     });
 
+    it("clears a stale existing review context instead of adopting another session", () => {
+        const trackedFiles = [
+            createTrackedFile({
+                path: "src/shared.ts",
+                sessionId: "session-b",
+                updatedAt: "2026-04-15T11:00:00.000Z",
+            }),
+        ];
+
+        const staleReviewContext = {
+            path: "src/shared.ts",
+            sessionId: "session-a",
+        };
+
+        expect(
+            resolveFileTabReviewContext({
+                existingReviewContext: staleReviewContext,
+                relativePath: "src/shared.ts",
+                trackedFiles,
+            }),
+        ).toBeNull();
+        expect(
+            findBestPendingTrackedFile({
+                paths: ["src/shared.ts"],
+                preferInlineReview: true,
+                reviewContext: staleReviewContext,
+                trackedFiles,
+            }),
+        ).toBeNull();
+    });
+
+    it("does not infer review context when multiple sessions match the same file", () => {
+        const trackedFiles = [
+            createTrackedFile({
+                path: "src/shared.ts",
+                sessionId: "session-a",
+                updatedAt: "2026-04-15T10:00:00.000Z",
+            }),
+            createTrackedFile({
+                path: "src/shared.ts",
+                sessionId: "session-b",
+                updatedAt: "2026-04-15T11:00:00.000Z",
+            }),
+        ];
+
+        expect(
+            resolveFileTabReviewContext({
+                relativePath: "src/shared.ts",
+                trackedFiles,
+            }),
+        ).toBeNull();
+        expect(
+            findBestPendingTrackedFile({
+                paths: ["src/shared.ts"],
+                preferInlineReview: true,
+                trackedFiles,
+            }),
+        ).toBeNull();
+    });
+
     it("collects only pending tracked files from all sessions", () => {
         const pending = createTrackedFile({
             path: "src/pending.ts",

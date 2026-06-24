@@ -213,6 +213,7 @@ type NativeAiReviewGateway = NativeAiGateway &
             | "keepAllTrackedFiles"
             | "keepTrackedFile"
             | "keepTrackedFileHunks"
+            | "recordReviewDiffs"
             | "reconcileTrackedFiles"
             | "rejectAllTrackedFiles"
             | "rejectTrackedFile"
@@ -648,6 +649,13 @@ export class AiService {
                     debugBenignError("ai.service.nativeReviewReconcile", error);
                 });
             }
+        }
+
+        if (event.kind === "subagent-created") {
+            this.#inheritNativeReviewContext(
+                event.parentSessionId,
+                event.childSessionId,
+            );
         }
 
         if (!previousSnapshot && event.kind === "subagent-created") {
@@ -2840,6 +2848,34 @@ export class AiService {
         return true;
     }
 
+    #inheritNativeReviewContext(
+        parentSessionId: string,
+        childSessionId: string,
+    ): void {
+        if (!this.#nativeReviewBaselines.has(childSessionId)) {
+            const parentBaseline =
+                this.#nativeReviewBaselines.get(parentSessionId);
+            if (parentBaseline) {
+                this.#nativeReviewBaselines.set(childSessionId, {
+                    ...parentBaseline,
+                });
+            }
+        }
+
+        if (!this.#recentNativeReviewContexts.has(childSessionId)) {
+            const parentRecentContext =
+                this.#recentNativeReviewContexts.get(parentSessionId);
+            if (
+                parentRecentContext &&
+                parentRecentContext.expiresAtMs > Date.now()
+            ) {
+                this.#recentNativeReviewContexts.set(childSessionId, {
+                    ...parentRecentContext,
+                });
+            }
+        }
+    }
+
     #markNativeReviewTurnStarted(sessionId: string): void {
         const baseline = this.#nativeReviewBaselines.get(sessionId);
         if (!baseline || baseline.turnStarted) {
@@ -2948,6 +2984,7 @@ export class AiService {
             return null;
         };
         let trackedFiles = snapshot.trackedFiles;
+        const nativeDiffs: AiFileDiff[] = [];
         for (const diff of activity.diffs) {
             const trackedFile = trackedFileFromToolActivityDiff(
                 diff,
@@ -2959,7 +2996,34 @@ export class AiService {
             if (!trackedFile) {
                 continue;
             }
+            nativeDiffs.push({
+                hunks: trackedFile.hunks,
+                isText: trackedFile.isText,
+                kind: trackedFile.kind,
+                newText: trackedFile.newText,
+                oldText: trackedFile.oldText,
+                path: trackedFile.path,
+                previousPath: trackedFile.previousPath,
+                reversible: trackedFile.reversible,
+            });
             trackedFiles = upsertTrackedFile(trackedFiles, trackedFile);
+        }
+
+        if (nativeDiffs.length > 0) {
+            void this.#requireNativeReviewGateway("recordReviewDiffs")
+                .recordReviewDiffs({
+                    diffs: nativeDiffs,
+                    reviewRoot: scopeRoot,
+                    sessionId: snapshot.sessionId,
+                    toolCallId: activity.id,
+                    updatedAt: activity.updatedAt,
+                })
+                .catch((error: unknown) => {
+                    debugBenignError(
+                        "ai.service.nativeReviewRecordDiffs",
+                        error,
+                    );
+                });
         }
 
         return trackedFiles === snapshot.trackedFiles

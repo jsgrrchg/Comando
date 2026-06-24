@@ -15,6 +15,7 @@ import type {
     AiPermissionRequest,
     AiPermissionResponseInput,
     AiHistorySessionSummary,
+    AiFileDiff,
     AiPromptResult,
     AiSessionConfigOption,
     AiSessionConfigOptionMutationInput,
@@ -167,6 +168,7 @@ export interface NativeAiGateway {
     logoutRuntimeAuth?(input: AiRuntimeAuthLogoutInput): Promise<AiRuntimeStatus>;
     disconnectRuntimeAuth?(input: AiRuntimeAuthDisconnectInput): Promise<AiRuntimeStatus>;
     notifyFileBuffer?(input: FileBufferNotificationInput): Promise<void>;
+    recordReviewDiffs?(input: NativeAiReviewDiffsRpcInput): Promise<readonly AiTrackedFile[]>;
     reconcileTrackedFiles?(sessionId: string): Promise<readonly AiTrackedFile[]>;
     rejectAllTrackedFiles?(input: AiReviewSessionRpcInput<string>): Promise<AiReviewMutationResult>;
     rejectTrackedFile?(
@@ -244,6 +246,14 @@ export interface NativeAiPrepareSessionRpcInput {
 export interface NativeAiSendPromptRpcInput {
     readonly input: SendAiPromptInput;
     readonly launch: AiSessionLaunchInput;
+}
+
+export interface NativeAiReviewDiffsRpcInput {
+    readonly diffs: readonly AiFileDiff[];
+    readonly reviewRoot?: string | null;
+    readonly sessionId: string;
+    readonly toolCallId: string;
+    readonly updatedAt: string;
 }
 
 export interface AiReviewSessionContext {

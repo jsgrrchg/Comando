@@ -111,6 +111,7 @@
   "ai_delete_session",
   "ai_migrate_session_history",
   "ai_get_history_storage_health",
+  "ai_record_review_diffs",
   "ai_capture_review_baseline",
   "ai_reconcile_tracked_files",
   "ai_list_tracked_files",

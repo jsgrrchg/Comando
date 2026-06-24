@@ -1832,6 +1832,7 @@ struct NotificationContextInner {
     loading_persisted_session: bool,
     open_messages: HashMap<String, StreamedMessage>,
     pending_content_chunks: HashMap<String, Vec<PendingContentChunk>>,
+    pending_unknown_runtime_tool_activities: HashMap<String, Vec<PendingToolActivity>>,
     runtime_session_id: Option<RuntimeSessionId>,
     session: NativeAiSession,
     subagents_by_runtime_session_id: HashMap<String, SubagentRuntimeSession>,
@@ -1846,6 +1847,18 @@ struct NotificationContextInner {
 struct PendingContentChunk {
     chunk: ContentChunk,
     message_kind: &'static str,
+}
+
+#[derive(Clone)]
+struct PendingToolActivity {
+    diffs: Vec<serde_json::Value>,
+    kind: String,
+    raw_input: Option<serde_json::Value>,
+    raw_output: Option<serde_json::Value>,
+    status: String,
+    summary: Option<String>,
+    title: String,
+    tool_call_id: NativeToolCallId,
 }
 
 #[derive(Clone)]
@@ -1905,6 +1918,7 @@ impl NotificationContextInner {
             loading_persisted_session: false,
             open_messages: HashMap::new(),
             pending_content_chunks: HashMap::new(),
+            pending_unknown_runtime_tool_activities: HashMap::new(),
             runtime_session_id: session.runtime_session_id.clone(),
             session,
             subagents_by_runtime_session_id,
@@ -2163,6 +2177,11 @@ impl NotificationContextInner {
             self.emit_image_generation(runtime_session_id, &tool_call_id, &tool_call);
             return;
         }
+        let diffs = self.tool_call_activity_diffs_for_runtime_session(
+            runtime_session_id,
+            tool_call_id.clone(),
+            &tool_call,
+        );
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
             &NativeAiToolActivityPayload {
@@ -2174,10 +2193,7 @@ impl NotificationContextInner {
                 raw_output: tool_call.raw_output.clone(),
                 title: tool_call.title,
                 tool_call_id: tool_call_id.clone(),
-                diffs: self.tool_call_content_diffs_for_runtime_session(
-                    runtime_session_id,
-                    &tool_call.content,
-                ),
+                diffs,
             },
         );
         self.emit_subagent_breadcrumb(runtime_session_id, tool_call_id, meta);
@@ -2204,6 +2220,11 @@ impl NotificationContextInner {
             self.emit_image_generation(runtime_session_id, &tool_call_id, &tool_call);
             return;
         }
+        let diffs = self.tool_call_activity_diffs_for_runtime_session(
+            runtime_session_id,
+            tool_call_id.clone(),
+            &tool_call,
+        );
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
             &NativeAiToolActivityPayload {
@@ -2215,33 +2236,95 @@ impl NotificationContextInner {
                 raw_output: tool_call.raw_output.clone(),
                 title: tool_call.title,
                 tool_call_id: tool_call_id.clone(),
-                diffs: self.tool_call_content_diffs_for_runtime_session(
-                    runtime_session_id,
-                    &tool_call.content,
-                ),
+                diffs,
             },
         );
         self.emit_subagent_breadcrumb(runtime_session_id, tool_call_id, meta);
     }
 
-    fn tool_call_content_diffs_for_runtime_session(
-        &self,
+    fn tool_call_activity_diffs_for_runtime_session(
+        &mut self,
         runtime_session_id: &RuntimeSessionId,
-        content: &[ToolCallContent],
+        tool_call_id: NativeToolCallId,
+        tool_call: &ToolCall,
     ) -> Vec<serde_json::Value> {
-        let diffs = tool_call_content_diffs(content);
-        if diffs.is_empty() || !self.should_suppress_unknown_runtime_diffs(runtime_session_id) {
+        let diffs = tool_call_content_diffs(&tool_call.content);
+        if diffs.is_empty() || !self.should_buffer_unknown_runtime_diffs(runtime_session_id) {
             return diffs;
         }
+
+        self.buffer_unknown_runtime_tool_activity(
+            runtime_session_id,
+            tool_call_id,
+            tool_call,
+            diffs,
+        );
         Vec::new()
     }
 
-    fn should_suppress_unknown_runtime_diffs(&self, runtime_session_id: &RuntimeSessionId) -> bool {
+    fn should_buffer_unknown_runtime_diffs(&self, runtime_session_id: &RuntimeSessionId) -> bool {
         self.supports_subagents
             && self.runtime_session_id.as_ref() != Some(runtime_session_id)
             && !self
                 .subagents_by_runtime_session_id
                 .contains_key(&runtime_session_id.0)
+    }
+
+    fn buffer_unknown_runtime_tool_activity(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        tool_call_id: NativeToolCallId,
+        tool_call: &ToolCall,
+        diffs: Vec<serde_json::Value>,
+    ) {
+        let pending = PendingToolActivity {
+            diffs,
+            kind: serde_label(&tool_call.kind),
+            raw_input: tool_call.raw_input.clone(),
+            raw_output: tool_call.raw_output.clone(),
+            status: serde_label(&tool_call.status),
+            summary: tool_call_summary(tool_call),
+            title: tool_call.title.clone(),
+            tool_call_id,
+        };
+        let bucket = self
+            .pending_unknown_runtime_tool_activities
+            .entry(runtime_session_id.0.clone())
+            .or_default();
+        if let Some(existing) = bucket
+            .iter_mut()
+            .find(|activity| activity.tool_call_id == pending.tool_call_id)
+        {
+            *existing = pending;
+        } else {
+            bucket.push(pending);
+        }
+    }
+
+    fn flush_pending_tool_activities(&mut self, runtime_session_id: &RuntimeSessionId) {
+        let Some(activities) = self
+            .pending_unknown_runtime_tool_activities
+            .remove(&runtime_session_id.0)
+        else {
+            return;
+        };
+
+        for activity in activities {
+            self.emit(
+                AI_TOOL_ACTIVITY_EVENT,
+                &NativeAiToolActivityPayload {
+                    base: self.event_base_for_runtime_session(runtime_session_id),
+                    kind: activity.kind,
+                    raw_input: activity.raw_input,
+                    raw_output: activity.raw_output,
+                    status: activity.status,
+                    summary: activity.summary,
+                    title: activity.title,
+                    tool_call_id: activity.tool_call_id,
+                    diffs: activity.diffs,
+                },
+            );
+        }
     }
 
     fn emit_image_generation(
@@ -2717,6 +2800,7 @@ impl NotificationContextInner {
                 let summary = self.summary_for_runtime_session(&child_runtime_session_id);
                 self.emit(AI_SESSION_UPDATED_EVENT, &session_updated(&summary));
             }
+            self.flush_pending_tool_activities(&child_runtime_session_id);
             return Some(subagent);
         }
         let parent_runtime_session_id =
@@ -2772,6 +2856,7 @@ impl NotificationContextInner {
                 title: subagent.title.clone(),
             },
         );
+        self.flush_pending_tool_activities(&child_runtime_session_id);
         self.replay_pending_content_chunks(&child_runtime_session_id);
         if self
             .subagent_active_turn_ids
@@ -5245,7 +5330,7 @@ mod tests {
     }
 
     #[test]
-    fn notification_context_drops_diffs_from_unknown_child_tool_without_metadata() {
+    fn notification_context_buffers_diffs_from_unknown_child_until_metadata_arrives() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
         let context =
             NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
@@ -5269,6 +5354,41 @@ mod tests {
             "runtime-child-without-meta"
         );
         assert!(tool_event.payload.get("diffs").is_none());
+        assert!(receiver.try_recv().is_err());
+
+        let created_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-without-meta"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-without-meta",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                        .meta(created_meta.clone()),
+                ),
+            )
+            .meta(created_meta),
+        );
+
+        let created_event = receiver.recv().unwrap();
+        assert_eq!(created_event.event_name, AI_SUBAGENT_CREATED_EVENT);
+
+        let child_tool_event = receiver.recv().unwrap();
+        assert_eq!(child_tool_event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(
+            child_tool_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-without-meta"
+        );
+        assert_eq!(
+            child_tool_event.payload["runtimeSessionId"],
+            "runtime-child-without-meta"
+        );
+        assert_eq!(child_tool_event.payload["diffs"][0]["path"], "src/main.rs");
         assert!(receiver.try_recv().is_err());
     }
 
