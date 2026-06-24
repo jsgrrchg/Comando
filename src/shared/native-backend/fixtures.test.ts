@@ -241,6 +241,22 @@ describe("native backend fixtures", () => {
             },
             kind: "tool-activity",
         });
+        expect(
+            nativeAiEventToIpc({
+                eventName: "ai://status-event",
+                payload: {
+                    detail: "Stop reason: end_turn",
+                    eventId: "acp:turn:message_1",
+                    runtimeId: "codex",
+                    runtimeSessionId: "runtime_1",
+                    sessionId: "session_1",
+                    status: "completed",
+                    title: "Completed",
+                    updatedAt: "2026-06-20T00:00:00.000Z",
+                },
+                type: "event",
+            }),
+        ).toBeNull();
         expect(aiEvent("ai/event.plan_updated.json")).toMatchObject({
             kind: "plan",
             plan: { entries: [{ content: "Inspect files" }] },

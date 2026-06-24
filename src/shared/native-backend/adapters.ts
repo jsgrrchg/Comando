@@ -174,9 +174,12 @@ export function nativeAiEventToIpc(
     }
 
     if (event.eventName === "ai://status-event") {
-        return nativeAiStatusEventToIpc(
-            requireRecord(event.payload) as unknown as NativeAiStatusEventPayload,
-        );
+        const payload = requireRecord(
+            event.payload,
+        ) as unknown as NativeAiStatusEventPayload;
+        return shouldSuppressNativeStatusActivity(payload)
+            ? null
+            : nativeAiStatusEventToIpc(payload);
     }
 
     if (event.eventName === "ai://plan-updated") {
@@ -628,6 +631,12 @@ function nativeAiStatusEventToIpc(
         },
         kind: "tool-activity",
     };
+}
+
+function shouldSuppressNativeStatusActivity(
+    payload: NativeAiStatusEventPayload,
+): boolean {
+    return payload.status === "completed" && payload.title === "Completed";
 }
 
 function nativeAiPlanUpdatedToIpc(

@@ -3046,7 +3046,10 @@ fn should_suppress_status_tool_call_update(update: &ToolCallUpdate, meta: &Meta)
 }
 
 fn is_suppressed_status_title(title: &str) -> bool {
-    matches!(title.trim(), "Preparing input" | "Drafting response")
+    matches!(
+        title.trim(),
+        "Preparing input" | "Drafting response" | "Changing files"
+    )
 }
 
 fn tool_call_content_summary(content: &[ToolCallContent]) -> Option<String> {
@@ -4142,6 +4145,10 @@ mod tests {
         context.handle(SessionNotification::new(
             "runtime-parent",
             SessionUpdate::ToolCall(ToolCall::new("status-2", "Preparing input")),
+        ));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(ToolCall::new("status-3", "Changing files")),
         ));
 
         assert!(receiver.try_recv().is_err());
