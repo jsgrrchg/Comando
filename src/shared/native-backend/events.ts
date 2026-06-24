@@ -30,6 +30,7 @@ export const NATIVE_PROJECT_FS_INDEX_EVENTS = [
 
 export const NATIVE_GIT_EVENTS = [
     "git://repository-invalidated",
+    // Reserved protocol events; repository-invalidated is the active producer today.
     "git://snapshot-updated",
     "git://worktrees-updated",
     "git://operation-error",

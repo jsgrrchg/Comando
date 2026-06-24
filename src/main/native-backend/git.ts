@@ -458,7 +458,8 @@ export class NativeGitGateway implements ClosableGitGateway {
 
     invalidate(inputPath?: string): void {
         void inputPath;
-        // Filesystem-driven Git invalidations are emitted by the Rust watcher.
+        // GitGateway keeps this hook for legacy cache invalidation; native Git reads
+        // are uncached and filesystem watcher events drive renderer refresh.
     }
 
     clear(): void {

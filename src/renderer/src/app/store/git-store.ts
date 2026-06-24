@@ -1277,25 +1277,38 @@ function applySnapshotState(
         },
         ...(hasWorktreeChanges
             ? {}
-            : {
-                  collapsedWorktreeDiffFileIds: {
-                      ...state.collapsedWorktreeDiffFileIds,
-                      [contextKey]: [],
-                  },
-                  diffsByContext: {
-                      ...state.diffsByContext,
-                      [contextKey]: {},
-                  },
-                  selectedWorktreeDiffFileIds: {
-                      ...state.selectedWorktreeDiffFileIds,
-                      [contextKey]: null,
-                  },
-                  worktreeDiffsByContext: {
-                      ...state.worktreeDiffsByContext,
-                      [contextKey]: null,
-                  },
-              }),
+            : clearCleanWorktreeDiffState(state, contextKey)),
     }));
+}
+
+function clearCleanWorktreeDiffState(
+    state: GitStoreState,
+    contextKey: string,
+): Pick<
+    GitStoreState,
+    | "collapsedWorktreeDiffFileIds"
+    | "diffsByContext"
+    | "selectedWorktreeDiffFileIds"
+    | "worktreeDiffsByContext"
+> {
+    return {
+        collapsedWorktreeDiffFileIds: {
+            ...state.collapsedWorktreeDiffFileIds,
+            [contextKey]: [],
+        },
+        diffsByContext: {
+            ...state.diffsByContext,
+            [contextKey]: {},
+        },
+        selectedWorktreeDiffFileIds: {
+            ...state.selectedWorktreeDiffFileIds,
+            [contextKey]: null,
+        },
+        worktreeDiffsByContext: {
+            ...state.worktreeDiffsByContext,
+            [contextKey]: null,
+        },
+    };
 }
 
 function resolveSnapshotWorktreeId(

@@ -23,9 +23,7 @@ import {
     type WindowContextSnapshot,
 } from "@shared/ipc";
 import {
-    nativeGitInvalidationToIpc,
     nativeProjectTreeInvalidationToIpc,
-    type NativeGitRepositoryInvalidation,
     type NativeProjectTreeInvalidation,
 } from "@shared/native-backend";
 
@@ -56,6 +54,7 @@ import {
 } from "./native-backend/app-data";
 import { NativeFsGateway } from "./native-backend/fs";
 import { NativeGitGateway, type ClosableGitGateway } from "./native-backend/git";
+import { nativeGitEventToIpcInvalidation } from "./native-backend/git-events";
 import { NativeSearchGateway } from "./native-backend/index-search";
 import {
     NativeTerminalGateway,
@@ -953,7 +952,7 @@ function broadcastProjectGitInvalidation(
                   }));
 
     for (const worktree of worktrees) {
-        gitService.invalidate(worktree.rootPath);
+        clearLegacyGitCacheIfAny(worktree.rootPath);
         broadcastGitRepositoryInvalidated({
             occurredAt: payload.occurredAt,
             projectId: payload.projectId,
@@ -962,6 +961,11 @@ function broadcastProjectGitInvalidation(
             worktreeId: worktree.id ?? null,
         });
     }
+}
+
+function clearLegacyGitCacheIfAny(rootPath: string): void {
+    // Legacy Git gateways may cache command results; native Git implements this as a no-op.
+    gitService?.invalidate(rootPath);
 }
 
 function broadcastGitRepositoryInvalidated(
@@ -1003,16 +1007,13 @@ function broadcastNativeBackendEvent(event: NativeBackendEvent): void {
         }
     }
 
-    if (event.eventName === "git://repository-invalidated") {
-        try {
-            broadcastGitRepositoryInvalidated(
-                nativeGitInvalidationToIpc(
-                    event.payload as NativeGitRepositoryInvalidation,
-                ),
-            );
-        } catch (error) {
-            debugBenignError("nativeBackend.gitInvalidation", error);
+    try {
+        const gitInvalidation = nativeGitEventToIpcInvalidation(event);
+        if (gitInvalidation) {
+            broadcastGitRepositoryInvalidated(gitInvalidation);
         }
+    } catch (error) {
+        debugBenignError("nativeBackend.gitInvalidation", error);
     }
 
     forEachLiveWindow((window) => {

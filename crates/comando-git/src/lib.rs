@@ -3,7 +3,6 @@ pub mod diff;
 pub mod env;
 pub mod error;
 pub mod history;
-pub mod invalidation;
 pub mod mutations;
 pub mod original_file;
 pub mod remotes;
@@ -22,7 +21,6 @@ pub use diff::{GitFileDiffRequest, get_diff_stats, get_file_diff, parse_unified_
 pub use env::GitEnvironment;
 pub use error::{GitError, GitResult};
 pub use history::{get_commit_detail, list_history};
-pub use invalidation::{GitInvalidationCoalescer, GitInvalidationReason};
 pub use mutations::{
     checkout_branch, commit, create_branch, create_worktree, delete_local_branch,
     delete_remote_branch, discard_paths, fetch, init_repository, pull, push, remove_worktree,

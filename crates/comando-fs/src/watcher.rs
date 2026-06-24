@@ -17,7 +17,9 @@ use crate::error::FsError;
 use crate::now_rfc3339;
 use crate::origin::{WriteTracker, hash_bytes};
 use crate::path::normalize_relative_path;
-use crate::policy::{git_watch_invalidation_reason, should_ignore_watch_path};
+use crate::policy::{
+    GitWatchInvalidationReason, git_watch_invalidation_reason, should_ignore_watch_path,
+};
 use crate::registry::ProjectRoot;
 
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(140);
@@ -36,7 +38,7 @@ pub struct WatcherRegistry {
     roots: HashMap<String, ProjectRoot>,
     write_tracker: WriteTracker,
     pending: Arc<Mutex<HashMap<String, PendingInvalidation>>>,
-    pending_git: Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
+    pending_git_invalidations: Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
     fs_events: Arc<Mutex<Vec<(String, NativeFsWatchEvent)>>>,
 }
 
@@ -53,7 +55,7 @@ struct PendingGitInvalidation {
     project_id: comando_types::ids::ProjectId,
     worktree_id: Option<comando_types::ids::WorktreeId>,
     root_path: String,
-    reason: String,
+    reason: GitWatchInvalidationReason,
     last_event_at: Instant,
 }
 
@@ -64,7 +66,7 @@ impl WatcherRegistry {
             roots: HashMap::new(),
             write_tracker: WriteTracker::new(),
             pending: Arc::new(Mutex::new(HashMap::new())),
-            pending_git: Arc::new(Mutex::new(HashMap::new())),
+            pending_git_invalidations: Arc::new(Mutex::new(HashMap::new())),
             fs_events: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -143,8 +145,11 @@ impl WatcherRegistry {
         drop(pending);
 
         let mut git_invalidations = Vec::new();
-        let mut pending_git = self.pending_git.lock().expect("git watch pending lock");
-        let ready_git_keys = pending_git
+        let mut pending_git_invalidations = self
+            .pending_git_invalidations
+            .lock()
+            .expect("git watch pending lock");
+        let ready_git_keys = pending_git_invalidations
             .iter()
             .filter(|(_, pending)| {
                 force || now.duration_since(pending.last_event_at) >= WATCH_DEBOUNCE
@@ -153,17 +158,17 @@ impl WatcherRegistry {
             .collect::<Vec<_>>();
 
         for key in ready_git_keys {
-            if let Some(pending) = pending_git.remove(&key) {
+            if let Some(pending) = pending_git_invalidations.remove(&key) {
                 git_invalidations.push(NativeGitRepositoryInvalidation {
                     project_id: pending.project_id,
                     worktree_id: pending.worktree_id,
                     root_path: Some(pending.root_path),
-                    reason: pending.reason,
+                    reason: pending.reason.as_native_reason().to_string(),
                     occurred_at: now_rfc3339(),
                 });
             }
         }
-        drop(pending_git);
+        drop(pending_git_invalidations);
 
         let fs_events = {
             let mut events = self.fs_events.lock().expect("watch events lock");
@@ -180,7 +185,7 @@ impl WatcherRegistry {
     fn start_root(&mut self, key: String, root: ProjectRoot) -> Result<(), FsError> {
         let watch_root = root.root_path.clone();
         let pending = Arc::clone(&self.pending);
-        let pending_git = Arc::clone(&self.pending_git);
+        let pending_git_invalidations = Arc::clone(&self.pending_git_invalidations);
         let fs_events = Arc::clone(&self.fs_events);
         let write_tracker = self.write_tracker.clone();
         let root_for_callback = root.clone();
@@ -198,7 +203,7 @@ impl WatcherRegistry {
                     &watch_root,
                     &write_tracker,
                     &pending,
-                    &pending_git,
+                    &pending_git_invalidations,
                     &fs_events,
                     event,
                 );
@@ -218,11 +223,17 @@ impl WatcherRegistry {
         delay: Duration,
     ) {
         let pending = Arc::clone(&self.pending);
-        let pending_git = Arc::clone(&self.pending_git);
+        let pending_git_invalidations = Arc::clone(&self.pending_git_invalidations);
         std::thread::spawn(move || {
             std::thread::sleep(delay);
             let key = watch_key(&root);
-            record_test_watch_path(&key, &root, &relative_path, &pending, &pending_git);
+            record_test_watch_path(
+                &key,
+                &root,
+                &relative_path,
+                &pending,
+                &pending_git_invalidations,
+            );
         });
     }
 }
@@ -239,7 +250,7 @@ fn handle_notify_event(
     watch_root: &Path,
     write_tracker: &WriteTracker,
     pending: &Arc<Mutex<HashMap<String, PendingInvalidation>>>,
-    pending_git: &Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
+    pending_git_invalidations: &Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
     fs_events: &Arc<Mutex<Vec<(String, NativeFsWatchEvent)>>>,
     event: Event,
 ) {
@@ -265,7 +276,7 @@ fn handle_notify_event(
         }
 
         if let Some(reason) = git_watch_invalidation_reason(&relative_path) {
-            record_pending_git_invalidation(key, root, reason, pending_git);
+            record_pending_git_invalidation(key, root, reason, pending_git_invalidations);
             continue;
         }
 
@@ -294,21 +305,23 @@ fn handle_notify_event(
 fn record_pending_git_invalidation(
     key: &str,
     root: &ProjectRoot,
-    reason: &str,
-    pending_git: &Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
+    reason: GitWatchInvalidationReason,
+    pending_git_invalidations: &Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
 ) {
-    let mut pending = pending_git.lock().expect("git watch pending lock");
+    let mut pending = pending_git_invalidations
+        .lock()
+        .expect("git watch pending lock");
     let entry = pending
         .entry(key.to_string())
         .or_insert_with(|| PendingGitInvalidation {
             project_id: root.project_id.clone(),
             worktree_id: root.worktree_id.clone(),
             root_path: root.root_path.display().to_string(),
-            reason: reason.to_string(),
+            reason,
             last_event_at: Instant::now(),
         });
 
-    entry.reason = merge_git_invalidation_reason(&entry.reason, reason).to_string();
+    entry.reason = merge_git_invalidation_reason(entry.reason, reason);
     entry.last_event_at = Instant::now();
 }
 
@@ -318,47 +331,28 @@ fn record_test_watch_path(
     root: &ProjectRoot,
     relative_path: &str,
     pending: &Arc<Mutex<HashMap<String, PendingInvalidation>>>,
-    pending_git: &Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
+    pending_git_invalidations: &Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
 ) {
     if should_ignore_watch_path(relative_path) {
         return;
     }
 
     if let Some(reason) = git_watch_invalidation_reason(relative_path) {
-        record_pending_git_invalidation(key, root, reason, pending_git);
+        record_pending_git_invalidation(key, root, reason, pending_git_invalidations);
         return;
     }
 
     record_pending_invalidation(key, root, relative_path, pending);
 }
 
-fn merge_git_invalidation_reason(existing: &str, incoming: &str) -> &'static str {
-    if git_invalidation_priority(incoming) > git_invalidation_priority(existing) {
-        normalize_git_invalidation_reason(incoming)
+fn merge_git_invalidation_reason(
+    existing: GitWatchInvalidationReason,
+    incoming: GitWatchInvalidationReason,
+) -> GitWatchInvalidationReason {
+    if incoming.priority() > existing.priority() {
+        incoming
     } else {
-        normalize_git_invalidation_reason(existing)
-    }
-}
-
-fn normalize_git_invalidation_reason(reason: &str) -> &'static str {
-    match reason {
-        "remote" => "remote",
-        "worktree" => "worktree",
-        "branch" => "branch",
-        "status" => "status",
-        "filesystem" => "filesystem",
-        _ => "unknown",
-    }
-}
-
-fn git_invalidation_priority(reason: &str) -> u8 {
-    match normalize_git_invalidation_reason(reason) {
-        "remote" => 5,
-        "worktree" => 4,
-        "branch" => 3,
-        "status" => 2,
-        "filesystem" => 1,
-        _ => 0,
+        existing
     }
 }
 
@@ -508,14 +502,14 @@ mod tests {
         record_pending_git_invalidation(
             "project_1:project_1:primary",
             &root,
-            "status",
-            &watchers.pending_git,
+            GitWatchInvalidationReason::Status,
+            &watchers.pending_git_invalidations,
         );
         record_pending_git_invalidation(
             "project_1:project_1:primary",
             &root,
-            "branch",
-            &watchers.pending_git,
+            GitWatchInvalidationReason::Branch,
+            &watchers.pending_git_invalidations,
         );
         thread::sleep(Duration::from_millis(160));
 

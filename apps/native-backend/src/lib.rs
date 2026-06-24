@@ -295,6 +295,56 @@ mod tests {
         handle.join().expect("stdio thread");
     }
 
+    #[test]
+    fn ignores_noisy_git_index_watch_events() {
+        let (sender, receiver) = mpsc::channel();
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let writer = SharedWriter {
+            output: Arc::clone(&output),
+        };
+        let handle = thread::spawn(move || {
+            run_stdio(BufReader::new(ChannelRead::new(receiver)), writer).expect("stdio");
+        });
+
+        send_request(
+            &sender,
+            json!({
+                "id": "queue",
+                "command": "backend_queue_test_fs_event",
+                "args": {
+                    "relativePath": ".git/index"
+                }
+            }),
+        );
+        assert!(wait_for_output(
+            &output,
+            "\"id\":\"queue\"",
+            Duration::from_secs(2)
+        ));
+
+        thread::sleep(Duration::from_millis(450));
+        let snapshot = String::from_utf8_lossy(&output.lock().expect("output lock")).to_string();
+        assert!(
+            !snapshot.contains("git://repository-invalidated"),
+            "{snapshot}"
+        );
+        assert!(
+            !snapshot.contains("project://tree-invalidated"),
+            "{snapshot}"
+        );
+
+        send_request(
+            &sender,
+            json!({
+                "id": "shutdown",
+                "command": "backend_shutdown",
+                "args": {}
+            }),
+        );
+        drop(sender);
+        handle.join().expect("stdio thread");
+    }
+
     fn send_request(sender: &mpsc::Sender<Vec<u8>>, value: serde_json::Value) {
         let mut line = serde_json::to_vec(&value).expect("json");
         line.push(b'\n');

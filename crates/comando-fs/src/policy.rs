@@ -5,6 +5,40 @@ use comando_types::fs::NativeFsVisibilityPolicy;
 const NOISY_DIRECTORY_NAMES: &[&str] =
     &["node_modules", "dist", "target", "build", "coverage", "out"];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitWatchInvalidationReason {
+    Filesystem,
+    Status,
+    Branch,
+    Worktree,
+    Remote,
+    Unknown,
+}
+
+impl GitWatchInvalidationReason {
+    pub fn as_native_reason(self) -> &'static str {
+        match self {
+            Self::Remote => "remote",
+            Self::Worktree => "worktree",
+            Self::Branch => "branch",
+            Self::Status => "status",
+            Self::Filesystem => "filesystem",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn priority(self) -> u8 {
+        match self {
+            Self::Remote => 5,
+            Self::Worktree => 4,
+            Self::Branch => 3,
+            Self::Status => 2,
+            Self::Filesystem => 1,
+            Self::Unknown => 0,
+        }
+    }
+}
+
 pub fn tree_visibility_for_entry(name: &str, is_directory: bool) -> NativeFsVisibilityPolicy {
     if is_directory && name == ".git" {
         return NativeFsVisibilityPolicy::Special;
@@ -51,7 +85,7 @@ pub fn is_special_no_expand_directory(path: &Path) -> bool {
         .is_some_and(|name| name == ".git")
 }
 
-pub fn git_watch_invalidation_reason(relative_path: &str) -> Option<&'static str> {
+pub fn git_watch_invalidation_reason(relative_path: &str) -> Option<GitWatchInvalidationReason> {
     let normalized = relative_path.replace('\\', "/").to_lowercase();
     let path = normalized.as_str();
 
@@ -60,14 +94,16 @@ pub fn git_watch_invalidation_reason(relative_path: &str) -> Option<&'static str
     }
 
     match path {
-        ".git/head" | ".git/packed-refs" => Some("branch"),
+        ".git/head" | ".git/packed-refs" => Some(GitWatchInvalidationReason::Branch),
         ".git/orig_head" | ".git/merge_head" | ".git/cherry_pick_head" | ".git/rebase_head" => {
-            Some("status")
+            Some(GitWatchInvalidationReason::Status)
         }
-        _ if path.starts_with(".git/refs/") => Some("branch"),
-        _ if path == ".git/logs/head" || path.starts_with(".git/logs/refs/") => Some("branch"),
+        _ if path.starts_with(".git/refs/") => Some(GitWatchInvalidationReason::Branch),
+        _ if path == ".git/logs/head" || path.starts_with(".git/logs/refs/") => {
+            Some(GitWatchInvalidationReason::Branch)
+        }
         _ if path.starts_with(".git/rebase-merge/") || path.starts_with(".git/rebase-apply/") => {
-            Some("status")
+            Some(GitWatchInvalidationReason::Status)
         }
         _ => None,
     }
@@ -75,7 +111,9 @@ pub fn git_watch_invalidation_reason(relative_path: &str) -> Option<&'static str
 
 #[cfg(test)]
 mod tests {
-    use super::{git_watch_invalidation_reason, should_ignore_watch_path};
+    use super::{
+        GitWatchInvalidationReason, git_watch_invalidation_reason, should_ignore_watch_path,
+    };
 
     #[test]
     fn ignores_noisy_git_index_paths() {
@@ -85,18 +123,21 @@ mod tests {
 
     #[test]
     fn keeps_git_metadata_paths_that_invalidate_repository_state() {
-        assert_eq!(git_watch_invalidation_reason(".git/HEAD"), Some("branch"));
+        assert_eq!(
+            git_watch_invalidation_reason(".git/HEAD"),
+            Some(GitWatchInvalidationReason::Branch),
+        );
         assert_eq!(
             git_watch_invalidation_reason(".git/refs/heads/main"),
-            Some("branch"),
+            Some(GitWatchInvalidationReason::Branch),
         );
         assert_eq!(
             git_watch_invalidation_reason(".git/packed-refs"),
-            Some("branch"),
+            Some(GitWatchInvalidationReason::Branch),
         );
         assert_eq!(
             git_watch_invalidation_reason(".git/MERGE_HEAD"),
-            Some("status"),
+            Some(GitWatchInvalidationReason::Status),
         );
 
         assert!(!should_ignore_watch_path(".git/HEAD"));
