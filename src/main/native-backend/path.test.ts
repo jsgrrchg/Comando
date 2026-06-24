@@ -85,33 +85,25 @@ describe("resolveNativeBackendPath", () => {
         });
     });
 
-    it("prefers the most recently built dev binary when both exist", () => {
+    it("prefers the dev debug binary when both dev profiles exist", () => {
         withTempDir((root) => {
             const debugPath = touch(
                 path.join(root, "target", "debug", "comando-native-backend"),
             );
-            const releasePath = touch(
+            touch(
                 path.join(root, "target", "release", "comando-native-backend"),
             );
-
-            // Release is fresher than debug — it must win even though debug is
-            // listed first among the candidates.
-            const mtimes = new Map([
-                [debugPath, 1_000],
-                [releasePath, 2_000],
-            ]);
 
             expect(
                 resolveNativeBackendPath({
                     cwd: root,
                     env: {},
                     exists: fs.existsSync,
-                    mtimeMs: (candidate) => mtimes.get(candidate) ?? 0,
                     resourcesPath: path.join(root, "resources"),
                 }),
             ).toMatchObject({
-                binaryPath: releasePath,
-                source: "dev-release",
+                binaryPath: debugPath,
+                source: "dev-debug",
             });
         });
     });
@@ -135,12 +127,74 @@ describe("resolveNativeBackendPath", () => {
                     cwd: root,
                     env: {},
                     exists: fs.existsSync,
+                    isPackaged: true,
                     platform: "darwin",
                     resourcesPath,
                 }),
             ).toMatchObject({
                 binaryPath,
                 source: "packaged",
+            });
+        });
+    });
+
+    it("does not let dev binaries shadow a packaged sidecar", () => {
+        withTempDir((root) => {
+            touch(path.join(root, "target", "debug", "comando-native-backend"));
+            const resourcesPath = path.join(root, "packaged-resources");
+            const binaryPath = touch(
+                path.join(
+                    resourcesPath,
+                    "native",
+                    "darwin",
+                    "arm64",
+                    "comando-native-backend",
+                ),
+            );
+
+            expect(
+                resolveNativeBackendPath({
+                    arch: "arm64",
+                    cwd: root,
+                    env: {},
+                    exists: fs.existsSync,
+                    isPackaged: true,
+                    platform: "darwin",
+                    resourcesPath,
+                }),
+            ).toMatchObject({
+                binaryPath,
+                source: "packaged",
+            });
+        });
+    });
+
+    it("does not fall back to packaged resources while running in dev", () => {
+        withTempDir((root) => {
+            const resourcesPath = path.join(root, "packaged-resources");
+            touch(
+                path.join(
+                    resourcesPath,
+                    "native",
+                    "darwin",
+                    "arm64",
+                    "comando-native-backend",
+                ),
+            );
+
+            expect(
+                resolveNativeBackendPath({
+                    arch: "arm64",
+                    cwd: root,
+                    env: {},
+                    exists: fs.existsSync,
+                    isPackaged: false,
+                    platform: "darwin",
+                    resourcesPath,
+                }),
+            ).toMatchObject({
+                binaryPath: null,
+                source: "missing",
             });
         });
     });
