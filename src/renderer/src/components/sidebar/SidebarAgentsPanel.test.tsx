@@ -1,11 +1,22 @@
+/** @vitest-environment jsdom */
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AiHistorySessionSummary } from "@shared/ipc";
+import type {
+    AiHistorySessionSummary,
+    AiSessionSnapshot,
+    ComandoApi,
+} from "@shared/ipc";
 import {
     registerClaudeCodeSidebarSession,
     resetClaudeCodeSidebarSessionsForTests,
 } from "@renderer/features/terminal/claudeCodeSidebarSession";
+import {
+    resetAiStoreRuntimeBuffersForTests,
+    useAiStore,
+} from "@renderer/app/store/ai-store";
 
 import {
     buildSidebarAgentsNewAgentMenuEntries,
@@ -15,6 +26,12 @@ import {
     clearSidebarAgentsHistoryCache,
     writeSidebarAgentsHistoryCache,
 } from "./sidebarAgentsHistoryCache";
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
+
+const mountedRoots: Root[] = [];
+const mountedContainers: HTMLDivElement[] = [];
 
 class MemoryStorage implements Storage {
     private readonly values = new Map<string, string>();
@@ -44,6 +61,18 @@ class MemoryStorage implements Storage {
     }
 }
 
+afterEach(() => {
+    for (const root of mountedRoots.splice(0)) {
+        act(() => {
+            root.unmount();
+        });
+    }
+
+    for (const container of mountedContainers.splice(0)) {
+        container.remove();
+    }
+});
+
 function createSummary(
     overrides: Partial<AiHistorySessionSummary> = {},
 ): AiHistorySessionSummary {
@@ -61,10 +90,47 @@ function createSummary(
     };
 }
 
+function createSnapshot(
+    overrides: Partial<AiSessionSnapshot> = {},
+): AiSessionSnapshot {
+    return {
+        availableCommands: [],
+        configOptions: [],
+        lastError: null,
+        messages: [],
+        modeId: null,
+        modes: [],
+        modelId: null,
+        models: [],
+        pendingPermission: null,
+        pendingUserInput: null,
+        plan: null,
+        projectId: "project-1",
+        runtimeId: "codex",
+        runtimeSessionId: "runtime-session-1",
+        sessionId: "session-1",
+        status: "idle",
+        title: "Session",
+        tokenUsage: null,
+        toolActivity: [],
+        trackedFiles: [],
+        updatedAt: "2026-04-19T10:00:00.000Z",
+        worktreeId: "worktree-1",
+        ...overrides,
+    };
+}
+
 describe("SidebarAgentsPanel history cache", () => {
     beforeEach(() => {
         clearSidebarAgentsHistoryCache();
         resetClaudeCodeSidebarSessionsForTests();
+        resetAiStoreRuntimeBuffersForTests();
+        useAiStore.setState((state) => ({
+            ...state,
+            runtimeCatalogById: {},
+            runtimeStatusById: {},
+            sessions: {},
+        }));
         Object.defineProperty(globalThis, "localStorage", {
             configurable: true,
             value: new MemoryStorage(),
@@ -149,6 +215,91 @@ describe("SidebarAgentsPanel history cache", () => {
         );
         expect(markup).toContain('data-subagent="true"');
         expect(markup).toContain("Agent");
+    });
+
+    it("shows Working only for child agents with a busy normalized snapshot", async () => {
+        const sessions = [
+            createSummary({
+                runtimeSessionId: "runtime-parent",
+                sessionId: "parent-session",
+                title: "Parent Thread",
+            }),
+            createSummary({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-finished",
+                sessionId: "child-finished",
+                title: "Finished Child",
+            }),
+            createSummary({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-running",
+                sessionId: "child-running",
+                title: "Running Child",
+            }),
+        ];
+        writeSidebarAgentsHistoryCache(
+            "project-1",
+            "worktree-1",
+            sessions,
+            100,
+        );
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-finished",
+                sessionId: "child-finished",
+                status: "idle",
+                title: "Finished Child",
+            }),
+        );
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-running",
+                sessionId: "child-running",
+                status: "streaming",
+                title: "Running Child",
+            }),
+        );
+        Object.defineProperty(window, "comando", {
+            configurable: true,
+            value: {
+                checkCommandAvailability: vi.fn().mockResolvedValue({
+                    found: true,
+                    path: "/usr/local/bin/claude",
+                }),
+                listAiSessionHistory: vi.fn().mockResolvedValue(sessions),
+                onAiSessionSnapshot: vi.fn(() => () => undefined),
+            } satisfies Partial<ComandoApi>,
+            writable: true,
+        });
+
+        const container = document.createElement("div");
+        document.body.appendChild(container);
+        mountedContainers.push(container);
+        const root = createRoot(container);
+        mountedRoots.push(root);
+
+        await act(async () => {
+            root.render(
+                <SidebarAgentsPanel
+                    projectId="project-1"
+                    worktreeId="worktree-1"
+                />,
+            );
+        });
+
+        const items = Array.from(container.querySelectorAll("li"));
+        const finishedItem = items.find((item) =>
+            item.textContent?.includes("Finished Child"),
+        );
+        const runningItem = items.find((item) =>
+            item.textContent?.includes("Running Child"),
+        );
+
+        expect(container.textContent?.match(/Working…/g)).toHaveLength(1);
+        expect(finishedItem?.textContent).not.toContain("Working…");
+        expect(runningItem?.textContent).toContain("Working…");
     });
 
     it("renders live Claude Code terminal agents alongside real history", () => {
