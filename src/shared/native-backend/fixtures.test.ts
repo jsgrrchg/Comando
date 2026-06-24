@@ -199,6 +199,26 @@ describe("native backend fixtures", () => {
             kind: "message-completed",
             messageId: "message_1",
         });
+        expect(
+            nativeAiEventToIpc({
+                eventName: "ai://message-started",
+                payload: {
+                    content: "",
+                    messageId: "message_user_1",
+                    messageKind: "user",
+                    runtimeId: "opencode",
+                    runtimeSessionId: "runtime_child_1",
+                    sessionId: "session_child_1",
+                    updatedAt: "2026-06-20T00:00:03.000Z",
+                },
+                type: "event",
+            }),
+        ).toMatchObject({
+            kind: "message-started",
+            message: { id: "message_user_1", kind: "user" },
+            messageKind: "user",
+            sessionId: "session_child_1",
+        });
         expect(aiEvent("ai/event.thinking_delta.json")).toMatchObject({
             kind: "thinking-delta",
             messageId: "thinking_1",

@@ -1726,6 +1726,101 @@ mod tests {
     }
 
     #[test]
+    fn records_subagent_user_message_chunks_in_history_order() {
+        let app_data = tempfile::tempdir().expect("app data");
+        let store = AiHistoryStore::new(app_data.path()).expect("history store");
+        let child_session_id = SessionId("s-child".to_string());
+        let metadata = AiHistorySessionMetadata::new_native(AiHistorySessionMetadataInput {
+            session_id: child_session_id.clone(),
+            runtime_id: RuntimeId("opencode".to_string()),
+            runtime_session_id: Some(RuntimeSessionId("runtime-child".to_string())),
+            parent_session_id: Some(SessionId("s-parent".to_string())),
+            project_id: None,
+            worktree_id: None,
+            title: "Child agent".to_string(),
+            status: NativeAiSessionStatus::Idle,
+            model_id: None,
+            mode_id: None,
+            config_values: BTreeMap::new(),
+            cwd: "/tmp/project".to_string(),
+            additional_roots: Vec::new(),
+        });
+        store
+            .create_session(metadata)
+            .expect("create child history session");
+        let engine = AiEngine::default();
+        engine
+            .set_history_store(Some(store.clone()))
+            .expect("install history store");
+
+        for event in [
+            AiRuntimeEvent::new(
+                AI_MESSAGE_STARTED_EVENT,
+                &json!({
+                    "content": "",
+                    "messageId": "user-1",
+                    "messageKind": "user",
+                    "runtimeId": "opencode",
+                    "runtimeSessionId": "runtime-child",
+                    "sessionId": "s-child",
+                    "updatedAt": "2026-06-20T00:00:00.000Z"
+                }),
+            ),
+            AiRuntimeEvent::new(
+                AI_MESSAGE_DELTA_EVENT,
+                &json!({
+                    "content": "Child prompt",
+                    "delta": "Child prompt",
+                    "messageId": "user-1",
+                    "messageKind": "user",
+                    "runtimeId": "opencode",
+                    "runtimeSessionId": "runtime-child",
+                    "sessionId": "s-child",
+                    "updatedAt": "2026-06-20T00:00:00.100Z"
+                }),
+            ),
+            AiRuntimeEvent::new(
+                AI_MESSAGE_COMPLETED_EVENT,
+                &json!({
+                    "messageId": "user-1",
+                    "messageKind": "user",
+                    "runtimeId": "opencode",
+                    "runtimeSessionId": "runtime-child",
+                    "sessionId": "s-child",
+                    "updatedAt": "2026-06-20T00:00:00.200Z"
+                }),
+            ),
+            AiRuntimeEvent::new(
+                AI_MESSAGE_STARTED_EVENT,
+                &json!({
+                    "content": "",
+                    "messageId": "assistant-1",
+                    "messageKind": "assistant",
+                    "runtimeId": "opencode",
+                    "runtimeSessionId": "runtime-child",
+                    "sessionId": "s-child",
+                    "updatedAt": "2026-06-20T00:00:01.000Z"
+                }),
+            ),
+        ] {
+            engine
+                .record_history_event(&event)
+                .expect("record history event");
+        }
+
+        let snapshot = store
+            .load_session_snapshot(&child_session_id)
+            .expect("load child snapshot")
+            .expect("child snapshot");
+
+        assert_eq!(snapshot.messages.len(), 2);
+        assert_eq!(snapshot.messages[0]["kind"], "user");
+        assert_eq!(snapshot.messages[0]["content"], "Child prompt");
+        assert_eq!(snapshot.messages[0]["status"], "completed");
+        assert_eq!(snapshot.messages[1]["kind"], "assistant");
+    }
+
+    #[test]
     fn prompt_rejects_too_many_image_attachments() {
         let engine = AiEngine::default();
         let input = NativeAiSendPromptInput {

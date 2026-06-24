@@ -2025,11 +2025,60 @@ impl NotificationContextInner {
                 if self.supports_subagents
                     && self.runtime_session_id.as_ref() != Some(&runtime_session_id)
                 {
-                    self.handle_content_chunk(&runtime_session_id, "user", chunk);
+                    self.handle_user_message_chunk(&runtime_session_id, chunk);
                 }
             }
             _ => {}
         }
+    }
+
+    fn handle_user_message_chunk(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        chunk: ContentChunk,
+    ) {
+        if !self.is_known_runtime_session(runtime_session_id) {
+            self.ensure_known_runtime_session(runtime_session_id, None);
+            if !self.is_known_runtime_session(runtime_session_id) {
+                self.pending_content_chunks
+                    .entry(runtime_session_id.0.clone())
+                    .or_default()
+                    .push(PendingContentChunk {
+                        chunk,
+                        message_kind: "user",
+                    });
+                return;
+            }
+        }
+
+        let delta = content_block_text(&chunk.content);
+        if delta.is_empty() {
+            return;
+        }
+
+        self.mark_subagent_active(runtime_session_id);
+
+        let message_id = self.resolve_stream_message_id(runtime_session_id, "user", &chunk);
+        let summary = self.summary_for_runtime_session(runtime_session_id);
+        self.emit(
+            AI_MESSAGE_STARTED_EVENT,
+            &message_started(&summary, MessageId(message_id.clone()), "user"),
+        );
+        self.emit(
+            AI_MESSAGE_DELTA_EVENT,
+            &message_delta(
+                &summary,
+                MessageId(message_id.clone()),
+                "user",
+                delta.clone(),
+                delta,
+            ),
+        );
+        self.emit(
+            AI_MESSAGE_COMPLETED_EVENT,
+            &message_completed(&summary, MessageId(message_id), "user"),
+        );
+        self.clear_synthetic_message_id(runtime_session_id, "user");
     }
 
     fn handle_content_chunk(
@@ -2984,7 +3033,11 @@ impl NotificationContextInner {
             return;
         };
         for pending in chunks {
-            self.handle_content_chunk(runtime_session_id, pending.message_kind, pending.chunk);
+            if pending.message_kind == "user" {
+                self.handle_user_message_chunk(runtime_session_id, pending.chunk);
+            } else {
+                self.handle_content_chunk(runtime_session_id, pending.message_kind, pending.chunk);
+            }
         }
     }
 
@@ -3035,6 +3088,15 @@ impl NotificationContextInner {
         let prefix = format!("{}\u{1f}", runtime_session_id.0);
         self.synthetic_message_ids
             .retain(|key, _message_id| !key.starts_with(&prefix));
+    }
+
+    fn clear_synthetic_message_id(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        message_kind: &str,
+    ) {
+        self.synthetic_message_ids
+            .remove(&synthetic_message_key(runtime_session_id, message_kind));
     }
 
     fn summary_for_runtime_session(
@@ -4600,6 +4662,13 @@ mod tests {
         assert_eq!(delta_event.event_name, AI_MESSAGE_DELTA_EVENT);
         assert_eq!(delta_event.payload["messageKind"], "user");
         assert_eq!(delta_event.payload["delta"], "Child prompt");
+        let completed_event = receiver.recv().unwrap();
+        assert_eq!(completed_event.event_name, AI_MESSAGE_COMPLETED_EVENT);
+        assert_eq!(completed_event.payload["messageKind"], "user");
+        assert_eq!(
+            completed_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-1"
+        );
     }
 
     #[test]
