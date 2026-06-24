@@ -2111,7 +2111,7 @@ function createSessionSnapshotFromEvent(
         activeTurnStartedAt:
             event.kind === "status" ? event.activeTurnStartedAt : null,
         availableCommands: catalog?.availableCommands ?? [],
-        closedAt: null,
+        closedAt: event.kind === "session-closed" ? event.closedAt : null,
         configOptions: catalog?.configOptions ?? [],
         lastError: event.kind === "status" ? event.lastError : null,
         messages: [],
@@ -2237,6 +2237,19 @@ function applySessionDomainEventToSnapshot(
                 updatedAt: event.updatedAt,
             };
         }
+        case "session-closed":
+            return {
+                ...snapshot,
+                activeTurnStartedAt: null,
+                closedAt: event.closedAt,
+                lastError: null,
+                pendingPermission: null,
+                pendingUserInput: null,
+                runtimeSessionId:
+                    event.runtimeSessionId ?? snapshot.runtimeSessionId,
+                status: "idle",
+                updatedAt: event.updatedAt,
+            };
         case "plan":
             return {
                 ...snapshot,

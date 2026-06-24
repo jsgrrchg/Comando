@@ -349,6 +349,29 @@ describe("NativeAiGateway", () => {
         client.request.mockClear();
         await gateway.closeSession("session-1:subagent:runtime-child-1");
         expect(client.request).not.toHaveBeenCalled();
+        expect(onSessionEvent).toHaveBeenCalledWith(
+            "window-1",
+            expect.objectContaining({
+                kind: "session-closed",
+                parentSessionId: "session-1",
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-child-1",
+                sessionId: "session-1:subagent:runtime-child-1",
+            }),
+        );
+        const closedEvent = onSessionEvent.mock.calls
+            .map(([, event]) => event)
+            .find(
+                (event) =>
+                    event.kind === "session-closed" &&
+                    event.sessionId === "session-1:subagent:runtime-child-1",
+            );
+        expect(closedEvent).toEqual(
+            expect.objectContaining({
+                closedAt: expect.any(String),
+                updatedAt: expect.any(String),
+            }),
+        );
     });
 
     it("hydrates persisted subagent mappings before child events arrive", async () => {

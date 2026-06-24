@@ -764,6 +764,56 @@ describe("ai-store queue", () => {
         );
     });
 
+    it("marks subagents closed from session-closed events without draining queued prompts", async () => {
+        const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                parentSessionId: "parent-session-1",
+                status: "streaming",
+            }),
+        );
+
+        await useAiStore.getState().sendPrompt(TAB, "queued after close");
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                closedAt: "2026-04-14T00:00:02.000Z",
+                kind: "session-closed",
+                runtimeSessionId: "runtime-session-1",
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+        await Promise.resolve();
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(session?.snapshot).toEqual(
+            expect.objectContaining({
+                closedAt: "2026-04-14T00:00:02.000Z",
+                parentSessionId: "parent-session-1",
+                status: "idle",
+            }),
+        );
+        expect(session?.queue[0]).toEqual(
+            expect.objectContaining({
+                prompt: "queued after close",
+                status: "queued",
+            }),
+        );
+        expect(sendAiPrompt).not.toHaveBeenCalled();
+    });
+
     it("upserts typed tool activity events by tool id", () => {
         useAiStore.getState().applySessionSnapshot(createSnapshot());
 

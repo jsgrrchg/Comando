@@ -609,6 +609,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         }
 
         if (this.#subagentParentSessionIds.has(sessionId)) {
+            this.#emitLocalSubagentClosed(sessionId);
             this.#forgetSession(sessionId);
             return;
         }
@@ -782,7 +783,9 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 return;
             }
 
-            const converted = nativeAiEventToIpc(event);
+            const converted = this.#hydrateNativeSessionEvent(
+                nativeAiEventToIpc(event),
+            );
             if (!converted) {
                 return;
             }
@@ -804,6 +807,9 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 );
             }
             this.#onSessionEvent(ownerWindowId, converted);
+            if (converted.kind === "session-closed") {
+                this.#forgetSession(converted.sessionId);
+            }
         } catch (error) {
             this.#reportDiagnostic(
                 `Native AI event failed: ${formatError(error)}`,
@@ -960,6 +966,48 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 event.runtimeSessionId,
             );
         }
+    }
+
+    #hydrateNativeSessionEvent(
+        event: AiSessionDomainEvent | null,
+    ): AiSessionDomainEvent | null {
+        if (!event || event.kind !== "session-closed") {
+            return event;
+        }
+
+        const parentSessionId =
+            event.parentSessionId ??
+            this.#subagentParentSessionIds.get(event.sessionId) ??
+            null;
+        if (parentSessionId === event.parentSessionId) {
+            return event;
+        }
+
+        return {
+            ...event,
+            parentSessionId,
+        };
+    }
+
+    #emitLocalSubagentClosed(sessionId: string): void {
+        const parentSessionId = this.#subagentParentSessionIds.get(sessionId);
+        const ownerWindowId = this.#sessionOwners.get(sessionId);
+        const runtimeId = this.#sessionRuntimeIds.get(sessionId);
+        if (!parentSessionId || !ownerWindowId || !runtimeId) {
+            return;
+        }
+
+        const closedAt = new Date().toISOString();
+        this.#onSessionEvent(ownerWindowId, {
+            closedAt,
+            kind: "session-closed",
+            origin: "live",
+            parentSessionId,
+            runtimeId,
+            runtimeSessionId: this.#runtimeSessionIds.get(sessionId) ?? null,
+            sessionId,
+            updatedAt: closedAt,
+        });
     }
 
     #restoreOwner(sessionId: string, previousOwner: string | undefined): void {

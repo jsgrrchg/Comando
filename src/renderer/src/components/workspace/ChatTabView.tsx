@@ -450,9 +450,7 @@ export const ChatTabView = memo(function ChatTabView({
         : null;
     const runtimeDisplayName = getRuntimeDisplayName(tab.runtimeId);
     const closedSubagentMessage =
-        snapshot.parentSessionId &&
-        snapshot.closedAt &&
-        !isActiveClosedSubagentStatus(snapshot.status)
+        snapshot.parentSessionId && snapshot.closedAt
             ? CLOSED_SUBAGENT_MESSAGE
             : null;
     const parentSessionId =
@@ -3189,17 +3187,6 @@ function StreamingIndicator({ elapsed }: { readonly elapsed: string }) {
 }
 
 /* ─── Utility functions ─── */
-
-function isActiveClosedSubagentStatus(
-    status: AiSessionSnapshot["status"],
-): boolean {
-    return (
-        status === "starting" ||
-        status === "streaming" ||
-        status === "waiting_permission" ||
-        status === "waiting_user_input"
-    );
-}
 
 function getRuntimeDisplayName(
     runtimeId: RuntimeWorkspaceChatTab["runtimeId"],
