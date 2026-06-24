@@ -8,7 +8,11 @@ import type {
 } from "@shared/ipc";
 import { isAiTrackedFileUnresolved } from "@shared/ai-tracked-file";
 import { FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
-import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexStore";
+import {
+    normalizeIndexPath,
+    useFileReferenceValidator,
+    useProjectFileIndex,
+} from "@renderer/app/store/projectFileIndexStore";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import { HighlightedCodeText } from "@renderer/app/editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "@renderer/app/editor/useCodeLanguageSupport";
@@ -417,27 +421,31 @@ function isReadToolActivityKind(kind: string): boolean {
 }
 
 function canOpenToolFileReference({
+    canRenderFileReference,
+    fileIndex,
     projectId,
     resolveFileReference,
     target,
 }: {
+    readonly canRenderFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
+    readonly fileIndex?: ReadonlySet<string> | null;
     readonly projectId: string | null;
     readonly resolveFileReference?: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly target: string;
 }) {
-    const resolvedReference = resolveFileReference?.(target) ?? null;
-    if (resolvedReference) {
-        return true;
-    }
-
-    const parsedReference = parseProjectFileReference(target);
     return (
-        !!parsedReference &&
-        !parsedReference.isAbsolute &&
-        hasPathSeparator(parsedReference.path) &&
-        !!projectId
+        !!projectId &&
+        resolveOpenableToolFileReference({
+            canRenderFileReference,
+            fileIndex,
+            resolveFileReference,
+            target,
+        }) !== null
     );
 }
 
@@ -456,6 +464,8 @@ function getOpenLocationFromFileReference(reference: {
 }
 
 function openToolFileReference({
+    canRenderFileReference,
+    fileIndex,
     onOpenFile,
     onOpenFileReference,
     projectId,
@@ -463,6 +473,11 @@ function openToolFileReference({
     target,
     worktreeId,
 }: {
+    readonly canRenderFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
+    readonly fileIndex?: ReadonlySet<string> | null;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -480,7 +495,12 @@ function openToolFileReference({
     readonly target: string;
     readonly worktreeId: string | null;
 }) {
-    const resolvedReference = resolveFileReference?.(target) ?? null;
+    const resolvedReference = resolveOpenableToolFileReference({
+        canRenderFileReference,
+        fileIndex,
+        resolveFileReference,
+        target,
+    });
     if (resolvedReference) {
         if (onOpenFileReference) {
             onOpenFileReference(resolvedReference);
@@ -508,34 +528,135 @@ function openToolFileReference({
         }
         return;
     }
-
-    const parsedReference = parseProjectFileReference(target);
-    if (
-        !parsedReference ||
-        parsedReference.isAbsolute ||
-        !hasPathSeparator(parsedReference.path) ||
-        !projectId
-    ) {
-        return;
-    }
-
-    const openLocation = getOpenLocationFromFileReference(parsedReference);
-    if (openLocation) {
-        void onOpenFile(
-            projectId,
-            parsedReference.path,
-            worktreeId,
-            undefined,
-            openLocation,
-        );
-        return;
-    }
-
-    void onOpenFile(projectId, parsedReference.path, worktreeId);
 }
 
 function hasPathSeparator(pathValue: string): boolean {
     return pathValue.includes("/") || pathValue.includes("\\");
+}
+
+function getPathBasename(pathValue: string): string {
+    return pathValue.split(/[\\/]/).filter(Boolean).at(-1) ?? pathValue;
+}
+
+function isBasenameOnlyFileReference(pathValue: string): boolean {
+    return !hasPathSeparator(pathValue) && pathValue.includes(".");
+}
+
+function resolveIndexedBasenameReference(
+    parsedReference: ReturnType<typeof parseProjectFileReference>,
+    fileIndex: ReadonlySet<string> | null | undefined,
+): ResolvedProjectFileReference | null {
+    if (
+        !parsedReference ||
+        parsedReference.isAbsolute ||
+        !fileIndex ||
+        !isBasenameOnlyFileReference(parsedReference.path)
+    ) {
+        return null;
+    }
+
+    const targetBasename = getPathBasename(parsedReference.path);
+    const matches = [...fileIndex].filter(
+        (candidatePath) => getPathBasename(candidatePath) === targetBasename,
+    );
+    if (matches.length !== 1) {
+        return null;
+    }
+
+    const [relativePath] = matches;
+    if (!relativePath) {
+        return null;
+    }
+
+    return {
+        ...parsedReference,
+        relativePath,
+    };
+}
+
+function isResolvedReferenceOpenable({
+    canRenderFileReference,
+    rawReference,
+    reference,
+}: {
+    readonly canRenderFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
+    readonly rawReference: string;
+    readonly reference: ResolvedProjectFileReference;
+}): boolean {
+    return canRenderFileReference
+        ? canRenderFileReference(rawReference, reference)
+        : hasPathSeparator(reference.relativePath);
+}
+
+function resolveOpenableToolFileReference({
+    canRenderFileReference,
+    fileIndex,
+    resolveFileReference,
+    target,
+}: {
+    readonly canRenderFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
+    readonly fileIndex?: ReadonlySet<string> | null;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
+    readonly target: string;
+}): ResolvedProjectFileReference | null {
+    const resolvedReference = resolveFileReference?.(target) ?? null;
+    if (
+        resolvedReference &&
+        isResolvedReferenceOpenable({
+            canRenderFileReference,
+            rawReference: target,
+            reference: resolvedReference,
+        })
+    ) {
+        return resolvedReference;
+    }
+
+    const parsedReference = parseProjectFileReference(target);
+    const basenameReference = resolveIndexedBasenameReference(
+        parsedReference,
+        fileIndex,
+    );
+    if (
+        basenameReference &&
+        isResolvedReferenceOpenable({
+            canRenderFileReference,
+            rawReference: target,
+            reference: basenameReference,
+        })
+    ) {
+        return basenameReference;
+    }
+
+    if (
+        !resolvedReference &&
+        parsedReference &&
+        !parsedReference.isAbsolute &&
+        hasPathSeparator(parsedReference.path)
+    ) {
+        const relativeReference: ResolvedProjectFileReference = {
+            ...parsedReference,
+            relativePath: normalizeIndexPath(parsedReference.path),
+        };
+        if (
+            isResolvedReferenceOpenable({
+                canRenderFileReference,
+                rawReference: target,
+                reference: relativeReference,
+            })
+        ) {
+            return relativeReference;
+        }
+    }
+
+    return null;
 }
 
 function formatToolLocationReference(
@@ -852,6 +973,7 @@ function FileToolMessage({
     activity,
     canRenderFileReference,
     expansionMode,
+    fileIndex,
     isLatestStreamingTool,
     onOpenFile,
     onOpenFileReference,
@@ -866,6 +988,7 @@ function FileToolMessage({
         reference: ResolvedProjectFileReference,
     ) => boolean;
     readonly expansionMode: AiToolCardExpansionMode;
+    readonly fileIndex?: ReadonlySet<string> | null;
     readonly isLatestStreamingTool: boolean;
     readonly onOpenFile: (
         projectId: string,
@@ -894,6 +1017,8 @@ function FileToolMessage({
     const titleIsLink =
         titleReference !== null &&
         canOpenToolFileReference({
+            canRenderFileReference,
+            fileIndex,
             projectId,
             resolveFileReference,
             target: titleReference.target,
@@ -949,6 +1074,8 @@ function FileToolMessage({
             onOpenFile,
             onOpenFileReference,
             projectId,
+            canRenderFileReference,
+            fileIndex,
             resolveFileReference,
             target: titleReference.target,
             worktreeId,
@@ -1173,13 +1300,27 @@ function FileToolMessage({
                         <div className="mb-1 flex flex-wrap gap-1">
                             {activity.locations.map((loc) => {
                                 const target = formatToolLocationReference(loc);
+                                const locationIsOpenable =
+                                    canOpenToolFileReference({
+                                        canRenderFileReference,
+                                        fileIndex,
+                                        projectId,
+                                        resolveFileReference,
+                                        target,
+                                    });
 
                                 return (
                                     <button
                                         className="app-no-drag rounded-md px-2 py-0.5"
+                                        disabled={!locationIsOpenable}
                                         key={target}
                                         onClick={() => {
+                                            if (!locationIsOpenable) {
+                                                return;
+                                            }
                                             openToolFileReference({
+                                                canRenderFileReference,
+                                                fileIndex,
                                                 onOpenFile,
                                                 onOpenFileReference,
                                                 projectId,
@@ -1205,14 +1346,13 @@ function FileToolMessage({
                                                 "var(--color-bg-tertiary)",
                                             border: "1px solid var(--color-border)",
                                             color: "var(--color-text-secondary)",
-                                            cursor: canOpenToolFileReference({
-                                                projectId,
-                                                resolveFileReference,
-                                                target,
-                                            })
+                                            cursor: locationIsOpenable
                                                 ? "pointer"
                                                 : "default",
                                             fontSize: "0.9em",
+                                            opacity: locationIsOpenable
+                                                ? 1
+                                                : 0.62,
                                             transition:
                                                 "background-color 100ms ease, filter 100ms ease",
                                         }}
@@ -1679,6 +1819,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
         projectId,
         worktreeId ?? null,
     );
+    const fileIndex = useProjectFileIndex(projectId, worktreeId ?? null);
 
     useRenderProbe("ToolActivityItem", {
         activityId: activity.id,
@@ -1740,6 +1881,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
                 activity={activity}
                 canRenderFileReference={canRenderFileReference}
                 expansionMode={fileToolExpansionMode}
+                fileIndex={fileIndex}
                 isLatestStreamingTool={isLatestStreamingTool}
                 onOpenFile={onOpenFile}
                 onOpenFileReference={onOpenFileReference}

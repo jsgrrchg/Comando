@@ -2,7 +2,7 @@
 import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
 
@@ -15,11 +15,32 @@ const mockAiStoreState = vi.hoisted(() => ({
     },
 }));
 
+const mockProjectFileIndexState = vi.hoisted(() => ({
+    paths: new Set<string>(),
+}));
+
 vi.mock("@renderer/app/store/ai-store", () => ({
     useAiStore: (
         selector: (state: typeof mockAiStoreState.current) => unknown,
     ) => selector(mockAiStoreState.current),
 }));
+
+vi.mock("@renderer/app/store/projectFileIndexStore", () => {
+    const normalizeIndexPath = (path: string) =>
+        path.replace(/^\.\//, "").replace(/\/+$/, "");
+
+    return {
+        normalizeIndexPath,
+        useFileReferenceValidator: () => (
+            _rawReference: string,
+            reference: { readonly relativePath: string },
+        ) =>
+            mockProjectFileIndexState.paths.has(
+                normalizeIndexPath(reference.relativePath),
+            ),
+        useProjectFileIndex: () => mockProjectFileIndexState.paths,
+    };
+});
 
 vi.mock("@renderer/app/hooks/use-ai-chat-settings", () => ({
     useAiChatSettings: () => ({
@@ -41,6 +62,17 @@ vi.mock("@renderer/app/debug/renderProbe", () => ({
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
+
+const DEFAULT_PROJECT_FILE_INDEX_PATHS = [
+    "src/app.ts",
+    "src/claude-reader.ts",
+    "src/components/example.cpp",
+    "src/example.ts",
+    "src/example.tsx",
+    "src/raw-input-only.ts",
+    "src/renderer/src/components/workspace/chat/ChatTabView.tsx",
+    "src/renderer/src/components/workspace/chat/deeply/nested/ToolActivityItem.tsx",
+];
 
 function createActivity(
     overrides: Partial<AiToolActivity> = {},
@@ -113,6 +145,12 @@ function createTrackedFile(
 
 const mountedRoots: Root[] = [];
 const mountedContainers: HTMLElement[] = [];
+
+beforeEach(() => {
+    mockProjectFileIndexState.paths = new Set(
+        DEFAULT_PROJECT_FILE_INDEX_PATHS,
+    );
+});
 
 afterEach(() => {
     for (const root of mountedRoots.splice(0)) {
@@ -668,9 +706,77 @@ describe("ToolActivityItem", () => {
         expect(onOpenFile).not.toHaveBeenCalled();
     });
 
+    it("opens a basename-only read target when the project index has one match", () => {
+        mockProjectFileIndexState.paths = new Set([
+            ...DEFAULT_PROJECT_FILE_INDEX_PATHS,
+            "src/shared/ipc.ts",
+        ]);
+        const onOpenFile = vi.fn(async () => {});
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [],
+                rawInputJson: JSON.stringify({ file_path: "ipc.ts" }),
+                summary: null,
+                title: "Read ipc.ts",
+            }),
+            onOpenFile,
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+        const linkButton = container.querySelector<HTMLButtonElement>(
+            'button[title="Open ipc.ts"]',
+        );
+
+        expect(linkButton).not.toBeNull();
+
+        act(() => {
+            linkButton?.click();
+        });
+
+        expect(onOpenFile).toHaveBeenCalledWith(
+            "project-1",
+            "src/shared/ipc.ts",
+            null,
+        );
+    });
+
+    it("does not open an ambiguous basename-only read target", () => {
+        mockProjectFileIndexState.paths = new Set([
+            ...DEFAULT_PROJECT_FILE_INDEX_PATHS,
+            "src/shared/ipc.ts",
+            "src/main/ipc.ts",
+        ]);
+        const onOpenFile = vi.fn(async () => {});
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [],
+                rawInputJson: JSON.stringify({ file_path: "ipc.ts" }),
+                summary: null,
+                title: "Read ipc.ts",
+            }),
+            onOpenFile,
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+        const linkButton = container.querySelector<HTMLButtonElement>(
+            'button[title="Open ipc.ts"]',
+        );
+
+        expect(linkButton).toBeNull();
+        expect(onOpenFile).not.toHaveBeenCalled();
+    });
+
     it("prefers structured read input over basename-only locations", () => {
         const onOpenFile = vi.fn(async () => {});
         const fullPath = "src/domain/contracts.ts";
+        mockProjectFileIndexState.paths = new Set([
+            ...DEFAULT_PROJECT_FILE_INDEX_PATHS,
+            fullPath,
+        ]);
         const container = renderInteractiveToolActivityItem({
             activity: createActivity({
                 kind: "read",
