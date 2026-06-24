@@ -2099,7 +2099,10 @@ impl NotificationContextInner {
                 raw_output: tool_call.raw_output.clone(),
                 title: tool_call.title,
                 tool_call_id: tool_call_id.clone(),
-                diffs: tool_call_content_diffs(&tool_call.content),
+                diffs: self.tool_call_content_diffs_for_runtime_session(
+                    runtime_session_id,
+                    &tool_call.content,
+                ),
             },
         );
         self.emit_subagent_breadcrumb(runtime_session_id, tool_call_id, meta);
@@ -2137,10 +2140,33 @@ impl NotificationContextInner {
                 raw_output: tool_call.raw_output.clone(),
                 title: tool_call.title,
                 tool_call_id: tool_call_id.clone(),
-                diffs: tool_call_content_diffs(&tool_call.content),
+                diffs: self.tool_call_content_diffs_for_runtime_session(
+                    runtime_session_id,
+                    &tool_call.content,
+                ),
             },
         );
         self.emit_subagent_breadcrumb(runtime_session_id, tool_call_id, meta);
+    }
+
+    fn tool_call_content_diffs_for_runtime_session(
+        &self,
+        runtime_session_id: &RuntimeSessionId,
+        content: &[ToolCallContent],
+    ) -> Vec<serde_json::Value> {
+        let diffs = tool_call_content_diffs(content);
+        if diffs.is_empty() || !self.should_suppress_unknown_runtime_diffs(runtime_session_id) {
+            return diffs;
+        }
+        Vec::new()
+    }
+
+    fn should_suppress_unknown_runtime_diffs(&self, runtime_session_id: &RuntimeSessionId) -> bool {
+        self.supports_subagents
+            && self.runtime_session_id.as_ref() != Some(runtime_session_id)
+            && !self
+                .subagents_by_runtime_session_id
+                .contains_key(&runtime_session_id.0)
     }
 
     fn emit_image_generation(
@@ -4234,6 +4260,74 @@ mod tests {
             tool_event.payload["runtimeSessionId"],
             "runtime-child-without-meta"
         );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn notification_context_drops_diffs_from_unknown_child_tool_without_metadata() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-child-without-meta",
+            SessionUpdate::ToolCall(ToolCall::new("tool-child-1", "Edit file").content(vec![
+                ToolCallContent::Diff(
+                    agent_client_protocol::schema::Diff::new("src/main.rs", "fn main() {}\n")
+                        .old_text(""),
+                ),
+            ])),
+        ));
+
+        let tool_event = receiver.recv().unwrap();
+        assert_eq!(tool_event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(tool_event.payload["sessionId"], "session-1");
+        assert_eq!(
+            tool_event.payload["runtimeSessionId"],
+            "runtime-child-without-meta"
+        );
+        assert!(tool_event.payload.get("diffs").is_none());
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn notification_context_keeps_diffs_for_child_tool_with_metadata() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let created_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-known"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-known",
+                SessionUpdate::ToolCall(ToolCall::new("tool-child-1", "Edit file").content(
+                    vec![ToolCallContent::Diff(
+                        agent_client_protocol::schema::Diff::new("src/main.rs", "fn main() {}\n")
+                            .old_text(""),
+                    )],
+                )),
+            )
+            .meta(created_meta),
+        );
+
+        let created_event = receiver.recv().unwrap();
+        assert_eq!(created_event.event_name, AI_SUBAGENT_CREATED_EVENT);
+        let tool_event = receiver.recv().unwrap();
+        assert_eq!(tool_event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(
+            tool_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-known"
+        );
+        assert_eq!(tool_event.payload["diffs"][0]["path"], "src/main.rs");
         assert!(receiver.try_recv().is_err());
     }
 

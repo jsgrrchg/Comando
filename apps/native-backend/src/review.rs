@@ -142,6 +142,7 @@ pub struct NativeReviewSessionState {
 struct NativeReviewBaseline {
     cwd: PathBuf,
     files: HashMap<String, Option<String>>,
+    has_concurrent_peer: bool,
     unsupported_files: HashMap<String, UnsupportedReviewBaseline>,
 }
 
@@ -248,11 +249,23 @@ impl NativeReviewService {
                 }
             }
         }
+        let cwd = PathBuf::from(&session.scope.cwd);
+        let has_concurrent_peer = self.baselines.iter().any(|(session_id, baseline)| {
+            session_id != &session.session_id.0 && same_review_cwd(&baseline.cwd, &cwd)
+        });
+        if has_concurrent_peer {
+            for (session_id, baseline) in &mut self.baselines {
+                if session_id != &session.session_id.0 && same_review_cwd(&baseline.cwd, &cwd) {
+                    baseline.has_concurrent_peer = true;
+                }
+            }
+        }
         self.baselines.insert(
             session.session_id.0.clone(),
             NativeReviewBaseline {
-                cwd: PathBuf::from(&session.scope.cwd),
+                cwd,
                 files,
+                has_concurrent_peer,
                 unsupported_files,
             },
         );
@@ -290,6 +303,9 @@ impl NativeReviewService {
         let mut tracked_file_events = Vec::new();
 
         for entry in status_entries {
+            if baseline.has_concurrent_peer && !is_tracked_status_entry(&tracked_files, &entry) {
+                continue;
+            }
             let baseline_text = baseline_text_for_entry(&baseline, &entry);
             let unsupported_baseline = unsupported_baseline_for_entry(&baseline, &entry);
             let deleted = is_git_deleted(&entry);
@@ -1122,6 +1138,18 @@ fn record_review_conflict(
     }
 }
 
+fn is_tracked_status_entry(files: &[ReviewTrackedFile], entry: &NativeGitStatusEntry) -> bool {
+    find_tracked_file_index(files, &entry.path).is_some()
+        || entry
+            .previous_path
+            .as_deref()
+            .is_some_and(|previous_path| find_tracked_file_index(files, previous_path).is_some())
+}
+
+fn same_review_cwd(left: &Path, right: &Path) -> bool {
+    left == right
+}
+
 fn merge_candidate_entries(
     status_entries: Vec<NativeGitStatusEntry>,
     baseline: &NativeReviewBaseline,
@@ -1777,6 +1805,76 @@ mod tests {
             )
             .expect("reject create");
         assert!(!file_path.exists());
+    }
+
+    #[test]
+    fn concurrent_baselines_do_not_import_new_peer_changes() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        let session_a = test_session(repo.path(), "s-peer-a");
+        let session_b = test_session(repo.path(), "s-peer-b");
+        let mut service = service_with_app_data(repo.path());
+
+        service.capture_baseline(&session_a).expect("baseline a");
+        service.capture_baseline(&session_b).expect("baseline b");
+        fs::write(repo.path().join("peer.txt"), "peer change\n").expect("write peer file");
+
+        let output = service
+            .reconcile_tracked_files(&session_b)
+            .expect("reconcile b");
+
+        assert!(output.tracked_files.is_empty());
+        assert!(output.tracked_file_events.is_empty());
+        assert!(output.conflicts.is_empty());
+    }
+
+    #[test]
+    fn concurrent_baselines_still_reconcile_existing_tracked_files() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        init_git_repo(repo.path());
+        fs::write(repo.path().join("a.txt"), "base\n").expect("write base");
+        git(repo.path(), &["add", "."]);
+        git(repo.path(), &["commit", "-m", "initial"]);
+
+        let session_a = test_session(repo.path(), "s-existing-peer");
+        let session_b = test_session(repo.path(), "s-existing-owner");
+        let mut service = service_with_app_data(repo.path());
+
+        service
+            .capture_baseline(&session_b)
+            .expect("initial baseline b");
+        fs::write(repo.path().join("a.txt"), "owned change\n").expect("write owned change");
+        let first = service
+            .reconcile_tracked_files(&session_b)
+            .expect("first reconcile b");
+        assert_eq!(first.tracked_files.len(), 1);
+        assert_eq!(first.tracked_files[0].path, "a.txt");
+
+        service
+            .capture_baseline(&session_b)
+            .expect("second baseline b");
+        service.capture_baseline(&session_a).expect("baseline a");
+        fs::write(repo.path().join("a.txt"), "owned change again\n")
+            .expect("write owned change again");
+        fs::write(repo.path().join("peer.txt"), "peer change\n").expect("write peer file");
+
+        let second = service
+            .reconcile_tracked_files(&session_b)
+            .expect("second reconcile b");
+
+        assert_eq!(second.tracked_files.len(), 1);
+        assert_eq!(second.tracked_files[0].path, "a.txt");
+        assert_eq!(
+            second.tracked_files[0].new_text.as_deref(),
+            Some("owned change again\n")
+        );
+        assert!(
+            second
+                .tracked_file_events
+                .iter()
+                .all(|event| event.tracked_file.path == "a.txt")
+        );
+        assert!(second.conflicts.is_empty());
     }
 
     #[test]
