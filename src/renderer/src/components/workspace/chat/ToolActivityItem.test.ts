@@ -644,6 +644,69 @@ describe("ToolActivityItem", () => {
         );
     });
 
+    it("does not make unresolved basename-only read titles clickable", () => {
+        const onOpenFile = vi.fn(async () => {});
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [],
+                rawInputJson: null,
+                summary: null,
+                title: "Read contracts.ts",
+            }),
+            onOpenFile,
+            projectId: "project-1",
+            resolveFileReference: () => null,
+            trackedFiles: [],
+            worktreeId: null,
+        });
+        const linkButton = container.querySelector<HTMLButtonElement>(
+            'button[title="Open contracts.ts"]',
+        );
+
+        expect(linkButton).toBeNull();
+        expect(onOpenFile).not.toHaveBeenCalled();
+    });
+
+    it("prefers structured read input over basename-only locations", () => {
+        const onOpenFile = vi.fn(async () => {});
+        const fullPath = "src/domain/contracts.ts";
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [
+                    {
+                        endLine: null,
+                        line: null,
+                        path: "contracts.ts",
+                    },
+                ],
+                rawInputJson: JSON.stringify({ file_path: fullPath }),
+                summary: null,
+                title: "Read contracts.ts",
+            }),
+            onOpenFile,
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+        const linkButton = container.querySelector<HTMLButtonElement>(
+            `button[title="Open ${fullPath}"]`,
+        );
+
+        expect(linkButton).not.toBeNull();
+
+        act(() => {
+            linkButton?.click();
+        });
+
+        expect(onOpenFile).toHaveBeenCalledWith(
+            "project-1",
+            fullPath,
+            null,
+        );
+    });
+
     it("passes raw relative location line ranges when no resolver is available", () => {
         const onOpenFile = vi.fn(async () => {});
         const container = renderInteractiveToolActivityItem({
