@@ -14,21 +14,9 @@ import { launchTerminalLoginCommand } from "./auth/terminal-login";
 import type { NativeAiGateway } from "./contracts";
 import { AiService } from "./service";
 
-const probeGrokCachedTokenAuthMock = vi.hoisted(() =>
-    vi.fn(() => Promise.resolve(false)),
-);
-
 vi.mock("./auth/terminal-login", () => ({
     launchTerminalLoginCommand: vi.fn(() => Promise.resolve()),
 }));
-
-vi.mock("./grok/setup", async (importOriginal) => {
-    const original = await importOriginal<typeof import("./grok/setup")>();
-    return {
-        ...original,
-        probeGrokCachedTokenAuth: probeGrokCachedTokenAuthMock,
-    };
-});
 
 const originalXaiApiKey = process.env.XAI_API_KEY;
 const originalGrokBin = process.env.COMANDO_GROK_ACP_BIN;
@@ -37,8 +25,6 @@ beforeEach(() => {
     delete process.env.XAI_API_KEY;
     delete process.env.COMANDO_GROK_ACP_BIN;
     vi.mocked(launchTerminalLoginCommand).mockClear();
-    probeGrokCachedTokenAuthMock.mockReset();
-    probeGrokCachedTokenAuthMock.mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -123,7 +109,6 @@ describe("AiService Grok branch", () => {
             expect(status.authMethod).toBe("xai-api-key");
             expect(status.authCredentialSource).toBe("environment");
             expect(status.authReady).toBe(true);
-            expect(probeGrokCachedTokenAuthMock).not.toHaveBeenCalled();
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -279,17 +264,16 @@ describe("AiService Grok branch", () => {
         }
     });
 
-    it("hydrates Grok login from the ACP cached token probe", async () => {
+    it("keeps invalidated Grok login pending without a TypeScript ACP probe", async () => {
         const tempDir = fs.mkdtempSync(
-            path.join(os.tmpdir(), "comando-grok-probe-"),
+            path.join(os.tmpdir(), "comando-grok-pending-status-"),
         );
 
         try {
             const binaryPath = writeExecutable(tempDir, "grok");
             const invalidatedAtMs = Date.now();
-            let savedSettings: GrokRuntimeSettings | null = null;
+            const saveGrokRuntimeSettings = vi.fn();
             const runtimeStatusEvents: AiRuntimeStatus[] = [];
-            probeGrokCachedTokenAuthMock.mockResolvedValueOnce(true);
 
             const service = createService({
                 onRuntimeStatus: (status) => runtimeStatusEvents.push(status),
@@ -300,33 +284,18 @@ describe("AiService Grok branch", () => {
                             binaryPath,
                         }),
                     ),
-                    saveGrokRuntimeSettings: (
-                        settings: GrokRuntimeSettings,
-                    ) => {
-                        savedSettings = settings;
-                    },
+                    saveGrokRuntimeSettings,
                 }),
             });
 
             const status = await service.getRuntimeStatus("grok");
 
-            expect(probeGrokCachedTokenAuthMock).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    authInvalidatedAtMs: invalidatedAtMs,
-                    binaryPath,
-                }),
-                expect.any(Object),
-            );
-            expect(savedSettings).toMatchObject({
-                authInvalidatedAtMs: null,
-                authMethod: "grok-login",
-                binaryPath,
-            });
-            expect(status.authMethod).toBe("grok-login");
-            expect(status.authCredentialSource).toBe("external-runtime");
-            expect(status.authReady).toBe(true);
-            expect(status.onboardingRequired).toBe(false);
-            expect(runtimeStatusEvents.at(-1)?.authMethod).toBe("grok-login");
+            expect(saveGrokRuntimeSettings).not.toHaveBeenCalled();
+            expect(status.authMethod).toBe(null);
+            expect(status.authCredentialSource).toBe("none");
+            expect(status.authReady).toBe(false);
+            expect(status.onboardingRequired).toBe(true);
+            expect(runtimeStatusEvents.at(-1)?.authMethod).toBe(null);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -490,15 +459,15 @@ describe("AiService Grok branch", () => {
         }
     });
 
-    it("hydrates Grok login during session preparation after terminal login", async () => {
+    it("uses native Grok status during session preparation after terminal login", async () => {
         const tempDir = fs.mkdtempSync(
-            path.join(os.tmpdir(), "comando-grok-prepare-probe-"),
+            path.join(os.tmpdir(), "comando-grok-prepare-native-status-"),
         );
 
         try {
             const binaryPath = writeExecutable(tempDir, "grok");
             const invalidatedAtMs = Date.now();
-            let grokSettings = createGrokSettings({
+            const grokSettings = createGrokSettings({
                 authInvalidatedAtMs: invalidatedAtMs,
                 authMethod: "grok-login",
                 binaryPath,
@@ -507,18 +476,31 @@ describe("AiService Grok branch", () => {
             const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
                 () => Promise.resolve(preparedSnapshot),
             );
-            const nativeAi = createNativeAi({ prepareSession });
-            probeGrokCachedTokenAuthMock.mockResolvedValueOnce(true);
+            const getRuntimeStatus = vi.fn<NativeAiGateway["getRuntimeStatus"]>(
+                () =>
+                    Promise.resolve({
+                        authCredentialSource: "external-runtime",
+                        authMethod: "grok-login",
+                        authMethods: [],
+                        authReady: true,
+                        checkedAt: "2026-06-25T00:00:00.000Z",
+                        command: `${binaryPath} --no-auto-update agent stdio`,
+                        hasCustomBinaryPath: true,
+                        hasGatewayConfig: false,
+                        hasGatewayUrl: false,
+                        message: null,
+                        onboardingRequired: false,
+                        runtimeId: "grok",
+                        source: "settings",
+                        state: "ready",
+                    }),
+            );
+            const nativeAi = createNativeAi({ getRuntimeStatus, prepareSession });
 
             const service = createService({
                 nativeAi,
                 settingsService: createSettingsService({
                     loadGrokRuntimeSettings: vi.fn(() => grokSettings),
-                    saveGrokRuntimeSettings: (
-                        settings: GrokRuntimeSettings,
-                    ) => {
-                        grokSettings = settings;
-                    },
                 }),
             });
 
@@ -533,19 +515,7 @@ describe("AiService Grok branch", () => {
                 "window-1",
             );
 
-            expect(probeGrokCachedTokenAuthMock).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    authInvalidatedAtMs: invalidatedAtMs,
-                    authMethod: "grok-login",
-                    binaryPath,
-                }),
-                expect.any(Object),
-            );
-            expect(grokSettings).toMatchObject({
-                authInvalidatedAtMs: null,
-                authMethod: "grok-login",
-                binaryPath,
-            });
+            expect(getRuntimeStatus).toHaveBeenCalledWith("grok");
             expect(prepareSession).toHaveBeenCalledOnce();
             expect(
                 prepareSession.mock.calls[0][0].launch.resolvedRuntime.status

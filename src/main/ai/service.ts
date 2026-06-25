@@ -144,7 +144,6 @@ import {
     launchGrokLogin,
     loadGrokSecretBundle,
     markGrokAuthInvalidated,
-    probeGrokCachedTokenAuth,
     resolveGrokRuntime,
 } from "./grok/setup";
 import {
@@ -751,13 +750,9 @@ export class AiService {
             return status;
         }
 
-        const resolvedStatus = this.#withPersistedRuntimeCatalog(
+        const status = this.#withPersistedRuntimeCatalog(
             this.#resolveRuntimeStatus(runtimeId),
         );
-        const status =
-            runtimeId === "grok"
-                ? await this.#resolveGrokRuntimeStatusWithProbe(resolvedStatus)
-                : resolvedStatus;
         this.#onRuntimeStatus(status);
         return status;
     }
@@ -3219,8 +3214,14 @@ export class AiService {
             input,
             projectRoot,
         );
-        await this.#hydrateGrokRuntimeAuthBeforeLaunch(input.runtimeId);
-        const resolvedRuntime = this.#resolveRuntimeCommand(input.runtimeId);
+        const resolvedRuntimeBase = this.#resolveRuntimeCommand(input.runtimeId);
+        const resolvedRuntime = {
+            ...resolvedRuntimeBase,
+            status: await this.#resolveLaunchRuntimeStatus(
+                input.runtimeId,
+                resolvedRuntimeBase.status,
+            ),
+        } satisfies ResolvedAcpRuntime;
         this.#onRuntimeStatus(resolvedRuntime.status);
         if (
             resolvedRuntime.status.state !== "ready" ||
@@ -4224,48 +4225,17 @@ export class AiService {
         this.#persistence.saveSessionSnapshot(snapshot);
     }
 
-    async #resolveGrokRuntimeStatusWithProbe(
-        status: AiRuntimeStatus,
+    async #resolveLaunchRuntimeStatus(
+        runtimeId: AiRuntimeId,
+        fallbackStatus: AiRuntimeStatus,
     ): Promise<AiRuntimeStatus> {
-        if (
-            status.state !== "ready" ||
-            status.authReady ||
-            status.authCredentialSource === "environment" ||
-            status.authCredentialSource === "comando-secret"
-        ) {
-            return status;
+        const nativeAi = this.#nativeAuthGateway(runtimeId);
+        if (!nativeAi?.getRuntimeStatus) {
+            return fallbackStatus;
         }
-
-        const settings = this.#settingsService.loadGrokRuntimeSettings();
-        const hasCachedToken = await probeGrokCachedTokenAuth(
-            settings,
-            this.#secretStore,
-        );
-        if (!hasCachedToken) {
-            return status;
-        }
-
-        const nextSettings = {
-            ...settings,
-            authInvalidatedAtMs: null,
-            authMethod: "grok-login",
-        } satisfies GrokRuntimeSettings;
-        await this.#saveGrokAuthSettings(nextSettings);
 
         return this.#withPersistedRuntimeCatalog(
-            getGrokRuntimeStatus(nextSettings, this.#secretStore),
-        );
-    }
-
-    async #hydrateGrokRuntimeAuthBeforeLaunch(
-        runtimeId: AiRuntimeId,
-    ): Promise<void> {
-        if (runtimeId !== "grok") {
-            return;
-        }
-
-        await this.#resolveGrokRuntimeStatusWithProbe(
-            this.#resolveRuntimeStatus(runtimeId),
+            await nativeAi.getRuntimeStatus(runtimeId),
         );
     }
 
