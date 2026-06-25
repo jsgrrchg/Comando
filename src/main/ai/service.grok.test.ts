@@ -476,27 +476,33 @@ describe("AiService Grok branch", () => {
             const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
                 () => Promise.resolve(preparedSnapshot),
             );
+            const readyStatus: AiRuntimeStatus = {
+                authCredentialSource: "external-runtime",
+                authMethod: "grok-login",
+                authMethods: [],
+                authReady: true,
+                checkedAt: "2026-06-25T00:00:00.000Z",
+                command: `${binaryPath} --no-auto-update agent stdio`,
+                hasCustomBinaryPath: true,
+                hasGatewayConfig: false,
+                hasGatewayUrl: false,
+                message: null,
+                onboardingRequired: false,
+                runtimeId: "grok",
+                source: "settings",
+                state: "ready",
+            };
+            const saveRuntimeSettings = vi.fn<
+                NonNullable<NativeAiGateway["saveRuntimeSettings"]>
+            >(() => Promise.resolve(readyStatus));
             const getRuntimeStatus = vi.fn<
                 NonNullable<NativeAiGateway["getRuntimeStatus"]>
-            >(() =>
-                Promise.resolve({
-                        authCredentialSource: "external-runtime",
-                        authMethod: "grok-login",
-                        authMethods: [],
-                        authReady: true,
-                        checkedAt: "2026-06-25T00:00:00.000Z",
-                        command: `${binaryPath} --no-auto-update agent stdio`,
-                        hasCustomBinaryPath: true,
-                        hasGatewayConfig: false,
-                        hasGatewayUrl: false,
-                        message: null,
-                        onboardingRequired: false,
-                        runtimeId: "grok",
-                        source: "settings",
-                        state: "ready",
-                    }),
-            );
-            const nativeAi = createNativeAi({ getRuntimeStatus, prepareSession });
+            >(() => Promise.resolve(readyStatus));
+            const nativeAi = createNativeAi({
+                getRuntimeStatus,
+                prepareSession,
+                saveRuntimeSettings,
+            });
 
             const service = createService({
                 nativeAi,
@@ -516,7 +522,19 @@ describe("AiService Grok branch", () => {
                 "window-1",
             );
 
+            expect(saveRuntimeSettings).toHaveBeenCalledWith({
+                runtimeId: "grok",
+                secretPatches: [],
+                settings: {
+                    authInvalidatedAtMs: invalidatedAtMs,
+                    authMethod: "grok-login",
+                    binaryPath,
+                },
+            });
             expect(getRuntimeStatus).toHaveBeenCalledWith("grok");
+            expect(
+                saveRuntimeSettings.mock.invocationCallOrder[0],
+            ).toBeLessThan(getRuntimeStatus.mock.invocationCallOrder[0]);
             expect(prepareSession).toHaveBeenCalledOnce();
             expect(
                 prepareSession.mock.calls[0][0].launch.resolvedRuntime.status

@@ -4234,6 +4234,7 @@ export class AiService {
             return fallbackStatus;
         }
 
+        await this.#migrateNativeRuntimeSettingsIfNeeded(runtimeId);
         return this.#withPersistedRuntimeCatalog(
             await nativeAi.getRuntimeStatus(runtimeId),
         );
