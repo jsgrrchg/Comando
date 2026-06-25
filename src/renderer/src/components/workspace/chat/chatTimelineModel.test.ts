@@ -156,6 +156,51 @@ describe("chatTimelineModel", () => {
         expect(completedModel.historyRows[1]?.id).toBe("message:message-2");
     });
 
+    it("renders context compaction below the latest user message", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    content: "Message payload projected by runtime",
+                    createdAt: "2026-04-14T00:00:02.000Z",
+                    id: "compact-message",
+                    kind: "user",
+                }),
+            ],
+            status: "streaming",
+            toolActivity: [
+                createActivity({
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    id: "codex-acp:status:turn:turn-1",
+                    kind: "status",
+                    title: "New turn",
+                    updatedAt: "2026-04-14T00:00:00.000Z",
+                }),
+                createActivity({
+                    createdAt: "2026-04-14T00:00:01.000Z",
+                    id: "codex-acp:status:item:compact-1",
+                    kind: "item_activity",
+                    status: "in_progress",
+                    title: "Compacting context",
+                    updatedAt: "2026-04-14T00:00:01.000Z",
+                }),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(model.orderedRowIds).toEqual([
+            "tool:codex-acp:status:turn:turn-1",
+            "tool:codex-acp:status:item:compact-1",
+            "message:compact-message",
+        ]);
+        expect(model.historyRowIds).toEqual([
+            "tool:codex-acp:status:turn:turn-1",
+            "message:compact-message",
+        ]);
+        expect(model.liveTailRowId).toBe(
+            "tool:codex-acp:status:item:compact-1",
+        );
+    });
+
     it("reuses unchanged tool rows when only the latest tool activity changes", () => {
         const initialModel = reconcileChatTimelineModel(null, {
             messages: [],

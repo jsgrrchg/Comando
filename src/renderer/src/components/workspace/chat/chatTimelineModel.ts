@@ -226,6 +226,18 @@ function getRowCreatedAt(row: ChatTimelineRow): string {
         : row.reviewEntry.activity.createdAt;
 }
 
+function isContextCompactionActivity(row: ChatTimelineRow): boolean {
+    if (row.kind !== "tool") {
+        return false;
+    }
+
+    const activity = row.reviewEntry.activity;
+    return (
+        activity.id.startsWith("codex-acp:status:item:") &&
+        activity.title === "Compacting context"
+    );
+}
+
 function compareRows(left: ChatTimelineRow, right: ChatTimelineRow): number {
     const createdAtComparison = getRowCreatedAt(left).localeCompare(
         getRowCreatedAt(right),
@@ -331,6 +343,34 @@ function isStreamingStatus(status: AiSessionSnapshot["status"]): boolean {
     return status === "starting" || status === "streaming";
 }
 
+function getStreamingLiveTailRow(
+    status: AiSessionSnapshot["status"],
+    orderedRows: readonly ChatTimelineRow[],
+): ChatTimelineRow | null {
+    if (!isStreamingStatus(status) || orderedRows.length === 0) {
+        return null;
+    }
+
+    const tailCandidate = orderedRows[orderedRows.length - 1] ?? null;
+    if (!tailCandidate) {
+        return null;
+    }
+
+    if (
+        tailCandidate.kind === "message" &&
+        tailCandidate.message.kind === "user"
+    ) {
+        for (let index = orderedRows.length - 2; index >= 0; index -= 1) {
+            const row = orderedRows[index];
+            if (row && isContextCompactionActivity(row)) {
+                return row;
+            }
+        }
+    }
+
+    return tailCandidate;
+}
+
 export function reconcileChatTimelineModel(
     previous: ChatTimelineModel | null,
     snapshot: Pick<
@@ -348,13 +388,12 @@ export function reconcileChatTimelineModel(
         buildOrderedRows(nextRowById),
     );
     const orderedRowIds = reuseRowIds(previous?.orderedRowIds, orderedRows);
-    const liveTailRow =
-        isStreamingStatus(snapshot.status) && orderedRows.length > 0
-            ? (orderedRows[orderedRows.length - 1] ?? null)
-            : null;
+    const liveTailRow = getStreamingLiveTailRow(snapshot.status, orderedRows);
     const liveTailRowId = liveTailRow?.id ?? null;
     const nextHistoryRows =
-        liveTailRow == null ? [...orderedRows] : orderedRows.slice(0, -1);
+        liveTailRow == null
+            ? [...orderedRows]
+            : orderedRows.filter((row) => row !== liveTailRow);
     const historyRows = reuseRows(previous?.historyRows, nextHistoryRows);
     const historyRowIds = reuseRowIds(previous?.historyRowIds, historyRows);
 
