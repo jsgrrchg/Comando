@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
@@ -55,6 +55,9 @@ use crate::events::{
 use crate::redaction::redact_env_key_value;
 use crate::runtime::{AcpProtocolFlavor, RuntimeDefinition};
 use crate::session::{NativeAiSession, SessionRegistry};
+
+const CODEX_ACP_DIFF_HUNKS_KEY: &str = "codexAcpHunks";
+const CODEX_ACP_DIFF_PREVIOUS_PATH_KEY: &str = "codexAcpPreviousPath";
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 const CODEX_ACP_STATUS_EVENT_TYPE_KEY: &str = "codexAcpEventType";
@@ -2181,6 +2184,7 @@ impl NotificationContextInner {
             runtime_session_id,
             tool_call_id.clone(),
             &tool_call,
+            tool_call.meta.as_ref().unwrap_or(meta),
         );
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
@@ -2224,6 +2228,7 @@ impl NotificationContextInner {
             runtime_session_id,
             tool_call_id.clone(),
             &tool_call,
+            tool_call.meta.as_ref().unwrap_or(meta),
         );
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
@@ -2247,8 +2252,14 @@ impl NotificationContextInner {
         runtime_session_id: &RuntimeSessionId,
         tool_call_id: NativeToolCallId,
         tool_call: &ToolCall,
+        meta: &Meta,
     ) -> Vec<serde_json::Value> {
-        let diffs = tool_call_content_diffs(&tool_call.content);
+        let diffs = tool_call_content_diffs(
+            &tool_call.content,
+            meta,
+            tool_call.raw_output.as_ref(),
+            &self.session.scope.cwd,
+        );
         if diffs.is_empty() || !self.should_buffer_unknown_runtime_diffs(runtime_session_id) {
             return diffs;
         }
@@ -3383,7 +3394,7 @@ fn config_option_category_label(category: &SessionConfigOptionCategory) -> Strin
 fn merged_meta(notification_meta: Option<&Meta>, update_meta: Option<&Meta>) -> Meta {
     let mut meta = notification_meta.cloned().unwrap_or_default();
     if let Some(update_meta) = update_meta {
-        meta.extend(update_meta.clone());
+        deep_merge_meta(&mut meta, update_meta);
     }
     meta
 }
@@ -3393,10 +3404,23 @@ fn merge_tool_call_meta(tool_call: &mut ToolCall, meta: Meta) {
         return;
     }
 
-    tool_call
-        .meta
-        .get_or_insert_with(Meta::default)
-        .extend(meta);
+    deep_merge_meta(tool_call.meta.get_or_insert_with(Meta::default), &meta);
+}
+
+fn deep_merge_meta(target: &mut Meta, incoming: &Meta) {
+    for (key, value) in incoming {
+        match (target.get_mut(key), value) {
+            (
+                Some(serde_json::Value::Object(target_object)),
+                serde_json::Value::Object(incoming_object),
+            ) => {
+                deep_merge_meta(target_object, incoming_object);
+            }
+            _ => {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+    }
 }
 
 fn is_canonical_tool_call_candidate(tool_call: &ToolCall) -> bool {
@@ -3710,8 +3734,83 @@ fn infer_generated_image_mime_type(path: &str) -> Option<String> {
     Some(mime_type.to_string())
 }
 
-fn tool_call_content_diffs(content: &[ToolCallContent]) -> Vec<serde_json::Value> {
-    let mut seen = HashSet::new();
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ProviderDiffHunk {
+    #[serde(alias = "oldStart")]
+    old_start: u32,
+    #[serde(alias = "oldCount")]
+    old_count: u32,
+    #[serde(alias = "newStart")]
+    new_start: u32,
+    #[serde(alias = "newCount")]
+    new_count: u32,
+    lines: Vec<ProviderDiffHunkLine>,
+    #[serde(default = "default_true")]
+    old_trailing_newline: bool,
+    #[serde(default = "default_true")]
+    new_trailing_newline: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ProviderDiffHunkLine {
+    #[serde(rename = "type")]
+    line_type: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct ClaudeStructuredPatchHunk {
+    #[serde(alias = "oldStart")]
+    old_start: u32,
+    #[serde(alias = "oldLines")]
+    old_lines: u32,
+    #[serde(alias = "newStart")]
+    new_start: u32,
+    #[serde(alias = "newLines")]
+    new_lines: u32,
+    lines: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AnchoredDiffCandidate {
+    changed_new_text: String,
+    changed_old_text: String,
+    hunks: Vec<comando_diff::AiDiffHunk>,
+    match_mode: AnchoredDiffMatchMode,
+    new_text: String,
+    old_text: String,
+    path: Option<String>,
+    previous_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnchoredDiffMatchMode {
+    Contains,
+    Exact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ToolDiffDedupeKey {
+    anchor_key: Option<Vec<(u32, u32, u32, u32)>>,
+    new_text: String,
+    old_text: Option<String>,
+    path: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn tool_call_content_diffs(
+    content: &[ToolCallContent],
+    meta: &Meta,
+    raw_output: Option<&serde_json::Value>,
+    cwd: &str,
+) -> Vec<serde_json::Value> {
+    let mut seen_plain = HashSet::new();
+    let mut seen_projected = HashSet::new();
+    let mut claude_candidates = claude_structured_patch_candidates(meta);
+    let mut opencode_candidates = opencode_filediff_candidates(raw_output);
     content
         .iter()
         .filter_map(|item| {
@@ -3720,27 +3819,598 @@ fn tool_call_content_diffs(content: &[ToolCallContent]) -> Vec<serde_json::Value
             };
             let path = diff.path.to_string_lossy().to_string();
             let old_text = diff.old_text.clone();
-            let dedupe_key = (path.clone(), old_text.clone(), diff.new_text.clone());
-            if !seen.insert(dedupe_key) {
+            let plain_key = (path.clone(), old_text.clone(), diff.new_text.clone());
+            let projected = project_tool_diff(
+                diff,
+                old_text.as_deref().unwrap_or_default(),
+                &path,
+                cwd,
+                &mut claude_candidates,
+                &mut opencode_candidates,
+            );
+            if projected.anchored {
+                let dedupe_key = ToolDiffDedupeKey {
+                    anchor_key: Some(projected.hunk_anchor_key()),
+                    new_text: diff.new_text.clone(),
+                    old_text: old_text.clone(),
+                    path: path.clone(),
+                };
+                if !seen_projected.insert(dedupe_key) {
+                    return None;
+                }
+                seen_plain.insert(plain_key);
+            } else if !seen_plain.insert(plain_key) {
                 return None;
             }
-            let hunks = comando_diff::compute_diff_hunks(
-                old_text.as_deref().unwrap_or_default(),
-                &diff.new_text,
-                &path,
-            );
+            let diff_kind = if old_text.is_none() {
+                "create"
+            } else if projected.previous_path.is_some() {
+                "move"
+            } else {
+                "update"
+            };
             Some(serde_json::json!({
-                "hunks": hunks,
+                "hunks": projected.hunks,
                 "isText": true,
-                "kind": if old_text.is_none() { "create" } else { "update" },
+                "kind": diff_kind,
                 "newText": diff.new_text,
                 "oldText": old_text,
                 "path": path,
-                "previousPath": null,
+                "previousPath": projected.previous_path,
                 "reversible": true
             }))
         })
         .collect()
+}
+
+struct ProjectedToolDiff {
+    anchored: bool,
+    hunks: Vec<comando_diff::AiDiffHunk>,
+    previous_path: Option<String>,
+}
+
+impl ProjectedToolDiff {
+    fn anchored(
+        hunks: Vec<comando_diff::AiDiffHunk>,
+        previous_path: Option<String>,
+    ) -> ProjectedToolDiff {
+        ProjectedToolDiff {
+            anchored: true,
+            hunks,
+            previous_path,
+        }
+    }
+
+    fn fallback(
+        hunks: Vec<comando_diff::AiDiffHunk>,
+        previous_path: Option<String>,
+    ) -> ProjectedToolDiff {
+        ProjectedToolDiff {
+            anchored: false,
+            hunks,
+            previous_path,
+        }
+    }
+
+    fn hunk_anchor_key(&self) -> Vec<(u32, u32, u32, u32)> {
+        self.hunks
+            .iter()
+            .map(|hunk| {
+                (
+                    hunk.old_start,
+                    hunk.old_count,
+                    hunk.new_start,
+                    hunk.new_count,
+                )
+            })
+            .collect()
+    }
+}
+
+fn project_tool_diff(
+    diff: &agent_client_protocol::schema::Diff,
+    old_text: &str,
+    path: &str,
+    cwd: &str,
+    claude_candidates: &mut [Option<AnchoredDiffCandidate>],
+    opencode_candidates: &mut [Option<AnchoredDiffCandidate>],
+) -> ProjectedToolDiff {
+    let diff_previous_path = read_meta_string(diff.meta.as_ref(), CODEX_ACP_DIFF_PREVIOUS_PATH_KEY);
+    if let Some(hunks) = codex_meta_hunks(diff, path) {
+        return ProjectedToolDiff::anchored(hunks, diff_previous_path);
+    }
+
+    if let Some((hunks, previous_path)) =
+        take_matching_anchored_candidate(claude_candidates, diff, old_text, path, cwd)
+    {
+        return ProjectedToolDiff::anchored(hunks, previous_path.or(diff_previous_path));
+    }
+
+    if let Some((hunks, previous_path)) =
+        take_matching_anchored_candidate(opencode_candidates, diff, old_text, path, cwd)
+    {
+        return ProjectedToolDiff::anchored(hunks, previous_path.or(diff_previous_path));
+    }
+
+    ProjectedToolDiff::fallback(
+        comando_diff::compute_diff_hunks(old_text, &diff.new_text, path),
+        diff_previous_path,
+    )
+}
+
+fn codex_meta_hunks(
+    diff: &agent_client_protocol::schema::Diff,
+    seed: &str,
+) -> Option<Vec<comando_diff::AiDiffHunk>> {
+    let meta = diff.meta.as_ref()?;
+    let value = meta.get(CODEX_ACP_DIFF_HUNKS_KEY)?.clone();
+    let provider_hunks: Vec<ProviderDiffHunk> = serde_json::from_value(value).ok()?;
+    provider_hunks_to_ai_hunks(provider_hunks, seed).filter(|hunks| !hunks.is_empty())
+}
+
+fn claude_structured_patch_candidates(meta: &Meta) -> Vec<Option<AnchoredDiffCandidate>> {
+    let Some(claude_code) = meta
+        .get("claudeCode")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Vec::new();
+    };
+    let tool_name = claude_code
+        .get("toolName")
+        .and_then(serde_json::Value::as_str);
+    if !matches!(tool_name, Some("Edit" | "Write")) {
+        return Vec::new();
+    }
+    let Some(tool_response) = claude_code
+        .get("toolResponse")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Vec::new();
+    };
+    let path = tool_response
+        .get("filePath")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    let Some(structured_patch) = tool_response.get("structuredPatch") else {
+        return Vec::new();
+    };
+    let Ok(hunks) =
+        serde_json::from_value::<Vec<ClaudeStructuredPatchHunk>>(structured_patch.clone())
+    else {
+        return Vec::new();
+    };
+
+    hunks
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, hunk)| claude_hunk_candidate(path.clone(), index, hunk))
+        .map(Some)
+        .collect()
+}
+
+fn claude_hunk_candidate(
+    path: Option<String>,
+    index: usize,
+    hunk: ClaudeStructuredPatchHunk,
+) -> Option<AnchoredDiffCandidate> {
+    let (old_text, new_text) = snapshot_texts_from_prefixed_lines(&hunk.lines);
+    if old_text.is_empty() && new_text.is_empty() {
+        return None;
+    }
+    let provider_hunk = ProviderDiffHunk {
+        old_start: hunk.old_start,
+        old_count: hunk.old_lines,
+        new_start: hunk.new_start,
+        new_count: hunk.new_lines,
+        lines: prefixed_lines_to_provider_lines(&hunk.lines),
+        old_trailing_newline: false,
+        new_trailing_newline: false,
+    };
+    let seed = path.as_deref().unwrap_or("claude-structured-patch");
+    let hunks = provider_hunks_to_ai_hunks(vec![provider_hunk], seed)?;
+    Some(AnchoredDiffCandidate {
+        changed_new_text: new_text.clone(),
+        changed_old_text: old_text.clone(),
+        hunks: hunks
+            .into_iter()
+            .map(|mut hunk| {
+                hunk.id = format!(
+                    "anchored-diff:{seed}:{}:{}:{index}",
+                    hunk.old_start, hunk.new_start
+                );
+                for (line_index, line) in hunk.lines.iter_mut().enumerate() {
+                    line.id = format!(
+                        "anchored-line:{seed}:{}:{}:{index}:{line_index}",
+                        hunk.old_start, hunk.new_start
+                    );
+                }
+                hunk
+            })
+            .collect(),
+        match_mode: AnchoredDiffMatchMode::Exact,
+        new_text,
+        old_text,
+        path,
+        previous_path: None,
+    })
+}
+
+fn opencode_filediff_candidates(
+    raw_output: Option<&serde_json::Value>,
+) -> Vec<Option<AnchoredDiffCandidate>> {
+    let Some(filediff) = raw_output
+        .and_then(|value| value.get("metadata"))
+        .and_then(|value| value.get("filediff"))
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Vec::new();
+    };
+    let path = filediff
+        .get("file")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned);
+    let Some(patch) = filediff.get("patch").and_then(serde_json::Value::as_str) else {
+        return Vec::new();
+    };
+
+    parse_unified_patch_hunks(patch)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, hunk)| {
+            let old_text = hunk_text(&hunk, true);
+            let new_text = hunk_text(&hunk, false);
+            let changed_old_text = hunk_changed_text(&hunk, true);
+            let changed_new_text = hunk_changed_text(&hunk, false);
+            if old_text.is_empty() && new_text.is_empty() {
+                return None;
+            }
+            let seed = path.as_deref().unwrap_or("opencode-filediff");
+            let hunks = provider_hunks_to_ai_hunks(vec![hunk], seed)?;
+            Some(AnchoredDiffCandidate {
+                hunks: hunks
+                    .into_iter()
+                    .map(|mut hunk| {
+                        hunk.id = format!(
+                            "anchored-diff:{seed}:{}:{}:{index}",
+                            hunk.old_start, hunk.new_start
+                        );
+                        hunk
+                    })
+                    .collect(),
+                changed_new_text,
+                changed_old_text,
+                match_mode: AnchoredDiffMatchMode::Contains,
+                new_text,
+                old_text,
+                path: path.clone(),
+                previous_path: None,
+            })
+        })
+        .map(Some)
+        .collect()
+}
+
+fn take_matching_anchored_candidate(
+    candidates: &mut [Option<AnchoredDiffCandidate>],
+    diff: &agent_client_protocol::schema::Diff,
+    old_text: &str,
+    path: &str,
+    cwd: &str,
+) -> Option<(Vec<comando_diff::AiDiffHunk>, Option<String>)> {
+    let index = candidates.iter().position(|candidate| {
+        candidate.as_ref().is_some_and(|candidate| {
+            anchored_candidate_matches_diff(candidate, diff, old_text, path, cwd)
+        })
+    })?;
+    let candidate = candidates.get_mut(index)?.take()?;
+    Some((candidate.hunks, candidate.previous_path))
+}
+
+fn anchored_candidate_matches_diff(
+    candidate: &AnchoredDiffCandidate,
+    diff: &agent_client_protocol::schema::Diff,
+    old_text: &str,
+    path: &str,
+    cwd: &str,
+) -> bool {
+    if let Some(candidate_path) = candidate.path.as_deref() {
+        if !paths_match(candidate_path, path, cwd) {
+            return false;
+        }
+    }
+
+    match candidate.match_mode {
+        AnchoredDiffMatchMode::Exact => {
+            old_text == candidate.old_text && diff.new_text == candidate.new_text
+        }
+        AnchoredDiffMatchMode::Contains => {
+            snippet_matches_candidate_text(old_text, &candidate.old_text)
+                && snippet_matches_candidate_text(&diff.new_text, &candidate.new_text)
+                && changed_text_matches_snippet(&candidate.changed_old_text, old_text)
+                && changed_text_matches_snippet(&candidate.changed_new_text, &diff.new_text)
+                && (!candidate.changed_old_text.is_empty()
+                    || !candidate.changed_new_text.is_empty())
+        }
+    }
+}
+
+fn provider_hunks_to_ai_hunks(
+    provider_hunks: Vec<ProviderDiffHunk>,
+    seed: &str,
+) -> Option<Vec<comando_diff::AiDiffHunk>> {
+    provider_hunks
+        .into_iter()
+        .enumerate()
+        .map(|(index, hunk)| provider_hunk_to_ai_hunk(hunk, seed, index))
+        .collect()
+}
+
+fn provider_hunk_to_ai_hunk(
+    hunk: ProviderDiffHunk,
+    seed: &str,
+    index: usize,
+) -> Option<comando_diff::AiDiffHunk> {
+    let lines = hunk
+        .lines
+        .into_iter()
+        .enumerate()
+        .map(|(line_index, line)| {
+            let line_type = match line.line_type.as_str() {
+                "add" => comando_diff::AiDiffLineType::Add,
+                "remove" => comando_diff::AiDiffLineType::Remove,
+                "context" => comando_diff::AiDiffLineType::Context,
+                _ => comando_diff::AiDiffLineType::Context,
+            };
+            comando_diff::AiDiffHunkLine {
+                id: format!(
+                    "line:{seed}:{}:{}:{line_index}",
+                    hunk.old_start, hunk.new_start
+                ),
+                text: line.text,
+                line_type,
+            }
+        })
+        .collect();
+    let visual_start_line = hunk.new_start.max(1);
+    let visual_end_line = visual_start_line
+        .saturating_add(hunk.new_count.max(1))
+        .saturating_sub(1);
+    Some(comando_diff::AiDiffHunk {
+        id: format!("{seed}:{}:{}:{index}", hunk.old_start, hunk.new_start),
+        lines,
+        new_count: hunk.new_count,
+        new_start: hunk.new_start,
+        old_count: hunk.old_count,
+        old_start: hunk.old_start,
+        visual_end_line: Some(visual_end_line),
+        visual_start_line: Some(visual_start_line),
+    })
+}
+
+fn prefixed_lines_to_provider_lines(lines: &[String]) -> Vec<ProviderDiffHunkLine> {
+    lines
+        .iter()
+        .filter_map(|line| {
+            if line == r"\ No newline at end of file" {
+                return None;
+            }
+            let (line_type, text) = prefixed_line_parts(line);
+            Some(ProviderDiffHunkLine {
+                line_type: line_type.to_string(),
+                text: text.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn snapshot_texts_from_prefixed_lines(lines: &[String]) -> (String, String) {
+    let mut old_lines = Vec::new();
+    let mut new_lines = Vec::new();
+    for line in lines {
+        if line == r"\ No newline at end of file" {
+            continue;
+        }
+        let (line_type, text) = prefixed_line_parts(line);
+        match line_type {
+            "add" => new_lines.push(text.to_string()),
+            "remove" => old_lines.push(text.to_string()),
+            _ => {
+                old_lines.push(text.to_string());
+                new_lines.push(text.to_string());
+            }
+        }
+    }
+    (old_lines.join("\n"), new_lines.join("\n"))
+}
+
+fn prefixed_line_parts(line: &str) -> (&'static str, &str) {
+    if let Some(text) = line.strip_prefix('+') {
+        ("add", text)
+    } else if let Some(text) = line.strip_prefix('-') {
+        ("remove", text)
+    } else if let Some(text) = line.strip_prefix(' ') {
+        ("context", text)
+    } else {
+        ("context", line)
+    }
+}
+
+fn parse_unified_patch_hunks(patch: &str) -> Vec<ProviderDiffHunk> {
+    let mut hunks = Vec::new();
+    let mut current: Option<ProviderDiffHunk> = None;
+    let mut previous_line_type: Option<&'static str> = None;
+
+    for line in patch.replace("\r\n", "\n").replace('\r', "\n").lines() {
+        if let Some((old_start, old_count, new_start, new_count)) = parse_unified_patch_header(line)
+        {
+            if let Some(hunk) = current.take() {
+                hunks.push(hunk);
+            }
+            current = Some(ProviderDiffHunk {
+                old_start,
+                old_count,
+                new_start,
+                new_count,
+                lines: Vec::new(),
+                old_trailing_newline: true,
+                new_trailing_newline: true,
+            });
+            previous_line_type = None;
+            continue;
+        }
+
+        let Some(hunk) = current.as_mut() else {
+            continue;
+        };
+        if line == r"\ No newline at end of file" {
+            match previous_line_type {
+                Some("context") => {
+                    hunk.old_trailing_newline = false;
+                    hunk.new_trailing_newline = false;
+                }
+                Some("remove") => hunk.old_trailing_newline = false,
+                Some("add") => hunk.new_trailing_newline = false,
+                _ => {}
+            }
+            continue;
+        }
+        let Some((line_type, text)) = line
+            .strip_prefix(' ')
+            .map(|text| ("context", text))
+            .or_else(|| line.strip_prefix('+').map(|text| ("add", text)))
+            .or_else(|| line.strip_prefix('-').map(|text| ("remove", text)))
+        else {
+            continue;
+        };
+        hunk.lines.push(ProviderDiffHunkLine {
+            line_type: line_type.to_string(),
+            text: text.to_string(),
+        });
+        previous_line_type = Some(line_type);
+    }
+
+    if let Some(hunk) = current {
+        hunks.push(hunk);
+    }
+    hunks
+}
+
+fn parse_unified_patch_header(line: &str) -> Option<(u32, u32, u32, u32)> {
+    let header = line.strip_prefix("@@ -")?;
+    let (old_part, rest) = header.split_once(" +")?;
+    let (new_part, _) = rest.split_once(" @@")?;
+    let (old_start, old_count) = parse_unified_patch_range(old_part)?;
+    let (new_start, new_count) = parse_unified_patch_range(new_part)?;
+    Some((old_start, old_count, new_start, new_count))
+}
+
+fn parse_unified_patch_range(range: &str) -> Option<(u32, u32)> {
+    let (start, count) = range.split_once(',').unwrap_or((range, "1"));
+    Some((start.parse().ok()?, count.parse().ok()?))
+}
+
+fn hunk_text(hunk: &ProviderDiffHunk, old_side: bool) -> String {
+    let mut text = hunk
+        .lines
+        .iter()
+        .filter_map(|line| match (old_side, line.line_type.as_str()) {
+            (true, "add") | (false, "remove") => None,
+            _ => Some(line.text.clone()),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let has_side_lines = hunk.lines.iter().any(|line| match old_side {
+        true => line.line_type != "add",
+        false => line.line_type != "remove",
+    });
+    let has_trailing_newline = if old_side {
+        hunk.old_trailing_newline
+    } else {
+        hunk.new_trailing_newline
+    };
+    if has_side_lines && has_trailing_newline {
+        text.push('\n');
+    }
+    text
+}
+
+fn hunk_changed_text(hunk: &ProviderDiffHunk, old_side: bool) -> String {
+    let mut text = hunk
+        .lines
+        .iter()
+        .filter_map(|line| match (old_side, line.line_type.as_str()) {
+            (true, "remove") | (false, "add") => Some(line.text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let has_changed_lines = !text.is_empty();
+    let last_side_line_type = hunk
+        .lines
+        .iter()
+        .rev()
+        .find(|line| match old_side {
+            true => line.line_type != "add",
+            false => line.line_type != "remove",
+        })
+        .map(|line| line.line_type.as_str());
+    let has_trailing_newline = if old_side {
+        hunk.old_trailing_newline
+    } else {
+        hunk.new_trailing_newline
+    };
+    let last_side_line_is_changed = matches!(
+        (old_side, last_side_line_type),
+        (true, Some("remove")) | (false, Some("add"))
+    );
+    if has_changed_lines && has_trailing_newline && last_side_line_is_changed {
+        text.push('\n');
+    }
+    text
+}
+
+fn snippet_matches_candidate_text(snippet: &str, candidate_text: &str) -> bool {
+    snippet.is_empty() || candidate_text.contains(snippet)
+}
+
+fn changed_text_matches_snippet(changed_text: &str, snippet: &str) -> bool {
+    changed_text.is_empty() || line_sequence_is_subsequence(changed_text, snippet)
+}
+
+fn line_sequence_is_subsequence(needle: &str, haystack: &str) -> bool {
+    let mut haystack_lines = haystack.split('\n');
+    for needle_line in needle.split('\n') {
+        if !haystack_lines.any(|haystack_line| haystack_line == needle_line) {
+            return false;
+        }
+    }
+    true
+}
+
+fn read_meta_string(meta: Option<&Meta>, key: &str) -> Option<String> {
+    meta.and_then(|meta| meta.get(key))
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+fn paths_match(candidate_path: &str, diff_path: &str, cwd: &str) -> bool {
+    candidate_path == diff_path
+        || normalize_diff_path(candidate_path, cwd) == normalize_diff_path(diff_path, cwd)
+}
+
+fn normalize_diff_path(path: &str, cwd: &str) -> String {
+    let path = Path::new(path);
+    let stripped = if path.is_absolute() {
+        path.strip_prefix(cwd).unwrap_or(path)
+    } else {
+        path
+    };
+    stripped
+        .components()
+        .as_path()
+        .to_string_lossy()
+        .trim_start_matches("./")
+        .to_string()
 }
 
 fn content_block_text(content: &ContentBlock) -> String {
@@ -4983,6 +5653,455 @@ mod tests {
         assert_eq!(event.payload["diffs"][0]["path"], "src/main.rs");
         assert_eq!(event.payload["diffs"][0]["kind"], "update");
         assert_eq!(event.payload["diffs"][0]["hunks"][0]["newStart"], 1);
+    }
+
+    #[test]
+    fn notification_context_anchors_claude_structured_patch_tool_diffs() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let mut meta = Meta::new();
+        meta.insert(
+            "claudeCode".to_string(),
+            serde_json::json!({
+                "toolName": "Edit",
+                "toolResponse": {
+                    "filePath": "/tmp/src/main.rs",
+                    "structuredPatch": [{
+                        "oldStart": 1338,
+                        "oldLines": 5,
+                        "newStart": 1338,
+                        "newLines": 5,
+                        "lines": [
+                            " const text = match[1].trim()",
+                            "-if (selectionTouchesRange(start, end)) {",
+                            "+if (selectionEditsRange(start, end)) {",
+                            "  return false",
+                            " }"
+                        ]
+                    }]
+                }
+            }),
+        );
+
+        context.handle(
+            SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    "tool-1",
+                    ToolCallUpdateFields::new()
+                        .title("Edit src/main.rs".to_string())
+                        .kind(ToolKind::Edit)
+                        .status(ToolCallStatus::Completed)
+                        .content(vec![ToolCallContent::Diff(
+                            agent_client_protocol::schema::Diff::new(
+                                "/tmp/src/main.rs",
+                                "const text = match[1].trim()\nif (selectionEditsRange(start, end)) {\n return false\n}",
+                            )
+                            .old_text(
+                                "const text = match[1].trim()\nif (selectionTouchesRange(start, end)) {\n return false\n}",
+                            ),
+                        )]),
+                )),
+            )
+            .meta(meta),
+        );
+
+        let event = receiver.recv().unwrap();
+        assert_eq!(event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(event.payload["diffs"][0]["hunks"][0]["newStart"], 1338);
+        assert_eq!(event.payload["diffs"][0]["hunks"][0]["oldStart"], 1338);
+    }
+
+    #[test]
+    fn notification_context_preserves_claude_anchor_after_followup_update() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let mut anchored_meta = Meta::new();
+        anchored_meta.insert(
+            "claudeCode".to_string(),
+            serde_json::json!({
+                "toolName": "Edit",
+                "toolResponse": {
+                    "filePath": "/tmp/src/main.rs",
+                    "structuredPatch": [{
+                        "oldStart": 749,
+                        "oldLines": 2,
+                        "newStart": 749,
+                        "newLines": 2,
+                        "lines": [
+                            "-cursor: \"text\",",
+                            "+cursor: \"default\","
+                        ]
+                    }]
+                }
+            }),
+        );
+        let mut followup_meta = Meta::new();
+        followup_meta.insert(
+            "claudeCode".to_string(),
+            serde_json::json!({
+                "toolName": "Edit"
+            }),
+        );
+
+        let diff = ToolCallContent::Diff(
+            agent_client_protocol::schema::Diff::new("/tmp/src/main.rs", "cursor: \"default\",")
+                .old_text("cursor: \"text\","),
+        );
+        context.handle(
+            SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    "tool-1",
+                    ToolCallUpdateFields::new()
+                        .title("Edit src/main.rs".to_string())
+                        .kind(ToolKind::Edit)
+                        .status(ToolCallStatus::InProgress)
+                        .content(vec![diff.clone()]),
+                )),
+            )
+            .meta(anchored_meta),
+        );
+        context.handle(
+            SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    "tool-1",
+                    ToolCallUpdateFields::new()
+                        .status(ToolCallStatus::Completed)
+                        .content(vec![diff]),
+                )),
+            )
+            .meta(followup_meta),
+        );
+
+        let initial_event = receiver.recv().unwrap();
+        let followup_event = receiver.recv().unwrap();
+        assert_eq!(
+            initial_event.payload["diffs"][0]["hunks"][0]["newStart"],
+            749
+        );
+        assert_eq!(
+            followup_event.payload["diffs"][0]["hunks"][0]["newStart"],
+            749
+        );
+    }
+
+    #[test]
+    fn tool_call_content_diffs_keeps_identical_claude_replace_all_hunks() {
+        let mut meta = Meta::new();
+        meta.insert(
+            "claudeCode".to_string(),
+            serde_json::json!({
+                "toolName": "Edit",
+                "toolResponse": {
+                    "filePath": "/tmp/src/main.rs",
+                    "structuredPatch": [
+                        {
+                            "oldStart": 40,
+                            "oldLines": 1,
+                            "newStart": 40,
+                            "newLines": 1,
+                            "lines": ["-enabled", "+disabled"]
+                        },
+                        {
+                            "oldStart": 90,
+                            "oldLines": 1,
+                            "newStart": 90,
+                            "newLines": 1,
+                            "lines": ["-enabled", "+disabled"]
+                        }
+                    ]
+                }
+            }),
+        );
+
+        let diff = ToolCallContent::Diff(
+            agent_client_protocol::schema::Diff::new("/tmp/src/main.rs", "disabled")
+                .old_text("enabled"),
+        );
+        let diffs = tool_call_content_diffs(&[diff.clone(), diff], &meta, None, "/tmp");
+
+        assert_eq!(diffs.len(), 2);
+        assert_eq!(diffs[0]["hunks"][0]["newStart"], 40);
+        assert_eq!(diffs[1]["hunks"][0]["newStart"], 90);
+    }
+
+    #[test]
+    fn tool_call_content_diffs_uses_codex_acp_hunks_from_diff_meta() {
+        let mut diff_meta = Meta::new();
+        diff_meta.insert(
+            CODEX_ACP_DIFF_PREVIOUS_PATH_KEY.to_string(),
+            serde_json::json!("src/old.rs"),
+        );
+        diff_meta.insert(
+            CODEX_ACP_DIFF_HUNKS_KEY.to_string(),
+            serde_json::json!([{
+                "old_start": 44,
+                "old_count": 1,
+                "new_start": 47,
+                "new_count": 1,
+                "lines": [
+                    { "type": "remove", "text": "let value = 1;" },
+                    { "type": "add", "text": "let value = 2;" }
+                ]
+            }]),
+        );
+
+        let diffs = tool_call_content_diffs(
+            &[ToolCallContent::Diff(
+                agent_client_protocol::schema::Diff::new("src/new.rs", "let value = 2;")
+                    .old_text("let value = 1;")
+                    .meta(diff_meta),
+            )],
+            &Meta::new(),
+            None,
+            "/tmp",
+        );
+
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0]["hunks"][0]["newStart"], 47);
+        assert_eq!(diffs[0]["hunks"][0]["oldStart"], 44);
+        assert_eq!(diffs[0]["previousPath"], "src/old.rs");
+        assert_eq!(diffs[0]["kind"], "move");
+    }
+
+    #[test]
+    fn tool_call_content_diffs_ignores_invalid_codex_hunks() {
+        let mut diff_meta = Meta::new();
+        diff_meta.insert(
+            CODEX_ACP_DIFF_HUNKS_KEY.to_string(),
+            serde_json::json!("not hunks"),
+        );
+
+        let diffs = tool_call_content_diffs(
+            &[ToolCallContent::Diff(
+                agent_client_protocol::schema::Diff::new("src/main.rs", "b\n")
+                    .old_text("a\n")
+                    .meta(diff_meta),
+            )],
+            &Meta::new(),
+            None,
+            "/tmp",
+        );
+
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0]["hunks"][0]["newStart"], 1);
+    }
+
+    #[test]
+    fn tool_call_content_diffs_anchors_opencode_filediff_patch_hunks() {
+        let patch = [
+            "Index: /tmp/src/main.rs",
+            "===================================================================",
+            "--- /tmp/src/main.rs",
+            "+++ /tmp/src/main.rs",
+            "@@ -2219,7 +2220,8 @@",
+            " syntaxTree(state).iterate({",
+            "   enter(node) {",
+            "-    return false;",
+            "+    return true;",
+            "   }",
+            " }",
+            "",
+        ]
+        .join("\n");
+        let raw_output = serde_json::json!({
+            "metadata": {
+                "filediff": {
+                    "file": "/tmp/src/main.rs",
+                    "patch": patch
+                }
+            }
+        });
+
+        let diffs = tool_call_content_diffs(
+            &[ToolCallContent::Diff(
+                agent_client_protocol::schema::Diff::new(
+                    "/tmp/src/main.rs",
+                    "syntaxTree(state).iterate({\n  enter(node) {\n    return true;\n  }\n}",
+                )
+                .old_text(
+                    "syntaxTree(state).iterate({\n  enter(node) {\n    return false;\n  }\n}",
+                ),
+            )],
+            &Meta::new(),
+            Some(&raw_output),
+            "/tmp",
+        );
+
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0]["hunks"][0]["newStart"], 2220);
+        assert_eq!(diffs[0]["hunks"][0]["oldStart"], 2219);
+    }
+
+    #[test]
+    fn tool_call_content_diffs_anchors_opencode_snippets_contained_in_patch_hunk() {
+        let patch = [
+            "Index: /tmp/src/main.rs",
+            "===================================================================",
+            "--- /tmp/src/main.rs",
+            "+++ /tmp/src/main.rs",
+            "@@ -10,3 +10,4 @@",
+            " alpha",
+            " anchor",
+            "+inserted",
+            " omega",
+            "",
+        ]
+        .join("\n");
+        let raw_output = serde_json::json!({
+            "metadata": {
+                "filediff": {
+                    "file": "/tmp/src/main.rs",
+                    "patch": patch
+                }
+            }
+        });
+
+        let diffs = tool_call_content_diffs(
+            &[ToolCallContent::Diff(
+                agent_client_protocol::schema::Diff::new("/tmp/src/main.rs", "anchor\ninserted\n")
+                    .old_text("anchor\n"),
+            )],
+            &Meta::new(),
+            Some(&raw_output),
+            "/tmp",
+        );
+
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0]["hunks"][0]["newStart"], 10);
+        assert_eq!(diffs[0]["hunks"][0]["oldStart"], 10);
+    }
+
+    #[test]
+    fn tool_call_content_diffs_skips_opencode_context_only_snippet_matches() {
+        let patch = [
+            "Index: /tmp/src/main.rs",
+            "===================================================================",
+            "--- /tmp/src/main.rs",
+            "+++ /tmp/src/main.rs",
+            "@@ -10,3 +10,4 @@",
+            " alpha",
+            " remove me",
+            "+inserted elsewhere",
+            " omega",
+            "@@ -40,3 +41,2 @@",
+            " before",
+            "-remove me",
+            " after",
+            "",
+        ]
+        .join("\n");
+        let raw_output = serde_json::json!({
+            "metadata": {
+                "filediff": {
+                    "file": "/tmp/src/main.rs",
+                    "patch": patch
+                }
+            }
+        });
+
+        let diffs = tool_call_content_diffs(
+            &[ToolCallContent::Diff(
+                agent_client_protocol::schema::Diff::new("/tmp/src/main.rs", "")
+                    .old_text("remove me\n"),
+            )],
+            &Meta::new(),
+            Some(&raw_output),
+            "/tmp",
+        );
+
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0]["hunks"][0]["newStart"], 41);
+        assert_eq!(diffs[0]["hunks"][0]["oldStart"], 40);
+    }
+
+    #[test]
+    fn tool_call_content_diffs_anchors_opencode_hunks_with_context_between_changes() {
+        let patch = [
+            "Index: /tmp/src/main.rs",
+            "===================================================================",
+            "--- /tmp/src/main.rs",
+            "+++ /tmp/src/main.rs",
+            "@@ -80,4 +80,2 @@",
+            " before",
+            "-remove first",
+            " keep context",
+            "-remove second",
+            "",
+        ]
+        .join("\n");
+        let raw_output = serde_json::json!({
+            "metadata": {
+                "filediff": {
+                    "file": "/tmp/src/main.rs",
+                    "patch": patch
+                }
+            }
+        });
+
+        let diffs = tool_call_content_diffs(
+            &[ToolCallContent::Diff(
+                agent_client_protocol::schema::Diff::new(
+                    "/tmp/src/main.rs",
+                    "before\nkeep context\n",
+                )
+                .old_text("before\nremove first\nkeep context\nremove second\n"),
+            )],
+            &Meta::new(),
+            Some(&raw_output),
+            "/tmp",
+        );
+
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0]["hunks"][0]["newStart"], 80);
+        assert_eq!(diffs[0]["hunks"][0]["oldStart"], 80);
+    }
+
+    #[test]
+    fn tool_call_content_diffs_anchors_opencode_trailing_newline_patch_hunks() {
+        let patch = [
+            "Index: /tmp/src/main.rs",
+            "===================================================================",
+            "--- /tmp/src/main.rs",
+            "+++ /tmp/src/main.rs",
+            "@@ -20,2 +20,2 @@",
+            " alpha",
+            "-beta",
+            "+beta",
+            r"\ No newline at end of file",
+            "",
+        ]
+        .join("\n");
+        let raw_output = serde_json::json!({
+            "metadata": {
+                "filediff": {
+                    "file": "/tmp/src/main.rs",
+                    "patch": patch
+                }
+            }
+        });
+
+        let diffs = tool_call_content_diffs(
+            &[ToolCallContent::Diff(
+                agent_client_protocol::schema::Diff::new("/tmp/src/main.rs", "beta")
+                    .old_text("beta\n"),
+            )],
+            &Meta::new(),
+            Some(&raw_output),
+            "/tmp",
+        );
+
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0]["hunks"][0]["newStart"], 20);
+        assert_eq!(diffs[0]["hunks"][0]["oldStart"], 20);
     }
 
     #[test]
