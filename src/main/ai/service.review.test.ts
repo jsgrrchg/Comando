@@ -972,6 +972,75 @@ describe("tracked file reconciliation", () => {
             trackedFiles: [],
         });
     });
+
+    it("drops pending tracked files when disk already matches the accepted text", async () => {
+        const baseText = "alpha\nbeta\ngamma\n";
+        const acceptedText = "alpha\nBETA\ngamma\n";
+        const trackedFile = createTrackedFile({
+            currentText: acceptedText,
+            diffBase: baseText,
+            hunks: __testing.computeDiffHunks(
+                baseText,
+                acceptedText,
+                "notes/example.md",
+            ),
+            newText: acceptedText,
+            oldText: baseText,
+            path: "notes/example.md",
+        });
+
+        const result = await reconcilePendingTrackedFiles({
+            readTrackedFileText: () => Promise.resolve(acceptedText),
+            trackedFiles: [trackedFile],
+        });
+
+        expect(result).toMatchObject({
+            changed: true,
+            trackedFiles: [],
+        });
+    });
+
+    it("drops pending delete files when disk already reflects the deletion", async () => {
+        const trackedFile = createTrackedFile({
+            currentText: "",
+            diffBase: "removed\n",
+            kind: "delete",
+            newText: null,
+            oldText: "removed\n",
+            path: "notes/example.md",
+        });
+
+        const result = await reconcilePendingTrackedFiles({
+            readTrackedFileText: () => Promise.resolve(null),
+            trackedFiles: [trackedFile],
+        });
+
+        expect(result).toMatchObject({
+            changed: true,
+            trackedFiles: [],
+        });
+    });
+
+    it("drops pending delete files when disk restored the base text", async () => {
+        const trackedFile = createTrackedFile({
+            currentText: "",
+            diffBase: "removed\n",
+            kind: "delete",
+            newText: null,
+            oldText: "removed\n",
+            path: "notes/example.md",
+        });
+
+        const result = await reconcilePendingTrackedFiles({
+            readTrackedFileText: () => Promise.resolve("removed\n"),
+            trackedFiles: [trackedFile],
+        });
+
+        expect(result).toMatchObject({
+            changed: true,
+            trackedFiles: [],
+        });
+    });
 });
 
 describe("mapImageGenerationToolUpdate", () => {

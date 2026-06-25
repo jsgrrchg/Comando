@@ -74,7 +74,7 @@ import {
     type PersistedRuntimeCatalogSnapshot,
 } from "./persistence";
 import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
-import { listOpenFileBuffers, readOpenFileBuffer } from "./openFileBuffers";
+import { listOpenFileBuffers } from "./openFileBuffers";
 import {
     type AiReviewMutationResult,
     type AiReviewSessionContext,
@@ -114,8 +114,6 @@ import {
     diffToAiFileDiff,
     normalizeTrackedDiffPath,
     parseCompleteNumberedFileOutput,
-    readTextIfExists,
-    reconcilePendingTrackedFiles,
     resolveDiffToFullTexts,
     shouldSuppressToolActivityUpdate,
 } from "./review-core";
@@ -1101,9 +1099,7 @@ export class AiService {
         const persistedSnapshot =
             await this.#loadPersistedSessionSnapshot(sessionId);
         return persistedSnapshot
-            ? this.#hydrateSnapshotRuntimeCatalog(
-                  await this.#reconcilePersistedTrackedFiles(persistedSnapshot),
-              )
+            ? this.#hydrateSnapshotRuntimeCatalog(persistedSnapshot)
             : null;
     }
 
@@ -3078,10 +3074,34 @@ export class AiService {
         previousSnapshot: AiSessionSnapshot,
     ): readonly AiTrackedFile[] {
         return preserveFallbackTrackedFiles(
-            nativeTrackedFiles,
+            this.#filterAcceptedNativeReviewTrackedFiles(
+                previousSnapshot.sessionId,
+                nativeTrackedFiles,
+            ),
             previousSnapshot.trackedFiles,
             this.#createNativeReviewPathMatcher(previousSnapshot),
         );
+    }
+
+    #filterAcceptedNativeReviewTrackedFiles(
+        sessionId: string,
+        trackedFiles: readonly AiTrackedFile[],
+    ): readonly AiTrackedFile[] {
+        const acceptedBaselines = this.#acceptedReviewBaselines.get(sessionId);
+        if (!acceptedBaselines || acceptedBaselines.size === 0) {
+            return trackedFiles;
+        }
+
+        const nextTrackedFiles = trackedFiles.filter(
+            (trackedFile) =>
+                !isTrackedFileAlreadyAccepted(
+                    trackedFile,
+                    acceptedBaselines,
+                ),
+        );
+        return nextTrackedFiles.length === trackedFiles.length
+            ? trackedFiles
+            : nextTrackedFiles;
     }
 
     #preservePassiveNativeSnapshotTrackedFiles(
@@ -3185,107 +3205,6 @@ export class AiService {
         }
     }
 
-    async #reconcilePersistedTrackedFiles(
-        snapshot: AiSessionSnapshot,
-    ): Promise<AiSessionSnapshot> {
-        if (snapshot.trackedFiles.length === 0) {
-            return snapshot;
-        }
-
-        const scope = this.#resolvePersistedSnapshotReviewScope(snapshot);
-        if (!scope) {
-            return snapshot;
-        }
-
-        const result = await reconcilePendingTrackedFiles({
-            onError: (error) => {
-                debugBenignError("ai.service.reconcileTrackedFile", error);
-            },
-            readTrackedFileText: async (trackedPath) =>
-                await this.#readPersistedTrackedFileText(scope, trackedPath),
-            trackedFiles: snapshot.trackedFiles,
-        });
-        if (!result.changed) {
-            return snapshot;
-        }
-
-        const nextSnapshot = {
-            ...snapshot,
-            trackedFiles: result.trackedFiles,
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistence.saveSessionSnapshot(nextSnapshot);
-        return nextSnapshot;
-    }
-
-    #resolvePersistedSnapshotReviewScope(
-        snapshot: Pick<AiSessionSnapshot, "projectId" | "worktreeId">,
-    ): {
-        readonly additionalRoots: readonly string[];
-        readonly scopeRoot: string;
-    } | null {
-        try {
-            const projectRoot = snapshot.projectId
-                ? this.#projectService.getProjectRootPath(
-                      snapshot.projectId,
-                      snapshot.worktreeId ?? null,
-                  )
-                : null;
-            const scopeRoot = path.resolve(projectRoot ?? process.cwd());
-            return {
-                additionalRoots: this.#resolveEffectiveAdditionalRoots(
-                    {
-                        additionalRoots: [],
-                        projectId: snapshot.projectId,
-                        worktreeId: snapshot.worktreeId ?? null,
-                    },
-                    projectRoot,
-                ),
-                scopeRoot,
-            };
-        } catch (error) {
-            debugBenignError("ai.service.resolveReviewScope", error);
-            return null;
-        }
-    }
-
-    async #readPersistedTrackedFileText(
-        scope: {
-            readonly additionalRoots: readonly string[];
-            readonly scopeRoot: string;
-        },
-        trackedPath: string,
-    ): Promise<string | null> {
-        const absolutePath = this.#resolvePersistedTrackedFileAbsolutePath(
-            scope,
-            trackedPath,
-        );
-        const bufferText = readOpenFileBuffer(absolutePath);
-        return bufferText ?? (await readTextIfExists(absolutePath));
-    }
-
-    #resolvePersistedTrackedFileAbsolutePath(
-        scope: {
-            readonly additionalRoots: readonly string[];
-            readonly scopeRoot: string;
-        },
-        candidatePath: string,
-    ): string {
-        const resolvedPath = resolveSessionScopedPath(
-            scope.scopeRoot,
-            candidatePath,
-        );
-        const insideAdditionalRoot = scope.additionalRoots.some((rootPath) =>
-            isPathInsideRoot(resolvedPath.absolutePath, rootPath),
-        );
-
-        if (!resolvedPath.insideRoot && !insideAdditionalRoot) {
-            throw new Error("Tracked file path is outside the session scope.");
-        }
-
-        return resolvedPath.absolutePath;
-    }
-
     #resolveSnapshotFromNativeUpdate(
         update: AiSessionUpdate,
     ): AiSessionSnapshot | null {
@@ -3313,7 +3232,11 @@ export class AiService {
             ? await this.#nativeAi.loadSessionSnapshot(sessionId)
             : await this.#persistence.loadSessionSnapshot(sessionId);
 
-        return snapshot ? normalizeRestoredAiSessionSnapshot(snapshot) : null;
+        return snapshot
+            ? clearRestoredSnapshotReviewState(
+                  normalizeRestoredAiSessionSnapshot(snapshot),
+              )
+            : null;
     }
 
     async #listPersistedRuntimeMappingsForParent(
@@ -3561,7 +3484,13 @@ export class AiService {
         await tracked;
     }
 
-    #rememberAcceptedReviewBaseline(trackedFile: AiTrackedFile): void {
+    #rememberAcceptedReviewBaseline(
+        trackedFile: AiTrackedFile,
+        acceptedText: string | null =
+            trackedFile.kind === "delete"
+                ? null
+                : getTrackedFileCurrentText(trackedFile),
+    ): void {
         const sessionBaselines =
             this.#acceptedReviewBaselines.get(trackedFile.sessionId) ??
             new Map<string, string | null>();
@@ -3570,12 +3499,7 @@ export class AiService {
             sessionBaselines,
         );
 
-        sessionBaselines.set(
-            trackedFile.path,
-            trackedFile.kind === "delete"
-                ? null
-                : getTrackedFileCurrentText(trackedFile),
-        );
+        sessionBaselines.set(trackedFile.path, acceptedText);
         if (trackedFile.previousPath) {
             sessionBaselines.set(trackedFile.previousPath, null);
         }
@@ -3592,6 +3516,28 @@ export class AiService {
         if (trackedFile) {
             this.#rememberAcceptedReviewBaseline(trackedFile);
         }
+    }
+
+    #rememberAcceptedReviewBaselineForKeptHunks(
+        previousSnapshot: AiSessionSnapshot,
+        nextSnapshot: AiSessionSnapshot,
+        reviewPath: string,
+    ): void {
+        const remainingTrackedFile = findTrackedFileForReviewPath(
+            nextSnapshot.trackedFiles,
+            reviewPath,
+        );
+        if (remainingTrackedFile) {
+            // After a partial hunk keep, the pending file keeps the final text
+            // but rebases its diff against the newly accepted text.
+            this.#rememberAcceptedReviewBaseline(
+                remainingTrackedFile,
+                getTrackedFileDiffBase(remainingTrackedFile),
+            );
+            return;
+        }
+
+        this.#rememberAcceptedReviewBaselineForPath(previousSnapshot, reviewPath);
     }
 
     #applyAcceptedReviewBaselineToDiff(
@@ -4030,8 +3976,9 @@ export class AiService {
                 context: reviewSession.context,
                 input,
             });
-            this.#rememberAcceptedReviewBaselineForPath(
+            this.#rememberAcceptedReviewBaselineForKeptHunks(
                 reviewSession.snapshot,
+                result.snapshot,
                 input.path,
             );
             this.#persistReviewMutation(reviewSession.snapshot, result);
@@ -4971,6 +4918,40 @@ function preservePassiveSnapshotTrackedFiles(
     };
 }
 
+function isTrackedFileAlreadyAccepted(
+    trackedFile: AiTrackedFile,
+    acceptedBaselines: ReadonlyMap<string, string | null>,
+): boolean {
+    const baseline = acceptedBaselines.get(trackedFile.path);
+    if (baseline !== undefined) {
+        return trackedFileMatchesAcceptedBaseline(trackedFile, baseline);
+    }
+
+    return Boolean(
+        trackedFile.previousPath &&
+            acceptedBaselines.get(trackedFile.previousPath) === null &&
+            trackedFileMatchesAcceptedBaseline(trackedFile, null),
+    );
+}
+
+function trackedFileMatchesAcceptedBaseline(
+    trackedFile: AiTrackedFile,
+    baseline: string | null,
+): boolean {
+    if (baseline === null) {
+        return trackedFile.kind === "delete" || trackedFile.newText === null;
+    }
+
+    if (trackedFile.newText === null) {
+        return false;
+    }
+
+    return (
+        normalizeReviewText(getTrackedFileCurrentText(trackedFile)) ===
+        normalizeReviewText(baseline)
+    );
+}
+
 function isTrackedFileRepresented(
     trackedFiles: readonly AiTrackedFile[],
     candidate: AiTrackedFile,
@@ -5450,6 +5431,21 @@ function isModeConfigOption(option: AiSessionConfigOption): boolean {
 
 function isModelConfigOption(option: AiSessionConfigOption): boolean {
     return option.category === "model" || option.id.toLowerCase() === "model";
+}
+
+function clearRestoredSnapshotReviewState(
+    snapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    if (snapshot.trackedFiles.length === 0) {
+        return snapshot;
+    }
+
+    return {
+        ...snapshot,
+        // Persisted transcripts keep historical diffs; pending review files are
+        // intentionally only restored from live session state.
+        trackedFiles: [],
+    };
 }
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {

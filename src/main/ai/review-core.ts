@@ -573,6 +573,7 @@ async function isTrackedFileNetClean(
     readTrackedFileText: (trackedPath: string) => Promise<string | null>,
 ): Promise<boolean> {
     const diffBase = getTrackedFileDiffBase(trackedFile);
+    const currentReviewText = getTrackedFileCurrentText(trackedFile);
     if (trackedFile.previousPath) {
         const [currentText, previousText] = await Promise.all([
             readTrackedFileText(trackedFile.path),
@@ -580,25 +581,38 @@ async function isTrackedFileNetClean(
         ]);
 
         return (
-            (currentText === null ||
+            ((currentText === null ||
+                normalizeReviewText(currentText) === normalizeReviewText(diffBase)) &&
+                previousText !== null &&
+                normalizeReviewText(previousText) === normalizeReviewText(diffBase)) ||
+            (currentText !== null &&
                 normalizeReviewText(currentText) ===
-                    normalizeReviewText(diffBase)) &&
-            previousText !== null &&
-            normalizeReviewText(previousText) === normalizeReviewText(diffBase)
+                    normalizeReviewText(currentReviewText) &&
+                previousText === null)
         );
     }
 
     const currentText = await readTrackedFileText(trackedFile.path);
-    if (trackedFile.kind === "create") {
+    if (trackedFile.newText === null) {
         return (
             currentText === null ||
             normalizeReviewText(currentText) === normalizeReviewText(diffBase)
         );
     }
+    if (trackedFile.kind === "create") {
+        return (
+            currentText === null ||
+            normalizeReviewText(currentText) === normalizeReviewText(diffBase) ||
+            normalizeReviewText(currentText) ===
+                normalizeReviewText(currentReviewText)
+        );
+    }
 
     return (
         currentText !== null &&
-        normalizeReviewText(currentText) === normalizeReviewText(diffBase)
+        (normalizeReviewText(currentText) === normalizeReviewText(diffBase) ||
+            normalizeReviewText(currentText) ===
+                normalizeReviewText(currentReviewText))
     );
 }
 

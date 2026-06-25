@@ -466,6 +466,237 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
+    it("drops previously accepted native review files from later live review events", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-review-accepted-filter-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
+            const originalText = "A\nfirst accepted\nsecond pending\nZ\n";
+            const acceptedText = "A\nsecond pending\nZ\n";
+            const nextText = "A\nZ\n";
+            const acceptedFile = createTrackedFile({
+                currentText: acceptedText,
+                diffBase: originalText,
+                newText: acceptedText,
+                oldText: originalText,
+                path: "cuento.md",
+            });
+            const nextFile = createTrackedFile({
+                currentText: nextText,
+                diffBase: acceptedText,
+                identityKey: "native:session-opencode::cuento.md:2",
+                newText: nextText,
+                oldText: acceptedText,
+                path: "cuento.md",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+                version: 2,
+            });
+            const onSessionSnapshot =
+                vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
+            const nativeAi = createNativeAi({
+                keepTrackedFile: vi.fn<
+                    NonNullable<NativeAiGateway["keepTrackedFile"]>
+                >(({ context }) =>
+                    Promise.resolve({
+                        ownerWindowId: context.ownerWindowId,
+                        snapshot: {
+                            ...context.snapshot,
+                            trackedFiles: [],
+                            updatedAt: "2026-06-20T00:00:01.000Z",
+                        },
+                    }),
+                ),
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-opencode",
+                            status: "idle",
+                            trackedFiles: [acceptedFile],
+                            updatedAt: "2026-06-20T00:00:00.000Z",
+                        }),
+                ),
+            });
+            const service = createService({
+                nativeAi,
+                onSessionSnapshot,
+                projectRootPath: tempDir,
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+
+            await service.prepareSession(
+                {
+                    projectId: "project-1",
+                    runtimeId: "opencode",
+                    sessionId: "session-opencode",
+                    title: "OpenCode 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            await service.keepTrackedFile({
+                path: "cuento.md",
+                sessionId: "session-opencode",
+            });
+
+            service.handleNativeSessionEvent("window-1", {
+                conflicts: [],
+                kind: "review",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-opencode",
+                sessionId: "session-opencode",
+                trackedFiles: [acceptedFile, nextFile],
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
+
+            const latestTrackedFiles = onSessionSnapshot.mock.calls
+                .map(([, update]) =>
+                    update.kind === "snapshot"
+                        ? update.snapshot.trackedFiles
+                        : update.patch.changes.trackedFiles,
+                )
+                .findLast((trackedFiles) => trackedFiles !== undefined);
+            expect(latestTrackedFiles).toEqual([
+                expect.objectContaining({
+                    currentText: nextText,
+                    oldText: acceptedText,
+                    path: "cuento.md",
+                    reviewState: "pending",
+                }),
+            ]);
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("keeps remaining native review hunks after a partial hunk accept", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-review-partial-accept-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
+            const originalText = "A\nfirst original\nsecond original\nZ\n";
+            const acceptedPartialText = "A\nfirst accepted\nsecond original\nZ\n";
+            const finalText = "A\nfirst accepted\nsecond accepted\nZ\n";
+            const originalTrackedFile = createTrackedFile({
+                currentText: finalText,
+                diffBase: originalText,
+                newText: finalText,
+                oldText: originalText,
+                path: "cuento.md",
+            });
+            const remainingTrackedFile = createTrackedFile({
+                currentText: finalText,
+                diffBase: acceptedPartialText,
+                identityKey: "native:session-opencode::cuento.md:2",
+                newText: finalText,
+                oldText: acceptedPartialText,
+                path: "cuento.md",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+                version: 2,
+            });
+            const onSessionSnapshot =
+                vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
+            const nativeAi = createNativeAi({
+                keepTrackedFileHunks: vi.fn<
+                    NonNullable<NativeAiGateway["keepTrackedFileHunks"]>
+                >(({ context }) =>
+                    Promise.resolve({
+                        ownerWindowId: context.ownerWindowId,
+                        snapshot: {
+                            ...context.snapshot,
+                            trackedFiles: [remainingTrackedFile],
+                            updatedAt: "2026-06-20T00:00:01.000Z",
+                        },
+                    }),
+                ),
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-opencode",
+                            status: "idle",
+                            trackedFiles: [originalTrackedFile],
+                            updatedAt: "2026-06-20T00:00:00.000Z",
+                        }),
+                ),
+            });
+            const service = createService({
+                nativeAi,
+                onSessionSnapshot,
+                projectRootPath: tempDir,
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+
+            await service.prepareSession(
+                {
+                    projectId: "project-1",
+                    runtimeId: "opencode",
+                    sessionId: "session-opencode",
+                    title: "OpenCode 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            await service.keepTrackedFileHunks({
+                hunkIds: ["hunk-1"],
+                path: "cuento.md",
+                sessionId: "session-opencode",
+            });
+
+            service.handleNativeSessionEvent("window-1", {
+                conflicts: [],
+                kind: "review",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-opencode",
+                sessionId: "session-opencode",
+                trackedFiles: [remainingTrackedFile],
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
+
+            const latestTrackedFiles = onSessionSnapshot.mock.calls
+                .map(([, update]) =>
+                    update.kind === "snapshot"
+                        ? update.snapshot.trackedFiles
+                        : update.patch.changes.trackedFiles,
+                )
+                .findLast((trackedFiles) => trackedFiles !== undefined);
+            expect(latestTrackedFiles).toEqual([
+                expect.objectContaining({
+                    currentText: finalText,
+                    diffBase: acceptedPartialText,
+                    path: "cuento.md",
+                    reviewState: "pending",
+                }),
+            ]);
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("prepares OpenCode sessions with opencode acp launch details", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-service-"),
