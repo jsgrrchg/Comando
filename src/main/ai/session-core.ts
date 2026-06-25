@@ -1,5 +1,4 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 
 import {
     isSameOrInsidePath as isSameOrInsidePathIdentity,
@@ -8,14 +7,7 @@ import {
     type PathIdentityPlatform,
 } from "@shared/path-identity";
 import type {
-    ContentBlock,
-    SessionConfigOption,
-    SessionModeState,
-    SessionModelState,
-} from "@agentclientprotocol/sdk";
-import type {
     AiAvailableCommand,
-    AiImageAttachment,
     AiRuntimeId,
     AiSessionConfigOption,
     AiSessionMode,
@@ -37,9 +29,60 @@ import {
 } from "./contracts";
 
 interface AcpSessionCatalogPayload {
-    readonly configOptions?: readonly SessionConfigOption[] | null;
-    readonly modes?: SessionModeState | null;
-    readonly models?: SessionModelState | null;
+    readonly configOptions?: readonly AiRuntimeCatalogConfigOption[] | null;
+    readonly modes?: AiRuntimeModeState | null;
+    readonly models?: AiRuntimeModelState | null;
+}
+
+type AiRuntimeCatalogConfigOption =
+    | {
+          readonly category?: string | null;
+          readonly currentValue: boolean;
+          readonly description?: string | null;
+          readonly id: string;
+          readonly name: string;
+          readonly type: "boolean";
+      }
+    | {
+          readonly category?: string | null;
+          readonly currentValue: string;
+          readonly description?: string | null;
+          readonly id: string;
+          readonly name: string;
+          readonly options: readonly AiRuntimeCatalogSelectOptionEntry[];
+          readonly type: "select";
+      };
+
+type AiRuntimeCatalogSelectOptionEntry =
+    | AiRuntimeCatalogSelectOption
+    | {
+          readonly group: true;
+          readonly name: string;
+          readonly options: readonly AiRuntimeCatalogSelectOption[];
+      };
+
+interface AiRuntimeCatalogSelectOption {
+    readonly description?: string | null;
+    readonly name: string;
+    readonly value: string;
+}
+
+interface AiRuntimeModeState {
+    readonly availableModes?: readonly {
+        readonly description?: string | null;
+        readonly id: string;
+        readonly name: string;
+    }[];
+    readonly currentModeId?: string | null;
+}
+
+interface AiRuntimeModelState {
+    readonly availableModels?: readonly {
+        readonly description?: string | null;
+        readonly modelId: string;
+        readonly name: string;
+    }[];
+    readonly currentModelId?: string | null;
 }
 
 export function shouldFlushLiveSessionImmediately(
@@ -306,7 +349,7 @@ export function applyNormalizedSessionCatalogToSnapshot(
 }
 
 function mapSessionModes(
-    state: SessionModeState | null | undefined,
+    state: AiRuntimeModeState | null | undefined,
     configOptions: readonly AiSessionConfigOption[],
 ): readonly AiSessionMode[] {
     const availableModes =
@@ -323,7 +366,7 @@ function mapSessionModes(
 }
 
 function mapSessionModels(
-    state: SessionModelState | null | undefined,
+    state: AiRuntimeModelState | null | undefined,
     configOptions: readonly AiSessionConfigOption[],
 ): readonly AiSessionModel[] {
     const availableModels =
@@ -342,7 +385,7 @@ function mapSessionModels(
 }
 
 function mapSessionConfigOptions(
-    options: readonly SessionConfigOption[] | null | undefined,
+    options: readonly AiRuntimeCatalogConfigOption[] | null | undefined,
 ): readonly AiSessionConfigOption[] {
     if (!options?.length) {
         return [];
@@ -371,7 +414,7 @@ function mapSessionConfigOptions(
 }
 
 function mapSessionSelectOptions(
-    option: Extract<SessionConfigOption, { type: "select" }>,
+    option: Extract<AiRuntimeCatalogConfigOption, { type: "select" }>,
 ): readonly {
     description: string | null;
     groupLabel: string | null;
@@ -424,7 +467,7 @@ function mapConfigOptionCategory(
 }
 
 function deriveModeId(
-    state: SessionModeState | null | undefined,
+    state: AiRuntimeModeState | null | undefined,
     configOptions: readonly AiSessionConfigOption[],
     fallback: string | null,
 ): string | null {
@@ -445,7 +488,7 @@ function deriveModeId(
 }
 
 function deriveModelId(
-    state: SessionModelState | null | undefined,
+    state: AiRuntimeModelState | null | undefined,
     configOptions: readonly AiSessionConfigOption[],
     fallback: string | null,
 ): string | null {
@@ -752,141 +795,6 @@ export function setConfigOptionOnSnapshot(
     };
 }
 
-type StreamingMessageKind = "assistant" | "thinking" | "user";
-
-function appendChunkToSnapshot(
-    snapshot: AiSessionSnapshot,
-    kind: StreamingMessageKind,
-    content: string,
-    messageId: string | null,
-): AiSessionSnapshot {
-    const messages = [...snapshot.messages];
-    const lastMessage = messages.at(-1);
-    const trimmedContent = content.trim();
-
-    if (
-        kind === "user" &&
-        lastMessage?.kind === "user" &&
-        lastMessage.status === "completed" &&
-        lastMessage.content.trim() === trimmedContent
-    ) {
-        return snapshot;
-    }
-
-    if (
-        lastMessage &&
-        lastMessage.kind === kind &&
-        lastMessage.status === "streaming" &&
-        (!messageId || lastMessage.id === messageId)
-    ) {
-        messages[messages.length - 1] = {
-            ...lastMessage,
-            content: `${lastMessage.content}${content}`,
-        };
-
-        return {
-            ...snapshot,
-            messages,
-        };
-    }
-
-    return {
-        ...snapshot,
-        messages: [
-            ...finalizeStreamingMessages(snapshot).messages,
-            {
-                attachments: [],
-                content,
-                createdAt: new Date().toISOString(),
-                id: messageId ?? randomUUID(),
-                kind,
-                status: "streaming",
-            },
-        ],
-    };
-}
-
-export function appendContentBlockToSnapshot(
-    snapshot: AiSessionSnapshot,
-    kind: StreamingMessageKind,
-    content: ContentBlock,
-    messageId: string | null,
-): AiSessionSnapshot {
-    if (content.type === "image") {
-        return appendAttachmentToSnapshot(
-            snapshot,
-            kind,
-            imageContentToAttachment(content, messageId),
-            messageId,
-        );
-    }
-
-    return appendChunkToSnapshot(
-        snapshot,
-        kind,
-        formatContentBlock(content),
-        messageId,
-    );
-}
-
-function appendAttachmentToSnapshot(
-    snapshot: AiSessionSnapshot,
-    kind: StreamingMessageKind,
-    attachment: AiImageAttachment,
-    messageId: string | null,
-): AiSessionSnapshot {
-    const messages = [...snapshot.messages];
-    const lastMessage = messages.at(-1);
-
-    if (
-        lastMessage &&
-        lastMessage.kind === kind &&
-        lastMessage.status === "streaming" &&
-        (!messageId || lastMessage.id === messageId)
-    ) {
-        messages[messages.length - 1] = {
-            ...lastMessage,
-            attachments: [...lastMessage.attachments, attachment],
-        };
-
-        return {
-            ...snapshot,
-            messages,
-        };
-    }
-
-    return {
-        ...snapshot,
-        messages: [
-            ...finalizeStreamingMessages(snapshot).messages,
-            {
-                attachments: [attachment],
-                content: "",
-                createdAt: new Date().toISOString(),
-                id: messageId ?? randomUUID(),
-                kind,
-                status: "streaming",
-            },
-        ],
-    };
-}
-
-export function finalizeStreamingMessages(
-    snapshot: AiSessionSnapshot,
-): AiSessionSnapshot {
-    return {
-        ...snapshot,
-        messages: snapshot.messages.map((message) =>
-            message.status === "streaming"
-                ? {
-                      ...message,
-                      status: "completed",
-                  }
-                : message,
-        ),
-    };
-}
-
 export function buildUserInputResponsePrompt(
     turnId: string | null,
     answers: AiUserInputResponseInput["answers"],
@@ -926,22 +834,6 @@ export function summarizeUserInputAnswers(
             return `${label}: ${answer.answers.join(", ")}`;
         })
         .join("\n");
-}
-
-function formatContentBlock(content: ContentBlock): string {
-    if (content.type === "text") {
-        return content.text;
-    }
-
-    if (content.type === "image") {
-        return content.uri ?? "";
-    }
-
-    if (content.type === "resource_link") {
-        return content.uri;
-    }
-
-    return `[${content.type}]`;
 }
 
 const PILL_OPEN = "\u200B\u00AB";
@@ -984,53 +876,6 @@ export function serializeComposerPartsForDisplay(
         })
         .join("")
         .trim();
-}
-
-function imageContentToAttachment(
-    content: Extract<ContentBlock, { type: "image" }>,
-    messageId: string | null,
-): AiImageAttachment {
-    return {
-        dataBase64: content.data,
-        id: messageId ? `${messageId}:image:${randomUUID()}` : randomUUID(),
-        mimeType: content.mimeType,
-        name: null,
-        sizeBytes: estimateBase64Size(content.data),
-    };
-}
-
-export function buildPromptContentBlocks(
-    promptText: string,
-    attachments: readonly AiImageAttachment[],
-): ContentBlock[] {
-    const prompt: ContentBlock[] = [];
-
-    if (promptText) {
-        prompt.push({
-            text: promptText,
-            type: "text",
-        });
-    }
-
-    for (const attachment of attachments) {
-        prompt.push({
-            data: attachment.dataBase64,
-            mimeType: attachment.mimeType,
-            type: "image",
-        });
-    }
-
-    return prompt;
-}
-
-function estimateBase64Size(dataBase64: string): number {
-    const padding = dataBase64.endsWith("==")
-        ? 2
-        : dataBase64.endsWith("=")
-          ? 1
-          : 0;
-
-    return Math.max(0, Math.floor((dataBase64.length * 3) / 4) - padding);
 }
 
 export function getPreparedSessionStatus(

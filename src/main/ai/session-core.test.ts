@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 
-import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 import type { AiSessionSnapshot } from "@shared/ipc";
 
 import {
@@ -32,7 +31,7 @@ describe("session-core model reconciliation", () => {
                         },
                     ],
                     type: "select",
-                } as unknown as SessionConfigOption,
+                },
             ],
             models: {
                 availableModels: [
