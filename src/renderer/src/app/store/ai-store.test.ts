@@ -2415,6 +2415,72 @@ describe("ai-store queue", () => {
         ).toHaveLength(0);
     });
 
+    it("timestamps auto-dispatched queued prompts at local acceptance time", async () => {
+        vi.useFakeTimers();
+        try {
+            const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
+
+            Object.defineProperty(globalThis, "window", {
+                configurable: true,
+                value: {
+                    comando: {
+                        sendAiPrompt,
+                    },
+                },
+                writable: true,
+            });
+
+            useAiStore.getState().registerSessionTab(TAB);
+            useAiStore.getState().applySessionSnapshot(
+                createSnapshot({
+                    status: "streaming",
+                    updatedAt: "2026-04-14T00:00:00.000Z",
+                }),
+            );
+
+            vi.setSystemTime(new Date("2026-04-14T00:00:01.000Z"));
+            await useAiStore.getState().sendPrompt(TAB, "queued");
+
+            const queuedPrompt =
+                useAiStore.getState().sessions[TAB.sessionId]?.queue[0];
+            expect(queuedPrompt?.createdAt).toBe(
+                "2026-04-14T00:00:01.000Z",
+            );
+
+            vi.setSystemTime(new Date("2026-04-14T00:00:05.000Z"));
+            useAiStore.getState().applySessionSnapshot(
+                createSnapshot({
+                    status: "idle",
+                    updatedAt: "2026-04-14T00:00:05.000Z",
+                }),
+            );
+
+            await vi.waitFor(() => {
+                expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+            });
+
+            const sentInput = sendAiPrompt.mock.calls[0]?.[0] as
+                | SendAiPromptInput
+                | undefined;
+            const acceptedMessage =
+                useAiStore
+                    .getState()
+                    .sessions[TAB.sessionId]?.snapshot?.messages.find(
+                        (message) => message.id === sentInput?.messageId,
+                    ) ?? null;
+
+            expect(acceptedMessage).toEqual(
+                expect.objectContaining({
+                    content: "queued",
+                    createdAt: "2026-04-14T00:00:05.000Z",
+                    kind: "user",
+                }),
+            );
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("restores a busy automatic dispatch to its original queued position", async () => {
         const sendAiPrompt = vi
             .fn()

@@ -3144,7 +3144,7 @@ function applyLocalPromptAcceptanceToSession(
                   {
                       attachments: queuedPrompt.attachments,
                       content: getQueuedPromptDisplayContent(queuedPrompt),
-                      createdAt: queuedPrompt.createdAt,
+                      createdAt: acceptedAt,
                       id: queuedPrompt.id,
                       kind: "user",
                       status: "completed",
