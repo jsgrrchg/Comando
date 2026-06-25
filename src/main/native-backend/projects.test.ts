@@ -241,6 +241,83 @@ describe("createNativeProjectRegistryStore", () => {
         await expect(store.removeProject("project-1")).resolves.toBeUndefined();
         expect(store.listProjects()).toEqual([]);
     });
+
+    it("uses native worktree sync results as the final project worktree source", async () => {
+        const syncedWorktrees = [
+            nativeWorktree({
+                id: "project-1:primary",
+                isPrimary: true,
+                rootPath: "/tmp/project",
+            }),
+            nativeWorktree({
+                branchName: "feature/final",
+                headSha: "def456",
+                id: "worktree-final",
+                isPrimary: false,
+                rootPath: "/tmp/project-feature",
+            }),
+        ];
+        const requestMock = vi.fn(
+            (command: string, args?: Record<string, unknown>) => {
+                if (command === "project_sync_worktrees") {
+                    expect(args).toEqual({
+                        projectId: "project-1",
+                        worktrees: [
+                            {
+                                branchName: null,
+                                headSha: "abc123",
+                                rootPath: "/tmp/project",
+                            },
+                            {
+                                branchName: "feature/final",
+                                headSha: "def456",
+                                rootPath: "/tmp/project-feature",
+                            },
+                        ],
+                    });
+                    return Promise.resolve(syncedWorktrees);
+                }
+
+                return Promise.resolve(nativeState());
+            },
+        );
+        const request: NativeBackendRequester["request"] = async (...args) =>
+            (await Promise.resolve(requestMock(...args))) as never;
+        const store = await createNativeProjectRegistryStore({
+            nativeClient: { request },
+        });
+
+        await expect(
+            store.syncProjectWorktrees("project-1", [
+                {
+                    branchName: null,
+                    headSha: "abc123",
+                    rootPath: "/tmp/project",
+                },
+                {
+                    branchName: "feature/final",
+                    headSha: "def456",
+                    rootPath: "/tmp/project-feature",
+                },
+            ]),
+        ).resolves.toEqual([
+            expect.objectContaining({
+                id: "project-1:primary",
+                isPrimary: true,
+                rootPath: "/tmp/project",
+            }),
+            expect.objectContaining({
+                branchName: "feature/final",
+                id: "worktree-final",
+                isPrimary: false,
+                rootPath: "/tmp/project-feature",
+            }),
+        ]);
+        expect(store.listProjectWorktrees("project-1")).toEqual([
+            expect.objectContaining({ id: "project-1:primary" }),
+            expect.objectContaining({ id: "worktree-final" }),
+        ]);
+    });
 });
 
 function nativeAddResult() {

@@ -92,6 +92,7 @@ interface GitStoreState {
     readonly loadingHistoryContexts: Record<string, boolean>;
     readonly loadingWorktreeDiffContexts: Record<string, boolean>;
     readonly panelTabs: Record<string, GitPanelTabId>;
+    readonly projectRefreshRequestKeysByContext: Record<string, string>;
     readonly selectedBranchNames: Record<string, string | null>;
     readonly selectedBranchNamesByContext: Record<string, string | null>;
     readonly selectedCommitShas: Record<string, string | null>;
@@ -289,6 +290,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
     loadingHistoryContexts: {},
     loadingWorktreeDiffContexts: {},
     panelTabs: {},
+    projectRefreshRequestKeysByContext: {},
     selectedBranchNames: {},
     selectedBranchNamesByContext: {},
     selectedCommitShas: {},
@@ -315,26 +317,37 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         });
 
         applySnapshotState(set, projectId, snapshot);
-        void get().refreshProject(projectId, snapshot.currentWorktreeId);
         void get().refreshHistory(projectId, snapshot.currentWorktreeId);
         return snapshot;
     },
 
     commitChanges: async (input) => {
         const result = await getComandoApi().commitGitChanges(input);
+        applySnapshotState(set, input.projectId, result.snapshot);
+        const inputContextKey = getContextKey(
+            input.projectId,
+            input.worktreeId ?? null,
+        );
+        const resolvedContextKey = getContextKey(
+            input.projectId,
+            result.snapshot.currentWorktreeId ?? input.worktreeId ?? null,
+        );
         set((state) => ({
             commitMessages: {
                 ...state.commitMessages,
-                [getContextKey(input.projectId, input.worktreeId ?? null)]: "",
+                [inputContextKey]: "",
+                [resolvedContextKey]: "",
             },
             errors: {
                 ...state.errors,
-                [getContextKey(input.projectId, input.worktreeId ?? null)]:
-                    null,
+                [inputContextKey]: null,
+                [resolvedContextKey]: null,
             },
         }));
-        void get().refreshProject(input.projectId, input.worktreeId ?? null);
-        void get().refreshHistory(input.projectId, input.worktreeId ?? null);
+        void get().refreshHistory(
+            input.projectId,
+            result.snapshot.currentWorktreeId ?? input.worktreeId ?? null,
+        );
         refreshCachedWorktreeDiff(get, input.projectId, result.worktreeId);
         return {
             branchName: result.branchName,
@@ -372,7 +385,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
-        void get().refreshProject(projectId, snapshot.currentWorktreeId);
         void get().refreshHistory(projectId, snapshot.currentWorktreeId);
         return snapshot;
     },
@@ -467,7 +479,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
-        void get().refreshProject(projectId, snapshot.currentWorktreeId);
         void get().refreshHistory(projectId, snapshot.currentWorktreeId);
         return snapshot;
     },
@@ -476,18 +487,13 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         const snapshots = await Promise.all(
             projects.map(async (project) => {
                 try {
-                    const [snapshot, branches] = await Promise.all([
-                        getComandoApi().getGitRepositorySnapshot({
+                    const snapshot =
+                        await getComandoApi().getGitRepositorySnapshot({
                             projectId: project.id,
-                        }),
-                        getComandoApi().listGitBranches({
-                            includeRemote: true,
-                            projectId: project.id,
-                        }),
-                    ]);
-                    return [project.id, snapshot, branches] as const;
+                        });
+                    return [project.id, snapshot] as const;
                 } catch {
-                    return [project.id, null, []] as const;
+                    return [project.id, null] as const;
                 }
             }),
         );
@@ -504,7 +510,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
                 ...state.selectedBranchNamesByContext,
             };
 
-            for (const [projectId, snapshot, branches] of snapshots) {
+            for (const [projectId, snapshot] of snapshots) {
                 const snapshotWorktreeId =
                     snapshot?.currentWorktreeId ??
                     snapshot?.worktrees.find((worktree) => worktree.isCurrent)
@@ -515,7 +521,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
                 const contextKey = getContextKey(projectId, snapshotWorktreeId);
 
                 nextSnapshots[contextKey] = snapshot;
-                nextBranches[projectId] = branches;
+                nextBranches[projectId] = snapshot?.branches ?? [];
                 nextActiveWorktrees[projectId] = resolveSnapshotWorktreeId(
                     snapshot,
                     activeWorktreeId,
@@ -561,7 +567,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
-        void get().refreshProject(projectId, snapshot.currentWorktreeId);
         void get().refreshHistory(projectId, snapshot.currentWorktreeId);
         return snapshot;
     },
@@ -577,7 +582,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
-        void get().refreshProject(projectId, snapshot.currentWorktreeId);
         void get().refreshHistory(projectId, snapshot.currentWorktreeId);
         return snapshot;
     },
@@ -732,27 +736,21 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
 
     refreshProject: async (projectId, preferredWorktreeId = null) => {
         const contextKey = getContextKey(projectId, preferredWorktreeId);
+        const requestKey = `${Date.now()}:${Math.random()}`;
         set((state) => ({
             errors: { ...state.errors, [contextKey]: null },
             loadingContexts: { ...state.loadingContexts, [contextKey]: true },
+            projectRefreshRequestKeysByContext: {
+                ...state.projectRefreshRequestKeysByContext,
+                [contextKey]: requestKey,
+            },
         }));
 
         try {
-            const [snapshot, branches] = await Promise.all([
-                getComandoApi().getGitRepositorySnapshot({
-                    projectId,
-                    worktreeId: preferredWorktreeId,
-                }),
-                getComandoApi().listGitBranches({
-                    includeRemote: true,
-                    projectId,
-                    worktreeId: preferredWorktreeId,
-                }),
-            ]);
-
-            if (snapshot) {
-                applySnapshotState(set, projectId, snapshot);
-            }
+            const snapshot = await getComandoApi().getGitRepositorySnapshot({
+                projectId,
+                worktreeId: preferredWorktreeId,
+            });
 
             const resolvedWorktreeId =
                 snapshot?.currentWorktreeId ??
@@ -763,22 +761,53 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
                 preferredWorktreeId ??
                 null;
             const resolvedKey = getContextKey(projectId, resolvedWorktreeId);
-            set((state) => ({
-                branchesByProject: {
-                    ...state.branchesByProject,
-                    [projectId]: branches,
-                },
-                errors: {
-                    ...state.errors,
-                    [contextKey]: null,
-                    [resolvedKey]: null,
-                },
-                loadingContexts: {
-                    ...state.loadingContexts,
-                    [contextKey]: false,
-                    [resolvedKey]: false,
-                },
-            }));
+
+            const currentState = get();
+            if (
+                currentState.projectRefreshRequestKeysByContext[contextKey] !==
+                    requestKey ||
+                (resolvedKey !== contextKey &&
+                    currentState.loadingContexts[resolvedKey] === true &&
+                    currentState.projectRefreshRequestKeysByContext[
+                        resolvedKey
+                    ] !== requestKey)
+            ) {
+                return currentState.snapshots[resolvedKey] ?? null;
+            }
+
+            if (snapshot) {
+                applySnapshotState(set, projectId, snapshot);
+            }
+
+            set((state) => {
+                const nextRequestKeys = {
+                    ...state.projectRefreshRequestKeysByContext,
+                };
+                if (nextRequestKeys[contextKey] === requestKey) {
+                    delete nextRequestKeys[contextKey];
+                }
+                if (nextRequestKeys[resolvedKey] === requestKey) {
+                    delete nextRequestKeys[resolvedKey];
+                }
+
+                return {
+                    branchesByProject: {
+                        ...state.branchesByProject,
+                        [projectId]: snapshot?.branches ?? [],
+                    },
+                    errors: {
+                        ...state.errors,
+                        [contextKey]: null,
+                        [resolvedKey]: null,
+                    },
+                    loadingContexts: {
+                        ...state.loadingContexts,
+                        [contextKey]: false,
+                        [resolvedKey]: false,
+                    },
+                    projectRefreshRequestKeysByContext: nextRequestKeys,
+                };
+            });
 
             refreshCachedWorktreeDiff(
                 get,
@@ -787,19 +816,34 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             );
             return snapshot;
         } catch (error) {
-            set((state) => ({
-                errors: {
-                    ...state.errors,
-                    [contextKey]:
-                        error instanceof Error
-                            ? error.message
-                            : "Could not refresh git state.",
-                },
-                loadingContexts: {
-                    ...state.loadingContexts,
-                    [contextKey]: false,
-                },
-            }));
+            set((state) => {
+                if (
+                    state.projectRefreshRequestKeysByContext[contextKey] !==
+                    requestKey
+                ) {
+                    return {};
+                }
+
+                const nextRequestKeys = {
+                    ...state.projectRefreshRequestKeysByContext,
+                };
+                delete nextRequestKeys[contextKey];
+
+                return {
+                    errors: {
+                        ...state.errors,
+                        [contextKey]:
+                            error instanceof Error
+                                ? error.message
+                                : "Could not refresh git state.",
+                    },
+                    loadingContexts: {
+                        ...state.loadingContexts,
+                        [contextKey]: false,
+                    },
+                    projectRefreshRequestKeysByContext: nextRequestKeys,
+                };
+            });
             return null;
         }
     },
@@ -911,7 +955,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
-        void get().refreshProject(projectId, snapshot.currentWorktreeId);
         void get().refreshHistory(projectId, snapshot.currentWorktreeId);
         return snapshot;
     },
@@ -929,7 +972,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
-        void get().refreshProject(projectId, snapshot.currentWorktreeId);
         void get().refreshHistory(projectId, snapshot.currentWorktreeId);
         return snapshot;
     },
@@ -941,7 +983,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
-        void get().refreshProject(projectId, snapshot.currentWorktreeId);
         return snapshot;
     },
 
@@ -1225,6 +1266,10 @@ function applySnapshotState(
                 snapshot,
                 state.activeWorktreeIds[projectId] ?? null,
             ),
+        },
+        branchesByProject: {
+            ...state.branchesByProject,
+            [projectId]: snapshot.branches,
         },
         errors: {
             ...state.errors,

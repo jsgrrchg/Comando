@@ -104,6 +104,7 @@ function createSnapshot(
         aheadBy: 0,
         behindBy: 0,
         branch: createBranch(),
+        branches: [],
         canonicalRootPath: "/tmp/Comando",
         changedPaths: [],
         changes: [],

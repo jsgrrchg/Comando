@@ -28,6 +28,7 @@ import {
     buildHierarchicalGitTreeNodesFromProjectEntries,
     findProjectTreeNodeByPath,
 } from "./app/projects/git-tree";
+import { createGitProjectRefreshScheduler } from "./app/git/refresh-scheduler";
 import {
     reconcileFileTreeSelection,
     resolveActiveFileTreePath,
@@ -693,33 +694,44 @@ export function App() {
             return;
         }
 
+        const resolvePreferredWorktreeId = (
+            projectId: string,
+            worktreeId: string | null,
+        ): string | null =>
+            worktreeId ??
+            useGitStore.getState().activeWorktreeIds[projectId] ??
+            null;
+        const projectRefreshScheduler = createGitProjectRefreshScheduler({
+            refreshProject: (projectId, worktreeId) => {
+                void refreshGitProject(projectId, worktreeId);
+            },
+        });
+
         const unsubscribeInvalidation = comandoApi.onGitRepositoryInvalidated(
             (payload) => {
-                const preferredWorktreeId =
-                    payload.worktreeId ??
-                    useGitStore.getState().activeWorktreeIds[
-                        payload.projectId
-                    ] ??
-                    null;
-                void refreshGitProject(payload.projectId, preferredWorktreeId);
+                const preferredWorktreeId = resolvePreferredWorktreeId(
+                    payload.projectId,
+                    payload.worktreeId,
+                );
+                projectRefreshScheduler.schedule(
+                    payload.projectId,
+                    preferredWorktreeId,
+                );
                 void refreshGitHistory(payload.projectId, preferredWorktreeId);
             },
         );
         const unsubscribeSnapshot = comandoApi.onGitRepositorySnapshotUpdated(
             (snapshot) => {
+                projectRefreshScheduler.cancel(
+                    snapshot.projectId,
+                    snapshot.currentWorktreeId,
+                );
+                projectRefreshScheduler.cancel(snapshot.projectId, null);
                 ingestGitSnapshot(snapshot);
             },
         );
         const unsubscribeWorktrees = comandoApi.onGitWorktreesUpdated(
             (payload) => {
-                const preferredWorktreeId =
-                    payload.worktreeId ??
-                    useGitStore.getState().activeWorktreeIds[
-                        payload.projectId
-                    ] ??
-                    null;
-                void refreshGitProject(payload.projectId, preferredWorktreeId);
-                void refreshGitHistory(payload.projectId, preferredWorktreeId);
                 void comandoApi.refreshAiProjectScopes(payload.projectId);
             },
         );
@@ -728,6 +740,7 @@ export function App() {
             unsubscribeInvalidation();
             unsubscribeSnapshot();
             unsubscribeWorktrees();
+            projectRefreshScheduler.clear();
         };
     }, [ingestGitSnapshot, refreshGitHistory, refreshGitProject]);
 

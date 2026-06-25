@@ -231,6 +231,7 @@ class NativeWriteProjectStore implements ProjectStore {
         );
         const synced = nativeWorktrees.map(nativeWorktreeSummaryToStoreWorktree);
         await this.#refresh();
+        this.#cache.replaceProjectWorktrees(projectId, synced);
         return synced;
     }
 
@@ -316,6 +317,24 @@ class ProjectStateCache {
                 return worktree ? [worktree] : [];
             },
         );
+    }
+
+    replaceProjectWorktrees(
+        projectId: string,
+        worktrees: readonly ProjectStoreWorktreeRecord[],
+    ): void {
+        for (const worktreeId of this.#worktreeIdsByProjectId.get(projectId) ??
+            []) {
+            this.#worktreesById.delete(worktreeId);
+        }
+
+        this.#worktreeIdsByProjectId.set(
+            projectId,
+            worktrees.map((worktree) => worktree.id),
+        );
+        for (const worktree of worktrees) {
+            this.#worktreesById.set(worktree.id, worktree);
+        }
     }
 
     removeProject(projectId: string): void {

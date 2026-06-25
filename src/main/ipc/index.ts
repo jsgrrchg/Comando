@@ -840,6 +840,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             return {
                 branchName: snapshot.branch?.name ?? null,
                 commitSha: result.commitSha,
+                snapshot,
                 updatedAt: snapshot.updatedAt,
                 worktreeId: snapshot.currentWorktreeId,
             };
@@ -2378,6 +2379,7 @@ async function adaptRepositorySnapshot(
         aheadBy,
         behindBy,
         branch: currentBranch,
+        branches,
         canonicalRootPath: scope.canonicalRootPath,
         changedPaths: snapshot.status.entries.map(
             (entry) => entry.relativePath,

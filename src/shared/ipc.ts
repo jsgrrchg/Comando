@@ -841,6 +841,7 @@ export interface GitRepositorySnapshot {
     readonly aheadBy: number;
     readonly behindBy: number;
     readonly branch: GitBranchSummary | null;
+    readonly branches: readonly GitBranchSummary[];
     readonly canonicalRootPath: string;
     readonly changedPaths: readonly string[];
     readonly changes: readonly GitChangeEntry[];
@@ -962,6 +963,7 @@ export interface GitCommitInput extends GitRepositoryScopeInput {
 export interface GitCommitResult {
     readonly branchName: string | null;
     readonly commitSha: string;
+    readonly snapshot: GitRepositorySnapshot;
     readonly updatedAt: string;
     readonly worktreeId: string | null;
 }

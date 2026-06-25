@@ -924,6 +924,7 @@ function createGitSnapshot(
         aheadBy: 0,
         behindBy: 0,
         branch: null,
+        branches: [],
         canonicalRootPath: "/workspace/comando",
         changedPaths,
         changes: changedPaths.map((path) => ({
