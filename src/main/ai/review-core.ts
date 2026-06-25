@@ -58,6 +58,7 @@ interface AiReviewPathContext {
 
 interface AiReviewRuntimeDiff {
     readonly _meta?: unknown;
+    readonly hunks?: readonly AiDiffHunk[];
     readonly newText: string;
     readonly oldText?: string | null;
     readonly path: string;
@@ -1138,6 +1139,33 @@ export function resolveDiffToFullTexts(
                 newText: resolvedAlreadyApplied.newText,
             };
         }
+
+        const resolvedCurrentSnippet = resolveAlreadyAppliedCurrentSnippetDiff(
+            { newText: newSnippet, oldText: oldSnippet },
+            base,
+        );
+        if (resolvedCurrentSnippet) {
+            return {
+                ...diff,
+                oldText: resolvedCurrentSnippet.oldText,
+                newText: resolvedCurrentSnippet.newText,
+            };
+        }
+
+        const resolvedDeletionHunk = resolveAlreadyAppliedDeletionHunkDiff(
+            {
+                hunks: diff.hunks,
+                oldText: oldSnippet,
+            },
+            base,
+        );
+        if (resolvedDeletionHunk) {
+            return {
+                ...diff,
+                oldText: resolvedDeletionHunk.oldText,
+                newText: resolvedDeletionHunk.newText,
+            };
+        }
     }
 
     if (first === -1 || first !== base.lastIndexOf(oldSnippet)) {
@@ -1166,4 +1194,80 @@ export function resolveDiffToFullTexts(
         base.slice(first + oldSnippet.length);
 
     return { ...diff, oldText: canonicalOldText, newText: spliced };
+}
+
+function resolveAlreadyAppliedCurrentSnippetDiff(
+    diff: { readonly newText: string; readonly oldText: string },
+    base: string,
+): { readonly newText: string; readonly oldText: string } | null {
+    if (diff.oldText.length === 0 || diff.newText.length === 0) {
+        return null;
+    }
+
+    const first = base.indexOf(diff.newText);
+    if (first === -1 || first !== base.lastIndexOf(diff.newText)) {
+        return null;
+    }
+
+    return {
+        oldText:
+            base.slice(0, first) +
+            diff.oldText +
+            base.slice(first + diff.newText.length),
+        newText: base,
+    };
+}
+
+function resolveAlreadyAppliedDeletionHunkDiff(
+    diff: {
+        readonly hunks?: readonly AiDiffHunk[];
+        readonly oldText: string;
+    },
+    base: string,
+): { readonly newText: string; readonly oldText: string } | null {
+    if (diff.oldText.length === 0 || !diff.hunks || diff.hunks.length !== 1) {
+        return null;
+    }
+
+    const [hunk] = diff.hunks;
+    if (!hunk || hunk.newCount !== 0 || hunk.oldCount === 0) {
+        return null;
+    }
+
+    const insertionOffset = lineStartOffset(base, hunk.newStart);
+    if (insertionOffset === null) {
+        return null;
+    }
+
+    const insertedText =
+        diff.oldText.endsWith("\n") || insertionOffset === base.length
+            ? diff.oldText
+            : `${diff.oldText}\n`;
+
+    return {
+        oldText:
+            base.slice(0, insertionOffset) +
+            insertedText +
+            base.slice(insertionOffset),
+        newText: base,
+    };
+}
+
+function lineStartOffset(text: string, lineNumber: number): number | null {
+    if (lineNumber < 1) {
+        return null;
+    }
+    if (lineNumber === 1) {
+        return 0;
+    }
+
+    let offset = 0;
+    for (let line = 1; line < lineNumber; line += 1) {
+        const next = text.indexOf("\n", offset);
+        if (next === -1) {
+            return line === lineNumber - 1 ? text.length : null;
+        }
+        offset = next + 1;
+    }
+    return offset;
 }

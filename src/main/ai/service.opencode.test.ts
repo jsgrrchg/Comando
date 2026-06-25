@@ -2388,6 +2388,156 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
+    it("expands native pure deletion tool diffs before creating pending review", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-native-snippet-review-"),
+        );
+        try {
+            const editedPath = path.join(tempDir, "cuento.md");
+            const originalContent = "titulo\nantes\nborrar uno\ndespues\nfinal\n";
+            const nextContent = "titulo\nantes\ndespues\nfinal\n";
+            fs.writeFileSync(editedPath, originalContent, "utf8");
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            const onSessionSnapshot =
+                vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
+            const recordReviewDiffs = vi.fn<
+                NonNullable<NativeAiGateway["recordReviewDiffs"]>
+            >(() => Promise.resolve([]));
+            const nativeAi = createNativeAi({
+                captureReviewBaseline: vi.fn(() => Promise.resolve(false)),
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-opencode",
+                            status: "idle",
+                            updatedAt: "2026-06-20T00:00:00.000Z",
+                        }),
+                ),
+                recordReviewDiffs,
+                sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
+                    Promise.resolve({
+                        sessionId: input.sessionId,
+                        stopReason: "accepted",
+                    }),
+                ),
+            });
+            const service = createService({
+                nativeAi,
+                onSessionSnapshot,
+                projectRootPath: tempDir,
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+
+            await service.sendPrompt(
+                {
+                    additionalRoots: [],
+                    attachments: [],
+                    messageId: "user-message-1",
+                    projectId: "project-1",
+                    prompt: "Edit the file.",
+                    runtimeId: "opencode",
+                    sessionId: "session-opencode",
+                    title: "OpenCode 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+
+            fs.writeFileSync(editedPath, nextContent, "utf8");
+            service.handleNativeSessionEvent("window-1", {
+                activity: {
+                    createdAt: "2026-06-20T00:00:01.000Z",
+                    diffs: [
+                        {
+                            hunks: [
+                                {
+                                    id: "cuento.md:2:2:0",
+                                    lines: [],
+                                    newCount: 0,
+                                    newStart: 3,
+                                    oldCount: 1,
+                                    oldStart: 3,
+                                    visualEndLine: 3,
+                                    visualStartLine: 2,
+                                },
+                            ],
+                            isText: true,
+                            kind: "update",
+                            newText: "",
+                            oldText: "borrar uno",
+                            path: editedPath,
+                            previousPath: null,
+                            reversible: true,
+                        },
+                    ],
+                    exitCode: 0,
+                    id: "tool-edit-1",
+                    kind: "edit",
+                    locations: [],
+                    rawInputJson: null,
+                    rawOutputJson: null,
+                    sessionId: "session-opencode",
+                    status: "completed",
+                    summary: "Edited cuento.md",
+                    terminalOutput: null,
+                    title: "Edited cuento.md",
+                    updatedAt: "2026-06-20T00:00:01.000Z",
+                },
+                kind: "tool-activity",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-opencode",
+                sessionId: "session-opencode",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            });
+
+            const latestTrackedFiles = onSessionSnapshot.mock.calls
+                .map(([, update]) =>
+                    update.kind === "snapshot"
+                        ? update.snapshot.trackedFiles
+                        : update.patch.changes.trackedFiles,
+                )
+                .findLast((trackedFiles) => trackedFiles !== undefined);
+            expect(latestTrackedFiles).toEqual([
+                expect.objectContaining({
+                    currentText: nextContent,
+                    diffBase: originalContent,
+                    newText: nextContent,
+                    oldText: originalContent,
+                    path: "cuento.md",
+                    reviewState: "pending",
+                }),
+            ]);
+            expect(recordReviewDiffs).toHaveBeenCalledWith({
+                diffs: [
+                    expect.objectContaining({
+                        isText: true,
+                        newText: nextContent,
+                        oldText: originalContent,
+                        path: "cuento.md",
+                        previousPath: null,
+                    }),
+                ],
+                reviewRoot: tempDir,
+                sessionId: "session-opencode",
+                toolCallId: "tool-edit-1",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            });
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("records flushed subagent tool diffs with inherited native review context", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-review-subagent-diff-"),

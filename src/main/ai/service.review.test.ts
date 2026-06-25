@@ -609,6 +609,61 @@ describe("resolveDiffToFullTexts", () => {
         expect(resolved.newText).toBe(nextContent);
     });
 
+    it("reconstructs full texts when an anchored snippet was already applied", () => {
+        const originalContent =
+            "title\nbefore\nremove one\nremove two\nafter\nfooter\n";
+        const nextContent = "title\nbefore\nafter\nfooter\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                path: "foo.ts",
+                oldText: "before\nremove one\nremove two\nafter\n",
+                newText: "before\nafter\n",
+            },
+            undefined,
+            liveSession,
+            "foo.ts",
+        );
+
+        expect(resolved.oldText).toBe(originalContent);
+        expect(resolved.newText).toBe(nextContent);
+    });
+
+    it("reconstructs full texts for an already-applied pure deletion hunk", () => {
+        const originalContent = "alpha\nbeta\ngamma\n";
+        const nextContent = "alpha\ngamma\n";
+        const absolutePath = path.join(tempDir, "foo.ts");
+        fs.writeFileSync(absolutePath, nextContent, "utf8");
+        const liveSession = { cwd: tempDir, projectRoot: tempDir };
+
+        const resolved = __testing.resolveDiffToFullTexts(
+            {
+                hunks: [
+                    {
+                        id: "foo.ts:2:2:0",
+                        lines: [],
+                        newCount: 0,
+                        newStart: 2,
+                        oldCount: 1,
+                        oldStart: 2,
+                    },
+                ],
+                path: "foo.ts",
+                oldText: "beta",
+                newText: "",
+            },
+            undefined,
+            liveSession,
+            "foo.ts",
+        );
+
+        expect(resolved.oldText).toBe(originalContent);
+        expect(resolved.newText).toBe(nextContent);
+    });
+
     it("uses OpenCode filediff patches when a snippet diff was already applied externally", () => {
         const originalContent = "alpha\nbeta\nremove me\nomega\n";
         const nextContent = "alpha\nbeta\nomega\n";

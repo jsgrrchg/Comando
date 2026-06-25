@@ -2857,6 +2857,7 @@ export class AiService {
         };
         let trackedFiles = snapshot.trackedFiles;
         const nativeDiffs: AiFileDiff[] = [];
+        const rawOutput = parseToolActivityJson(activity.rawOutputJson);
         for (const diff of activity.diffs) {
             const normalizedDiff = normalizeAiFileDiffPaths(
                 diff,
@@ -2865,9 +2866,39 @@ export class AiService {
             if (!normalizedDiff) {
                 continue;
             }
+            const existingTrackedFile = findTrackedFileForReviewPath(
+                trackedFiles,
+                normalizedDiff.path,
+            );
+            const fullTextDiff: AiFileDiff =
+                normalizedDiff.newText === null
+                    ? normalizedDiff
+                    : {
+                          ...normalizedDiff,
+                          ...resolveDiffToFullTexts(
+                              {
+                                  hunks: normalizedDiff.hunks,
+                                  newText: normalizedDiff.newText,
+                                  oldText: normalizedDiff.oldText,
+                                  path: normalizedDiff.path,
+                              },
+                              existingTrackedFile ?? undefined,
+                              {
+                                  cwd: reviewContext.cwd,
+                                  projectRoot,
+                              },
+                              normalizedDiff.path,
+                              {
+                                  meta: null,
+                                  rawOutput,
+                                  sessionUpdate: "tool_call_update",
+                                  toolCallId: activity.id,
+                              },
+                          ),
+                      };
             const reviewDiff = this.#applyAcceptedReviewBaselineToDiff(
                 snapshot.sessionId,
-                normalizedDiff,
+                fullTextDiff,
             );
             if (!reviewDiff) {
                 continue;
@@ -4455,6 +4486,18 @@ function isTerminalNativeReviewActivityStatus(
     status: AiToolActivity["status"],
 ): boolean {
     return status === "completed" || status === "failed";
+}
+
+function parseToolActivityJson(value: string | null): unknown {
+    if (value === null) {
+        return undefined;
+    }
+    try {
+        return JSON.parse(value);
+    } catch (error) {
+        debugBenignError("ai.service.toolActivityJson", error);
+        return undefined;
+    }
 }
 
 function normalizeSessionStatusTitle(
