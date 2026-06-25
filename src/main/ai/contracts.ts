@@ -1,18 +1,4 @@
 import type {
-    ChildProcess,
-    ChildProcessWithoutNullStreams,
-} from "node:child_process";
-
-import type {
-    ClientSideConnection,
-    LoadSessionResponse,
-    NewSessionResponse,
-    RequestPermissionResponse,
-    SessionNotification,
-    TerminalExitStatus,
-} from "@agentclientprotocol/sdk";
-import type {
-    AiPermissionRequest,
     AiPermissionResponseInput,
     AiHistorySessionSummary,
     AiFileDiff,
@@ -274,75 +260,6 @@ export interface AiReviewSessionRpcInput<TInput> {
     readonly input: TInput;
 }
 
-export interface LiveAcpConnection {
-    appSessionIdByRuntimeSessionId: Map<string, string>;
-    child: ChildProcessWithoutNullStreams;
-    closing: boolean;
-    connection: ClientSideConnection;
-    connectionId: string;
-    ownerWindowId: string;
-    pendingSessionUpdatesByRuntimeSessionId: Map<string, SessionNotification[]>;
-    persistedSubagentMappingsByRuntimeSessionId: Map<
-        string,
-        AiRuntimeSessionMapping
-    >;
-    resolvedRuntime: ResolvedAcpRuntime;
-    runtimeId: AiRuntimeId;
-    sessionsByAppSessionId: Map<string, LiveAcpSession>;
-    stderrChunks: string[];
-    stderrHandler: ((chunk: Buffer | string) => void) | null;
-}
-
-export interface LiveAcpSession {
-    additionalRoots: readonly string[];
-    activeTurnId: string | null;
-    child: ChildProcessWithoutNullStreams;
-    closing: boolean;
-    connection: ClientSideConnection;
-    cwd: string;
-    desiredSelections: AiDesiredSelections;
-    isRestoring: boolean;
-    ownerWindowId: string;
-    pendingPermissions: Map<
-        string,
-        {
-            readonly request: AiPermissionRequest;
-            readonly resolve: (response: RequestPermissionResponse) => void;
-        }
-    >;
-    pendingPermission: {
-        readonly requestId: string;
-        readonly resolve: (response: RequestPermissionResponse) => void;
-    } | null;
-    pendingAdditionalRoots: readonly string[] | null;
-    pendingLaunch: AiSessionLaunchInput | null;
-    pendingPersistTimer: ReturnType<typeof setTimeout> | null;
-    preEditSnapshots: Map<string, string>;
-    processedDiffPaths: Map<string, Set<string>>;
-    projectRoot: string | null;
-    resolvedRuntime: ResolvedAcpRuntime;
-    runtimeConnection: LiveAcpConnection;
-    runtimeId: AiRuntimeId;
-    snapshot: AiSessionSnapshot;
-    terminals: Map<string, LiveAcpTerminal>;
-    terminalOutputBuffers: Map<string, string>;
-    lastBroadcastSnapshot: AiSessionSnapshot | null;
-    stderrChunks: string[];
-    stderrHandler: ((chunk: Buffer | string) => void) | null;
-}
-
-export interface LiveAcpTerminal {
-    child: ChildProcess;
-    commandLine: string;
-    cwd: string;
-    exitStatus: TerminalExitStatus | null;
-    output: string;
-    outputByteLimit: number;
-    released: boolean;
-    truncated: boolean;
-    waiters: Set<(status: TerminalExitStatus) => void>;
-}
-
 export interface ResolvedAcpRuntime {
     readonly args: readonly string[];
     readonly authHandshake?: {
@@ -356,14 +273,6 @@ export interface ResolvedAcpRuntime {
     readonly status: AiRuntimeStatus;
 }
 
-export type AcpSessionCatalogPayload = Pick<
-    LoadSessionResponse | NewSessionResponse,
-    "configOptions" | "models" | "modes"
->;
-
-export interface OpenRuntimeSessionResult extends AcpSessionCatalogPayload {
-    readonly runtimeSessionId: string;
-}
 
 export type SessionDescriptor = Pick<
     PrepareAiSessionInput,

@@ -5,6 +5,7 @@ import type {
     AiSessionConfigOption,
     AiSessionSnapshot,
     AiSessionUpdate,
+    AiTrackedFile,
 } from "@shared/ipc";
 
 import type { NativeAiGateway } from "./contracts";
@@ -956,6 +957,67 @@ describe("AiService prepareSession", () => {
             desiredSelections?.configOptions.find((option) => option.id === "model")
                 ?.value,
         ).toBe("gpt-5.5");
+    });
+
+    it("does not restore persisted review files before native prepare", async () => {
+        const pendingFile: AiTrackedFile = {
+            currentText: "export const value = 2;\n",
+            diffBase: "export const value = 1;\n",
+            hunks: [],
+            identityKey: "native:session-1::src-app.ts",
+            isText: true,
+            kind: "update",
+            newText: "export const value = 2;\n",
+            oldText: "export const value = 1;\n",
+            path: "src-app.ts",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session-1",
+            toolCallId: null,
+            updatedAt: "2026-06-20T00:00:00.000Z",
+            version: 1,
+        };
+        const persistedSnapshot = createSnapshot({
+            projectId: "project-1",
+            trackedFiles: [pendingFile],
+        });
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+            ({ launch }) =>
+                Promise.resolve({
+                    ...launch.persistedSnapshot,
+                    runtimeSessionId: "runtime-session-1",
+                    status: "idle",
+                    updatedAt: "2026-06-20T00:00:01.000Z",
+                }),
+        );
+        const keepTrackedFile = vi.fn<
+            NonNullable<NativeAiGateway["keepTrackedFile"]>
+        >();
+        const nativeAi = createNativeAi({
+            keepTrackedFile,
+            loadSessionSnapshot: vi.fn(() => Promise.resolve(persistedSnapshot)),
+            prepareSession,
+        });
+        const service = createPrepareService({ nativeAi });
+
+        const snapshot = await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        expect(snapshot.trackedFiles).toEqual([]);
+        expect(
+            prepareSession.mock.calls[0]?.[0].launch.persistedSnapshot
+                .trackedFiles,
+        ).toEqual([]);
+        expect(keepTrackedFile).not.toHaveBeenCalled();
     });
 });
 

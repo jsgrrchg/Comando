@@ -1,14 +1,5 @@
 import path from "node:path";
 import fs from "node:fs";
-import { spawn } from "node:child_process";
-import { Readable, Writable } from "node:stream";
-
-import {
-    ClientSideConnection,
-    PROTOCOL_VERSION,
-    ndJsonStream,
-    type Client,
-} from "@agentclientprotocol/sdk";
 import type {
     AiHistorySessionSummary,
     AiFileDiff,
@@ -66,7 +57,6 @@ import type {
     SecretStoreGateway,
 } from "@main/ai/secret-store";
 import { debugBenignError } from "@main/observability/logging";
-import { prepareCommandForSpawn } from "@main/shell/command-launch";
 
 import {
     createEmptyAiSessionSnapshot,
@@ -74,7 +64,7 @@ import {
     type PersistedRuntimeCatalogSnapshot,
 } from "./persistence";
 import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
-import { listOpenFileBuffers, readOpenFileBuffer } from "./openFileBuffers";
+import { listOpenFileBuffers } from "./openFileBuffers";
 import {
     type AiReviewMutationResult,
     type AiReviewSessionContext,
@@ -96,7 +86,6 @@ import {
     buildAiSessionUpdate,
     getModeConfigOption,
     getModelConfigOption,
-    getRecentStderrText,
     getRuntimeDisplayName,
     hasSelectConfigValue,
     isPathInsideRoot,
@@ -114,8 +103,6 @@ import {
     diffToAiFileDiff,
     normalizeTrackedDiffPath,
     parseCompleteNumberedFileOutput,
-    readTextIfExists,
-    reconcilePendingTrackedFiles,
     resolveDiffToFullTexts,
     shouldSuppressToolActivityUpdate,
 } from "./review-core";
@@ -124,7 +111,6 @@ import { resolveCodexRuntime } from "./resolver/runtime-resolver";
 import {
     applyCodexAuthEnv,
     buildCodexSecretPatches,
-    getCodexAuthMethods,
     getCodexRuntimeStatus,
     isCodexAuthenticationError,
     type CodexSecretBundle,
@@ -158,7 +144,6 @@ import {
     launchGrokLogin,
     loadGrokSecretBundle,
     markGrokAuthInvalidated,
-    probeGrokCachedTokenAuth,
     resolveGrokRuntime,
 } from "./grok/setup";
 import {
@@ -170,14 +155,6 @@ import {
     markOpenCodeAuthInvalidated,
     resolveOpenCodeRuntime,
 } from "./opencode/setup";
-
-function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
-    return Writable.toWeb(stream) as WritableStream<Uint8Array>;
-}
-
-function toWebByteReadable(stream: Readable): ReadableStream<Uint8Array> {
-    return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
-}
 
 type LiveSessionContext = {
     readonly additionalRoots: readonly string[];
@@ -455,6 +432,11 @@ export class AiService {
         string,
         RecentNativeReviewContext
     >();
+    readonly #acceptedReviewBaselines = new Map<
+        string,
+        Map<string, string | null>
+    >();
+    readonly #reviewMutationChains = new Map<string, Promise<void>>();
     readonly #nativeReviewReconciliations = new Set<string>();
     readonly #nativeSessionIds = new Set<string>();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
@@ -507,6 +489,8 @@ export class AiService {
         });
         this.#nativeReviewBaselines.clear();
         this.#recentNativeReviewContexts.clear();
+        this.#acceptedReviewBaselines.clear();
+        this.#reviewMutationChains.clear();
         this.#nativeReviewReconciliations.clear();
         this.#nativeSessionIds.clear();
         this.#pendingNativeCatalogPatches.clear();
@@ -766,13 +750,9 @@ export class AiService {
             return status;
         }
 
-        const resolvedStatus = this.#withPersistedRuntimeCatalog(
+        const status = this.#withPersistedRuntimeCatalog(
             this.#resolveRuntimeStatus(runtimeId),
         );
-        const status =
-            runtimeId === "grok"
-                ? await this.#resolveGrokRuntimeStatusWithProbe(resolvedStatus)
-                : resolvedStatus;
         this.#onRuntimeStatus(status);
         return status;
     }
@@ -1094,9 +1074,7 @@ export class AiService {
         const persistedSnapshot =
             await this.#loadPersistedSessionSnapshot(sessionId);
         return persistedSnapshot
-            ? this.#hydrateSnapshotRuntimeCatalog(
-                  await this.#reconcilePersistedTrackedFiles(persistedSnapshot),
-              )
+            ? this.#hydrateSnapshotRuntimeCatalog(persistedSnapshot)
             : null;
     }
 
@@ -1244,6 +1222,7 @@ export class AiService {
         input: SendAiPromptInput,
         ownerWindowId: string,
     ): Promise<AiPromptResult> {
+        await this.#waitForReviewMutations(input.sessionId);
         const launch = await this.#buildNativeSessionLaunchInput(
             input,
             ownerWindowId,
@@ -1568,6 +1547,7 @@ export class AiService {
     async launchRuntimeAuth(input: AiRuntimeAuthLaunchInput): Promise<void> {
         const nativeAi = this.#nativeAuthGateway(input.runtimeId);
         if (nativeAi?.launchRuntimeAuth) {
+            await this.#migrateNativeRuntimeSettingsIfNeeded(input.runtimeId);
             await nativeAi.launchRuntimeAuth(input);
             return;
         }
@@ -1691,66 +1671,8 @@ export class AiService {
             return;
         }
 
-        const currentSettings = this.#settingsService.loadCodexRuntimeSettings();
-        const authMethod = getCodexAuthMethods().some(
-            (method) => method.id === input.methodId,
-        )
-            ? (input.methodId as CodexRuntimeSettings["authMethod"])
-            : null;
-
-        if (authMethod === null) {
-            throw new Error(
-                "Choose a valid Codex login method before opening authentication.",
-            );
-        }
-
-        const nextSettings = {
-            ...currentSettings,
-            authMethod,
-        } satisfies CodexRuntimeSettings;
-        await this.#runRuntimeAuthConnection(
-            "codex",
-            cwd,
-            async (connection) => {
-                const initializeResponse = await connection.initialize({
-                    clientCapabilities: {
-                        fs: {
-                            readTextFile: true,
-                            writeTextFile: true,
-                        },
-                    },
-                    clientInfo: {
-                        name: "comando",
-                        title: "Comando",
-                        version: process.versions.electron,
-                    },
-                    protocolVersion: PROTOCOL_VERSION,
-                });
-
-                const advertisedMethods =
-                    initializeResponse.authMethods?.map((method) => method.id) ??
-                    [];
-                if (!advertisedMethods.includes(authMethod)) {
-                    throw new Error(
-                        `Codex does not support the authentication method \`${authMethod}\` on this machine.`,
-                    );
-                }
-
-                await connection.authenticate({
-                    methodId: authMethod,
-                });
-            },
-            nextSettings,
-        );
-
-        await this.#saveCodexAuthSettings(nextSettings, []);
-        this.#onRuntimeStatus(
-            this.#withPersistedRuntimeCatalog(
-                getCodexRuntimeStatus(
-                    nextSettings,
-                    loadCodexSecretBundle(this.#secretStore),
-                ),
-            ),
+        throw new Error(
+            "Codex authentication requires the native AI runtime gateway.",
         );
     }
 
@@ -1759,6 +1681,7 @@ export class AiService {
     ): Promise<AiRuntimeStatus> {
         const nativeAi = this.#nativeAuthGateway(input.runtimeId);
         if (nativeAi?.logoutRuntimeAuth) {
+            await this.#migrateNativeRuntimeSettingsIfNeeded(input.runtimeId);
             const status = await nativeAi.logoutRuntimeAuth(input);
             this.#onRuntimeStatus(status);
             return status;
@@ -1770,63 +1693,9 @@ export class AiService {
             );
         }
 
-        const currentSettings =
-            this.#settingsService.loadCodexRuntimeSettings();
-        if (currentSettings.authMethod !== "chatgpt") {
-            throw new Error(
-                "Codex provider logout is only available for ChatGPT login. Use Disconnect from Comando to clear local API keys.",
-            );
-        }
-
-        await this.#runRuntimeAuthConnection(
-            "codex",
-            process.cwd(),
-            async (connection) => {
-                const initializeResponse = await connection.initialize({
-                    clientCapabilities: {
-                        fs: {
-                            readTextFile: true,
-                            writeTextFile: true,
-                        },
-                    },
-                    clientInfo: {
-                        name: "comando",
-                        title: "Comando",
-                        version: process.versions.electron,
-                    },
-                    protocolVersion: PROTOCOL_VERSION,
-                });
-
-                if (!initializeResponse.agentCapabilities?.auth?.logout) {
-                    throw new Error(
-                        "Codex does not advertise logout support on this machine.",
-                    );
-                }
-
-                await connection.unstable_logout({});
-            },
+        throw new Error(
+            "Codex logout requires the native AI runtime gateway.",
         );
-
-        const secretPatch = buildCodexSecretPatches(this.#secretStore, {
-            codexApiKey: null,
-            openaiApiKey: null,
-        });
-        const nextSettings = {
-            ...currentSettings,
-            authMethod: null,
-            hasCodexApiKey: secretPatch.flags.hasCodexApiKey,
-            hasOpenAiApiKey: secretPatch.flags.hasOpenAiApiKey,
-        } satisfies CodexRuntimeSettings;
-        await this.#saveCodexAuthSettings(nextSettings, secretPatch.patches);
-
-        const status = this.#withPersistedRuntimeCatalog(
-            getCodexRuntimeStatus(
-                nextSettings,
-                loadCodexSecretBundle(this.#secretStore),
-            ),
-        );
-        this.#onRuntimeStatus(status);
-        return status;
     }
 
     async disconnectRuntimeAuth(
@@ -1834,6 +1703,7 @@ export class AiService {
     ): Promise<AiRuntimeStatus> {
         const nativeAi = this.#nativeAuthGateway(input.runtimeId);
         if (nativeAi?.disconnectRuntimeAuth) {
+            await this.#migrateNativeRuntimeSettingsIfNeeded(input.runtimeId);
             const status = await nativeAi.disconnectRuntimeAuth(input);
             this.#onRuntimeStatus(status);
             return status;
@@ -2228,6 +2098,8 @@ export class AiService {
         this.#freezingSessionIds.delete(sessionId);
         this.#nativeReviewBaselines.delete(sessionId);
         this.#recentNativeReviewContexts.delete(sessionId);
+        this.#acceptedReviewBaselines.delete(sessionId);
+        this.#reviewMutationChains.delete(sessionId);
         this.#nativeReviewReconciliations.delete(sessionId);
         this.#nativeSessionIds.delete(sessionId);
         this.#scheduleSessionRetentionTimer();
@@ -2986,12 +2858,25 @@ export class AiService {
         let trackedFiles = snapshot.trackedFiles;
         const nativeDiffs: AiFileDiff[] = [];
         for (const diff of activity.diffs) {
-            const trackedFile = trackedFileFromToolActivityDiff(
+            const normalizedDiff = normalizeAiFileDiffPaths(
                 diff,
+                normalizeDiffPath,
+            );
+            if (!normalizedDiff) {
+                continue;
+            }
+            const reviewDiff = this.#applyAcceptedReviewBaselineToDiff(
+                snapshot.sessionId,
+                normalizedDiff,
+            );
+            if (!reviewDiff) {
+                continue;
+            }
+            const trackedFile = trackedFileFromToolActivityDiff(
+                reviewDiff,
                 snapshot.sessionId,
                 activity.id,
                 activity.updatedAt,
-                normalizeDiffPath,
             );
             if (!trackedFile) {
                 continue;
@@ -3055,10 +2940,34 @@ export class AiService {
         previousSnapshot: AiSessionSnapshot,
     ): readonly AiTrackedFile[] {
         return preserveFallbackTrackedFiles(
-            nativeTrackedFiles,
+            this.#filterAcceptedNativeReviewTrackedFiles(
+                previousSnapshot.sessionId,
+                nativeTrackedFiles,
+            ),
             previousSnapshot.trackedFiles,
             this.#createNativeReviewPathMatcher(previousSnapshot),
         );
+    }
+
+    #filterAcceptedNativeReviewTrackedFiles(
+        sessionId: string,
+        trackedFiles: readonly AiTrackedFile[],
+    ): readonly AiTrackedFile[] {
+        const acceptedBaselines = this.#acceptedReviewBaselines.get(sessionId);
+        if (!acceptedBaselines || acceptedBaselines.size === 0) {
+            return trackedFiles;
+        }
+
+        const nextTrackedFiles = trackedFiles.filter(
+            (trackedFile) =>
+                !isTrackedFileAlreadyAccepted(
+                    trackedFile,
+                    acceptedBaselines,
+                ),
+        );
+        return nextTrackedFiles.length === trackedFiles.length
+            ? trackedFiles
+            : nextTrackedFiles;
     }
 
     #preservePassiveNativeSnapshotTrackedFiles(
@@ -3162,107 +3071,6 @@ export class AiService {
         }
     }
 
-    async #reconcilePersistedTrackedFiles(
-        snapshot: AiSessionSnapshot,
-    ): Promise<AiSessionSnapshot> {
-        if (snapshot.trackedFiles.length === 0) {
-            return snapshot;
-        }
-
-        const scope = this.#resolvePersistedSnapshotReviewScope(snapshot);
-        if (!scope) {
-            return snapshot;
-        }
-
-        const result = await reconcilePendingTrackedFiles({
-            onError: (error) => {
-                debugBenignError("ai.service.reconcileTrackedFile", error);
-            },
-            readTrackedFileText: async (trackedPath) =>
-                await this.#readPersistedTrackedFileText(scope, trackedPath),
-            trackedFiles: snapshot.trackedFiles,
-        });
-        if (!result.changed) {
-            return snapshot;
-        }
-
-        const nextSnapshot = {
-            ...snapshot,
-            trackedFiles: result.trackedFiles,
-            updatedAt: new Date().toISOString(),
-        };
-        this.#persistence.saveSessionSnapshot(nextSnapshot);
-        return nextSnapshot;
-    }
-
-    #resolvePersistedSnapshotReviewScope(
-        snapshot: Pick<AiSessionSnapshot, "projectId" | "worktreeId">,
-    ): {
-        readonly additionalRoots: readonly string[];
-        readonly scopeRoot: string;
-    } | null {
-        try {
-            const projectRoot = snapshot.projectId
-                ? this.#projectService.getProjectRootPath(
-                      snapshot.projectId,
-                      snapshot.worktreeId ?? null,
-                  )
-                : null;
-            const scopeRoot = path.resolve(projectRoot ?? process.cwd());
-            return {
-                additionalRoots: this.#resolveEffectiveAdditionalRoots(
-                    {
-                        additionalRoots: [],
-                        projectId: snapshot.projectId,
-                        worktreeId: snapshot.worktreeId ?? null,
-                    },
-                    projectRoot,
-                ),
-                scopeRoot,
-            };
-        } catch (error) {
-            debugBenignError("ai.service.resolveReviewScope", error);
-            return null;
-        }
-    }
-
-    async #readPersistedTrackedFileText(
-        scope: {
-            readonly additionalRoots: readonly string[];
-            readonly scopeRoot: string;
-        },
-        trackedPath: string,
-    ): Promise<string | null> {
-        const absolutePath = this.#resolvePersistedTrackedFileAbsolutePath(
-            scope,
-            trackedPath,
-        );
-        const bufferText = readOpenFileBuffer(absolutePath);
-        return bufferText ?? (await readTextIfExists(absolutePath));
-    }
-
-    #resolvePersistedTrackedFileAbsolutePath(
-        scope: {
-            readonly additionalRoots: readonly string[];
-            readonly scopeRoot: string;
-        },
-        candidatePath: string,
-    ): string {
-        const resolvedPath = resolveSessionScopedPath(
-            scope.scopeRoot,
-            candidatePath,
-        );
-        const insideAdditionalRoot = scope.additionalRoots.some((rootPath) =>
-            isPathInsideRoot(resolvedPath.absolutePath, rootPath),
-        );
-
-        if (!resolvedPath.insideRoot && !insideAdditionalRoot) {
-            throw new Error("Tracked file path is outside the session scope.");
-        }
-
-        return resolvedPath.absolutePath;
-    }
-
     #resolveSnapshotFromNativeUpdate(
         update: AiSessionUpdate,
     ): AiSessionSnapshot | null {
@@ -3290,7 +3098,11 @@ export class AiService {
             ? await this.#nativeAi.loadSessionSnapshot(sessionId)
             : await this.#persistence.loadSessionSnapshot(sessionId);
 
-        return snapshot ? normalizeRestoredAiSessionSnapshot(snapshot) : null;
+        return snapshot
+            ? clearRestoredSnapshotReviewState(
+                  normalizeRestoredAiSessionSnapshot(snapshot),
+              )
+            : null;
     }
 
     async #listPersistedRuntimeMappingsForParent(
@@ -3405,8 +3217,14 @@ export class AiService {
             input,
             projectRoot,
         );
-        await this.#hydrateGrokRuntimeAuthBeforeLaunch(input.runtimeId);
-        const resolvedRuntime = this.#resolveRuntimeCommand(input.runtimeId);
+        const resolvedRuntimeBase = this.#resolveRuntimeCommand(input.runtimeId);
+        const resolvedRuntime = {
+            ...resolvedRuntimeBase,
+            status: await this.#resolveLaunchRuntimeStatus(
+                input.runtimeId,
+                resolvedRuntimeBase.status,
+            ),
+        } satisfies ResolvedAcpRuntime;
         this.#onRuntimeStatus(resolvedRuntime.status);
         if (
             resolvedRuntime.status.state !== "ready" ||
@@ -3517,6 +3335,123 @@ export class AiService {
         void this.#enforceSessionRetention();
     }
 
+    async #waitForReviewMutations(sessionId: string): Promise<void> {
+        await this.#reviewMutationChains.get(sessionId);
+    }
+
+    async #runSerializedReviewMutation(
+        sessionId: string,
+        mutation: () => Promise<void>,
+    ): Promise<void> {
+        const previous =
+            this.#reviewMutationChains.get(sessionId) ?? Promise.resolve();
+        const run = previous.catch(() => undefined).then(mutation);
+        const tracked = run.finally(() => {
+            if (this.#reviewMutationChains.get(sessionId) === tracked) {
+                this.#reviewMutationChains.delete(sessionId);
+            }
+        });
+
+        this.#reviewMutationChains.set(sessionId, tracked);
+        await tracked;
+    }
+
+    #rememberAcceptedReviewBaseline(
+        trackedFile: AiTrackedFile,
+        acceptedText: string | null =
+            trackedFile.kind === "delete"
+                ? null
+                : getTrackedFileCurrentText(trackedFile),
+    ): void {
+        const sessionBaselines =
+            this.#acceptedReviewBaselines.get(trackedFile.sessionId) ??
+            new Map<string, string | null>();
+        this.#acceptedReviewBaselines.set(
+            trackedFile.sessionId,
+            sessionBaselines,
+        );
+
+        sessionBaselines.set(trackedFile.path, acceptedText);
+        if (trackedFile.previousPath) {
+            sessionBaselines.set(trackedFile.previousPath, null);
+        }
+    }
+
+    #rememberAcceptedReviewBaselineForPath(
+        snapshot: AiSessionSnapshot,
+        reviewPath: string,
+    ): void {
+        const trackedFile = findTrackedFileForReviewPath(
+            snapshot.trackedFiles,
+            reviewPath,
+        );
+        if (trackedFile) {
+            this.#rememberAcceptedReviewBaseline(trackedFile);
+        }
+    }
+
+    #rememberAcceptedReviewBaselineForKeptHunks(
+        previousSnapshot: AiSessionSnapshot,
+        nextSnapshot: AiSessionSnapshot,
+        reviewPath: string,
+    ): void {
+        const remainingTrackedFile = findTrackedFileForReviewPath(
+            nextSnapshot.trackedFiles,
+            reviewPath,
+        );
+        if (remainingTrackedFile) {
+            // After a partial hunk keep, the pending file keeps the final text
+            // but rebases its diff against the newly accepted text.
+            this.#rememberAcceptedReviewBaseline(
+                remainingTrackedFile,
+                getTrackedFileDiffBase(remainingTrackedFile),
+            );
+            return;
+        }
+
+        this.#rememberAcceptedReviewBaselineForPath(previousSnapshot, reviewPath);
+    }
+
+    #applyAcceptedReviewBaselineToDiff(
+        sessionId: string,
+        diff: AiFileDiff,
+    ): AiFileDiff | null {
+        const baseline =
+            this.#acceptedReviewBaselines.get(sessionId)?.get(diff.path) ??
+            null;
+        if (!this.#acceptedReviewBaselines.get(sessionId)?.has(diff.path)) {
+            return diff;
+        }
+
+        if (baseline === null) {
+            if (diff.newText === null) {
+                return null;
+            }
+            return {
+                ...diff,
+                hunks: [],
+                kind: "create",
+                oldText: null,
+                previousPath: null,
+            };
+        }
+
+        if (
+            diff.newText !== null &&
+            !diff.previousPath &&
+            normalizeReviewText(baseline) === normalizeReviewText(diff.newText)
+        ) {
+            return null;
+        }
+
+        return {
+            ...diff,
+            hunks: [],
+            kind: diff.kind === "create" ? "update" : diff.kind,
+            oldText: baseline,
+        };
+    }
+
     async #tryApplyFallbackTrackedFileMutation(
         input: AiTrackedFileMutationInput,
         decision: "keep" | "reject",
@@ -3548,6 +3483,9 @@ export class AiService {
             ),
             updatedAt: new Date().toISOString(),
         };
+        if (decision === "keep") {
+            this.#rememberAcceptedReviewBaseline(trackedFile);
+        }
         this.#persistReviewMutation(reviewSession.snapshot, {
             ownerWindowId: reviewSession.context.ownerWindowId,
             snapshot: nextSnapshot,
@@ -3596,6 +3534,9 @@ export class AiService {
             ),
             updatedAt: new Date().toISOString(),
         };
+        if (decision === "keep") {
+            this.#rememberAcceptedReviewBaseline(trackedFile);
+        }
         this.#persistReviewMutation(reviewSession.snapshot, {
             ownerWindowId: reviewSession.context.ownerWindowId,
             snapshot: nextSnapshot,
@@ -3658,6 +3599,11 @@ export class AiService {
             ),
             updatedAt: new Date().toISOString(),
         };
+        if (decision === "keep") {
+            for (const trackedFile of pendingFallbackFiles) {
+                this.#rememberAcceptedReviewBaseline(trackedFile);
+            }
+        }
         this.#persistReviewMutation(reviewSession.snapshot, {
             ownerWindowId: reviewSession.context.ownerWindowId,
             snapshot: nextSnapshot,
@@ -3837,119 +3783,155 @@ export class AiService {
     }
 
     async keepTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
-        if (await this.#tryApplyFallbackTrackedFileMutation(input, "keep")) {
-            return;
-        }
+        await this.#runSerializedReviewMutation(input.sessionId, async () => {
+            if (await this.#tryApplyFallbackTrackedFileMutation(input, "keep")) {
+                return;
+            }
 
-        const reviewSession = await this.#buildNativeReviewContext(
-            input.sessionId,
-        );
-        const result = await this.#requireNativeReviewGateway(
-            "keepTrackedFile",
-        ).keepTrackedFile({
-            context: reviewSession.context,
-            input,
+            const reviewSession = await this.#buildNativeReviewContext(
+                input.sessionId,
+            );
+            const result = await this.#requireNativeReviewGateway(
+                "keepTrackedFile",
+            ).keepTrackedFile({
+                context: reviewSession.context,
+                input,
+            });
+            this.#rememberAcceptedReviewBaselineForPath(
+                reviewSession.snapshot,
+                input.path,
+            );
+            this.#persistReviewMutation(reviewSession.snapshot, result);
         });
-        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async rejectTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
-        if (await this.#tryApplyFallbackTrackedFileMutation(input, "reject")) {
-            return;
-        }
+        await this.#runSerializedReviewMutation(input.sessionId, async () => {
+            if (
+                await this.#tryApplyFallbackTrackedFileMutation(input, "reject")
+            ) {
+                return;
+            }
 
-        const reviewSession = await this.#buildNativeReviewContext(
-            input.sessionId,
-        );
-        const result = await this.#requireNativeReviewGateway(
-            "rejectTrackedFile",
-        ).rejectTrackedFile({
-            context: reviewSession.context,
-            input,
+            const reviewSession = await this.#buildNativeReviewContext(
+                input.sessionId,
+            );
+            const result = await this.#requireNativeReviewGateway(
+                "rejectTrackedFile",
+            ).rejectTrackedFile({
+                context: reviewSession.context,
+                input,
+            });
+            this.#persistReviewMutation(reviewSession.snapshot, result);
         });
-        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async keepTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
-        if (
-            await this.#tryApplyFallbackTrackedFileHunkMutation(input, "keep")
-        ) {
-            return;
-        }
+        await this.#runSerializedReviewMutation(input.sessionId, async () => {
+            if (
+                await this.#tryApplyFallbackTrackedFileHunkMutation(
+                    input,
+                    "keep",
+                )
+            ) {
+                return;
+            }
 
-        const reviewSession = await this.#buildNativeReviewContext(
-            input.sessionId,
-        );
-        const result = await this.#requireNativeReviewGateway(
-            "keepTrackedFileHunks",
-        ).keepTrackedFileHunks({
-            context: reviewSession.context,
-            input,
+            const reviewSession = await this.#buildNativeReviewContext(
+                input.sessionId,
+            );
+            const result = await this.#requireNativeReviewGateway(
+                "keepTrackedFileHunks",
+            ).keepTrackedFileHunks({
+                context: reviewSession.context,
+                input,
+            });
+            this.#rememberAcceptedReviewBaselineForKeptHunks(
+                reviewSession.snapshot,
+                result.snapshot,
+                input.path,
+            );
+            this.#persistReviewMutation(reviewSession.snapshot, result);
         });
-        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async rejectTrackedFileHunks(
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
-        if (
-            await this.#tryApplyFallbackTrackedFileHunkMutation(input, "reject")
-        ) {
-            return;
-        }
+        await this.#runSerializedReviewMutation(input.sessionId, async () => {
+            if (
+                await this.#tryApplyFallbackTrackedFileHunkMutation(
+                    input,
+                    "reject",
+                )
+            ) {
+                return;
+            }
 
-        const reviewSession = await this.#buildNativeReviewContext(
-            input.sessionId,
-        );
-        const result = await this.#requireNativeReviewGateway(
-            "rejectTrackedFileHunks",
-        ).rejectTrackedFileHunks({
-            context: reviewSession.context,
-            input,
+            const reviewSession = await this.#buildNativeReviewContext(
+                input.sessionId,
+            );
+            const result = await this.#requireNativeReviewGateway(
+                "rejectTrackedFileHunks",
+            ).rejectTrackedFileHunks({
+                context: reviewSession.context,
+                input,
+            });
+            this.#persistReviewMutation(reviewSession.snapshot, result);
         });
-        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async keepAllTrackedFiles(sessionId: string): Promise<void> {
-        if (
-            await this.#tryApplyAllFallbackTrackedFileMutations(
-                sessionId,
-                "keep",
-            )
-        ) {
-            return;
-        }
+        await this.#runSerializedReviewMutation(sessionId, async () => {
+            if (
+                await this.#tryApplyAllFallbackTrackedFileMutations(
+                    sessionId,
+                    "keep",
+                )
+            ) {
+                return;
+            }
 
-        const reviewSession = await this.#buildNativeReviewContext(sessionId);
-        const result = await this.#requireNativeReviewGateway(
-            "keepAllTrackedFiles",
-        ).keepAllTrackedFiles({
-            context: reviewSession.context,
-            input: sessionId,
+            const reviewSession = await this.#buildNativeReviewContext(
+                sessionId,
+            );
+            const result = await this.#requireNativeReviewGateway(
+                "keepAllTrackedFiles",
+            ).keepAllTrackedFiles({
+                context: reviewSession.context,
+                input: sessionId,
+            });
+            for (const trackedFile of reviewSession.snapshot.trackedFiles) {
+                this.#rememberAcceptedReviewBaseline(trackedFile);
+            }
+            this.#persistReviewMutation(reviewSession.snapshot, result);
         });
-        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     async rejectAllTrackedFiles(sessionId: string): Promise<void> {
-        if (
-            await this.#tryApplyAllFallbackTrackedFileMutations(
-                sessionId,
-                "reject",
-            )
-        ) {
-            return;
-        }
+        await this.#runSerializedReviewMutation(sessionId, async () => {
+            if (
+                await this.#tryApplyAllFallbackTrackedFileMutations(
+                    sessionId,
+                    "reject",
+                )
+            ) {
+                return;
+            }
 
-        const reviewSession = await this.#buildNativeReviewContext(sessionId);
-        const result = await this.#requireNativeReviewGateway(
-            "rejectAllTrackedFiles",
-        ).rejectAllTrackedFiles({
-            context: reviewSession.context,
-            input: sessionId,
+            const reviewSession = await this.#buildNativeReviewContext(
+                sessionId,
+            );
+            const result = await this.#requireNativeReviewGateway(
+                "rejectAllTrackedFiles",
+            ).rejectAllTrackedFiles({
+                context: reviewSession.context,
+                input: sessionId,
+            });
+            this.#persistReviewMutation(reviewSession.snapshot, result);
         });
-        this.#persistReviewMutation(reviewSession.snapshot, result);
     }
 
     #resolveEffectiveAdditionalRoots(
@@ -4246,48 +4228,18 @@ export class AiService {
         this.#persistence.saveSessionSnapshot(snapshot);
     }
 
-    async #resolveGrokRuntimeStatusWithProbe(
-        status: AiRuntimeStatus,
-    ): Promise<AiRuntimeStatus> {
-        if (
-            status.state !== "ready" ||
-            status.authReady ||
-            status.authCredentialSource === "environment" ||
-            status.authCredentialSource === "comando-secret"
-        ) {
-            return status;
-        }
-
-        const settings = this.#settingsService.loadGrokRuntimeSettings();
-        const hasCachedToken = await probeGrokCachedTokenAuth(
-            settings,
-            this.#secretStore,
-        );
-        if (!hasCachedToken) {
-            return status;
-        }
-
-        const nextSettings = {
-            ...settings,
-            authInvalidatedAtMs: null,
-            authMethod: "grok-login",
-        } satisfies GrokRuntimeSettings;
-        await this.#saveGrokAuthSettings(nextSettings);
-
-        return this.#withPersistedRuntimeCatalog(
-            getGrokRuntimeStatus(nextSettings, this.#secretStore),
-        );
-    }
-
-    async #hydrateGrokRuntimeAuthBeforeLaunch(
+    async #resolveLaunchRuntimeStatus(
         runtimeId: AiRuntimeId,
-    ): Promise<void> {
-        if (runtimeId !== "grok") {
-            return;
+        fallbackStatus: AiRuntimeStatus,
+    ): Promise<AiRuntimeStatus> {
+        const nativeAi = this.#nativeAuthGateway(runtimeId);
+        if (!nativeAi?.getRuntimeStatus) {
+            return fallbackStatus;
         }
 
-        await this.#resolveGrokRuntimeStatusWithProbe(
-            this.#resolveRuntimeStatus(runtimeId),
+        await this.#migrateNativeRuntimeSettingsIfNeeded(runtimeId);
+        return this.#withPersistedRuntimeCatalog(
+            await nativeAi.getRuntimeStatus(runtimeId),
         );
     }
 
@@ -4388,109 +4340,6 @@ export class AiService {
             executable: resolved.executable,
             status: getCodexRuntimeStatus(settings, secrets),
         };
-    }
-
-    async #runRuntimeAuthConnection(
-        runtimeId: AiRuntimeId,
-        cwd: string,
-        action: (connection: ClientSideConnection) => Promise<void>,
-        codexSettingsOverride?: CodexRuntimeSettings,
-    ): Promise<void> {
-        const resolvedRuntime = this.#resolveRuntimeCommand(
-            runtimeId,
-            codexSettingsOverride,
-        );
-        if (resolvedRuntime.status.state !== "ready") {
-            throw new Error(
-                resolvedRuntime.status.message ??
-                    `${getRuntimeDisplayName(runtimeId)} is not available on this machine.`,
-            );
-        }
-
-        const runtimeSpawn = prepareCommandForSpawn(
-            resolvedRuntime.executable,
-            resolvedRuntime.args,
-            {
-                cwd,
-                env: resolvedRuntime.env,
-                stdio: ["pipe", "pipe", "pipe"] as [
-                    "pipe",
-                    "pipe",
-                    "pipe",
-                ],
-            },
-        );
-        const child = spawn(
-            runtimeSpawn.command,
-            runtimeSpawn.args,
-            runtimeSpawn.options,
-        );
-        const stderrChunks: string[] = [];
-        const stderrHandler = (chunk: Buffer | string) => {
-            const text =
-                typeof chunk === "string" ? chunk : chunk.toString("utf8");
-            stderrChunks.push(text);
-            if (stderrChunks.length > 20) {
-                stderrChunks.shift();
-            }
-        };
-        child.stderr.on("data", stderrHandler);
-        let removeSpawnErrorHandler = () => {};
-        const spawnErrorPromise = new Promise<never>((_, reject) => {
-            const spawnErrorHandler = (error: Error) => {
-                debugBenignError("ai.service.runtimeAuth.process", error);
-                reject(error);
-            };
-            child.once("error", spawnErrorHandler);
-            removeSpawnErrorHandler = () => {
-                child.off("error", spawnErrorHandler);
-            };
-        });
-
-        const client: Client = {
-            readTextFile: () => {
-                throw new Error("Runtime auth does not support file reads.");
-            },
-            requestPermission: () => {
-                throw new Error(
-                    "Runtime auth does not support permission requests.",
-                );
-            },
-            sessionUpdate: () => Promise.resolve(undefined),
-            writeTextFile: () => {
-                throw new Error("Runtime auth does not support file writes.");
-            },
-        };
-        const stream = ndJsonStream(
-            toWebByteWritable(child.stdin),
-            toWebByteReadable(child.stdout),
-        );
-        const connection = new ClientSideConnection(() => client, stream);
-
-        try {
-            await Promise.race([action(connection), spawnErrorPromise]);
-        } catch (error) {
-            const stderrText = getRecentStderrText(stderrChunks);
-
-            if (error instanceof Error && error.message.trim()) {
-                throw error;
-            }
-
-            throw new Error(
-                stderrText ||
-                    `Failed to complete ${getRuntimeDisplayName(runtimeId)} authentication.`,
-                {
-                    cause: error,
-                },
-            );
-        } finally {
-            removeSpawnErrorHandler();
-            child.stderr.off("data", stderrHandler);
-            child.kill();
-            child.stdin.destroy();
-            child.stdout.destroy();
-            child.stderr.destroy();
-        }
     }
 
     #invalidateRuntimeAuthIfNeeded(
@@ -4675,6 +4524,32 @@ function trackedFileFromToolActivityDiff(
     };
 }
 
+function normalizeAiFileDiffPaths(
+    diff: AiFileDiff,
+    normalizePath: (candidatePath: string) => string | null,
+): AiFileDiff | null {
+    const normalizedPath = normalizePath(diff.path);
+    if (!normalizedPath) {
+        return null;
+    }
+
+    const normalizedPreviousPath = diff.previousPath
+        ? normalizePath(diff.previousPath)
+        : null;
+    if (diff.previousPath && !normalizedPreviousPath) {
+        return null;
+    }
+
+    return {
+        ...diff,
+        path: normalizedPath,
+        previousPath:
+            normalizedPreviousPath && normalizedPreviousPath !== normalizedPath
+                ? normalizedPreviousPath
+                : null,
+    };
+}
+
 function isFallbackTrackedFile(trackedFile: AiTrackedFile): boolean {
     return trackedFile.identityKey.startsWith("tool:");
 }
@@ -4690,6 +4565,20 @@ function findFallbackTrackedFile(
                 (trackedFile.path === reviewPath ||
                     trackedFile.previousPath === reviewPath ||
                     trackedFile.identityKey === reviewPath),
+        ) ?? null
+    );
+}
+
+function findTrackedFileForReviewPath(
+    trackedFiles: readonly AiTrackedFile[],
+    reviewPath: string,
+): AiTrackedFile | null {
+    return (
+        trackedFiles.find(
+            (trackedFile) =>
+                trackedFile.path === reviewPath ||
+                trackedFile.previousPath === reviewPath ||
+                trackedFile.identityKey === reviewPath,
         ) ?? null
     );
 }
@@ -4766,6 +4655,40 @@ function preservePassiveSnapshotTrackedFiles(
         ...incomingSnapshot,
         trackedFiles: pendingTrackedFiles,
     };
+}
+
+function isTrackedFileAlreadyAccepted(
+    trackedFile: AiTrackedFile,
+    acceptedBaselines: ReadonlyMap<string, string | null>,
+): boolean {
+    const baseline = acceptedBaselines.get(trackedFile.path);
+    if (baseline !== undefined) {
+        return trackedFileMatchesAcceptedBaseline(trackedFile, baseline);
+    }
+
+    return Boolean(
+        trackedFile.previousPath &&
+            acceptedBaselines.get(trackedFile.previousPath) === null &&
+            trackedFileMatchesAcceptedBaseline(trackedFile, null),
+    );
+}
+
+function trackedFileMatchesAcceptedBaseline(
+    trackedFile: AiTrackedFile,
+    baseline: string | null,
+): boolean {
+    if (baseline === null) {
+        return trackedFile.kind === "delete" || trackedFile.newText === null;
+    }
+
+    if (trackedFile.newText === null) {
+        return false;
+    }
+
+    return (
+        normalizeReviewText(getTrackedFileCurrentText(trackedFile)) ===
+        normalizeReviewText(baseline)
+    );
 }
 
 function isTrackedFileRepresented(
@@ -5247,6 +5170,21 @@ function isModeConfigOption(option: AiSessionConfigOption): boolean {
 
 function isModelConfigOption(option: AiSessionConfigOption): boolean {
     return option.category === "model" || option.id.toLowerCase() === "model";
+}
+
+function clearRestoredSnapshotReviewState(
+    snapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    if (snapshot.trackedFiles.length === 0) {
+        return snapshot;
+    }
+
+    return {
+        ...snapshot,
+        // Persisted transcripts keep historical diffs; pending review files are
+        // intentionally only restored from live session state.
+        trackedFiles: [],
+    };
 }
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {

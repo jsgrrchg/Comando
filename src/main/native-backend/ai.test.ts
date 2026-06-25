@@ -588,7 +588,7 @@ describe("NativeAiGateway", () => {
         await expect(gateway.loadSessionSnapshot("session-1")).resolves.toMatchObject({
             runtimeId: "opencode",
             sessionId: "session-1",
-            trackedFiles: [{ path: "src/main.rs", version: 2 }],
+            trackedFiles: [],
         });
         await expect(
             gateway.listSessionRuntimeMappingsForParent("session-1"),
@@ -617,7 +617,7 @@ describe("NativeAiGateway", () => {
         });
     });
 
-    it("uses native review state when loading historical snapshots", async () => {
+    it("does not hydrate review state when loading historical snapshots", async () => {
         const client = createClient();
         const legacyFile = createNativeTrackedFile({
             path: "src/legacy.ts",
@@ -650,12 +650,12 @@ describe("NativeAiGateway", () => {
             sessionId: "session-1",
             trackedFiles: [],
         });
-        expect(client.request).toHaveBeenCalledWith("ai_load_review_state", {
+        expect(client.request).not.toHaveBeenCalledWith("ai_load_review_state", {
             sessionId: "session-1",
         });
     });
 
-    it("clears tracked files when native review state is explicitly empty", async () => {
+    it("clears tracked files from restored historical snapshots", async () => {
         const client = createClient();
         client.request.mockImplementation(
             <T = unknown>(command: string, _args?: unknown): Promise<T> => {
@@ -689,6 +689,9 @@ describe("NativeAiGateway", () => {
         await expect(gateway.loadSessionSnapshot("session-1")).resolves.toMatchObject({
             sessionId: "session-1",
             trackedFiles: [],
+        });
+        expect(client.request).not.toHaveBeenCalledWith("ai_load_review_state", {
+            sessionId: "session-1",
         });
     });
 

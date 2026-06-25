@@ -1,14 +1,5 @@
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { Readable, Writable } from "node:stream";
-
-import {
-    ClientSideConnection,
-    PROTOCOL_VERSION,
-    ndJsonStream,
-    type Client,
-} from "@agentclientprotocol/sdk";
 
 import type {
     AiAuthCredentialSource,
@@ -25,11 +16,7 @@ import {
     type SecretStoreGateway,
 } from "../secret-store";
 import { debugBenignError } from "../../observability/logging";
-import {
-    buildRuntimeSpawnEnv,
-    resolveExecutableFromRuntimePath,
-} from "../runtime-env";
-import { prepareCommandForSpawn } from "../../shell/command-launch";
+import { resolveExecutableFromRuntimePath } from "../runtime-env";
 
 const GROK_PROGRAM_NAME = "grok";
 const GROK_ACP_ARGS = ["--no-auto-update", "agent", "stdio"] as const;
@@ -40,7 +27,6 @@ const GROK_LOGIN_METHOD_ID = "grok-login" satisfies GrokAuthMethodId;
 const XAI_API_KEY_METHOD_ID = "xai-api-key" satisfies GrokAuthMethodId;
 const GROK_SECRET_NAMESPACE = "ai.grok";
 const XAI_API_KEY_SECRET = "xai_api_key";
-const GROK_AUTH_PROBE_TIMEOUT_MS = 2_000;
 
 interface ResolvedGrokBinary {
     readonly args: readonly string[];
@@ -332,99 +318,6 @@ export function isGrokExternalCredentialReady(
     return grokLoginAvailable(settings);
 }
 
-export async function probeGrokCachedTokenAuth(
-    settings: GrokRuntimeSettings,
-    secretStore?: SecretStoreGateway | null,
-    options: {
-        readonly cwd?: string | null;
-        readonly timeoutMs?: number;
-    } = {},
-): Promise<boolean> {
-    let resolved: ResolvedGrokRuntimeCommand;
-    try {
-        resolved = resolveGrokRuntime(settings, secretStore);
-    } catch {
-        return false;
-    }
-
-    const runtimeSpawn = prepareCommandForSpawn(resolved.program, resolved.args, {
-        cwd: options.cwd ?? undefined,
-        env: buildRuntimeSpawnEnv(
-            applyGrokAuthEnv(process.env, settings, secretStore),
-            resolved.program,
-        ),
-        stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
-    });
-    const child = spawn(
-        runtimeSpawn.command,
-        runtimeSpawn.args,
-        runtimeSpawn.options,
-    );
-    const client: Client = {
-        readTextFile: () => {
-            throw new Error("Grok auth probe does not support file reads.");
-        },
-        requestPermission: () => {
-            throw new Error(
-                "Grok auth probe does not support permission requests.",
-            );
-        },
-        sessionUpdate: () => Promise.resolve(undefined),
-        writeTextFile: () => {
-            throw new Error("Grok auth probe does not support file writes.");
-        },
-    };
-    const stream = ndJsonStream(
-        toWebByteWritable(child.stdin),
-        toWebByteReadable(child.stdout),
-    );
-    const connection = new ClientSideConnection(() => client, stream);
-
-    try {
-        const initializeResponse = await withTimeout(
-            connection.initialize({
-                clientCapabilities: {
-                    fs: {
-                        readTextFile: true,
-                        writeTextFile: true,
-                    },
-                },
-                clientInfo: {
-                    name: "comando",
-                    title: "Comando",
-                    version: process.versions.electron,
-                },
-                protocolVersion: PROTOCOL_VERSION,
-            }),
-            options.timeoutMs ?? GROK_AUTH_PROBE_TIMEOUT_MS,
-        );
-        const advertisedMethodIds =
-            initializeResponse.authMethods?.map((method) => method.id) ?? [];
-        if (!advertisedMethodIds.includes("cached_token")) {
-            return false;
-        }
-
-        await withTimeout(
-            connection.authenticate({
-                _meta: {
-                    headless: true,
-                },
-                methodId: "cached_token",
-            }),
-            options.timeoutMs ?? GROK_AUTH_PROBE_TIMEOUT_MS,
-        );
-        return true;
-    } catch (error) {
-        debugBenignError("ai.grok.probeCachedTokenAuth", error);
-        return false;
-    } finally {
-        child.kill();
-        child.stdin.destroy();
-        child.stdout.destroy();
-        child.stderr.destroy();
-    }
-}
-
 export function markGrokAuthInvalidated(
     settings: GrokRuntimeSettings,
 ): GrokRuntimeSettings {
@@ -592,39 +485,6 @@ function readGrokAuthStoreStatus(authDir: string): GrokAuthStoreStatus {
 
 function envSecretPresent(env: NodeJS.ProcessEnv, key: typeof XAI_API_KEY_ENV) {
     return Boolean(env[key]?.trim());
-}
-
-function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
-    return Writable.toWeb(stream) as WritableStream<Uint8Array>;
-}
-
-function toWebByteReadable(stream: Readable): ReadableStream<Uint8Array> {
-    return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
-}
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-    return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-            reject(new Error("Grok auth probe timed out."));
-        }, timeoutMs);
-
-        promise.then(
-            (value) => {
-                clearTimeout(timeout);
-                resolve(value);
-            },
-            (error: unknown) => {
-                clearTimeout(timeout);
-                reject(
-                    error instanceof Error
-                        ? error
-                        : new Error("Grok auth probe failed.", {
-                              cause: error,
-                          }),
-                );
-            },
-        );
-    });
 }
 
 function getCredentialSourceLabel(source: AiAuthCredentialSource): string {

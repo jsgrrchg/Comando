@@ -1,9 +1,12 @@
 import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 import {
     claudeEmbeddedDist,
     claudeEmbeddedNodeModules,
+    claudeEmbeddedRoot,
     claudeVendorDir,
     codexEmbeddedDir,
     codexBundledBinary,
@@ -27,9 +30,10 @@ export function verifyAiRuntimes() {
     const embeddedNodeReady = isExecutableFile(embeddedNodeBin);
     const claudeEmbeddedReady = isFile(`${claudeEmbeddedDist}/index.js`);
     const claudeModulesReady = fs.existsSync(claudeEmbeddedNodeModules);
+    const claudeRuntimeDependencies = verifyClaudeRuntimeDependencies();
 
     console.log(
-        `[verify:ai-runtimes] codexVendor=${codexVendorExists ? "yes" : "no"} codexBundled=${codexBundledReady ? "yes" : "no"} codexEmbedded=${codexEmbeddedReady ? "yes" : "no"} codexEmbeddedDebug=${codexEmbeddedDebugReady ? "yes" : "no"} legacyTarget=${legacyTargetExists ? "yes" : "no"} claudeVendor=${claudeVendorExists ? "yes" : "no"} embeddedNode=${embeddedNodeReady ? "yes" : "no"} claudeEmbedded=${claudeEmbeddedReady ? "yes" : "no"} claudeModules=${claudeModulesReady ? "yes" : "no"}`,
+        `[verify:ai-runtimes] codexVendor=${codexVendorExists ? "yes" : "no"} codexBundled=${codexBundledReady ? "yes" : "no"} codexEmbedded=${codexEmbeddedReady ? "yes" : "no"} codexEmbeddedDebug=${codexEmbeddedDebugReady ? "yes" : "no"} legacyTarget=${legacyTargetExists ? "yes" : "no"} claudeVendor=${claudeVendorExists ? "yes" : "no"} embeddedNode=${embeddedNodeReady ? "yes" : "no"} claudeEmbedded=${claudeEmbeddedReady ? "yes" : "no"} claudeModules=${claudeModulesReady ? "yes" : "no"} claudeRuntimeDeps=${claudeRuntimeDependencies.ok ? "yes" : "no"}`,
     );
 
     if (!codexVendorExists) {
@@ -65,6 +69,47 @@ export function verifyAiRuntimes() {
         );
         process.exit(1);
     }
+
+    if (!claudeRuntimeDependencies.ok) {
+        console.error(
+            `[verify:ai-runtimes] Claude embedded runtime dependencies are incomplete: ${claudeRuntimeDependencies.missing.join(", ")}. Run pnpm run stage:ai.`,
+        );
+        process.exit(1);
+    }
+}
+
+function verifyClaudeRuntimeDependencies() {
+    const packageNames = [
+        "@agentclientprotocol/sdk",
+        "@anthropic-ai/claude-agent-sdk",
+        "zod",
+    ];
+    const runtimeRequire = createRequire(
+        path.join(claudeEmbeddedRoot, "package.json"),
+    );
+    const missing = [];
+
+    for (const packageName of packageNames) {
+        const packageDir = path.join(
+            claudeEmbeddedNodeModules,
+            ...packageName.split("/"),
+        );
+        if (!isFile(path.join(packageDir, "package.json"))) {
+            missing.push(packageName);
+            continue;
+        }
+
+        try {
+            runtimeRequire.resolve(packageName);
+        } catch {
+            missing.push(packageName);
+        }
+    }
+
+    return {
+        missing,
+        ok: missing.length === 0,
+    };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

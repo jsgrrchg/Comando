@@ -2,11 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type {
-    Diff,
-    ToolCall,
-    ToolCallUpdate,
-} from "@agentclientprotocol/sdk";
-import type {
     AiDiffHunk,
     AiGeneratedImage,
     AiFileDiff,
@@ -36,7 +31,6 @@ import {
     COMANDO_STATUS_EVENT_TYPE_KEY,
     COMANDO_STATUS_TURN_EVENT_ID_PREFIX,
     SUPPRESSED_STATUS_TITLES,
-    type LiveAcpSession,
 } from "./contracts";
 import {
     basenameForPathIdentity,
@@ -57,8 +51,30 @@ interface DiffResolutionContext {
     readonly toolCallId: string;
 }
 
+interface AiReviewPathContext {
+    readonly cwd: string;
+    readonly projectRoot: string | null;
+}
+
+interface AiReviewRuntimeDiff {
+    readonly _meta?: unknown;
+    readonly newText: string;
+    readonly oldText?: string | null;
+    readonly path: string;
+}
+
+type AiReviewToolStatus = "completed" | "failed" | "in_progress" | "pending";
+
+interface AiReviewToolUpdate {
+    readonly _meta?: unknown;
+    readonly rawInput?: unknown;
+    readonly status?: AiReviewToolStatus | null;
+    readonly title?: string | null;
+    readonly toolCallId: string;
+}
+
 export function isImageGenerationToolUpdate(
-    update: Pick<ToolCall | ToolCallUpdate, "_meta" | "toolCallId">,
+    update: Pick<AiReviewToolUpdate, "_meta" | "toolCallId">,
 ): boolean {
     if (
         update.toolCallId.startsWith(CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX)
@@ -77,7 +93,7 @@ export function isImageGenerationToolUpdate(
 
 export function mapImageGenerationToolUpdate(
     snapshot: AiSessionSnapshot,
-    update: ToolCall | ToolCallUpdate,
+    update: AiReviewToolUpdate,
     updatedAt: string,
 ): AiSessionSnapshot {
     const messageId = `image:${update.toolCallId}`;
@@ -150,7 +166,7 @@ export function mapImageGenerationToolUpdate(
 }
 
 export function shouldSuppressToolActivityUpdate(
-    update: Pick<ToolCall | ToolCallUpdate, "_meta" | "toolCallId">,
+    update: Pick<AiReviewToolUpdate, "_meta" | "toolCallId">,
     title: string | null,
 ): boolean {
     if (!title || !SUPPRESSED_STATUS_TITLES.has(title)) {
@@ -181,7 +197,7 @@ export function shouldSuppressToolActivityUpdate(
 }
 
 export function diffToAiFileDiff(
-    diff: Diff,
+    diff: AiReviewRuntimeDiff,
     toolKind: string,
     normalizePath: (candidatePath: string) => string = (candidatePath) =>
         candidatePath,
@@ -213,7 +229,7 @@ export function diffToAiFileDiff(
 }
 
 function inferDiffKind(
-    diff: Diff,
+    diff: AiReviewRuntimeDiff,
     toolKind: string,
     previousPath: string | null,
 ): AiTrackedFile["kind"] {
@@ -305,7 +321,7 @@ function readRecordString(
 }
 
 function mapToolStatusToImageStatus(
-    status: ToolCall["status"] | ToolCallUpdate["status"] | null | undefined,
+    status: AiReviewToolStatus | null | undefined,
 ): string | null {
     switch (status) {
         case "completed":
@@ -450,7 +466,7 @@ export function parseCompleteNumberedFileOutput(
 }
 
 export function normalizeTrackedDiffPath(
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    liveSession: AiReviewPathContext,
     candidatePath: string,
     options: ResolveSessionPathOptions = {},
 ): string {
@@ -573,6 +589,7 @@ async function isTrackedFileNetClean(
     readTrackedFileText: (trackedPath: string) => Promise<string | null>,
 ): Promise<boolean> {
     const diffBase = getTrackedFileDiffBase(trackedFile);
+    const currentReviewText = getTrackedFileCurrentText(trackedFile);
     if (trackedFile.previousPath) {
         const [currentText, previousText] = await Promise.all([
             readTrackedFileText(trackedFile.path),
@@ -580,30 +597,43 @@ async function isTrackedFileNetClean(
         ]);
 
         return (
-            (currentText === null ||
+            ((currentText === null ||
+                normalizeReviewText(currentText) === normalizeReviewText(diffBase)) &&
+                previousText !== null &&
+                normalizeReviewText(previousText) === normalizeReviewText(diffBase)) ||
+            (currentText !== null &&
                 normalizeReviewText(currentText) ===
-                    normalizeReviewText(diffBase)) &&
-            previousText !== null &&
-            normalizeReviewText(previousText) === normalizeReviewText(diffBase)
+                    normalizeReviewText(currentReviewText) &&
+                previousText === null)
         );
     }
 
     const currentText = await readTrackedFileText(trackedFile.path);
-    if (trackedFile.kind === "create") {
+    if (trackedFile.newText === null) {
         return (
             currentText === null ||
             normalizeReviewText(currentText) === normalizeReviewText(diffBase)
         );
     }
+    if (trackedFile.kind === "create") {
+        return (
+            currentText === null ||
+            normalizeReviewText(currentText) === normalizeReviewText(diffBase) ||
+            normalizeReviewText(currentText) ===
+                normalizeReviewText(currentReviewText)
+        );
+    }
 
     return (
         currentText !== null &&
-        normalizeReviewText(currentText) === normalizeReviewText(diffBase)
+        (normalizeReviewText(currentText) === normalizeReviewText(diffBase) ||
+            normalizeReviewText(currentText) ===
+                normalizeReviewText(currentReviewText))
     );
 }
 
 function resolveTrackedDiffAbsolutePath(
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    liveSession: AiReviewPathContext,
     trackedPath: string,
 ): string {
     const scopeRoot = liveSession.projectRoot ?? liveSession.cwd;
@@ -626,7 +656,7 @@ function tryReadFileAsText(absolutePath: string): string | null {
 }
 
 function isClaudeEditReEmission(
-    diff: Pick<Diff, "newText" | "oldText">,
+    diff: Pick<AiReviewRuntimeDiff, "newText" | "oldText">,
     existing: AiTrackedFile | undefined,
     base: string,
     context: DiffResolutionContext | undefined,
@@ -735,7 +765,7 @@ interface UnifiedPatchHunk {
 function resolveAlreadyAppliedExternalDiff(
     diff: { readonly newText: string; readonly oldText: string },
     base: string,
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    liveSession: AiReviewPathContext,
     normalizedPath: string,
     context: DiffResolutionContext | undefined,
 ): { readonly newText: string; readonly oldText: string } | null {
@@ -760,7 +790,7 @@ function resolveAlreadyAppliedExternalDiff(
 function resolveAlreadyAppliedUnifiedPatchDiff(
     diff: { readonly newText: string; readonly oldText: string },
     base: string,
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    liveSession: AiReviewPathContext,
     normalizedPath: string,
     rawOutput: unknown,
 ): { readonly newText: string; readonly oldText: string } | null {
@@ -1051,12 +1081,12 @@ function matchesPatchLineSequence(
 }
 
 export function resolveDiffToFullTexts(
-    diff: Diff,
+    diff: AiReviewRuntimeDiff,
     existing: AiTrackedFile | undefined,
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    liveSession: AiReviewPathContext,
     normalizedPath: string,
     context?: DiffResolutionContext,
-): Diff {
+): AiReviewRuntimeDiff {
     if (diff.oldText == null) {
         return diff;
     }

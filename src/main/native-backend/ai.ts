@@ -442,32 +442,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         const snapshot = nativeSnapshotToIpc(
             requireRecord(output, "Native AI session snapshot") as unknown as NativeAiSessionSnapshot,
         );
-        if (!this.#reviewEnabled) {
-            return snapshot;
-        }
-        return await this.#hydrateSnapshotReviewState(snapshot);
-    }
-
-    async #hydrateSnapshotReviewState(
-        snapshot: AiSessionSnapshot,
-    ): Promise<AiSessionSnapshot> {
-        if (!this.#reviewEnabled) {
-            return snapshot;
-        }
-        try {
-            const reviewOutput = await this.#loadReviewStateOutput(
-                snapshot.sessionId,
-            );
-            return {
-                ...snapshot,
-                trackedFiles: nativeReviewCommandTrackedFiles(reviewOutput),
-            };
-        } catch (error) {
-            this.#reportDiagnostic(
-                `Native AI review state load failed: ${formatError(error)}`,
-            );
-            return snapshot;
-        }
+        return stripHistoricalSnapshotReviewState(snapshot);
     }
 
     async setSessionPinned(input: AiSessionPinnedMutationInput): Promise<void> {
@@ -512,11 +487,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             );
             this.#rememberSummary(summary, request.launch.ownerWindowId);
 
-            const snapshot = nativeSummaryToSnapshot(summary, request.launch);
-            if (snapshot.trackedFiles.length === 0) {
-                return snapshot;
-            }
-            return await this.#hydrateSnapshotReviewState(snapshot);
+            return nativeSummaryToSnapshot(summary, request.launch);
         } catch (error) {
             this.#restoreOwner(request.input.sessionId, previousOwner);
             throw error;
@@ -1128,6 +1099,21 @@ function nativeSummaryToSnapshot(
         title: summary.title,
         updatedAt: summary.updatedAt,
         worktreeId: summary.worktreeId,
+    };
+}
+
+function stripHistoricalSnapshotReviewState(
+    snapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    if (snapshot.trackedFiles.length === 0) {
+        return snapshot;
+    }
+
+    return {
+        ...snapshot,
+        // Historical review diffs remain in the transcript; pending review files
+        // are live session state and must not be resurrected after restart.
+        trackedFiles: [],
     };
 }
 
