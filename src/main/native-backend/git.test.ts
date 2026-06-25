@@ -13,6 +13,7 @@ import type {
     NativeGitRemoteSummary,
     NativeGitRepositorySnapshot,
     NativeGitStatusSnapshot,
+    NativeGitWorktreeDiffResult,
 } from "@shared/native-backend";
 
 import type { NativeBackendRequester } from "./persistence";
@@ -160,6 +161,40 @@ describe("NativeGitGateway", () => {
                 diffScope: "untracked",
                 path: "src/new.ts",
                 staged: false,
+            }),
+        );
+    });
+
+    it("adapts native worktree diffs through the native command", async () => {
+        const requestMock = vi.fn(() =>
+            fixture<NativeGitWorktreeDiffResult>("worktree.diff.json"),
+        );
+        const gateway = gatewayWith(requestMock);
+
+        await expect(
+            gateway.listWorktreeDiff("/tmp/comando-project", {
+                scopes: ["unstaged"],
+            }),
+        ).resolves.toMatchObject({
+            sections: [
+                {
+                    files: [
+                        {
+                            kind: "modified",
+                            path: "src/main.ts",
+                            scope: "unstaged",
+                        },
+                    ],
+                    scope: "unstaged",
+                },
+            ],
+            updatedAt: "2026-06-20T00:00:00.000Z",
+        });
+
+        expect(requestMock).toHaveBeenCalledWith(
+            "git_list_worktree_diff",
+            expect.objectContaining({
+                scopes: ["unstaged"],
             }),
         );
     });

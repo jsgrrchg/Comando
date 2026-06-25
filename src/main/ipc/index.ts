@@ -1946,16 +1946,13 @@ type MainGitRepositorySnapshot = Awaited<
     ReturnType<GitGateway["getRepositorySnapshot"]>
 >;
 type MainGitChangeEntry = MainGitRepositorySnapshot["status"]["entries"][number];
+type MainGitWorktreeDiffResult = Awaited<
+    ReturnType<GitGateway["listWorktreeDiff"]>
+>;
+type MainGitWorktreeDiffFile =
+    MainGitWorktreeDiffResult["sections"][number]["files"][number];
 type DiffStatEntry = { additions: number; deletions: number };
 type DiffStatMap = Map<string, DiffStatEntry>;
-
-const GIT_WORKTREE_DIFF_SCOPES: readonly GitDiffScope[] = [
-    "conflicted",
-    "staged",
-    "unstaged",
-    "untracked",
-];
-const GIT_WORKTREE_DIFF_CONCURRENCY = 4;
 
 function buildDiffStatMap(
     entries: Awaited<ReturnType<GitGateway["getDiffStats"]>>,
@@ -2185,132 +2182,77 @@ async function buildSharedGitWorktreeDiff(
         return null;
     }
 
-    const diffStats = buildDiffStatMap(
-        await gitService.getDiffStats(scope.rootPath),
-    );
-    const requestedScopes = normalizeRequestedDiffScopes(input.scopes);
-    const filesByScope = new Map<GitDiffScope, MainGitChangeEntry[]>(
-        requestedScopes.map((diffScope) => [diffScope, []]),
-    );
+    const result = await gitService.listWorktreeDiff(scope.rootPath, {
+        scopes: input.scopes,
+    });
 
-    for (const entry of snapshot.status.entries) {
-        for (const diffScope of requestedScopes) {
-            if (entry.scopes.includes(diffScope)) {
-                filesByScope.get(diffScope)?.push(entry);
-            }
-        }
-    }
+    return adaptGitWorktreeDiffResult(input.projectId, scope.worktreeId, result);
+}
 
-    const sections = await mapWithConcurrency(
-        requestedScopes,
-        GIT_WORKTREE_DIFF_CONCURRENCY,
-        async (diffScope): Promise<GitWorktreeDiffSection> => ({
-            scope: diffScope,
-            files: await mapWithConcurrency(
-                filesByScope.get(diffScope) ?? [],
-                GIT_WORKTREE_DIFF_CONCURRENCY,
-                (entry) =>
-                    buildSharedGitWorktreeDiffFile(
-                        gitService,
-                        scope.rootPath,
-                        entry,
-                        diffScope,
-                        diffStats,
-                    ),
-            ),
-        }),
-    );
-
+function adaptGitWorktreeDiffResult(
+    projectId: string,
+    worktreeId: string | null,
+    result: MainGitWorktreeDiffResult,
+): GitWorktreeDiffResult {
     return {
-        projectId: input.projectId,
-        sections,
-        updatedAt: snapshot.fetchedAt,
-        worktreeId: scope.worktreeId,
+        projectId,
+        sections: result.sections.map((section): GitWorktreeDiffSection => ({
+            files: section.files.map(adaptGitWorktreeDiffFile),
+            scope: section.scope,
+        })),
+        updatedAt: result.updatedAt,
+        worktreeId,
     };
 }
 
-async function buildSharedGitWorktreeDiffFile(
-    gitService: GitGateway,
-    rootPath: string,
-    entry: MainGitChangeEntry,
-    diffScope: GitDiffScope,
-    diffStats: DiffStatMap,
-): Promise<GitWorktreeDiffFile> {
-    const stat = diffStats.get(`${diffScope}:${entry.relativePath}`) ?? null;
-    const baseFile = {
-        additions: stat?.additions ?? null,
-        deletions: stat?.deletions ?? null,
-        error: null,
-        isBinary: entry.isBinary,
-        isConflicted: entry.conflicted,
-        kind: deriveScopedWorktreeDiffKind(entry, diffScope),
-        path: entry.relativePath,
-        previousPath: entry.previousPath,
-        scope: diffScope,
-    } satisfies Omit<GitWorktreeDiffFile, "diff">;
-
-    try {
-        const diff = await gitService.getFileDiff(rootPath, entry.relativePath, {
-            kind: entry.kind,
-            previousPath: entry.previousPath,
-            scope: diffScope,
-            staged: diffScope === "staged",
-        });
-        const sharedDiff = adaptGitFileDiff(diff, entry, diffScope);
-        const summary = summarizeSharedDiff(sharedDiff);
-
-        return {
-            ...baseFile,
-            additions: baseFile.additions ?? summary.additions,
-            deletions: baseFile.deletions ?? summary.deletions,
-            diff: sharedDiff,
-            isBinary: diff.isBinary || baseFile.isBinary,
-        };
-    } catch (error) {
-        return {
-            ...baseFile,
-            diff: null,
-            error:
-                error instanceof Error
-                    ? error.message
-                    : "Could not load this diff.",
-        };
-    }
+function adaptGitWorktreeDiffFile(
+    file: MainGitWorktreeDiffFile,
+): GitWorktreeDiffFile {
+    return {
+        additions: file.additions,
+        deletions: file.deletions,
+        diff: file.diff ? adaptGitWorktreeDiffFileDiff(file) : null,
+        error: file.error,
+        isBinary: file.isBinary,
+        isConflicted: file.isConflicted,
+        kind: mapSharedChangeKind(file.kind),
+        path: file.path,
+        previousPath: file.previousPath,
+        scope: file.scope,
+    };
 }
 
-function deriveScopedWorktreeDiffKind(
-    entry: MainGitChangeEntry,
-    diffScope: GitDiffScope,
-): GitWorktreeDiffFile["kind"] {
-    if (diffScope === "conflicted") {
-        return "conflicted";
+function adaptGitWorktreeDiffFileDiff(
+    file: MainGitWorktreeDiffFile,
+): SharedGitFileDiff {
+    const diff = file.diff;
+    if (!diff) {
+        throw new Error("Cannot adapt an empty worktree diff file.");
     }
 
-    if (diffScope === "untracked") {
-        return "untracked";
-    }
+    const idPrefix = `${file.scope}:${diff.changedPath}`;
 
-    const statusCode =
-        diffScope === "staged" ? entry.statusIndex : entry.statusWorkingDir;
-
-    switch (statusCode) {
-        case "A":
-            return "added";
-        case "C":
-            return "copied";
-        case "D":
-            return "deleted";
-        case "M":
-            return "modified";
-        case "R":
-            return "renamed";
-        case "T":
-            return "typechange";
-        default:
-            return diffScope === "staged" && entry.isRenamed
-                ? "renamed"
-                : mapSharedChangeKind(entry.kind);
-    }
+    return {
+        hunks: diff.hunks.map((hunk, hunkIndex) => ({
+            id: `${idPrefix}:${hunkIndex}`,
+            lines: hunk.lines.map((line, lineIndex) => ({
+                id: `${idPrefix}:${hunkIndex}:${lineIndex}`,
+                text: line.text,
+                type: line.type,
+            })),
+            newCount: hunk.newCount,
+            newStart: hunk.newStart,
+            oldCount: hunk.oldCount,
+            oldStart: hunk.oldStart,
+        })),
+        isText: !diff.isBinary,
+        kind: mapDiffKind(file.kind),
+        newText: null,
+        oldText: null,
+        path: diff.changedPath,
+        previousPath: diff.previousPath,
+        reversible: !file.isConflicted,
+    };
 }
 
 function adaptGitFileDiff(
@@ -2345,19 +2287,6 @@ function adaptGitFileDiff(
     };
 }
 
-function normalizeRequestedDiffScopes(
-    requestedScopes: readonly GitDiffScope[] | undefined,
-): readonly GitDiffScope[] {
-    if (!requestedScopes || requestedScopes.length === 0) {
-        return GIT_WORKTREE_DIFF_SCOPES;
-    }
-
-    const requestedScopeSet = new Set(requestedScopes);
-    return GIT_WORKTREE_DIFF_SCOPES.filter((scope) =>
-        requestedScopeSet.has(scope),
-    );
-}
-
 function normalizeRequestedDiffScope(
     requestedScope: GitDiffInput["scope"],
 ): GitDiffScope | "auto" {
@@ -2371,55 +2300,6 @@ function isGitDiffScope(value: unknown): value is GitDiffScope {
         value === "unstaged" ||
         value === "untracked"
     );
-}
-
-function summarizeSharedDiff(diff: SharedGitFileDiff): {
-    readonly additions: number;
-    readonly deletions: number;
-} {
-    let additions = 0;
-    let deletions = 0;
-
-    for (const hunk of diff.hunks) {
-        for (const line of hunk.lines) {
-            if (line.type === "add") {
-                additions += 1;
-            } else if (line.type === "remove") {
-                deletions += 1;
-            }
-        }
-    }
-
-    return { additions, deletions };
-}
-
-async function mapWithConcurrency<Input, Output>(
-    items: readonly Input[],
-    concurrency: number,
-    mapper: (item: Input, index: number) => Promise<Output>,
-): Promise<Output[]> {
-    const results = new Array<Output>(items.length);
-    let nextIndex = 0;
-
-    async function worker(): Promise<void> {
-        while (nextIndex < items.length) {
-            const currentIndex = nextIndex;
-            nextIndex += 1;
-            results[currentIndex] = await mapper(
-                items[currentIndex],
-                currentIndex,
-            );
-        }
-    }
-
-    await Promise.all(
-        Array.from(
-            { length: Math.min(concurrency, items.length) },
-            () => worker(),
-        ),
-    );
-
-    return results;
 }
 
 async function handleGitSnapshotMutation(

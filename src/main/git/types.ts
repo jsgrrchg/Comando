@@ -158,6 +158,33 @@ export interface GitFileDiffOptions {
     readonly staged?: boolean;
 }
 
+export interface GitWorktreeDiffFile {
+    readonly additions: number | null;
+    readonly deletions: number | null;
+    readonly diff: GitFileDiff | null;
+    readonly error: string | null;
+    readonly isBinary: boolean;
+    readonly isConflicted: boolean;
+    readonly kind: GitChangeKind;
+    readonly path: string;
+    readonly previousPath: string | null;
+    readonly scope: GitChangeScope;
+}
+
+export interface GitWorktreeDiffSection {
+    readonly files: readonly GitWorktreeDiffFile[];
+    readonly scope: GitChangeScope;
+}
+
+export interface GitWorktreeDiffResult {
+    readonly sections: readonly GitWorktreeDiffSection[];
+    readonly updatedAt: string;
+}
+
+export interface GitWorktreeDiffOptions {
+    readonly scopes?: readonly GitChangeScope[];
+}
+
 export type GitFileTextReference = "head" | "index";
 
 export interface GitListBranchesOptions {

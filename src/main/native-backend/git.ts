@@ -24,6 +24,7 @@ import type {
     NativeGitStatusSnapshot,
     NativeGitSyncStatus,
     NativeGitWorktreeSummary,
+    NativeGitWorktreeDiffResult,
 } from "@shared/native-backend";
 
 import type { GitGateway } from "../git/service";
@@ -51,6 +52,8 @@ import type {
     GitRepositoryState,
     GitStatusSnapshot,
     GitSyncStatus,
+    GitWorktreeDiffOptions,
+    GitWorktreeDiffResult,
     GitWorktreeSummary,
 } from "../git/types";
 import type { NativeBackendRequester } from "./persistence";
@@ -141,6 +144,23 @@ export class NativeGitGateway implements ClosableGitGateway {
                     "git_get_file_diff",
                     nativeGitPathInput(inputPath, relativePath, resolvedOptions),
                 ),
+            ),
+        );
+    }
+
+    async listWorktreeDiff(
+        inputPath: string,
+        options: GitWorktreeDiffOptions = {},
+    ): Promise<GitWorktreeDiffResult> {
+        return nativeWorktreeDiffToMain(
+            parseNativeWorktreeDiff(
+                await this.#client.request("git_list_worktree_diff", {
+                    scope: nativeGitScope(inputPath),
+                    scopes:
+                        options.scopes && options.scopes.length > 0
+                            ? [...options.scopes]
+                            : null,
+                }),
             ),
         );
     }
@@ -542,6 +562,29 @@ export function nativeFileDiffToMain(diff: NativeGitFileDiff): GitFileDiff {
             deletions: diff.summary.deletions,
             insertions: diff.summary.insertions,
         },
+    };
+}
+
+function nativeWorktreeDiffToMain(
+    result: NativeGitWorktreeDiffResult,
+): GitWorktreeDiffResult {
+    return {
+        sections: result.sections.map((section) => ({
+            files: section.files.map((file) => ({
+                additions: file.additions,
+                deletions: file.deletions,
+                diff: file.diff ? nativeFileDiffToMain(file.diff) : null,
+                error: file.error,
+                isBinary: file.isBinary,
+                isConflicted: file.isConflicted,
+                kind: nativeChangeKindToMain(file.kind),
+                path: file.path,
+                previousPath: file.previousPath,
+                scope: parseChangeScope(file.scope),
+            })),
+            scope: parseChangeScope(section.scope),
+        })),
+        updatedAt: result.updatedAt,
     };
 }
 
@@ -976,6 +1019,13 @@ function parseNativeFileDiff(value: unknown): NativeGitFileDiff {
     requireRecord(record.summary, "summary");
     requireArray(record.hunks, "hunks");
     return record as unknown as NativeGitFileDiff;
+}
+
+function parseNativeWorktreeDiff(value: unknown): NativeGitWorktreeDiffResult {
+    const record = requireRecord(value, "Native git worktree diff");
+    requireArray(record.sections, "sections");
+    requireString(record.updatedAt, "updatedAt");
+    return record as unknown as NativeGitWorktreeDiffResult;
 }
 
 function parseNativeOriginalFile(value: unknown): NativeGitOriginalFile {

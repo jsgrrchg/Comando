@@ -14,6 +14,8 @@ import type {
     GitRepositorySnapshot,
     GitStatusSnapshot,
     GitSyncStatus,
+    GitWorktreeDiffOptions,
+    GitWorktreeDiffResult,
     GitWorktreeSummary,
 } from "./types";
 
@@ -32,6 +34,10 @@ export interface GitGateway {
         relativePath: string,
         options?: GitFileDiffOptions,
     ): Promise<GitFileDiff>;
+    listWorktreeDiff(
+        inputPath: string,
+        options?: GitWorktreeDiffOptions,
+    ): Promise<GitWorktreeDiffResult>;
     getFileText(
         inputPath: string,
         relativePath: string,
