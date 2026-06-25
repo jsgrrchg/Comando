@@ -1,8 +1,6 @@
-import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { PassThrough } from "node:stream";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -14,42 +12,8 @@ import type {
 
 import { AiService } from "./service";
 
-const initializeMock = vi.hoisted(() =>
-    vi.fn(() =>
-        Promise.resolve({
-            authMethods: [{ id: "codex-api-key" }, { id: "chatgpt" }],
-        }),
-    ),
-);
-const authenticateMock = vi.hoisted(() => vi.fn(() => Promise.resolve({})));
-const logoutMock = vi.hoisted(() => vi.fn(() => Promise.resolve({})));
-const spawnMock = vi.hoisted(() => vi.fn());
-
-vi.mock("@agentclientprotocol/sdk", () => ({
-    ClientSideConnection: class MockClientSideConnection {
-        initialize = initializeMock;
-        authenticate = authenticateMock;
-        unstable_logout = logoutMock;
-    },
-    PROTOCOL_VERSION: "test-protocol-version",
-    ndJsonStream: vi.fn(() => ({})),
-}));
-
-vi.mock("node:child_process", () => ({
-    spawn: spawnMock,
-}));
-
 beforeEach(() => {
-    initializeMock.mockReset();
-    initializeMock.mockResolvedValue({
-        authMethods: [{ id: "codex-api-key" }, { id: "chatgpt" }],
-    });
-    authenticateMock.mockReset();
-    authenticateMock.mockResolvedValue({});
-    logoutMock.mockReset();
-    logoutMock.mockResolvedValue({});
-    spawnMock.mockReset();
-    spawnMock.mockImplementation(createMockChildProcess);
+    vi.clearAllMocks();
 });
 
 describe("AiService Codex branch", () => {
@@ -451,7 +415,62 @@ describe("AiService Codex branch", () => {
         expect(status.runtimeId).toBe("codex");
     });
 
-    it("rejects Codex provider logout for API key auth without clearing local secrets", async () => {
+    it("delegates Codex logout to native auth", async () => {
+        const runtimeStatusEvents: AiRuntimeStatus[] = [];
+        const logoutRuntimeAuth = vi.fn(() =>
+            Promise.resolve({
+                authMethod: null,
+                authMethods: [],
+                authReady: false,
+                checkedAt: "2026-06-25T00:00:00.000Z",
+                command: null,
+                hasCustomBinaryPath: false,
+                hasGatewayConfig: false,
+                hasGatewayUrl: false,
+                message: null,
+                onboardingRequired: true,
+                runtimeId: "codex" as const,
+                source: null,
+                state: "ready",
+            }),
+        );
+        const service = new AiService({
+            nativeAi: {
+                logoutRuntimeAuth,
+                shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "codex"),
+            } as never,
+            onRuntimeStatus: (status) => runtimeStatusEvents.push(status),
+            onSessionSnapshot: vi.fn(),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+            projectService: {
+                getProjectRootPath: vi.fn(() => process.cwd()),
+            } as never,
+            secretStore: {
+                loadSecret: vi.fn(() => null),
+                saveSecret: vi.fn(),
+            },
+            settingsService: {
+                loadClaudeRuntimeSettings: vi.fn(),
+                loadCodexRuntimeSettings: vi.fn(),
+                loadKiloRuntimeSettings: vi.fn(),
+                saveClaudeRuntimeSettings: vi.fn(),
+                saveCodexRuntimeSettings: vi.fn(),
+                saveKiloRuntimeSettings: vi.fn(),
+            } as never,
+        });
+
+        const status = await service.logoutRuntimeAuth({ runtimeId: "codex" });
+
+        expect(logoutRuntimeAuth).toHaveBeenCalledWith({ runtimeId: "codex" });
+        expect(status.runtimeId).toBe("codex");
+        expect(runtimeStatusEvents.at(-1)?.runtimeId).toBe("codex");
+    });
+
+    it("requires native auth for Codex logout without clearing local secrets", async () => {
         const secretValues = new Map<string, string>([
             ["ai.codex:codex_api_key", "codex-secret"],
         ]);
@@ -510,26 +529,20 @@ describe("AiService Codex branch", () => {
 
         await expect(
             service.logoutRuntimeAuth({ runtimeId: "codex" }),
-        ).rejects.toThrow("Use Disconnect from Comando");
+        ).rejects.toThrow("Codex logout requires the native AI runtime gateway");
         expect(secretValues.get("ai.codex:codex_api_key")).toBe(
             "codex-secret",
         );
         expect(saveCodexRuntimeSettings).not.toHaveBeenCalled();
     });
 
-    it("rejects Codex runtime auth when the child process fails to spawn", async () => {
-        const tempDir = fs.mkdtempSync(
-            path.join(os.tmpdir(), "comando-codex-auth-spawn-"),
-        );
-        const executablePath = path.join(tempDir, "codex-acp");
-        fs.writeFileSync(executablePath, "#!/bin/sh\nexit 0\n", "utf8");
-        fs.chmodSync(executablePath, 0o755);
-        const child = createMockChildProcess();
-        spawnMock.mockReturnValueOnce(child);
-        initializeMock.mockImplementationOnce(
-            () => new Promise(() => undefined),
-        );
+    it("delegates Codex runtime auth to native", async () => {
+        const launchRuntimeAuth = vi.fn(() => Promise.resolve());
         const service = new AiService({
+            nativeAi: {
+                launchRuntimeAuth,
+                shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "codex"),
+            } as never,
             onRuntimeStatus: vi.fn(),
             onSessionSnapshot: vi.fn(),
             persistence: {
@@ -538,7 +551,7 @@ describe("AiService Codex branch", () => {
                 saveSessionSnapshot: vi.fn(),
             } as never,
             projectService: {
-                getProjectRootPath: vi.fn(() => tempDir),
+                getProjectRootPath: vi.fn(() => process.cwd()),
             } as never,
             secretStore: {
                 loadSecret: vi.fn(() => null),
@@ -569,24 +582,17 @@ describe("AiService Codex branch", () => {
             } as never,
         });
 
-        const result = service.launchRuntimeAuth({
+        await service.launchRuntimeAuth({
             methodId: "codex-api-key",
             projectId: null,
             runtimeId: "codex",
         });
-        queueMicrotask(() => {
-            child.emit("error", new Error("spawn ENOENT"));
-        });
 
-        try {
-            await expect(result).rejects.toThrow("spawn ENOENT");
-            expect(child.kill).toHaveBeenCalled();
-            expect(child.stdin.destroyed).toBe(true);
-            expect(child.stdout.destroyed).toBe(true);
-            expect(child.stderr.destroyed).toBe(true);
-        } finally {
-            fs.rmSync(tempDir, { force: true, recursive: true });
-        }
+        expect(launchRuntimeAuth).toHaveBeenCalledWith({
+            methodId: "codex-api-key",
+            projectId: null,
+            runtimeId: "codex",
+        });
     });
 
     it("clears the opposing key when changing Codex preferred method", async () => {
@@ -1029,28 +1035,3 @@ describe("AiService Codex branch", () => {
         expect(saveSessionSnapshot).toHaveBeenCalled();
     });
 });
-
-function createMockChildProcess() {
-    const emitter = new EventEmitter();
-    const child = {
-        emit: (event: string, ...args: unknown[]) => emitter.emit(event, ...args),
-        kill: vi.fn(() => true),
-        off: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
-            emitter.off(event, listener);
-            return child;
-        }),
-        on: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
-            emitter.on(event, listener);
-            return child;
-        }),
-        once: vi.fn((event: string, listener: (...args: unknown[]) => void) => {
-            emitter.once(event, listener);
-            return child;
-        }),
-        stderr: new PassThrough(),
-        stdin: new PassThrough(),
-        stdout: new PassThrough(),
-    };
-
-    return child;
-}

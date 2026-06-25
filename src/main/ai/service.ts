@@ -1,14 +1,5 @@
 import path from "node:path";
 import fs from "node:fs";
-import { spawn } from "node:child_process";
-import { Readable, Writable } from "node:stream";
-
-import {
-    ClientSideConnection,
-    PROTOCOL_VERSION,
-    ndJsonStream,
-    type Client,
-} from "@agentclientprotocol/sdk";
 import type {
     AiHistorySessionSummary,
     AiFileDiff,
@@ -66,7 +57,6 @@ import type {
     SecretStoreGateway,
 } from "@main/ai/secret-store";
 import { debugBenignError } from "@main/observability/logging";
-import { prepareCommandForSpawn } from "@main/shell/command-launch";
 
 import {
     createEmptyAiSessionSnapshot,
@@ -96,7 +86,6 @@ import {
     buildAiSessionUpdate,
     getModeConfigOption,
     getModelConfigOption,
-    getRecentStderrText,
     getRuntimeDisplayName,
     hasSelectConfigValue,
     isPathInsideRoot,
@@ -122,7 +111,6 @@ import { resolveCodexRuntime } from "./resolver/runtime-resolver";
 import {
     applyCodexAuthEnv,
     buildCodexSecretPatches,
-    getCodexAuthMethods,
     getCodexRuntimeStatus,
     isCodexAuthenticationError,
     type CodexSecretBundle,
@@ -168,14 +156,6 @@ import {
     markOpenCodeAuthInvalidated,
     resolveOpenCodeRuntime,
 } from "./opencode/setup";
-
-function toWebByteWritable(stream: Writable): WritableStream<Uint8Array> {
-    return Writable.toWeb(stream) as WritableStream<Uint8Array>;
-}
-
-function toWebByteReadable(stream: Readable): ReadableStream<Uint8Array> {
-    return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
-}
 
 type LiveSessionContext = {
     readonly additionalRoots: readonly string[];
@@ -1695,66 +1675,8 @@ export class AiService {
             return;
         }
 
-        const currentSettings = this.#settingsService.loadCodexRuntimeSettings();
-        const authMethod = getCodexAuthMethods().some(
-            (method) => method.id === input.methodId,
-        )
-            ? (input.methodId as CodexRuntimeSettings["authMethod"])
-            : null;
-
-        if (authMethod === null) {
-            throw new Error(
-                "Choose a valid Codex login method before opening authentication.",
-            );
-        }
-
-        const nextSettings = {
-            ...currentSettings,
-            authMethod,
-        } satisfies CodexRuntimeSettings;
-        await this.#runRuntimeAuthConnection(
-            "codex",
-            cwd,
-            async (connection) => {
-                const initializeResponse = await connection.initialize({
-                    clientCapabilities: {
-                        fs: {
-                            readTextFile: true,
-                            writeTextFile: true,
-                        },
-                    },
-                    clientInfo: {
-                        name: "comando",
-                        title: "Comando",
-                        version: process.versions.electron,
-                    },
-                    protocolVersion: PROTOCOL_VERSION,
-                });
-
-                const advertisedMethods =
-                    initializeResponse.authMethods?.map((method) => method.id) ??
-                    [];
-                if (!advertisedMethods.includes(authMethod)) {
-                    throw new Error(
-                        `Codex does not support the authentication method \`${authMethod}\` on this machine.`,
-                    );
-                }
-
-                await connection.authenticate({
-                    methodId: authMethod,
-                });
-            },
-            nextSettings,
-        );
-
-        await this.#saveCodexAuthSettings(nextSettings, []);
-        this.#onRuntimeStatus(
-            this.#withPersistedRuntimeCatalog(
-                getCodexRuntimeStatus(
-                    nextSettings,
-                    loadCodexSecretBundle(this.#secretStore),
-                ),
-            ),
+        throw new Error(
+            "Codex authentication requires the native AI runtime gateway.",
         );
     }
 
@@ -1774,63 +1696,9 @@ export class AiService {
             );
         }
 
-        const currentSettings =
-            this.#settingsService.loadCodexRuntimeSettings();
-        if (currentSettings.authMethod !== "chatgpt") {
-            throw new Error(
-                "Codex provider logout is only available for ChatGPT login. Use Disconnect from Comando to clear local API keys.",
-            );
-        }
-
-        await this.#runRuntimeAuthConnection(
-            "codex",
-            process.cwd(),
-            async (connection) => {
-                const initializeResponse = await connection.initialize({
-                    clientCapabilities: {
-                        fs: {
-                            readTextFile: true,
-                            writeTextFile: true,
-                        },
-                    },
-                    clientInfo: {
-                        name: "comando",
-                        title: "Comando",
-                        version: process.versions.electron,
-                    },
-                    protocolVersion: PROTOCOL_VERSION,
-                });
-
-                if (!initializeResponse.agentCapabilities?.auth?.logout) {
-                    throw new Error(
-                        "Codex does not advertise logout support on this machine.",
-                    );
-                }
-
-                await connection.unstable_logout({});
-            },
+        throw new Error(
+            "Codex logout requires the native AI runtime gateway.",
         );
-
-        const secretPatch = buildCodexSecretPatches(this.#secretStore, {
-            codexApiKey: null,
-            openaiApiKey: null,
-        });
-        const nextSettings = {
-            ...currentSettings,
-            authMethod: null,
-            hasCodexApiKey: secretPatch.flags.hasCodexApiKey,
-            hasOpenAiApiKey: secretPatch.flags.hasOpenAiApiKey,
-        } satisfies CodexRuntimeSettings;
-        await this.#saveCodexAuthSettings(nextSettings, secretPatch.patches);
-
-        const status = this.#withPersistedRuntimeCatalog(
-            getCodexRuntimeStatus(
-                nextSettings,
-                loadCodexSecretBundle(this.#secretStore),
-            ),
-        );
-        this.#onRuntimeStatus(status);
-        return status;
     }
 
     async disconnectRuntimeAuth(
@@ -4498,109 +4366,6 @@ export class AiService {
             executable: resolved.executable,
             status: getCodexRuntimeStatus(settings, secrets),
         };
-    }
-
-    async #runRuntimeAuthConnection(
-        runtimeId: AiRuntimeId,
-        cwd: string,
-        action: (connection: ClientSideConnection) => Promise<void>,
-        codexSettingsOverride?: CodexRuntimeSettings,
-    ): Promise<void> {
-        const resolvedRuntime = this.#resolveRuntimeCommand(
-            runtimeId,
-            codexSettingsOverride,
-        );
-        if (resolvedRuntime.status.state !== "ready") {
-            throw new Error(
-                resolvedRuntime.status.message ??
-                    `${getRuntimeDisplayName(runtimeId)} is not available on this machine.`,
-            );
-        }
-
-        const runtimeSpawn = prepareCommandForSpawn(
-            resolvedRuntime.executable,
-            resolvedRuntime.args,
-            {
-                cwd,
-                env: resolvedRuntime.env,
-                stdio: ["pipe", "pipe", "pipe"] as [
-                    "pipe",
-                    "pipe",
-                    "pipe",
-                ],
-            },
-        );
-        const child = spawn(
-            runtimeSpawn.command,
-            runtimeSpawn.args,
-            runtimeSpawn.options,
-        );
-        const stderrChunks: string[] = [];
-        const stderrHandler = (chunk: Buffer | string) => {
-            const text =
-                typeof chunk === "string" ? chunk : chunk.toString("utf8");
-            stderrChunks.push(text);
-            if (stderrChunks.length > 20) {
-                stderrChunks.shift();
-            }
-        };
-        child.stderr.on("data", stderrHandler);
-        let removeSpawnErrorHandler = () => {};
-        const spawnErrorPromise = new Promise<never>((_, reject) => {
-            const spawnErrorHandler = (error: Error) => {
-                debugBenignError("ai.service.runtimeAuth.process", error);
-                reject(error);
-            };
-            child.once("error", spawnErrorHandler);
-            removeSpawnErrorHandler = () => {
-                child.off("error", spawnErrorHandler);
-            };
-        });
-
-        const client: Client = {
-            readTextFile: () => {
-                throw new Error("Runtime auth does not support file reads.");
-            },
-            requestPermission: () => {
-                throw new Error(
-                    "Runtime auth does not support permission requests.",
-                );
-            },
-            sessionUpdate: () => Promise.resolve(undefined),
-            writeTextFile: () => {
-                throw new Error("Runtime auth does not support file writes.");
-            },
-        };
-        const stream = ndJsonStream(
-            toWebByteWritable(child.stdin),
-            toWebByteReadable(child.stdout),
-        );
-        const connection = new ClientSideConnection(() => client, stream);
-
-        try {
-            await Promise.race([action(connection), spawnErrorPromise]);
-        } catch (error) {
-            const stderrText = getRecentStderrText(stderrChunks);
-
-            if (error instanceof Error && error.message.trim()) {
-                throw error;
-            }
-
-            throw new Error(
-                stderrText ||
-                    `Failed to complete ${getRuntimeDisplayName(runtimeId)} authentication.`,
-                {
-                    cause: error,
-                },
-            );
-        } finally {
-            removeSpawnErrorHandler();
-            child.stderr.off("data", stderrHandler);
-            child.kill();
-            child.stdin.destroy();
-            child.stdout.destroy();
-            child.stderr.destroy();
-        }
     }
 
     #invalidateRuntimeAuthIfNeeded(
