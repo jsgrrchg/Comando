@@ -1547,6 +1547,7 @@ export class AiService {
     async launchRuntimeAuth(input: AiRuntimeAuthLaunchInput): Promise<void> {
         const nativeAi = this.#nativeAuthGateway(input.runtimeId);
         if (nativeAi?.launchRuntimeAuth) {
+            await this.#migrateNativeRuntimeSettingsIfNeeded(input.runtimeId);
             await nativeAi.launchRuntimeAuth(input);
             return;
         }
@@ -1680,6 +1681,7 @@ export class AiService {
     ): Promise<AiRuntimeStatus> {
         const nativeAi = this.#nativeAuthGateway(input.runtimeId);
         if (nativeAi?.logoutRuntimeAuth) {
+            await this.#migrateNativeRuntimeSettingsIfNeeded(input.runtimeId);
             const status = await nativeAi.logoutRuntimeAuth(input);
             this.#onRuntimeStatus(status);
             return status;
@@ -1701,6 +1703,7 @@ export class AiService {
     ): Promise<AiRuntimeStatus> {
         const nativeAi = this.#nativeAuthGateway(input.runtimeId);
         if (nativeAi?.disconnectRuntimeAuth) {
+            await this.#migrateNativeRuntimeSettingsIfNeeded(input.runtimeId);
             const status = await nativeAi.disconnectRuntimeAuth(input);
             this.#onRuntimeStatus(status);
             return status;
