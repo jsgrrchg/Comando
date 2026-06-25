@@ -195,7 +195,7 @@ For automatic GitHub releases:
 ```
 src/
 ├── main/                 # Electron main process
-│   ├── ai/              # ACP client, runtimes, review flow, runtime setup
+│   ├── ai/              # AI runtimes, review flow, runtime setup
 │   ├── db/              # Shared migration fixtures and test DB types
 │   ├── git/             # Git facade contracts
 │   ├── ipc/             # Typed IPC handlers
@@ -233,7 +233,7 @@ src/
 - Monaco Editor · xterm.js · CodeMirror 6 · vscode-textmate
 
 **Backend**
-- Rust native sidecar · `@agentclientprotocol/sdk`
+- Rust native sidecar · `agent-client-protocol`
 
 **Tooling**
 - Vite 7 · Vitest 4 · ESLint 10 · `@typescript-eslint` 8

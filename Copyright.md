@@ -92,9 +92,9 @@ required notices.
 
 ### Protocol And AI Client Packages
 
-| Package | License |
-| ------- | ------- |
-| `@agentclientprotocol/sdk` | Apache-2.0 |
+The main application uses the Rust `agent-client-protocol` crate through the
+native sidecar. The TypeScript ACP SDK is not a direct dependency of the root
+package.
 
 ### Development And Test Tooling
 
@@ -171,8 +171,8 @@ was checked with `cargo metadata --format-version=1 --locked`.
 | Upstream package | `@agentclientprotocol/claude-agent-acp` |
 | Upstream baseline | `0.37.0`, commit `36822c2b75b6e1cd5406a5ab40fe603fc380ee10` |
 | Package license | Apache-2.0 |
-| ACP SDK dependency | `@agentclientprotocol/sdk` `0.22.1`, Apache-2.0 |
-| Claude Agent SDK dependency | `@anthropic-ai/claude-agent-sdk` `0.3.154`, Anthropic legal terms |
+| ACP SDK dependency | `@agentclientprotocol/sdk` `0.24.0`, Apache-2.0, vendored inside the Claude runtime only |
+| Claude Agent SDK dependency | `@anthropic-ai/claude-agent-sdk` `0.3.165`, Anthropic legal terms |
 
 The Claude ACP adapter itself is Apache-2.0. Its runtime dependency
 `@anthropic-ai/claude-agent-sdk` and the platform-specific
@@ -202,7 +202,7 @@ terms, and installation channels.
 | ------- | ---------------- | ------ |
 | `vendor/codex-acp` | Apache-2.0 | `github.com/zed-industries/codex-acp` plus OpenAI Codex Rust crates |
 | `vendor/Claude-agent-acp-upstream` | Apache-2.0 | `github.com/agentclientprotocol/claude-agent-acp` |
-| `@agentclientprotocol/sdk` | Apache-2.0 | Agent Client Protocol TypeScript SDK |
+| `@agentclientprotocol/sdk` | Apache-2.0 | Agent Client Protocol TypeScript SDK, vendored only inside the Claude ACP runtime |
 | `@anthropic-ai/claude-agent-sdk` | Anthropic legal terms | Anthropic Claude Agent SDK |
 
 All original copyright notices and license headers in vendored sources should
