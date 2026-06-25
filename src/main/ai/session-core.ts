@@ -352,8 +352,7 @@ function mapSessionModes(
     state: AiRuntimeModeState | null | undefined,
     configOptions: readonly AiSessionConfigOption[],
 ): readonly AiSessionMode[] {
-    const availableModes =
-        state && Array.isArray(state.availableModes) ? state.availableModes : [];
+    const availableModes = state?.availableModes ?? [];
     if (availableModes.length > 0) {
         return availableModes.map((mode) => ({
             description: mode.description ?? null,
@@ -369,10 +368,7 @@ function mapSessionModels(
     state: AiRuntimeModelState | null | undefined,
     configOptions: readonly AiSessionConfigOption[],
 ): readonly AiSessionModel[] {
-    const availableModels =
-        state && Array.isArray(state.availableModels)
-            ? state.availableModels
-            : [];
+    const availableModels = state?.availableModels ?? [];
     if (availableModels.length > 0) {
         return availableModels.map((model) => ({
             description: model.description ?? null,
