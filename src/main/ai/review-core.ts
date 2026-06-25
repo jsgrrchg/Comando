@@ -2,11 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 
 import type {
-    Diff,
-    ToolCall,
-    ToolCallUpdate,
-} from "@agentclientprotocol/sdk";
-import type {
     AiDiffHunk,
     AiGeneratedImage,
     AiFileDiff,
@@ -61,8 +56,25 @@ interface AiReviewPathContext {
     readonly projectRoot: string | null;
 }
 
+interface AiReviewRuntimeDiff {
+    readonly _meta?: unknown;
+    readonly newText: string;
+    readonly oldText?: string | null;
+    readonly path: string;
+}
+
+type AiReviewToolStatus = "completed" | "failed" | "in_progress" | "pending";
+
+interface AiReviewToolUpdate {
+    readonly _meta?: unknown;
+    readonly rawInput?: unknown;
+    readonly status?: AiReviewToolStatus | null;
+    readonly title?: string | null;
+    readonly toolCallId: string;
+}
+
 export function isImageGenerationToolUpdate(
-    update: Pick<ToolCall | ToolCallUpdate, "_meta" | "toolCallId">,
+    update: Pick<AiReviewToolUpdate, "_meta" | "toolCallId">,
 ): boolean {
     if (
         update.toolCallId.startsWith(CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX)
@@ -81,7 +93,7 @@ export function isImageGenerationToolUpdate(
 
 export function mapImageGenerationToolUpdate(
     snapshot: AiSessionSnapshot,
-    update: ToolCall | ToolCallUpdate,
+    update: AiReviewToolUpdate,
     updatedAt: string,
 ): AiSessionSnapshot {
     const messageId = `image:${update.toolCallId}`;
@@ -154,7 +166,7 @@ export function mapImageGenerationToolUpdate(
 }
 
 export function shouldSuppressToolActivityUpdate(
-    update: Pick<ToolCall | ToolCallUpdate, "_meta" | "toolCallId">,
+    update: Pick<AiReviewToolUpdate, "_meta" | "toolCallId">,
     title: string | null,
 ): boolean {
     if (!title || !SUPPRESSED_STATUS_TITLES.has(title)) {
@@ -185,7 +197,7 @@ export function shouldSuppressToolActivityUpdate(
 }
 
 export function diffToAiFileDiff(
-    diff: Diff,
+    diff: AiReviewRuntimeDiff,
     toolKind: string,
     normalizePath: (candidatePath: string) => string = (candidatePath) =>
         candidatePath,
@@ -217,7 +229,7 @@ export function diffToAiFileDiff(
 }
 
 function inferDiffKind(
-    diff: Diff,
+    diff: AiReviewRuntimeDiff,
     toolKind: string,
     previousPath: string | null,
 ): AiTrackedFile["kind"] {
@@ -309,7 +321,7 @@ function readRecordString(
 }
 
 function mapToolStatusToImageStatus(
-    status: ToolCall["status"] | ToolCallUpdate["status"] | null | undefined,
+    status: AiReviewToolStatus | null | undefined,
 ): string | null {
     switch (status) {
         case "completed":
@@ -644,7 +656,7 @@ function tryReadFileAsText(absolutePath: string): string | null {
 }
 
 function isClaudeEditReEmission(
-    diff: Pick<Diff, "newText" | "oldText">,
+    diff: Pick<AiReviewRuntimeDiff, "newText" | "oldText">,
     existing: AiTrackedFile | undefined,
     base: string,
     context: DiffResolutionContext | undefined,
@@ -1069,12 +1081,12 @@ function matchesPatchLineSequence(
 }
 
 export function resolveDiffToFullTexts(
-    diff: Diff,
+    diff: AiReviewRuntimeDiff,
     existing: AiTrackedFile | undefined,
     liveSession: AiReviewPathContext,
     normalizedPath: string,
     context?: DiffResolutionContext,
-): Diff {
+): AiReviewRuntimeDiff {
     if (diff.oldText == null) {
         return diff;
     }
