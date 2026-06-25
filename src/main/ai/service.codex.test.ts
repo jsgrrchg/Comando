@@ -1,7 +1,3 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
@@ -568,7 +564,7 @@ describe("AiService Codex branch", () => {
                 })),
                 loadCodexRuntimeSettings: vi.fn(() => ({
                     authMethod: null,
-                    binaryPath: executablePath,
+                    binaryPath: null,
                     hasCodexApiKey: false,
                     hasOpenAiApiKey: false,
                 })),

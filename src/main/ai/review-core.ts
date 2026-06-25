@@ -36,7 +36,6 @@ import {
     COMANDO_STATUS_EVENT_TYPE_KEY,
     COMANDO_STATUS_TURN_EVENT_ID_PREFIX,
     SUPPRESSED_STATUS_TITLES,
-    type LiveAcpSession,
 } from "./contracts";
 import {
     basenameForPathIdentity,
@@ -55,6 +54,11 @@ interface DiffResolutionContext {
     readonly rawOutput?: unknown;
     readonly sessionUpdate: "tool_call" | "tool_call_update";
     readonly toolCallId: string;
+}
+
+interface AiReviewPathContext {
+    readonly cwd: string;
+    readonly projectRoot: string | null;
 }
 
 export function isImageGenerationToolUpdate(
@@ -450,7 +454,7 @@ export function parseCompleteNumberedFileOutput(
 }
 
 export function normalizeTrackedDiffPath(
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    liveSession: AiReviewPathContext,
     candidatePath: string,
     options: ResolveSessionPathOptions = {},
 ): string {
@@ -617,7 +621,7 @@ async function isTrackedFileNetClean(
 }
 
 function resolveTrackedDiffAbsolutePath(
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    liveSession: AiReviewPathContext,
     trackedPath: string,
 ): string {
     const scopeRoot = liveSession.projectRoot ?? liveSession.cwd;
@@ -749,7 +753,7 @@ interface UnifiedPatchHunk {
 function resolveAlreadyAppliedExternalDiff(
     diff: { readonly newText: string; readonly oldText: string },
     base: string,
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    liveSession: AiReviewPathContext,
     normalizedPath: string,
     context: DiffResolutionContext | undefined,
 ): { readonly newText: string; readonly oldText: string } | null {
@@ -774,7 +778,7 @@ function resolveAlreadyAppliedExternalDiff(
 function resolveAlreadyAppliedUnifiedPatchDiff(
     diff: { readonly newText: string; readonly oldText: string },
     base: string,
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    liveSession: AiReviewPathContext,
     normalizedPath: string,
     rawOutput: unknown,
 ): { readonly newText: string; readonly oldText: string } | null {
@@ -1067,7 +1071,7 @@ function matchesPatchLineSequence(
 export function resolveDiffToFullTexts(
     diff: Diff,
     existing: AiTrackedFile | undefined,
-    liveSession: Pick<LiveAcpSession, "cwd" | "projectRoot">,
+    liveSession: AiReviewPathContext,
     normalizedPath: string,
     context?: DiffResolutionContext,
 ): Diff {

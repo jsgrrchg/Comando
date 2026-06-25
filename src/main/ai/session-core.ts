@@ -34,8 +34,13 @@ import {
 
 import {
     CODEX_ACP_USER_INPUT_RESPONSE_PREFIX,
-    type AcpSessionCatalogPayload,
 } from "./contracts";
+
+interface AcpSessionCatalogPayload {
+    readonly configOptions?: readonly SessionConfigOption[] | null;
+    readonly modes?: SessionModeState | null;
+    readonly models?: SessionModelState | null;
+}
 
 export function shouldFlushLiveSessionImmediately(
     snapshot: AiSessionSnapshot,

@@ -476,9 +476,10 @@ describe("AiService Grok branch", () => {
             const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
                 () => Promise.resolve(preparedSnapshot),
             );
-            const getRuntimeStatus = vi.fn<NativeAiGateway["getRuntimeStatus"]>(
-                () =>
-                    Promise.resolve({
+            const getRuntimeStatus = vi.fn<
+                NonNullable<NativeAiGateway["getRuntimeStatus"]>
+            >(() =>
+                Promise.resolve({
                         authCredentialSource: "external-runtime",
                         authMethod: "grok-login",
                         authMethods: [],
