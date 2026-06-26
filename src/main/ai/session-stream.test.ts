@@ -2,18 +2,25 @@ import { describe, expect, it } from "vitest";
 
 import type {
     AiSessionDomainEvent,
+    AiMessage,
+    AiSessionPatchChanges,
     AiSessionSnapshot,
     AiSessionStreamPayload,
     AiSessionUpdate,
+    AiToolActivity,
 } from "@shared/ipc";
 
 import {
     buildAiSessionStreamRecoveryDiagnostic,
     buildAiSessionStreamRecoveryFallbackPayloads,
     getAiSessionStreamPayloadKind,
+    getAiSessionStreamPreservationKey,
     isAiSessionStreamAckStale,
     isAiSessionUpdate,
     isCriticalAiSessionStreamPayload,
+    isPreservableAiSessionStreamPayload,
+    rememberAiSessionStreamPayloadForRecovery,
+    type AiSessionStreamPreservationQueue,
 } from "./session-stream";
 
 const BASE_EVENT = {
@@ -46,6 +53,82 @@ function createCompletedEvent(
         messageId: "message-1",
         ...(kind === "message-completed" ? { messageKind: "assistant" } : {}),
     } as AiSessionStreamPayload;
+}
+
+function createMessage(id: string, content = ""): AiMessage {
+    return {
+        attachments: [],
+        content,
+        createdAt: "2026-04-14T00:00:00.000Z",
+        id,
+        kind: "assistant",
+        status: "streaming",
+    };
+}
+
+function createVisibleTranscriptEvent(
+    kind:
+        | "message-delta"
+        | "message-started"
+        | "thinking-delta"
+        | "thinking-started",
+    messageId = "message-1",
+    content = "Hello",
+): AiSessionStreamPayload {
+    if (kind === "message-started") {
+        return {
+            ...BASE_EVENT,
+            kind,
+            message: createMessage(messageId),
+            messageKind: "assistant",
+        };
+    }
+    if (kind === "thinking-started") {
+        return {
+            ...BASE_EVENT,
+            kind,
+            message: {
+                ...createMessage(messageId),
+                kind: "thinking",
+            },
+        };
+    }
+    if (kind === "message-delta") {
+        return {
+            ...BASE_EVENT,
+            content,
+            delta: content,
+            kind,
+            messageId,
+            messageKind: "assistant",
+        };
+    }
+    return {
+        ...BASE_EVENT,
+        content,
+        delta: content,
+        kind,
+        messageId,
+    };
+}
+
+function createToolActivity(): AiToolActivity {
+    return {
+        createdAt: "2026-04-14T00:00:00.000Z",
+        diffs: [],
+        exitCode: null,
+        id: "tool-1",
+        kind: "shell",
+        locations: [],
+        rawInputJson: null,
+        rawOutputJson: null,
+        sessionId: "session-1",
+        status: "in_progress",
+        summary: null,
+        terminalOutput: null,
+        title: "Run command",
+        updatedAt: "2026-04-14T00:00:00.000Z",
+    };
 }
 
 function createSnapshot(status: AiSessionSnapshot["status"]): AiSessionSnapshot {
@@ -94,6 +177,19 @@ function createPatchUpdate(
             changes: {
                 status,
             },
+            runtimeId: "codex",
+            sessionId: "session-1",
+        },
+    };
+}
+
+function createPatchUpdateWithChanges(
+    changes: AiSessionPatchChanges,
+): AiSessionUpdate {
+    return {
+        kind: "patch",
+        patch: {
+            changes,
             runtimeId: "codex",
             sessionId: "session-1",
         },
@@ -163,6 +259,146 @@ describe("AI session stream helpers", () => {
         ).toBe(false);
     });
 
+    it("marks visible transcript payloads as preservable", () => {
+        expect(
+            isPreservableAiSessionStreamPayload(
+                createVisibleTranscriptEvent("message-started"),
+            ),
+        ).toBe(true);
+        expect(
+            isPreservableAiSessionStreamPayload(
+                createVisibleTranscriptEvent("thinking-started"),
+            ),
+        ).toBe(true);
+        expect(
+            isPreservableAiSessionStreamPayload(
+                createVisibleTranscriptEvent("message-delta"),
+            ),
+        ).toBe(true);
+        expect(
+            isPreservableAiSessionStreamPayload(
+                createVisibleTranscriptEvent("thinking-delta"),
+            ),
+        ).toBe(true);
+    });
+
+    it("marks patches with visible messages or tool activity as preservable", () => {
+        expect(
+            isPreservableAiSessionStreamPayload(
+                createPatchUpdateWithChanges({
+                    messages: [createMessage("message-1", "Hello")],
+                }),
+            ),
+        ).toBe(true);
+        expect(
+            isPreservableAiSessionStreamPayload(
+                createPatchUpdateWithChanges({
+                    toolActivity: [createToolActivity()],
+                }),
+            ),
+        ).toBe(true);
+    });
+
+    it("does not preserve patches without visible transcript changes", () => {
+        const queue: AiSessionStreamPreservationQueue = new Map();
+        const patch = createPatchUpdateWithChanges({
+            title: "Renamed chat",
+        });
+
+        expect(isPreservableAiSessionStreamPayload(patch)).toBe(false);
+        expect(
+            rememberAiSessionStreamPayloadForRecovery({
+                maxPayloads: 10,
+                payload: patch,
+                queue,
+                seq: 1,
+            }),
+        ).toEqual({
+            droppedOldest: false,
+            pendingCount: 0,
+            preserved: false,
+        });
+        expect(queue.size).toBe(0);
+    });
+
+    it("coalesces multiple deltas for the same message and keeps accumulated content", () => {
+        const queue: AiSessionStreamPreservationQueue = new Map();
+        const firstDelta = createVisibleTranscriptEvent(
+            "message-delta",
+            "message-1",
+            "Hel",
+        );
+        const latestDelta = createVisibleTranscriptEvent(
+            "message-delta",
+            "message-1",
+            "Hello",
+        );
+
+        rememberAiSessionStreamPayloadForRecovery({
+            maxPayloads: 10,
+            payload: firstDelta,
+            queue,
+            seq: 1,
+        });
+        rememberAiSessionStreamPayloadForRecovery({
+            maxPayloads: 10,
+            payload: latestDelta,
+            queue,
+            seq: 2,
+        });
+
+        const key = getAiSessionStreamPreservationKey(latestDelta);
+        expect(queue.size).toBe(1);
+        expect(key).not.toBeNull();
+        expect(queue.get(key ?? "")).toEqual({
+            payload: latestDelta,
+            seq: 2,
+        });
+    });
+
+    it("drops the oldest preserved payload when the queue exceeds its limit", () => {
+        const queue: AiSessionStreamPreservationQueue = new Map();
+        const firstDelta = createVisibleTranscriptEvent(
+            "message-delta",
+            "message-1",
+            "First",
+        );
+        const secondDelta = createVisibleTranscriptEvent(
+            "message-delta",
+            "message-2",
+            "Second",
+        );
+
+        rememberAiSessionStreamPayloadForRecovery({
+            maxPayloads: 1,
+            payload: firstDelta,
+            queue,
+            seq: 1,
+        });
+        expect(
+            rememberAiSessionStreamPayloadForRecovery({
+                maxPayloads: 1,
+                payload: secondDelta,
+                queue,
+                seq: 2,
+            }),
+        ).toEqual({
+            droppedOldest: true,
+            pendingCount: 1,
+            preserved: true,
+        });
+
+        expect(queue.has(getAiSessionStreamPreservationKey(firstDelta) ?? "")).toBe(
+            false,
+        );
+        expect(
+            queue.get(getAiSessionStreamPreservationKey(secondDelta) ?? ""),
+        ).toEqual({
+            payload: secondDelta,
+            seq: 2,
+        });
+    });
+
     it("only marks ack state stale when an unacked message exceeds the timeout", () => {
         const timeoutMs = 2_000;
 
@@ -205,7 +441,7 @@ describe("AI session stream helpers", () => {
         expect(
             buildAiSessionStreamRecoveryDiagnostic({
                 nowMs: 4_500,
-                pendingCriticalPayloadCount: 2,
+                pendingPreservedPayloadCount: 2,
                 reason: "ack-timeout",
                 resyncSnapshotCount: 1,
                 state: {
@@ -218,7 +454,7 @@ describe("AI session stream helpers", () => {
             ackLagMs: 2_500,
             lastAckSeq: 7,
             lastSentSeq: 9,
-            pendingCriticalPayloadCount: 2,
+            pendingPreservedPayloadCount: 2,
             reason: "ack-timeout",
             resyncSnapshotCount: 1,
         });
@@ -231,7 +467,7 @@ describe("AI session stream helpers", () => {
 
         expect(
             buildAiSessionStreamRecoveryFallbackPayloads({
-                pendingCriticalPayloads: [
+                pendingPreservedPayloads: [
                     {
                         payload: laterCritical,
                         seq: 20,
@@ -258,7 +494,7 @@ describe("AI session stream helpers", () => {
 
         expect(
             buildAiSessionStreamRecoveryFallbackPayloads({
-                pendingCriticalPayloads: [
+                pendingPreservedPayloads: [
                     {
                         payload: critical,
                         seq: 1,
