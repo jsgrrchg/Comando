@@ -337,6 +337,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getAiEnvironmentDiagnostics);
     ipcMain.removeHandler(IPC_CHANNELS.getAiRuntimeStatus);
     ipcMain.removeHandler(IPC_CHANNELS.getAiSessionSnapshot);
+    ipcMain.removeHandler(IPC_CHANNELS.resyncAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.listAiSessionHistory);
     ipcMain.removeHandler(IPC_CHANNELS.getAiSessionTranscriptPage);
     ipcMain.removeHandler(IPC_CHANNELS.sendAiPrompt);
@@ -1731,6 +1732,13 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (_event, sessionId: string) =>
             options.aiService.getSessionSnapshot(sessionId),
     );
+    ipcMain.handle(IPC_CHANNELS.resyncAiSession, (event, sessionId: string) => {
+        const context = requireWindowContext(event.sender, "main");
+        return options.aiService.getLiveSessionSnapshotForWindow(
+            context.windowId,
+            sessionId,
+        );
+    });
     ipcMain.handle(
         IPC_CHANNELS.getAiSessionTranscriptPage,
         (_event, input: GetAiSessionTranscriptPageInput) =>

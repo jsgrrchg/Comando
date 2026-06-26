@@ -565,6 +565,22 @@ export class AiService {
         return snapshots;
     }
 
+    getLiveSessionSnapshotForWindow(
+        ownerWindowId: string,
+        sessionId: string,
+    ): AiSessionSnapshot | null {
+        const context = this.#liveSessionContexts.get(sessionId);
+        if (
+            !context ||
+            context.ownerWindowId !== ownerWindowId ||
+            this.#deletedSessionIds.has(sessionId)
+        ) {
+            return null;
+        }
+
+        return this.#liveSnapshots.get(sessionId) ?? null;
+    }
+
     handleNativeRuntimeStatus(status: AiRuntimeStatus): void {
         this.#onRuntimeStatus(status);
     }

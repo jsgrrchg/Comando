@@ -1277,6 +1277,11 @@ const comandoApi: ComandoApi = {
                 sessionId,
             ),
         ),
+    resyncAiSession: async (sessionId: string) =>
+        assertIpcObjectOrNull<AiSessionSnapshot>(
+            IPC_CHANNELS.resyncAiSession,
+            await ipcRenderer.invoke(IPC_CHANNELS.resyncAiSession, sessionId),
+        ),
     getAiSessionTranscriptPage: (input: GetAiSessionTranscriptPageInput) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.getAiSessionTranscriptPage,

@@ -303,6 +303,16 @@ type BufferedSessionDeltaEvent = Extract<
 const bufferedSessionDeltaEvents = new Map<string, BufferedSessionDeltaEvent>();
 let bufferedSessionDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let isFlushingBufferedSessionDeltas = false;
+const AI_SESSION_RESYNC_SILENCE_MS = 20_000;
+
+interface AiSessionResyncWatchdog {
+    inFlight: boolean;
+    progressKey: string;
+    requestedProgressKey: string | null;
+    timer: ReturnType<typeof setTimeout> | null;
+}
+
+const aiSessionResyncWatchdogs = new Map<string, AiSessionResyncWatchdog>();
 
 function isSessionDeltaEvent(
     event: AiSessionDomainEvent,
@@ -380,11 +390,130 @@ function resetBufferedSessionDeltas(): void {
     isFlushingBufferedSessionDeltas = false;
 }
 
+function isAiSessionResyncWatchdogActive(snapshot: AiSessionSnapshot): boolean {
+    return snapshot.status === "starting" || snapshot.status === "streaming";
+}
+
+function getAiSessionVisibleProgressKey(snapshot: AiSessionSnapshot): string {
+    const lastMessage = snapshot.messages[snapshot.messages.length - 1] ?? null;
+    const lastToolActivity =
+        snapshot.toolActivity[snapshot.toolActivity.length - 1] ?? null;
+
+    return JSON.stringify({
+        messageContentLength: lastMessage?.content.length ?? 0,
+        messageCount: snapshot.messages.length,
+        messageId: lastMessage?.id ?? null,
+        messageStatus: lastMessage?.status ?? null,
+        status: snapshot.status,
+        toolActivityCount: snapshot.toolActivity.length,
+        toolActivityId: lastToolActivity?.id ?? null,
+        toolActivityStatus: lastToolActivity?.status ?? null,
+        toolActivityUpdatedAt: lastToolActivity?.updatedAt ?? null,
+        updatedAt: snapshot.updatedAt,
+    });
+}
+
+function clearAiSessionResyncWatchdog(sessionId: string): void {
+    const existing = aiSessionResyncWatchdogs.get(sessionId);
+    if (!existing) {
+        return;
+    }
+    if (existing.timer) {
+        clearTimeout(existing.timer);
+    }
+    aiSessionResyncWatchdogs.delete(sessionId);
+}
+
+function resetAiSessionResyncWatchdogs(): void {
+    for (const sessionId of aiSessionResyncWatchdogs.keys()) {
+        clearAiSessionResyncWatchdog(sessionId);
+    }
+}
+
+function scheduleAiSessionResyncWatchdog(
+    sessionId: string,
+    get: GetAiState,
+): void {
+    const snapshot = get().sessions[sessionId]?.snapshot ?? null;
+    if (!snapshot || !isAiSessionResyncWatchdogActive(snapshot)) {
+        clearAiSessionResyncWatchdog(sessionId);
+        return;
+    }
+
+    const progressKey = getAiSessionVisibleProgressKey(snapshot);
+    const existing = aiSessionResyncWatchdogs.get(sessionId);
+    if (
+        existing?.progressKey === progressKey &&
+        (existing.timer ||
+            existing.inFlight ||
+            existing.requestedProgressKey === progressKey)
+    ) {
+        return;
+    }
+
+    if (existing?.timer) {
+        clearTimeout(existing.timer);
+    }
+
+    const watchdog: AiSessionResyncWatchdog = {
+        inFlight: false,
+        progressKey,
+        requestedProgressKey:
+            existing?.progressKey === progressKey
+                ? existing.requestedProgressKey
+                : null,
+        timer: setTimeout(() => {
+            void requestAiSessionResyncAfterSilence(sessionId, progressKey, get);
+        }, AI_SESSION_RESYNC_SILENCE_MS),
+    };
+    aiSessionResyncWatchdogs.set(sessionId, watchdog);
+}
+
+async function requestAiSessionResyncAfterSilence(
+    sessionId: string,
+    progressKey: string,
+    get: GetAiState,
+): Promise<void> {
+    const watchdog = aiSessionResyncWatchdogs.get(sessionId);
+    if (!watchdog || watchdog.progressKey !== progressKey) {
+        return;
+    }
+    watchdog.timer = null;
+
+    const snapshot = get().sessions[sessionId]?.snapshot ?? null;
+    if (
+        !snapshot ||
+        !isAiSessionResyncWatchdogActive(snapshot) ||
+        getAiSessionVisibleProgressKey(snapshot) !== progressKey ||
+        watchdog.inFlight ||
+        watchdog.requestedProgressKey === progressKey
+    ) {
+        return;
+    }
+
+    watchdog.inFlight = true;
+    watchdog.requestedProgressKey = progressKey;
+    try {
+        const resyncSnapshot = await getComandoApi().resyncAiSession(sessionId);
+        if (resyncSnapshot) {
+            get().applySessionSnapshot(resyncSnapshot);
+        }
+    } catch (error) {
+        console.warn("[comando] Failed to resync quiet AI session.", error);
+    } finally {
+        const latest = aiSessionResyncWatchdogs.get(sessionId);
+        if (latest?.progressKey === progressKey) {
+            latest.inFlight = false;
+        }
+    }
+}
+
 const activeQueueDrainSessionIds = new Set<string>();
 const pendingQueueDrainSessionIds = new Set<string>();
 
 export function resetAiStoreRuntimeBuffersForTests(): void {
     resetBufferedSessionDeltas();
+    resetAiSessionResyncWatchdogs();
 }
 
 export const useAiStore = create<AiStore>((set, get) => ({
@@ -643,6 +772,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
         }
 
         void drainQueueIfNeeded(event.sessionId, get, set);
+        scheduleAiSessionResyncWatchdog(event.sessionId, get);
     },
 
     applySessionUpdate: (update) => {
@@ -822,6 +952,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
         }
 
         void drainQueueIfNeeded(update.patch.sessionId, get, set);
+        scheduleAiSessionResyncWatchdog(update.patch.sessionId, get);
     },
 
     applySessionSnapshot: (snapshot) => {
@@ -894,6 +1025,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
         }
 
         void drainQueueIfNeeded(snapshot.sessionId, get, set);
+        scheduleAiSessionResyncWatchdog(snapshot.sessionId, get);
     },
 
     cancelSession: async (sessionId) => {
