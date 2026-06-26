@@ -10,6 +10,8 @@ import type {
     AiSessionUpdate,
     AiToolActivity,
     AiTrackedFile,
+    AiTrackedFileHunkMutationInput,
+    AiTrackedFileMutationInput,
     AppBootstrapSnapshot,
     SendAiPromptInput,
     WorkspaceChatTab,
@@ -1666,6 +1668,88 @@ describe("ai-store queue", () => {
             hunkIds: [hunkId],
             path: "c:\\repo\\src\\app.ts",
             sessionId: TAB.sessionId,
+        });
+    });
+
+    it("does not optimistically remove a tracked file when the expected version is stale", async () => {
+        const keepAiTrackedFile = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    keepAiTrackedFile,
+                },
+            },
+        });
+        const trackedFile = createTrackedFile({
+            identityKey: "tracked-file-1",
+            version: 2,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                trackedFiles: [trackedFile],
+            }),
+        );
+
+        await useAiStore.getState().keepTrackedFile({
+            expectedVersion: 1,
+            path: trackedFile.path,
+            sessionId: TAB.sessionId,
+            trackedFileId: trackedFile.identityKey,
+        } as unknown as AiTrackedFileMutationInput);
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.trackedFiles,
+        ).toEqual([trackedFile]);
+        expect(keepAiTrackedFile).toHaveBeenCalledWith({
+            expectedVersion: 1,
+            path: trackedFile.path,
+            sessionId: TAB.sessionId,
+            trackedFileId: trackedFile.identityKey,
+        });
+    });
+
+    it("does not optimistically resolve hunks when the expected version is stale", async () => {
+        const keepAiTrackedFileHunks = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    keepAiTrackedFileHunks,
+                },
+            },
+        });
+        const trackedFile = createTrackedFile({
+            identityKey: "tracked-file-1",
+            version: 2,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                trackedFiles: [trackedFile],
+            }),
+        );
+
+        await useAiStore.getState().keepTrackedFileHunks({
+            expectedVersion: 1,
+            hunkIds: ["hunk-1"],
+            path: trackedFile.path,
+            sessionId: TAB.sessionId,
+            trackedFileId: trackedFile.identityKey,
+        } as unknown as AiTrackedFileHunkMutationInput);
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.trackedFiles,
+        ).toEqual([trackedFile]);
+        expect(keepAiTrackedFileHunks).toHaveBeenCalledWith({
+            expectedVersion: 1,
+            hunkIds: ["hunk-1"],
+            path: trackedFile.path,
+            sessionId: TAB.sessionId,
+            trackedFileId: trackedFile.identityKey,
         });
     });
 
