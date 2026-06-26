@@ -321,6 +321,54 @@ describe("AI session stream helpers", () => {
         expect(queue.size).toBe(0);
     });
 
+    it("merges preserved patch changes for the same session", () => {
+        const queue: AiSessionStreamPreservationQueue = new Map();
+        const toolActivity = createToolActivity();
+        const message = createMessage("message-1", "Hello");
+        const toolPatch = createPatchUpdateWithChanges({
+            toolActivity: [toolActivity],
+            updatedAt: "2026-04-14T00:00:01.000Z",
+        });
+        const terminalPatch = createPatchUpdateWithChanges({
+            messages: [message],
+            status: "idle",
+            updatedAt: "2026-04-14T00:00:02.000Z",
+        });
+
+        rememberAiSessionStreamPayloadForRecovery({
+            maxPayloads: 10,
+            payload: toolPatch,
+            queue,
+            seq: 1,
+        });
+        rememberAiSessionStreamPayloadForRecovery({
+            maxPayloads: 10,
+            payload: terminalPatch,
+            queue,
+            seq: 2,
+        });
+
+        expect(queue.size).toBe(1);
+        expect(
+            queue.get(getAiSessionStreamPreservationKey(terminalPatch) ?? ""),
+        ).toEqual({
+            payload: {
+                kind: "patch",
+                patch: {
+                    changes: {
+                        messages: [message],
+                        status: "idle",
+                        toolActivity: [toolActivity],
+                        updatedAt: "2026-04-14T00:00:02.000Z",
+                    },
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                },
+            },
+            seq: 2,
+        });
+    });
+
     it("coalesces multiple deltas for the same message and keeps accumulated content", () => {
         const queue: AiSessionStreamPreservationQueue = new Map();
         const firstDelta = createVisibleTranscriptEvent(

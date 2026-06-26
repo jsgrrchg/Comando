@@ -152,10 +152,30 @@ export function rememberAiSessionStreamPayloadForRecovery(input: {
         };
     }
 
-    input.queue.set(key, {
-        payload: input.payload,
-        seq: input.seq,
-    });
+    const existing = input.queue.get(key);
+    if (
+        existing?.payload.kind === "patch" &&
+        input.payload.kind === "patch"
+    ) {
+        input.queue.set(key, {
+            payload: {
+                kind: "patch",
+                patch: {
+                    ...input.payload.patch,
+                    changes: {
+                        ...existing.payload.patch.changes,
+                        ...input.payload.patch.changes,
+                    },
+                },
+            },
+            seq: input.seq,
+        });
+    } else {
+        input.queue.set(key, {
+            payload: input.payload,
+            seq: input.seq,
+        });
+    }
 
     let droppedOldest = false;
     while (input.queue.size > input.maxPayloads) {
