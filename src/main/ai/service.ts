@@ -1352,11 +1352,18 @@ export class AiService {
                         launch.persistedSnapshot,
                         ownerWindowId,
                     );
+                    nativeSendState.capturedReviewBaseline =
+                        await this.#prepareNativeReviewBaselineForPrompt(
+                            input.sessionId,
+                            ownerWindowId,
+                            nativePrepareLaunch.launch,
+                            input.messageId,
+                        );
                     if (!this.#nativeReviewBaselines.has(input.sessionId)) {
                         nativeSendState.capturedReviewBaseline =
                             await this.#captureNativeReviewBaseline(
                                 input.sessionId,
-                                launch,
+                                nativePrepareLaunch.launch,
                                 input.messageId,
                             );
                     }
@@ -2768,6 +2775,33 @@ export class AiService {
         return true;
     }
 
+    async #prepareNativeReviewBaselineForPrompt(
+        sessionId: string,
+        ownerWindowId: string,
+        launch: AiSessionLaunchInput,
+        messageId: string,
+    ): Promise<boolean> {
+        const baseline = this.#nativeReviewBaselines.get(sessionId);
+        if (!baseline || baseline.messageId === messageId) {
+            return false;
+        }
+
+        if (baseline.promptAccepted || baseline.terminalStatusSeen) {
+            await this.#reconcileNativeReviewFiles(sessionId, ownerWindowId);
+            return false;
+        }
+
+        if (!baseline.turnStarted) {
+            return await this.#captureNativeReviewBaseline(
+                sessionId,
+                launch,
+                messageId,
+            );
+        }
+
+        return false;
+    }
+
     #inheritNativeReviewContext(
         parentSessionId: string,
         childSessionId: string,
@@ -3053,11 +3087,24 @@ export class AiService {
         incomingSnapshot: AiSessionSnapshot,
         previousSnapshot: AiSessionSnapshot | null,
     ): AiSessionSnapshot {
+        const filteredIncomingTrackedFiles =
+            this.#filterAcceptedNativeReviewTrackedFiles(
+                incomingSnapshot.sessionId,
+                incomingSnapshot.trackedFiles,
+            );
+        const filteredIncomingSnapshot =
+            filteredIncomingTrackedFiles === incomingSnapshot.trackedFiles
+                ? incomingSnapshot
+                : {
+                      ...incomingSnapshot,
+                      trackedFiles: filteredIncomingTrackedFiles,
+                  };
+
         return preservePassiveSnapshotTrackedFiles(
-            incomingSnapshot,
+            filteredIncomingSnapshot,
             previousSnapshot,
             this.#createNativeReviewPathMatcher(
-                previousSnapshot ?? incomingSnapshot,
+                previousSnapshot ?? filteredIncomingSnapshot,
             ),
         );
     }
