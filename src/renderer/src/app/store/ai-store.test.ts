@@ -480,6 +480,98 @@ describe("ai-store queue", () => {
         expect(snapshot?.messages).toEqual([message]);
     });
 
+    it("applies authoritative snapshots after visible transcript deltas were missed", () => {
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "message-started",
+                message: createMessage({
+                    content: "",
+                    id: "assistant-1",
+                }),
+                messageKind: "assistant",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                content: "Hel",
+                delta: "Hel",
+                kind: "message-delta",
+                messageId: "assistant-1",
+                messageKind: "assistant",
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+
+        const authoritativeMessage = createMessage({
+            content: "Hello from the completed snapshot",
+            id: "assistant-1",
+            status: "completed",
+        });
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [authoritativeMessage],
+                status: "idle",
+                updatedAt: "2026-04-14T00:00:20.000Z",
+            }),
+        );
+
+        const snapshot =
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot ?? null;
+        expect(snapshot?.status).toBe("idle");
+        expect(snapshot?.messages).toEqual([authoritativeMessage]);
+        expect(snapshot?.messages).toHaveLength(1);
+    });
+
+    it("applies resynced tool activity progress after an active stream goes quiet", async () => {
+        vi.useFakeTimers();
+        const initialTool = createToolActivity({
+            id: "tool-1",
+            status: "in_progress",
+            summary: "Running tests",
+            updatedAt: "2026-04-14T00:00:01.000Z",
+        });
+        const updatedTool = createToolActivity({
+            id: "tool-1",
+            status: "completed",
+            summary: "Tests passed",
+            updatedAt: "2026-04-14T00:00:20.000Z",
+        });
+        const resyncAiSession = vi.fn().mockResolvedValue(
+            createSnapshot({
+                messages: [createMessage({ status: "completed" })],
+                status: "idle",
+                toolActivity: [updatedTool],
+                updatedAt: "2026-04-14T00:00:20.000Z",
+            }),
+        );
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    resyncAiSession,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [createMessage()],
+                status: "streaming",
+                toolActivity: [initialTool],
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+        await vi.advanceTimersByTimeAsync(20_000);
+
+        const snapshot =
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot ?? null;
+        expect(resyncAiSession).toHaveBeenCalledWith(TAB.sessionId);
+        expect(snapshot?.status).toBe("idle");
+        expect(snapshot?.toolActivity).toEqual([updatedTool]);
+    });
+
     it("applies a prepared runtime session snapshot from the backend", async () => {
         const prepareAiSession = vi.fn().mockResolvedValue(createSnapshot());
         const sendAiPrompt = vi.fn().mockResolvedValue(undefined);

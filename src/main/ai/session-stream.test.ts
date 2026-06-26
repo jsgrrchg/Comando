@@ -489,6 +489,51 @@ describe("AI session stream helpers", () => {
         ]);
     });
 
+    it("builds recovery fallback payloads with visible transcript payloads before authoritative snapshots", () => {
+        const started = createVisibleTranscriptEvent("message-started");
+        const delta = createVisibleTranscriptEvent(
+            "message-delta",
+            "message-1",
+            "Partial",
+        );
+        const snapshot = {
+            ...createSnapshot("idle"),
+            messages: [
+                {
+                    attachments: [],
+                    content: "Partial response complete",
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    id: "message-1",
+                    kind: "assistant",
+                    status: "completed",
+                },
+            ],
+        } satisfies AiSessionSnapshot;
+
+        expect(
+            buildAiSessionStreamRecoveryFallbackPayloads({
+                pendingPreservedPayloads: [
+                    {
+                        payload: delta,
+                        seq: 12,
+                    },
+                    {
+                        payload: started,
+                        seq: 10,
+                    },
+                ],
+                resyncSnapshots: [snapshot],
+            }),
+        ).toEqual([
+            started,
+            delta,
+            {
+                kind: "snapshot",
+                snapshot,
+            },
+        ]);
+    });
+
     it("does not add resync snapshots when none are available", () => {
         const critical = createCompletedEvent("thinking-completed");
 

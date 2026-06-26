@@ -55,6 +55,22 @@ describe("AI session stream preload delivery", () => {
         );
     });
 
+    it("acknowledges ping envelopes without notifying payload listeners", () => {
+        const handlers = createHandlers();
+
+        deliverAiSessionStreamMessage(
+            {
+                sentAt: 1_000,
+                seq: 8,
+                type: "ping",
+            },
+            handlers,
+        );
+
+        expect(handlers.acknowledge).toHaveBeenCalledWith(8);
+        expect(handlers.notifyPayload).not.toHaveBeenCalled();
+    });
+
     it("acknowledges a valid payload even when listener dispatch fails", () => {
         const error = new Error("listener failed");
         const handlers = createHandlers();
