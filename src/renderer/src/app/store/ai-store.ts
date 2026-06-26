@@ -1113,9 +1113,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     ensureSession: async (tab, options) => {
-        void options;
         const currentSession = get().sessions[tab.sessionId] ?? null;
         if (
+            !options?.force &&
             getSessionRuntimeStateForTab(tab) === "history" &&
             currentSession?.runtimeState !== "live"
         ) {
@@ -1878,6 +1878,7 @@ async function executeSessionPrepare(
             [tab.sessionId]: {
                 ...(state.sessions[tab.sessionId] ?? createSessionState()),
                 meta: buildSessionMeta(tab),
+                runtimeState: "live",
             },
         },
     }));
@@ -1965,6 +1966,7 @@ async function executeSessionPrepare(
                                       null,
                               }),
                         meta: buildSessionMeta(tab),
+                        runtimeState: "live",
                         snapshot: nextSnapshot,
                         transcript: nextTranscript,
                     },
@@ -1992,6 +1994,7 @@ async function executeSessionPrepare(
                             ? error.message
                             : `Could not hydrate the ${getRuntimeDisplayName(tab.runtimeId)} session.`,
                     meta: buildSessionMeta(tab),
+                    runtimeState: "live",
                     snapshot: createEmptySessionSnapshot(
                         tab,
                         state.runtimeCatalogById[tab.runtimeId] ?? null,

@@ -399,6 +399,43 @@ export const ChatTabView = memo(function ChatTabView({
             tab.worktreeId,
         ],
     );
+    const liveSessionTab = useMemo(
+        () => ({
+            ...sessionTab,
+            sessionOpenMode: "live" as const,
+        }),
+        [sessionTab],
+    );
+    const ensureLiveAgentSession = useCallback(async () => {
+        await ensureSession(liveSessionTab, { force: true });
+    }, [ensureSession, liveSessionTab]);
+    const runAgentControlMutation = useCallback(
+        (mutation: () => Promise<void>) => {
+            void (async () => {
+                if (tab.sessionOpenMode === "history") {
+                    await ensureLiveAgentSession();
+                }
+
+                try {
+                    await mutation();
+                    return;
+                } catch (error) {
+                    await ensureLiveAgentSession();
+                    await mutation();
+                    console.warn(
+                        "[comando] Recovered AI session control update after live session prepare.",
+                        error,
+                    );
+                }
+            })().catch((error: unknown) => {
+                console.warn(
+                    "[comando] Failed to update AI session control.",
+                    error,
+                );
+            });
+        },
+        [ensureLiveAgentSession, tab.sessionOpenMode],
+    );
 
     useEffect(() => {
         void ensureSession(sessionTab);
@@ -517,7 +554,13 @@ export const ChatTabView = memo(function ChatTabView({
                     null,
             });
         },
-        [openChatSessionTab, tab.projectId, tab.runtimeId, tab.worktreeId],
+        [
+            openChatSessionTab,
+            tab.projectId,
+            tab.runtimeId,
+            tab.sessionOpenMode,
+            tab.worktreeId,
+        ],
     );
 
     useEffect(() => {
@@ -1911,23 +1954,29 @@ export const ChatTabView = memo(function ChatTabView({
                                             optionId,
                                             value,
                                         ) => {
-                                            void setSessionConfigOption({
-                                                optionId,
-                                                sessionId: tab.sessionId,
-                                                value,
-                                            });
+                                            runAgentControlMutation(() =>
+                                                setSessionConfigOption({
+                                                    optionId,
+                                                    sessionId: tab.sessionId,
+                                                    value,
+                                                }),
+                                            );
                                         }}
                                         onModeChange={(modeId) => {
-                                            void setSessionMode({
-                                                modeId,
-                                                sessionId: tab.sessionId,
-                                            });
+                                            runAgentControlMutation(() =>
+                                                setSessionMode({
+                                                    modeId,
+                                                    sessionId: tab.sessionId,
+                                                }),
+                                            );
                                         }}
                                         onModelChange={(modelId) => {
-                                            void setSessionModel({
-                                                modelId,
-                                                sessionId: tab.sessionId,
-                                            });
+                                            runAgentControlMutation(() =>
+                                                setSessionModel({
+                                                    modelId,
+                                                    sessionId: tab.sessionId,
+                                                }),
+                                            );
                                         }}
                                         runtimeId={tab.runtimeId}
                                     />

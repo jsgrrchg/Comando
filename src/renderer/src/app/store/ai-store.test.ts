@@ -803,6 +803,49 @@ describe("ai-store queue", () => {
         expect(session?.transcript.lastTurnStartedMessageId).toBeNull();
     });
 
+    it("force prepares history chat tabs as live sessions", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            sessionOpenMode: "history",
+        };
+        const getAiSessionSnapshot = vi.fn().mockResolvedValue(createSnapshot());
+        const prepareAiSession = vi.fn().mockResolvedValue(
+            createSnapshot({
+                modelId: "gpt-5",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    getAiSessionSnapshot,
+                    prepareAiSession,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(historyTab);
+        await useAiStore.getState().ensureSession(historyTab, { force: true });
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(getAiSessionSnapshot).toHaveBeenCalledTimes(1);
+        expect(prepareAiSession).toHaveBeenCalledWith({
+            projectId: TAB.projectId,
+            runtimeId: TAB.runtimeId,
+            sessionId: TAB.sessionId,
+            title: TAB.title,
+            worktreeId: TAB.worktreeId,
+        });
+        expect(session?.runtimeState).toBe("live");
+        expect(session?.snapshot?.modelId).toBe("gpt-5");
+    });
+
     it("dispatches a prompt immediately when the backend snapshot is idle", async () => {
         const sendAiPrompt = vi.fn().mockResolvedValue(undefined);
         Object.defineProperty(globalThis, "window", {
