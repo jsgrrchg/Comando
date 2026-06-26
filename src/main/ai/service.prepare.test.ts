@@ -1019,6 +1019,234 @@ describe("AiService prepareSession", () => {
         ).toEqual([]);
         expect(keepTrackedFile).not.toHaveBeenCalled();
     });
+
+    it("returns active live session snapshots owned by a window for stream resync", async () => {
+        const nativeAi = createNativeAi({
+            prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(({ input }) =>
+                Promise.resolve(
+                    createSnapshot({
+                        projectId: input.projectId,
+                        runtimeId: input.runtimeId,
+                        runtimeSessionId: `runtime-${input.sessionId}`,
+                        sessionId: input.sessionId,
+                        status:
+                            input.sessionId === "session-2"
+                                ? "waiting_permission"
+                                : "streaming",
+                        title: input.title,
+                        worktreeId: input.worktreeId ?? null,
+                    }),
+                ),
+            ),
+        });
+        const service = createPrepareService({ nativeAi });
+
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Session 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.prepareSession(
+            {
+                projectId: "project-1",
+                runtimeId: "codex",
+                sessionId: "session-2",
+                title: "Session 2",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.prepareSession(
+            {
+                projectId: "project-2",
+                runtimeId: "codex",
+                sessionId: "session-3",
+                title: "Session 3",
+                worktreeId: null,
+            },
+            "window-2",
+        );
+
+        expect(
+            service
+                .getLiveSessionSnapshotsForWindow("window-1")
+                .map((snapshot) => [snapshot.sessionId, snapshot.status]),
+        ).toEqual([
+            ["session-1", "streaming"],
+            ["session-2", "waiting_permission"],
+        ]);
+        expect(
+            service
+                .getLiveSessionSnapshotsForWindow("window-2")
+                .map((snapshot) => snapshot.sessionId),
+        ).toEqual(["session-3"]);
+    });
+
+    it("returns a single live session snapshot only to its owning window", async () => {
+        const nativeAi = createNativeAi({
+            prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(({ input }) =>
+                Promise.resolve(
+                    createSnapshot({
+                        runtimeSessionId: `runtime-${input.sessionId}`,
+                        sessionId: input.sessionId,
+                        status: "streaming",
+                        title: input.title,
+                    }),
+                ),
+            ),
+        });
+        const service = createPrepareService({ nativeAi });
+
+        const snapshot = await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Streaming",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        expect(
+            service.getLiveSessionSnapshotForWindow("window-1", "session-1"),
+        ).toBe(snapshot);
+        expect(
+            service.getLiveSessionSnapshotForWindow("window-2", "session-1"),
+        ).toBeNull();
+        expect(
+            service.getLiveSessionSnapshotForWindow("window-1", "missing"),
+        ).toBeNull();
+    });
+
+    it("omits inactive sessions and snapshots without live context from stream resync", async () => {
+        const nativeAi = createNativeAi({
+            prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(({ input }) =>
+                Promise.resolve(
+                    createSnapshot({
+                        runtimeSessionId: `runtime-${input.sessionId}`,
+                        sessionId: input.sessionId,
+                        status:
+                            input.sessionId === "session-1"
+                                ? "idle"
+                                : "starting",
+                        title: input.title,
+                    }),
+                ),
+            ),
+        });
+        const service = createPrepareService({ nativeAi });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Idle",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-2",
+                title: "Starting",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSnapshot({
+                runtimeSessionId: "runtime-orphan",
+                sessionId: "orphan-session",
+                status: "streaming",
+                title: "Orphan",
+            }),
+        });
+
+        expect(
+            service
+                .getLiveSessionSnapshotsForWindow("window-1")
+                .map((snapshot) => snapshot.sessionId),
+        ).toEqual(["session-2"]);
+    });
+
+    it("does not mutate live snapshots while reading stream resync state", async () => {
+        const onSessionSnapshot = vi.fn();
+        const nativeAi = createNativeAi({
+            prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(({ input }) =>
+                Promise.resolve(
+                    createSnapshot({
+                        runtimeSessionId: `runtime-${input.sessionId}`,
+                        sessionId: input.sessionId,
+                        status: "streaming",
+                        title: input.title,
+                    }),
+                ),
+            ),
+        });
+        const service = createPrepareService({
+            nativeAi,
+            onSessionSnapshot,
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Streaming",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        const callsBeforeRead = onSessionSnapshot.mock.calls.length;
+        const before = service.getLiveSessionSnapshotsForWindow("window-1");
+        const after = service.getLiveSessionSnapshotsForWindow("window-1");
+
+        expect(after).toHaveLength(1);
+        expect(after[0]).toBe(before[0]);
+        expect(onSessionSnapshot).toHaveBeenCalledTimes(callsBeforeRead);
+    });
+
+    it("does not return live snapshots after the owning window is closed", async () => {
+        const nativeAi = createNativeAi({
+            prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(({ input }) =>
+                Promise.resolve(
+                    createSnapshot({
+                        runtimeSessionId: `runtime-${input.sessionId}`,
+                        sessionId: input.sessionId,
+                        status: "streaming",
+                        title: input.title,
+                    }),
+                ),
+            ),
+        });
+        const service = createPrepareService({ nativeAi });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Streaming",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        service.closeOwnedByWindow("window-1");
+
+        expect(service.getLiveSessionSnapshotsForWindow("window-1")).toEqual([]);
+    });
 });
 
 function createNativeAi(

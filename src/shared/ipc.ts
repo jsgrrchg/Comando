@@ -135,6 +135,7 @@ export const IPC_CHANNELS = {
     refreshAiProjectScopes: "ai:refresh-project-scopes",
     listAiSessionHistory: "ai:list-session-history",
     getAiSessionSnapshot: "ai:get-session-snapshot",
+    resyncAiSession: "ai:resync-session",
     getAiSessionTranscriptPage: "ai:get-session-transcript-page",
     sendAiPrompt: "ai:send-prompt",
     setAiSessionMode: "ai:set-session-mode",
@@ -3040,6 +3041,7 @@ export interface ComandoApi {
     getAiSessionSnapshot: (
         sessionId: string,
     ) => Promise<AiSessionSnapshot | null>;
+    resyncAiSession: (sessionId: string) => Promise<AiSessionSnapshot | null>;
     getAiSessionTranscriptPage: (
         input: GetAiSessionTranscriptPageInput,
     ) => Promise<AiSessionTranscriptPage>;
