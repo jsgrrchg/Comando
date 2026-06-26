@@ -408,6 +408,7 @@ describe("AI session stream helpers", () => {
                     lastAckSeq: 4,
                     lastSentAt: 1_000,
                     lastSentSeq: 4,
+                    pendingAckSentAtBySeq: new Map(),
                 },
                 5_000,
                 timeoutMs,
@@ -419,6 +420,7 @@ describe("AI session stream helpers", () => {
                     lastAckSeq: 3,
                     lastSentAt: 1_000,
                     lastSentSeq: 4,
+                    pendingAckSentAtBySeq: new Map([[4, 1_000]]),
                 },
                 2_999,
                 timeoutMs,
@@ -430,9 +432,29 @@ describe("AI session stream helpers", () => {
                     lastAckSeq: 3,
                     lastSentAt: 1_000,
                     lastSentSeq: 4,
+                    pendingAckSentAtBySeq: new Map([[4, 1_000]]),
                 },
                 3_000,
                 timeoutMs,
+            ),
+        ).toBe(true);
+    });
+
+    it("keeps an older unacked message stale after newer heartbeats", () => {
+        expect(
+            isAiSessionStreamAckStale(
+                {
+                    lastAckSeq: 3,
+                    lastSentAt: 2_900,
+                    lastSentSeq: 6,
+                    pendingAckSentAtBySeq: new Map([
+                        [4, 1_000],
+                        [5, 2_000],
+                        [6, 2_900],
+                    ]),
+                },
+                3_000,
+                2_000,
             ),
         ).toBe(true);
     });
@@ -446,8 +468,12 @@ describe("AI session stream helpers", () => {
                 resyncSnapshotCount: 1,
                 state: {
                     lastAckSeq: 7,
-                    lastSentAt: 2_000,
+                    lastSentAt: 4_000,
                     lastSentSeq: 9,
+                    pendingAckSentAtBySeq: new Map([
+                        [8, 2_000],
+                        [9, 4_000],
+                    ]),
                 },
             }),
         ).toEqual({

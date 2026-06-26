@@ -13,6 +13,7 @@ export type AiSessionStreamRecoveryReason =
 
 export interface AiSessionStreamAckState {
     readonly lastAckSeq: number;
+    readonly pendingAckSentAtBySeq: ReadonlyMap<number, number>;
     readonly lastSentAt: number;
     readonly lastSentSeq: number;
 }
@@ -185,9 +186,9 @@ export function isAiSessionStreamAckStale(
     nowMs: number,
     staleMs: number,
 ): boolean {
+    const oldestPendingSentAt = getOldestPendingAiSessionStreamAckSentAt(state);
     return (
-        state.lastSentSeq > state.lastAckSeq &&
-        nowMs - state.lastSentAt >= staleMs
+        oldestPendingSentAt !== null && nowMs - oldestPendingSentAt >= staleMs
     );
 }
 
@@ -198,8 +199,14 @@ export function buildAiSessionStreamRecoveryDiagnostic(input: {
     readonly resyncSnapshotCount: number;
     readonly state: AiSessionStreamAckState;
 }): AiSessionStreamRecoveryDiagnostic {
+    const oldestPendingSentAt = getOldestPendingAiSessionStreamAckSentAt(
+        input.state,
+    );
     return {
-        ackLagMs: Math.max(0, input.nowMs - input.state.lastSentAt),
+        ackLagMs:
+            oldestPendingSentAt === null
+                ? 0
+                : Math.max(0, input.nowMs - oldestPendingSentAt),
         lastAckSeq: input.state.lastAckSeq,
         lastSentSeq: input.state.lastSentSeq,
         pendingPreservedPayloadCount: input.pendingPreservedPayloadCount,
@@ -223,4 +230,20 @@ export function buildAiSessionStreamRecoveryFallbackPayloads(input: {
     );
 
     return [...pendingPayloads, ...snapshotPayloads];
+}
+
+function getOldestPendingAiSessionStreamAckSentAt(
+    state: AiSessionStreamAckState,
+): number | null {
+    let oldestPendingSentAt: number | null = null;
+    for (const [seq, sentAt] of state.pendingAckSentAtBySeq) {
+        if (seq <= state.lastAckSeq) {
+            continue;
+        }
+        if (oldestPendingSentAt === null || sentAt < oldestPendingSentAt) {
+            oldestPendingSentAt = sentAt;
+        }
+    }
+
+    return oldestPendingSentAt;
 }

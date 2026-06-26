@@ -124,6 +124,7 @@ type AiSessionStreamPortState = {
     lastSentAt: number;
     lastSentSeq: number;
     nextSeq: number;
+    readonly pendingAckSentAtBySeq: Map<number, number>;
     readonly pendingPreservedPayloads: AiSessionStreamPreservationQueue;
     staleTimer: ReturnType<typeof setTimeout> | null;
 };
@@ -1121,6 +1122,7 @@ function attachAiSessionStream(window: BrowserWindow, windowId: string): void {
             lastSentAt: now,
             lastSentSeq: 0,
             nextSeq: 1,
+            pendingAckSentAtBySeq: new Map(),
             pendingPreservedPayloads: new Map(),
             port: channel.port1,
             staleTimer: null,
@@ -1182,6 +1184,11 @@ function handleAiSessionStreamPortMessage(
 
     state.lastAckAt = Date.now();
     state.lastAckSeq = Math.max(state.lastAckSeq, candidate.seq);
+    for (const seq of [...state.pendingAckSentAtBySeq.keys()]) {
+        if (seq <= state.lastAckSeq) {
+            state.pendingAckSentAtBySeq.delete(seq);
+        }
+    }
     for (const [key, pendingPayload] of state.pendingPreservedPayloads) {
         if (pendingPayload.seq <= state.lastAckSeq) {
             state.pendingPreservedPayloads.delete(key);
@@ -1197,6 +1204,7 @@ function nextAiSessionStreamMessage(
     state.nextSeq += 1;
     state.lastSentAt = Date.now();
     state.lastSentSeq = seq;
+    state.pendingAckSentAtBySeq.set(seq, state.lastSentAt);
     return {
         payload,
         seq,
@@ -1211,6 +1219,7 @@ function nextAiSessionStreamPing(
     state.nextSeq += 1;
     state.lastSentAt = Date.now();
     state.lastSentSeq = seq;
+    state.pendingAckSentAtBySeq.set(seq, state.lastSentAt);
     return {
         sentAt: state.lastSentAt,
         seq,
