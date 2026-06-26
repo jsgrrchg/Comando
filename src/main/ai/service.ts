@@ -209,6 +209,17 @@ const DEFAULT_AI_SESSION_RETENTION_CONFIG: AiSessionRetentionConfig = {
 };
 const RECENT_NATIVE_REVIEW_CONTEXT_TTL_MS = 60_000;
 
+function isResyncEligibleAiSessionStatus(
+    status: AiSessionSnapshot["status"],
+): boolean {
+    return (
+        status === "starting" ||
+        status === "streaming" ||
+        status === "waiting_permission" ||
+        status === "waiting_user_input"
+    );
+}
+
 type AiSchedulerPriority = 0 | 1 | 2 | 3;
 
 interface AiSchedulerDiagnostics {
@@ -531,6 +542,27 @@ export class AiService {
                 this.#retentionConfig.maxHotSessionsPerWindow,
             skipped: [...this.#lastRetentionSkippedRecords],
         };
+    }
+
+    getLiveSessionSnapshotsForWindow(
+        ownerWindowId: string,
+    ): readonly AiSessionSnapshot[] {
+        const snapshots: AiSessionSnapshot[] = [];
+        for (const context of this.#liveSessionContexts.values()) {
+            if (
+                context.ownerWindowId !== ownerWindowId ||
+                this.#deletedSessionIds.has(context.sessionId)
+            ) {
+                continue;
+            }
+
+            const snapshot = this.#liveSnapshots.get(context.sessionId) ?? null;
+            if (snapshot && isResyncEligibleAiSessionStatus(snapshot.status)) {
+                snapshots.push(snapshot);
+            }
+        }
+
+        return snapshots;
     }
 
     handleNativeRuntimeStatus(status: AiRuntimeStatus): void {
