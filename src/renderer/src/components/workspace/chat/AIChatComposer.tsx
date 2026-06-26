@@ -70,6 +70,11 @@ type ComposerPillLayoutStyle = Pick<
     | "wordBreak"
 >;
 
+type ComposerShellLayoutStyle = Pick<
+    CSSProperties,
+    "display" | "gridTemplateRows"
+>;
+
 export function getComposerShellSizingStyle(
     customHeight: number | null,
     options: { readonly expanded?: boolean } = {},
@@ -87,9 +92,31 @@ export function getComposerShellSizingStyle(
     };
 }
 
-export function getComposerInputSizingStyle(): Pick<CSSProperties, "minHeight"> {
+export function getComposerShellLayoutStyle(options: {
+    readonly hasAttachments: boolean;
+}): ComposerShellLayoutStyle {
+    const inputTrack = "minmax(0, 1fr)";
+    return {
+        display: "grid",
+        gridTemplateRows: options.hasAttachments
+            ? `auto ${inputTrack} auto`
+            : `${inputTrack} auto`,
+    };
+}
+
+export function getComposerInputSlotSizingStyle(): Pick<
+    CSSProperties,
+    "minHeight" | "overflow"
+> {
     return {
         minHeight: MIN_COMPOSER_INPUT_HEIGHT,
+        overflow: "hidden",
+    };
+}
+
+export function getComposerInputSizingStyle(): Pick<CSSProperties, "minHeight"> {
+    return {
+        minHeight: 0,
     };
 }
 
@@ -1398,6 +1425,7 @@ export function AIChatComposer({
     const shellSizingStyle = getComposerShellSizingStyle(customHeight, {
         expanded,
     });
+    const shellLayoutStyle = getComposerShellLayoutStyle({ hasAttachments });
 
     return (
         <div
@@ -1405,8 +1433,8 @@ export function AIChatComposer({
             data-ai-composer-drop-zone="true"
             className={
                 expanded
-                    ? "relative flex min-h-0 flex-1 select-none flex-col"
-                    : "relative flex select-none flex-col"
+                    ? "relative min-h-0 flex-1 select-none"
+                    : "relative select-none"
             }
             onDrop={handleDrop}
             onDragOver={(e) => e.preventDefault()}
@@ -1429,6 +1457,7 @@ export function AIChatComposer({
                         : "none",
                 overflow: "hidden",
                 transition: "box-shadow 0.15s ease",
+                ...shellLayoutStyle,
                 ...shellSizingStyle,
             }}
         >
@@ -1585,7 +1614,10 @@ export function AIChatComposer({
             />
 
             {/* Contenteditable input */}
-            <div className="relative min-h-0 flex-1">
+            <div
+                className="relative min-h-0"
+                style={getComposerInputSlotSizingStyle()}
+            >
                 {isEmpty && !disabled ? (
                     <div
                         className="pointer-events-none absolute left-3.5 top-3 select-none"
@@ -1654,7 +1686,7 @@ export function AIChatComposer({
             </div>
 
             {/* Bottom toolbar */}
-            <div className="mt-auto flex items-center justify-between gap-2 px-2 pb-1.5">
+            <div className="flex items-center justify-between gap-2 px-2 pb-1.5">
                 <div className="min-w-0 flex-1">
                     {agentControls ? agentControls : null}
                 </div>

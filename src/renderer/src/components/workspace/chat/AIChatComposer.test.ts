@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
     appendComposerProjectEntries,
     getComposerPillLayoutStyle,
+    getComposerShellLayoutStyle,
     getComposerShellSizingStyle,
+    getComposerInputSlotSizingStyle,
     getComposerInputSizingStyle,
     getComposerSubmitKeyboardAction,
     shouldAutoFocusComposerForKeyChange,
@@ -337,9 +339,26 @@ describe("AIChatComposer", () => {
         });
     });
 
-    it("keeps room for the bottom toolbar inside the collapsed composer", () => {
-        expect(getComposerInputSizingStyle()).toEqual({
+    it("keeps editor overflow isolated from the bottom toolbar", () => {
+        expect(
+            getComposerShellLayoutStyle({ hasAttachments: false }),
+        ).toEqual({
+            display: "grid",
+            gridTemplateRows: "minmax(0, 1fr) auto",
+        });
+        expect(getComposerInputSlotSizingStyle()).toEqual({
             minHeight: 76,
+            overflow: "hidden",
+        });
+        expect(getComposerInputSizingStyle()).toEqual({
+            minHeight: 0,
+        });
+    });
+
+    it("keeps attachments in their own row above long composer text", () => {
+        expect(getComposerShellLayoutStyle({ hasAttachments: true })).toEqual({
+            display: "grid",
+            gridTemplateRows: "auto minmax(0, 1fr) auto",
         });
     });
 
