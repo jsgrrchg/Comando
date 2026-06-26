@@ -148,6 +148,11 @@ fn ai_fixtures_deserialize() {
         payload.raw_output.unwrap(),
         serde_json::json!("export function main() {}\n")
     );
+    assert_eq!(
+        payload.terminal_output.as_deref(),
+        Some("export function main() {}\n")
+    );
+    assert_eq!(payload.exit_code, Some(0));
 
     let catalog: NativeRpcOutput = fixture("ai/event.session_catalog_updated.json");
     let NativeRpcOutput::Event(catalog) = catalog else {

@@ -240,6 +240,8 @@ describe("native backend fixtures", () => {
                 diffs: [],
                 rawInputJson: JSON.stringify({ file_path: "src/main.ts" }),
                 rawOutputJson: JSON.stringify("export function main() {}\n"),
+                terminalOutput: "export function main() {}\n",
+                exitCode: 0,
                 status: "completed",
                 title: "Read file",
             },

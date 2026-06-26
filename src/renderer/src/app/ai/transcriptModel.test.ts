@@ -187,8 +187,10 @@ describe("transcriptModel", () => {
             createSessionEvent({
                 activity: createToolActivity({
                     createdAt: "2026-04-14T00:00:01.000Z",
+                    exitCode: 0,
                     status: "in_progress",
                     summary: "Running",
+                    terminalOutput: "hello world",
                 }),
                 kind: "tool-activity",
             }),
@@ -210,8 +212,10 @@ describe("transcriptModel", () => {
         expect(getAiSessionTranscriptToolActivity(transcript)).toEqual([
             expect.objectContaining({
                 createdAt: "2026-04-14T00:00:01.000Z",
+                exitCode: 0,
                 status: "completed",
                 summary: "Done",
+                terminalOutput: "hello world",
             }),
         ]);
     });

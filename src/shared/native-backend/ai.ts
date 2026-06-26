@@ -602,6 +602,8 @@ export type NativeAiToolActivityPayload = NativeAiEventBase & {
     readonly rawInput?: unknown;
     readonly rawOutput?: unknown;
     readonly diffs?: readonly unknown[];
+    readonly terminalOutput?: string | null;
+    readonly exitCode?: number | null;
 };
 
 export type NativeAiPlanEntryPayload = {

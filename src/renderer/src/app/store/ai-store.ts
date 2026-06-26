@@ -2428,8 +2428,13 @@ function upsertToolActivity(
         return [...activity, nextActivity];
     }
 
+    const existing = activity[index];
     const nextActivities = [...activity];
-    nextActivities[index] = nextActivity;
+    nextActivities[index] = {
+        ...nextActivity,
+        exitCode: nextActivity.exitCode ?? existing.exitCode,
+        terminalOutput: nextActivity.terminalOutput ?? existing.terminalOutput,
+    };
     return nextActivities;
 }
 

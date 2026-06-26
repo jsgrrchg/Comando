@@ -556,12 +556,11 @@ function mergeTranscriptEntry(
     if (existing.kind === "tool" && incoming.kind === "tool") {
         return {
             ...incoming,
-            activity: {
-                ...incoming.activity,
-                createdAt: options.preserveCreatedAt
-                    ? existing.activity.createdAt
-                    : incoming.activity.createdAt,
-            },
+            activity: mergeAiToolActivity(
+                existing.activity,
+                incoming.activity,
+                options,
+            ),
             createdAt: options.preserveCreatedAt
                 ? existing.createdAt
                 : incoming.createdAt,
@@ -587,6 +586,23 @@ function mergeAiMessage(existing: AiMessage, incoming: AiMessage): AiMessage {
             existing.status === "completed" && incoming.status !== "completed"
                 ? "completed"
                 : incoming.status,
+    };
+}
+
+function mergeAiToolActivity(
+    existing: AiToolActivity,
+    incoming: AiToolActivity,
+    options: {
+        readonly preserveCreatedAt?: boolean;
+    } = {},
+): AiToolActivity {
+    return {
+        ...incoming,
+        createdAt: options.preserveCreatedAt
+            ? existing.createdAt
+            : incoming.createdAt,
+        exitCode: incoming.exitCode ?? existing.exitCode,
+        terminalOutput: incoming.terminalOutput ?? existing.terminalOutput,
     };
 }
 

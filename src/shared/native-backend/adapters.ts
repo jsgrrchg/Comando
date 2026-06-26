@@ -598,7 +598,11 @@ function nativeAiToolActivityToIpc(
         action: null,
         createdAt: payload.updatedAt,
         diffs: nativeFileDiffsToIpc(payload.diffs),
-        exitCode: null,
+        exitCode:
+            typeof payload.exitCode === "number" &&
+            Number.isFinite(payload.exitCode)
+                ? payload.exitCode
+                : null,
         id: payload.toolCallId,
         kind: payload.kind,
         locations: [],
@@ -607,7 +611,10 @@ function nativeAiToolActivityToIpc(
         sessionId: payload.sessionId,
         status: payload.status as AiToolActivity["status"],
         summary: payload.summary,
-        terminalOutput: null,
+        terminalOutput:
+            typeof payload.terminalOutput === "string"
+                ? payload.terminalOutput
+                : null,
         title: payload.title,
         updatedAt: payload.updatedAt,
     };

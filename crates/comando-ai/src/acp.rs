@@ -79,6 +79,13 @@ const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
 const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
 const CODEX_ACP_AGENT_STATUSES_KEY: &str = "codexAcpAgentStatuses";
 const CODEX_ACP_MODEL_KEY: &str = "codexAcpModel";
+const ACP_TERMINAL_OUTPUT_META_KEY: &str = "terminal_output";
+const ACP_TERMINAL_EXIT_META_KEY: &str = "terminal_exit";
+const ACP_TERMINAL_ID_META_KEY: &str = "terminal_id";
+const ACP_TERMINAL_OUTPUT_DATA_META_KEY: &str = "data";
+const ACP_TERMINAL_OUTPUT_MODE_META_KEY: &str = "mode";
+const ACP_TERMINAL_EXIT_CODE_META_KEY: &str = "exit_code";
+const TERMINAL_OUTPUT_MAX_LENGTH: usize = 10_000;
 
 type PermissionWaiterMap = Arc<Mutex<HashMap<String, PendingPermissionRequest>>>;
 type PromptCapabilitiesState = Arc<Mutex<AcpPromptCapabilities>>;
@@ -255,8 +262,14 @@ fn validate_launch_context(
 }
 
 fn acp_client_capabilities() -> ClientCapabilities {
+    let mut meta = Meta::default();
+    meta.insert(
+        ACP_TERMINAL_OUTPUT_META_KEY.to_string(),
+        serde_json::json!(true),
+    );
     ClientCapabilities::new()
         .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()))
+        .meta(meta)
 }
 
 fn set_prompt_capabilities(
@@ -1844,6 +1857,7 @@ struct NotificationContextInner {
     supports_subagents: bool,
     synthetic_message_ids: HashMap<String, String>,
     synthetic_message_next_id: usize,
+    terminal_output_buffers: HashMap<String, String>,
     tool_calls: HashMap<String, ToolCall>,
 }
 
@@ -1860,8 +1874,16 @@ struct PendingToolActivity {
     raw_output: Option<serde_json::Value>,
     status: String,
     summary: Option<String>,
+    terminal_output: Option<String>,
+    exit_code: Option<i32>,
     title: String,
     tool_call_id: NativeToolCallId,
+}
+
+#[derive(Clone)]
+struct TerminalToolUpdate {
+    terminal_output: Option<String>,
+    exit_code: Option<i32>,
 }
 
 #[derive(Clone)]
@@ -1930,6 +1952,7 @@ impl NotificationContextInner {
             supports_subagents,
             synthetic_message_ids: HashMap::new(),
             synthetic_message_next_id: 1,
+            terminal_output_buffers: HashMap::new(),
             tool_calls: HashMap::new(),
         }
     }
@@ -2180,11 +2203,13 @@ impl NotificationContextInner {
             self.emit_image_generation(runtime_session_id, &tool_call_id, &tool_call);
             return;
         }
+        let terminal_update = self.consume_terminal_meta(runtime_session_id, meta);
         let diffs = self.tool_call_activity_diffs_for_runtime_session(
             runtime_session_id,
             tool_call_id.clone(),
             &tool_call,
             tool_call.meta.as_ref().unwrap_or(meta),
+            terminal_update.clone(),
         );
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
@@ -2198,6 +2223,8 @@ impl NotificationContextInner {
                 title: tool_call.title,
                 tool_call_id: tool_call_id.clone(),
                 diffs,
+                terminal_output: terminal_update.terminal_output,
+                exit_code: terminal_update.exit_code,
             },
         );
         self.emit_subagent_breadcrumb(runtime_session_id, tool_call_id, meta);
@@ -2224,11 +2251,13 @@ impl NotificationContextInner {
             self.emit_image_generation(runtime_session_id, &tool_call_id, &tool_call);
             return;
         }
+        let terminal_update = self.consume_terminal_meta(runtime_session_id, meta);
         let diffs = self.tool_call_activity_diffs_for_runtime_session(
             runtime_session_id,
             tool_call_id.clone(),
             &tool_call,
             tool_call.meta.as_ref().unwrap_or(meta),
+            terminal_update.clone(),
         );
         self.emit(
             AI_TOOL_ACTIVITY_EVENT,
@@ -2242,6 +2271,8 @@ impl NotificationContextInner {
                 title: tool_call.title,
                 tool_call_id: tool_call_id.clone(),
                 diffs,
+                terminal_output: terminal_update.terminal_output,
+                exit_code: terminal_update.exit_code,
             },
         );
         self.emit_subagent_breadcrumb(runtime_session_id, tool_call_id, meta);
@@ -2253,6 +2284,7 @@ impl NotificationContextInner {
         tool_call_id: NativeToolCallId,
         tool_call: &ToolCall,
         meta: &Meta,
+        terminal_update: TerminalToolUpdate,
     ) -> Vec<serde_json::Value> {
         let diffs = tool_call_content_diffs(
             &tool_call.content,
@@ -2269,6 +2301,7 @@ impl NotificationContextInner {
             tool_call_id,
             tool_call,
             diffs,
+            terminal_update,
         );
         Vec::new()
     }
@@ -2287,6 +2320,7 @@ impl NotificationContextInner {
         tool_call_id: NativeToolCallId,
         tool_call: &ToolCall,
         diffs: Vec<serde_json::Value>,
+        terminal_update: TerminalToolUpdate,
     ) {
         let pending = PendingToolActivity {
             diffs,
@@ -2295,6 +2329,8 @@ impl NotificationContextInner {
             raw_output: tool_call.raw_output.clone(),
             status: serde_label(&tool_call.status),
             summary: tool_call_summary(tool_call),
+            terminal_output: terminal_update.terminal_output,
+            exit_code: terminal_update.exit_code,
             title: tool_call.title.clone(),
             tool_call_id,
         };
@@ -2333,9 +2369,76 @@ impl NotificationContextInner {
                     title: activity.title,
                     tool_call_id: activity.tool_call_id,
                     diffs: activity.diffs,
+                    terminal_output: activity.terminal_output,
+                    exit_code: activity.exit_code,
                 },
             );
         }
+    }
+
+    fn consume_terminal_meta(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        meta: &Meta,
+    ) -> TerminalToolUpdate {
+        let mut terminal_output = self.consume_terminal_output_meta(runtime_session_id, meta);
+        let mut exit_code = None;
+
+        if let Some(exit_meta) = meta
+            .get(ACP_TERMINAL_EXIT_META_KEY)
+            .and_then(serde_json::Value::as_object)
+        {
+            let terminal_id = exit_meta
+                .get(ACP_TERMINAL_ID_META_KEY)
+                .and_then(serde_json::Value::as_str);
+            if let Some(code) = exit_meta
+                .get(ACP_TERMINAL_EXIT_CODE_META_KEY)
+                .and_then(serde_json::Value::as_i64)
+                .and_then(|value| i32::try_from(value).ok())
+            {
+                exit_code = Some(code);
+            }
+            if let Some(terminal_id) = terminal_id {
+                let buffer_key = terminal_output_buffer_key(runtime_session_id, terminal_id);
+                if let Some(final_output) = self.terminal_output_buffers.remove(&buffer_key) {
+                    terminal_output = Some(final_output);
+                }
+            }
+        }
+
+        TerminalToolUpdate {
+            terminal_output,
+            exit_code,
+        }
+    }
+
+    fn consume_terminal_output_meta(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        meta: &Meta,
+    ) -> Option<String> {
+        let output_meta = meta
+            .get(ACP_TERMINAL_OUTPUT_META_KEY)
+            .and_then(serde_json::Value::as_object)?;
+        let terminal_id = output_meta
+            .get(ACP_TERMINAL_ID_META_KEY)
+            .and_then(serde_json::Value::as_str)?;
+        let data = output_meta
+            .get(ACP_TERMINAL_OUTPUT_DATA_META_KEY)
+            .and_then(serde_json::Value::as_str)?;
+        let mode = output_meta
+            .get(ACP_TERMINAL_OUTPUT_MODE_META_KEY)
+            .and_then(serde_json::Value::as_str);
+        let buffer_key = terminal_output_buffer_key(runtime_session_id, terminal_id);
+        let previous = self
+            .terminal_output_buffers
+            .get(&buffer_key)
+            .map(String::as_str)
+            .unwrap_or_default();
+        let next = merge_terminal_output_buffer(previous, data, mode);
+        self.terminal_output_buffers
+            .insert(buffer_key, next.clone());
+        Some(next)
     }
 
     fn emit_image_generation(
@@ -3549,6 +3652,73 @@ fn meta_references_subagent(meta: &Meta) -> bool {
 
 fn is_generic_subagent_title(title: &str) -> bool {
     title.trim().eq_ignore_ascii_case("subagent")
+}
+
+fn terminal_output_buffer_key(runtime_session_id: &RuntimeSessionId, terminal_id: &str) -> String {
+    format!("{}:{terminal_id}", runtime_session_id.0)
+}
+
+fn merge_terminal_output_buffer(previous: &str, data: &str, mode: Option<&str>) -> String {
+    if data.is_empty() {
+        return previous.to_string();
+    }
+
+    match mode {
+        Some("delta") => trim_terminal_output_buffer(&format!("{previous}{data}")),
+        Some("snapshot") => trim_terminal_output_buffer(data),
+        _ => merge_legacy_terminal_output_buffer(previous, data),
+    }
+}
+
+fn merge_legacy_terminal_output_buffer(previous: &str, data: &str) -> String {
+    if previous.is_empty() || data.starts_with(previous) {
+        return trim_terminal_output_buffer(data);
+    }
+
+    if let Some(previous_in_data_index) = data.rfind(previous) {
+        return trim_terminal_output_buffer(&format!(
+            "{}{}",
+            previous,
+            &data[previous_in_data_index + previous.len()..]
+        ));
+    }
+
+    let overlap_length = find_terminal_output_overlap_length(previous, data);
+    let overlap_start = next_char_boundary(data, overlap_length);
+    trim_terminal_output_buffer(&format!("{}{}", previous, &data[overlap_start..]))
+}
+
+fn find_terminal_output_overlap_length(previous: &str, data: &str) -> usize {
+    let previous_bytes = previous.as_bytes();
+    let data_bytes = data.as_bytes();
+    let max_length = previous_bytes.len().min(data_bytes.len());
+    for length in (1..=max_length).rev() {
+        if previous_bytes.ends_with(&data_bytes[..length]) {
+            return length;
+        }
+    }
+    0
+}
+
+fn trim_terminal_output_buffer(output: &str) -> String {
+    if output.len() > TERMINAL_OUTPUT_MAX_LENGTH {
+        let start = output
+            .char_indices()
+            .map(|(index, _)| index)
+            .find(|index| output.len() - *index <= TERMINAL_OUTPUT_MAX_LENGTH)
+            .unwrap_or(0);
+        output[start..].to_string()
+    } else {
+        output.to_string()
+    }
+}
+
+fn next_char_boundary(value: &str, index: usize) -> usize {
+    let mut candidate = index.min(value.len());
+    while candidate < value.len() && !value.is_char_boundary(candidate) {
+        candidate += 1;
+    }
+    candidate
 }
 
 fn should_suppress_status_tool_call(tool_call: &ToolCall, meta: &Meta) -> bool {
@@ -6341,6 +6511,78 @@ mod tests {
         let event = receiver.recv().unwrap();
         assert_eq!(event.event_name, AI_TOOL_ACTIVITY_EVENT);
         assert_eq!(event.payload["summary"], "Command completed");
+    }
+
+    #[test]
+    fn notification_context_projects_terminal_output_metadata() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(ToolCall::new("tool-1", "Run command")),
+        ));
+        let started = receiver.recv().unwrap();
+        assert_eq!(started.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert!(started.payload.get("terminalOutput").is_none());
+
+        let mut first_meta = Meta::default();
+        first_meta.insert(
+            ACP_TERMINAL_OUTPUT_META_KEY.to_string(),
+            serde_json::json!({
+                "terminal_id": "tool-1",
+                "data": "hello",
+                "mode": "delta",
+            }),
+        );
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCallUpdate(
+                agent_client_protocol::schema::ToolCallUpdate::new(
+                    "tool-1",
+                    ToolCallUpdateFields::new().status(ToolCallStatus::InProgress),
+                )
+                .meta(first_meta),
+            ),
+        ));
+
+        let first_output = receiver.recv().unwrap();
+        assert_eq!(first_output.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(first_output.payload["terminalOutput"], "hello");
+
+        let mut exit_meta = Meta::default();
+        exit_meta.insert(
+            ACP_TERMINAL_OUTPUT_META_KEY.to_string(),
+            serde_json::json!({
+                "terminal_id": "tool-1",
+                "data": " world",
+                "mode": "delta",
+            }),
+        );
+        exit_meta.insert(
+            ACP_TERMINAL_EXIT_META_KEY.to_string(),
+            serde_json::json!({
+                "terminal_id": "tool-1",
+                "exit_code": 0,
+            }),
+        );
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCallUpdate(
+                agent_client_protocol::schema::ToolCallUpdate::new(
+                    "tool-1",
+                    ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+                )
+                .meta(exit_meta),
+            ),
+        ));
+
+        let completed = receiver.recv().unwrap();
+        assert_eq!(completed.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(completed.payload["terminalOutput"], "hello world");
+        assert_eq!(completed.payload["exitCode"], 0);
     }
 
     #[test]

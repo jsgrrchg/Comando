@@ -914,6 +914,45 @@ describe("ai-store queue", () => {
         ).toEqual(["tool:tool-1"]);
     });
 
+    it("preserves terminal output when later tool updates omit terminal fields", () => {
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                activity: createToolActivity({
+                    exitCode: 0,
+                    status: "completed",
+                    terminalOutput: "hello world",
+                }),
+                kind: "tool-activity",
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                activity: createToolActivity({
+                    rawOutputJson: JSON.stringify("done"),
+                    status: "completed",
+                    summary: "Done",
+                    updatedAt: "2026-04-14T00:00:05.000Z",
+                }),
+                kind: "tool-activity",
+            }),
+        );
+
+        const toolActivity =
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.toolActivity ?? [];
+        expect(toolActivity).toHaveLength(1);
+        expect(toolActivity[0]).toEqual(
+            expect.objectContaining({
+                exitCode: 0,
+                rawOutputJson: JSON.stringify("done"),
+                summary: "Done",
+                terminalOutput: "hello world",
+            }),
+        );
+    });
+
     it("does not let a stale snapshot revive old tool activity", () => {
         useAiStore.getState().registerSessionTab(TAB);
         useAiStore.getState().applySessionSnapshot(

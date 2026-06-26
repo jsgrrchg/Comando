@@ -11,6 +11,8 @@
     "kind": "read_file",
     "status": "completed",
     "summary": "Read src/main.ts",
+    "terminalOutput": "export function main() {}\n",
+    "exitCode": 0,
     "rawInput": {
       "file_path": "src/main.ts"
     },
