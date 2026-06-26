@@ -9,6 +9,7 @@ import type {
 
 import {
     buildAiSessionStreamRecoveryDiagnostic,
+    buildAiSessionStreamRecoveryFallbackPayloads,
     getAiSessionStreamPayloadKind,
     isAiSessionStreamAckStale,
     isAiSessionUpdate,
@@ -206,6 +207,7 @@ describe("AI session stream helpers", () => {
                 nowMs: 4_500,
                 pendingCriticalPayloadCount: 2,
                 reason: "ack-timeout",
+                resyncSnapshotCount: 1,
                 state: {
                     lastAckSeq: 7,
                     lastSentAt: 2_000,
@@ -218,6 +220,52 @@ describe("AI session stream helpers", () => {
             lastSentSeq: 9,
             pendingCriticalPayloadCount: 2,
             reason: "ack-timeout",
+            resyncSnapshotCount: 1,
         });
+    });
+
+    it("builds recovery fallback payloads with critical entries before resync snapshots", () => {
+        const laterCritical = createStatusEvent("idle");
+        const earlierCritical = createCompletedEvent("message-completed");
+        const snapshot = createSnapshot("streaming");
+
+        expect(
+            buildAiSessionStreamRecoveryFallbackPayloads({
+                pendingCriticalPayloads: [
+                    {
+                        payload: laterCritical,
+                        seq: 20,
+                    },
+                    {
+                        payload: earlierCritical,
+                        seq: 10,
+                    },
+                ],
+                resyncSnapshots: [snapshot],
+            }),
+        ).toEqual([
+            earlierCritical,
+            laterCritical,
+            {
+                kind: "snapshot",
+                snapshot,
+            },
+        ]);
+    });
+
+    it("does not add resync snapshots when none are available", () => {
+        const critical = createCompletedEvent("thinking-completed");
+
+        expect(
+            buildAiSessionStreamRecoveryFallbackPayloads({
+                pendingCriticalPayloads: [
+                    {
+                        payload: critical,
+                        seq: 1,
+                    },
+                ],
+                resyncSnapshots: [],
+            }),
+        ).toEqual([critical]);
     });
 });

@@ -1,4 +1,5 @@
 import type {
+    AiSessionSnapshot,
     AiSessionStreamPayload,
     AiSessionUpdate,
 } from "@shared/ipc";
@@ -22,6 +23,12 @@ export interface AiSessionStreamRecoveryDiagnostic {
     readonly lastSentSeq: number;
     readonly pendingCriticalPayloadCount: number;
     readonly reason: AiSessionStreamRecoveryReason;
+    readonly resyncSnapshotCount: number;
+}
+
+export interface PendingCriticalAiSessionStreamPayload {
+    readonly payload: AiSessionStreamPayload;
+    readonly seq: number;
 }
 
 export type AiSessionStreamPayloadKind = AiSessionStreamPayload["kind"];
@@ -77,6 +84,7 @@ export function buildAiSessionStreamRecoveryDiagnostic(input: {
     readonly nowMs: number;
     readonly pendingCriticalPayloadCount: number;
     readonly reason: AiSessionStreamRecoveryReason;
+    readonly resyncSnapshotCount: number;
     readonly state: AiSessionStreamAckState;
 }): AiSessionStreamRecoveryDiagnostic {
     return {
@@ -85,5 +93,23 @@ export function buildAiSessionStreamRecoveryDiagnostic(input: {
         lastSentSeq: input.state.lastSentSeq,
         pendingCriticalPayloadCount: input.pendingCriticalPayloadCount,
         reason: input.reason,
+        resyncSnapshotCount: input.resyncSnapshotCount,
     };
+}
+
+export function buildAiSessionStreamRecoveryFallbackPayloads(input: {
+    readonly pendingCriticalPayloads: readonly PendingCriticalAiSessionStreamPayload[];
+    readonly resyncSnapshots: readonly AiSessionSnapshot[];
+}): readonly AiSessionStreamPayload[] {
+    const pendingPayloads = [...input.pendingCriticalPayloads]
+        .sort((left, right) => left.seq - right.seq)
+        .map((entry) => entry.payload);
+    const snapshotPayloads = input.resyncSnapshots.map(
+        (snapshot): AiSessionUpdate => ({
+            kind: "snapshot",
+            snapshot,
+        }),
+    );
+
+    return [...pendingPayloads, ...snapshotPayloads];
 }

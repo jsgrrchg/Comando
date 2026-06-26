@@ -34,6 +34,7 @@ import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
 import type { NormalizedSessionCatalogPayload } from "./ai/session-core";
 import {
+    buildAiSessionStreamRecoveryFallbackPayloads,
     buildAiSessionStreamRecoveryDiagnostic,
     isAiSessionStreamAckStale,
     isAiSessionUpdate,
@@ -1283,15 +1284,31 @@ function recoverAiSessionStreamPort(
     const state = aiSessionStreamPorts.get(windowId);
     const targetWindow = windowRegistry.getWindowByStableId(windowId);
     const pendingCriticalPayloadCount = state?.pendingCriticalPayloads.size ?? 0;
-    if (state && targetWindow && !targetWindow.isDestroyed()) {
-        flushPendingCriticalAiSessionPayloads(targetWindow, state);
+    const canSendFallback = Boolean(targetWindow && !targetWindow.isDestroyed());
+    const resyncSnapshots = canSendFallback
+        ? (aiService?.getLiveSessionSnapshotsForWindow(windowId) ?? [])
+        : [];
+
+    if (targetWindow && canSendFallback) {
+        const fallbackPayloads = buildAiSessionStreamRecoveryFallbackPayloads({
+            pendingCriticalPayloads: state
+                ? [...state.pendingCriticalPayloads.values()]
+                : [],
+            resyncSnapshots,
+        });
+        state?.pendingCriticalPayloads.clear();
+        for (const payload of fallbackPayloads) {
+            sendAiSessionStreamPayloadOverIpc(targetWindow, payload);
+        }
     }
+
     const message = state
         ? JSON.stringify(
               buildAiSessionStreamRecoveryDiagnostic({
                   nowMs: Date.now(),
                   pendingCriticalPayloadCount,
                   reason,
+                  resyncSnapshotCount: resyncSnapshots.length,
                   state,
               }),
           )
@@ -1300,20 +1317,6 @@ function recoverAiSessionStreamPort(
     detachAiSessionStream(windowId);
     if (targetWindow && !targetWindow.isDestroyed()) {
         attachAiSessionStream(targetWindow, windowId);
-    }
-}
-
-function flushPendingCriticalAiSessionPayloads(
-    window: BrowserWindow,
-    state: AiSessionStreamPortState,
-): void {
-    const pending = [...state.pendingCriticalPayloads.values()].sort(
-        (left, right) => left.seq - right.seq,
-    );
-    state.pendingCriticalPayloads.clear();
-
-    for (const entry of pending) {
-        sendAiSessionStreamPayloadOverIpc(window, entry.payload);
     }
 }
 
