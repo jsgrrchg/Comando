@@ -304,11 +304,13 @@ const bufferedSessionDeltaEvents = new Map<string, BufferedSessionDeltaEvent>();
 let bufferedSessionDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
 let isFlushingBufferedSessionDeltas = false;
 const AI_SESSION_RESYNC_SILENCE_MS = 20_000;
+const AI_SESSION_RESYNC_RETRY_DELAYS_MS = [20_000, 30_000, 45_000, 60_000];
 
 interface AiSessionResyncWatchdog {
     inFlight: boolean;
     progressKey: string;
     requestedProgressKey: string | null;
+    retryAttempt: number;
     timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -391,7 +393,12 @@ function resetBufferedSessionDeltas(): void {
 }
 
 function isAiSessionResyncWatchdogActive(snapshot: AiSessionSnapshot): boolean {
-    return snapshot.status === "starting" || snapshot.status === "streaming";
+    return (
+        snapshot.status === "starting" ||
+        snapshot.status === "streaming" ||
+        snapshot.status === "waiting_permission" ||
+        snapshot.status === "waiting_user_input"
+    );
 }
 
 function getAiSessionVisibleProgressKey(snapshot: AiSessionSnapshot): string {
@@ -430,6 +437,27 @@ function resetAiSessionResyncWatchdogs(): void {
     }
 }
 
+function getAiSessionResyncRetryDelayMs(retryAttempt: number): number {
+    return AI_SESSION_RESYNC_RETRY_DELAYS_MS[
+        Math.min(retryAttempt, AI_SESSION_RESYNC_RETRY_DELAYS_MS.length - 1)
+    ];
+}
+
+function scheduleAiSessionResyncWatchdogTimer(
+    sessionId: string,
+    watchdog: AiSessionResyncWatchdog,
+    get: GetAiState,
+    delayMs: number,
+): void {
+    watchdog.timer = setTimeout(() => {
+        void requestAiSessionResyncAfterSilence(
+            sessionId,
+            watchdog.progressKey,
+            get,
+        );
+    }, delayMs);
+}
+
 function scheduleAiSessionResyncWatchdog(
     sessionId: string,
     get: GetAiState,
@@ -462,10 +490,16 @@ function scheduleAiSessionResyncWatchdog(
             existing?.progressKey === progressKey
                 ? existing.requestedProgressKey
                 : null,
-        timer: setTimeout(() => {
-            void requestAiSessionResyncAfterSilence(sessionId, progressKey, get);
-        }, AI_SESSION_RESYNC_SILENCE_MS),
+        retryAttempt:
+            existing?.progressKey === progressKey ? existing.retryAttempt : 0,
+        timer: null,
     };
+    scheduleAiSessionResyncWatchdogTimer(
+        sessionId,
+        watchdog,
+        get,
+        AI_SESSION_RESYNC_SILENCE_MS,
+    );
     aiSessionResyncWatchdogs.set(sessionId, watchdog);
 }
 
@@ -493,9 +527,11 @@ async function requestAiSessionResyncAfterSilence(
 
     watchdog.inFlight = true;
     watchdog.requestedProgressKey = progressKey;
+    let appliedSnapshot = false;
     try {
         const resyncSnapshot = await getComandoApi().resyncAiSession(sessionId);
         if (resyncSnapshot) {
+            appliedSnapshot = true;
             get().applySessionSnapshot(resyncSnapshot);
         }
     } catch (error) {
@@ -504,6 +540,26 @@ async function requestAiSessionResyncAfterSilence(
         const latest = aiSessionResyncWatchdogs.get(sessionId);
         if (latest?.progressKey === progressKey) {
             latest.inFlight = false;
+            if (!appliedSnapshot) {
+                latest.requestedProgressKey = null;
+                latest.retryAttempt += 1;
+                const latestSnapshot =
+                    get().sessions[sessionId]?.snapshot ?? null;
+                if (
+                    latestSnapshot &&
+                    isAiSessionResyncWatchdogActive(latestSnapshot) &&
+                    getAiSessionVisibleProgressKey(latestSnapshot) ===
+                        progressKey &&
+                    latest.timer === null
+                ) {
+                    scheduleAiSessionResyncWatchdogTimer(
+                        sessionId,
+                        latest,
+                        get,
+                        getAiSessionResyncRetryDelayMs(latest.retryAttempt),
+                    );
+                }
+            }
         }
     }
 }

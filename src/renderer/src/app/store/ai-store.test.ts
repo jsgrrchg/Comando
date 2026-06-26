@@ -378,6 +378,27 @@ describe("ai-store queue", () => {
         expect(resyncAiSession).not.toHaveBeenCalled();
     });
 
+    it("requests resync for waiting permission sessions", async () => {
+        vi.useFakeTimers();
+        const resyncAiSession = vi.fn().mockResolvedValue(null);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    resyncAiSession,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({ status: "waiting_permission" }),
+        );
+        await vi.advanceTimersByTimeAsync(20_000);
+
+        expect(resyncAiSession).toHaveBeenCalledWith(TAB.sessionId);
+    });
+
     it("does not request resync while active sessions keep making visible progress", async () => {
         vi.useFakeTimers();
         const resyncAiSession = vi.fn().mockResolvedValue(null);
@@ -418,7 +439,7 @@ describe("ai-store queue", () => {
         expect(resyncAiSession).toHaveBeenCalledTimes(1);
     });
 
-    it("requests resync once for an unchanged active session", async () => {
+    it("retries resync for an unchanged active session when no snapshot is returned", async () => {
         vi.useFakeTimers();
         const resyncAiSession = vi.fn().mockResolvedValue(null);
         Object.defineProperty(globalThis, "window", {
@@ -440,8 +461,58 @@ describe("ai-store queue", () => {
         await vi.advanceTimersByTimeAsync(20_000);
         await vi.advanceTimersByTimeAsync(40_000);
 
-        expect(resyncAiSession).toHaveBeenCalledTimes(1);
+        expect(resyncAiSession).toHaveBeenCalledTimes(2);
         expect(resyncAiSession).toHaveBeenCalledWith(TAB.sessionId);
+    });
+
+    it("retries resync after a transient failure", async () => {
+        vi.useFakeTimers();
+        const error = new Error("ipc unavailable");
+        const message = createMessage({
+            content: "Complete",
+            status: "completed",
+        });
+        const resyncAiSession = vi
+            .fn()
+            .mockRejectedValueOnce(error)
+            .mockResolvedValue(
+                createSnapshot({
+                    messages: [message],
+                    status: "idle",
+                    updatedAt: "2026-04-14T00:00:50.000Z",
+                }),
+            );
+        const warn = vi
+            .spyOn(console, "warn")
+            .mockImplementation(() => undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    resyncAiSession,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [createMessage()],
+                status: "streaming",
+            }),
+        );
+        await vi.advanceTimersByTimeAsync(20_000);
+        await vi.advanceTimersByTimeAsync(30_000);
+
+        const snapshot =
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot ?? null;
+        expect(resyncAiSession).toHaveBeenCalledTimes(2);
+        expect(warn).toHaveBeenCalledWith(
+            "[comando] Failed to resync quiet AI session.",
+            error,
+        );
+        expect(snapshot?.status).toBe("idle");
+        expect(snapshot?.messages).toEqual([message]);
     });
 
     it("applies a resynced snapshot without duplicating messages", async () => {
