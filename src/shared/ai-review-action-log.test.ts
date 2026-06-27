@@ -10,6 +10,7 @@ import * as reviewActionLog from "./ai-review-action-log";
 const {
     consolidateReviewDiffs,
     createEmptyReviewActionLog,
+    createReviewActionLogFromTrackedFiles,
     deriveTrackedFilesFromActionLog,
     keepReviewFile,
     keepReviewRanges,
@@ -73,7 +74,71 @@ function deriveOnlyTrackedFile(state: AiReviewActionLogState): AiTrackedFile {
     return trackedFile;
 }
 
+function createTrackedFile(
+    overrides: Partial<AiTrackedFile> = {},
+): AiTrackedFile {
+    const path = overrides.path ?? "src/app.ts";
+    return {
+        currentText: "after\n",
+        diffBase: "before\n",
+        hunks: [],
+        identityKey: `native:${SESSION_ID}:${path}`,
+        isText: true,
+        kind: "update",
+        newText: "after\n",
+        oldText: "before\n",
+        path,
+        previousPath: null,
+        reviewState: "pending",
+        reversible: true,
+        sessionId: SESSION_ID,
+        toolCallId: "tool-1",
+        updatedAt: "2026-06-26T00:00:00.000Z",
+        version: 4,
+        ...overrides,
+    };
+}
+
 describe("AiReviewActionLog canonical review state", () => {
+    it("migrates unresolved legacy tracked files into canonical state", () => {
+        const pendingFile = createTrackedFile({
+            path: "src/pending.ts",
+        });
+        const keptFile = createTrackedFile({
+            identityKey: `native:${SESSION_ID}:src/kept.ts`,
+            path: "src/kept.ts",
+            reviewState: "kept",
+        });
+        const wrongSessionFile = createTrackedFile({
+            identityKey: "native:other:src/app.ts",
+            sessionId: "other-session",
+        });
+        const binaryFile = createTrackedFile({
+            identityKey: `native:${SESSION_ID}:assets/image.png`,
+            isText: false,
+            path: "assets/image.png",
+        });
+
+        const state = createReviewActionLogFromTrackedFiles(
+            SESSION_ID,
+            [pendingFile, keptFile, wrongSessionFile, binaryFile],
+            { updatedAt: "2026-06-26T00:01:00.000Z" },
+        );
+
+        expect(state.fileOrder).toEqual([pendingFile.identityKey]);
+        expect(state.versionClockByIdentityKey).toEqual({
+            [pendingFile.identityKey]: 4,
+        });
+        expect(deriveTrackedFilesFromActionLog(state)).toEqual([
+            expect.objectContaining({
+                identityKey: pendingFile.identityKey,
+                path: "src/pending.ts",
+                reviewState: "pending",
+                version: 4,
+            }),
+        ]);
+    });
+
     it("tracks create, update, delete, and move diffs as pending files", () => {
         const state = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),

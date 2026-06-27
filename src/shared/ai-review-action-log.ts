@@ -2,6 +2,7 @@ import {
     computeDiffHunks,
     getTrackedFileCurrentText,
     getTrackedFileDiffBase,
+    isAiTrackedFileUnresolved,
     normalizeReviewText,
     resolveTrackedFileHunks,
     syncTrackedFile,
@@ -82,6 +83,51 @@ export function createEmptyReviewActionLog(
         sessionId,
         updatedAt: new Date().toISOString(),
         versionClockByIdentityKey: {},
+    };
+}
+
+export function createReviewActionLogFromTrackedFiles(
+    sessionId: string,
+    trackedFiles: readonly AiTrackedFile[],
+    options: {
+        readonly activeWorkCycleId?: string | null;
+        readonly updatedAt?: string;
+    } = {},
+): AiReviewActionLogState {
+    let state: AiReviewActionLogState = {
+        ...createEmptyReviewActionLog(sessionId),
+        activeWorkCycleId: options.activeWorkCycleId ?? null,
+        updatedAt: options.updatedAt ?? new Date().toISOString(),
+    };
+
+    for (const trackedFile of trackedFiles) {
+        if (
+            !trackedFile.isText ||
+            trackedFile.sessionId !== sessionId ||
+            !isAiTrackedFileUnresolved(trackedFile)
+        ) {
+            continue;
+        }
+
+        const syncedTrackedFile = syncTrackedFile(trackedFile);
+        state = replaceReviewFile(
+            state,
+            actionLogFileFromTrackedFile(
+                syncedTrackedFile,
+                state.filesByIdentityKey[syncedTrackedFile.identityKey],
+                {
+                    updatedAt: syncedTrackedFile.updatedAt,
+                },
+            ),
+            {
+                updatedAt: syncedTrackedFile.updatedAt,
+            },
+        );
+    }
+
+    return {
+        ...state,
+        updatedAt: options.updatedAt ?? state.updatedAt,
     };
 }
 

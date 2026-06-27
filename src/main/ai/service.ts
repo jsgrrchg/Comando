@@ -17,6 +17,7 @@ import type {
     AiSessionConfigOptionMutationInput,
     AiSessionModeMutationInput,
     AiSessionModelMutationInput,
+    AiSessionEventOrigin,
     AiSessionPinnedMutationInput,
     AiSessionUpdate,
     AiSessionRenameMutationInput,
@@ -49,6 +50,10 @@ import {
     resolveTrackedFileHunks,
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
+import {
+    createReviewActionLogFromTrackedFiles,
+    deriveTrackedFilesFromActionLog,
+} from "@shared/ai-review-action-log";
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
@@ -610,24 +615,29 @@ export class AiService {
         }
 
         const previousSnapshot = this.#liveSnapshots.get(sessionId) ?? null;
+        const preservePreviousReviewSnapshot =
+            isNativeTrackedFilesPatch(update) ? null : previousSnapshot;
         const nextSnapshot = this.#drainPendingNativeCatalogPatches(
             this.#preservePassiveNativeSnapshotTrackedFiles(
                 this.#hydrateSnapshotRuntimeCatalog(snapshot),
-                previousSnapshot,
+                preservePreviousReviewSnapshot,
             ),
             ownerWindowId,
         );
-        this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
-        this.#persistence.saveSessionSnapshot(nextSnapshot);
-        if (nextSnapshot.lastError) {
+        const cachedSnapshot = this.#cacheLiveSessionSnapshot(
+            nextSnapshot,
+            ownerWindowId,
+        );
+        this.#persistence.saveSessionSnapshot(cachedSnapshot);
+        if (cachedSnapshot.lastError) {
             this.#invalidateRuntimeAuthIfNeeded(
-                nextSnapshot.runtimeId,
-                nextSnapshot.lastError,
+                cachedSnapshot.runtimeId,
+                cachedSnapshot.lastError,
             );
         }
         this.#onSessionSnapshot(
             ownerWindowId,
-            buildAiSessionUpdate(previousSnapshot, nextSnapshot),
+            buildAiSessionUpdate(previousSnapshot, cachedSnapshot),
         );
     }
 
@@ -651,15 +661,18 @@ export class AiService {
                 previousSnapshot,
                 event,
             );
-            this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+            const cachedSnapshot = this.#cacheLiveSessionSnapshot(
+                nextSnapshot,
+                ownerWindowId,
+            );
             this.#onSessionSnapshot(
                 ownerWindowId,
-                buildAiSessionUpdate(previousSnapshot, nextSnapshot),
+                buildAiSessionUpdate(previousSnapshot, cachedSnapshot),
             );
-            if (nextSnapshot.lastError) {
+            if (cachedSnapshot.lastError) {
                 this.#invalidateRuntimeAuthIfNeeded(
-                    nextSnapshot.runtimeId,
-                    nextSnapshot.lastError,
+                    cachedSnapshot.runtimeId,
+                    cachedSnapshot.lastError,
                 );
             }
             if (this.#isNativeAiSession(event.sessionId)) {
@@ -710,6 +723,7 @@ export class AiService {
                     title: event.title,
                     tokenUsage: null,
                     toolActivity: [],
+                    reviewActionLog: null,
                     trackedFiles: [],
                     updatedAt: event.updatedAt,
                 };
@@ -720,7 +734,10 @@ export class AiService {
                           event.updatedAt,
                       )
                     : baseChildSnapshot;
-                this.#cacheLiveSessionSnapshot(childSnapshot, ownerWindowId);
+                const cachedChildSnapshot = this.#cacheLiveSessionSnapshot(
+                    childSnapshot,
+                    ownerWindowId,
+                );
                 this.#nativeSessionIds.add(event.childSessionId);
                 this.#nativeChildParentSessionIds.set(
                     event.childSessionId,
@@ -728,7 +745,7 @@ export class AiService {
                 );
                 this.#onSessionSnapshot(ownerWindowId, {
                     kind: "snapshot",
-                    snapshot: childSnapshot,
+                    snapshot: cachedChildSnapshot,
                 });
             }
         }
@@ -2101,42 +2118,44 @@ export class AiService {
     #cacheLiveSessionSnapshot(
         snapshot: AiSessionSnapshot,
         ownerWindowId: string,
-    ): void {
-        this.#liveSnapshots.set(snapshot.sessionId, snapshot);
-        this.#touchLiveSession(snapshot.sessionId);
-        const context = this.#liveSessionContexts.get(snapshot.sessionId);
+    ): AiSessionSnapshot {
+        const cachedSnapshot = normalizeLiveSnapshotReviewState(snapshot);
+        this.#liveSnapshots.set(cachedSnapshot.sessionId, cachedSnapshot);
+        this.#touchLiveSession(cachedSnapshot.sessionId);
+        const context = this.#liveSessionContexts.get(cachedSnapshot.sessionId);
         if (context) {
-            this.#liveSessionContexts.set(snapshot.sessionId, {
+            this.#liveSessionContexts.set(cachedSnapshot.sessionId, {
                 ...context,
                 ownerWindowId,
                 parentSessionId:
-                    normalizeSessionRef(snapshot.parentSessionId) ??
+                    normalizeSessionRef(cachedSnapshot.parentSessionId) ??
                     context.parentSessionId,
-                projectId: snapshot.projectId,
-                runtimeId: snapshot.runtimeId,
-                worktreeId: snapshot.worktreeId ?? null,
+                projectId: cachedSnapshot.projectId,
+                runtimeId: cachedSnapshot.runtimeId,
+                worktreeId: cachedSnapshot.worktreeId ?? null,
             });
-            return;
+            return cachedSnapshot;
         }
 
-        const parentSessionId = snapshot.parentSessionId ?? null;
+        const parentSessionId = cachedSnapshot.parentSessionId ?? null;
         const parentContext = parentSessionId
             ? this.#liveSessionContexts.get(parentSessionId)
             : null;
         if (!parentContext) {
-            return;
+            return cachedSnapshot;
         }
 
-        this.#liveSessionContexts.set(snapshot.sessionId, {
+        this.#liveSessionContexts.set(cachedSnapshot.sessionId, {
             additionalRoots: parentContext.additionalRoots,
             ownerWindowId,
             parentSessionId,
-            projectId: snapshot.projectId,
-            runtimeId: snapshot.runtimeId,
-            sessionId: snapshot.sessionId,
-            worktreeId: snapshot.worktreeId ?? null,
+            projectId: cachedSnapshot.projectId,
+            runtimeId: cachedSnapshot.runtimeId,
+            sessionId: cachedSnapshot.sessionId,
+            worktreeId: cachedSnapshot.worktreeId ?? null,
         });
-        this.#touchLiveSession(snapshot.sessionId);
+        this.#touchLiveSession(cachedSnapshot.sessionId);
+        return cachedSnapshot;
     }
 
     #clearLiveSession(sessionId: string): void {
@@ -2429,11 +2448,14 @@ export class AiService {
             ),
             ownerWindowId,
         );
-        this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
-        if (!this.#isNativeAiSession(nextSnapshot.sessionId)) {
-            this.#persistence.saveSessionSnapshot(nextSnapshot);
+        const cachedSnapshot = this.#cacheLiveSessionSnapshot(
+            nextSnapshot,
+            ownerWindowId,
+        );
+        if (!this.#isNativeAiSession(cachedSnapshot.sessionId)) {
+            this.#persistence.saveSessionSnapshot(cachedSnapshot);
         }
-        return nextSnapshot;
+        return cachedSnapshot;
     }
 
     async #reconcileLiveSelectionPreferences(
@@ -2520,17 +2542,20 @@ export class AiService {
             },
             patch,
         );
-        this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
-        this.#persistNativeCatalogPatch(nextSnapshot, patch);
+        const cachedSnapshot = this.#cacheLiveSessionSnapshot(
+            nextSnapshot,
+            ownerWindowId,
+        );
+        this.#persistNativeCatalogPatch(cachedSnapshot, patch);
 
         if (options.emitUpdate) {
             this.#onSessionSnapshot(
                 ownerWindowId,
-                buildAiSessionUpdate(previousSnapshot, nextSnapshot),
+                buildAiSessionUpdate(previousSnapshot, cachedSnapshot),
             );
         }
 
-        return nextSnapshot;
+        return cachedSnapshot;
     }
 
     #drainPendingNativeCatalogPatches(
@@ -2692,12 +2717,18 @@ export class AiService {
             return this.#applyNativeToolActivityReviewDiffs(
                 nextSnapshot,
                 event.activity,
+                event.origin,
             );
         }
 
         if (event.kind === "review") {
+            if (event.origin !== "live") {
+                return base;
+            }
+
             return {
                 ...base,
+                reviewActionLog: null,
                 trackedFiles: this.#preserveNativeReviewFallbackTrackedFiles(
                     event.trackedFiles,
                     snapshot,
@@ -2902,9 +2933,11 @@ export class AiService {
     #applyNativeToolActivityReviewDiffs(
         snapshot: AiSessionSnapshot,
         activity: AiToolActivity,
+        origin: AiSessionEventOrigin,
     ): AiSessionSnapshot {
         const reviewContext = this.#nativeReviewDiffContext(snapshot.sessionId);
         if (
+            origin !== "live" ||
             !reviewContext ||
             !isTerminalNativeReviewActivityStatus(activity.status) ||
             activity.diffs.length === 0
@@ -3028,6 +3061,7 @@ export class AiService {
             ? snapshot
             : {
                   ...snapshot,
+                  reviewActionLog: null,
                   trackedFiles,
               };
     }
@@ -3087,16 +3121,30 @@ export class AiService {
         incomingSnapshot: AiSessionSnapshot,
         previousSnapshot: AiSessionSnapshot | null,
     ): AiSessionSnapshot {
+        const normalizedIncomingSnapshot =
+            normalizeLiveSnapshotReviewState(incomingSnapshot);
         const filteredIncomingTrackedFiles =
             this.#filterAcceptedNativeReviewTrackedFiles(
-                incomingSnapshot.sessionId,
-                incomingSnapshot.trackedFiles,
+                normalizedIncomingSnapshot.sessionId,
+                normalizedIncomingSnapshot.trackedFiles,
             );
         const filteredIncomingSnapshot =
-            filteredIncomingTrackedFiles === incomingSnapshot.trackedFiles
-                ? incomingSnapshot
+            filteredIncomingTrackedFiles ===
+            normalizedIncomingSnapshot.trackedFiles
+                ? normalizedIncomingSnapshot
                 : {
-                      ...incomingSnapshot,
+                      ...normalizedIncomingSnapshot,
+                      reviewActionLog:
+                          filteredIncomingTrackedFiles.length > 0
+                              ? createReviewActionLogFromTrackedFiles(
+                                    normalizedIncomingSnapshot.sessionId,
+                                    filteredIncomingTrackedFiles,
+                                    {
+                                        updatedAt:
+                                            normalizedIncomingSnapshot.updatedAt,
+                                    },
+                                )
+                              : null,
                       trackedFiles: filteredIncomingTrackedFiles,
                   };
 
@@ -3179,13 +3227,17 @@ export class AiService {
 
             const nextSnapshot = {
                 ...snapshot,
+                reviewActionLog: null,
                 trackedFiles: nextTrackedFiles,
                 updatedAt: new Date().toISOString(),
             };
-            this.#cacheLiveSessionSnapshot(nextSnapshot, ownerWindowId);
+            const cachedSnapshot = this.#cacheLiveSessionSnapshot(
+                nextSnapshot,
+                ownerWindowId,
+            );
             this.#onSessionSnapshot(
                 ownerWindowId,
-                buildAiSessionUpdate(snapshot, nextSnapshot),
+                buildAiSessionUpdate(snapshot, cachedSnapshot),
             );
             void this.#enforceSessionRetention();
         } finally {
@@ -3209,12 +3261,26 @@ export class AiService {
             return null;
         }
 
-        return {
+        const patchChanges = update.patch.changes;
+        const resolvedSnapshot = {
             ...previousSnapshot,
-            ...update.patch.changes,
+            ...patchChanges,
             runtimeId: update.patch.runtimeId,
             sessionId: update.patch.sessionId,
         };
+        const hasLegacyTrackedFilePatch =
+            isNativeTrackedFilesPatch(update) &&
+            !Object.prototype.hasOwnProperty.call(
+                patchChanges,
+                "reviewActionLog",
+            );
+
+        return hasLegacyTrackedFilePatch
+            ? {
+                  ...resolvedSnapshot,
+                  reviewActionLog: null,
+              }
+            : resolvedSnapshot;
     }
 
     async #loadPersistedSessionSnapshot(
@@ -3319,12 +3385,15 @@ export class AiService {
             return;
         }
 
-        this.#cacheLiveSessionSnapshot(snapshot, ownerWindowId);
+        const cachedSnapshot = this.#cacheLiveSessionSnapshot(
+            snapshot,
+            ownerWindowId,
+        );
         this.#nativeSessionIds.add(snapshot.sessionId);
         this.#nativeChildParentSessionIds.set(snapshot.sessionId, parentSessionId);
         this.#onSessionSnapshot(ownerWindowId, {
             kind: "snapshot",
-            snapshot,
+            snapshot: cachedSnapshot,
         });
     }
 
@@ -3447,16 +3516,20 @@ export class AiService {
         previousSnapshot: AiSessionSnapshot,
         result: AiReviewMutationResult,
     ): void {
-        if (!this.#isNativeAiSession(result.snapshot.sessionId)) {
-            this.#persistence.saveSessionSnapshot(result.snapshot);
+        const nextSnapshot = normalizeLiveReviewMutationSnapshot(
+            previousSnapshot,
+            result.snapshot,
+        );
+        if (!this.#isNativeAiSession(nextSnapshot.sessionId)) {
+            this.#persistence.saveSessionSnapshot(nextSnapshot);
         }
-        if (this.#liveSnapshots.has(result.snapshot.sessionId)) {
-            this.#liveSnapshots.set(result.snapshot.sessionId, result.snapshot);
-            this.#touchLiveSession(result.snapshot.sessionId);
+        if (this.#liveSnapshots.has(nextSnapshot.sessionId)) {
+            this.#liveSnapshots.set(nextSnapshot.sessionId, nextSnapshot);
+            this.#touchLiveSession(nextSnapshot.sessionId);
         }
         this.#onSessionSnapshot(
             result.ownerWindowId,
-            buildAiSessionUpdate(previousSnapshot, result.snapshot),
+            buildAiSessionUpdate(previousSnapshot, nextSnapshot),
         );
         void this.#enforceSessionRetention();
     }
@@ -4170,7 +4243,9 @@ export class AiService {
     ): Promise<AiSessionSnapshot> {
         const liveSnapshot = this.#liveSnapshots.get(sessionId);
         if (liveSnapshot) {
-            const nextSnapshot = mutate(liveSnapshot);
+            const nextSnapshot = normalizeLiveSnapshotReviewState(
+                mutate(liveSnapshot),
+            );
             this.#liveSnapshots.set(sessionId, nextSnapshot);
             if (!this.#isNativeAiSession(sessionId)) {
                 this.#persistence.saveSessionSnapshot(nextSnapshot);
@@ -4187,7 +4262,7 @@ export class AiService {
             throw new Error("The AI session was not found.");
         }
 
-        const nextSnapshot = mutate(snapshot);
+        const nextSnapshot = clearRestoredSnapshotReviewState(mutate(snapshot));
         this.#persistence.saveSessionSnapshot(nextSnapshot);
         this.#onSessionSnapshot("", {
             kind: "snapshot",
@@ -4761,6 +4836,13 @@ function preservePassiveSnapshotTrackedFiles(
     pathMatcher?: TrackedFilePathMatcher,
 ): AiSessionSnapshot {
     if (
+        incomingSnapshot.reviewActionLog &&
+        incomingSnapshot.reviewActionLog.sessionId === incomingSnapshot.sessionId
+    ) {
+        return normalizeLiveSnapshotReviewState(incomingSnapshot);
+    }
+
+    if (
         !previousSnapshot ||
         previousSnapshot.sessionId !== incomingSnapshot.sessionId ||
         previousSnapshot.trackedFiles.length === 0
@@ -4778,6 +4860,7 @@ function preservePassiveSnapshotTrackedFiles(
             ? incomingSnapshot
             : {
                   ...incomingSnapshot,
+                  reviewActionLog: null,
                   trackedFiles,
               };
     }
@@ -4791,6 +4874,7 @@ function preservePassiveSnapshotTrackedFiles(
 
     return {
         ...incomingSnapshot,
+        reviewActionLog: null,
         trackedFiles: pendingTrackedFiles,
     };
 }
@@ -5313,7 +5397,10 @@ function isModelConfigOption(option: AiSessionConfigOption): boolean {
 function clearRestoredSnapshotReviewState(
     snapshot: AiSessionSnapshot,
 ): AiSessionSnapshot {
-    if (snapshot.trackedFiles.length === 0) {
+    if (
+        snapshot.trackedFiles.length === 0 &&
+        (snapshot.reviewActionLog ?? null) === null
+    ) {
         return snapshot;
     }
 
@@ -5321,8 +5408,83 @@ function clearRestoredSnapshotReviewState(
         ...snapshot,
         // Persisted transcripts keep historical diffs; pending review files are
         // intentionally only restored from live session state.
+        reviewActionLog: null,
         trackedFiles: [],
     };
+}
+
+function normalizeLiveSnapshotReviewState(
+    snapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    return normalizeSnapshotReviewState(snapshot, {
+        migrateLegacyTrackedFiles: true,
+    });
+}
+
+function isNativeTrackedFilesPatch(update: AiSessionUpdate): boolean {
+    return (
+        update.kind === "patch" &&
+        Object.prototype.hasOwnProperty.call(
+            update.patch.changes,
+            "trackedFiles",
+        )
+    );
+}
+
+function normalizeLiveReviewMutationSnapshot(
+    previousSnapshot: AiSessionSnapshot,
+    snapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    if (
+        (snapshot.reviewActionLog ?? null) !== null &&
+        snapshot.reviewActionLog === (previousSnapshot.reviewActionLog ?? null) &&
+        snapshot.trackedFiles !== previousSnapshot.trackedFiles
+    ) {
+        return normalizeLiveSnapshotReviewState({
+            ...snapshot,
+            reviewActionLog: null,
+        });
+    }
+
+    return normalizeLiveSnapshotReviewState(snapshot);
+}
+
+function normalizeSnapshotReviewState(
+    snapshot: AiSessionSnapshot,
+    options: { readonly migrateLegacyTrackedFiles: boolean },
+): AiSessionSnapshot {
+    const reviewActionLog = snapshot.reviewActionLog ?? null;
+    if (reviewActionLog && reviewActionLog.sessionId === snapshot.sessionId) {
+        const trackedFiles = deriveTrackedFilesFromActionLog(reviewActionLog);
+        return snapshot.trackedFiles === trackedFiles
+            ? snapshot
+            : {
+                  ...snapshot,
+                  trackedFiles,
+              };
+    }
+
+    if (options.migrateLegacyTrackedFiles && snapshot.trackedFiles.length > 0) {
+        const migratedActionLog = createReviewActionLogFromTrackedFiles(
+            snapshot.sessionId,
+            snapshot.trackedFiles,
+            {
+                updatedAt: snapshot.updatedAt,
+            },
+        );
+        return {
+            ...snapshot,
+            reviewActionLog: migratedActionLog,
+            trackedFiles: deriveTrackedFilesFromActionLog(migratedActionLog),
+        };
+    }
+
+    return reviewActionLog === null
+        ? snapshot
+        : {
+              ...snapshot,
+              reviewActionLog: null,
+          };
 }
 
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
