@@ -51,6 +51,7 @@ import {
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
 import {
+    consolidateReviewDiffs,
     createReviewActionLogFromTrackedFiles,
     deriveTrackedFilesFromActionLog,
 } from "@shared/ai-review-action-log";
@@ -2970,6 +2971,7 @@ export class AiService {
             }
             return null;
         };
+        let reviewActionLog = snapshot.reviewActionLog ?? null;
         let trackedFiles = snapshot.trackedFiles;
         const nativeDiffs: AiFileDiff[] = [];
         const rawOutput = parseToolActivityJson(activity.rawOutputJson);
@@ -3018,26 +3020,41 @@ export class AiService {
             if (!reviewDiff) {
                 continue;
             }
-            const trackedFile = trackedFileFromToolActivityDiff(
+            const baseReviewActionLog =
+                reviewActionLog ??
+                createReviewActionLogFromTrackedFiles(
+                    snapshot.sessionId,
+                    trackedFiles,
+                    {
+                        updatedAt: snapshot.updatedAt,
+                    },
+                );
+            const nextReviewActionLog = consolidateReviewDiffs(
+                baseReviewActionLog,
+                [reviewDiff],
+                {
+                    origin,
+                    sessionId: snapshot.sessionId,
+                    toolCallId: activity.id,
+                    updatedAt: activity.updatedAt,
+                    workCycleId: baseReviewActionLog.activeWorkCycleId,
+                },
+            );
+            if (nextReviewActionLog === baseReviewActionLog) {
+                continue;
+            }
+            reviewActionLog = nextReviewActionLog;
+            trackedFiles = deriveTrackedFilesFromActionLog(reviewActionLog);
+
+            const nativeDiff = nativeDiffFromToolActivityDiff(
                 reviewDiff,
                 snapshot.sessionId,
                 activity.id,
                 activity.updatedAt,
             );
-            if (!trackedFile) {
-                continue;
+            if (nativeDiff) {
+                nativeDiffs.push(nativeDiff);
             }
-            nativeDiffs.push({
-                hunks: trackedFile.hunks,
-                isText: trackedFile.isText,
-                kind: trackedFile.kind,
-                newText: trackedFile.newText,
-                oldText: trackedFile.oldText,
-                path: trackedFile.path,
-                previousPath: trackedFile.previousPath,
-                reversible: trackedFile.reversible,
-            });
-            trackedFiles = upsertTrackedFile(trackedFiles, trackedFile);
         }
 
         if (nativeDiffs.length > 0) {
@@ -3057,11 +3074,11 @@ export class AiService {
                 });
         }
 
-        return trackedFiles === snapshot.trackedFiles
+        return reviewActionLog === snapshot.reviewActionLog
             ? snapshot
             : {
                   ...snapshot,
-                  reviewActionLog: null,
+                  reviewActionLog,
                   trackedFiles,
               };
     }
@@ -4680,14 +4697,14 @@ function normalizeSessionStatusTitle(
     return trimmed.length > 0 ? trimmed : null;
 }
 
-function trackedFileFromToolActivityDiff(
+function nativeDiffFromToolActivityDiff(
     diff: AiFileDiff,
     sessionId: string,
     toolCallId: string,
     updatedAt: string,
     normalizePath: (candidatePath: string) => string | null = (candidatePath) =>
         candidatePath,
-): AiTrackedFile | null {
+): AiFileDiff | null {
     if (!diff.isText) {
         return null;
     }
@@ -4711,7 +4728,7 @@ function trackedFileFromToolActivityDiff(
         return null;
     }
 
-    return {
+    const trackedFile: AiTrackedFile = {
         currentText,
         diffBase,
         hunks:
@@ -4734,6 +4751,16 @@ function trackedFileFromToolActivityDiff(
         toolCallId,
         updatedAt,
         version: 1,
+    };
+    return {
+        hunks: trackedFile.hunks,
+        isText: trackedFile.isText,
+        kind: trackedFile.kind,
+        newText: trackedFile.newText,
+        oldText: trackedFile.oldText,
+        path: trackedFile.path,
+        previousPath: trackedFile.previousPath,
+        reversible: trackedFile.reversible,
     };
 }
 
@@ -4764,7 +4791,10 @@ function normalizeAiFileDiffPaths(
 }
 
 function isFallbackTrackedFile(trackedFile: AiTrackedFile): boolean {
-    return trackedFile.identityKey.startsWith("tool:");
+    return (
+        trackedFile.identityKey.startsWith("review:") ||
+        trackedFile.identityKey.startsWith("tool:")
+    );
 }
 
 function findFallbackTrackedFile(

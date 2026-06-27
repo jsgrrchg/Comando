@@ -448,6 +448,25 @@ describe("AiService OpenCode branch", () => {
                 toolCallId: "tool-write-2",
                 updatedAt: "2026-06-20T00:00:02.000Z",
             });
+            const latestReviewActionLog = onSessionSnapshot.mock.calls
+                .map(([, update]) =>
+                    update.kind === "snapshot"
+                        ? update.snapshot.reviewActionLog
+                        : update.patch.changes.reviewActionLog,
+                )
+                .findLast((reviewActionLog) => reviewActionLog !== undefined);
+            expect(latestReviewActionLog).toMatchObject({
+                sessionId: "session-opencode",
+            });
+            const loggedIdentityKey = latestReviewActionLog?.fileOrder[0] ?? "";
+            const loggedFile =
+                latestReviewActionLog?.filesByIdentityKey[loggedIdentityKey];
+            expect(loggedFile).toMatchObject({
+                currentText: nextText,
+                oldText: acceptedText,
+                path: "cuento.md",
+                toolCallIds: ["tool-write-2"],
+            });
             const latestTrackedFiles = onSessionSnapshot.mock.calls
                 .map(([, update]) =>
                     update.kind === "snapshot"
@@ -457,12 +476,158 @@ describe("AiService OpenCode branch", () => {
                 .findLast((trackedFiles) => trackedFiles !== undefined);
             expect(latestTrackedFiles).toEqual([
                 expect.objectContaining({
+                    identityKey: loggedFile?.identityKey,
                     newText: nextText,
                     oldText: acceptedText,
                     path: "cuento.md",
                     reviewState: "pending",
                 }),
             ]);
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("does not recreate pending review files from already accepted live tool diffs", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-review-accepted-tool-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
+            const originalText = "before\n";
+            const acceptedText = "after\n";
+            const acceptedFile = createTrackedFile({
+                currentText: acceptedText,
+                diffBase: originalText,
+                newText: acceptedText,
+                oldText: originalText,
+                path: "cuento.md",
+            });
+            const recordReviewDiffs = vi.fn<
+                NonNullable<NativeAiGateway["recordReviewDiffs"]>
+            >(() => Promise.resolve([]));
+            const nativeAi = createNativeAi({
+                keepTrackedFile: vi.fn<
+                    NonNullable<NativeAiGateway["keepTrackedFile"]>
+                >(({ context }) =>
+                    Promise.resolve({
+                        ownerWindowId: context.ownerWindowId,
+                        snapshot: {
+                            ...context.snapshot,
+                            trackedFiles: [],
+                            updatedAt: "2026-06-20T00:00:01.000Z",
+                        },
+                    }),
+                ),
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-opencode",
+                            status: "idle",
+                            trackedFiles: [acceptedFile],
+                            updatedAt: "2026-06-20T00:00:00.000Z",
+                        }),
+                ),
+                recordReviewDiffs,
+                sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
+                    Promise.resolve({
+                        sessionId: input.sessionId,
+                        stopReason: "accepted",
+                    }),
+                ),
+            });
+            const service = createService({
+                nativeAi,
+                projectRootPath: tempDir,
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+
+            await service.prepareSession(
+                {
+                    projectId: "project-1",
+                    runtimeId: "opencode",
+                    sessionId: "session-opencode",
+                    title: "OpenCode 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            await service.keepTrackedFile({
+                path: "cuento.md",
+                sessionId: "session-opencode",
+            });
+            await service.sendPrompt(
+                {
+                    additionalRoots: [],
+                    attachments: [],
+                    messageId: "user-message-2",
+                    projectId: "project-1",
+                    prompt: "No-op follow-up.",
+                    runtimeId: "opencode",
+                    sessionId: "session-opencode",
+                    title: "OpenCode 1",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+
+            service.handleNativeSessionEvent("window-1", {
+                activity: {
+                    createdAt: "2026-06-20T00:00:02.000Z",
+                    diffs: [
+                        {
+                            hunks: [],
+                            isText: true,
+                            kind: "update",
+                            newText: acceptedText,
+                            oldText: originalText,
+                            path: path.join(tempDir, "cuento.md"),
+                            previousPath: null,
+                            reversible: true,
+                        },
+                    ],
+                    exitCode: 0,
+                    id: "tool-accepted-edit",
+                    kind: "edit",
+                    locations: [],
+                    rawInputJson: null,
+                    rawOutputJson: null,
+                    sessionId: "session-opencode",
+                    status: "completed",
+                    summary: "Edited cuento.md",
+                    terminalOutput: null,
+                    title: "Edited cuento.md",
+                    updatedAt: "2026-06-20T00:00:02.000Z",
+                },
+                kind: "tool-activity",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-opencode",
+                sessionId: "session-opencode",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
+
+            expect(recordReviewDiffs).not.toHaveBeenCalled();
+            expect(
+                service.getLiveSessionSnapshotForWindow(
+                    "window-1",
+                    "session-opencode",
+                ),
+            ).toMatchObject({
+                reviewActionLog: null,
+                trackedFiles: [],
+            });
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -680,7 +845,7 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
-    it("does not create pending review files from restored tool activity diffs", async () => {
+    it("does not create pending review files from restored or replayed tool activity diffs", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-review-restore-diffs-"),
         );
@@ -772,6 +937,42 @@ describe("AiService OpenCode branch", () => {
                 runtimeSessionId: "runtime-opencode",
                 sessionId: "session-opencode",
                 updatedAt: "2026-06-20T00:00:01.000Z",
+            });
+            service.handleNativeSessionEvent("window-1", {
+                activity: {
+                    createdAt: "2026-06-20T00:00:02.000Z",
+                    diffs: [
+                        {
+                            hunks: [],
+                            isText: true,
+                            kind: "update",
+                            newText: "export const replayed = 2;\n",
+                            oldText: "export const replayed = 1;\n",
+                            path: path.join(tempDir, "src/replayed.ts"),
+                            previousPath: null,
+                            reversible: true,
+                        },
+                    ],
+                    exitCode: 0,
+                    id: "tool-replayed-edit",
+                    kind: "edit",
+                    locations: [],
+                    rawInputJson: null,
+                    rawOutputJson: null,
+                    sessionId: "session-opencode",
+                    status: "completed",
+                    summary: "Edited src/replayed.ts",
+                    terminalOutput: null,
+                    title: "Edited src/replayed.ts",
+                    updatedAt: "2026-06-20T00:00:02.000Z",
+                },
+                kind: "tool-activity",
+                origin: "replay",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-opencode",
+                sessionId: "session-opencode",
+                updatedAt: "2026-06-20T00:00:02.000Z",
             });
 
             expect(recordReviewDiffs).not.toHaveBeenCalled();
