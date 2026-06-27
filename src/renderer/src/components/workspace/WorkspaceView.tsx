@@ -57,6 +57,10 @@ import {
     truncateChatTitle,
 } from "@shared/chatTitle";
 import {
+    createReviewFileMutationInput,
+    createReviewHunkMutationInput,
+} from "@renderer/app/ai/reviewMutationTarget";
+import {
     hasPrimaryPointerButton,
     isPrimaryPointerButton,
 } from "@renderer/app/pointerGuards";
@@ -4151,10 +4155,9 @@ function FileTabView({
         }
 
         captureInlineReviewModifiedEditorState();
-        void keepTrackedFile({
-            path: inlineReviewTrackedFile.path,
-            sessionId: inlineReviewTrackedFile.sessionId,
-        });
+        void keepTrackedFile(
+            createReviewFileMutationInput(inlineReviewTrackedFile),
+        );
     }, [
         captureInlineReviewModifiedEditorState,
         inlineReviewTrackedFile,
@@ -4167,10 +4170,9 @@ function FileTabView({
         }
 
         captureInlineReviewModifiedEditorState();
-        void rejectTrackedFile({
-            path: inlineReviewTrackedFile.path,
-            sessionId: inlineReviewTrackedFile.sessionId,
-        });
+        void rejectTrackedFile(
+            createReviewFileMutationInput(inlineReviewTrackedFile),
+        );
     }, [
         captureInlineReviewModifiedEditorState,
         inlineReviewTrackedFile,
@@ -5973,12 +5975,12 @@ function FileTabView({
                             <InlineReviewHunkZone
                                 onAccept={() => {
                                     captureInlineReviewModifiedEditorState();
-                                    void keepTrackedFileHunks({
-                                        hunkIds: [hoveredInlineReviewHunk.id],
-                                        path: inlineReviewTrackedFile.path,
-                                        sessionId:
-                                            inlineReviewTrackedFile.sessionId,
-                                    });
+                                    void keepTrackedFileHunks(
+                                        createReviewHunkMutationInput(
+                                            inlineReviewTrackedFile,
+                                            [hoveredInlineReviewHunk.id],
+                                        ),
+                                    );
                                 }}
                                 onMouseEnter={() => {
                                     clearInlineReviewHoverHideTimer();
@@ -5990,12 +5992,12 @@ function FileTabView({
                                 }}
                                 onReject={() => {
                                     captureInlineReviewModifiedEditorState();
-                                    void rejectTrackedFileHunks({
-                                        hunkIds: [hoveredInlineReviewHunk.id],
-                                        path: inlineReviewTrackedFile.path,
-                                        sessionId:
-                                            inlineReviewTrackedFile.sessionId,
-                                    });
+                                    void rejectTrackedFileHunks(
+                                        createReviewHunkMutationInput(
+                                            inlineReviewTrackedFile,
+                                            [hoveredInlineReviewHunk.id],
+                                        ),
+                                    );
                                 }}
                                 top={hoveredInlineReviewHunkState.top}
                             />

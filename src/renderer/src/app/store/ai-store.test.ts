@@ -10,8 +10,6 @@ import type {
     AiSessionUpdate,
     AiToolActivity,
     AiTrackedFile,
-    AiTrackedFileHunkMutationInput,
-    AiTrackedFileMutationInput,
     AppBootstrapSnapshot,
     SendAiPromptInput,
     WorkspaceChatTab,
@@ -1632,6 +1630,52 @@ describe("ai-store queue", () => {
         });
     });
 
+    it("optimistically removes tracked files through identity targets", async () => {
+        const keepAiTrackedFile = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    keepAiTrackedFile,
+                },
+            },
+        });
+        const trackedFile = createTrackedFile({
+            identityKey: "tracked-file-1",
+            path: "src/app.ts",
+            version: 2,
+        });
+        const samePathFile = createTrackedFile({
+            identityKey: "tracked-file-2",
+            path: "src/app.ts",
+            version: 1,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                trackedFiles: [trackedFile, samePathFile],
+            }),
+        );
+
+        await useAiStore.getState().keepTrackedFile({
+            expectedVersion: 2,
+            path: trackedFile.path,
+            sessionId: TAB.sessionId,
+            trackedFileId: trackedFile.identityKey,
+        });
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.trackedFiles,
+        ).toEqual([samePathFile]);
+        expect(keepAiTrackedFile).toHaveBeenCalledWith({
+            expectedVersion: 2,
+            path: trackedFile.path,
+            sessionId: TAB.sessionId,
+            trackedFileId: trackedFile.identityKey,
+        });
+    });
+
     it("optimistically updates tracked file hunks through Windows casing aliases", async () => {
         const keepAiTrackedFileHunks = vi.fn().mockResolvedValue(undefined);
         Object.defineProperty(globalThis, "window", {
@@ -1697,7 +1741,7 @@ describe("ai-store queue", () => {
             path: trackedFile.path,
             sessionId: TAB.sessionId,
             trackedFileId: trackedFile.identityKey,
-        } as unknown as AiTrackedFileMutationInput);
+        });
 
         expect(
             useAiStore.getState().sessions[TAB.sessionId]?.snapshot
@@ -1738,7 +1782,7 @@ describe("ai-store queue", () => {
             path: trackedFile.path,
             sessionId: TAB.sessionId,
             trackedFileId: trackedFile.identityKey,
-        } as unknown as AiTrackedFileHunkMutationInput);
+        });
 
         expect(
             useAiStore.getState().sessions[TAB.sessionId]?.snapshot

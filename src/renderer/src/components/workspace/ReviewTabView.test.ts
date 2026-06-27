@@ -287,4 +287,29 @@ describe("ReviewTabView", () => {
 
         expect(mockAiStoreState.current.ensureSession).not.toHaveBeenCalled();
     });
+
+    it("sends review mutation targets with identity and version", () => {
+        const trackedFile = createTrackedFile({
+            identityKey: "review:session-1:src/app.ts",
+            version: 7,
+        });
+        setMockSessionSnapshot(createSnapshot([trackedFile]));
+
+        renderInteractiveReviewTab();
+
+        const keepButton = mountedContainers[0]?.querySelector<HTMLButtonElement>(
+            'button[aria-label="Keep"], button[aria-label="Accept"]',
+        );
+        expect(keepButton).not.toBeNull();
+        act(() => {
+            keepButton?.click();
+        });
+
+        expect(mockAiStoreState.current.keepTrackedFile).toHaveBeenCalledWith({
+            expectedVersion: 7,
+            path: "src/app.ts",
+            sessionId: TAB.sessionId,
+            trackedFileId: "review:session-1:src/app.ts",
+        });
+    });
 });

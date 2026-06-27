@@ -1155,7 +1155,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
     keepTrackedFile: async (input) => {
         await runOptimisticSnapshotMutation(
             input.sessionId,
-            (snapshot) => removeTrackedFileFromSnapshot(snapshot, input.path),
+            (snapshot) => removeTrackedFileFromSnapshot(snapshot, input),
             () => getComandoApi().keepAiTrackedFile(input),
             set,
             get,
@@ -1227,7 +1227,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
     rejectTrackedFile: async (input) => {
         await runOptimisticSnapshotMutation(
             input.sessionId,
-            (snapshot) => removeTrackedFileFromSnapshot(snapshot, input.path),
+            (snapshot) => removeTrackedFileFromSnapshot(snapshot, input),
             () => getComandoApi().rejectAiTrackedFile(input),
             set,
             get,
@@ -4000,12 +4000,17 @@ function setConfigOptionOnSnapshot(
 
 function removeTrackedFileFromSnapshot(
     snapshot: AiSessionSnapshot,
-    path: string,
+    input: AiTrackedFileMutationInput,
 ): AiSessionSnapshot {
+    const target = resolveTrackedFileMutationTarget(snapshot, input);
+    if (!target) {
+        return snapshot;
+    }
+
     return {
         ...snapshot,
         trackedFiles: snapshot.trackedFiles.filter(
-            (trackedFile) => !matchesTrackedFilePath(trackedFile, path),
+            (trackedFile) => trackedFile.identityKey !== target.identityKey,
         ),
         updatedAt: new Date().toISOString(),
     };
@@ -4016,8 +4021,13 @@ function resolveTrackedFileHunksInSnapshot(
     input: AiTrackedFileHunkMutationInput,
     decision: "keep" | "reject",
 ): AiSessionSnapshot {
+    const target = resolveTrackedFileMutationTarget(snapshot, input);
+    if (!target) {
+        return snapshot;
+    }
+
     const nextTrackedFiles = snapshot.trackedFiles.flatMap((trackedFile) => {
-        if (!matchesTrackedFilePath(trackedFile, input.path)) {
+        if (trackedFile.identityKey !== target.identityKey) {
             return [trackedFile];
         }
 
@@ -4038,6 +4048,39 @@ function resolveTrackedFileHunksInSnapshot(
         trackedFiles: nextTrackedFiles,
         updatedAt: new Date().toISOString(),
     };
+}
+
+function resolveTrackedFileMutationTarget(
+    snapshot: AiSessionSnapshot,
+    input: AiTrackedFileHunkMutationInput | AiTrackedFileMutationInput,
+): AiTrackedFile | null {
+    const trackedFile = input.trackedFileId
+        ? snapshot.trackedFiles.find(
+              (candidate) => candidate.identityKey === input.trackedFileId,
+          )
+        : snapshot.trackedFiles.find((candidate) =>
+              matchesTrackedFilePath(candidate, input.path),
+          );
+    if (!trackedFile || !isTrackedFileMutationTargetCurrent(trackedFile, input)) {
+        return null;
+    }
+
+    return trackedFile;
+}
+
+function isTrackedFileMutationTargetCurrent(
+    trackedFile: AiTrackedFile,
+    input: AiTrackedFileHunkMutationInput | AiTrackedFileMutationInput,
+): boolean {
+    if (input.expectedVersion === undefined) {
+        return true;
+    }
+
+    return (
+        Number.isFinite(input.expectedVersion) &&
+        Number.isInteger(input.expectedVersion) &&
+        input.expectedVersion === (trackedFile.version ?? 1)
+    );
 }
 
 function isBusySession(snapshot: AiSessionSnapshot): boolean {
