@@ -131,6 +131,99 @@ export function createReviewActionLogFromTrackedFiles(
     };
 }
 
+export function replaceReviewFilesFromMirror(
+    state: AiReviewActionLogState,
+    trackedFiles: readonly AiTrackedFile[],
+    context: AiReviewDiffConsolidationContext = {},
+): AiReviewActionLogState {
+    let nextState: AiReviewActionLogState = {
+        ...state,
+        fileOrder: [],
+        filesByIdentityKey: {},
+        updatedAt: context.updatedAt ?? new Date().toISOString(),
+    };
+    for (const identityKey of state.fileOrder) {
+        const file = state.filesByIdentityKey[identityKey];
+        if (
+            file &&
+            (file.reviewState === "conflict" ||
+                (isLocalReviewFile(file) &&
+                    !trackedFiles.some((trackedFile) =>
+                        trackedFileRepresentsActionLogFile(trackedFile, file),
+                    )))
+        ) {
+            nextState = replaceReviewFile(nextState, file, context);
+        }
+    }
+
+    for (const trackedFile of trackedFiles) {
+        if (
+            !trackedFile.isText ||
+            trackedFile.sessionId !== state.sessionId ||
+            !isAiTrackedFileUnresolved(trackedFile)
+        ) {
+            continue;
+        }
+
+        const syncedTrackedFile = syncTrackedFile(trackedFile);
+        const previousFile = findActionLogFileForTrackedFile(
+            state,
+            syncedTrackedFile,
+        );
+        if (
+            previousFile &&
+            normalizeVersion(syncedTrackedFile.version) < previousFile.version
+        ) {
+            continue;
+        }
+
+        if (
+            !previousFile &&
+            normalizeVersion(syncedTrackedFile.version) <=
+                (state.versionClockByIdentityKey[
+                    syncedTrackedFile.identityKey
+                ] ?? 0)
+        ) {
+            continue;
+        }
+
+        nextState = replaceReviewFile(
+            nextState,
+            actionLogFileFromTrackedFile(
+                syncedTrackedFile,
+                previousFile,
+                context,
+            ),
+            context,
+        );
+    }
+
+    return nextState;
+}
+
+function isLocalReviewFile(file: AiReviewActionLogFile): boolean {
+    return (
+        file.identityKey.startsWith("review:") ||
+        file.identityKey.startsWith("tool:")
+    );
+}
+
+function trackedFileRepresentsActionLogFile(
+    trackedFile: AiTrackedFile,
+    file: AiReviewActionLogFile,
+): boolean {
+    return (
+        trackedFile.identityKey === file.identityKey ||
+        trackedFile.path === file.path ||
+        trackedFile.path === file.originPath ||
+        trackedFile.previousPath === file.path ||
+        trackedFile.previousPath === file.originPath ||
+        file.previousPath === trackedFile.path ||
+        (file.previousPath !== null &&
+            file.previousPath === trackedFile.previousPath)
+    );
+}
+
 export function beginReviewWorkCycle(
     state: AiReviewActionLogState,
     workCycleId: string,

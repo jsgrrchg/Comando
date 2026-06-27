@@ -27,6 +27,7 @@ import type {
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiTrackedFile,
+    AiReviewConflict,
     AiUserInputResponseInput,
     ClaudeRuntimeSettingsInput,
     CodexRuntimeSettingsInput,
@@ -61,6 +62,7 @@ import {
     markReviewFileConflict,
     rejectReviewFile,
     rejectReviewRanges,
+    replaceReviewFilesFromMirror,
     resolveReviewTarget,
     type AiReviewActionLogState,
     type AiReviewActionLogTarget,
@@ -2744,6 +2746,22 @@ export class AiService {
                 return base;
             }
 
+            const reviewActionLog = validReviewActionLogForSnapshot(snapshot);
+            if (reviewActionLog) {
+                const nextActionLog = applyNativeReviewMirrorConflicts(
+                    reviewActionLog,
+                    collectNativeReviewConflicts(
+                        event.trackedFiles,
+                        event.conflicts,
+                    ),
+                );
+                return {
+                    ...base,
+                    reviewActionLog: nextActionLog,
+                    trackedFiles: deriveTrackedFilesFromActionLog(nextActionLog),
+                };
+            }
+
             return {
                 ...base,
                 reviewActionLog: null,
@@ -3250,6 +3268,21 @@ export class AiService {
         incomingSnapshot: AiSessionSnapshot,
         previousSnapshot: AiSessionSnapshot | null,
     ): AiSessionSnapshot {
+        const previousReviewActionLog = previousSnapshot
+            ? validReviewActionLogForSnapshot(previousSnapshot)
+            : null;
+        if (previousReviewActionLog) {
+            const nextActionLog = applyNativeReviewMirrorConflicts(
+                previousReviewActionLog,
+                collectNativeReviewConflicts(incomingSnapshot.trackedFiles),
+            );
+            return {
+                ...incomingSnapshot,
+                reviewActionLog: nextActionLog,
+                trackedFiles: deriveTrackedFilesFromActionLog(nextActionLog),
+            };
+        }
+
         const normalizedIncomingSnapshot =
             normalizeLiveSnapshotReviewState(incomingSnapshot);
         const filteredIncomingTrackedFiles =
@@ -3343,6 +3376,54 @@ export class AiService {
                 ).reconcileTrackedFiles(sessionId);
             const snapshot =
                 this.#liveSnapshots.get(sessionId) ?? initialSnapshot;
+            const reviewActionLog = validReviewActionLogForSnapshot(snapshot);
+            if (reviewActionLog) {
+                const nativeConflicts = collectNativeReviewConflicts(trackedFiles);
+                const conflictActionLog = applyNativeReviewMirrorConflicts(
+                    reviewActionLog,
+                    nativeConflicts,
+                );
+                const baseActionLog =
+                    options.preserveCanonical === true
+                        ? conflictActionLog
+                        : replaceReviewFilesFromMirror(
+                              conflictActionLog,
+                              this.#filterAcceptedNativeReviewTrackedFiles(
+                                  snapshot.sessionId,
+                                  trackedFiles,
+                              ),
+                              {
+                                  updatedAt: new Date().toISOString(),
+                                  workCycleId:
+                                      reviewActionLog.activeWorkCycleId,
+                              },
+                          );
+                const nextActionLog = baseActionLog;
+                if (nextActionLog === reviewActionLog) {
+                    return;
+                }
+
+                const nextSnapshot = {
+                    ...snapshot,
+                    reviewActionLog: nextActionLog,
+                    trackedFiles: deriveTrackedFilesFromActionLog(nextActionLog),
+                    updatedAt:
+                        nextActionLog === reviewActionLog
+                            ? snapshot.updatedAt
+                            : nextActionLog.updatedAt,
+                };
+                const cachedSnapshot = this.#cacheLiveSessionSnapshot(
+                    nextSnapshot,
+                    ownerWindowId,
+                );
+                this.#onSessionSnapshot(
+                    ownerWindowId,
+                    buildAiSessionUpdate(snapshot, cachedSnapshot),
+                );
+                void this.#enforceSessionRetention();
+                return;
+            }
+
             if (trackedFiles.length === 0 && snapshot.trackedFiles.length === 0) {
                 return;
             }
@@ -6012,6 +6093,62 @@ function reviewActionLogTargetFromInput(
         sessionId: input.sessionId,
         trackedFileId: input.trackedFileId ?? null,
     };
+}
+
+function applyNativeReviewMirrorConflicts(
+    reviewActionLog: AiReviewActionLogState,
+    conflicts: readonly AiReviewConflict[],
+): AiReviewActionLogState {
+    let nextActionLog = reviewActionLog;
+    const markedIdentityKeys = new Set<string>();
+
+    for (const conflict of conflicts) {
+        if (!conflict.path) {
+            continue;
+        }
+
+        const file = resolveReviewTarget(nextActionLog, {
+            path: conflict.path,
+            sessionId: nextActionLog.sessionId,
+        });
+        if (
+            !file ||
+            file.reviewState === "conflict" ||
+            markedIdentityKeys.has(file.identityKey)
+        ) {
+            continue;
+        }
+
+        markedIdentityKeys.add(file.identityKey);
+        nextActionLog = markReviewFileConflict(nextActionLog, {
+            expectedVersion: file.version,
+            path: file.path,
+            sessionId: nextActionLog.sessionId,
+            trackedFileId: file.identityKey,
+        });
+    }
+
+    return nextActionLog;
+}
+
+function collectNativeReviewConflicts(
+    trackedFiles: readonly AiTrackedFile[],
+    conflicts: readonly AiReviewConflict[] = [],
+): readonly AiReviewConflict[] {
+    const nextConflicts = [...conflicts];
+    for (const trackedFile of trackedFiles) {
+        if (trackedFile.reviewState !== "conflict") {
+            continue;
+        }
+
+        nextConflicts.push({
+            externalChangeHash: null,
+            path: trackedFile.path,
+            reason: trackedFile.conflict ?? "native_conflict",
+        });
+    }
+
+    return nextConflicts;
 }
 
 function createReviewWorkCycleId(sessionId: string, messageId: string): string {
