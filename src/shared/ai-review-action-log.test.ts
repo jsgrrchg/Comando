@@ -14,6 +14,9 @@ const {
     deriveTrackedFilesFromActionLog,
     keepReviewFile,
     keepReviewRanges,
+    markReviewFileConflict,
+    rejectReviewFile,
+    rejectReviewRanges,
 } = reviewActionLog;
 
 const SESSION_ID = "session-1";
@@ -634,5 +637,73 @@ describe("AiReviewActionLog canonical review state", () => {
             }),
         ).toThrow(/version|stale/i);
         expect(deriveTrackedFilesFromActionLog(state)).toEqual([trackedFile]);
+    });
+
+    it("rejects a full file by removing it from canonical pending state", () => {
+        const state = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [createDiff()],
+            liveContext(),
+        );
+        const trackedFile = deriveOnlyTrackedFile(state);
+
+        const nextState = rejectReviewFile(state, reviewTarget(trackedFile));
+
+        expect(deriveTrackedFilesFromActionLog(nextState)).toEqual([]);
+        expect(nextState.versionClockByIdentityKey).toEqual({
+            [trackedFile.identityKey]: trackedFile.version,
+        });
+    });
+
+    it("rejects selected ranges while keeping the remaining pending ranges", () => {
+        const state = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [
+                createDiff({
+                    newText: "ONE\ntwo\nTHREE\nfour\n",
+                    oldText: "one\ntwo\nthree\nfour\n",
+                }),
+            ],
+            liveContext(),
+        );
+        const trackedFile = deriveOnlyTrackedFile(state);
+        const [firstHunk] = trackedFile.hunks;
+
+        const nextState = rejectReviewRanges(
+            state,
+            reviewTarget(trackedFile),
+            [firstHunk?.id ?? ""],
+        );
+        const pendingFile = deriveOnlyTrackedFile(nextState);
+
+        expect(pendingFile).toMatchObject({
+            currentText: "one\ntwo\nTHREE\nfour\n",
+            diffBase: "one\ntwo\nthree\nfour\n",
+            reviewState: "pending",
+            version: (trackedFile.version ?? 1) + 1,
+        });
+        expect(pendingFile.hunks).toHaveLength(1);
+    });
+
+    it("marks a target as conflict without dropping pending ranges", () => {
+        const state = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [createDiff()],
+            liveContext(),
+        );
+        const trackedFile = deriveOnlyTrackedFile(state);
+
+        const nextState = markReviewFileConflict(
+            state,
+            reviewTarget(trackedFile),
+        );
+        const conflictedFile = deriveOnlyTrackedFile(nextState);
+
+        expect(conflictedFile).toMatchObject({
+            identityKey: trackedFile.identityKey,
+            reviewState: "conflict",
+            version: (trackedFile.version ?? 1) + 1,
+        });
+        expect(conflictedFile.hunks).toEqual(trackedFile.hunks);
     });
 });

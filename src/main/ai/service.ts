@@ -54,6 +54,15 @@ import {
     consolidateReviewDiffs,
     createReviewActionLogFromTrackedFiles,
     deriveTrackedFilesFromActionLog,
+    isReviewTargetVersionCurrent,
+    keepReviewFile,
+    keepReviewRanges,
+    markReviewFileConflict,
+    rejectReviewFile,
+    rejectReviewRanges,
+    resolveReviewTarget,
+    type AiReviewActionLogState,
+    type AiReviewActionLogTarget,
 } from "@shared/ai-review-action-log";
 
 import type { ProjectService } from "@main/projects/service";
@@ -453,6 +462,7 @@ export class AiService {
         string,
         Map<string, string | null>
     >();
+    readonly #resolvedReviewVersions = new Map<string, Map<string, number>>();
     readonly #reviewMutationChains = new Map<string, Promise<void>>();
     readonly #nativeReviewReconciliations = new Set<string>();
     readonly #nativeSessionIds = new Set<string>();
@@ -507,6 +517,7 @@ export class AiService {
         this.#nativeReviewBaselines.clear();
         this.#recentNativeReviewContexts.clear();
         this.#acceptedReviewBaselines.clear();
+        this.#resolvedReviewVersions.clear();
         this.#reviewMutationChains.clear();
         this.#nativeReviewReconciliations.clear();
         this.#nativeSessionIds.clear();
@@ -2174,6 +2185,7 @@ export class AiService {
         this.#nativeReviewBaselines.delete(sessionId);
         this.#recentNativeReviewContexts.delete(sessionId);
         this.#acceptedReviewBaselines.delete(sessionId);
+        this.#resolvedReviewVersions.delete(sessionId);
         this.#reviewMutationChains.delete(sessionId);
         this.#nativeReviewReconciliations.delete(sessionId);
         this.#nativeSessionIds.delete(sessionId);
@@ -2733,6 +2745,7 @@ export class AiService {
                 trackedFiles: this.#preserveNativeReviewFallbackTrackedFiles(
                     event.trackedFiles,
                     snapshot,
+                    { preserveCanonical: true },
                 ),
             };
         }
@@ -3102,14 +3115,28 @@ export class AiService {
     #preserveNativeReviewFallbackTrackedFiles(
         nativeTrackedFiles: readonly AiTrackedFile[],
         previousSnapshot: AiSessionSnapshot,
+        options: { readonly preserveCanonical?: boolean } = {},
     ): readonly AiTrackedFile[] {
+        const pathMatcher = this.#createNativeReviewPathMatcher(previousSnapshot);
+        const filteredTrackedFiles = this.#filterAcceptedNativeReviewTrackedFiles(
+            previousSnapshot.sessionId,
+            nativeTrackedFiles,
+        );
+        if (
+            options.preserveCanonical === true &&
+            validReviewActionLogForSnapshot(previousSnapshot)
+        ) {
+            return preserveCanonicalReviewTrackedFiles(
+                filteredTrackedFiles,
+                previousSnapshot.trackedFiles,
+                pathMatcher,
+            );
+        }
+
         return preserveFallbackTrackedFiles(
-            this.#filterAcceptedNativeReviewTrackedFiles(
-                previousSnapshot.sessionId,
-                nativeTrackedFiles,
-            ),
+            filteredTrackedFiles,
             previousSnapshot.trackedFiles,
-            this.#createNativeReviewPathMatcher(previousSnapshot),
+            pathMatcher,
         );
     }
 
@@ -3118,15 +3145,27 @@ export class AiService {
         trackedFiles: readonly AiTrackedFile[],
     ): readonly AiTrackedFile[] {
         const acceptedBaselines = this.#acceptedReviewBaselines.get(sessionId);
-        if (!acceptedBaselines || acceptedBaselines.size === 0) {
+        const resolvedVersions = this.#resolvedReviewVersions.get(sessionId);
+        if (
+            (!acceptedBaselines || acceptedBaselines.size === 0) &&
+            (!resolvedVersions || resolvedVersions.size === 0)
+        ) {
             return trackedFiles;
         }
 
         const nextTrackedFiles = trackedFiles.filter(
             (trackedFile) =>
-                !isTrackedFileAlreadyAccepted(
-                    trackedFile,
-                    acceptedBaselines,
+                !(
+                    (acceptedBaselines &&
+                        isTrackedFileAlreadyAccepted(
+                            trackedFile,
+                            acceptedBaselines,
+                        )) ||
+                    (resolvedVersions &&
+                        isTrackedFileAlreadyResolved(
+                            trackedFile,
+                            resolvedVersions,
+                        ))
                 ),
         );
         return nextTrackedFiles.length === trackedFiles.length
@@ -3593,6 +3632,24 @@ export class AiService {
         }
     }
 
+    #rememberResolvedReviewVersion(trackedFile: AiTrackedFile): void {
+        const resolvedVersions =
+            this.#resolvedReviewVersions.get(trackedFile.sessionId) ??
+            new Map<string, number>();
+        this.#resolvedReviewVersions.set(
+            trackedFile.sessionId,
+            resolvedVersions,
+        );
+
+        resolvedVersions.set(
+            trackedFile.identityKey,
+            Math.max(
+                resolvedVersions.get(trackedFile.identityKey) ?? 0,
+                trackedFile.version ?? 1,
+            ),
+        );
+    }
+
     #rememberAcceptedReviewBaselineForPath(
         snapshot: AiSessionSnapshot,
         reviewPath: string,
@@ -3668,6 +3725,275 @@ export class AiService {
         };
     }
 
+    async #tryApplyActionLogTrackedFileMutation(
+        input: AiTrackedFileMutationInput,
+        decision: "keep" | "reject",
+    ): Promise<boolean> {
+        const reviewSession = await this.#buildNativeReviewContext(
+            input.sessionId,
+        );
+        const reviewActionLog = validReviewActionLogForSnapshot(
+            reviewSession.snapshot,
+        );
+        if (!reviewActionLog) {
+            return false;
+        }
+
+        const target = reviewActionLogTargetFromInput(input);
+        const file = resolveReviewTarget(reviewActionLog, target);
+        if (!file || !isReviewTargetVersionCurrent(file, target)) {
+            return true;
+        }
+
+        const trackedFile = findTrackedFileForReviewPath(
+            deriveTrackedFilesFromActionLog(reviewActionLog),
+            file.identityKey,
+        );
+        if (!trackedFile) {
+            return true;
+        }
+
+        let nativeRejectApplied = false;
+        if (decision === "reject") {
+            try {
+                const nativeAi = isFallbackTrackedFile(trackedFile)
+                    ? null
+                    : this.#optionalNativeReviewGateway("rejectTrackedFile");
+                if (nativeAi?.rejectTrackedFile) {
+                    await nativeAi.rejectTrackedFile({
+                        context: reviewSession.context,
+                        input,
+                    });
+                    nativeRejectApplied = true;
+                } else {
+                    this.#assertFallbackTrackedFileCurrentMatches(
+                        reviewSession.context,
+                        trackedFile,
+                    );
+                    this.#rejectFallbackTrackedFile(
+                        reviewSession.context,
+                        trackedFile,
+                    );
+                }
+            } catch (error) {
+                this.#persistActionLogReviewMutation(
+                    reviewSession,
+                    markReviewFileConflict(reviewActionLog, target),
+                );
+                throw error;
+            }
+        }
+
+        const nextActionLog =
+            decision === "keep"
+                ? keepReviewFile(reviewActionLog, target)
+                : rejectReviewFile(reviewActionLog, target);
+        if (nextActionLog === reviewActionLog) {
+            return true;
+        }
+
+        this.#rememberResolvedReviewVersion(trackedFile);
+        this.#persistActionLogReviewMutation(reviewSession, nextActionLog);
+        if (decision === "keep") {
+            this.#rememberAcceptedReviewBaseline(trackedFile);
+        }
+        if (decision === "keep" || !nativeRejectApplied) {
+            await this.#mirrorNativeTrackedFileMutation(
+                reviewSession.context,
+                input,
+                decision,
+                trackedFile,
+            );
+        }
+        return true;
+    }
+
+    async #tryApplyActionLogTrackedFileHunkMutation(
+        input: AiTrackedFileHunkMutationInput,
+        decision: "keep" | "reject",
+    ): Promise<boolean> {
+        const reviewSession = await this.#buildNativeReviewContext(
+            input.sessionId,
+        );
+        const reviewActionLog = validReviewActionLogForSnapshot(
+            reviewSession.snapshot,
+        );
+        if (!reviewActionLog) {
+            return false;
+        }
+
+        const target = reviewActionLogTargetFromInput(input);
+        const file = resolveReviewTarget(reviewActionLog, target);
+        if (!file || !isReviewTargetVersionCurrent(file, target)) {
+            return true;
+        }
+
+        const trackedFile = findTrackedFileForReviewPath(
+            deriveTrackedFilesFromActionLog(reviewActionLog),
+            file.identityKey,
+        );
+        if (!trackedFile) {
+            return true;
+        }
+
+        let nativeRejectApplied = false;
+        if (decision === "reject") {
+            try {
+                const nativeAi = isFallbackTrackedFile(trackedFile)
+                    ? null
+                    : this.#optionalNativeReviewGateway(
+                          "rejectTrackedFileHunks",
+                      );
+                if (nativeAi?.rejectTrackedFileHunks) {
+                    await nativeAi.rejectTrackedFileHunks({
+                        context: reviewSession.context,
+                        input,
+                    });
+                    nativeRejectApplied = true;
+                } else {
+                    this.#assertFallbackTrackedFileCurrentMatches(
+                        reviewSession.context,
+                        trackedFile,
+                    );
+                    this.#writeFallbackTrackedFileCurrentText(
+                        reviewSession.context,
+                        trackedFile,
+                        resolveTrackedFileHunks(
+                            trackedFile,
+                            input.hunkIds,
+                            "reject",
+                        ),
+                    );
+                }
+            } catch (error) {
+                this.#persistActionLogReviewMutation(
+                    reviewSession,
+                    markReviewFileConflict(reviewActionLog, target),
+                );
+                throw error;
+            }
+        }
+
+        const nextActionLog =
+            decision === "keep"
+                ? keepReviewRanges(reviewActionLog, target, input.hunkIds)
+                : rejectReviewRanges(reviewActionLog, target, input.hunkIds);
+        if (nextActionLog === reviewActionLog) {
+            return true;
+        }
+
+        this.#rememberResolvedReviewVersion(trackedFile);
+        const nextSnapshot = this.#persistActionLogReviewMutation(
+            reviewSession,
+            nextActionLog,
+        );
+        if (decision === "keep") {
+            this.#rememberAcceptedReviewBaselineForKeptHunks(
+                reviewSession.snapshot,
+                nextSnapshot,
+                input.path,
+            );
+        }
+        if (decision === "keep" || !nativeRejectApplied) {
+            await this.#mirrorNativeTrackedFileHunkMutation(
+                reviewSession.context,
+                input,
+                decision,
+                trackedFile,
+            );
+        }
+        return true;
+    }
+
+    #persistActionLogReviewMutation(
+        reviewSession: {
+            readonly context: AiReviewSessionContext;
+            readonly snapshot: AiSessionSnapshot;
+        },
+        reviewActionLog: AiReviewActionLogState,
+    ): AiSessionSnapshot {
+        const nextSnapshot = snapshotWithReviewActionLog(
+            reviewSession.snapshot,
+            reviewActionLog,
+        );
+        this.#persistReviewMutation(reviewSession.snapshot, {
+            ownerWindowId: reviewSession.context.ownerWindowId,
+            snapshot: nextSnapshot,
+        });
+        return nextSnapshot;
+    }
+
+    async #mirrorNativeTrackedFileMutation(
+        context: AiReviewSessionContext,
+        input: AiTrackedFileMutationInput,
+        decision: "keep" | "reject",
+        trackedFile: AiTrackedFile,
+    ): Promise<void> {
+        if (isFallbackTrackedFile(trackedFile)) {
+            return;
+        }
+
+        const methodName =
+            decision === "keep" ? "keepTrackedFile" : "rejectTrackedFile";
+        const nativeAi = this.#optionalNativeReviewGateway(methodName);
+        if (!nativeAi) {
+            return;
+        }
+
+        try {
+            if (decision === "keep") {
+                await nativeAi.keepTrackedFile?.({ context, input });
+                return;
+            }
+            await nativeAi.rejectTrackedFile?.({ context, input });
+        } catch (error) {
+            debugBenignError("ai.service.nativeReviewMirrorFile", error);
+        }
+    }
+
+    async #mirrorNativeTrackedFileHunkMutation(
+        context: AiReviewSessionContext,
+        input: AiTrackedFileHunkMutationInput,
+        decision: "keep" | "reject",
+        trackedFile: AiTrackedFile,
+    ): Promise<void> {
+        if (isFallbackTrackedFile(trackedFile)) {
+            return;
+        }
+
+        const methodName =
+            decision === "keep"
+                ? "keepTrackedFileHunks"
+                : "rejectTrackedFileHunks";
+        const nativeAi = this.#optionalNativeReviewGateway(methodName);
+        if (!nativeAi) {
+            return;
+        }
+
+        try {
+            if (decision === "keep") {
+                await nativeAi.keepTrackedFileHunks?.({ context, input });
+                return;
+            }
+            await nativeAi.rejectTrackedFileHunks?.({ context, input });
+        } catch (error) {
+            debugBenignError("ai.service.nativeReviewMirrorHunks", error);
+        }
+    }
+
+    #optionalNativeReviewGateway(
+        methodName: keyof NativeAiReviewGateway,
+    ): NativeAiReviewGateway | null {
+        if (!this.#nativeAi || this.#nativeAi.shouldHandleReview?.() !== true) {
+            return null;
+        }
+
+        const method = this.#nativeAi[methodName];
+        return typeof method === "function"
+            ? (this.#nativeAi as NativeAiReviewGateway)
+            : null;
+    }
+
     async #tryApplyFallbackTrackedFileMutation(
         input: AiTrackedFileMutationInput,
         decision: "keep" | "reject",
@@ -3675,12 +4001,15 @@ export class AiService {
         const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
-        const trackedFile = findFallbackTrackedFile(
+        const trackedFile = findFallbackTrackedFileForInput(
             reviewSession.snapshot.trackedFiles,
-            input.path,
+            input,
         );
         if (!trackedFile) {
             return false;
+        }
+        if (!isTrackedFileMutationTargetCurrent(trackedFile, input)) {
+            return true;
         }
 
         if (decision === "reject") {
@@ -3699,6 +4028,7 @@ export class AiService {
             ),
             updatedAt: new Date().toISOString(),
         };
+        this.#rememberResolvedReviewVersion(trackedFile);
         if (decision === "keep") {
             this.#rememberAcceptedReviewBaseline(trackedFile);
         }
@@ -3716,12 +4046,15 @@ export class AiService {
         const reviewSession = await this.#buildNativeReviewContext(
             input.sessionId,
         );
-        const trackedFile = findFallbackTrackedFile(
+        const trackedFile = findFallbackTrackedFileForInput(
             reviewSession.snapshot.trackedFiles,
-            input.path,
+            input,
         );
         if (!trackedFile) {
             return false;
+        }
+        if (!isTrackedFileMutationTargetCurrent(trackedFile, input)) {
+            return true;
         }
 
         const nextTrackedFile = resolveTrackedFileHunks(
@@ -3750,6 +4083,7 @@ export class AiService {
             ),
             updatedAt: new Date().toISOString(),
         };
+        this.#rememberResolvedReviewVersion(trackedFile);
         if (decision === "keep") {
             this.#rememberAcceptedReviewBaseline(trackedFile);
         }
@@ -4000,6 +4334,12 @@ export class AiService {
 
     async keepTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
         await this.#runSerializedReviewMutation(input.sessionId, async () => {
+            if (
+                await this.#tryApplyActionLogTrackedFileMutation(input, "keep")
+            ) {
+                return;
+            }
+
             if (await this.#tryApplyFallbackTrackedFileMutation(input, "keep")) {
                 return;
             }
@@ -4024,6 +4364,15 @@ export class AiService {
     async rejectTrackedFile(input: AiTrackedFileMutationInput): Promise<void> {
         await this.#runSerializedReviewMutation(input.sessionId, async () => {
             if (
+                await this.#tryApplyActionLogTrackedFileMutation(
+                    input,
+                    "reject",
+                )
+            ) {
+                return;
+            }
+
+            if (
                 await this.#tryApplyFallbackTrackedFileMutation(input, "reject")
             ) {
                 return;
@@ -4046,6 +4395,15 @@ export class AiService {
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
         await this.#runSerializedReviewMutation(input.sessionId, async () => {
+            if (
+                await this.#tryApplyActionLogTrackedFileHunkMutation(
+                    input,
+                    "keep",
+                )
+            ) {
+                return;
+            }
+
             if (
                 await this.#tryApplyFallbackTrackedFileHunkMutation(
                     input,
@@ -4077,6 +4435,15 @@ export class AiService {
         input: AiTrackedFileHunkMutationInput,
     ): Promise<void> {
         await this.#runSerializedReviewMutation(input.sessionId, async () => {
+            if (
+                await this.#tryApplyActionLogTrackedFileHunkMutation(
+                    input,
+                    "reject",
+                )
+            ) {
+                return;
+            }
+
             if (
                 await this.#tryApplyFallbackTrackedFileHunkMutation(
                     input,
@@ -4812,6 +5179,38 @@ function findFallbackTrackedFile(
     );
 }
 
+function findFallbackTrackedFileForInput(
+    trackedFiles: readonly AiTrackedFile[],
+    input: AiTrackedFileHunkMutationInput | AiTrackedFileMutationInput,
+): AiTrackedFile | null {
+    if (input.trackedFileId) {
+        const trackedFile =
+            trackedFiles.find(
+                (candidate) => candidate.identityKey === input.trackedFileId,
+            ) ?? null;
+        return trackedFile && isFallbackTrackedFile(trackedFile)
+            ? trackedFile
+            : null;
+    }
+
+    return findFallbackTrackedFile(trackedFiles, input.path);
+}
+
+function isTrackedFileMutationTargetCurrent(
+    trackedFile: AiTrackedFile,
+    input: AiTrackedFileHunkMutationInput | AiTrackedFileMutationInput,
+): boolean {
+    if (input.expectedVersion === undefined) {
+        return true;
+    }
+
+    return (
+        Number.isFinite(input.expectedVersion) &&
+        Number.isInteger(input.expectedVersion) &&
+        input.expectedVersion === (trackedFile.version ?? 1)
+    );
+}
+
 function findTrackedFileForReviewPath(
     trackedFiles: readonly AiTrackedFile[],
     reviewPath: string,
@@ -4858,6 +5257,51 @@ function preserveFallbackTrackedFiles(
         return previousTrackedFiles;
     }
     return [...nativeTrackedFiles, ...fallbackTrackedFiles];
+}
+
+function preserveCanonicalReviewTrackedFiles(
+    nativeTrackedFiles: readonly AiTrackedFile[],
+    previousTrackedFiles: readonly AiTrackedFile[],
+    pathMatcher?: TrackedFilePathMatcher,
+): readonly AiTrackedFile[] {
+    const previousPendingFiles = previousTrackedFiles.filter(
+        isAiTrackedFileUnresolved,
+    );
+    if (previousPendingFiles.length === 0) {
+        return nativeTrackedFiles;
+    }
+
+    const nativeFreshTrackedFiles = nativeTrackedFiles.filter(
+        (nativeTrackedFile) => {
+            const previousTrackedFile = previousPendingFiles.find(
+                (candidate) =>
+                    candidate.identityKey === nativeTrackedFile.identityKey,
+            );
+            return (
+                !previousTrackedFile ||
+                (nativeTrackedFile.version ?? 1) >
+                    (previousTrackedFile.version ?? 1)
+            );
+        },
+    );
+    const preservedTrackedFiles = previousPendingFiles.filter(
+        (previousTrackedFile) =>
+            !isTrackedFileRepresented(
+                nativeFreshTrackedFiles,
+                previousTrackedFile,
+                pathMatcher,
+            ),
+    );
+    if (preservedTrackedFiles.length === 0) {
+        return nativeFreshTrackedFiles;
+    }
+    if (
+        nativeFreshTrackedFiles.length === 0 &&
+        preservedTrackedFiles.length === previousPendingFiles.length
+    ) {
+        return previousTrackedFiles;
+    }
+    return [...nativeFreshTrackedFiles, ...preservedTrackedFiles];
 }
 
 function preservePassiveSnapshotTrackedFiles(
@@ -4923,6 +5367,18 @@ function isTrackedFileAlreadyAccepted(
             acceptedBaselines.get(trackedFile.previousPath) === null &&
             trackedFileMatchesAcceptedBaseline(trackedFile, null),
     );
+}
+
+function isTrackedFileAlreadyResolved(
+    trackedFile: AiTrackedFile,
+    resolvedVersions: ReadonlyMap<string, number>,
+): boolean {
+    const resolvedVersion = resolvedVersions.get(trackedFile.identityKey);
+    if (resolvedVersion === undefined) {
+        return false;
+    }
+
+    return (trackedFile.version ?? 1) <= resolvedVersion;
 }
 
 function trackedFileMatchesAcceptedBaseline(
@@ -5449,6 +5905,38 @@ function normalizeLiveSnapshotReviewState(
     return normalizeSnapshotReviewState(snapshot, {
         migrateLegacyTrackedFiles: true,
     });
+}
+
+function validReviewActionLogForSnapshot(
+    snapshot: AiSessionSnapshot,
+): AiReviewActionLogState | null {
+    const reviewActionLog = snapshot.reviewActionLog ?? null;
+    return reviewActionLog?.sessionId === snapshot.sessionId
+        ? reviewActionLog
+        : null;
+}
+
+function snapshotWithReviewActionLog(
+    snapshot: AiSessionSnapshot,
+    reviewActionLog: AiReviewActionLogState,
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        reviewActionLog,
+        trackedFiles: deriveTrackedFilesFromActionLog(reviewActionLog),
+        updatedAt: reviewActionLog.updatedAt,
+    };
+}
+
+function reviewActionLogTargetFromInput(
+    input: AiTrackedFileHunkMutationInput | AiTrackedFileMutationInput,
+): AiReviewActionLogTarget {
+    return {
+        expectedVersion: input.expectedVersion,
+        path: input.path,
+        sessionId: input.sessionId,
+        trackedFileId: input.trackedFileId ?? null,
+    };
 }
 
 function isNativeTrackedFilesPatch(update: AiSessionUpdate): boolean {

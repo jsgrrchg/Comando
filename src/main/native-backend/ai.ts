@@ -291,8 +291,13 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         input: AiReviewSessionRpcInput<AiTrackedFileMutationInput>,
     ): Promise<AiReviewMutationResult> {
         return await this.#runReviewMutation(input, "ai_keep_tracked_file", {
+            trackedFileId: input.input.trackedFileId ?? null,
             path: input.input.path,
-            ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
+            ...nativeExpectedReviewVersion(
+                input.context.snapshot,
+                input.input.path,
+                input.input.expectedVersion,
+            ),
         });
     }
 
@@ -300,8 +305,13 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         input: AiReviewSessionRpcInput<AiTrackedFileMutationInput>,
     ): Promise<AiReviewMutationResult> {
         return await this.#runReviewMutation(input, "ai_reject_tracked_file", {
+            trackedFileId: input.input.trackedFileId ?? null,
             path: input.input.path,
-            ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
+            ...nativeExpectedReviewVersion(
+                input.context.snapshot,
+                input.input.path,
+                input.input.expectedVersion,
+            ),
         });
     }
 
@@ -310,8 +320,13 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     ): Promise<AiReviewMutationResult> {
         return await this.#runReviewMutation(input, "ai_keep_tracked_file_hunks", {
             hunkIds: input.input.hunkIds,
+            trackedFileId: input.input.trackedFileId ?? null,
             path: input.input.path,
-            ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
+            ...nativeExpectedReviewVersion(
+                input.context.snapshot,
+                input.input.path,
+                input.input.expectedVersion,
+            ),
         });
     }
 
@@ -320,8 +335,13 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     ): Promise<AiReviewMutationResult> {
         return await this.#runReviewMutation(input, "ai_reject_tracked_file_hunks", {
             hunkIds: input.input.hunkIds,
+            trackedFileId: input.input.trackedFileId ?? null,
             path: input.input.path,
-            ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
+            ...nativeExpectedReviewVersion(
+                input.context.snapshot,
+                input.input.path,
+                input.input.expectedVersion,
+            ),
         });
     }
 
@@ -1065,7 +1085,16 @@ function nativeReviewCommandTrackedFiles(
 function nativeExpectedReviewVersion(
     snapshot: AiSessionSnapshot,
     reviewPath: string,
+    expectedVersion?: number,
 ): { readonly expectedVersion?: number } {
+    if (
+        typeof expectedVersion === "number" &&
+        Number.isFinite(expectedVersion) &&
+        Number.isInteger(expectedVersion)
+    ) {
+        return { expectedVersion };
+    }
+
     const trackedFile = snapshot.trackedFiles.find(
         (file) =>
             file.path === reviewPath ||

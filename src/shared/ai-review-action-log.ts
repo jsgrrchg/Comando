@@ -183,6 +183,60 @@ export function keepReviewRanges(
     target: AiReviewActionLogTarget,
     rangeIds: readonly string[],
 ): AiReviewActionLogState {
+    return resolveReviewRanges(state, target, rangeIds, "keep");
+}
+
+export function rejectReviewFile(
+    state: AiReviewActionLogState,
+    target: AiReviewActionLogTarget,
+): AiReviewActionLogState {
+    const file = resolveReviewTarget(state, target);
+    if (!file) {
+        return state;
+    }
+    assertReviewTargetVersion(file, target);
+    return removeReviewFile(state, file.identityKey);
+}
+
+export function rejectReviewRanges(
+    state: AiReviewActionLogState,
+    target: AiReviewActionLogTarget,
+    rangeIds: readonly string[],
+): AiReviewActionLogState {
+    return resolveReviewRanges(state, target, rangeIds, "reject");
+}
+
+export function markReviewFileConflict(
+    state: AiReviewActionLogState,
+    target: AiReviewActionLogTarget,
+): AiReviewActionLogState {
+    const file = resolveReviewTarget(state, target);
+    if (!file) {
+        return state;
+    }
+    assertReviewTargetVersion(file, target);
+
+    const updatedAt = new Date().toISOString();
+    return replaceReviewFile(
+        state,
+        {
+            ...file,
+            reviewState: "conflict",
+            updatedAt,
+            version: file.version + 1,
+        },
+        {
+            updatedAt,
+        },
+    );
+}
+
+function resolveReviewRanges(
+    state: AiReviewActionLogState,
+    target: AiReviewActionLogTarget,
+    rangeIds: readonly string[],
+    decision: "keep" | "reject",
+): AiReviewActionLogState {
     const file = resolveReviewTarget(state, target);
     if (!file) {
         return state;
@@ -193,7 +247,7 @@ export function keepReviewRanges(
     const nextTrackedFile = resolveTrackedFileHunks(
         trackedFile,
         rangeIds,
-        "keep",
+        decision,
     );
     if (!nextTrackedFile) {
         return removeReviewFile(state, file.identityKey);
@@ -237,17 +291,24 @@ export function assertReviewTargetVersion(
     file: AiReviewActionLogFile,
     target: Pick<AiReviewActionLogTarget, "expectedVersion">,
 ): void {
-    if (target.expectedVersion === undefined) {
-        return;
-    }
-
-    if (
-        !Number.isFinite(target.expectedVersion) ||
-        !Number.isInteger(target.expectedVersion) ||
-        target.expectedVersion !== file.version
-    ) {
+    if (!isReviewTargetVersionCurrent(file, target)) {
         throw new Error("Stale AI review target version.");
     }
+}
+
+export function isReviewTargetVersionCurrent(
+    file: AiReviewActionLogFile,
+    target: Pick<AiReviewActionLogTarget, "expectedVersion">,
+): boolean {
+    if (target.expectedVersion === undefined) {
+        return true;
+    }
+
+    return (
+        Number.isFinite(target.expectedVersion) &&
+        Number.isInteger(target.expectedVersion) &&
+        target.expectedVersion === file.version
+    );
 }
 
 function applyTrackedFile(

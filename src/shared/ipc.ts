@@ -2761,14 +2761,18 @@ export interface AiRuntimeAuthDisconnectInput {
 }
 
 export interface AiTrackedFileMutationInput {
+    readonly expectedVersion?: number;
     readonly path: string;
     readonly sessionId: string;
+    readonly trackedFileId?: string | null;
 }
 
 export interface AiTrackedFileHunkMutationInput {
+    readonly expectedVersion?: number;
     readonly hunkIds: readonly string[];
     readonly path: string;
     readonly sessionId: string;
+    readonly trackedFileId?: string | null;
 }
 
 export interface ComandoApi {
