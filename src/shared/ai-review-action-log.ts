@@ -131,6 +131,22 @@ export function createReviewActionLogFromTrackedFiles(
     };
 }
 
+export function beginReviewWorkCycle(
+    state: AiReviewActionLogState,
+    workCycleId: string,
+    options: { readonly updatedAt?: string } = {},
+): AiReviewActionLogState {
+    if (state.activeWorkCycleId === workCycleId && !options.updatedAt) {
+        return state;
+    }
+
+    return {
+        ...state,
+        activeWorkCycleId: workCycleId,
+        updatedAt: options.updatedAt ?? new Date().toISOString(),
+    };
+}
+
 export function consolidateReviewDiffs(
     state: AiReviewActionLogState,
     diffs: readonly AiFileDiff[],

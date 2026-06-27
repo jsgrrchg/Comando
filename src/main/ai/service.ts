@@ -51,6 +51,7 @@ import {
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
 import {
+    beginReviewWorkCycle,
     consolidateReviewDiffs,
     createReviewActionLogFromTrackedFiles,
     deriveTrackedFilesFromActionLog,
@@ -184,17 +185,20 @@ type LiveSessionContext = {
 interface NativeReviewBaseline {
     readonly additionalRoots: readonly string[];
     readonly cwd: string;
+    readonly inherited: boolean;
     readonly messageId: string;
     readonly nativeCaptured: boolean;
     readonly promptAccepted: boolean;
     readonly terminalStatusSeen: boolean;
     readonly turnStarted: boolean;
+    readonly workCycleId: string;
 }
 
 interface RecentNativeReviewContext {
     readonly additionalRoots: readonly string[];
     readonly cwd: string;
     readonly expiresAtMs: number;
+    readonly workCycleId: string;
 }
 
 type NativeAiReviewGateway = NativeAiGateway &
@@ -1392,6 +1396,7 @@ export class AiService {
                         nativeSendState.capturedReviewBaseline =
                             await this.#captureNativeReviewBaseline(
                                 input.sessionId,
+                                ownerWindowId,
                                 nativePrepareLaunch.launch,
                                 input.messageId,
                             );
@@ -2802,20 +2807,31 @@ export class AiService {
 
     async #captureNativeReviewBaseline(
         sessionId: string,
+        ownerWindowId: string,
         launch: AiSessionLaunchInput,
         messageId: string,
     ): Promise<boolean> {
         const nativeAi = this.#requireNativeReviewGateway("captureReviewBaseline");
         const nativeCaptured = await nativeAi.captureReviewBaseline(sessionId);
+        const workCycleId = createReviewWorkCycleId(sessionId, messageId);
+        const updatedAt = new Date().toISOString();
+        this.#beginNativeReviewWorkCycle(
+            sessionId,
+            ownerWindowId,
+            workCycleId,
+            updatedAt,
+        );
         this.#recentNativeReviewContexts.delete(sessionId);
         this.#nativeReviewBaselines.set(sessionId, {
             additionalRoots: launch.additionalRoots,
             cwd: launch.cwd,
+            inherited: false,
             messageId,
             nativeCaptured,
             promptAccepted: false,
             terminalStatusSeen: false,
             turnStarted: false,
+            workCycleId,
         });
         return true;
     }
@@ -2827,24 +2843,77 @@ export class AiService {
         messageId: string,
     ): Promise<boolean> {
         const baseline = this.#nativeReviewBaselines.get(sessionId);
-        if (!baseline || baseline.messageId === messageId) {
+        if (!baseline) {
             return false;
         }
 
+        if (baseline.messageId === messageId && !baseline.inherited) {
+            return false;
+        }
+
+        if (baseline.inherited) {
+            return await this.#captureNativeReviewBaseline(
+                sessionId,
+                ownerWindowId,
+                launch,
+                messageId,
+            );
+        }
+
         if (baseline.promptAccepted || baseline.terminalStatusSeen) {
-            await this.#reconcileNativeReviewFiles(sessionId, ownerWindowId);
+            await this.#reconcileNativeReviewFiles(sessionId, ownerWindowId, {
+                preserveCanonical: true,
+            });
             return false;
         }
 
         if (!baseline.turnStarted) {
             return await this.#captureNativeReviewBaseline(
                 sessionId,
+                ownerWindowId,
                 launch,
                 messageId,
             );
         }
 
         return false;
+    }
+
+    #beginNativeReviewWorkCycle(
+        sessionId: string,
+        ownerWindowId: string,
+        workCycleId: string,
+        updatedAt: string,
+    ): void {
+        const snapshot = this.#liveSnapshots.get(sessionId);
+        if (!snapshot) {
+            return;
+        }
+
+        const reviewActionLog =
+            validReviewActionLogForSnapshot(snapshot) ??
+            createReviewActionLogFromTrackedFiles(
+                snapshot.sessionId,
+                snapshot.trackedFiles,
+                {
+                    updatedAt: snapshot.updatedAt,
+                },
+            );
+        const nextActionLog = beginReviewWorkCycle(reviewActionLog, workCycleId, {
+            updatedAt,
+        });
+        if (nextActionLog === reviewActionLog) {
+            return;
+        }
+
+        const nextSnapshot = this.#cacheLiveSessionSnapshot(
+            snapshotWithReviewActionLog(snapshot, nextActionLog),
+            ownerWindowId,
+        );
+        this.#onSessionSnapshot(
+            ownerWindowId,
+            buildAiSessionUpdate(snapshot, nextSnapshot),
+        );
     }
 
     #inheritNativeReviewContext(
@@ -2857,6 +2926,7 @@ export class AiService {
             if (parentBaseline) {
                 this.#nativeReviewBaselines.set(childSessionId, {
                     ...parentBaseline,
+                    inherited: true,
                 });
             }
         }
@@ -2941,6 +3011,7 @@ export class AiService {
             additionalRoots: baseline.additionalRoots,
             cwd: baseline.cwd,
             expiresAtMs: Date.now() + RECENT_NATIVE_REVIEW_CONTEXT_TTL_MS,
+            workCycleId: baseline.workCycleId,
         });
     }
 
@@ -3050,7 +3121,9 @@ export class AiService {
                     sessionId: snapshot.sessionId,
                     toolCallId: activity.id,
                     updatedAt: activity.updatedAt,
-                    workCycleId: baseReviewActionLog.activeWorkCycleId,
+                    workCycleId:
+                        reviewContext.workCycleId ??
+                        baseReviewActionLog.activeWorkCycleId,
                 },
             );
             if (nextReviewActionLog === baseReviewActionLog) {
@@ -3250,6 +3323,7 @@ export class AiService {
     async #reconcileNativeReviewFiles(
         sessionId: string,
         ownerWindowId: string,
+        options: { readonly preserveCanonical?: boolean } = {},
     ): Promise<void> {
         const baseline = this.#nativeReviewBaselines.get(sessionId);
         if (!baseline || this.#nativeReviewReconciliations.has(sessionId)) {
@@ -3276,6 +3350,7 @@ export class AiService {
             const nextTrackedFiles = this.#preserveNativeReviewFallbackTrackedFiles(
                 trackedFiles,
                 snapshot,
+                { preserveCanonical: options.preserveCanonical === true },
             );
             if (nextTrackedFiles === snapshot.trackedFiles) {
                 return;
@@ -5937,6 +6012,10 @@ function reviewActionLogTargetFromInput(
         sessionId: input.sessionId,
         trackedFileId: input.trackedFileId ?? null,
     };
+}
+
+function createReviewWorkCycleId(sessionId: string, messageId: string): string {
+    return `review-cycle:${sessionId}:${messageId}`;
 }
 
 function isNativeTrackedFilesPatch(update: AiSessionUpdate): boolean {

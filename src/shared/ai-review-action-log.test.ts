@@ -8,6 +8,7 @@ import type {
 import * as reviewActionLog from "./ai-review-action-log";
 
 const {
+    beginReviewWorkCycle,
     consolidateReviewDiffs,
     createEmptyReviewActionLog,
     createReviewActionLogFromTrackedFiles,
@@ -103,6 +104,69 @@ function createTrackedFile(
 }
 
 describe("AiReviewActionLog canonical review state", () => {
+    it("starts a new work cycle without clearing unresolved pending ranges", () => {
+        const firstTurn = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [
+                createDiff({
+                    newText: "first after\n",
+                    oldText: "first before\n",
+                    path: "src/first.ts",
+                }),
+            ],
+            liveContext({
+                toolCallId: "tool-1",
+                workCycleId: "cycle-1",
+            }),
+        );
+
+        const secondCycle = beginReviewWorkCycle(firstTurn, "cycle-2", {
+            updatedAt: "2026-06-26T00:01:00.000Z",
+        });
+
+        expect(secondCycle.activeWorkCycleId).toBe("cycle-2");
+        expect(secondCycle.fileOrder).toEqual(firstTurn.fileOrder);
+        expect(deriveTrackedFilesFromActionLog(secondCycle)).toEqual([
+            expect.objectContaining({
+                path: "src/first.ts",
+                reviewState: "pending",
+            }),
+        ]);
+        expect(
+            secondCycle.filesByIdentityKey[
+                secondCycle.fileOrder[0] ?? ""
+            ]?.pendingRanges.map((range) => range.workCycleId),
+        ).toEqual(["cycle-1"]);
+
+        const withSecondTurnPending = consolidateReviewDiffs(
+            secondCycle,
+            [
+                createDiff({
+                    newText: "second after\n",
+                    oldText: "second before\n",
+                    path: "src/second.ts",
+                }),
+            ],
+            liveContext({
+                toolCallId: "tool-2",
+                updatedAt: "2026-06-26T00:02:00.000Z",
+                workCycleId: secondCycle.activeWorkCycleId,
+            }),
+        );
+
+        const [firstFileKey, secondFileKey] = withSecondTurnPending.fileOrder;
+        expect(
+            withSecondTurnPending.filesByIdentityKey[
+                firstFileKey ?? ""
+            ]?.pendingRanges.map((range) => range.workCycleId),
+        ).toEqual(["cycle-1"]);
+        expect(
+            withSecondTurnPending.filesByIdentityKey[
+                secondFileKey ?? ""
+            ]?.pendingRanges.map((range) => range.workCycleId),
+        ).toEqual(["cycle-2"]);
+    });
+
     it("migrates unresolved legacy tracked files into canonical state", () => {
         const pendingFile = createTrackedFile({
             path: "src/pending.ts",

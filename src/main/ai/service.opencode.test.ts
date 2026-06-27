@@ -1579,6 +1579,148 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
+    it("keeps review work cycles distinct across prompts", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-review-work-cycles-"),
+        );
+
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
+            const nativeAi = createNativeAi({
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-opencode",
+                            status: "idle",
+                            updatedAt: "2026-06-20T00:00:00.000Z",
+                        }),
+                ),
+                sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
+                    Promise.resolve({
+                        sessionId: input.sessionId,
+                        stopReason: "accepted",
+                    }),
+                ),
+            });
+            const service = createService({
+                nativeAi,
+                projectRootPath: tempDir,
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+            const basePrompt = {
+                additionalRoots: [],
+                attachments: [],
+                projectId: "project-1",
+                runtimeId: "opencode" as const,
+                sessionId: "session-opencode",
+                title: "OpenCode 1",
+                worktreeId: null,
+            };
+
+            await service.sendPrompt(
+                {
+                    ...basePrompt,
+                    messageId: "user-message-1",
+                    prompt: "Edit two files.",
+                },
+                "window-1",
+            );
+            emitCompletedEdit(service, {
+                newText: "accepted after\n",
+                oldText: "accepted before\n",
+                path: path.join(tempDir, "accepted.md"),
+                toolCallId: "tool-accepted-1",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            });
+            emitCompletedEdit(service, {
+                newText: "pending after\n",
+                oldText: "pending before\n",
+                path: path.join(tempDir, "pending.md"),
+                toolCallId: "tool-pending-1",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
+
+            const firstTurnSnapshot = service.getLiveSessionSnapshotForWindow(
+                "window-1",
+                "session-opencode",
+            );
+            const acceptedFile = firstTurnSnapshot?.trackedFiles.find(
+                (file) => file.path === "accepted.md",
+            );
+            if (!acceptedFile) {
+                throw new Error("Expected the accepted file pending review.");
+            }
+
+            await service.keepTrackedFile({
+                expectedVersion: acceptedFile.version,
+                path: "accepted.md",
+                sessionId: "session-opencode",
+                trackedFileId: acceptedFile.identityKey,
+            });
+
+            await service.sendPrompt(
+                {
+                    ...basePrompt,
+                    messageId: "user-message-2",
+                    prompt: "Edit another file.",
+                },
+                "window-1",
+            );
+            emitCompletedEdit(service, {
+                newText: "accepted after\n",
+                oldText: "accepted before\n",
+                path: path.join(tempDir, "accepted.md"),
+                toolCallId: "tool-accepted-2",
+                updatedAt: "2026-06-20T00:00:03.000Z",
+            });
+            emitCompletedEdit(service, {
+                newText: "next after\n",
+                oldText: "next before\n",
+                path: path.join(tempDir, "next.md"),
+                toolCallId: "tool-next-1",
+                updatedAt: "2026-06-20T00:00:04.000Z",
+            });
+
+            const latestSnapshot = service.getLiveSessionSnapshotForWindow(
+                "window-1",
+                "session-opencode",
+            );
+            expect(latestSnapshot?.trackedFiles.map((file) => file.path)).toEqual([
+                "pending.md",
+                "next.md",
+            ]);
+            expect(latestSnapshot?.reviewActionLog?.activeWorkCycleId).toBe(
+                "review-cycle:session-opencode:user-message-2",
+            );
+            const filesByPath = new Map(
+                Object.values(
+                    latestSnapshot?.reviewActionLog?.filesByIdentityKey ?? {},
+                ).map((file) => [file.path, file]),
+            );
+            expect(
+                filesByPath
+                    .get("pending.md")
+                    ?.pendingRanges.map((range) => range.workCycleId),
+            ).toEqual(["review-cycle:session-opencode:user-message-1"]);
+            expect(
+                filesByPath
+                    .get("next.md")
+                    ?.pendingRanges.map((range) => range.workCycleId),
+            ).toEqual(["review-cycle:session-opencode:user-message-2"]);
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("keeps remaining native review hunks after a partial hunk accept", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-review-partial-accept-"),
@@ -3667,6 +3809,171 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
+    it("starts a subagent work cycle after inherited review work", async () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-opencode-review-subagent-cycle-"),
+        );
+        try {
+            const binaryPath = writeExecutable(tempDir, "opencode");
+            process.env.OPENCODE_API_KEY = "test-opencode-key";
+            let resolveParentPrompt: () => void = () => {
+                throw new Error("Parent prompt was not started.");
+            };
+            const nativeAi = createNativeAi({
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ launch }) =>
+                        Promise.resolve({
+                            ...launch.persistedSnapshot,
+                            runtimeSessionId: "runtime-parent",
+                            status: "idle",
+                            updatedAt: "2026-06-20T00:00:00.000Z",
+                        }),
+                ),
+                sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(
+                    ({ input }) => {
+                        if (input.sessionId === "session-parent") {
+                            return new Promise((resolve) => {
+                                resolveParentPrompt = () =>
+                                    resolve({
+                                        sessionId: input.sessionId,
+                                        stopReason: "accepted",
+                                    });
+                            });
+                        }
+
+                        return Promise.resolve({
+                            sessionId: input.sessionId,
+                            stopReason: "accepted",
+                        });
+                    },
+                ),
+            });
+            const service = createService({
+                nativeAi,
+                projectRootPath: tempDir,
+                settingsService: createSettingsService({
+                    loadOpenCodeRuntimeSettings: vi.fn(() =>
+                        createOpenCodeSettings({
+                            authMethod: "opencode-login",
+                            binaryPath,
+                        }),
+                    ),
+                }),
+            });
+            const childSessionId = "session-parent:subagent:runtime-child";
+
+            const parentPrompt = service.sendPrompt(
+                {
+                    additionalRoots: [],
+                    attachments: [],
+                    messageId: "parent-message-1",
+                    projectId: "project-1",
+                    prompt: "Delegate the edit.",
+                    runtimeId: "opencode",
+                    sessionId: "session-parent",
+                    title: "Parent",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            await vi.waitFor(() => {
+                expect(nativeAi.sendPrompt).toHaveBeenCalledTimes(1);
+            });
+            service.handleNativeSessionEvent("window-1", {
+                activeTurnStartedAt: "2026-06-20T00:00:00.500Z",
+                kind: "status",
+                lastError: null,
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-parent",
+                sessionId: "session-parent",
+                status: "streaming",
+                updatedAt: "2026-06-20T00:00:00.500Z",
+            });
+            service.handleNativeSessionEvent("window-1", {
+                childRuntimeSessionId: "runtime-child",
+                childSessionId,
+                kind: "subagent-created",
+                modelId: null,
+                origin: "live",
+                parentSessionId: "session-parent",
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-child",
+                sessionId: childSessionId,
+                title: "Child",
+                updatedAt: "2026-06-20T00:00:01.000Z",
+            });
+            emitCompletedEdit(service, {
+                newText: "delegated after\n",
+                oldText: "delegated before\n",
+                parentSessionId: "session-parent",
+                path: path.join(tempDir, "delegated.ts"),
+                runtimeSessionId: "runtime-child",
+                sessionId: childSessionId,
+                toolCallId: "tool-child-delegated-1",
+                updatedAt: "2026-06-20T00:00:02.000Z",
+            });
+
+            await service.sendPrompt(
+                {
+                    additionalRoots: [],
+                    attachments: [],
+                    messageId: "child-message-1",
+                    projectId: "project-1",
+                    prompt: "Now make your own edit.",
+                    runtimeId: "opencode",
+                    sessionId: childSessionId,
+                    title: "Child",
+                    worktreeId: null,
+                },
+                "window-1",
+            );
+            emitCompletedEdit(service, {
+                newText: "own after\n",
+                oldText: "own before\n",
+                parentSessionId: "session-parent",
+                path: path.join(tempDir, "own.ts"),
+                runtimeSessionId: "runtime-child",
+                sessionId: childSessionId,
+                toolCallId: "tool-child-own-1",
+                updatedAt: "2026-06-20T00:00:03.000Z",
+            });
+
+            const childSnapshot = service.getLiveSessionSnapshotForWindow(
+                "window-1",
+                childSessionId,
+            );
+            expect(childSnapshot?.trackedFiles.map((file) => file.path)).toEqual([
+                "delegated.ts",
+                "own.ts",
+            ]);
+            expect(childSnapshot?.reviewActionLog?.activeWorkCycleId).toBe(
+                `review-cycle:${childSessionId}:child-message-1`,
+            );
+            const filesByPath = new Map(
+                Object.values(
+                    childSnapshot?.reviewActionLog?.filesByIdentityKey ?? {},
+                ).map((file) => [file.path, file]),
+            );
+            expect(
+                filesByPath
+                    .get("delegated.ts")
+                    ?.pendingRanges.map((range) => range.workCycleId),
+            ).toEqual(["review-cycle:session-parent:parent-message-1"]);
+            expect(
+                filesByPath
+                    .get("own.ts")
+                    ?.pendingRanges.map((range) => range.workCycleId),
+            ).toEqual([`review-cycle:${childSessionId}:child-message-1`]);
+
+            resolveParentPrompt();
+            await parentPrompt;
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
     it("waits for terminal status before native review reconciliation", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-native-review-idle-"),
@@ -4548,6 +4855,58 @@ function createTrackedFile(
         version: 1,
         ...overrides,
     };
+}
+
+function emitCompletedEdit(
+    service: AiService,
+    input: {
+        readonly newText: string;
+        readonly oldText: string;
+        readonly parentSessionId?: string | null;
+        readonly path: string;
+        readonly runtimeSessionId?: string;
+        readonly sessionId?: string;
+        readonly toolCallId: string;
+        readonly updatedAt: string;
+    },
+): void {
+    const sessionId = input.sessionId ?? "session-opencode";
+    service.handleNativeSessionEvent("window-1", {
+        activity: {
+            createdAt: input.updatedAt,
+            diffs: [
+                {
+                    hunks: [],
+                    isText: true,
+                    kind: "update",
+                    newText: input.newText,
+                    oldText: input.oldText,
+                    path: input.path,
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            exitCode: 0,
+            id: input.toolCallId,
+            kind: "edit",
+            locations: [],
+            rawInputJson: null,
+            rawOutputJson: null,
+            sessionId,
+            status: "completed",
+            summary: `Edited ${path.basename(input.path)}`,
+            terminalOutput: null,
+            title: `Edited ${path.basename(input.path)}`,
+            updatedAt: input.updatedAt,
+        },
+        kind: "tool-activity",
+        origin: "live",
+        parentSessionId: input.parentSessionId ?? null,
+        runtimeId: "opencode",
+        runtimeSessionId: input.runtimeSessionId ?? "runtime-opencode",
+        sessionId,
+        updatedAt: input.updatedAt,
+    });
 }
 
 function writeExecutable(dir: string, name: string): string {
