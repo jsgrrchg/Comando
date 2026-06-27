@@ -203,6 +203,11 @@ describe("AiService OpenCode branch", () => {
                 ({ launch }) =>
                     Promise.resolve({
                         ...launch.persistedSnapshot,
+                        reviewActionLog: createReviewActionLogFromTrackedFiles(
+                            "session-opencode",
+                            [trackedFile],
+                            { updatedAt: "2026-06-20T00:00:00.000Z" },
+                        ),
                         runtimeSessionId: "runtime-opencode",
                         status: "idle",
                         trackedFiles: [trackedFile],
@@ -322,6 +327,11 @@ describe("AiService OpenCode branch", () => {
                 ({ launch }) =>
                     Promise.resolve({
                         ...launch.persistedSnapshot,
+                        reviewActionLog: createReviewActionLogFromTrackedFiles(
+                            "session-opencode",
+                            [trackedFile],
+                            { updatedAt: "2026-06-20T00:00:00.000Z" },
+                        ),
                         runtimeSessionId: "runtime-opencode",
                         status: "idle",
                         trackedFiles: [trackedFile],
@@ -526,6 +536,11 @@ describe("AiService OpenCode branch", () => {
                     ({ launch }) =>
                         Promise.resolve({
                             ...launch.persistedSnapshot,
+                            reviewActionLog: createReviewActionLogFromTrackedFiles(
+                                "session-opencode",
+                                [acceptedFile],
+                                { updatedAt: "2026-06-20T00:00:00.000Z" },
+                            ),
                             runtimeSessionId: "runtime-opencode",
                             status: "idle",
                             trackedFiles: [acceptedFile],
@@ -669,6 +684,11 @@ describe("AiService OpenCode branch", () => {
                     ({ launch }) =>
                         Promise.resolve({
                             ...launch.persistedSnapshot,
+                            reviewActionLog: createReviewActionLogFromTrackedFiles(
+                                "session-opencode",
+                                [acceptedFile],
+                                { updatedAt: "2026-06-20T00:00:00.000Z" },
+                            ),
                             runtimeSessionId: "runtime-opencode",
                             status: "idle",
                             trackedFiles: [acceptedFile],
@@ -824,6 +844,11 @@ describe("AiService OpenCode branch", () => {
                     ({ launch }) =>
                         Promise.resolve({
                             ...launch.persistedSnapshot,
+                            reviewActionLog: createReviewActionLogFromTrackedFiles(
+                                "session-opencode",
+                                [acceptedFile],
+                                { updatedAt: "2026-06-20T00:00:00.000Z" },
+                            ),
                             runtimeSessionId: "runtime-opencode",
                             status: "idle",
                             trackedFiles: [acceptedFile],
@@ -1053,6 +1078,11 @@ describe("AiService OpenCode branch", () => {
                     ({ launch }) =>
                         Promise.resolve({
                             ...launch.persistedSnapshot,
+                            reviewActionLog: createReviewActionLogFromTrackedFiles(
+                                "session-opencode",
+                                [trackedFile],
+                                { updatedAt: "2026-06-20T00:00:00.000Z" },
+                            ),
                             runtimeSessionId: "runtime-opencode",
                             status: "idle",
                             trackedFiles: [trackedFile],
@@ -1156,6 +1186,11 @@ describe("AiService OpenCode branch", () => {
                     ({ launch }) =>
                         Promise.resolve({
                             ...launch.persistedSnapshot,
+                            reviewActionLog: createReviewActionLogFromTrackedFiles(
+                                "session-opencode",
+                                [trackedFile],
+                                { updatedAt: "2026-06-20T00:00:00.000Z" },
+                            ),
                             runtimeSessionId: "runtime-opencode",
                             status: "idle",
                             trackedFiles: [trackedFile],
@@ -1515,6 +1550,11 @@ describe("AiService OpenCode branch", () => {
                     ({ launch }) =>
                         Promise.resolve({
                             ...launch.persistedSnapshot,
+                            reviewActionLog: createReviewActionLogFromTrackedFiles(
+                                "session-opencode",
+                                [trackedFile],
+                                { updatedAt: "2026-06-20T00:00:00.000Z" },
+                            ),
                             runtimeSessionId: "runtime-opencode",
                             status: "idle",
                             trackedFiles: [trackedFile],
@@ -1604,6 +1644,11 @@ describe("AiService OpenCode branch", () => {
                     ({ launch }) =>
                         Promise.resolve({
                             ...launch.persistedSnapshot,
+                            reviewActionLog: createReviewActionLogFromTrackedFiles(
+                                "session-opencode",
+                                [trackedFile],
+                                { updatedAt: "2026-06-20T00:00:00.000Z" },
+                            ),
                             runtimeSessionId: "runtime-opencode",
                             status: "idle",
                             trackedFiles: [trackedFile],
@@ -1690,6 +1735,11 @@ describe("AiService OpenCode branch", () => {
                     ({ launch }) =>
                         Promise.resolve({
                             ...launch.persistedSnapshot,
+                            reviewActionLog: createReviewActionLogFromTrackedFiles(
+                                "session-opencode",
+                                [trackedFile],
+                                { updatedAt: "2026-06-20T00:00:00.000Z" },
+                            ),
                             runtimeSessionId: "runtime-opencode",
                             status: "idle",
                             trackedFiles: [trackedFile],
@@ -1788,6 +1838,11 @@ describe("AiService OpenCode branch", () => {
                     ({ launch }) =>
                         Promise.resolve({
                             ...launch.persistedSnapshot,
+                            reviewActionLog: createReviewActionLogFromTrackedFiles(
+                                "session-opencode",
+                                [trackedFile],
+                                { updatedAt: "2026-06-20T00:00:00.000Z" },
+                            ),
                             runtimeSessionId: "runtime-opencode",
                             status: "idle",
                             trackedFiles: [trackedFile],
@@ -1863,9 +1918,9 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
-    it("migrates live legacy tracked review files into an action log", async () => {
+    it("drops live legacy tracked review files without an action log", async () => {
         const tempDir = fs.mkdtempSync(
-            path.join(os.tmpdir(), "comando-opencode-review-log-migrate-"),
+            path.join(os.tmpdir(), "comando-opencode-review-log-drop-"),
         );
         const pendingFile = createTrackedFile({
             identityKey: "native:session-opencode::src/app.ts",
@@ -1912,20 +1967,8 @@ describe("AiService OpenCode branch", () => {
                 "window-1",
             );
 
-            expect(prepared.reviewActionLog?.fileOrder).toEqual([
-                pendingFile.identityKey,
-            ]);
-            expect(prepared.reviewActionLog?.versionClockByIdentityKey).toEqual({
-                [pendingFile.identityKey]: 3,
-            });
-            expect(prepared.trackedFiles).toEqual([
-                expect.objectContaining({
-                    identityKey: pendingFile.identityKey,
-                    path: "src/app.ts",
-                    reviewState: "pending",
-                    version: 3,
-                }),
-            ]);
+            expect(prepared.reviewActionLog).toBeNull();
+            expect(prepared.trackedFiles).toEqual([]);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -2270,6 +2313,11 @@ describe("AiService OpenCode branch", () => {
                     ({ launch }) =>
                         Promise.resolve({
                             ...launch.persistedSnapshot,
+                            reviewActionLog: createReviewActionLogFromTrackedFiles(
+                                "session-opencode",
+                                [originalTrackedFile],
+                                { updatedAt: "2026-06-20T00:00:00.000Z" },
+                            ),
                             runtimeSessionId: "runtime-opencode",
                             status: "idle",
                             trackedFiles: [originalTrackedFile],
@@ -3415,17 +3463,11 @@ describe("AiService OpenCode branch", () => {
             });
 
             await service.prepareSession(input, "window-1");
-            service.handleNativeSessionEvent("window-1", {
-                conflicts: [],
-                kind: "review",
-                origin: "live",
-                parentSessionId: null,
-                runtimeId: "opencode",
-                runtimeSessionId: "runtime-opencode",
-                sessionId: "session-opencode",
-                trackedFiles: [pendingFile],
-                updatedAt: "2026-06-20T00:00:03.000Z",
-            });
+            installCanonicalReviewState(
+                service,
+                [pendingFile],
+                "2026-06-20T00:00:03.000Z",
+            );
 
             const reopenedSnapshot = await service.prepareSession(
                 input,
@@ -3507,17 +3549,11 @@ describe("AiService OpenCode branch", () => {
                 },
                 "window-1",
             );
-            service.handleNativeSessionEvent("window-1", {
-                conflicts: [],
-                kind: "review",
-                origin: "live",
-                parentSessionId: null,
-                runtimeId: "opencode",
-                runtimeSessionId: "runtime-opencode",
-                sessionId: "session-opencode",
-                trackedFiles: [pendingFile],
-                updatedAt: "2026-06-20T00:00:02.000Z",
-            });
+            installCanonicalReviewState(
+                service,
+                [pendingFile],
+                "2026-06-20T00:00:02.000Z",
+            );
 
             service.handleNativeSessionSnapshot("window-1", {
                 kind: "snapshot",
@@ -3605,17 +3641,11 @@ describe("AiService OpenCode branch", () => {
                 },
                 "window-1",
             );
-            service.handleNativeSessionEvent("window-1", {
-                conflicts: [],
-                kind: "review",
-                origin: "live",
-                parentSessionId: null,
-                runtimeId: "opencode",
-                runtimeSessionId: "runtime-opencode",
-                sessionId: "session-opencode",
-                trackedFiles: [pendingFile],
-                updatedAt: "2026-06-20T00:00:02.000Z",
-            });
+            installCanonicalReviewState(
+                service,
+                [pendingFile],
+                "2026-06-20T00:00:02.000Z",
+            );
             fs.writeFileSync(editedPath, "agent + user\n", "utf8");
 
             await expect(
@@ -3704,17 +3734,11 @@ describe("AiService OpenCode branch", () => {
                 },
                 "window-1",
             );
-            service.handleNativeSessionEvent("window-1", {
-                conflicts: [],
-                kind: "review",
-                origin: "live",
-                parentSessionId: null,
-                runtimeId: "opencode",
-                runtimeSessionId: "runtime-opencode",
-                sessionId: "session-opencode",
-                trackedFiles: [pendingFile],
-                updatedAt: "2026-06-20T00:00:02.000Z",
-            });
+            installCanonicalReviewState(
+                service,
+                [pendingFile],
+                "2026-06-20T00:00:02.000Z",
+            );
             fs.writeFileSync(editedPath, "agent + user\n", "utf8");
 
             await service.keepTrackedFile({
@@ -3817,17 +3841,11 @@ describe("AiService OpenCode branch", () => {
                 },
                 "window-1",
             );
-            service.handleNativeSessionEvent("window-1", {
-                conflicts: [],
-                kind: "review",
-                origin: "live",
-                parentSessionId: null,
-                runtimeId: "opencode",
-                runtimeSessionId: "runtime-opencode",
-                sessionId: "session-opencode",
-                trackedFiles: [firstFile, secondFile],
-                updatedAt: "2026-06-20T00:00:02.000Z",
-            });
+            installCanonicalReviewState(
+                service,
+                [firstFile, secondFile],
+                "2026-06-20T00:00:02.000Z",
+            );
             originalWriteFileSync(firstPath, "agent a\n", "utf8");
             originalWriteFileSync(secondPath, "agent b\n", "utf8");
 
@@ -5330,6 +5348,29 @@ function createService(overrides: {
         },
         settingsService: (overrides.settingsService ??
             createSettingsService({})) as never,
+    });
+}
+
+function installCanonicalReviewState(
+    service: AiService,
+    trackedFiles: readonly AiTrackedFile[],
+    updatedAt = "2026-06-20T00:00:02.000Z",
+): void {
+    service.handleNativeSessionSnapshot("window-1", {
+        kind: "patch",
+        patch: {
+            changes: {
+                reviewActionLog: createReviewActionLogFromTrackedFiles(
+                    "session-opencode",
+                    trackedFiles,
+                    { updatedAt },
+                ),
+                trackedFiles,
+                updatedAt,
+            },
+            runtimeId: "opencode",
+            sessionId: "session-opencode",
+        },
     });
 }
 

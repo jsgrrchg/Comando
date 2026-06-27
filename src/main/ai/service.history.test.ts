@@ -575,7 +575,7 @@ describe("AiService history", () => {
         expect(update.snapshot.trackedFiles).toEqual(savedSnapshot.trackedFiles);
     });
 
-    it("migrates live legacy tracked files into review action log", () => {
+    it("drops live legacy tracked files without a review action log", () => {
         const trackedFile = createTrackedFile();
         const saveSessionSnapshot = vi.fn();
         const service = createService({
@@ -590,17 +590,10 @@ describe("AiService history", () => {
         });
 
         const savedSnapshot = saveSessionSnapshot.mock.calls.at(-1)?.[0];
-        expect(savedSnapshot.reviewActionLog).toMatchObject({
-            fileOrder: [trackedFile.identityKey],
-            sessionId: "session-1",
+        expect(savedSnapshot).toMatchObject({
+            reviewActionLog: null,
+            trackedFiles: [],
         });
-        expect(savedSnapshot.trackedFiles).toEqual([
-            expect.objectContaining({
-                identityKey: trackedFile.identityKey,
-                path: "src/app.ts",
-                reviewState: "pending",
-            }),
-        ]);
     });
 
     it("does not rederive legacy tracked file patches from an old action log", () => {
@@ -645,7 +638,6 @@ describe("AiService history", () => {
             kind: "patch",
             patch: {
                 changes: {
-                    reviewActionLog: null,
                     trackedFiles: [],
                 },
             },

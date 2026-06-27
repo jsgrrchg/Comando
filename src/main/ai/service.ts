@@ -2756,6 +2756,7 @@ export class AiService {
 
             const reviewActionLog = validReviewActionLogForSnapshot(snapshot);
             if (reviewActionLog) {
+                // Native review state mirrors the action log and must not resurrect accepted work.
                 const nextActionLog = applyNativeReviewMirrorConflicts(
                     reviewActionLog,
                     collectNativeReviewConflicts(
@@ -2773,11 +2774,7 @@ export class AiService {
             return {
                 ...base,
                 reviewActionLog: null,
-                trackedFiles: this.#preserveNativeReviewFallbackTrackedFiles(
-                    event.trackedFiles,
-                    snapshot,
-                    { preserveCanonical: true },
-                ),
+                trackedFiles: [],
             };
         }
 
@@ -3053,6 +3050,7 @@ export class AiService {
             !isTerminalNativeReviewActivityStatus(activity.status) ||
             activity.diffs.length === 0
         ) {
+            // Historical tool diffs are display-only; review state is owned by the action log.
             return snapshot;
         }
 
@@ -3213,34 +3211,6 @@ export class AiService {
         }
     }
 
-    #preserveNativeReviewFallbackTrackedFiles(
-        nativeTrackedFiles: readonly AiTrackedFile[],
-        previousSnapshot: AiSessionSnapshot,
-        options: { readonly preserveCanonical?: boolean } = {},
-    ): readonly AiTrackedFile[] {
-        const pathMatcher = this.#createNativeReviewPathMatcher(previousSnapshot);
-        const filteredTrackedFiles = this.#filterResolvedNativeReviewTrackedFiles(
-            previousSnapshot.sessionId,
-            nativeTrackedFiles,
-        );
-        if (
-            options.preserveCanonical === true &&
-            validReviewActionLogForSnapshot(previousSnapshot)
-        ) {
-            return preserveCanonicalReviewTrackedFiles(
-                filteredTrackedFiles,
-                previousSnapshot.trackedFiles,
-                pathMatcher,
-            );
-        }
-
-        return preserveFallbackTrackedFiles(
-            filteredTrackedFiles,
-            previousSnapshot.trackedFiles,
-            pathMatcher,
-        );
-    }
-
     #filterResolvedNativeReviewTrackedFiles(
         sessionId: string,
         trackedFiles: readonly AiTrackedFile[],
@@ -3267,6 +3237,7 @@ export class AiService {
             ? validReviewActionLogForSnapshot(previousSnapshot)
             : null;
         if (previousReviewActionLog) {
+            // Native review state mirrors the action log and must not resurrect accepted work.
             const nextActionLog = applyNativeReviewMirrorConflicts(
                 previousReviewActionLog,
                 collectNativeReviewConflicts(incomingSnapshot.trackedFiles),
@@ -3278,60 +3249,7 @@ export class AiService {
             };
         }
 
-        const normalizedIncomingSnapshot =
-            normalizeLiveSnapshotReviewState(incomingSnapshot);
-        const filteredIncomingTrackedFiles =
-            this.#filterResolvedNativeReviewTrackedFiles(
-                normalizedIncomingSnapshot.sessionId,
-                normalizedIncomingSnapshot.trackedFiles,
-            );
-        const filteredIncomingSnapshot =
-            filteredIncomingTrackedFiles ===
-            normalizedIncomingSnapshot.trackedFiles
-                ? normalizedIncomingSnapshot
-                : {
-                      ...normalizedIncomingSnapshot,
-                      reviewActionLog:
-                          filteredIncomingTrackedFiles.length > 0
-                              ? createReviewActionLogFromTrackedFiles(
-                                    normalizedIncomingSnapshot.sessionId,
-                                    filteredIncomingTrackedFiles,
-                                    {
-                                        updatedAt:
-                                            normalizedIncomingSnapshot.updatedAt,
-                                    },
-                                )
-                              : null,
-                      trackedFiles: filteredIncomingTrackedFiles,
-                  };
-
-        return preservePassiveSnapshotTrackedFiles(
-            filteredIncomingSnapshot,
-            previousSnapshot,
-            this.#createNativeReviewPathMatcher(
-                previousSnapshot ?? filteredIncomingSnapshot,
-            ),
-        );
-    }
-
-    #createNativeReviewPathMatcher(
-        snapshot: Pick<
-            AiSessionSnapshot,
-            "projectId" | "sessionId" | "worktreeId"
-        >,
-    ): TrackedFilePathMatcher | undefined {
-        const projectRoot = this.#resolveNativeReviewProjectRoot(snapshot);
-        const reviewContext = this.#nativeReviewDiffContext(snapshot.sessionId);
-        const scopeRoot = projectRoot ?? reviewContext?.cwd ?? null;
-        if (!scopeRoot) {
-            return undefined;
-        }
-
-        return (leftPath, rightPath) =>
-            isSamePath(
-                resolveSessionScopedPath(scopeRoot, leftPath).absolutePath,
-                resolveSessionScopedPath(scopeRoot, rightPath).absolutePath,
-            );
+        return normalizeLiveSnapshotReviewState(incomingSnapshot);
     }
 
     #shouldReconcileNativeReviewFiles(event: AiSessionDomainEvent): boolean {
@@ -3419,23 +3337,14 @@ export class AiService {
                 return;
             }
 
-            if (trackedFiles.length === 0 && snapshot.trackedFiles.length === 0) {
-                return;
-            }
-
-            const nextTrackedFiles = this.#preserveNativeReviewFallbackTrackedFiles(
-                trackedFiles,
-                snapshot,
-                { preserveCanonical: options.preserveCanonical === true },
-            );
-            if (nextTrackedFiles === snapshot.trackedFiles) {
+            if (snapshot.trackedFiles.length === 0) {
                 return;
             }
 
             const nextSnapshot = {
                 ...snapshot,
                 reviewActionLog: null,
-                trackedFiles: nextTrackedFiles,
+                trackedFiles: [],
                 updatedAt: new Date().toISOString(),
             };
             const cachedSnapshot = this.#cacheLiveSessionSnapshot(
@@ -5428,128 +5337,6 @@ function fallbackReviewMutationPaths(trackedFile: AiTrackedFile): readonly strin
         : [trackedFile.path];
 }
 
-type TrackedFilePathMatcher = (leftPath: string, rightPath: string) => boolean;
-
-function preserveFallbackTrackedFiles(
-    nativeTrackedFiles: readonly AiTrackedFile[],
-    previousTrackedFiles: readonly AiTrackedFile[],
-    pathMatcher?: TrackedFilePathMatcher,
-): readonly AiTrackedFile[] {
-    const fallbackTrackedFiles = previousTrackedFiles.filter(
-        (trackedFile) =>
-            isFallbackTrackedFile(trackedFile) &&
-            !isTrackedFileRepresented(
-                nativeTrackedFiles,
-                trackedFile,
-                pathMatcher,
-            ),
-    );
-    if (fallbackTrackedFiles.length === 0) {
-        return nativeTrackedFiles;
-    }
-    if (
-        nativeTrackedFiles.length === 0 &&
-        fallbackTrackedFiles.length === previousTrackedFiles.length
-    ) {
-        return previousTrackedFiles;
-    }
-    return [...nativeTrackedFiles, ...fallbackTrackedFiles];
-}
-
-function preserveCanonicalReviewTrackedFiles(
-    nativeTrackedFiles: readonly AiTrackedFile[],
-    previousTrackedFiles: readonly AiTrackedFile[],
-    pathMatcher?: TrackedFilePathMatcher,
-): readonly AiTrackedFile[] {
-    const previousPendingFiles = previousTrackedFiles.filter(
-        isAiTrackedFileUnresolved,
-    );
-    if (previousPendingFiles.length === 0) {
-        return nativeTrackedFiles;
-    }
-
-    const nativeFreshTrackedFiles = nativeTrackedFiles.filter(
-        (nativeTrackedFile) => {
-            const previousTrackedFile = previousPendingFiles.find(
-                (candidate) =>
-                    candidate.identityKey === nativeTrackedFile.identityKey,
-            );
-            return (
-                !previousTrackedFile ||
-                (nativeTrackedFile.version ?? 1) >
-                    (previousTrackedFile.version ?? 1)
-            );
-        },
-    );
-    const preservedTrackedFiles = previousPendingFiles.filter(
-        (previousTrackedFile) =>
-            !isTrackedFileRepresented(
-                nativeFreshTrackedFiles,
-                previousTrackedFile,
-                pathMatcher,
-            ),
-    );
-    if (preservedTrackedFiles.length === 0) {
-        return nativeFreshTrackedFiles;
-    }
-    if (
-        nativeFreshTrackedFiles.length === 0 &&
-        preservedTrackedFiles.length === previousPendingFiles.length
-    ) {
-        return previousTrackedFiles;
-    }
-    return [...nativeFreshTrackedFiles, ...preservedTrackedFiles];
-}
-
-function preservePassiveSnapshotTrackedFiles(
-    incomingSnapshot: AiSessionSnapshot,
-    previousSnapshot: AiSessionSnapshot | null,
-    pathMatcher?: TrackedFilePathMatcher,
-): AiSessionSnapshot {
-    if (
-        incomingSnapshot.reviewActionLog &&
-        incomingSnapshot.reviewActionLog.sessionId === incomingSnapshot.sessionId
-    ) {
-        return normalizeLiveSnapshotReviewState(incomingSnapshot);
-    }
-
-    if (
-        !previousSnapshot ||
-        previousSnapshot.sessionId !== incomingSnapshot.sessionId ||
-        previousSnapshot.trackedFiles.length === 0
-    ) {
-        return incomingSnapshot;
-    }
-
-    if (incomingSnapshot.trackedFiles.length > 0) {
-        const trackedFiles = preserveFallbackTrackedFiles(
-            incomingSnapshot.trackedFiles,
-            previousSnapshot.trackedFiles,
-            pathMatcher,
-        );
-        return trackedFiles === incomingSnapshot.trackedFiles
-            ? incomingSnapshot
-            : {
-                  ...incomingSnapshot,
-                  reviewActionLog: null,
-                  trackedFiles,
-              };
-    }
-
-    const pendingTrackedFiles = previousSnapshot.trackedFiles.filter(
-        isAiTrackedFileUnresolved,
-    );
-    if (pendingTrackedFiles.length === 0) {
-        return incomingSnapshot;
-    }
-
-    return {
-        ...incomingSnapshot,
-        reviewActionLog: null,
-        trackedFiles: pendingTrackedFiles,
-    };
-}
-
 function isTrackedFileAlreadyResolved(
     trackedFile: AiTrackedFile,
     resolvedVersions: ReadonlyMap<string, number>,
@@ -5560,40 +5347,6 @@ function isTrackedFileAlreadyResolved(
     }
 
     return (trackedFile.version ?? 1) <= resolvedVersion;
-}
-
-function isTrackedFileRepresented(
-    trackedFiles: readonly AiTrackedFile[],
-    candidate: AiTrackedFile,
-    pathMatcher?: TrackedFilePathMatcher,
-): boolean {
-    return trackedFiles.some(
-        (trackedFile) =>
-            trackedFile.identityKey === candidate.identityKey ||
-            trackedFilesSharePath(trackedFile, candidate, pathMatcher),
-    );
-}
-
-function trackedFilesSharePath(
-    left: AiTrackedFile,
-    right: AiTrackedFile,
-    pathMatcher?: TrackedFilePathMatcher,
-): boolean {
-    const leftPaths = getTrackedFileIdentityPaths(left);
-    const rightPaths = getTrackedFileIdentityPaths(right);
-    return leftPaths.some((leftPath) =>
-        rightPaths.some((rightPath) =>
-            leftPath === rightPath || pathMatcher?.(leftPath, rightPath),
-        ),
-    );
-}
-
-function getTrackedFileIdentityPaths(
-    trackedFile: AiTrackedFile,
-): readonly string[] {
-    return trackedFile.previousPath
-        ? [trackedFile.path, trackedFile.previousPath]
-        : [trackedFile.path];
 }
 
 function removeTrackedFileByIdentity(
@@ -6055,8 +5808,8 @@ function clearRestoredSnapshotReviewState(
 
     return {
         ...snapshot,
-        // Persisted transcripts keep historical diffs; pending review files are
-        // intentionally only restored from live session state.
+        // Persisted transcripts keep historical diffs; pending review state is
+        // intentionally restored only from the live action log.
         reviewActionLog: null,
         trackedFiles: [],
     };
@@ -6065,9 +5818,7 @@ function clearRestoredSnapshotReviewState(
 function normalizeLiveSnapshotReviewState(
     snapshot: AiSessionSnapshot,
 ): AiSessionSnapshot {
-    return normalizeSnapshotReviewState(snapshot, {
-        migrateLegacyTrackedFiles: true,
-    });
+    return normalizeSnapshotReviewState(snapshot);
 }
 
 function validReviewActionLogForSnapshot(
@@ -6192,7 +5943,6 @@ function normalizeLiveReviewMutationSnapshot(
 
 function normalizeSnapshotReviewState(
     snapshot: AiSessionSnapshot,
-    options: { readonly migrateLegacyTrackedFiles: boolean },
 ): AiSessionSnapshot {
     const reviewActionLog = snapshot.reviewActionLog ?? null;
     if (reviewActionLog && reviewActionLog.sessionId === snapshot.sessionId) {
@@ -6205,26 +5955,12 @@ function normalizeSnapshotReviewState(
               };
     }
 
-    if (options.migrateLegacyTrackedFiles && snapshot.trackedFiles.length > 0) {
-        const migratedActionLog = createReviewActionLogFromTrackedFiles(
-            snapshot.sessionId,
-            snapshot.trackedFiles,
-            {
-                updatedAt: snapshot.updatedAt,
-            },
-        );
-        return {
-            ...snapshot,
-            reviewActionLog: migratedActionLog,
-            trackedFiles: deriveTrackedFilesFromActionLog(migratedActionLog),
-        };
-    }
-
-    return reviewActionLog === null
+    return reviewActionLog === null && snapshot.trackedFiles.length === 0
         ? snapshot
         : {
               ...snapshot,
               reviewActionLog: null,
+              trackedFiles: [],
           };
 }
 
