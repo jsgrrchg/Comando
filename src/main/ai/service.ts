@@ -438,6 +438,14 @@ interface PendingNativeCatalogPatch {
     readonly updatedAt: string;
 }
 
+interface LateAcceptedReviewTombstone {
+    readonly acceptedText: string | null;
+    readonly expiresAtMs: number;
+    readonly toolCallId: string | null;
+}
+
+const LATE_ACCEPTED_REVIEW_TOMBSTONE_TTL_MS = 60_000;
+
 export class AiService {
     readonly #deletedSessionIds = new Set<string>();
     readonly #freezingSessionIds = new Set<string>();
@@ -464,9 +472,9 @@ export class AiService {
         string,
         RecentNativeReviewContext
     >();
-    readonly #acceptedReviewBaselines = new Map<
+    readonly #lateAcceptedReviewTombstones = new Map<
         string,
-        Map<string, string | null>
+        Map<string, LateAcceptedReviewTombstone>
     >();
     readonly #resolvedReviewVersions = new Map<string, Map<string, number>>();
     readonly #reviewMutationChains = new Map<string, Promise<void>>();
@@ -522,7 +530,7 @@ export class AiService {
         });
         this.#nativeReviewBaselines.clear();
         this.#recentNativeReviewContexts.clear();
-        this.#acceptedReviewBaselines.clear();
+        this.#lateAcceptedReviewTombstones.clear();
         this.#resolvedReviewVersions.clear();
         this.#reviewMutationChains.clear();
         this.#nativeReviewReconciliations.clear();
@@ -2191,7 +2199,7 @@ export class AiService {
         this.#freezingSessionIds.delete(sessionId);
         this.#nativeReviewBaselines.delete(sessionId);
         this.#recentNativeReviewContexts.delete(sessionId);
-        this.#acceptedReviewBaselines.delete(sessionId);
+        this.#lateAcceptedReviewTombstones.delete(sessionId);
         this.#resolvedReviewVersions.delete(sessionId);
         this.#reviewMutationChains.delete(sessionId);
         this.#nativeReviewReconciliations.delete(sessionId);
@@ -3115,10 +3123,12 @@ export class AiService {
                               },
                           ),
                       };
-            const reviewDiff = this.#applyAcceptedReviewBaselineToDiff(
-                snapshot.sessionId,
-                fullTextDiff,
-            );
+            const reviewDiff =
+                this.#applyLateAcceptedReviewTombstoneToDiff(
+                    snapshot.sessionId,
+                    fullTextDiff,
+                    activity.id,
+                );
             if (!reviewDiff) {
                 continue;
             }
@@ -3209,7 +3219,7 @@ export class AiService {
         options: { readonly preserveCanonical?: boolean } = {},
     ): readonly AiTrackedFile[] {
         const pathMatcher = this.#createNativeReviewPathMatcher(previousSnapshot);
-        const filteredTrackedFiles = this.#filterAcceptedNativeReviewTrackedFiles(
+        const filteredTrackedFiles = this.#filterResolvedNativeReviewTrackedFiles(
             previousSnapshot.sessionId,
             nativeTrackedFiles,
         );
@@ -3231,33 +3241,18 @@ export class AiService {
         );
     }
 
-    #filterAcceptedNativeReviewTrackedFiles(
+    #filterResolvedNativeReviewTrackedFiles(
         sessionId: string,
         trackedFiles: readonly AiTrackedFile[],
     ): readonly AiTrackedFile[] {
-        const acceptedBaselines = this.#acceptedReviewBaselines.get(sessionId);
         const resolvedVersions = this.#resolvedReviewVersions.get(sessionId);
-        if (
-            (!acceptedBaselines || acceptedBaselines.size === 0) &&
-            (!resolvedVersions || resolvedVersions.size === 0)
-        ) {
+        if (!resolvedVersions || resolvedVersions.size === 0) {
             return trackedFiles;
         }
 
         const nextTrackedFiles = trackedFiles.filter(
             (trackedFile) =>
-                !(
-                    (acceptedBaselines &&
-                        isTrackedFileAlreadyAccepted(
-                            trackedFile,
-                            acceptedBaselines,
-                        )) ||
-                    (resolvedVersions &&
-                        isTrackedFileAlreadyResolved(
-                            trackedFile,
-                            resolvedVersions,
-                        ))
-                ),
+                !isTrackedFileAlreadyResolved(trackedFile, resolvedVersions),
         );
         return nextTrackedFiles.length === trackedFiles.length
             ? trackedFiles
@@ -3286,7 +3281,7 @@ export class AiService {
         const normalizedIncomingSnapshot =
             normalizeLiveSnapshotReviewState(incomingSnapshot);
         const filteredIncomingTrackedFiles =
-            this.#filterAcceptedNativeReviewTrackedFiles(
+            this.#filterResolvedNativeReviewTrackedFiles(
                 normalizedIncomingSnapshot.sessionId,
                 normalizedIncomingSnapshot.trackedFiles,
             );
@@ -3388,7 +3383,7 @@ export class AiService {
                         ? conflictActionLog
                         : replaceReviewFilesFromMirror(
                               conflictActionLog,
-                              this.#filterAcceptedNativeReviewTrackedFiles(
+                              this.#filterResolvedNativeReviewTrackedFiles(
                                   snapshot.sessionId,
                                   trackedFiles,
                               ),
@@ -3767,25 +3762,60 @@ export class AiService {
         await tracked;
     }
 
-    #rememberAcceptedReviewBaseline(
+    #rememberLateAcceptedReviewTombstone(
         trackedFile: AiTrackedFile,
         acceptedText: string | null =
             trackedFile.kind === "delete"
                 ? null
                 : getTrackedFileCurrentText(trackedFile),
     ): void {
-        const sessionBaselines =
-            this.#acceptedReviewBaselines.get(trackedFile.sessionId) ??
-            new Map<string, string | null>();
-        this.#acceptedReviewBaselines.set(
+        const now = Date.now();
+        const sessionTombstones =
+            this.#lateAcceptedReviewTombstones.get(trackedFile.sessionId) ??
+            new Map<string, LateAcceptedReviewTombstone>();
+        this.#lateAcceptedReviewTombstones.set(
             trackedFile.sessionId,
-            sessionBaselines,
+            sessionTombstones,
         );
 
-        sessionBaselines.set(trackedFile.path, acceptedText);
+        sessionTombstones.set(trackedFile.path, {
+            acceptedText,
+            expiresAtMs: now + LATE_ACCEPTED_REVIEW_TOMBSTONE_TTL_MS,
+            toolCallId: trackedFile.toolCallId,
+        });
         if (trackedFile.previousPath) {
-            sessionBaselines.set(trackedFile.previousPath, null);
+            sessionTombstones.set(trackedFile.previousPath, {
+                acceptedText: null,
+                expiresAtMs: now + LATE_ACCEPTED_REVIEW_TOMBSTONE_TTL_MS,
+                toolCallId: trackedFile.toolCallId,
+            });
         }
+    }
+
+    #readLateAcceptedReviewTombstone(
+        sessionId: string,
+        reviewPath: string,
+    ): LateAcceptedReviewTombstone | null {
+        const sessionTombstones =
+            this.#lateAcceptedReviewTombstones.get(sessionId);
+        if (!sessionTombstones) {
+            return null;
+        }
+
+        const tombstone = sessionTombstones.get(reviewPath);
+        if (!tombstone) {
+            return null;
+        }
+
+        if (tombstone.expiresAtMs <= Date.now()) {
+            sessionTombstones.delete(reviewPath);
+            if (sessionTombstones.size === 0) {
+                this.#lateAcceptedReviewTombstones.delete(sessionId);
+            }
+            return null;
+        }
+
+        return tombstone;
     }
 
     #rememberResolvedReviewVersion(trackedFile: AiTrackedFile): void {
@@ -3806,7 +3836,7 @@ export class AiService {
         );
     }
 
-    #rememberAcceptedReviewBaselineForPath(
+    #rememberLateAcceptedReviewTombstoneForPath(
         snapshot: AiSessionSnapshot,
         reviewPath: string,
     ): void {
@@ -3815,11 +3845,11 @@ export class AiService {
             reviewPath,
         );
         if (trackedFile) {
-            this.#rememberAcceptedReviewBaseline(trackedFile);
+            this.#rememberLateAcceptedReviewTombstone(trackedFile);
         }
     }
 
-    #rememberAcceptedReviewBaselineForKeptHunks(
+    #rememberLateAcceptedReviewTombstoneForKeptHunks(
         previousSnapshot: AiSessionSnapshot,
         nextSnapshot: AiSessionSnapshot,
         reviewPath: string,
@@ -3831,28 +3861,33 @@ export class AiService {
         if (remainingTrackedFile) {
             // After a partial hunk keep, the pending file keeps the final text
             // but rebases its diff against the newly accepted text.
-            this.#rememberAcceptedReviewBaseline(
+            this.#rememberLateAcceptedReviewTombstone(
                 remainingTrackedFile,
                 getTrackedFileDiffBase(remainingTrackedFile),
             );
             return;
         }
 
-        this.#rememberAcceptedReviewBaselineForPath(previousSnapshot, reviewPath);
+        this.#rememberLateAcceptedReviewTombstoneForPath(
+            previousSnapshot,
+            reviewPath,
+        );
     }
 
-    #applyAcceptedReviewBaselineToDiff(
+    #applyLateAcceptedReviewTombstoneToDiff(
         sessionId: string,
         diff: AiFileDiff,
+        toolCallId: string | null,
     ): AiFileDiff | null {
-        const baseline =
-            this.#acceptedReviewBaselines.get(sessionId)?.get(diff.path) ??
-            null;
-        if (!this.#acceptedReviewBaselines.get(sessionId)?.has(diff.path)) {
+        const tombstone = this.#readLateAcceptedReviewTombstone(
+            sessionId,
+            diff.path,
+        );
+        if (!tombstone) {
             return diff;
         }
 
-        if (baseline === null) {
+        if (tombstone.acceptedText === null) {
             if (diff.newText === null) {
                 return null;
             }
@@ -3867,8 +3902,14 @@ export class AiService {
 
         if (
             diff.newText !== null &&
-            !diff.previousPath &&
-            normalizeReviewText(baseline) === normalizeReviewText(diff.newText)
+            normalizeReviewText(tombstone.acceptedText) ===
+                normalizeReviewText(diff.newText) &&
+            (!diff.previousPath ||
+                tombstone.toolCallId === toolCallId ||
+                this.#readLateAcceptedReviewTombstone(
+                    sessionId,
+                    diff.previousPath,
+                )?.acceptedText === null)
         ) {
             return null;
         }
@@ -3877,7 +3918,7 @@ export class AiService {
             ...diff,
             hunks: [],
             kind: diff.kind === "create" ? "update" : diff.kind,
-            oldText: baseline,
+            oldText: tombstone.acceptedText,
         };
     }
 
@@ -3951,7 +3992,7 @@ export class AiService {
         this.#rememberResolvedReviewVersion(trackedFile);
         this.#persistActionLogReviewMutation(reviewSession, nextActionLog);
         if (decision === "keep") {
-            this.#rememberAcceptedReviewBaseline(trackedFile);
+            this.#rememberLateAcceptedReviewTombstone(trackedFile);
         }
         if (decision === "keep" || !nativeRejectApplied) {
             await this.#mirrorNativeTrackedFileMutation(
@@ -4044,7 +4085,7 @@ export class AiService {
             nextActionLog,
         );
         if (decision === "keep") {
-            this.#rememberAcceptedReviewBaselineForKeptHunks(
+            this.#rememberLateAcceptedReviewTombstoneForKeptHunks(
                 reviewSession.snapshot,
                 nextSnapshot,
                 input.path,
@@ -4186,7 +4227,7 @@ export class AiService {
         };
         this.#rememberResolvedReviewVersion(trackedFile);
         if (decision === "keep") {
-            this.#rememberAcceptedReviewBaseline(trackedFile);
+            this.#rememberLateAcceptedReviewTombstone(trackedFile);
         }
         this.#persistReviewMutation(reviewSession.snapshot, {
             ownerWindowId: reviewSession.context.ownerWindowId,
@@ -4241,7 +4282,7 @@ export class AiService {
         };
         this.#rememberResolvedReviewVersion(trackedFile);
         if (decision === "keep") {
-            this.#rememberAcceptedReviewBaseline(trackedFile);
+            this.#rememberLateAcceptedReviewTombstone(trackedFile);
         }
         this.#persistReviewMutation(reviewSession.snapshot, {
             ownerWindowId: reviewSession.context.ownerWindowId,
@@ -4307,7 +4348,7 @@ export class AiService {
         };
         if (decision === "keep") {
             for (const trackedFile of pendingFallbackFiles) {
-                this.#rememberAcceptedReviewBaseline(trackedFile);
+                this.#rememberLateAcceptedReviewTombstone(trackedFile);
             }
         }
         this.#persistReviewMutation(reviewSession.snapshot, {
@@ -4509,7 +4550,7 @@ export class AiService {
                 context: reviewSession.context,
                 input,
             });
-            this.#rememberAcceptedReviewBaselineForPath(
+            this.#rememberLateAcceptedReviewTombstoneForPath(
                 reviewSession.snapshot,
                 input.path,
             );
@@ -4578,7 +4619,7 @@ export class AiService {
                 context: reviewSession.context,
                 input,
             });
-            this.#rememberAcceptedReviewBaselineForKeptHunks(
+            this.#rememberLateAcceptedReviewTombstoneForKeptHunks(
                 reviewSession.snapshot,
                 result.snapshot,
                 input.path,
@@ -4643,7 +4684,7 @@ export class AiService {
                 input: sessionId,
             });
             for (const trackedFile of reviewSession.snapshot.trackedFiles) {
-                this.#rememberAcceptedReviewBaseline(trackedFile);
+                this.#rememberLateAcceptedReviewTombstone(trackedFile);
             }
             this.#persistReviewMutation(reviewSession.snapshot, result);
         });
@@ -5509,22 +5550,6 @@ function preservePassiveSnapshotTrackedFiles(
     };
 }
 
-function isTrackedFileAlreadyAccepted(
-    trackedFile: AiTrackedFile,
-    acceptedBaselines: ReadonlyMap<string, string | null>,
-): boolean {
-    const baseline = acceptedBaselines.get(trackedFile.path);
-    if (baseline !== undefined) {
-        return trackedFileMatchesAcceptedBaseline(trackedFile, baseline);
-    }
-
-    return Boolean(
-        trackedFile.previousPath &&
-            acceptedBaselines.get(trackedFile.previousPath) === null &&
-            trackedFileMatchesAcceptedBaseline(trackedFile, null),
-    );
-}
-
 function isTrackedFileAlreadyResolved(
     trackedFile: AiTrackedFile,
     resolvedVersions: ReadonlyMap<string, number>,
@@ -5535,24 +5560,6 @@ function isTrackedFileAlreadyResolved(
     }
 
     return (trackedFile.version ?? 1) <= resolvedVersion;
-}
-
-function trackedFileMatchesAcceptedBaseline(
-    trackedFile: AiTrackedFile,
-    baseline: string | null,
-): boolean {
-    if (baseline === null) {
-        return trackedFile.kind === "delete" || trackedFile.newText === null;
-    }
-
-    if (trackedFile.newText === null) {
-        return false;
-    }
-
-    return (
-        normalizeReviewText(getTrackedFileCurrentText(trackedFile)) ===
-        normalizeReviewText(baseline)
-    );
 }
 
 function isTrackedFileRepresented(
