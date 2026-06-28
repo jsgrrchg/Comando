@@ -46,7 +46,6 @@ import {
     getTrackedFileCurrentText,
     getTrackedFileDiffBase,
     isAiTrackedFileUnresolved,
-    normalizeReviewText,
     resolveTrackedFileHunks,
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";

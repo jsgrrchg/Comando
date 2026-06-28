@@ -211,7 +211,6 @@ describe("AiService OpenCode branch", () => {
                         updatedAt: "2026-06-20T00:00:00.000Z",
                     }),
             );
-            const keepTrackedFile = vi.fn();
             const sendPrompt = vi.fn<NativeAiGateway["sendPrompt"]>(() =>
                 Promise.resolve({
                     sessionId: "session-opencode",
@@ -219,7 +218,6 @@ describe("AiService OpenCode branch", () => {
                 }),
             );
             const nativeAi = createNativeAi({
-                keepTrackedFile,
                 prepareSession,
                 sendPrompt,
             });
@@ -251,7 +249,6 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-opencode",
             });
             await keepPromise;
-            expect(keepTrackedFile).not.toHaveBeenCalled();
 
             const sendPromise = service.sendPrompt(
                 {
@@ -315,25 +312,8 @@ describe("AiService OpenCode branch", () => {
                         updatedAt: "2026-06-20T00:00:00.000Z",
                     }),
             );
-            const keepTrackedFile = vi.fn<
-                NonNullable<NativeAiGateway["keepTrackedFile"]>
-            >(({ context }) =>
-                Promise.resolve({
-                    ownerWindowId: context.ownerWindowId,
-                    snapshot: {
-                        ...context.snapshot,
-                        trackedFiles: [],
-                        updatedAt: "2026-06-20T00:00:01.000Z",
-                    },
-                }),
-            );
-            const recordReviewDiffs = vi.fn<
-                NonNullable<NativeAiGateway["recordReviewDiffs"]>
-            >(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
-                keepTrackedFile,
                 prepareSession,
-                recordReviewDiffs,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -420,8 +400,6 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-opencode",
                 updatedAt: "2026-06-20T00:00:02.000Z",
             });
-
-            expect(recordReviewDiffs).not.toHaveBeenCalled();
             const latestReviewActionLog = onSessionSnapshot.mock.calls
                 .map(([, update]) =>
                     update.kind === "snapshot"
@@ -480,22 +458,7 @@ describe("AiService OpenCode branch", () => {
                 path: "cuento.md",
                 toolCallId: "tool-accepted-edit",
             });
-            const recordReviewDiffs = vi.fn<
-                NonNullable<NativeAiGateway["recordReviewDiffs"]>
-            >(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
-                keepTrackedFile: vi.fn<
-                    NonNullable<NativeAiGateway["keepTrackedFile"]>
-                >(({ context }) =>
-                    Promise.resolve({
-                        ownerWindowId: context.ownerWindowId,
-                        snapshot: {
-                            ...context.snapshot,
-                            trackedFiles: [],
-                            updatedAt: "2026-06-20T00:00:01.000Z",
-                        },
-                    }),
-                ),
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -511,7 +474,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                recordReviewDiffs,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -597,8 +559,6 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-opencode",
                 updatedAt: "2026-06-20T00:00:02.000Z",
             });
-
-            expect(recordReviewDiffs).not.toHaveBeenCalled();
             const latestSnapshot = service.getLiveSessionSnapshotForWindow(
                 "window-1",
                 "session-opencode",
@@ -627,22 +587,7 @@ describe("AiService OpenCode branch", () => {
                 path: "cuento.md",
                 toolCallId: "tool-expired-edit",
             });
-            const recordReviewDiffs = vi.fn<
-                NonNullable<NativeAiGateway["recordReviewDiffs"]>
-            >(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
-                keepTrackedFile: vi.fn<
-                    NonNullable<NativeAiGateway["keepTrackedFile"]>
-                >(({ context }) =>
-                    Promise.resolve({
-                        ownerWindowId: context.ownerWindowId,
-                        snapshot: {
-                            ...context.snapshot,
-                            trackedFiles: [],
-                            updatedAt: "2026-06-20T00:00:01.000Z",
-                        },
-                    }),
-                ),
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -658,7 +603,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                recordReviewDiffs,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -747,8 +691,6 @@ describe("AiService OpenCode branch", () => {
                 updatedAt: "2026-06-20T00:01:02.000Z",
             });
             vi.useRealTimers();
-
-            expect(recordReviewDiffs).not.toHaveBeenCalled();
             const latestSnapshot = service.getLiveSessionSnapshotForWindow(
                 "window-1",
                 "session-opencode",
@@ -780,22 +722,7 @@ describe("AiService OpenCode branch", () => {
                 previousPath: "old.md",
                 toolCallId: "tool-accepted-move",
             });
-            const recordReviewDiffs = vi.fn<
-                NonNullable<NativeAiGateway["recordReviewDiffs"]>
-            >(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
-                keepTrackedFile: vi.fn<
-                    NonNullable<NativeAiGateway["keepTrackedFile"]>
-                >(({ context }) =>
-                    Promise.resolve({
-                        ownerWindowId: context.ownerWindowId,
-                        snapshot: {
-                            ...context.snapshot,
-                            trackedFiles: [],
-                            updatedAt: "2026-06-20T00:00:01.000Z",
-                        },
-                    }),
-                ),
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -811,7 +738,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                recordReviewDiffs,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -897,8 +823,6 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-opencode",
                 updatedAt: "2026-06-20T00:00:02.000Z",
             });
-
-            expect(recordReviewDiffs).not.toHaveBeenCalled();
             const latestSnapshot = service.getLiveSessionSnapshotForWindow(
                 "window-1",
                 "session-opencode",
@@ -940,18 +864,6 @@ describe("AiService OpenCode branch", () => {
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
             const nativeAi = createNativeAi({
-                keepTrackedFile: vi.fn<
-                    NonNullable<NativeAiGateway["keepTrackedFile"]>
-                >(({ context }) =>
-                    Promise.resolve({
-                        ownerWindowId: context.ownerWindowId,
-                        snapshot: {
-                            ...context.snapshot,
-                            trackedFiles: [],
-                            updatedAt: "2026-06-20T00:00:01.000Z",
-                        },
-                    }),
-                ),
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -1120,22 +1032,7 @@ describe("AiService OpenCode branch", () => {
                 path: "cuento.md",
                 version: 2,
             });
-            const reconcileTrackedFiles = vi.fn(() =>
-                Promise.resolve([trackedFile]),
-            );
             const nativeAi = createNativeAi({
-                keepTrackedFile: vi.fn<
-                    NonNullable<NativeAiGateway["keepTrackedFile"]>
-                >(({ context }) =>
-                    Promise.resolve({
-                        ownerWindowId: context.ownerWindowId,
-                        snapshot: {
-                            ...context.snapshot,
-                            trackedFiles: [],
-                            updatedAt: "2026-06-20T00:00:01.000Z",
-                        },
-                    }),
-                ),
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -1151,7 +1048,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                reconcileTrackedFiles,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -1217,10 +1113,6 @@ describe("AiService OpenCode branch", () => {
                 status: "idle",
                 updatedAt: "2026-06-20T00:00:02.000Z",
             });
-
-            await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
-            });
             const latestSnapshot = service.getLiveSessionSnapshotForWindow(
                 "window-1",
                 "session-opencode",
@@ -1254,18 +1146,6 @@ describe("AiService OpenCode branch", () => {
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
             const nativeAi = createNativeAi({
-                keepTrackedFile: vi.fn<
-                    NonNullable<NativeAiGateway["keepTrackedFile"]>
-                >(({ context }) =>
-                    Promise.resolve({
-                        ownerWindowId: context.ownerWindowId,
-                        snapshot: {
-                            ...context.snapshot,
-                            trackedFiles: [],
-                            updatedAt: "2026-06-20T00:00:01.000Z",
-                        },
-                    }),
-                ),
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -1336,9 +1216,6 @@ describe("AiService OpenCode branch", () => {
         try {
             const binaryPath = writeExecutable(tempDir, "opencode");
             process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
-            const recordReviewDiffs = vi.fn<
-                NonNullable<NativeAiGateway["recordReviewDiffs"]>
-            >(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
@@ -1349,7 +1226,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                recordReviewDiffs,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -1457,8 +1333,6 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-opencode",
                 updatedAt: "2026-06-20T00:00:02.000Z",
             });
-
-            expect(recordReviewDiffs).not.toHaveBeenCalled();
             expect(
                 service.getLiveSessionSnapshotForWindow(
                     "window-1",
@@ -1483,20 +1357,7 @@ describe("AiService OpenCode branch", () => {
                 path: "cuento.md",
                 version: 2,
             });
-            const keepTrackedFile = vi.fn<
-                NonNullable<NativeAiGateway["keepTrackedFile"]>
-            >(({ context }) =>
-                Promise.resolve({
-                    ownerWindowId: context.ownerWindowId,
-                    snapshot: {
-                        ...context.snapshot,
-                        trackedFiles: [],
-                        updatedAt: "2026-06-20T00:00:01.000Z",
-                    },
-                }),
-            );
             const nativeAi = createNativeAi({
-                keepTrackedFile,
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -1542,8 +1403,6 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-opencode",
                 trackedFileId: trackedFile.identityKey,
             });
-
-            expect(keepTrackedFile).not.toHaveBeenCalled();
             const latestSnapshot = service.getLiveSessionSnapshotForWindow(
                 "window-1",
                 "session-opencode",
@@ -1577,20 +1436,7 @@ describe("AiService OpenCode branch", () => {
                 path: "cuento.md",
                 version: 2,
             });
-            const keepTrackedFile = vi.fn<
-                NonNullable<NativeAiGateway["keepTrackedFile"]>
-            >(({ context }) =>
-                Promise.resolve({
-                    ownerWindowId: context.ownerWindowId,
-                    snapshot: {
-                        ...context.snapshot,
-                        trackedFiles: [trackedFile],
-                        updatedAt: "2026-06-20T00:00:01.000Z",
-                    },
-                }),
-            );
             const nativeAi = createNativeAi({
-                keepTrackedFile,
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -1636,8 +1482,6 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-opencode",
                 trackedFileId: trackedFile.identityKey,
             });
-
-            expect(keepTrackedFile).not.toHaveBeenCalled();
             const latestSnapshot = service.getLiveSessionSnapshotForWindow(
                 "window-1",
                 "session-opencode",
@@ -1770,19 +1614,10 @@ describe("AiService OpenCode branch", () => {
                 path: "cuento.md",
                 version: 2,
             });
-            const keepTrackedFile = vi.fn<
-                NonNullable<NativeAiGateway["keepTrackedFile"]>
-            >(() =>
-                Promise.resolve({
-                    ownerWindowId: "window-1",
-                    snapshot: createSessionSnapshot(),
-                }),
-            );
             const rejectTrackedFile = vi.fn<
                 NonNullable<NativeAiGateway["rejectTrackedFile"]>
             >(() => Promise.reject(new Error("native drift")));
             const nativeAi = createNativeAi({
-                keepTrackedFile,
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -1848,8 +1683,6 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-opencode",
                 trackedFileId: trackedFile.identityKey,
             });
-
-            expect(keepTrackedFile).not.toHaveBeenCalled();
             const latestSnapshot = service.getLiveSessionSnapshotForWindow(
                 "window-1",
                 "session-opencode",
@@ -2006,7 +1839,6 @@ describe("AiService OpenCode branch", () => {
             const binaryPath = writeExecutable(tempDir, "opencode");
             process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
             const captureReviewBaseline = vi.fn(() => Promise.resolve(true));
-            const reconcileTrackedFiles = vi.fn(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
                 captureReviewBaseline,
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
@@ -2018,7 +1850,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                reconcileTrackedFiles,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -2064,8 +1895,6 @@ describe("AiService OpenCode branch", () => {
                 },
                 "window-1",
             );
-
-            expect(reconcileTrackedFiles).not.toHaveBeenCalled();
             expect(captureReviewBaseline).toHaveBeenCalledTimes(2);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
@@ -2242,18 +2071,6 @@ describe("AiService OpenCode branch", () => {
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
             const nativeAi = createNativeAi({
-                keepTrackedFileHunks: vi.fn<
-                    NonNullable<NativeAiGateway["keepTrackedFileHunks"]>
-                >(({ context }) =>
-                    Promise.resolve({
-                        ownerWindowId: context.ownerWindowId,
-                        snapshot: {
-                            ...context.snapshot,
-                            trackedFiles: [remainingTrackedFile],
-                            updatedAt: "2026-06-20T00:00:01.000Z",
-                        },
-                    }),
-                ),
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -2629,62 +2446,6 @@ describe("AiService OpenCode branch", () => {
             const serviceRef: { current: AiService | null } = {
                 current: null,
             };
-            const trackedReviewFiles: readonly AiTrackedFile[] = [
-                {
-                    currentText: "export const value = 2;\n",
-                    diffBase: "export const value = 1;\n",
-                    hunks: [],
-                    identityKey: "native:session-opencode:src/app.ts",
-                    isText: true,
-                    kind: "update",
-                    newText: "export const value = 2;\n",
-                    oldText: "export const value = 1;\n",
-                    path: "src/app.ts",
-                    previousPath: null,
-                    reviewState: "pending",
-                    reversible: true,
-                    sessionId: "session-opencode",
-                    toolCallId: null,
-                    updatedAt: "2026-06-20T00:00:02.000Z",
-                    version: 1,
-                },
-                {
-                    currentText: "export const restored = false;\n",
-                    diffBase: "export const restored = true;\n",
-                    hunks: [],
-                    identityKey: "native:session-opencode:src/restored.ts",
-                    isText: true,
-                    kind: "update",
-                    newText: "export const restored = false;\n",
-                    oldText: "export const restored = true;\n",
-                    path: "src/restored.ts",
-                    previousPath: null,
-                    reviewState: "pending",
-                    reversible: true,
-                    sessionId: "session-opencode",
-                    toolCallId: null,
-                    updatedAt: "2026-06-20T00:00:02.000Z",
-                    version: 1,
-                },
-                {
-                    currentText: "",
-                    diffBase: "temporary local note\n",
-                    hunks: [],
-                    identityKey: "native:session-opencode:scratch.txt",
-                    isText: true,
-                    kind: "delete",
-                    newText: null,
-                    oldText: "temporary local note\n",
-                    path: "scratch.txt",
-                    previousPath: null,
-                    reviewState: "pending",
-                    reversible: true,
-                    sessionId: "session-opencode",
-                    toolCallId: null,
-                    updatedAt: "2026-06-20T00:00:02.000Z",
-                    version: 1,
-                },
-            ];
             const nativeAi = createNativeAi({
                 cancelSession: vi.fn(),
                 close: vi.fn(),
@@ -2741,9 +2502,6 @@ describe("AiService OpenCode branch", () => {
                         stopReason: "accepted",
                     });
                 }),
-                reconcileTrackedFiles: vi.fn(() =>
-                    Promise.resolve(trackedReviewFiles),
-                ),
                 renameSession: vi.fn(),
                 setSessionConfigOption: vi.fn(),
                 setSessionMode: vi.fn(),
@@ -3242,7 +3000,6 @@ describe("AiService OpenCode branch", () => {
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
-            const reconcileTrackedFiles = vi.fn(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
@@ -3254,7 +3011,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                reconcileTrackedFiles,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -3303,7 +3059,6 @@ describe("AiService OpenCode branch", () => {
             });
 
             await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
                 const updates = onSessionSnapshot.mock.calls.map(
                     ([, update]) => update,
                 );
@@ -3596,9 +3351,7 @@ describe("AiService OpenCode branch", () => {
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
-            const keepTrackedFile = vi.fn();
             const nativeAi = createNativeAi({
-                keepTrackedFile,
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
                         Promise.resolve({
@@ -3658,7 +3411,6 @@ describe("AiService OpenCode branch", () => {
             expect(fs.readFileSync(editedPath, "utf8")).toBe(
                 "agent + user\n",
             );
-            expect(keepTrackedFile).not.toHaveBeenCalled();
             const latestTrackedFiles = onSessionSnapshot.mock.calls
                 .map(([, update]) =>
                     update.kind === "snapshot"
@@ -3791,10 +3543,6 @@ describe("AiService OpenCode branch", () => {
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
-            const reconcileTrackedFiles = vi.fn(() => Promise.resolve([]));
-            const recordReviewDiffs = vi.fn<
-                NonNullable<NativeAiGateway["recordReviewDiffs"]>
-            >(() => Promise.resolve([]));
             const rejectTrackedFile = vi.fn();
             const nativeAi = createNativeAi({
                 captureReviewBaseline: vi.fn(() => Promise.resolve(false)),
@@ -3807,8 +3555,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                reconcileTrackedFiles,
-                recordReviewDiffs,
                 rejectTrackedFile,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
@@ -3910,8 +3656,6 @@ describe("AiService OpenCode branch", () => {
                     ],
                 }),
             ]);
-            expect(recordReviewDiffs).not.toHaveBeenCalled();
-            expect(reconcileTrackedFiles).not.toHaveBeenCalled();
 
             service.handleNativeSessionEvent("window-1", {
                 conflicts: [],
@@ -3965,7 +3709,6 @@ describe("AiService OpenCode branch", () => {
             const editedPath = path.join(tempDir, "local.ts");
             const binaryPath = writeExecutable(tempDir, "opencode");
             process.env.OPENCODE_API_KEY = "test-opencode-key";
-            const reconcileTrackedFiles = vi.fn(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
@@ -3976,7 +3719,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                reconcileTrackedFiles,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -4032,7 +3774,6 @@ describe("AiService OpenCode branch", () => {
             });
 
             await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
                 const latestSnapshot = service.getLiveSessionSnapshotForWindow(
                     "window-1",
                     "session-opencode",
@@ -4063,9 +3804,6 @@ describe("AiService OpenCode branch", () => {
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
-            const recordReviewDiffs = vi.fn<
-                NonNullable<NativeAiGateway["recordReviewDiffs"]>
-            >(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
                 captureReviewBaseline: vi.fn(() => Promise.resolve(false)),
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
@@ -4077,7 +3815,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                recordReviewDiffs,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -4180,7 +3917,6 @@ describe("AiService OpenCode branch", () => {
                     reviewState: "pending",
                 }),
             ]);
-            expect(recordReviewDiffs).not.toHaveBeenCalled();
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -4194,9 +3930,6 @@ describe("AiService OpenCode branch", () => {
             const editedPath = path.join(tempDir, "child.ts");
             const binaryPath = writeExecutable(tempDir, "opencode");
             process.env.OPENCODE_API_KEY = "test-opencode-key";
-            const recordReviewDiffs = vi.fn<
-                NonNullable<NativeAiGateway["recordReviewDiffs"]>
-            >(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
@@ -4207,7 +3940,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                recordReviewDiffs,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -4291,8 +4023,6 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-parent:subagent:runtime-child",
                 updatedAt: "2026-06-20T00:00:02.000Z",
             });
-
-            expect(recordReviewDiffs).not.toHaveBeenCalled();
             const childSnapshot = service.getLiveSessionSnapshotForWindow(
                 "window-1",
                 "session-parent:subagent:runtime-child",
@@ -4481,13 +4211,6 @@ describe("AiService OpenCode branch", () => {
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
-            const trackedFile = createTrackedFile({
-                path: "Fliege font.md",
-                sessionId: "session-opencode",
-            });
-            const reconcileTrackedFiles = vi.fn(() =>
-                Promise.resolve([trackedFile]),
-            );
             const nativeAi = createNativeAi({
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
@@ -4498,7 +4221,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                reconcileTrackedFiles,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -4595,8 +4317,6 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-opencode",
                 updatedAt: "2026-06-20T00:00:01.000Z",
             });
-
-            expect(reconcileTrackedFiles).not.toHaveBeenCalled();
             expect(
                 onSessionSnapshot.mock.calls
                     .map(([, update]) =>
@@ -4628,7 +4348,6 @@ describe("AiService OpenCode branch", () => {
             });
 
             await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
                 expect(
                     onSessionSnapshot.mock.calls.some(([, update]) =>
                         update.kind === "patch" &&
@@ -4652,7 +4371,6 @@ describe("AiService OpenCode branch", () => {
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
-            const reconcileTrackedFiles = vi.fn(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
@@ -4663,7 +4381,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                reconcileTrackedFiles,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -4749,7 +4466,6 @@ describe("AiService OpenCode branch", () => {
             });
 
             await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
                 const latestTrackedFiles = onSessionSnapshot.mock.calls
                     .map(([, update]) =>
                         update.kind === "snapshot"
@@ -4779,7 +4495,6 @@ describe("AiService OpenCode branch", () => {
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
-            const reconcileTrackedFiles = vi.fn(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
@@ -4790,7 +4505,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                reconcileTrackedFiles,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -4837,10 +4551,6 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-opencode",
                 status: "idle",
                 updatedAt: "2026-06-20T00:00:01.000Z",
-            });
-
-            await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
             });
 
             service.handleNativeSessionEvent("window-1", {
@@ -4912,7 +4622,6 @@ describe("AiService OpenCode branch", () => {
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
-            const reconcileTrackedFiles = vi.fn(() => Promise.resolve([]));
             const nativeAi = createNativeAi({
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
@@ -4923,7 +4632,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                reconcileTrackedFiles,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -5016,7 +4724,6 @@ describe("AiService OpenCode branch", () => {
                         reviewState: "pending",
                     }),
                 ]);
-                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
             });
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
@@ -5036,15 +4743,6 @@ describe("AiService OpenCode branch", () => {
             process.env.OPENCODE_API_KEY = "test-opencode-key";
             const onSessionSnapshot =
                 vi.fn<(ownerWindowId: string, update: AiSessionUpdate) => void>();
-            let resolveReconcile!: (
-                trackedFiles: readonly AiTrackedFile[],
-            ) => void;
-            const reconcilePromise = new Promise<readonly AiTrackedFile[]>(
-                (resolve) => {
-                    resolveReconcile = resolve;
-                },
-            );
-            const reconcileTrackedFiles = vi.fn(() => reconcilePromise);
             const nativeAi = createNativeAi({
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
@@ -5055,7 +4753,6 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                reconcileTrackedFiles,
                 sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
                     Promise.resolve({
                         sessionId: input.sessionId,
@@ -5103,9 +4800,6 @@ describe("AiService OpenCode branch", () => {
                 status: "idle",
                 updatedAt: "2026-06-20T00:00:01.000Z",
             });
-            await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
-            });
 
             const externalPath = path.join(additionalRoot, "External.md");
             service.handleNativeSessionEvent("window-1", {
@@ -5144,8 +4838,6 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-opencode",
                 updatedAt: "2026-06-20T00:00:02.000Z",
             });
-            resolveReconcile([]);
-
             await waitForAssertion(() => {
                 const updates = onSessionSnapshot.mock.calls.map(
                     ([, update]) => update,
@@ -5296,8 +4988,6 @@ function createNativeAi(
         loadSessionSnapshot: vi.fn(() => Promise.resolve(null)),
         loadSessionTranscriptPage: vi.fn(() => Promise.resolve(null)),
         prepareSession: vi.fn(),
-        recordReviewDiffs: vi.fn(() => Promise.resolve([])),
-        reconcileTrackedFiles: vi.fn(() => Promise.resolve([])),
         renameSession: vi.fn(),
         respondPermission: vi.fn(),
         respondUserInput: vi.fn(),

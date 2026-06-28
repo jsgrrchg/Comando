@@ -127,7 +127,7 @@ describe("AiReviewActionLog single-store review state", () => {
         const state = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
             [createDiff()],
-            liveContext({ origin: "history" }),
+            liveContext({ origin: "replay" }),
         );
         expect(deriveTrackedFilesFromActionLog(state)).toEqual([]);
     });
@@ -308,7 +308,7 @@ describe("AiReviewActionLog accept/reject never re-proposes resolved work", () =
         );
         const replay = consolidateReviewDiffs(accepted, [createDiff()], {
             ...liveContext(),
-            origin: "history",
+            origin: "replay",
         });
         expect(deriveTrackedFilesFromActionLog(replay)).toEqual([]);
     });

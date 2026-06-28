@@ -17,7 +17,6 @@ import type {
 import {
     createReviewActionLogFromTrackedFiles,
     deriveTrackedFilesFromActionLog,
-    type AiReviewActionLogState,
 } from "@shared/ai-review-action-log";
 
 import { AI_SESSION_BUSY_MESSAGE } from "@shared/ai-errors";
@@ -105,20 +104,6 @@ function createTrackedFile(
         reversible: true,
         sessionId: TAB.sessionId,
         toolCallId: "tool-1",
-        updatedAt: "2026-04-14T00:00:00.000Z",
-        ...overrides,
-    };
-}
-
-function createReviewActionLog(
-    overrides: Partial<AiReviewActionLogState> = {},
-): AiReviewActionLogState {
-    return {
-        activeWorkCycleId: "cycle-1",
-        fileOrder: [],
-        schemaVersion: 2,
-        sessionId: TAB.sessionId,
-        trackedFilesByIdentityKey: {},
         updatedAt: "2026-04-14T00:00:00.000Z",
         ...overrides,
     };
