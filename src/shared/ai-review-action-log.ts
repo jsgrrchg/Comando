@@ -223,15 +223,22 @@ function updateTrackedFileWithDiff(
     // moves. This is what keeps accepted work (folded into diffBase) from
     // resurfacing when the runtime re-emits against its stale session baseline.
     const diffBase = getTrackedFileDiffBase(file);
-    const currentText = diff.kind === "delete" ? "" : (diff.newText ?? "");
+    // The retained log entry is the source of truth for whether the baseline
+    // exists. An accepted create has a real baseline now, so later changes must
+    // reject back to that text instead of being treated as a new create to delete.
+    const baselineExists = trackedFileBaseExists(file);
+    const currentExists = diff.kind !== "delete" && diff.newText !== null;
+    const currentText = currentExists ? (diff.newText ?? "") : "";
     const hunks = computeDiffHunks(diffBase, currentText, diff.path);
-    const kind =
-        diff.kind === "delete"
-            ? "delete"
-            : file.kind === "delete" &&
-                (diff.kind === "update" || diff.kind === "move")
-              ? "update"
-              : file.kind;
+    const oldText = baselineExists ? diffBase : null;
+    const newText = currentExists ? currentText : null;
+    const previousPath = normalizeTrackedPreviousPath(
+        diff.path,
+        diff.path !== file.path
+            ? (diff.previousPath ?? file.previousPath)
+            : file.previousPath,
+    );
+    const kind = inferTrackedFileKind(previousPath, oldText, newText);
     return {
         ...file,
         conflict: undefined,
@@ -239,20 +246,51 @@ function updateTrackedFileWithDiff(
         diffBase,
         hunks,
         kind,
-        newText: diff.newText,
+        newText,
+        oldText,
         path: diff.path,
         // Only adopt the diff's previous path on a genuine move (the path
         // actually changes). A late move diff whose target already matches the
         // tracked path is stale — keep the file's own (resolved) rename state.
-        previousPath:
-            diff.path !== file.path
-                ? (diff.previousPath ?? file.previousPath)
-                : file.previousPath,
+        previousPath,
         reviewState: "pending",
+        reversible: kind === "create" || oldText !== null,
         toolCallId: context.toolCallId ?? file.toolCallId,
         updatedAt,
         version: nextVersion(file),
     };
+}
+
+function trackedFileBaseExists(file: AiTrackedFile): boolean {
+    return file.oldText !== null;
+}
+
+function trackedFileCurrentExists(file: AiTrackedFile): boolean {
+    return file.kind !== "delete" && file.newText !== null;
+}
+
+function inferTrackedFileKind(
+    previousPath: string | null,
+    oldText: string | null,
+    newText: string | null,
+): AiTrackedFile["kind"] {
+    if (previousPath) {
+        return "move";
+    }
+    if (oldText === null) {
+        return "create";
+    }
+    if (newText === null) {
+        return "delete";
+    }
+    return "update";
+}
+
+function normalizeTrackedPreviousPath(
+    path: string,
+    previousPath: string | null,
+): string | null {
+    return previousPath !== null && previousPath !== path ? previousPath : null;
 }
 
 // --- Derivation ------------------------------------------------------------
@@ -401,16 +439,26 @@ function retainedResolvedFile(
         decision === "keep"
             ? getTrackedFileCurrentText(file)
             : getTrackedFileDiffBase(file);
-    const isEmpty = settledText.length === 0;
+    const settledExists =
+        decision === "keep"
+            ? trackedFileCurrentExists(file)
+            : trackedFileBaseExists(file);
+    // Hidden resolved entries still feed later diff consolidation. Preserve
+    // existence explicitly so an accepted create becomes an existing baseline,
+    // while a rejected create remains an absent baseline.
+    const textSide = settledExists ? settledText : null;
+    const kind = inferTrackedFileKind(null, textSide, textSide);
     return {
         ...file,
         currentText: settledText,
         diffBase: settledText,
         hunks: [],
-        newText: file.kind === "delete" ? null : isEmpty ? null : settledText,
-        oldText: isEmpty ? null : settledText,
+        kind,
+        newText: textSide,
+        oldText: textSide,
         previousPath: null,
         reviewState: "pending",
+        reversible: kind === "create" || textSide !== null,
         updatedAt: new Date().toISOString(),
         version: nextVersion(file),
     };

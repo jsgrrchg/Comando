@@ -274,6 +274,105 @@ describe("AiReviewActionLog accept/reject never re-proposes resolved work", () =
         expect(file.currentText).toBe("after\nmore\n");
     });
 
+    it("shows later edits to an accepted create as updates", () => {
+        const firstTurn = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [
+                createDiff({
+                    kind: "create",
+                    newText: "created\n",
+                    oldText: null,
+                    path: "src/created.ts",
+                }),
+            ],
+            liveContext(),
+        );
+        const created = deriveOnlyTrackedFile(firstTurn);
+        expect(created.kind).toBe("create");
+
+        const accepted = keepReviewFile(firstTurn, reviewTarget(created));
+        const retained =
+            accepted.trackedFilesByIdentityKey[created.identityKey];
+        expect(retained).toMatchObject({
+            currentText: "created\n",
+            diffBase: "created\n",
+            kind: "update",
+            newText: "created\n",
+            oldText: "created\n",
+        });
+        expect(deriveTrackedFilesFromActionLog(accepted)).toEqual([]);
+
+        const laterTurn = consolidateReviewDiffs(
+            accepted,
+            [
+                createDiff({
+                    kind: "create",
+                    newText: "created\nedited\n",
+                    oldText: null,
+                    path: "src/created.ts",
+                }),
+            ],
+            liveContext({ toolCallId: "tool-2", workCycleId: "cycle-2" }),
+        );
+        const file = deriveOnlyTrackedFile(laterTurn);
+        expect(file).toMatchObject({
+            currentText: "created\nedited\n",
+            diffBase: "created\n",
+            kind: "update",
+            newText: "created\nedited\n",
+            oldText: "created\n",
+        });
+    });
+
+    it("keeps later work after a rejected create as a create", () => {
+        const firstTurn = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [
+                createDiff({
+                    kind: "create",
+                    newText: "created\n",
+                    oldText: null,
+                    path: "src/created.ts",
+                }),
+            ],
+            liveContext(),
+        );
+        const created = deriveOnlyTrackedFile(firstTurn);
+
+        const rejected = rejectReviewFile(firstTurn, reviewTarget(created));
+        const retained =
+            rejected.trackedFilesByIdentityKey[created.identityKey];
+        expect(retained).toMatchObject({
+            currentText: "",
+            diffBase: "",
+            kind: "create",
+            newText: null,
+            oldText: null,
+        });
+        expect(deriveTrackedFilesFromActionLog(rejected)).toEqual([]);
+
+        const laterTurn = consolidateReviewDiffs(
+            rejected,
+            [
+                createDiff({
+                    kind: "create",
+                    newText: "created again\n",
+                    oldText: null,
+                    path: "src/created.ts",
+                }),
+            ],
+            liveContext({ toolCallId: "tool-2", workCycleId: "cycle-2" }),
+        );
+        const file = deriveOnlyTrackedFile(laterTurn);
+        expect(file).toMatchObject({
+            currentText: "created again\n",
+            diffBase: "",
+            kind: "create",
+            newText: "created again\n",
+            oldText: null,
+        });
+    });
+
     it("hides a rejected file and stays hidden once reverted on disk", () => {
         const firstTurn = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
