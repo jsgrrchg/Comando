@@ -29,7 +29,6 @@ import {
     nativeAiCatalogPatchToIpc,
     nativeAiEventToIpc,
     nativeAiRuntimeStatusToIpc,
-    nativeReviewCommandTrackedFilesToIpc,
     nativeReviewTrackedFileToIpc,
     type NativeAiCatalogPatch,
     type NativeAiCancelSessionOutput,
@@ -38,7 +37,6 @@ import {
     type NativeAiLaunchRuntimeAuthOutput,
     type NativeAiReviewCaptureOutput,
     type NativeAiReviewCommandOutput,
-    type NativeAiReviewRecordDiffsInput,
     type NativeAiRuntimeSessionMapping,
     type NativeAiSessionSnapshot,
     type NativeAiSessionTranscriptPage,
@@ -56,10 +54,10 @@ import type {
     AiRuntimeSessionMapping,
     NativeAiGateway as NativeAiGatewayContract,
     NativeAiPrepareSessionRpcInput,
-    NativeAiReviewDiffsRpcInput,
     NativeAiRuntimeSettingsRpcInput,
     NativeAiSendPromptRpcInput,
 } from "@main/ai/contracts";
+import { isAiTrackedFileUnresolved } from "@shared/ai-tracked-file";
 import { serializeComposerPartsForDisplay } from "@main/ai/session-core";
 import { NativeBackendError } from "./client";
 import type { NativeBackendRequester } from "./persistence";
@@ -67,14 +65,6 @@ import type { NativeBackendRequester } from "./persistence";
 type NativeAiClient = NativeBackendRequester & {
     onEvent(listener: (event: NativeBackendEvent) => void): () => void;
 };
-
-type NativeReviewMutationCommand =
-    | "ai_keep_all_tracked_files"
-    | "ai_keep_tracked_file"
-    | "ai_keep_tracked_file_hunks"
-    | "ai_reject_all_tracked_files"
-    | "ai_reject_tracked_file"
-    | "ai_reject_tracked_file_hunks";
 
 export interface NativeAiGatewayOptions {
     readonly client: NativeAiClient;
@@ -213,6 +203,10 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         return this.#reviewEnabled;
     }
 
+    shouldHandleReviewDiskMutations(): boolean {
+        return this.#reviewEnabled;
+    }
+
     async notifyFileBuffer(input: FileBufferNotificationInput): Promise<void> {
         if (!this.#reviewEnabled) {
             return;
@@ -234,132 +228,61 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         return output.captured === true;
     }
 
-    async recordReviewDiffs(
-        input: NativeAiReviewDiffsRpcInput,
-    ): Promise<readonly AiTrackedFile[]> {
-        if (!this.#reviewEnabled || input.diffs.length === 0) {
-            return [];
-        }
-        const output = await this.#client.request<NativeAiReviewCommandOutput>(
-            "ai_record_review_diffs",
-            {
-                diffs: input.diffs.map((diff) => ({
-                    isText: diff.isText,
-                    newText: diff.newText,
-                    oldText: diff.oldText,
-                    path: diff.path,
-                    previousPath: diff.previousPath,
-                })),
-                reviewRoot: input.reviewRoot ?? null,
-                sessionId: input.sessionId,
-                toolCallId: input.toolCallId,
-                updatedAt: input.updatedAt,
-            } satisfies NativeAiReviewRecordDiffsInput,
-        );
-        return nativeReviewCommandTrackedFiles(output);
-    }
-
-    async reconcileTrackedFiles(sessionId: string): Promise<readonly AiTrackedFile[]> {
-        if (!this.#reviewEnabled) {
-            return [];
-        }
-        const output = await this.#client.request<NativeAiReviewCommandOutput>(
-            "ai_reconcile_tracked_files",
-            { sessionId },
-        );
-        return nativeReviewCommandTrackedFiles(output);
-    }
-
-    async loadReviewState(sessionId: string): Promise<readonly AiTrackedFile[]> {
-        if (!this.#reviewEnabled) {
-            return [];
-        }
-        const output = await this.#loadReviewStateOutput(sessionId);
-        return nativeReviewCommandTrackedFiles(output);
-    }
-
-    async #loadReviewStateOutput(
-        sessionId: string,
-    ): Promise<NativeAiReviewCommandOutput> {
-        return await this.#client.request<NativeAiReviewCommandOutput>(
-            "ai_load_review_state",
-            { sessionId },
-        );
-    }
-
-    async keepTrackedFile(
-        input: AiReviewSessionRpcInput<AiTrackedFileMutationInput>,
-    ): Promise<AiReviewMutationResult> {
-        return await this.#runReviewMutation(input, "ai_keep_tracked_file", {
-            path: input.input.path,
-            ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
-        });
-    }
-
     async rejectTrackedFile(
         input: AiReviewSessionRpcInput<AiTrackedFileMutationInput>,
     ): Promise<AiReviewMutationResult> {
-        return await this.#runReviewMutation(input, "ai_reject_tracked_file", {
-            path: input.input.path,
-            ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
+        const trackedFile = nativeReviewTrackedFileForInput(input);
+        await this.#requestReviewDiskMutation(input, "ai_reject_tracked_file", {
+            expectedVersion:
+                input.input.expectedVersion ?? trackedFile.version ?? null,
+            trackedFile,
         });
-    }
-
-    async keepTrackedFileHunks(
-        input: AiReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
-    ): Promise<AiReviewMutationResult> {
-        return await this.#runReviewMutation(input, "ai_keep_tracked_file_hunks", {
-            hunkIds: input.input.hunkIds,
-            path: input.input.path,
-            ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
-        });
+        return reviewMutationResultFromContext(input);
     }
 
     async rejectTrackedFileHunks(
         input: AiReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
     ): Promise<AiReviewMutationResult> {
-        return await this.#runReviewMutation(input, "ai_reject_tracked_file_hunks", {
+        const trackedFile = nativeReviewTrackedFileForInput(input);
+        await this.#requestReviewDiskMutation(input, "ai_reject_tracked_file_hunks", {
+            expectedVersion:
+                input.input.expectedVersion ?? trackedFile.version ?? null,
             hunkIds: input.input.hunkIds,
-            path: input.input.path,
-            ...nativeExpectedReviewVersion(input.context.snapshot, input.input.path),
+            trackedFile,
         });
-    }
-
-    async keepAllTrackedFiles(
-        input: AiReviewSessionRpcInput<string>,
-    ): Promise<AiReviewMutationResult> {
-        return await this.#runReviewMutation(input, "ai_keep_all_tracked_files", {});
+        return reviewMutationResultFromContext(input);
     }
 
     async rejectAllTrackedFiles(
         input: AiReviewSessionRpcInput<string>,
     ): Promise<AiReviewMutationResult> {
-        return await this.#runReviewMutation(input, "ai_reject_all_tracked_files", {});
+        await this.#requestReviewDiskMutation(input, "ai_reject_all_tracked_files", {
+            trackedFiles: input.context.snapshot.trackedFiles.filter(
+                isAiTrackedFileUnresolved,
+            ),
+        });
+        return reviewMutationResultFromContext(input);
     }
 
-    async #runReviewMutation<TInput>(
+    async #requestReviewDiskMutation<TInput>(
         input: AiReviewSessionRpcInput<TInput>,
-        command: NativeReviewMutationCommand,
+        command:
+            | "ai_reject_all_tracked_files"
+            | "ai_reject_tracked_file"
+            | "ai_reject_tracked_file_hunks",
         args: Record<string, unknown>,
-    ): Promise<AiReviewMutationResult> {
+    ): Promise<NativeAiReviewCommandOutput> {
         if (!this.#reviewEnabled) {
             throw new Error("Native AI review is not enabled.");
         }
-        const output = await this.#client.request<NativeAiReviewCommandOutput>(
+        return await this.#client.request<NativeAiReviewCommandOutput>(
             command,
             {
                 ...args,
+                reviewRoot: input.context.projectRoot ?? null,
                 sessionId: input.context.snapshot.sessionId,
             },
         );
-        return {
-            ownerWindowId: input.context.ownerWindowId,
-            snapshot: {
-                ...input.context.snapshot,
-                trackedFiles: nativeReviewCommandTrackedFiles(output),
-                updatedAt: output.updatedAt,
-            },
-        };
     }
 
     async listSessionHistory(
@@ -1056,25 +979,34 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 }
 
-function nativeReviewCommandTrackedFiles(
-    output: NativeAiReviewCommandOutput,
-): readonly AiTrackedFile[] {
-    return nativeReviewCommandTrackedFilesToIpc(output);
+function nativeReviewTrackedFileForInput(
+    input: AiReviewSessionRpcInput<
+        AiTrackedFileHunkMutationInput | AiTrackedFileMutationInput
+    >,
+): AiTrackedFile {
+    const trackedFile = input.input.trackedFileId
+        ? input.context.snapshot.trackedFiles.find(
+              (file) => file.identityKey === input.input.trackedFileId,
+          )
+        : input.context.snapshot.trackedFiles.find(
+              (file) =>
+                  file.path === input.input.path ||
+                  file.previousPath === input.input.path ||
+                  file.identityKey === input.input.path,
+          );
+    if (!trackedFile) {
+        throw new Error("The file to review was not found.");
+    }
+    return trackedFile;
 }
 
-function nativeExpectedReviewVersion(
-    snapshot: AiSessionSnapshot,
-    reviewPath: string,
-): { readonly expectedVersion?: number } {
-    const trackedFile = snapshot.trackedFiles.find(
-        (file) =>
-            file.path === reviewPath ||
-            file.previousPath === reviewPath ||
-            file.identityKey === reviewPath,
-    );
-    return typeof trackedFile?.version === "number"
-        ? { expectedVersion: trackedFile.version }
-        : {};
+function reviewMutationResultFromContext<TInput>(
+    input: AiReviewSessionRpcInput<TInput>,
+): AiReviewMutationResult {
+    return {
+        ownerWindowId: input.context.ownerWindowId,
+        snapshot: input.context.snapshot,
+    };
 }
 
 function nativeSummaryToSnapshot(

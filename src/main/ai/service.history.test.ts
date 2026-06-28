@@ -5,7 +5,10 @@ import type {
     AiSessionSnapshot,
     AiSessionTranscriptPage,
     AiSessionUpdate,
+    AiTrackedFile,
 } from "@shared/ipc";
+
+import { createReviewActionLogFromTrackedFiles } from "@shared/ai-review-action-log";
 
 import { AiService } from "./service";
 import type { NativeAiGateway } from "./contracts";
@@ -525,6 +528,147 @@ describe("AiService history", () => {
         expect(nativeSetSessionPinned).toHaveBeenCalled();
         expect(setSessionPinned).not.toHaveBeenCalled();
     });
+
+    it("derives live tracked files from review action log snapshots", () => {
+        const trackedFile = createTrackedFile();
+        const reviewActionLog = createReviewActionLogFromTrackedFiles(
+            "session-1",
+            [trackedFile],
+            {
+                updatedAt: "2026-04-16T12:00:00.000Z",
+            },
+        );
+        const onSessionSnapshot = vi.fn<
+            (ownerWindowId: string, update: AiSessionUpdate) => void
+        >();
+        const saveSessionSnapshot = vi.fn();
+        const service = createService({
+            onSessionSnapshot,
+            saveSessionSnapshot,
+        });
+
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSnapshot({
+                reviewActionLog,
+                trackedFiles: [],
+            }),
+        });
+
+        const savedSnapshot = saveSessionSnapshot.mock.calls.at(-1)?.[0];
+        expect(savedSnapshot).toMatchObject({
+            reviewActionLog,
+            trackedFiles: [
+                expect.objectContaining({
+                    currentText: "after\n",
+                    diffBase: "before\n",
+                    path: "src/app.ts",
+                    reviewState: "pending",
+                }),
+            ],
+        });
+        const update = onSessionSnapshot.mock.calls.at(-1)?.[1];
+        expect(update?.kind).toBe("snapshot");
+        if (update?.kind !== "snapshot") {
+            throw new Error("Expected a snapshot update.");
+        }
+        expect(update.snapshot.trackedFiles).toEqual(savedSnapshot.trackedFiles);
+    });
+
+    it("drops live legacy tracked files without a review action log", () => {
+        const trackedFile = createTrackedFile();
+        const saveSessionSnapshot = vi.fn();
+        const service = createService({
+            saveSessionSnapshot,
+        });
+
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSnapshot({
+                trackedFiles: [trackedFile],
+            }),
+        });
+
+        const savedSnapshot = saveSessionSnapshot.mock.calls.at(-1)?.[0];
+        expect(savedSnapshot).toMatchObject({
+            reviewActionLog: null,
+            trackedFiles: [],
+        });
+    });
+
+    it("does not rederive legacy tracked file patches from an old action log", () => {
+        const trackedFile = createTrackedFile();
+        const onSessionSnapshot = vi.fn<
+            (ownerWindowId: string, update: AiSessionUpdate) => void
+        >();
+        const saveSessionSnapshot = vi.fn();
+        const service = createService({
+            onSessionSnapshot,
+            saveSessionSnapshot,
+        });
+
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSnapshot({
+                trackedFiles: [trackedFile],
+            }),
+        });
+        saveSessionSnapshot.mockClear();
+        onSessionSnapshot.mockClear();
+
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "patch",
+            patch: {
+                changes: {
+                    trackedFiles: [],
+                    updatedAt: "2026-04-16T12:01:00.000Z",
+                },
+                runtimeId: "codex",
+                sessionId: "session-1",
+            },
+        });
+
+        const savedSnapshot = saveSessionSnapshot.mock.calls.at(-1)?.[0];
+        expect(savedSnapshot).toMatchObject({
+            reviewActionLog: null,
+            trackedFiles: [],
+        });
+        const update = onSessionSnapshot.mock.calls.at(-1)?.[1];
+        expect(update).toMatchObject({
+            kind: "patch",
+            patch: {
+                changes: {
+                    trackedFiles: [],
+                },
+            },
+        });
+    });
+
+    it("does not restore pending review state from persisted snapshots", async () => {
+        const trackedFile = createTrackedFile();
+        const reviewActionLog = createReviewActionLogFromTrackedFiles(
+            "session-1",
+            [trackedFile],
+            {
+                updatedAt: "2026-04-16T12:00:00.000Z",
+            },
+        );
+        const service = createService({
+            loadSessionSnapshot: vi.fn(() =>
+                createSnapshot({
+                    reviewActionLog,
+                    trackedFiles: [trackedFile],
+                }),
+            ),
+        });
+
+        const snapshot = await service.getSessionSnapshot("session-1");
+
+        expect(snapshot).toMatchObject({
+            reviewActionLog: null,
+            trackedFiles: [],
+        });
+    });
 });
 
 function createSnapshot(
@@ -557,10 +701,35 @@ function createSnapshot(
     };
 }
 
+function createTrackedFile(
+    overrides: Partial<AiTrackedFile> = {},
+): AiTrackedFile {
+    return {
+        currentText: "after\n",
+        diffBase: "before\n",
+        hunks: [],
+        identityKey: "review:session-1:src/app.ts",
+        isText: true,
+        kind: "update",
+        newText: "after\n",
+        oldText: "before\n",
+        path: "src/app.ts",
+        previousPath: null,
+        reviewState: "pending",
+        reversible: true,
+        sessionId: "session-1",
+        toolCallId: "tool-1",
+        updatedAt: "2026-04-16T12:00:00.000Z",
+        version: 1,
+        ...overrides,
+    };
+}
+
 function createService(overrides: {
     readonly deleteSession?: ReturnType<typeof vi.fn>;
     readonly loadLatestRuntimeCatalog?: ReturnType<typeof vi.fn>;
     readonly listSessionHistory?: ReturnType<typeof vi.fn>;
+    readonly loadSessionSnapshot?: ReturnType<typeof vi.fn>;
     readonly loadSessionTranscriptPage?: ReturnType<typeof vi.fn>;
     readonly onSessionSnapshot?: (
         ownerWindowId: string,
@@ -588,7 +757,7 @@ function createService(overrides: {
                 modeId: null,
                 modelId: null,
             })),
-            loadSessionSnapshot: vi.fn(() => null),
+            loadSessionSnapshot: overrides.loadSessionSnapshot ?? vi.fn(() => null),
             loadSessionTranscriptPage:
                 overrides.loadSessionTranscriptPage ?? vi.fn(() => null),
             saveRuntimeSelectionPreferenceOption: vi.fn(),

@@ -367,7 +367,7 @@ describe("toolActivityReviewModel", () => {
         expect(item?.file?.identityKey).toBe("tracked-1");
     });
 
-    it("keeps activity diffs immutable when a tracked file is matched", () => {
+    it("renders the tracked-file diff when a tracked file is matched", () => {
         const activity = createActivity({
             diffs: [
                 {
@@ -436,9 +436,42 @@ describe("toolActivityReviewModel", () => {
 
         expect(item).toBeDefined();
         expect(item?.file?.identityKey).toBe("tracked-1");
-        expect(item?.diff.hunks[0]?.id).toBe("snippet-hunk");
-        expect(item?.diff.hunks[0]?.oldStart).toBe(4);
-        expect(item?.diff.hunks[0]?.newStart).toBe(4);
+        expect(item?.diff.hunks[0]?.id).toBe("full-file-hunk");
+        expect(item?.diff.hunks[0]?.oldStart).toBe(1502);
+        expect(item?.diff.hunks[0]?.newStart).toBe(1502);
+        expect(activity.diffs[0]?.hunks[0]?.id).toBe("snippet-hunk");
+    });
+
+    it("does not show accepted cumulative activity hunks after the action log rebases pending text", () => {
+        const activity = createActivity({
+            diffs: [
+                {
+                    hunks: [],
+                    isText: true,
+                    kind: "update",
+                    newText: "A\nZ\n",
+                    oldText: "A\nfirst accepted\nsecond pending\nZ\n",
+                    path: "cuento.md",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            id: "tool-next-turn",
+        });
+        const trackedFile = createTrackedFile({
+            currentText: "A\nZ\n",
+            diffBase: "A\nsecond pending\nZ\n",
+            newText: "A\nZ\n",
+            oldText: "A\nsecond pending\nZ\n",
+            path: "cuento.md",
+            toolCallId: "tool-next-turn",
+        });
+
+        const [item] = deriveChangeReviewItems(activity, [trackedFile]);
+
+        expect(item?.diff.oldText).toBe("A\nsecond pending\nZ\n");
+        expect(item?.diff.newText).toBe("A\nZ\n");
+        expect(item?.stats.deletions).toBe(1);
     });
 
     it("marks preview-only when only activity diff exists", () => {

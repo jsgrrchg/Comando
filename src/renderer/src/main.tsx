@@ -1,6 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 
+import { initReviewEngine } from "@shared/ai-review-engine/reviewEngine";
+
 import { App } from "./App";
 import { SettingsApp } from "./SettingsApp";
 import "./styles.css";
@@ -17,6 +19,14 @@ const detectedPlatform = userAgentPlatform.startsWith("mac")
 document.documentElement.setAttribute("data-platform", detectedPlatform);
 
 document.documentElement.dataset.comandoRenderer = "booted";
+
+// The review diff/patch engine lives in Rust/WASM. Load it before mounting so
+// review computation is never invoked before the engine is ready.
+try {
+    await initReviewEngine();
+} catch (error) {
+    console.error("Failed to initialize the review engine", error);
+}
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>

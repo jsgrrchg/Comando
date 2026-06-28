@@ -197,6 +197,7 @@ function createAiSessionPatchChanges(
         "plan",
         "parentSessionId",
         "projectId",
+        "reviewActionLog",
         "runtimeSessionId",
         "status",
         "title",

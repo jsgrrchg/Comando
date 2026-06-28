@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import type {
     AiSessionClosedEvent,
+    AiSessionSnapshot,
+    AiTrackedFile,
     AiRuntimeStatus,
     PrepareAiSessionInput,
     SendAiPromptInput,
@@ -529,34 +531,6 @@ describe("NativeAiGateway", () => {
                         worktreeId: "worktree-1",
                     } as T);
                 }
-                if (command === "ai_load_review_state") {
-                    return Promise.resolve({
-                        changedFiles: [],
-                        conflicts: [],
-                        sessionId: "session-1",
-                        trackedFiles: [
-                            {
-                                currentText: "new\n",
-                                diffBase: "old\n",
-                                hunks: [],
-                                identityKey: "native:session-1::src/main.rs",
-                                isText: true,
-                                kind: "update",
-                                newText: "new\n",
-                                oldText: "old\n",
-                                path: "src/main.rs",
-                                previousPath: null,
-                                reviewState: "pending",
-                                reversible: true,
-                                sessionId: "session-1",
-                                toolCallId: null,
-                                updatedAt: "2026-06-20T00:00:02.000Z",
-                                version: 2,
-                            },
-                        ],
-                        updatedAt: "2026-06-20T00:00:02.000Z",
-                    } as T);
-                }
                 if (command === "ai_list_session_runtime_mappings") {
                     return Promise.resolve([
                         {
@@ -631,16 +605,6 @@ describe("NativeAiGateway", () => {
                         }) as T,
                     );
                 }
-                if (command === "ai_load_review_state") {
-                    return Promise.resolve({
-                        changedFiles: [],
-                        conflicts: [],
-                        sessionId: "session-1",
-                        stateFound: false,
-                        trackedFiles: [],
-                        updatedAt: "2026-06-20T00:00:03.000Z",
-                    } as T);
-                }
                 return Promise.resolve({ ok: true } as T);
             },
         );
@@ -649,9 +613,6 @@ describe("NativeAiGateway", () => {
         await expect(gateway.loadSessionSnapshot("session-1")).resolves.toMatchObject({
             sessionId: "session-1",
             trackedFiles: [],
-        });
-        expect(client.request).not.toHaveBeenCalledWith("ai_load_review_state", {
-            sessionId: "session-1",
         });
     });
 
@@ -671,16 +632,6 @@ describe("NativeAiGateway", () => {
                         }) as T,
                     );
                 }
-                if (command === "ai_load_review_state") {
-                    return Promise.resolve({
-                        changedFiles: [],
-                        conflicts: [],
-                        sessionId: "session-1",
-                        stateFound: true,
-                        trackedFiles: [],
-                        updatedAt: "2026-06-20T00:00:03.000Z",
-                    } as T);
-                }
                 return Promise.resolve({ ok: true } as T);
             },
         );
@@ -690,115 +641,67 @@ describe("NativeAiGateway", () => {
             sessionId: "session-1",
             trackedFiles: [],
         });
-        expect(client.request).not.toHaveBeenCalledWith("ai_load_review_state", {
+    });
+
+    it("rejects a tracked file through the stateless native disk executor", async () => {
+        const client = createClient();
+        const gateway = createGateway(client);
+        const trackedFile = createIpcTrackedFile({
+            path: "src/main.rs",
+            version: 2,
+        });
+        const snapshot = createIpcSnapshot({
+            trackedFiles: [trackedFile],
+        });
+
+        await expect(
+            gateway.rejectTrackedFile({
+                context: {
+                    additionalRoots: [],
+                    cwd: "/workspace/project",
+                    ownerWindowId: "window-1",
+                    projectRoot: "/workspace/project",
+                    snapshot,
+                },
+                input: {
+                    path: "src/main.rs",
+                    sessionId: "session-1",
+                },
+            }),
+        ).resolves.toMatchObject({ snapshot });
+
+        expect(client.request).toHaveBeenCalledWith("ai_reject_tracked_file", {
+            expectedVersion: 2,
+            reviewRoot: "/workspace/project",
             sessionId: "session-1",
+            trackedFile,
         });
     });
 
-    it("surfaces review conflicts over stale tracked files", async () => {
+    it("rejects all tracked files through the stateless native disk executor", async () => {
         const client = createClient();
-        client.request.mockImplementation(
-            <T = unknown>(command: string, _args?: unknown): Promise<T> => {
-                void _args;
-                if (command === "ai_reconcile_tracked_files") {
-                    return Promise.resolve({
-                        changedFiles: [],
-                        conflicts: [
-                            {
-                                externalChangeHash: "hash-1",
-                                path: "binary.bin",
-                                reason: "binary_file",
-                            },
-                        ],
-                        sessionId: "session-1",
-                        trackedFiles: [
-                            {
-                                currentText: "old pending\n",
-                                diffBase: "base\n",
-                                hunks: [],
-                                identityKey: "native:session-1::binary.bin",
-                                isText: true,
-                                kind: "update",
-                                newText: "old pending\n",
-                                oldText: "base\n",
-                                path: "binary.bin",
-                                previousPath: null,
-                                reviewState: "pending",
-                                reversible: true,
-                                sessionId: "session-1",
-                                toolCallId: null,
-                                updatedAt: "2026-06-20T00:00:01.000Z",
-                                version: 2,
-                            },
-                        ],
-                        updatedAt: "2026-06-20T00:00:02.000Z",
-                    } as T);
-                }
+        const gateway = createGateway(client);
+        const firstFile = createIpcTrackedFile({ path: "a.ts" });
+        const secondFile = createIpcTrackedFile({ path: "b.ts" });
+        const snapshot = createIpcSnapshot({
+            trackedFiles: [firstFile, secondFile],
+        });
 
-                return Promise.resolve({ ok: true } as T);
+        await gateway.rejectAllTrackedFiles({
+            context: {
+                additionalRoots: [],
+                cwd: "/workspace/project",
+                ownerWindowId: "window-1",
+                projectRoot: "/workspace/project",
+                snapshot,
             },
-        );
-        const gateway = createGateway(client);
+            input: "session-1",
+        });
 
-        await expect(gateway.reconcileTrackedFiles("session-1")).resolves.toEqual([
-            expect.objectContaining({
-                conflict: "binary_file",
-                currentText: "",
-                diffBase: "",
-                isText: false,
-                path: "binary.bin",
-                reviewState: "conflict",
-                reversible: false,
-            }),
-        ]);
-    });
-
-    it("records exact review diffs through the native backend", async () => {
-        const client = createClient();
-        const gateway = createGateway(client);
-
-        await expect(
-            gateway.recordReviewDiffs({
-                diffs: [
-                    {
-                        hunks: [],
-                        isText: true,
-                        kind: "update",
-                        newText: "new\n",
-                        oldText: "old\n",
-                        path: "src/main.rs",
-                        previousPath: null,
-                        reversible: true,
-                    },
-                ],
-                reviewRoot: "/workspace/project",
-                sessionId: "session-1",
-                toolCallId: "tool-1",
-                updatedAt: "2026-06-20T00:00:02.000Z",
-            }),
-        ).resolves.toEqual([
-            expect.objectContaining({
-                newText: "new\n",
-                oldText: "old\n",
-                path: "src/main.rs",
-                toolCallId: "tool-1",
-            }),
-        ]);
-
-        expect(client.request).toHaveBeenCalledWith("ai_record_review_diffs", {
-            diffs: [
-                {
-                    isText: true,
-                    newText: "new\n",
-                    oldText: "old\n",
-                    path: "src/main.rs",
-                    previousPath: null,
-                },
-            ],
+        expect(client.request).toHaveBeenCalledWith("ai_reject_all_tracked_files", {
             reviewRoot: "/workspace/project",
             sessionId: "session-1",
-            toolCallId: "tool-1",
-            updatedAt: "2026-06-20T00:00:02.000Z",
+            trackedFiles: [firstFile, secondFile],
         });
     });
 
@@ -981,39 +884,6 @@ function createClient() {
                 } as T);
             }
 
-            if (command === "ai_load_review_state") {
-                const args = _args as { sessionId?: string } | undefined;
-                return Promise.resolve({
-                    changedFiles: [],
-                    conflicts: [],
-                    sessionId: args?.sessionId ?? "session-1",
-                    stateFound: false,
-                    trackedFiles: [],
-                    updatedAt: "2026-06-20T00:00:00.000Z",
-                } as T);
-            }
-
-            if (command === "ai_record_review_diffs") {
-                const args = _args as {
-                    sessionId?: string;
-                    toolCallId?: string | null;
-                } | undefined;
-                return Promise.resolve({
-                    changedFiles: [],
-                    conflicts: [],
-                    sessionId: args?.sessionId ?? "session-1",
-                    stateFound: true,
-                    trackedFiles: [
-                        createNativeTrackedFile({
-                            identityKey: "tool:session-1:tool-1::src/main.rs",
-                            sessionId: args?.sessionId ?? "session-1",
-                            toolCallId: args?.toolCallId ?? null,
-                        }),
-                    ],
-                    updatedAt: "2026-06-20T00:00:02.000Z",
-                } as T);
-            }
-
             if (command === "ai_send_prompt") {
                 return Promise.resolve({
                     accepted: true,
@@ -1096,6 +966,30 @@ function createNativeTrackedFile(
         toolCallId: null,
         updatedAt: "2026-06-20T00:00:02.000Z",
         version: 1,
+        ...overrides,
+    };
+}
+
+function createIpcTrackedFile(
+    overrides: Partial<AiTrackedFile> = {},
+): AiTrackedFile {
+    return createNativeTrackedFile(overrides) as unknown as AiTrackedFile;
+}
+
+function createIpcSnapshot(
+    overrides: Partial<AiSessionSnapshot> = {},
+): AiSessionSnapshot {
+    return {
+        ...createEmptyAiSessionSnapshot({
+            projectId: "project-1",
+            runtimeId: "opencode",
+            sessionId: "session-1",
+            title: "Native session",
+            worktreeId: "worktree-1",
+        }),
+        runtimeSessionId: "runtime-session-1",
+        status: "idle",
+        updatedAt: "2026-06-20T00:00:01.000Z",
         ...overrides,
     };
 }

@@ -1,4 +1,5 @@
 import type { AppIdentity } from "@shared/app-identity";
+import type { AiReviewActionLogState } from "./ai-review-action-log";
 import type { AppTerminalSettings } from "./terminal-settings";
 import type { ChatFontFamily, EditorFontFamily } from "./typography";
 
@@ -2416,6 +2417,7 @@ export interface AiSessionSnapshot {
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
     readonly runtimeSessionId: string | null;
+    readonly reviewActionLog?: AiReviewActionLogState | null;
     readonly sessionId: string;
     readonly status: AiSessionStatus;
     readonly title: string;
@@ -2759,14 +2761,18 @@ export interface AiRuntimeAuthDisconnectInput {
 }
 
 export interface AiTrackedFileMutationInput {
+    readonly expectedVersion?: number;
     readonly path: string;
     readonly sessionId: string;
+    readonly trackedFileId?: string | null;
 }
 
 export interface AiTrackedFileHunkMutationInput {
+    readonly expectedVersion?: number;
     readonly hunkIds: readonly string[];
     readonly path: string;
     readonly sessionId: string;
+    readonly trackedFileId?: string | null;
 }
 
 export interface ComandoApi {

@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { AiSessionSnapshot } from "@shared/ipc";
+import { deriveTrackedFilesFromActionLog } from "@shared/ai-review-action-log";
 
 import {
     AI_REVIEW_UNDO_ENABLED,
     DEFAULT_AI_DIFF_ZOOM,
 } from "@renderer/app/ai/sessionReviewContracts";
+import {
+    createReviewFileMutationInput,
+    createReviewHunkMutationInput,
+} from "@renderer/app/ai/reviewMutationTarget";
 import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
@@ -514,13 +519,19 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
     const snapshot = sessionState?.snapshot ?? createEmptySnapshot(tab);
     const currentError = sessionState?.localError ?? snapshot.lastError;
     const trackedFiles = useMemo(
-        () =>
-            snapshot.trackedFiles
+        () => {
+            const canonicalTrackedFiles =
+                snapshot.reviewActionLog?.sessionId === snapshot.sessionId
+                    ? deriveTrackedFilesFromActionLog(snapshot.reviewActionLog)
+                    : snapshot.trackedFiles;
+
+            return canonicalTrackedFiles
                 .filter(isReviewUnresolvedFile)
                 .sort((left, right) =>
                     right.updatedAt.localeCompare(left.updatedAt),
-                ),
-        [snapshot.trackedFiles],
+                );
+        },
+        [snapshot.reviewActionLog, snapshot.sessionId, snapshot.trackedFiles],
     );
     const projectSummary = useProjectsStore((state) =>
         tab.projectId
@@ -1015,24 +1026,18 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
             }
             persistedAnchorRef.current = createPersistedReviewAnchor(item);
             persistViewState();
-            void keepTrackedFile({
-                path: item.file.path,
-                sessionId: tab.sessionId,
-            });
+            void keepTrackedFile(createReviewFileMutationInput(item.file));
         },
-        [keepTrackedFile, persistViewState, tab.sessionId],
+        [keepTrackedFile, persistViewState],
     );
 
     const handleRejectFile = useCallback(
         (item: ReviewFileItem) => {
             persistedAnchorRef.current = createPersistedReviewAnchor(item);
             persistViewState();
-            void rejectTrackedFile({
-                path: item.file.path,
-                sessionId: tab.sessionId,
-            });
+            void rejectTrackedFile(createReviewFileMutationInput(item.file));
         },
-        [persistViewState, rejectTrackedFile, tab.sessionId],
+        [persistViewState, rejectTrackedFile],
     );
 
     const handleKeepHunk = useCallback(
@@ -1041,13 +1046,11 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                 hunkId,
             ]);
             persistViewState();
-            void keepTrackedFileHunks({
-                hunkIds: [hunkId],
-                path: item.file.path,
-                sessionId: tab.sessionId,
-            });
+            void keepTrackedFileHunks(
+                createReviewHunkMutationInput(item.file, [hunkId]),
+            );
         },
-        [keepTrackedFileHunks, persistViewState, tab.sessionId],
+        [keepTrackedFileHunks, persistViewState],
     );
 
     const handleRejectHunk = useCallback(
@@ -1056,13 +1059,11 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
                 hunkId,
             ]);
             persistViewState();
-            void rejectTrackedFileHunks({
-                hunkIds: [hunkId],
-                path: item.file.path,
-                sessionId: tab.sessionId,
-            });
+            void rejectTrackedFileHunks(
+                createReviewHunkMutationInput(item.file, [hunkId]),
+            );
         },
-        [persistViewState, rejectTrackedFileHunks, tab.sessionId],
+        [persistViewState, rejectTrackedFileHunks],
     );
 
     if (items.length === 0 && !currentError) {

@@ -14,6 +14,10 @@ import type {
     SendAiPromptInput,
     WorkspaceChatTab,
 } from "@shared/ipc";
+import {
+    createReviewActionLogFromTrackedFiles,
+    deriveTrackedFilesFromActionLog,
+} from "@shared/ai-review-action-log";
 
 import { AI_SESSION_BUSY_MESSAGE } from "@shared/ai-errors";
 
@@ -675,13 +679,19 @@ describe("ai-store queue", () => {
         );
     });
 
-    it("preserves pending review files when live session prepare returns an empty review", async () => {
+    it("preserves canonical review action log when live session prepare returns an empty review", async () => {
         const trackedFile = createTrackedFile({ path: "cuento.md" });
+        const reviewActionLog = createReviewActionLogFromTrackedFiles(
+            TAB.sessionId,
+            [trackedFile],
+            { updatedAt: "2026-04-14T00:00:01.000Z" },
+        );
         const prepareAiSession = vi
             .fn()
             .mockResolvedValueOnce(
                 createSnapshot({
-                    trackedFiles: [trackedFile],
+                    reviewActionLog,
+                    trackedFiles: deriveTrackedFilesFromActionLog(reviewActionLog),
                     updatedAt: "2026-04-14T00:00:01.000Z",
                 }),
             )
@@ -711,10 +721,14 @@ describe("ai-store queue", () => {
         expect(
             useAiStore.getState().sessions[TAB.sessionId]?.snapshot
                 ?.trackedFiles,
-        ).toEqual([trackedFile]);
+        ).toEqual(deriveTrackedFilesFromActionLog(reviewActionLog));
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.reviewActionLog,
+        ).toBe(reviewActionLog);
     });
 
-    it("preserves pending review files when a full incoming snapshot is empty", () => {
+    it("does not preserve legacy pending review files when a full incoming snapshot is empty", () => {
         const trackedFile = createTrackedFile({ path: "cuento.md" });
 
         useAiStore.getState().applySessionSnapshot(
@@ -733,7 +747,36 @@ describe("ai-store queue", () => {
         expect(
             useAiStore.getState().sessions[TAB.sessionId]?.snapshot
                 ?.trackedFiles,
-        ).toEqual([trackedFile]);
+        ).toEqual([]);
+    });
+
+    it("preserves canonical review action log when a full incoming snapshot is empty", () => {
+        const trackedFile = createTrackedFile({ path: "cuento.md" });
+        const reviewActionLog = createReviewActionLogFromTrackedFiles(
+            TAB.sessionId,
+            [trackedFile],
+            { updatedAt: "2026-04-14T00:00:01.000Z" },
+        );
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                reviewActionLog,
+                trackedFiles: deriveTrackedFilesFromActionLog(reviewActionLog),
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                trackedFiles: [],
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+
+        const snapshot = useAiStore.getState().sessions[TAB.sessionId]?.snapshot;
+        expect(snapshot?.reviewActionLog).toBe(reviewActionLog);
+        expect(snapshot?.trackedFiles).toEqual(
+            deriveTrackedFilesFromActionLog(reviewActionLog),
+        );
     });
 
     it("hydrates history chat tabs without preparing the runtime session", async () => {
@@ -1630,6 +1673,52 @@ describe("ai-store queue", () => {
         });
     });
 
+    it("optimistically removes tracked files through identity targets", async () => {
+        const keepAiTrackedFile = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    keepAiTrackedFile,
+                },
+            },
+        });
+        const trackedFile = createTrackedFile({
+            identityKey: "tracked-file-1",
+            path: "src/app.ts",
+            version: 2,
+        });
+        const samePathFile = createTrackedFile({
+            identityKey: "tracked-file-2",
+            path: "src/app.ts",
+            version: 1,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                trackedFiles: [trackedFile, samePathFile],
+            }),
+        );
+
+        await useAiStore.getState().keepTrackedFile({
+            expectedVersion: 2,
+            path: trackedFile.path,
+            sessionId: TAB.sessionId,
+            trackedFileId: trackedFile.identityKey,
+        });
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.trackedFiles,
+        ).toEqual([samePathFile]);
+        expect(keepAiTrackedFile).toHaveBeenCalledWith({
+            expectedVersion: 2,
+            path: trackedFile.path,
+            sessionId: TAB.sessionId,
+            trackedFileId: trackedFile.identityKey,
+        });
+    });
+
     it("optimistically updates tracked file hunks through Windows casing aliases", async () => {
         const keepAiTrackedFileHunks = vi.fn().mockResolvedValue(undefined);
         Object.defineProperty(globalThis, "window", {
@@ -1666,6 +1755,153 @@ describe("ai-store queue", () => {
             hunkIds: [hunkId],
             path: "c:\\repo\\src\\app.ts",
             sessionId: TAB.sessionId,
+        });
+    });
+
+    it("optimistically resolves review action log hunks and mirrors derived tracked files", async () => {
+        const keepAiTrackedFileHunks = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    keepAiTrackedFileHunks,
+                },
+            },
+        });
+        const identityKey = `review:${TAB.sessionId}:src/app.ts`;
+        const baseTracked = createTrackedFile({
+            currentText: "ONE\ntwo\nTHREE\nfour\n",
+            diffBase: "one\ntwo\nthree\nfour\n",
+            identityKey,
+            newText: "ONE\ntwo\nTHREE\nfour\n",
+            oldText: "one\ntwo\nthree\nfour\n",
+            path: "src/app.ts",
+            version: 2,
+        });
+        const reviewActionLog = createReviewActionLogFromTrackedFiles(
+            TAB.sessionId,
+            [baseTracked],
+        );
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                reviewActionLog,
+                trackedFiles: [baseTracked],
+            }),
+        );
+
+        // Hunk ids are engine-generated; resolve the first one (line "one").
+        const beforeFile =
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.reviewActionLog?.trackedFilesByIdentityKey?.[identityKey];
+        expect(beforeFile?.hunks.length).toBe(2);
+        const firstHunkId = beforeFile?.hunks[0]?.id ?? "";
+        const keepInput = {
+            expectedVersion: beforeFile?.version,
+            hunkIds: [firstHunkId],
+            path: "src/app.ts",
+            sessionId: TAB.sessionId,
+            trackedFileId: identityKey,
+        };
+
+        await useAiStore.getState().keepTrackedFileHunks(keepInput);
+
+        const snapshot = useAiStore.getState().sessions[TAB.sessionId]?.snapshot;
+        const file =
+            snapshot?.reviewActionLog?.trackedFilesByIdentityKey?.[identityKey];
+        // The accepted hunk folds into the base; the other change stays pending.
+        expect(file?.diffBase).toBe("ONE\ntwo\nthree\nfour\n");
+        expect(file?.hunks.length).toBe(1);
+        expect(snapshot?.trackedFiles).toEqual([
+            expect.objectContaining({
+                diffBase: "ONE\ntwo\nthree\nfour\n",
+                identityKey,
+                path: "src/app.ts",
+            }),
+        ]);
+        expect(snapshot?.trackedFiles[0]?.hunks.length).toBe(1);
+        expect(keepAiTrackedFileHunks).toHaveBeenCalledWith(keepInput);
+    });
+
+    it("does not optimistically remove a tracked file when the expected version is stale", async () => {
+        const keepAiTrackedFile = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    keepAiTrackedFile,
+                },
+            },
+        });
+        const trackedFile = createTrackedFile({
+            identityKey: "tracked-file-1",
+            version: 2,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                trackedFiles: [trackedFile],
+            }),
+        );
+
+        await useAiStore.getState().keepTrackedFile({
+            expectedVersion: 1,
+            path: trackedFile.path,
+            sessionId: TAB.sessionId,
+            trackedFileId: trackedFile.identityKey,
+        });
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.trackedFiles,
+        ).toEqual([trackedFile]);
+        expect(keepAiTrackedFile).toHaveBeenCalledWith({
+            expectedVersion: 1,
+            path: trackedFile.path,
+            sessionId: TAB.sessionId,
+            trackedFileId: trackedFile.identityKey,
+        });
+    });
+
+    it("does not optimistically resolve hunks when the expected version is stale", async () => {
+        const keepAiTrackedFileHunks = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    keepAiTrackedFileHunks,
+                },
+            },
+        });
+        const trackedFile = createTrackedFile({
+            identityKey: "tracked-file-1",
+            version: 2,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                trackedFiles: [trackedFile],
+            }),
+        );
+
+        await useAiStore.getState().keepTrackedFileHunks({
+            expectedVersion: 1,
+            hunkIds: ["hunk-1"],
+            path: trackedFile.path,
+            sessionId: TAB.sessionId,
+            trackedFileId: trackedFile.identityKey,
+        });
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.trackedFiles,
+        ).toEqual([trackedFile]);
+        expect(keepAiTrackedFileHunks).toHaveBeenCalledWith({
+            expectedVersion: 1,
+            hunkIds: ["hunk-1"],
+            path: trackedFile.path,
+            sessionId: TAB.sessionId,
+            trackedFileId: trackedFile.identityKey,
         });
     });
 

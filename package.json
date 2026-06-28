@@ -49,7 +49,7 @@
         "stage:codex-runtime": "node scripts/ai/stage-codex-runtime.mjs",
         "native:build": "node scripts/native/build-native-backend.mjs",
         "native:dev": "pnpm run native:build -- --debug && pnpm run native:stage -- --debug",
-        "native:wasm": "cargo build -p comando-diff --target wasm32-unknown-unknown",
+        "native:wasm": "cargo build -p comando-diff --release --target wasm32-unknown-unknown && wasm-bindgen target/wasm32-unknown-unknown/release/comando_diff.wasm --out-dir src/shared/ai-review-engine/wasm --target web",
         "native:test": "cargo test --workspace",
         "native:stage": "node scripts/native/stage-native-backend.mjs",
         "native:persistence:check": "cargo test -p comando-persistence -p comando-projects && pnpm exec vitest run src/main/native-backend src/shared/native-backend",

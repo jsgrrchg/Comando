@@ -688,22 +688,6 @@ export type NativeAiReviewCaptureOutput = {
     readonly updatedAt: string;
 };
 
-export type NativeAiReviewExactDiffInput = {
-    readonly path: string;
-    readonly previousPath?: string | null;
-    readonly oldText?: string | null;
-    readonly newText?: string | null;
-    readonly isText?: boolean;
-};
-
-export type NativeAiReviewRecordDiffsInput = {
-    readonly sessionId: NativeSessionId;
-    readonly reviewRoot?: string | null;
-    readonly toolCallId?: NativeToolCallId | null;
-    readonly updatedAt?: string | null;
-    readonly diffs: readonly NativeAiReviewExactDiffInput[];
-};
-
 export type NativeAiReviewCommandOutput = {
     readonly sessionId: NativeSessionId;
     readonly trackedFiles: readonly unknown[];

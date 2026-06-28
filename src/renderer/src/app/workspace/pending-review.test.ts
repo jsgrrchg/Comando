@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { AiTrackedFile, AppBootstrapSnapshot } from "@shared/ipc";
+import {
+    createReviewActionLogFromTrackedFiles,
+    keepReviewFile,
+} from "@shared/ai-review-action-log";
 import { useAppStore } from "@renderer/app/store/app-store";
 
 import {
     collectPendingTrackedFilesFromSessions,
     findBestPendingTrackedFile,
+    hasUnresolvedReviewFilesForSession,
     resolveFileTabReviewContext,
 } from "./pending-review";
 
@@ -297,6 +302,92 @@ describe("pending review helpers", () => {
                 },
             }),
         ).toEqual([pending]);
+    });
+
+    it("collects pending files from the review action log when the tracked file mirror is stale", () => {
+        const canonical = createTrackedFile({
+            path: "src/canonical.ts",
+            sessionId: "session-canonical",
+        });
+        const stale = createTrackedFile({
+            path: "src/stale.ts",
+            sessionId: "session-canonical",
+        });
+        const reviewActionLog = createReviewActionLogFromTrackedFiles(
+            "session-canonical",
+            [canonical],
+            { updatedAt: "2026-04-15T12:00:00.000Z" },
+        );
+
+        expect(
+            collectPendingTrackedFilesFromSessions({
+                "session-canonical": {
+                    snapshot: {
+                        reviewActionLog,
+                        sessionId: "session-canonical",
+                        trackedFiles: [stale],
+                    },
+                },
+            }).map((file) => file.path),
+        ).toEqual(["src/canonical.ts"]);
+    });
+
+    it("treats a resolved review action log as authoritative over a stale mirror", () => {
+        const accepted = createTrackedFile({
+            identityKey: "review:session-resolved:src/accepted.ts",
+            path: "src/accepted.ts",
+            sessionId: "session-resolved",
+        });
+        const staleMirror = createTrackedFile({
+            identityKey: "review:session-resolved:src/stale.ts",
+            path: "src/stale.ts",
+            sessionId: "session-resolved",
+        });
+        const pendingActionLog = createReviewActionLogFromTrackedFiles(
+            "session-resolved",
+            [accepted],
+            { updatedAt: "2026-04-15T12:00:00.000Z" },
+        );
+        const resolvedActionLog = keepReviewFile(pendingActionLog, {
+            expectedVersion: accepted.version,
+            path: accepted.path,
+            sessionId: "session-resolved",
+            trackedFileId: accepted.identityKey,
+        });
+        const session = {
+            snapshot: {
+                reviewActionLog: resolvedActionLog,
+                sessionId: "session-resolved",
+                trackedFiles: [staleMirror],
+            },
+        };
+
+        expect(collectPendingTrackedFilesFromSessions({ session })).toEqual([]);
+        expect(hasUnresolvedReviewFilesForSession(session)).toBe(false);
+    });
+
+    it("keeps review sessions with action-log conflicts unresolved", () => {
+        const conflicted = createTrackedFile({
+            identityKey: "review:session-conflict:src/conflict.ts",
+            path: "src/conflict.ts",
+            reviewState: "conflict",
+            sessionId: "session-conflict",
+        });
+        const reviewActionLog = createReviewActionLogFromTrackedFiles(
+            "session-conflict",
+            [conflicted],
+            { updatedAt: "2026-04-15T12:00:00.000Z" },
+        );
+
+        expect(
+            hasUnresolvedReviewFilesForSession({
+                snapshot: {
+                    reviewActionLog,
+                    sessionId: "session-conflict",
+                    trackedFiles: [],
+                },
+            }),
+        ).toBe(true);
     });
 
     it("returns pending tracked files without recomputing their hunks", () => {

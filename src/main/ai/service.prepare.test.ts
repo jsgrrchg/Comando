@@ -991,11 +991,7 @@ describe("AiService prepareSession", () => {
                     updatedAt: "2026-06-20T00:00:01.000Z",
                 }),
         );
-        const keepTrackedFile = vi.fn<
-            NonNullable<NativeAiGateway["keepTrackedFile"]>
-        >();
         const nativeAi = createNativeAi({
-            keepTrackedFile,
             loadSessionSnapshot: vi.fn(() => Promise.resolve(persistedSnapshot)),
             prepareSession,
         });
@@ -1017,7 +1013,6 @@ describe("AiService prepareSession", () => {
             prepareSession.mock.calls[0]?.[0].launch.persistedSnapshot
                 .trackedFiles,
         ).toEqual([]);
-        expect(keepTrackedFile).not.toHaveBeenCalled();
     });
 
     it("returns active live session snapshots owned by a window for stream resync", async () => {

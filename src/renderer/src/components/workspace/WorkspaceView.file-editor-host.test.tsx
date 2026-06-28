@@ -1052,6 +1052,10 @@ describe("WorkspaceFileEditorHost", () => {
         mockEditorRuntime.installMonacoTokenDebugAction.mockClear();
         mockWorkspaceStoreState.current.updateFilePendingOpenLocation.mockClear();
         mockWorkspaceStoreState.current.updateFileViewState.mockClear();
+        mockAiStoreState.current.keepTrackedFile.mockClear();
+        mockAiStoreState.current.keepTrackedFileHunks.mockClear();
+        mockAiStoreState.current.rejectTrackedFile.mockClear();
+        mockAiStoreState.current.rejectTrackedFileHunks.mockClear();
         mockAiStoreState.current.sessions = {};
         mockGitStoreState.current.snapshots = {};
     });
@@ -1715,6 +1719,45 @@ describe("WorkspaceFileEditorHost", () => {
 
         expect(normalEditor?.disposed).toBe(false);
         expect(diffEditor?.disposed).toBe(true);
+    });
+
+    it("sends inline review file targets with identity and version", async () => {
+        const fileTab = createFileTab("file-1");
+        const trackedFile = createTrackedFile();
+        mockAiStoreState.current.sessions = {
+            "session-1": {
+                snapshot: {
+                    trackedFiles: [trackedFile],
+                },
+            },
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: fileTab,
+                    fileTabs: [fileTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const keepButton = [...container.querySelectorAll("button")].find(
+            (button) => button.textContent?.includes("keep all"),
+        );
+        expect(keepButton).toBeDefined();
+        act(() => {
+            keepButton?.dispatchEvent(
+                new MouseEvent("click", { bubbles: true }),
+            );
+        });
+
+        expect(mockAiStoreState.current.keepTrackedFile).toHaveBeenCalledWith({
+            expectedVersion: 2,
+            path: "src/app.ts",
+            sessionId: "session-1",
+            trackedFileId: "tracked:src/app.ts",
+        });
     });
 
     it("reinstalls inline review models when a hidden file tab resumes with shell models", async () => {

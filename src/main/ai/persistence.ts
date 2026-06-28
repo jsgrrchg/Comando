@@ -108,6 +108,7 @@ export function createEmptyAiSessionSnapshot(options: {
         projectId: options.projectId,
         runtimeId: options.runtimeId,
         runtimeSessionId: options.runtimeSessionId ?? null,
+        reviewActionLog: null,
         sessionId: options.sessionId,
         status: options.status ?? "idle",
         title: options.title,
