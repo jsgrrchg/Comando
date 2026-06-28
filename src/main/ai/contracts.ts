@@ -1,7 +1,6 @@
 import type {
     AiPermissionResponseInput,
     AiHistorySessionSummary,
-    AiFileDiff,
     AiPromptResult,
     AiSessionConfigOption,
     AiSessionConfigOptionMutationInput,
@@ -20,7 +19,6 @@ import type {
     AiSessionSnapshot,
     AiSessionUpdate,
     AiSessionTranscriptPage,
-    AiTrackedFile,
     AiUserInputResponseInput,
     FileBufferNotificationInput,
     GetAiSessionTranscriptPageInput,
@@ -130,13 +128,6 @@ export interface NativeAiGateway {
     closeOwnedByWindow(ownerWindowId: string): Promise<void> | void;
     closeSession(sessionId: string): Promise<void>;
     deleteSession(sessionId: string): Promise<void>;
-    keepAllTrackedFiles?(input: AiReviewSessionRpcInput<string>): Promise<AiReviewMutationResult>;
-    keepTrackedFile?(
-        input: AiReviewSessionRpcInput<AiTrackedFileMutationInput>,
-    ): Promise<AiReviewMutationResult>;
-    keepTrackedFileHunks?(
-        input: AiReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
-    ): Promise<AiReviewMutationResult>;
     listSessionHistory(
         input: ListAiSessionHistoryInput,
     ): Promise<readonly AiHistorySessionSummary[]>;
@@ -147,15 +138,12 @@ export interface NativeAiGateway {
     loadSessionTranscriptPage(
         input: GetAiSessionTranscriptPageInput,
     ): Promise<AiSessionTranscriptPage | null>;
-    loadReviewState?(sessionId: string): Promise<readonly AiTrackedFile[]>;
     getRuntimeStatus?(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus>;
     saveRuntimeSettings?(input: NativeAiRuntimeSettingsRpcInput): Promise<AiRuntimeStatus>;
     launchRuntimeAuth?(input: AiRuntimeAuthLaunchInput): Promise<void>;
     logoutRuntimeAuth?(input: AiRuntimeAuthLogoutInput): Promise<AiRuntimeStatus>;
     disconnectRuntimeAuth?(input: AiRuntimeAuthDisconnectInput): Promise<AiRuntimeStatus>;
     notifyFileBuffer?(input: FileBufferNotificationInput): Promise<void>;
-    recordReviewDiffs?(input: NativeAiReviewDiffsRpcInput): Promise<readonly AiTrackedFile[]>;
-    reconcileTrackedFiles?(sessionId: string): Promise<readonly AiTrackedFile[]>;
     rejectAllTrackedFiles?(input: AiReviewSessionRpcInput<string>): Promise<AiReviewMutationResult>;
     rejectTrackedFile?(
         input: AiReviewSessionRpcInput<AiTrackedFileMutationInput>,
@@ -233,14 +221,6 @@ export interface NativeAiPrepareSessionRpcInput {
 export interface NativeAiSendPromptRpcInput {
     readonly input: SendAiPromptInput;
     readonly launch: AiSessionLaunchInput;
-}
-
-export interface NativeAiReviewDiffsRpcInput {
-    readonly diffs: readonly AiFileDiff[];
-    readonly reviewRoot?: string | null;
-    readonly sessionId: string;
-    readonly toolCallId: string;
-    readonly updatedAt: string;
 }
 
 export interface AiReviewSessionContext {

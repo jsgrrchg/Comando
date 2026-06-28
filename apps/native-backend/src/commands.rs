@@ -60,7 +60,7 @@ use serde_json::{Value, json};
 use crate::protocol::{RpcOutput, RpcRequest, error_response, event, response_ok};
 use crate::review::{
     NativeReviewCommandOutput, NativeReviewFileBufferInput, NativeReviewFileMutationInput,
-    NativeReviewHunkMutationInput, NativeReviewRecordDiffsInput, NativeReviewService,
+    NativeReviewHunkMutationInput, NativeReviewRejectAllInput, NativeReviewService,
     NativeReviewSessionInput,
 };
 
@@ -212,16 +212,9 @@ impl NativeBackend {
             | "ai_delete_session"
             | "ai_migrate_session_history"
             | "ai_get_history_storage_health"
-            | "ai_record_review_diffs"
             | "ai_capture_review_baseline"
-            | "ai_reconcile_tracked_files"
-            | "ai_list_tracked_files"
-            | "ai_load_review_state"
-            | "ai_keep_tracked_file"
             | "ai_reject_tracked_file"
-            | "ai_keep_tracked_file_hunks"
             | "ai_reject_tracked_file_hunks"
-            | "ai_keep_all_tracked_files"
             | "ai_reject_all_tracked_files"
             | "ai_notify_file_buffer" => {
                 if let Err(error) = self.ensure_ai_event_bridge(background_sender.clone()) {
@@ -342,16 +335,9 @@ impl NativeBackend {
             | "ai_delete_session"
             | "ai_migrate_session_history"
             | "ai_get_history_storage_health"
-            | "ai_record_review_diffs"
             | "ai_capture_review_baseline"
-            | "ai_reconcile_tracked_files"
-            | "ai_list_tracked_files"
-            | "ai_load_review_state"
-            | "ai_keep_tracked_file"
             | "ai_reject_tracked_file"
-            | "ai_keep_tracked_file_hunks"
             | "ai_reject_tracked_file_hunks"
-            | "ai_keep_all_tracked_files"
             | "ai_reject_all_tracked_files"
             | "ai_notify_file_buffer" => self.handle_ai_request(request),
             "secret_status" => self.secret_status(request),
@@ -2309,20 +2295,6 @@ impl NativeBackend {
                 ),
                 Err(error) => error_only(request.id, error),
             },
-            "ai_record_review_diffs" => {
-                let input = match parse_args::<NativeReviewRecordDiffsInput>(&request) {
-                    Ok(input) => input,
-                    Err(error) => return error_only(request.id, error),
-                };
-                let session = match self.ai_engine.session_for_review(&input.session_id) {
-                    Ok(session) => session,
-                    Err(error) => return error_only(request.id, error.to_native_error()),
-                };
-                match self.review_service.record_diffs(&session, input) {
-                    Ok(output) => self.review_response(request.id, &session, output),
-                    Err(error) => error_only(request.id, error),
-                }
-            }
             "ai_capture_review_baseline" => {
                 let input = match parse_args::<NativeReviewSessionInput>(&request) {
                     Ok(input) => input,
@@ -2340,48 +2312,6 @@ impl NativeBackend {
                     Err(error) => error_only(request.id, error),
                 }
             }
-            "ai_reconcile_tracked_files" => {
-                let input = match parse_args::<NativeReviewSessionInput>(&request) {
-                    Ok(input) => input,
-                    Err(error) => return error_only(request.id, error),
-                };
-                let session = match self.ai_engine.session_for_review(&input.session_id) {
-                    Ok(session) => session,
-                    Err(error) => return error_only(request.id, error.to_native_error()),
-                };
-                match self.review_service.reconcile_tracked_files(&session) {
-                    Ok(output) => self.review_response(request.id, &session, output),
-                    Err(error) => error_only(request.id, error),
-                }
-            }
-            "ai_list_tracked_files" | "ai_load_review_state" => {
-                let input = match parse_args::<NativeReviewSessionInput>(&request) {
-                    Ok(input) => input,
-                    Err(error) => return error_only(request.id, error),
-                };
-                let session = match self.ai_engine.session_for_review(&input.session_id) {
-                    Ok(session) => session,
-                    Err(error) => return error_only(request.id, error.to_native_error()),
-                };
-                match self.review_service.list_tracked_files(&session) {
-                    Ok(output) => review_read_response(request.id, output),
-                    Err(error) => error_only(request.id, error),
-                }
-            }
-            "ai_keep_tracked_file" => {
-                let input = match parse_args::<NativeReviewFileMutationInput>(&request) {
-                    Ok(input) => input,
-                    Err(error) => return error_only(request.id, error),
-                };
-                let session = match self.ai_engine.session_for_review(&input.session_id) {
-                    Ok(session) => session,
-                    Err(error) => return error_only(request.id, error.to_native_error()),
-                };
-                match self.review_service.keep_file(&session, input) {
-                    Ok(output) => self.review_response(request.id, &session, output),
-                    Err(error) => error_only(request.id, error),
-                }
-            }
             "ai_reject_tracked_file" => {
                 let input = match parse_args::<NativeReviewFileMutationInput>(&request) {
                     Ok(input) => input,
@@ -2396,20 +2326,6 @@ impl NativeBackend {
                     .review_service
                     .reject_file(&session, input, &write_tracker)
                 {
-                    Ok(output) => self.review_response(request.id, &session, output),
-                    Err(error) => error_only(request.id, error),
-                }
-            }
-            "ai_keep_tracked_file_hunks" => {
-                let input = match parse_args::<NativeReviewHunkMutationInput>(&request) {
-                    Ok(input) => input,
-                    Err(error) => return error_only(request.id, error),
-                };
-                let session = match self.ai_engine.session_for_review(&input.session_id) {
-                    Ok(session) => session,
-                    Err(error) => return error_only(request.id, error.to_native_error()),
-                };
-                match self.review_service.keep_hunks(&session, input) {
                     Ok(output) => self.review_response(request.id, &session, output),
                     Err(error) => error_only(request.id, error),
                 }
@@ -2432,22 +2348,8 @@ impl NativeBackend {
                     Err(error) => error_only(request.id, error),
                 }
             }
-            "ai_keep_all_tracked_files" => {
-                let input = match parse_args::<NativeReviewSessionInput>(&request) {
-                    Ok(input) => input,
-                    Err(error) => return error_only(request.id, error),
-                };
-                let session = match self.ai_engine.session_for_review(&input.session_id) {
-                    Ok(session) => session,
-                    Err(error) => return error_only(request.id, error.to_native_error()),
-                };
-                match self.review_service.keep_all(&session) {
-                    Ok(output) => self.review_response(request.id, &session, output),
-                    Err(error) => error_only(request.id, error),
-                }
-            }
             "ai_reject_all_tracked_files" => {
-                let input = match parse_args::<NativeReviewSessionInput>(&request) {
+                let input = match parse_args::<NativeReviewRejectAllInput>(&request) {
                     Ok(input) => input,
                     Err(error) => return error_only(request.id, error),
                 };
@@ -2456,7 +2358,10 @@ impl NativeBackend {
                     Err(error) => return error_only(request.id, error.to_native_error()),
                 };
                 let write_tracker = self.fs_service.write_tracker();
-                match self.review_service.reject_all(&session, &write_tracker) {
+                match self
+                    .review_service
+                    .reject_all(&session, input, &write_tracker)
+                {
                     Ok(output) => self.review_response(request.id, &session, output),
                     Err(error) => error_only(request.id, error),
                 }
@@ -2739,18 +2644,6 @@ impl NativeBackend {
             id,
             serde_json::to_value(&output).expect("review command output serializes"),
         )];
-        outputs.push(event(
-            "ai://review-updated",
-            serde_json::to_value(self.review_service.review_updated_payload(session, &output))
-                .expect("review updated event serializes"),
-        ));
-        for tracked_file_event in &output.tracked_file_events {
-            outputs.push(event(
-                "ai://tracked-file-updated",
-                serde_json::to_value(tracked_file_event)
-                    .expect("tracked file updated event serializes"),
-            ));
-        }
         if let Some(project_id) = session.scope.project_id.clone()
             && !output.changed_files.is_empty()
         {
@@ -3680,13 +3573,6 @@ fn response_only(id: RequestId, payload: Value) -> CommandResult {
     }
 }
 
-fn review_read_response(id: RequestId, output: NativeReviewCommandOutput) -> CommandResult {
-    response_only(
-        id,
-        serde_json::to_value(output).expect("review command output serializes"),
-    )
-}
-
 fn error_only(id: RequestId, error: NativeError) -> CommandResult {
     CommandResult {
         outputs: vec![error_response(Some(id), error)],
@@ -4384,33 +4270,6 @@ mod tests {
                 event(BACKEND_TEST_EVENT, json!({"message": "hola"})),
             ]
         );
-    }
-
-    #[test]
-    fn review_read_response_does_not_emit_update_event() {
-        let result = review_read_response(
-            RequestId::Number(1),
-            NativeReviewCommandOutput {
-                session_id: "session-1".into(),
-                tracked_files: Vec::new(),
-                changed_files: Vec::new(),
-                conflicts: Vec::new(),
-                updated_at: "2026-04-14T00:00:00.000Z".to_string(),
-                state_found: false,
-                tracked_file_events: Vec::new(),
-            },
-        );
-
-        let [RpcOutput::Response(response)] = result.outputs.as_slice() else {
-            panic!("expected only one response");
-        };
-        assert!(response.ok);
-        assert!(result.outputs.iter().all(|output| {
-            !matches!(
-                output,
-                RpcOutput::Event(event) if event.event_name == "ai://review-updated"
-            )
-        }));
     }
 
     #[test]
