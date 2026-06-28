@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { AiTrackedFile, AppBootstrapSnapshot } from "@shared/ipc";
+import { createReviewActionLogFromTrackedFiles } from "@shared/ai-review-action-log";
 import { useAppStore } from "@renderer/app/store/app-store";
 
 import {
@@ -297,6 +298,34 @@ describe("pending review helpers", () => {
                 },
             }),
         ).toEqual([pending]);
+    });
+
+    it("collects pending files from the review action log when the tracked file mirror is stale", () => {
+        const canonical = createTrackedFile({
+            path: "src/canonical.ts",
+            sessionId: "session-canonical",
+        });
+        const stale = createTrackedFile({
+            path: "src/stale.ts",
+            sessionId: "session-canonical",
+        });
+        const reviewActionLog = createReviewActionLogFromTrackedFiles(
+            "session-canonical",
+            [canonical],
+            { updatedAt: "2026-04-15T12:00:00.000Z" },
+        );
+
+        expect(
+            collectPendingTrackedFilesFromSessions({
+                "session-canonical": {
+                    snapshot: {
+                        reviewActionLog,
+                        sessionId: "session-canonical",
+                        trackedFiles: [stale],
+                    },
+                },
+            }).map((file) => file.path),
+        ).toEqual(["src/canonical.ts"]);
     });
 
     it("returns pending tracked files without recomputing their hunks", () => {

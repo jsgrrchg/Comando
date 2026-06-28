@@ -36,6 +36,17 @@ import type {
     OpenCodeRuntimeSettingsInput,
     SecretValuePatch,
 } from "@shared/ipc";
+import {
+    deriveTrackedFilesFromActionLog,
+    isReviewTargetVersionCurrent,
+    keepReviewFile,
+    keepReviewRanges,
+    rejectReviewFile,
+    rejectReviewRanges,
+    resolveReviewTarget,
+    type AiReviewActionLogState,
+    type AiReviewActionLogTarget,
+} from "@shared/ai-review-action-log";
 import { resolveTrackedFileHunks } from "@shared/ai-tracked-file";
 import { isSessionBusyErrorMessage } from "@shared/ai-errors";
 
@@ -1143,6 +1154,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             sessionId,
             (snapshot) => ({
                 ...snapshot,
+                reviewActionLog: null,
                 trackedFiles: [],
                 updatedAt: new Date().toISOString(),
             }),
@@ -1155,7 +1167,8 @@ export const useAiStore = create<AiStore>((set, get) => ({
     keepTrackedFile: async (input) => {
         await runOptimisticSnapshotMutation(
             input.sessionId,
-            (snapshot) => removeTrackedFileFromSnapshot(snapshot, input),
+            (snapshot) =>
+                removeTrackedFileFromSnapshot(snapshot, input, "keep"),
             () => getComandoApi().keepAiTrackedFile(input),
             set,
             get,
@@ -1215,6 +1228,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             sessionId,
             (snapshot) => ({
                 ...snapshot,
+                reviewActionLog: null,
                 trackedFiles: [],
                 updatedAt: new Date().toISOString(),
             }),
@@ -1227,7 +1241,8 @@ export const useAiStore = create<AiStore>((set, get) => ({
     rejectTrackedFile: async (input) => {
         await runOptimisticSnapshotMutation(
             input.sessionId,
-            (snapshot) => removeTrackedFileFromSnapshot(snapshot, input),
+            (snapshot) =>
+                removeTrackedFileFromSnapshot(snapshot, input, "reject"),
             () => getComandoApi().rejectAiTrackedFile(input),
             set,
             get,
@@ -2824,30 +2839,18 @@ function preserveCurrentReviewTrackedFiles(
     if (
         !currentSnapshot ||
         currentSnapshot.sessionId !== incomingSnapshot.sessionId ||
-        incomingSnapshot.trackedFiles.length > 0 ||
-        currentSnapshot.trackedFiles.length === 0
+        getSnapshotReviewActionLog(incomingSnapshot) ||
+        incomingSnapshot.trackedFiles.length > 0
     ) {
         return incomingSnapshot;
     }
 
-    const pendingTrackedFiles = currentSnapshot.trackedFiles.filter(
-        isTrackedFileUnresolved,
-    );
-    if (pendingTrackedFiles.length === 0) {
+    const currentReviewActionLog = getSnapshotReviewActionLog(currentSnapshot);
+    if (!currentReviewActionLog) {
         return incomingSnapshot;
     }
 
-    return {
-        ...incomingSnapshot,
-        trackedFiles: pendingTrackedFiles,
-    };
-}
-
-function isTrackedFileUnresolved(trackedFile: AiTrackedFile): boolean {
-    return (
-        trackedFile.reviewState === "pending" ||
-        trackedFile.reviewState === "conflict"
-    );
+    return snapshotWithReviewActionLog(incomingSnapshot, currentReviewActionLog);
 }
 
 function mergeHydrationMetadataIntoCurrent(
@@ -4001,7 +4004,21 @@ function setConfigOptionOnSnapshot(
 function removeTrackedFileFromSnapshot(
     snapshot: AiSessionSnapshot,
     input: AiTrackedFileMutationInput,
+    decision: "keep" | "reject",
 ): AiSessionSnapshot {
+    const reviewActionLog = getSnapshotReviewActionLog(snapshot);
+    if (reviewActionLog) {
+        const nextActionLog = resolveOptimisticActionLogFileMutation(
+            reviewActionLog,
+            input,
+            decision,
+        );
+
+        return nextActionLog === reviewActionLog
+            ? snapshot
+            : snapshotWithReviewActionLog(snapshot, nextActionLog);
+    }
+
     const target = resolveTrackedFileMutationTarget(snapshot, input);
     if (!target) {
         return snapshot;
@@ -4021,6 +4038,19 @@ function resolveTrackedFileHunksInSnapshot(
     input: AiTrackedFileHunkMutationInput,
     decision: "keep" | "reject",
 ): AiSessionSnapshot {
+    const reviewActionLog = getSnapshotReviewActionLog(snapshot);
+    if (reviewActionLog) {
+        const nextActionLog = resolveOptimisticActionLogHunkMutation(
+            reviewActionLog,
+            input,
+            decision,
+        );
+
+        return nextActionLog === reviewActionLog
+            ? snapshot
+            : snapshotWithReviewActionLog(snapshot, nextActionLog);
+    }
+
     const target = resolveTrackedFileMutationTarget(snapshot, input);
     if (!target) {
         return snapshot;
@@ -4048,6 +4078,70 @@ function resolveTrackedFileHunksInSnapshot(
         trackedFiles: nextTrackedFiles,
         updatedAt: new Date().toISOString(),
     };
+}
+
+function getSnapshotReviewActionLog(
+    snapshot: AiSessionSnapshot,
+): AiReviewActionLogState | null {
+    const reviewActionLog = snapshot.reviewActionLog ?? null;
+    return reviewActionLog?.sessionId === snapshot.sessionId
+        ? reviewActionLog
+        : null;
+}
+
+function snapshotWithReviewActionLog(
+    snapshot: AiSessionSnapshot,
+    reviewActionLog: AiReviewActionLogState,
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        reviewActionLog,
+        trackedFiles: deriveTrackedFilesFromActionLog(reviewActionLog),
+        updatedAt: reviewActionLog.updatedAt,
+    };
+}
+
+function reviewActionLogTargetFromInput(
+    input: AiTrackedFileHunkMutationInput | AiTrackedFileMutationInput,
+): AiReviewActionLogTarget {
+    return {
+        expectedVersion: input.expectedVersion,
+        path: input.path,
+        sessionId: input.sessionId,
+        trackedFileId: input.trackedFileId ?? null,
+    };
+}
+
+function resolveOptimisticActionLogFileMutation(
+    reviewActionLog: AiReviewActionLogState,
+    input: AiTrackedFileMutationInput,
+    decision: "keep" | "reject",
+): AiReviewActionLogState {
+    const target = reviewActionLogTargetFromInput(input);
+    const file = resolveReviewTarget(reviewActionLog, target);
+    if (!file || !isReviewTargetVersionCurrent(file, target)) {
+        return reviewActionLog;
+    }
+
+    return decision === "keep"
+        ? keepReviewFile(reviewActionLog, target)
+        : rejectReviewFile(reviewActionLog, target);
+}
+
+function resolveOptimisticActionLogHunkMutation(
+    reviewActionLog: AiReviewActionLogState,
+    input: AiTrackedFileHunkMutationInput,
+    decision: "keep" | "reject",
+): AiReviewActionLogState {
+    const target = reviewActionLogTargetFromInput(input);
+    const file = resolveReviewTarget(reviewActionLog, target);
+    if (!file || !isReviewTargetVersionCurrent(file, target)) {
+        return reviewActionLog;
+    }
+
+    return decision === "keep"
+        ? keepReviewRanges(reviewActionLog, target, input.hunkIds)
+        : rejectReviewRanges(reviewActionLog, target, input.hunkIds);
 }
 
 function resolveTrackedFileMutationTarget(

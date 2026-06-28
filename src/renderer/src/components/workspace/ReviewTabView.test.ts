@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AiSessionSnapshot, AiTrackedFile } from "@shared/ipc";
+import { createReviewActionLogFromTrackedFiles } from "@shared/ai-review-action-log";
 import type { RuntimeWorkspaceReviewTab } from "@renderer/app/workspace/tree";
 
 const mockAiStoreState = vi.hoisted(() => ({
@@ -132,6 +133,7 @@ function createTrackedFile(
 
 function createSnapshot(
     trackedFiles: readonly AiTrackedFile[],
+    overrides: Partial<AiSessionSnapshot> = {},
 ): AiSessionSnapshot {
     return {
         availableCommands: [],
@@ -156,6 +158,7 @@ function createSnapshot(
         trackedFiles: [...trackedFiles],
         updatedAt: "2026-04-14T00:00:00.000Z",
         worktreeId: TAB.worktreeId,
+        ...overrides,
     };
 }
 
@@ -264,6 +267,39 @@ describe("ReviewTabView", () => {
         expect(markup).toContain(">2 files<");
         expect(markup).toContain("+2");
         expect(markup).toContain("-1");
+    });
+
+    it("derives pending files from the review action log instead of stale tracked files", () => {
+        const canonicalFile = createTrackedFile({
+            identityKey: "review:session-1:src/canonical.ts",
+            path: "src/canonical.ts",
+        });
+        const reviewActionLog = createReviewActionLogFromTrackedFiles(
+            TAB.sessionId,
+            [canonicalFile],
+            { updatedAt: "2026-04-14T12:00:00.000Z" },
+        );
+        setMockSessionSnapshot(
+            createSnapshot(
+                [
+                    createTrackedFile({
+                        identityKey: "stale-file",
+                        path: "src/stale.ts",
+                    }),
+                ],
+                { reviewActionLog },
+            ),
+        );
+
+        const markup = renderToStaticMarkup(
+            createElement(ReviewTabView, {
+                onOpenFile: async () => {},
+                tab: TAB,
+            }),
+        );
+
+        expect(markup).toContain("src/canonical.ts");
+        expect(markup).not.toContain("src/stale.ts");
     });
 
     it("displays empty state when there are no pending changes", () => {

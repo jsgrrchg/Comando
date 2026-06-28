@@ -95,6 +95,13 @@ import {
 import { windowRegistry } from "./windows/registry";
 import type { WorkspaceGateway } from "./workspace/service";
 
+import { initReviewEngine } from "@shared/ai-review-engine/reviewEngine";
+
+// Kick off loading the Rust/WASM review engine as early as possible (overlaps
+// with native backend setup). The bootstrap awaits it before the AI service can
+// run any review work.
+void initReviewEngine();
+
 let nativeAppDataClient: NativeAppDataClient | null = null;
 let bootstrapSnapshot: AppBootstrapSnapshot | null = null;
 let aiService: AiService | null = null;
@@ -212,6 +219,14 @@ if (!hasSingleInstanceLock) {
                         : undefined,
                 store: projectStore,
             });
+            // The review engine (Rust/WASM) must be ready before the AI service
+            // can compute review diffs. The load was kicked off at module load;
+            // this awaits it (idempotent) before any review work can run.
+            try {
+                await initReviewEngine();
+            } catch (error) {
+                debugBenignError("ai.reviewEngine.init", error);
+            }
             aiService = new AiService({
                 nativeAi: createNativeAiGateway({
                     nativeClient,

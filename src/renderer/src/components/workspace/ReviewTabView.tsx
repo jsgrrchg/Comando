@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { AiSessionSnapshot } from "@shared/ipc";
+import { deriveTrackedFilesFromActionLog } from "@shared/ai-review-action-log";
 
 import {
     AI_REVIEW_UNDO_ENABLED,
@@ -518,13 +519,19 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
     const snapshot = sessionState?.snapshot ?? createEmptySnapshot(tab);
     const currentError = sessionState?.localError ?? snapshot.lastError;
     const trackedFiles = useMemo(
-        () =>
-            snapshot.trackedFiles
+        () => {
+            const canonicalTrackedFiles =
+                snapshot.reviewActionLog?.sessionId === snapshot.sessionId
+                    ? deriveTrackedFilesFromActionLog(snapshot.reviewActionLog)
+                    : snapshot.trackedFiles;
+
+            return canonicalTrackedFiles
                 .filter(isReviewUnresolvedFile)
                 .sort((left, right) =>
                     right.updatedAt.localeCompare(left.updatedAt),
-                ),
-        [snapshot.trackedFiles],
+                );
+        },
+        [snapshot.reviewActionLog, snapshot.sessionId, snapshot.trackedFiles],
     );
     const projectSummary = useProjectsStore((state) =>
         tab.projectId

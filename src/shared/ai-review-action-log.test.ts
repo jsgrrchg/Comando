@@ -13,11 +13,14 @@ const {
     createEmptyReviewActionLog,
     createReviewActionLogFromTrackedFiles,
     deriveTrackedFilesFromActionLog,
+    isReviewTargetVersionCurrent,
     keepReviewFile,
     keepReviewRanges,
     markReviewFileConflict,
+    mergeReviewFilesFromMirror,
     rejectReviewFile,
     rejectReviewRanges,
+    resolveReviewTarget,
 } = reviewActionLog;
 
 const SESSION_ID = "session-1";
@@ -103,527 +106,284 @@ function createTrackedFile(
     };
 }
 
-describe("AiReviewActionLog canonical review state", () => {
-    it("starts a new work cycle without clearing unresolved pending ranges", () => {
-        const firstTurn = consolidateReviewDiffs(
+describe("AiReviewActionLog single-store review state", () => {
+    it("tracks a live diff as a pending file", () => {
+        const state = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
-            [
-                createDiff({
-                    newText: "first after\n",
-                    oldText: "first before\n",
-                    path: "src/first.ts",
-                }),
-            ],
-            liveContext({
-                toolCallId: "tool-1",
-                workCycleId: "cycle-1",
-            }),
+            [createDiff()],
+            liveContext(),
         );
-
-        const secondCycle = beginReviewWorkCycle(firstTurn, "cycle-2", {
-            updatedAt: "2026-06-26T00:01:00.000Z",
+        const file = deriveOnlyTrackedFile(state);
+        expect(file).toMatchObject({
+            currentText: "after\n",
+            diffBase: "before\n",
+            path: "src/app.ts",
+            reviewState: "pending",
         });
-
-        expect(secondCycle.activeWorkCycleId).toBe("cycle-2");
-        expect(secondCycle.fileOrder).toEqual(firstTurn.fileOrder);
-        expect(deriveTrackedFilesFromActionLog(secondCycle)).toEqual([
-            expect.objectContaining({
-                path: "src/first.ts",
-                reviewState: "pending",
-            }),
-        ]);
-        expect(
-            secondCycle.filesByIdentityKey[
-                secondCycle.fileOrder[0] ?? ""
-            ]?.pendingRanges.map((range) => range.workCycleId),
-        ).toEqual(["cycle-1"]);
-
-        const withSecondTurnPending = consolidateReviewDiffs(
-            secondCycle,
-            [
-                createDiff({
-                    newText: "second after\n",
-                    oldText: "second before\n",
-                    path: "src/second.ts",
-                }),
-            ],
-            liveContext({
-                toolCallId: "tool-2",
-                updatedAt: "2026-06-26T00:02:00.000Z",
-                workCycleId: secondCycle.activeWorkCycleId,
-            }),
-        );
-
-        const [firstFileKey, secondFileKey] = withSecondTurnPending.fileOrder;
-        expect(
-            withSecondTurnPending.filesByIdentityKey[
-                firstFileKey ?? ""
-            ]?.pendingRanges.map((range) => range.workCycleId),
-        ).toEqual(["cycle-1"]);
-        expect(
-            withSecondTurnPending.filesByIdentityKey[
-                secondFileKey ?? ""
-            ]?.pendingRanges.map((range) => range.workCycleId),
-        ).toEqual(["cycle-2"]);
+        expect(file.hunks.length).toBeGreaterThan(0);
     });
 
-    it("migrates unresolved legacy tracked files into canonical state", () => {
-        const pendingFile = createTrackedFile({
-            path: "src/pending.ts",
-        });
-        const keptFile = createTrackedFile({
-            identityKey: `native:${SESSION_ID}:src/kept.ts`,
-            path: "src/kept.ts",
-            reviewState: "kept",
-        });
-        const wrongSessionFile = createTrackedFile({
-            identityKey: "native:other:src/app.ts",
-            sessionId: "other-session",
-        });
-        const binaryFile = createTrackedFile({
-            identityKey: `native:${SESSION_ID}:assets/image.png`,
-            isText: false,
-            path: "assets/image.png",
-        });
-
-        const state = createReviewActionLogFromTrackedFiles(
-            SESSION_ID,
-            [pendingFile, keptFile, wrongSessionFile, binaryFile],
-            { updatedAt: "2026-06-26T00:01:00.000Z" },
+    it("ignores non-live (historical) diffs", () => {
+        const state = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [createDiff()],
+            liveContext({ origin: "history" }),
         );
-
-        expect(state.fileOrder).toEqual([pendingFile.identityKey]);
-        expect(state.versionClockByIdentityKey).toEqual({
-            [pendingFile.identityKey]: 4,
-        });
-        expect(deriveTrackedFilesFromActionLog(state)).toEqual([
-            expect.objectContaining({
-                identityKey: pendingFile.identityKey,
-                path: "src/pending.ts",
-                reviewState: "pending",
-                version: 4,
-            }),
-        ]);
+        expect(deriveTrackedFilesFromActionLog(state)).toEqual([]);
     });
 
-    it("tracks create, update, delete, and move diffs as pending files", () => {
+    it("tracks create, update, delete and move diffs", () => {
         const state = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
             [
                 createDiff({
                     kind: "create",
-                    newText: "created\n",
                     oldText: null,
+                    newText: "new\n",
                     path: "src/created.ts",
                 }),
                 createDiff({
-                    kind: "update",
-                    newText: "after\n",
-                    oldText: "before\n",
-                    path: "src/updated.ts",
-                }),
-                createDiff({
                     kind: "delete",
+                    oldText: "gone\n",
                     newText: null,
-                    oldText: "deleted\n",
                     path: "src/deleted.ts",
                 }),
                 createDiff({
                     kind: "move",
-                    newText: "same\n",
-                    oldText: "same\n",
-                    path: "src/new.ts",
-                    previousPath: "src/old.ts",
+                    oldText: "moved\n",
+                    newText: "moved\n",
+                    path: "src/new-name.ts",
+                    previousPath: "src/old-name.ts",
                 }),
             ],
             liveContext(),
         );
-
-        expect(deriveTrackedFilesFromActionLog(state)).toEqual([
-            expect.objectContaining({
-                identityKey: `review:${SESSION_ID}:src/created.ts`,
-                kind: "create",
-                newText: "created\n",
-                oldText: null,
-                path: "src/created.ts",
-                reviewState: "pending",
-            }),
-            expect.objectContaining({
-                identityKey: `review:${SESSION_ID}:src/updated.ts`,
-                kind: "update",
-                newText: "after\n",
-                oldText: "before\n",
-                path: "src/updated.ts",
-                reviewState: "pending",
-            }),
-            expect.objectContaining({
-                identityKey: `review:${SESSION_ID}:src/deleted.ts`,
-                kind: "delete",
-                newText: null,
-                oldText: "deleted\n",
-                path: "src/deleted.ts",
-                reviewState: "pending",
-            }),
-            expect.objectContaining({
-                identityKey: `review:${SESSION_ID}:src/old.ts->src/new.ts`,
-                kind: "move",
-                path: "src/new.ts",
-                previousPath: "src/old.ts",
-                reviewState: "pending",
-            }),
+        const paths = deriveTrackedFilesFromActionLog(state)
+            .map((file) => file.path)
+            .sort();
+        // A pure move with identical content is still visible (pending rename).
+        expect(paths).toEqual([
+            "src/created.ts",
+            "src/deleted.ts",
+            "src/new-name.ts",
         ]);
     });
 
-    it("accumulates consecutive diffs for the same file", () => {
-        const firstState = consolidateReviewDiffs(
+    it("accumulates consecutive diffs for the same file into one entry", () => {
+        let state = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
-            [
-                createDiff({
-                    newText: "one\nTWO\nthree\nfour\n",
-                    oldText: "one\ntwo\nthree\nfour\n",
-                    path: "src/app.ts",
-                }),
-            ],
+            [createDiff({ oldText: "before\n", newText: "after\n" })],
             liveContext(),
         );
-        const secondState = consolidateReviewDiffs(
-            firstState,
-            [
-                createDiff({
-                    newText: "FOUR",
-                    oldText: "four",
-                    path: "src/app.ts",
-                }),
-            ],
-            liveContext({
-                toolCallId: "tool-2",
-                updatedAt: "2026-06-26T00:01:00.000Z",
-            }),
+        state = consolidateReviewDiffs(
+            state,
+            [createDiff({ oldText: "before\n", newText: "after\nmore\n" })],
+            liveContext({ toolCallId: "tool-2" }),
         );
-        const trackedFile = deriveOnlyTrackedFile(secondState);
-
-        expect(trackedFile).toMatchObject({
-            currentText: "one\nTWO\nthree\nFOUR\n",
-            diffBase: "one\ntwo\nthree\nfour\n",
-            newText: "one\nTWO\nthree\nFOUR\n",
-            oldText: "one\ntwo\nthree\nfour\n",
-            path: "src/app.ts",
-            version: 2,
-        });
-        expect(trackedFile.hunks).toHaveLength(2);
+        const file = deriveOnlyTrackedFile(state);
+        expect(file.currentText).toBe("after\nmore\n");
+        expect(file.diffBase).toBe("before\n");
     });
 
     it("consolidates by explicit identity key before path fallback", () => {
-        const identityKey = "native:session-1:src/app.ts";
-        const state = consolidateReviewDiffs(
+        let state = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
-            [
-                createDiffWithIdentity(identityKey, {
-                    newText: "after\n",
-                    oldText: "before\n",
-                    path: "src/app.ts",
-                }),
-            ],
+            [createDiffWithIdentity("review:custom", { newText: "after\n" })],
             liveContext(),
         );
-        const nextState = consolidateReviewDiffs(
+        state = consolidateReviewDiffs(
             state,
-            [
-                createDiffWithIdentity(identityKey, {
-                    newText: "AFTER\n",
-                    oldText: "after\n",
-                    path: "src/renamed.ts",
-                }),
-            ],
-            liveContext({
-                toolCallId: "tool-2",
-                updatedAt: "2026-06-26T00:02:00.000Z",
-            }),
+            [createDiffWithIdentity("review:custom", { newText: "after2\n" })],
+            liveContext({ toolCallId: "tool-2" }),
         );
-        const trackedFile = deriveOnlyTrackedFile(nextState);
-
-        expect(trackedFile).toMatchObject({
-            identityKey,
-            path: "src/renamed.ts",
-            version: 2,
-        });
+        const file = deriveOnlyTrackedFile(state);
+        expect(file.identityKey).toBe("review:custom");
+        expect(file.currentText).toBe("after2\n");
     });
 
-    it("does not merge an explicit missing diff identity through path fallback", () => {
-        const state = consolidateReviewDiffs(
+    it("hides a file when a later diff returns it to the baseline", () => {
+        let state = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
-            [
-                createDiffWithIdentity("native:session-1:src/app.ts:1", {
-                    newText: "after\n",
-                    oldText: "before\n",
-                    path: "src/app.ts",
-                }),
-            ],
+            [createDiff({ oldText: "before\n", newText: "after\n" })],
             liveContext(),
         );
-        const nextState = consolidateReviewDiffs(
+        state = consolidateReviewDiffs(
             state,
-            [
-                createDiffWithIdentity("native:session-1:src/app.ts:2", {
-                    newText: "next\n",
-                    oldText: "after\n",
-                    path: "src/app.ts",
-                }),
-            ],
-            liveContext({
-                toolCallId: "tool-2",
-                updatedAt: "2026-06-26T00:02:30.000Z",
-            }),
+            [createDiff({ oldText: "before\n", newText: "before\n" })],
+            liveContext({ toolCallId: "tool-2" }),
         );
-
-        expect(
-            deriveTrackedFilesFromActionLog(nextState).map((trackedFile) => ({
-                identityKey: trackedFile.identityKey,
-                newText: trackedFile.newText,
-                oldText: trackedFile.oldText,
-                version: trackedFile.version,
-            })),
-        ).toEqual([
-            {
-                identityKey: "native:session-1:src/app.ts:1",
-                newText: "after\n",
-                oldText: "before\n",
-                version: 1,
-            },
-            {
-                identityKey: "native:session-1:src/app.ts:2",
-                newText: "next\n",
-                oldText: "after\n",
-                version: 1,
-            },
-        ]);
+        expect(deriveTrackedFilesFromActionLog(state)).toEqual([]);
     });
 
-    it("updates an explicit existing diff identity without merging by shared path", () => {
-        const firstState = consolidateReviewDiffs(
-            createEmptyReviewActionLog(SESSION_ID),
-            [
-                createDiffWithIdentity("native:session-1:src/app.ts:1", {
-                    newText: "after one\n",
-                    oldText: "before one\n",
-                    path: "src/app.ts",
-                }),
-                createDiffWithIdentity("native:session-1:src/app.ts:2", {
-                    newText: "after two\n",
-                    oldText: "before two\n",
-                    path: "src/app.ts",
-                }),
-            ],
-            liveContext(),
-        );
-        const nextState = consolidateReviewDiffs(
-            firstState,
-            [
-                createDiffWithIdentity("native:session-1:src/app.ts:2", {
-                    newText: "after two\nand more\n",
-                    oldText: "after two\n",
-                    path: "src/app.ts",
-                }),
-            ],
-            liveContext({
-                toolCallId: "tool-2",
-                updatedAt: "2026-06-26T00:02:45.000Z",
-            }),
-        );
-
-        expect(
-            deriveTrackedFilesFromActionLog(nextState).map((trackedFile) => ({
-                identityKey: trackedFile.identityKey,
-                newText: trackedFile.newText,
-                oldText: trackedFile.oldText,
-                version: trackedFile.version,
-            })),
-        ).toEqual([
-            {
-                identityKey: "native:session-1:src/app.ts:1",
-                newText: "after one\n",
-                oldText: "before one\n",
-                version: 1,
-            },
-            {
-                identityKey: "native:session-1:src/app.ts:2",
-                newText: "after two\nand more\n",
-                oldText: "before two\n",
-                version: 2,
-            },
-        ]);
-    });
-
-    it("removes a pending file when a later diff returns it to the baseline", () => {
-        const state = consolidateReviewDiffs(
-            createEmptyReviewActionLog(SESSION_ID),
-            [
-                createDiff({
-                    newText: "after\n",
-                    oldText: "before\n",
-                    path: "src/app.ts",
-                }),
-            ],
-            liveContext(),
-        );
-        const cleanState = consolidateReviewDiffs(
-            state,
-            [
-                createDiff({
-                    newText: "before\n",
-                    oldText: "after\n",
-                    path: "src/app.ts",
-                }),
-            ],
-            liveContext({
-                toolCallId: "tool-2",
-                updatedAt: "2026-06-26T00:03:00.000Z",
-            }),
-        );
-
-        expect(deriveTrackedFilesFromActionLog(cleanState)).toEqual([]);
-    });
-
-    it("removes a file from the canonical state when it is kept", () => {
-        const state = consolidateReviewDiffs(
+    it("starts a new work cycle without clearing unresolved files", () => {
+        const firstTurn = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
             [createDiff()],
             liveContext(),
         );
-        const trackedFile = deriveOnlyTrackedFile(state);
+        const nextCycle = beginReviewWorkCycle(firstTurn, "cycle-2");
+        expect(nextCycle.activeWorkCycleId).toBe("cycle-2");
+        expect(deriveTrackedFilesFromActionLog(nextCycle)).toHaveLength(1);
+    });
+});
 
-        const keptState = keepReviewFile(state, reviewTarget(trackedFile));
+describe("AiReviewActionLog accept/reject never re-proposes resolved work", () => {
+    it("drops an accepted file re-emitted whole on a later turn", () => {
+        const firstTurn = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [createDiff({ newText: "after\n", oldText: "before\n" })],
+            liveContext(),
+        );
+        const accepted = keepReviewFile(
+            firstTurn,
+            reviewTarget(deriveOnlyTrackedFile(firstTurn)),
+        );
+        // Accepting settles the file: it leaves the visible set but is retained
+        // (hidden) as the baseline for later reconciliation.
+        expect(deriveTrackedFilesFromActionLog(accepted)).toEqual([]);
 
-        expect(keptState.filesByIdentityKey).toEqual({});
-        expect(keptState.fileOrder).toEqual([]);
-        expect(deriveTrackedFilesFromActionLog(keptState)).toEqual([]);
+        // The runtime re-emits the whole file against its session-start
+        // baseline. The accepted change must not come back as pending.
+        const laterTurn = consolidateReviewDiffs(
+            accepted,
+            [createDiff({ newText: "after\n", oldText: "before\n" })],
+            liveContext({ toolCallId: "tool-2", workCycleId: "cycle-2" }),
+        );
+        expect(deriveTrackedFilesFromActionLog(laterTurn)).toEqual([]);
+    });
+
+    it("shows only new work when an accepted file changes again", () => {
+        const firstTurn = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [createDiff({ newText: "after\n", oldText: "before\n" })],
+            liveContext(),
+        );
+        const accepted = keepReviewFile(
+            firstTurn,
+            reviewTarget(deriveOnlyTrackedFile(firstTurn)),
+        );
+
+        // A later turn adds a genuinely new line on top of the accepted text.
+        const laterTurn = consolidateReviewDiffs(
+            accepted,
+            [createDiff({ newText: "after\nmore\n", oldText: "before\n" })],
+            liveContext({ toolCallId: "tool-2", workCycleId: "cycle-2" }),
+        );
+        const file = deriveOnlyTrackedFile(laterTurn);
+        expect(file.diffBase).toBe("after\n");
+        expect(file.currentText).toBe("after\nmore\n");
+    });
+
+    it("hides a rejected file and stays hidden once reverted on disk", () => {
+        const firstTurn = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [createDiff({ newText: "after\n", oldText: "before\n" })],
+            liveContext(),
+        );
+        const rejected = rejectReviewFile(
+            firstTurn,
+            reviewTarget(deriveOnlyTrackedFile(firstTurn)),
+        );
+        expect(deriveTrackedFilesFromActionLog(rejected)).toEqual([]);
+
+        // Reject reverts the file to its base on disk; the runtime's next read
+        // sees that reverted content, so a re-emission carries no change.
+        const laterTurn = consolidateReviewDiffs(
+            rejected,
+            [createDiff({ newText: "before\n", oldText: "before\n" })],
+            liveContext({ toolCallId: "tool-2", workCycleId: "cycle-2" }),
+        );
+        expect(deriveTrackedFilesFromActionLog(laterTurn)).toEqual([]);
     });
 
     it("does not recreate a kept file when historical tool diffs replay", () => {
-        const diff = createDiff({
-            newText: "export const value = 2;\n",
-            oldText: "export const value = 1;\n",
-            path: "src/app.ts",
+        const firstTurn = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [createDiff()],
+            liveContext(),
+        );
+        const accepted = keepReviewFile(
+            firstTurn,
+            reviewTarget(deriveOnlyTrackedFile(firstTurn)),
+        );
+        const replay = consolidateReviewDiffs(accepted, [createDiff()], {
+            ...liveContext(),
+            origin: "history",
         });
+        expect(deriveTrackedFilesFromActionLog(replay)).toEqual([]);
+    });
+});
+
+describe("AiReviewActionLog per-hunk keep/reject", () => {
+    const multiHunkDiff = createDiff({
+        oldText: "one\ntwo\nthree\nfour\n",
+        newText: "ONE\ntwo\nTHREE\nfour\n",
+    });
+
+    it("keeps a hunk and leaves the remaining change pending", () => {
         const state = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
-            [diff],
+            [multiHunkDiff],
             liveContext(),
         );
         const trackedFile = deriveOnlyTrackedFile(state);
+        expect(trackedFile.hunks.length).toBe(2);
+        const [firstHunk] = trackedFile.hunks;
 
-        expect(trackedFile).toMatchObject({
-            newText: "export const value = 2;\n",
-            oldText: "export const value = 1;\n",
-            path: "src/app.ts",
-            reviewState: "pending",
-        });
-
-        const keptState = keepReviewFile(state, reviewTarget(trackedFile));
-        const replayedState = consolidateReviewDiffs(
-            keptState,
-            [diff],
-            liveContext({
-                origin: "replay",
-                toolCallId: "tool-replayed",
-                updatedAt: "2026-06-26T00:01:00.000Z",
-            }),
-        );
-
-        expect(deriveTrackedFilesFromActionLog(replayedState)).toEqual([]);
+        const next = keepReviewRanges(state, reviewTarget(trackedFile), [
+            firstHunk?.id ?? "",
+        ]);
+        const pending = deriveOnlyTrackedFile(next);
+        // The accepted hunk folded into the base; only the other change remains.
+        expect(pending.diffBase).toBe("ONE\ntwo\nthree\nfour\n");
+        expect(pending.currentText).toBe("ONE\ntwo\nTHREE\nfour\n");
+        expect(pending.hunks.length).toBe(1);
     });
 
-    it("rebases kept ranges and leaves only the unaccepted span pending", () => {
-        const originalText = "one\ntwo\nthree\nfour\n";
-        const editedText = "ONE\ntwo\nTHREE\nfour\n";
+    it("rejects a hunk and reverts only that change", () => {
         const state = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
-            [
-                createDiff({
-                    newText: editedText,
-                    oldText: originalText,
-                    path: "src/app.ts",
-                }),
-            ],
+            [multiHunkDiff],
             liveContext(),
         );
         const trackedFile = deriveOnlyTrackedFile(state);
+        const [firstHunk] = trackedFile.hunks;
 
-        expect(trackedFile.hunks).toHaveLength(2);
-        const firstHunk = trackedFile.hunks[0];
-        if (!firstHunk) {
-            throw new Error("Expected the first pending hunk.");
-        }
-
-        const afterFirstKeep = keepReviewRanges(
-            state,
-            reviewTarget(trackedFile),
-            [firstHunk.id],
-        );
-        const remainingFile = deriveOnlyTrackedFile(afterFirstKeep);
-
-        expect(remainingFile).toMatchObject({
-            currentText: editedText,
-            diffBase: "ONE\ntwo\nthree\nfour\n",
-            path: "src/app.ts",
-            reviewState: "pending",
-        });
-        expect(remainingFile.hunks).toHaveLength(1);
-        expect(
-            remainingFile.hunks.flatMap((hunk) =>
-                hunk.lines
-                    .filter((line) => line.type === "add")
-                    .map((line) => line.text),
-            ),
-        ).toEqual(["THREE"]);
-
-        const afterSecondTurn = consolidateReviewDiffs(
-            afterFirstKeep,
-            [
-                createDiff({
-                    newText: "ONE\ntwo\nTHREE!\nfour\n",
-                    oldText: editedText,
-                    path: "src/app.ts",
-                }),
-            ],
-            liveContext({
-                toolCallId: "tool-2",
-                updatedAt: "2026-06-26T00:02:00.000Z",
-                workCycleId: "cycle-2",
-            }),
-        );
-        const pendingFile = deriveOnlyTrackedFile(afterSecondTurn);
-
-        expect(pendingFile).toMatchObject({
-            currentText: "ONE\ntwo\nTHREE!\nfour\n",
-            diffBase: "ONE\ntwo\nthree\nfour\n",
-            path: "src/app.ts",
-            reviewState: "pending",
-        });
-        expect(
-            pendingFile.hunks.flatMap((hunk) =>
-                hunk.lines
-                    .filter((line) => line.type === "add")
-                    .map((line) => line.text),
-            ),
-        ).toEqual(["THREE!"]);
+        const next = rejectReviewRanges(state, reviewTarget(trackedFile), [
+            firstHunk?.id ?? "",
+        ]);
+        const pending = deriveOnlyTrackedFile(next);
+        expect(pending.diffBase).toBe("one\ntwo\nthree\nfour\n");
+        expect(pending.currentText).toBe("one\ntwo\nTHREE\nfour\n");
+        expect(pending.hunks.length).toBe(1);
     });
+});
 
-    it("rejects stale targets without mutating canonical pending state", () => {
+describe("AiReviewActionLog target resolution", () => {
+    it("rejects a stale expected version", () => {
         const state = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
             [createDiff()],
             liveContext(),
         );
         const trackedFile = deriveOnlyTrackedFile(state);
+        const file = resolveReviewTarget(state, reviewTarget(trackedFile));
+        expect(file).not.toBeNull();
+        expect(
+            isReviewTargetVersionCurrent(file!, { expectedVersion: 999 }),
+        ).toBe(false);
+    });
 
-        expect(() =>
-            keepReviewFile(state, {
-                ...reviewTarget(trackedFile),
-                expectedVersion: (trackedFile.version ?? 1) - 1,
-            }),
-        ).toThrow(/version|stale/i);
-        expect(deriveTrackedFilesFromActionLog(state)).toEqual([trackedFile]);
+    it("rejects non-integer expected versions", () => {
+        const state = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [createDiff()],
+            liveContext(),
+        );
+        const file = deriveOnlyTrackedFile(state);
+        expect(
+            isReviewTargetVersionCurrent(file, { expectedVersion: 1.5 }),
+        ).toBe(false);
     });
 
     it("does not fall back to path when an explicit tracked file id is stale", () => {
@@ -633,141 +393,115 @@ describe("AiReviewActionLog canonical review state", () => {
             liveContext(),
         );
         const trackedFile = deriveOnlyTrackedFile(state);
-
-        const nextState = keepReviewFile(state, {
-            ...reviewTarget(trackedFile),
-            trackedFileId: "review:session-1:missing.ts",
+        const resolved = resolveReviewTarget(state, {
+            expectedVersion: trackedFile.version ?? 1,
+            path: trackedFile.path,
+            sessionId: SESSION_ID,
+            trackedFileId: "review:session-1:does-not-exist",
         });
-
-        expect(deriveTrackedFilesFromActionLog(nextState)).toEqual([
-            trackedFile,
-        ]);
+        expect(resolved).toBeNull();
     });
 
-    it("keeps versions monotonic when a kept identity receives new pending work", () => {
-        const firstState = consolidateReviewDiffs(
+    it("marks a target as conflict and keeps it visible", () => {
+        const state = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
             [createDiff()],
             liveContext(),
         );
-        const firstTrackedFile = deriveOnlyTrackedFile(firstState);
-        const keptState = keepReviewFile(
-            firstState,
-            reviewTarget(firstTrackedFile),
-        );
+        const trackedFile = deriveOnlyTrackedFile(state);
+        const next = markReviewFileConflict(state, reviewTarget(trackedFile));
+        const conflicted = deriveOnlyTrackedFile(next);
+        expect(conflicted.reviewState).toBe("conflict");
+        expect(conflicted.version).toBe((trackedFile.version ?? 1) + 1);
+    });
+});
 
-        const secondState = consolidateReviewDiffs(
-            keptState,
+describe("createReviewActionLogFromTrackedFiles", () => {
+    it("bootstraps the log from existing tracked files", () => {
+        const state = createReviewActionLogFromTrackedFiles(SESSION_ID, [
+            createTrackedFile(),
+        ]);
+        const file = deriveOnlyTrackedFile(state);
+        expect(file.path).toBe("src/app.ts");
+        expect(file.currentText).toBe("after\n");
+    });
+});
+
+describe("mergeReviewFilesFromMirror is additive only", () => {
+    // The native turn-end reconcile must never resurrect work the user already
+    // resolved. A runtime that re-emits the accepted file against its stale
+    // session-start baseline shows up in the mirror as a "pending" change; the
+    // merge must recognise the resolved log entry and ignore it.
+    it("does not un-resolve an accepted file echoed back by the mirror", () => {
+        const firstTurn = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [createDiff({ newText: "after\n", oldText: "before\n" })],
+            liveContext(),
+        );
+        const accepted = keepReviewFile(
+            firstTurn,
+            reviewTarget(deriveOnlyTrackedFile(firstTurn)),
+        );
+        expect(deriveTrackedFilesFromActionLog(accepted)).toEqual([]);
+
+        const merged = mergeReviewFilesFromMirror(
+            accepted,
             [
-                createDiff({
-                    newText: "new after\n",
-                    oldText: "new before\n",
+                createTrackedFile({
+                    newText: "after\n",
+                    oldText: "before\n",
+                    version: 9,
                 }),
             ],
-            liveContext({
-                toolCallId: "tool-2",
-                updatedAt: "2026-06-26T00:04:00.000Z",
-            }),
+            liveContext({ toolCallId: "tool-2", workCycleId: "cycle-2" }),
         );
-        const secondTrackedFile = deriveOnlyTrackedFile(secondState);
-
-        expect(secondTrackedFile).toMatchObject({
-            identityKey: firstTrackedFile.identityKey,
-            version: 2,
-        });
-        expect(() =>
-            keepReviewFile(secondState, {
-                ...reviewTarget(firstTrackedFile),
-                expectedVersion: firstTrackedFile.version,
-            }),
-        ).toThrow(/version|stale/i);
-        expect(deriveTrackedFilesFromActionLog(secondState)).toEqual([
-            secondTrackedFile,
-        ]);
+        expect(deriveTrackedFilesFromActionLog(merged)).toEqual([]);
     });
 
-    it("rejects non-integer expected versions", () => {
-        const state = consolidateReviewDiffs(
+    it("keeps the canonical pending entry and ignores a mirror echo", () => {
+        const live = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
-            [createDiff()],
+            [createDiff({ newText: "after\n", oldText: "before\n" })],
             liveContext(),
         );
-        const trackedFile = deriveOnlyTrackedFile(state);
+        const livePending = deriveOnlyTrackedFile(live);
 
-        expect(() =>
-            keepReviewFile(state, {
-                ...reviewTarget(trackedFile),
-                expectedVersion: 1.9,
-            }),
-        ).toThrow(/version|stale/i);
-        expect(deriveTrackedFilesFromActionLog(state)).toEqual([trackedFile]);
-    });
-
-    it("rejects a full file by removing it from canonical pending state", () => {
-        const state = consolidateReviewDiffs(
-            createEmptyReviewActionLog(SESSION_ID),
-            [createDiff()],
-            liveContext(),
-        );
-        const trackedFile = deriveOnlyTrackedFile(state);
-
-        const nextState = rejectReviewFile(state, reviewTarget(trackedFile));
-
-        expect(deriveTrackedFilesFromActionLog(nextState)).toEqual([]);
-        expect(nextState.versionClockByIdentityKey).toEqual({
-            [trackedFile.identityKey]: trackedFile.version,
-        });
-    });
-
-    it("rejects selected ranges while keeping the remaining pending ranges", () => {
-        const state = consolidateReviewDiffs(
-            createEmptyReviewActionLog(SESSION_ID),
+        const merged = mergeReviewFilesFromMirror(
+            live,
             [
-                createDiff({
-                    newText: "ONE\ntwo\nTHREE\nfour\n",
-                    oldText: "one\ntwo\nthree\nfour\n",
+                createTrackedFile({
+                    currentText: "mirror-recomputed\n",
+                    newText: "mirror-recomputed\n",
+                    oldText: "before\n",
+                    version: 1,
                 }),
             ],
             liveContext(),
         );
-        const trackedFile = deriveOnlyTrackedFile(state);
-        const [firstHunk] = trackedFile.hunks;
 
-        const nextState = rejectReviewRanges(
-            state,
-            reviewTarget(trackedFile),
-            [firstHunk?.id ?? ""],
-        );
-        const pendingFile = deriveOnlyTrackedFile(nextState);
-
-        expect(pendingFile).toMatchObject({
-            currentText: "one\ntwo\nTHREE\nfour\n",
-            diffBase: "one\ntwo\nthree\nfour\n",
-            reviewState: "pending",
-            version: (trackedFile.version ?? 1) + 1,
-        });
-        expect(pendingFile.hunks).toHaveLength(1);
+        const pending = deriveOnlyTrackedFile(merged);
+        expect(pending.currentText).toBe(livePending.currentText);
+        expect(pending.identityKey).toBe(livePending.identityKey);
     });
 
-    it("marks a target as conflict without dropping pending ranges", () => {
-        const state = consolidateReviewDiffs(
+    it("adds a changed file the live path never captured", () => {
+        const merged = mergeReviewFilesFromMirror(
             createEmptyReviewActionLog(SESSION_ID),
-            [createDiff()],
+            [
+                createTrackedFile({
+                    currentText: "added\n",
+                    diffBase: "",
+                    kind: "create",
+                    newText: "added\n",
+                    oldText: null,
+                    path: "src/new.ts",
+                }),
+            ],
             liveContext(),
         );
-        const trackedFile = deriveOnlyTrackedFile(state);
 
-        const nextState = markReviewFileConflict(
-            state,
-            reviewTarget(trackedFile),
-        );
-        const conflictedFile = deriveOnlyTrackedFile(nextState);
-
-        expect(conflictedFile).toMatchObject({
-            identityKey: trackedFile.identityKey,
-            reviewState: "conflict",
-            version: (trackedFile.version ?? 1) + 1,
-        });
-        expect(conflictedFile.hunks).toEqual(trackedFile.hunks);
+        const pending = deriveOnlyTrackedFile(merged);
+        expect(pending.path).toBe("src/new.ts");
+        expect(pending.currentText).toBe("added\n");
     });
 });

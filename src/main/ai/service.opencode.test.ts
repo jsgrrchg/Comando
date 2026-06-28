@@ -196,9 +196,6 @@ describe("AiService OpenCode branch", () => {
             const binaryPath = writeExecutable(tempDir, "opencode");
             process.env.XDG_DATA_HOME = path.join(tempDir, "xdg");
             const trackedFile = createTrackedFile();
-            let resolveKeep: () => void = () => {
-                throw new Error("keepTrackedFile was not started.");
-            };
             const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
                 ({ launch }) =>
                     Promise.resolve({
@@ -214,23 +211,7 @@ describe("AiService OpenCode branch", () => {
                         updatedAt: "2026-06-20T00:00:00.000Z",
                     }),
             );
-            const keepTrackedFile = vi.fn<
-                NonNullable<NativeAiGateway["keepTrackedFile"]>
-            >(
-                ({ context }) =>
-                    new Promise((resolve) => {
-                        resolveKeep = () =>
-                            resolve({
-                                ownerWindowId: context.ownerWindowId,
-                                snapshot: {
-                                    ...context.snapshot,
-                                    trackedFiles: [],
-                                    updatedAt:
-                                        "2026-06-20T00:00:01.000Z",
-                                },
-                            });
-                    }),
-            );
+            const keepTrackedFile = vi.fn();
             const sendPrompt = vi.fn<NativeAiGateway["sendPrompt"]>(() =>
                 Promise.resolve({
                     sessionId: "session-opencode",
@@ -269,7 +250,8 @@ describe("AiService OpenCode branch", () => {
                 path: trackedFile.path,
                 sessionId: "session-opencode",
             });
-            await vi.waitFor(() => expect(keepTrackedFile).toHaveBeenCalled());
+            await keepPromise;
+            expect(keepTrackedFile).not.toHaveBeenCalled();
 
             const sendPromise = service.sendPrompt(
                 {
@@ -285,11 +267,6 @@ describe("AiService OpenCode branch", () => {
                 },
                 "window-1",
             );
-            await Promise.resolve();
-            expect(sendPrompt).not.toHaveBeenCalled();
-
-            resolveKeep();
-            await keepPromise;
             await sendPromise;
 
             expect(sendPrompt).toHaveBeenCalledTimes(1);
@@ -444,20 +421,7 @@ describe("AiService OpenCode branch", () => {
                 updatedAt: "2026-06-20T00:00:02.000Z",
             });
 
-            expect(recordReviewDiffs).toHaveBeenCalledWith({
-                diffs: [
-                    expect.objectContaining({
-                        isText: true,
-                        newText: nextText,
-                        oldText: acceptedText,
-                        path: "cuento.md",
-                    }),
-                ],
-                reviewRoot: tempDir,
-                sessionId: "session-opencode",
-                toolCallId: "tool-write-2",
-                updatedAt: "2026-06-20T00:00:02.000Z",
-            });
+            expect(recordReviewDiffs).not.toHaveBeenCalled();
             const latestReviewActionLog = onSessionSnapshot.mock.calls
                 .map(([, update]) =>
                     update.kind === "snapshot"
@@ -470,12 +434,12 @@ describe("AiService OpenCode branch", () => {
             });
             const loggedIdentityKey = latestReviewActionLog?.fileOrder[0] ?? "";
             const loggedFile =
-                latestReviewActionLog?.filesByIdentityKey[loggedIdentityKey];
+                latestReviewActionLog?.trackedFilesByIdentityKey[loggedIdentityKey];
             expect(loggedFile).toMatchObject({
                 currentText: nextText,
+                diffBase: acceptedText,
                 oldText: acceptedText,
                 path: "cuento.md",
-                toolCallIds: ["tool-write-2"],
             });
             const latestTrackedFiles = onSessionSnapshot.mock.calls
                 .map(([, update]) =>
@@ -639,14 +603,13 @@ describe("AiService OpenCode branch", () => {
                 "window-1",
                 "session-opencode",
             );
-            expect(latestSnapshot?.reviewActionLog?.fileOrder ?? []).toEqual([]);
             expect(latestSnapshot?.trackedFiles).toEqual([]);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
     });
 
-    it("expires accepted live tool diff tombstones", async () => {
+    it("does not reopen an accepted live tool diff on a later turn", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-review-expired-tool-"),
         );
@@ -785,19 +748,12 @@ describe("AiService OpenCode branch", () => {
             });
             vi.useRealTimers();
 
-            expect(recordReviewDiffs).toHaveBeenCalledOnce();
+            expect(recordReviewDiffs).not.toHaveBeenCalled();
             const latestSnapshot = service.getLiveSessionSnapshotForWindow(
                 "window-1",
                 "session-opencode",
             );
-            expect(latestSnapshot?.trackedFiles).toEqual([
-                expect.objectContaining({
-                    newText: acceptedText,
-                    oldText: originalText,
-                    path: "cuento.md",
-                    reviewState: "pending",
-                }),
-            ]);
+            expect(latestSnapshot?.trackedFiles ?? []).toEqual([]);
         } finally {
             vi.useRealTimers();
             fs.rmSync(tempDir, { force: true, recursive: true });
@@ -947,7 +903,6 @@ describe("AiService OpenCode branch", () => {
                 "window-1",
                 "session-opencode",
             );
-            expect(latestSnapshot?.reviewActionLog?.fileOrder ?? []).toEqual([]);
             expect(latestSnapshot?.trackedFiles).toEqual([]);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
@@ -1053,14 +1008,13 @@ describe("AiService OpenCode branch", () => {
                 "window-1",
                 "session-opencode",
             );
-            expect(latestSnapshot?.reviewActionLog?.fileOrder ?? []).toEqual([]);
             expect(latestSnapshot?.trackedFiles).toEqual([]);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
     });
 
-    it("reflects native review conflicts into the action log", async () => {
+    it("ignores native review conflicts because the action log is canonical", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-review-native-conflict-"),
         );
@@ -1139,15 +1093,15 @@ describe("AiService OpenCode branch", () => {
                 expect.objectContaining({
                     identityKey: trackedFile.identityKey,
                     path: "cuento.md",
-                    reviewState: "conflict",
-                    version: 3,
+                    reviewState: "pending",
+                    version: 2,
                 }),
             ]);
             expect(
-                latestSnapshot?.reviewActionLog?.filesByIdentityKey[
+                latestSnapshot?.reviewActionLog?.trackedFilesByIdentityKey[
                     trackedFile.identityKey
                 ]?.reviewState,
-            ).toBe("conflict");
+            ).toBe("pending");
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -1265,15 +1219,12 @@ describe("AiService OpenCode branch", () => {
             });
 
             await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).toHaveBeenCalledWith(
-                    "session-opencode",
-                );
+                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
             });
             const latestSnapshot = service.getLiveSessionSnapshotForWindow(
                 "window-1",
                 "session-opencode",
             );
-            expect(latestSnapshot?.reviewActionLog?.fileOrder ?? []).toEqual([]);
             expect(latestSnapshot?.trackedFiles).toEqual([]);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
@@ -1686,12 +1637,11 @@ describe("AiService OpenCode branch", () => {
                 trackedFileId: trackedFile.identityKey,
             });
 
-            expect(keepTrackedFile).toHaveBeenCalledOnce();
+            expect(keepTrackedFile).not.toHaveBeenCalled();
             const latestSnapshot = service.getLiveSessionSnapshotForWindow(
                 "window-1",
                 "session-opencode",
             );
-            expect(latestSnapshot?.reviewActionLog?.fileOrder ?? []).toEqual([]);
             expect(latestSnapshot?.trackedFiles).toEqual([]);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
@@ -1789,13 +1739,12 @@ describe("AiService OpenCode branch", () => {
                 updatedAt: "2026-06-20T00:00:02.000Z",
             });
 
-            expect(rejectTrackedFile).toHaveBeenCalledOnce();
+            expect(rejectTrackedFile).not.toHaveBeenCalled();
             expect(fs.readFileSync(editedPath, "utf8")).toBe("base\n");
             const latestSnapshot = service.getLiveSessionSnapshotForWindow(
                 "window-1",
                 "session-opencode",
             );
-            expect(latestSnapshot?.reviewActionLog?.fileOrder ?? []).toEqual([]);
             expect(latestSnapshot?.trackedFiles).toEqual([]);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
@@ -1881,7 +1830,7 @@ describe("AiService OpenCode branch", () => {
                     sessionId: "session-opencode",
                     trackedFileId: trackedFile.identityKey,
                 }),
-            ).rejects.toThrow("native drift");
+            ).rejects.toThrow("no longer matches the reviewed content");
             service.handleNativeSessionEvent("window-1", {
                 conflicts: [],
                 kind: "review",
@@ -2116,7 +2065,7 @@ describe("AiService OpenCode branch", () => {
                 "window-1",
             );
 
-            expect(reconcileTrackedFiles).toHaveBeenCalledTimes(1);
+            expect(reconcileTrackedFiles).not.toHaveBeenCalled();
             expect(captureReviewBaseline).toHaveBeenCalledTimes(2);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
@@ -2247,19 +2196,15 @@ describe("AiService OpenCode branch", () => {
             );
             const filesByPath = new Map(
                 Object.values(
-                    latestSnapshot?.reviewActionLog?.filesByIdentityKey ?? {},
+                    latestSnapshot?.reviewActionLog?.trackedFilesByIdentityKey ?? {},
                 ).map((file) => [file.path, file]),
             );
-            expect(
-                filesByPath
-                    .get("pending.md")
-                    ?.pendingRanges.map((range) => range.workCycleId),
-            ).toEqual(["review-cycle:session-opencode:user-message-1"]);
-            expect(
-                filesByPath
-                    .get("next.md")
-                    ?.pendingRanges.map((range) => range.workCycleId),
-            ).toEqual(["review-cycle:session-opencode:user-message-2"]);
+            expect(filesByPath.get("pending.md")).toMatchObject({
+                toolCallId: "tool-pending-1",
+            });
+            expect(filesByPath.get("next.md")).toMatchObject({
+                toolCallId: "tool-next-1",
+            });
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -2632,7 +2577,7 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
-    it("tracks native working tree edits after a turn for review", async () => {
+    it("does not create review state from working tree edits without tool diffs", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-native-review-"),
         );
@@ -2896,43 +2841,7 @@ describe("AiService OpenCode branch", () => {
                         (snapshot) => snapshot.trackedFiles !== undefined,
                     );
                 const trackedFiles = latestSnapshot?.trackedFiles ?? [];
-                expect(
-                    trackedFiles.map((trackedFile) => trackedFile.path).sort(),
-                ).toEqual(["scratch.txt", "src/app.ts", "src/restored.ts"]);
-                expect(
-                    trackedFiles.find(
-                        (trackedFile) => trackedFile.path === "src/app.ts",
-                    ),
-                ).toMatchObject({
-                    kind: "update",
-                    newText: "export const value = 2;\n",
-                    oldText: "export const value = 1;\n",
-                    path: "src/app.ts",
-                    reviewState: "pending",
-                });
-                expect(
-                    trackedFiles.find(
-                        (trackedFile) =>
-                            trackedFile.path === "src/restored.ts",
-                    ),
-                ).toMatchObject({
-                    kind: "update",
-                    newText: "export const restored = false;\n",
-                    oldText: "export const restored = true;\n",
-                    path: "src/restored.ts",
-                    reviewState: "pending",
-                });
-                expect(
-                    trackedFiles.find(
-                        (trackedFile) => trackedFile.path === "scratch.txt",
-                    ),
-                ).toMatchObject({
-                    kind: "delete",
-                    newText: null,
-                    oldText: "temporary local note\n",
-                    path: "scratch.txt",
-                    reviewState: "pending",
-                });
+                expect(trackedFiles).toEqual([]);
             });
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
@@ -3320,7 +3229,7 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
-    it("clears pending review when native reconciliation returns no files without streaming status", async () => {
+    it("keeps pending review when native reconciliation is disabled", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-review-clear-"),
         );
@@ -3394,20 +3303,20 @@ describe("AiService OpenCode branch", () => {
             });
 
             await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).toHaveBeenCalledWith(
-                    "session-opencode",
-                );
+                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
                 const updates = onSessionSnapshot.mock.calls.map(
                     ([, update]) => update,
                 );
-                expect(
-                    updates.some(
-                        (update) =>
-                            update.kind === "patch" &&
-                            Array.isArray(update.patch.changes.trackedFiles) &&
-                            update.patch.changes.trackedFiles.length === 0,
-                    ),
-                ).toBe(true);
+                const latestSnapshot = updates
+                    .map((update) =>
+                        update.kind === "snapshot"
+                            ? update.snapshot
+                            : update.patch.changes,
+                    )
+                    .findLast(
+                        (snapshot) => snapshot.trackedFiles !== undefined,
+                    );
+                expect(latestSnapshot?.trackedFiles ?? []).toEqual([]);
             });
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
@@ -4001,21 +3910,7 @@ describe("AiService OpenCode branch", () => {
                     ],
                 }),
             ]);
-            expect(recordReviewDiffs).toHaveBeenCalledWith({
-                diffs: [
-                    expect.objectContaining({
-                        isText: true,
-                        newText: "new text\n",
-                        oldText: "old text\n",
-                        path: "Fliege font.md",
-                        previousPath: null,
-                    }),
-                ],
-                reviewRoot: tempDir,
-                sessionId: "session-opencode",
-                toolCallId: "tool-write-1",
-                updatedAt: "2026-06-20T00:00:01.000Z",
-            });
+            expect(recordReviewDiffs).not.toHaveBeenCalled();
             expect(reconcileTrackedFiles).not.toHaveBeenCalled();
 
             service.handleNativeSessionEvent("window-1", {
@@ -4137,9 +4032,7 @@ describe("AiService OpenCode branch", () => {
             });
 
             await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).toHaveBeenCalledWith(
-                    "session-opencode",
-                );
+                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
                 const latestSnapshot = service.getLiveSessionSnapshotForWindow(
                     "window-1",
                     "session-opencode",
@@ -4287,21 +4180,7 @@ describe("AiService OpenCode branch", () => {
                     reviewState: "pending",
                 }),
             ]);
-            expect(recordReviewDiffs).toHaveBeenCalledWith({
-                diffs: [
-                    expect.objectContaining({
-                        isText: true,
-                        newText: nextContent,
-                        oldText: originalContent,
-                        path: "cuento.md",
-                        previousPath: null,
-                    }),
-                ],
-                reviewRoot: tempDir,
-                sessionId: "session-opencode",
-                toolCallId: "tool-edit-1",
-                updatedAt: "2026-06-20T00:00:01.000Z",
-            });
+            expect(recordReviewDiffs).not.toHaveBeenCalled();
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -4413,20 +4292,20 @@ describe("AiService OpenCode branch", () => {
                 updatedAt: "2026-06-20T00:00:02.000Z",
             });
 
-            expect(recordReviewDiffs).toHaveBeenCalledWith({
-                diffs: [
-                    expect.objectContaining({
-                        newText: "child agent\n",
-                        oldText: "child base\n",
-                        path: "child.ts",
-                        previousPath: null,
-                    }),
-                ],
-                reviewRoot: tempDir,
-                sessionId: "session-parent:subagent:runtime-child",
-                toolCallId: "tool-child-write-1",
-                updatedAt: "2026-06-20T00:00:02.000Z",
-            });
+            expect(recordReviewDiffs).not.toHaveBeenCalled();
+            const childSnapshot = service.getLiveSessionSnapshotForWindow(
+                "window-1",
+                "session-parent:subagent:runtime-child",
+            );
+            expect(childSnapshot?.trackedFiles).toEqual([
+                expect.objectContaining({
+                    newText: "child agent\n",
+                    oldText: "child base\n",
+                    path: "child.ts",
+                    reviewState: "pending",
+                    toolCallId: "tool-child-write-1",
+                }),
+            ]);
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -4576,19 +4455,15 @@ describe("AiService OpenCode branch", () => {
             );
             const filesByPath = new Map(
                 Object.values(
-                    childSnapshot?.reviewActionLog?.filesByIdentityKey ?? {},
+                    childSnapshot?.reviewActionLog?.trackedFilesByIdentityKey ?? {},
                 ).map((file) => [file.path, file]),
             );
-            expect(
-                filesByPath
-                    .get("delegated.ts")
-                    ?.pendingRanges.map((range) => range.workCycleId),
-            ).toEqual(["review-cycle:session-parent:parent-message-1"]);
-            expect(
-                filesByPath
-                    .get("own.ts")
-                    ?.pendingRanges.map((range) => range.workCycleId),
-            ).toEqual([`review-cycle:${childSessionId}:child-message-1`]);
+            expect(filesByPath.get("delegated.ts")).toMatchObject({
+                toolCallId: "tool-child-delegated-1",
+            });
+            expect(filesByPath.get("own.ts")).toMatchObject({
+                toolCallId: "tool-child-own-1",
+            });
 
             resolveParentPrompt();
             await parentPrompt;
@@ -4753,7 +4628,7 @@ describe("AiService OpenCode branch", () => {
             });
 
             await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).toHaveBeenCalledTimes(1);
+                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
                 expect(
                     onSessionSnapshot.mock.calls.some(([, update]) =>
                         update.kind === "patch" &&
@@ -4874,7 +4749,7 @@ describe("AiService OpenCode branch", () => {
             });
 
             await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).toHaveBeenCalledTimes(1);
+                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
                 const latestTrackedFiles = onSessionSnapshot.mock.calls
                     .map(([, update]) =>
                         update.kind === "snapshot"
@@ -4965,7 +4840,7 @@ describe("AiService OpenCode branch", () => {
             });
 
             await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).toHaveBeenCalledTimes(1);
+                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
             });
 
             service.handleNativeSessionEvent("window-1", {
@@ -5229,7 +5104,7 @@ describe("AiService OpenCode branch", () => {
                 updatedAt: "2026-06-20T00:00:01.000Z",
             });
             await waitForAssertion(() => {
-                expect(reconcileTrackedFiles).toHaveBeenCalledTimes(1);
+                expect(reconcileTrackedFiles).not.toHaveBeenCalled();
             });
 
             const externalPath = path.join(additionalRoot, "External.md");

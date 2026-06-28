@@ -12,6 +12,8 @@ export default tseslint.config(
     {
         ignores: [
             "**/*.d.ts",
+            // Generated wasm-bindgen glue for the Rust review engine.
+            "src/shared/ai-review-engine/wasm/**",
             "build/**",
             "coverage/**",
             "dist/**",

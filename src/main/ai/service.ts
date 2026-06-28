@@ -27,7 +27,6 @@ import type {
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiTrackedFile,
-    AiReviewConflict,
     AiUserInputResponseInput,
     ClaudeRuntimeSettingsInput,
     CodexRuntimeSettingsInput,
@@ -62,8 +61,8 @@ import {
     markReviewFileConflict,
     rejectReviewFile,
     rejectReviewRanges,
-    replaceReviewFilesFromMirror,
     resolveReviewTarget,
+    settleAcceptedReviewFile,
     type AiReviewActionLogState,
     type AiReviewActionLogTarget,
 } from "@shared/ai-review-action-log";
@@ -189,7 +188,6 @@ interface NativeReviewBaseline {
     readonly cwd: string;
     readonly inherited: boolean;
     readonly messageId: string;
-    readonly nativeCaptured: boolean;
     readonly promptAccepted: boolean;
     readonly terminalStatusSeen: boolean;
     readonly turnStarted: boolean;
@@ -208,11 +206,6 @@ type NativeAiReviewGateway = NativeAiGateway &
         Pick<
             NativeAiGateway,
             | "captureReviewBaseline"
-            | "keepAllTrackedFiles"
-            | "keepTrackedFile"
-            | "keepTrackedFileHunks"
-            | "recordReviewDiffs"
-            | "reconcileTrackedFiles"
             | "rejectAllTrackedFiles"
             | "rejectTrackedFile"
             | "rejectTrackedFileHunks"
@@ -438,14 +431,6 @@ interface PendingNativeCatalogPatch {
     readonly updatedAt: string;
 }
 
-interface LateAcceptedReviewTombstone {
-    readonly acceptedText: string | null;
-    readonly expiresAtMs: number;
-    readonly toolCallId: string | null;
-}
-
-const LATE_ACCEPTED_REVIEW_TOMBSTONE_TTL_MS = 60_000;
-
 export class AiService {
     readonly #deletedSessionIds = new Set<string>();
     readonly #freezingSessionIds = new Set<string>();
@@ -472,13 +457,8 @@ export class AiService {
         string,
         RecentNativeReviewContext
     >();
-    readonly #lateAcceptedReviewTombstones = new Map<
-        string,
-        Map<string, LateAcceptedReviewTombstone>
-    >();
     readonly #resolvedReviewVersions = new Map<string, Map<string, number>>();
     readonly #reviewMutationChains = new Map<string, Promise<void>>();
-    readonly #nativeReviewReconciliations = new Set<string>();
     readonly #nativeSessionIds = new Set<string>();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly #onSessionEvent: (
@@ -530,10 +510,8 @@ export class AiService {
         });
         this.#nativeReviewBaselines.clear();
         this.#recentNativeReviewContexts.clear();
-        this.#lateAcceptedReviewTombstones.clear();
         this.#resolvedReviewVersions.clear();
         this.#reviewMutationChains.clear();
-        this.#nativeReviewReconciliations.clear();
         this.#nativeSessionIds.clear();
         this.#pendingNativeCatalogPatches.clear();
         this.#liveSessionContexts.clear();
@@ -710,15 +688,10 @@ export class AiService {
                     (event.status === "idle" || event.status === "error")
                 ) {
                     this.#markNativeReviewTerminalStatusSeen(event.sessionId);
+                    if (this.#shouldFinishNativeReviewBaseline(event)) {
+                        this.#finishNativeReviewBaseline(event.sessionId);
+                    }
                 }
-            }
-            if (this.#shouldReconcileNativeReviewFiles(event)) {
-                void this.#reconcileNativeReviewFiles(
-                    event.sessionId,
-                    ownerWindowId,
-                ).catch((error: unknown) => {
-                    debugBenignError("ai.service.nativeReviewReconcile", error);
-                });
             }
         }
 
@@ -1421,15 +1394,7 @@ export class AiService {
                                 input.sessionId,
                             );
                         if (terminalStatusAlreadySeen) {
-                            void this.#reconcileNativeReviewFiles(
-                                input.sessionId,
-                                ownerWindowId,
-                            ).catch((error: unknown) => {
-                                debugBenignError(
-                                    "ai.service.nativeReviewReconcile",
-                                    error,
-                                );
-                            });
+                            this.#finishNativeReviewBaseline(input.sessionId);
                         }
                     }
                     return promptResult;
@@ -2199,10 +2164,8 @@ export class AiService {
         this.#freezingSessionIds.delete(sessionId);
         this.#nativeReviewBaselines.delete(sessionId);
         this.#recentNativeReviewContexts.delete(sessionId);
-        this.#lateAcceptedReviewTombstones.delete(sessionId);
         this.#resolvedReviewVersions.delete(sessionId);
         this.#reviewMutationChains.delete(sessionId);
-        this.#nativeReviewReconciliations.delete(sessionId);
         this.#nativeSessionIds.delete(sessionId);
         this.#scheduleSessionRetentionTimer();
     }
@@ -2750,32 +2713,9 @@ export class AiService {
         }
 
         if (event.kind === "review") {
-            if (event.origin !== "live") {
-                return base;
-            }
-
-            const reviewActionLog = validReviewActionLogForSnapshot(snapshot);
-            if (reviewActionLog) {
-                // Native review state mirrors the action log and must not resurrect accepted work.
-                const nextActionLog = applyNativeReviewMirrorConflicts(
-                    reviewActionLog,
-                    collectNativeReviewConflicts(
-                        event.trackedFiles,
-                        event.conflicts,
-                    ),
-                );
-                return {
-                    ...base,
-                    reviewActionLog: nextActionLog,
-                    trackedFiles: deriveTrackedFilesFromActionLog(nextActionLog),
-                };
-            }
-
-            return {
-                ...base,
-                reviewActionLog: null,
-                trackedFiles: [],
-            };
+            // Review state is owned by the TS action log. Native review events
+            // are ignored so a stale sidecar cannot overwrite local decisions.
+            return base;
         }
 
         if (event.kind === "plan") {
@@ -2835,7 +2775,7 @@ export class AiService {
         messageId: string,
     ): Promise<boolean> {
         const nativeAi = this.#requireNativeReviewGateway("captureReviewBaseline");
-        const nativeCaptured = await nativeAi.captureReviewBaseline(sessionId);
+        await nativeAi.captureReviewBaseline(sessionId);
         const workCycleId = createReviewWorkCycleId(sessionId, messageId);
         const updatedAt = new Date().toISOString();
         this.#beginNativeReviewWorkCycle(
@@ -2850,7 +2790,6 @@ export class AiService {
             cwd: launch.cwd,
             inherited: false,
             messageId,
-            nativeCaptured,
             promptAccepted: false,
             terminalStatusSeen: false,
             turnStarted: false,
@@ -2884,9 +2823,7 @@ export class AiService {
         }
 
         if (baseline.promptAccepted || baseline.terminalStatusSeen) {
-            await this.#reconcileNativeReviewFiles(sessionId, ownerWindowId, {
-                preserveCanonical: true,
-            });
+            this.#finishNativeReviewBaseline(sessionId);
             return false;
         }
 
@@ -2900,6 +2837,17 @@ export class AiService {
         }
 
         return false;
+    }
+
+    #finishNativeReviewBaseline(sessionId: string): void {
+        const baseline = this.#nativeReviewBaselines.get(sessionId);
+        if (!baseline) {
+            return;
+        }
+        if (this.#liveSessionContexts.has(sessionId)) {
+            this.#rememberRecentNativeReviewContext(sessionId, baseline);
+        }
+        this.#nativeReviewBaselines.delete(sessionId);
     }
 
     #beginNativeReviewWorkCycle(
@@ -3081,7 +3029,6 @@ export class AiService {
         };
         let reviewActionLog = snapshot.reviewActionLog ?? null;
         let trackedFiles = snapshot.trackedFiles;
-        const nativeDiffs: AiFileDiff[] = [];
         const rawOutput = parseToolActivityJson(activity.rawOutputJson);
         for (const diff of activity.diffs) {
             const normalizedDiff = normalizeAiFileDiffPaths(
@@ -3121,15 +3068,6 @@ export class AiService {
                               },
                           ),
                       };
-            const reviewDiff =
-                this.#applyLateAcceptedReviewTombstoneToDiff(
-                    snapshot.sessionId,
-                    fullTextDiff,
-                    activity.id,
-                );
-            if (!reviewDiff) {
-                continue;
-            }
             const baseReviewActionLog =
                 reviewActionLog ??
                 createReviewActionLogFromTrackedFiles(
@@ -3139,9 +3077,13 @@ export class AiService {
                         updatedAt: snapshot.updatedAt,
                     },
                 );
+            // The action log is the single owner of review state: it preserves
+            // each file's accumulated diff base and reconciles a re-emitted
+            // runtime diff against it, so accepted/rejected work never resurfaces
+            // — no rebase here and no separate native review mirror to feed.
             const nextReviewActionLog = consolidateReviewDiffs(
                 baseReviewActionLog,
-                [reviewDiff],
+                [fullTextDiff],
                 {
                     origin,
                     sessionId: snapshot.sessionId,
@@ -3157,33 +3099,6 @@ export class AiService {
             }
             reviewActionLog = nextReviewActionLog;
             trackedFiles = deriveTrackedFilesFromActionLog(reviewActionLog);
-
-            const nativeDiff = nativeDiffFromToolActivityDiff(
-                reviewDiff,
-                snapshot.sessionId,
-                activity.id,
-                activity.updatedAt,
-            );
-            if (nativeDiff) {
-                nativeDiffs.push(nativeDiff);
-            }
-        }
-
-        if (nativeDiffs.length > 0) {
-            void this.#requireNativeReviewGateway("recordReviewDiffs")
-                .recordReviewDiffs({
-                    diffs: nativeDiffs,
-                    reviewRoot: scopeRoot,
-                    sessionId: snapshot.sessionId,
-                    toolCallId: activity.id,
-                    updatedAt: activity.updatedAt,
-                })
-                .catch((error: unknown) => {
-                    debugBenignError(
-                        "ai.service.nativeReviewRecordDiffs",
-                        error,
-                    );
-                });
         }
 
         return reviewActionLog === snapshot.reviewActionLog
@@ -3211,24 +3126,6 @@ export class AiService {
         }
     }
 
-    #filterResolvedNativeReviewTrackedFiles(
-        sessionId: string,
-        trackedFiles: readonly AiTrackedFile[],
-    ): readonly AiTrackedFile[] {
-        const resolvedVersions = this.#resolvedReviewVersions.get(sessionId);
-        if (!resolvedVersions || resolvedVersions.size === 0) {
-            return trackedFiles;
-        }
-
-        const nextTrackedFiles = trackedFiles.filter(
-            (trackedFile) =>
-                !isTrackedFileAlreadyResolved(trackedFile, resolvedVersions),
-        );
-        return nextTrackedFiles.length === trackedFiles.length
-            ? trackedFiles
-            : nextTrackedFiles;
-    }
-
     #preservePassiveNativeSnapshotTrackedFiles(
         incomingSnapshot: AiSessionSnapshot,
         previousSnapshot: AiSessionSnapshot | null,
@@ -3237,132 +3134,31 @@ export class AiService {
             ? validReviewActionLogForSnapshot(previousSnapshot)
             : null;
         if (previousReviewActionLog) {
-            // Native review state mirrors the action log and must not resurrect accepted work.
-            const nextActionLog = applyNativeReviewMirrorConflicts(
-                previousReviewActionLog,
-                collectNativeReviewConflicts(incomingSnapshot.trackedFiles),
-            );
+            // The TS action log is canonical; passive native snapshots cannot
+            // overwrite pending, accepted, rejected, or conflict state.
             return {
                 ...incomingSnapshot,
-                reviewActionLog: nextActionLog,
-                trackedFiles: deriveTrackedFilesFromActionLog(nextActionLog),
+                reviewActionLog: previousReviewActionLog,
+                trackedFiles: deriveTrackedFilesFromActionLog(
+                    previousReviewActionLog,
+                ),
             };
         }
 
         return normalizeLiveSnapshotReviewState(incomingSnapshot);
     }
 
-    #shouldReconcileNativeReviewFiles(event: AiSessionDomainEvent): boolean {
+    #shouldFinishNativeReviewBaseline(event: AiSessionDomainEvent): boolean {
         const baseline = this.#nativeReviewBaselines.get(event.sessionId);
         if (!baseline || !this.#isNativeAiSession(event.sessionId)) {
             return false;
         }
 
         return (
-            baseline.nativeCaptured &&
             event.kind === "status" &&
             (baseline.turnStarted || baseline.promptAccepted) &&
             (event.status === "idle" || event.status === "error")
         );
-    }
-
-    async #reconcileNativeReviewFiles(
-        sessionId: string,
-        ownerWindowId: string,
-        options: { readonly preserveCanonical?: boolean } = {},
-    ): Promise<void> {
-        const baseline = this.#nativeReviewBaselines.get(sessionId);
-        if (!baseline || this.#nativeReviewReconciliations.has(sessionId)) {
-            return;
-        }
-
-        this.#nativeReviewReconciliations.add(sessionId);
-        try {
-            const initialSnapshot = this.#liveSnapshots.get(sessionId);
-            if (!initialSnapshot) {
-                return;
-            }
-
-            const trackedFiles =
-                await this.#requireNativeReviewGateway(
-                    "reconcileTrackedFiles",
-                ).reconcileTrackedFiles(sessionId);
-            const snapshot =
-                this.#liveSnapshots.get(sessionId) ?? initialSnapshot;
-            const reviewActionLog = validReviewActionLogForSnapshot(snapshot);
-            if (reviewActionLog) {
-                const nativeConflicts = collectNativeReviewConflicts(trackedFiles);
-                const conflictActionLog = applyNativeReviewMirrorConflicts(
-                    reviewActionLog,
-                    nativeConflicts,
-                );
-                const baseActionLog =
-                    options.preserveCanonical === true
-                        ? conflictActionLog
-                        : replaceReviewFilesFromMirror(
-                              conflictActionLog,
-                              this.#filterResolvedNativeReviewTrackedFiles(
-                                  snapshot.sessionId,
-                                  trackedFiles,
-                              ),
-                              {
-                                  updatedAt: new Date().toISOString(),
-                                  workCycleId:
-                                      reviewActionLog.activeWorkCycleId,
-                              },
-                          );
-                const nextActionLog = baseActionLog;
-                if (nextActionLog === reviewActionLog) {
-                    return;
-                }
-
-                const nextSnapshot = {
-                    ...snapshot,
-                    reviewActionLog: nextActionLog,
-                    trackedFiles: deriveTrackedFilesFromActionLog(nextActionLog),
-                    updatedAt:
-                        nextActionLog === reviewActionLog
-                            ? snapshot.updatedAt
-                            : nextActionLog.updatedAt,
-                };
-                const cachedSnapshot = this.#cacheLiveSessionSnapshot(
-                    nextSnapshot,
-                    ownerWindowId,
-                );
-                this.#onSessionSnapshot(
-                    ownerWindowId,
-                    buildAiSessionUpdate(snapshot, cachedSnapshot),
-                );
-                void this.#enforceSessionRetention();
-                return;
-            }
-
-            if (snapshot.trackedFiles.length === 0) {
-                return;
-            }
-
-            const nextSnapshot = {
-                ...snapshot,
-                reviewActionLog: null,
-                trackedFiles: [],
-                updatedAt: new Date().toISOString(),
-            };
-            const cachedSnapshot = this.#cacheLiveSessionSnapshot(
-                nextSnapshot,
-                ownerWindowId,
-            );
-            this.#onSessionSnapshot(
-                ownerWindowId,
-                buildAiSessionUpdate(snapshot, cachedSnapshot),
-            );
-            void this.#enforceSessionRetention();
-        } finally {
-            if (this.#liveSessionContexts.has(sessionId)) {
-                this.#rememberRecentNativeReviewContext(sessionId, baseline);
-            }
-            this.#nativeReviewBaselines.delete(sessionId);
-            this.#nativeReviewReconciliations.delete(sessionId);
-        }
     }
 
     #resolveSnapshotFromNativeUpdate(
@@ -3671,62 +3467,6 @@ export class AiService {
         await tracked;
     }
 
-    #rememberLateAcceptedReviewTombstone(
-        trackedFile: AiTrackedFile,
-        acceptedText: string | null =
-            trackedFile.kind === "delete"
-                ? null
-                : getTrackedFileCurrentText(trackedFile),
-    ): void {
-        const now = Date.now();
-        const sessionTombstones =
-            this.#lateAcceptedReviewTombstones.get(trackedFile.sessionId) ??
-            new Map<string, LateAcceptedReviewTombstone>();
-        this.#lateAcceptedReviewTombstones.set(
-            trackedFile.sessionId,
-            sessionTombstones,
-        );
-
-        sessionTombstones.set(trackedFile.path, {
-            acceptedText,
-            expiresAtMs: now + LATE_ACCEPTED_REVIEW_TOMBSTONE_TTL_MS,
-            toolCallId: trackedFile.toolCallId,
-        });
-        if (trackedFile.previousPath) {
-            sessionTombstones.set(trackedFile.previousPath, {
-                acceptedText: null,
-                expiresAtMs: now + LATE_ACCEPTED_REVIEW_TOMBSTONE_TTL_MS,
-                toolCallId: trackedFile.toolCallId,
-            });
-        }
-    }
-
-    #readLateAcceptedReviewTombstone(
-        sessionId: string,
-        reviewPath: string,
-    ): LateAcceptedReviewTombstone | null {
-        const sessionTombstones =
-            this.#lateAcceptedReviewTombstones.get(sessionId);
-        if (!sessionTombstones) {
-            return null;
-        }
-
-        const tombstone = sessionTombstones.get(reviewPath);
-        if (!tombstone) {
-            return null;
-        }
-
-        if (tombstone.expiresAtMs <= Date.now()) {
-            sessionTombstones.delete(reviewPath);
-            if (sessionTombstones.size === 0) {
-                this.#lateAcceptedReviewTombstones.delete(sessionId);
-            }
-            return null;
-        }
-
-        return tombstone;
-    }
-
     #rememberResolvedReviewVersion(trackedFile: AiTrackedFile): void {
         const resolvedVersions =
             this.#resolvedReviewVersions.get(trackedFile.sessionId) ??
@@ -3745,90 +3485,36 @@ export class AiService {
         );
     }
 
-    #rememberLateAcceptedReviewTombstoneForPath(
+    /**
+     * Settle accepted files into a snapshot's action log so later runtime diffs
+     * for those files reconcile against the accepted text instead of the
+     * session-start baseline. Native/fallback accept paths resolve changes
+     * without an action log, so we create a minimal one here to carry the
+     * settled baselines forward — the action log is the single owner of resolved
+     * review state.
+     */
+    #settleAcceptedReviewFiles(
         snapshot: AiSessionSnapshot,
-        reviewPath: string,
-    ): void {
-        const trackedFile = findTrackedFileForReviewPath(
-            snapshot.trackedFiles,
-            reviewPath,
-        );
-        if (trackedFile) {
-            this.#rememberLateAcceptedReviewTombstone(trackedFile);
+        acceptedTrackedFiles: readonly AiTrackedFile[],
+    ): AiSessionSnapshot {
+        if (acceptedTrackedFiles.length === 0) {
+            return snapshot;
         }
-    }
 
-    #rememberLateAcceptedReviewTombstoneForKeptHunks(
-        previousSnapshot: AiSessionSnapshot,
-        nextSnapshot: AiSessionSnapshot,
-        reviewPath: string,
-    ): void {
-        const remainingTrackedFile = findTrackedFileForReviewPath(
-            nextSnapshot.trackedFiles,
-            reviewPath,
-        );
-        if (remainingTrackedFile) {
-            // After a partial hunk keep, the pending file keeps the final text
-            // but rebases its diff against the newly accepted text.
-            this.#rememberLateAcceptedReviewTombstone(
-                remainingTrackedFile,
-                getTrackedFileDiffBase(remainingTrackedFile),
+        let reviewActionLog =
+            validReviewActionLogForSnapshot(snapshot) ??
+            createReviewActionLogFromTrackedFiles(
+                snapshot.sessionId,
+                snapshot.trackedFiles,
+                { updatedAt: snapshot.updatedAt },
             );
-            return;
+        for (const trackedFile of acceptedTrackedFiles) {
+            reviewActionLog = settleAcceptedReviewFile(
+                reviewActionLog,
+                trackedFile,
+            );
         }
-
-        this.#rememberLateAcceptedReviewTombstoneForPath(
-            previousSnapshot,
-            reviewPath,
-        );
-    }
-
-    #applyLateAcceptedReviewTombstoneToDiff(
-        sessionId: string,
-        diff: AiFileDiff,
-        toolCallId: string | null,
-    ): AiFileDiff | null {
-        const tombstone = this.#readLateAcceptedReviewTombstone(
-            sessionId,
-            diff.path,
-        );
-        if (!tombstone) {
-            return diff;
-        }
-
-        if (tombstone.acceptedText === null) {
-            if (diff.newText === null) {
-                return null;
-            }
-            return {
-                ...diff,
-                hunks: [],
-                kind: "create",
-                oldText: null,
-                previousPath: null,
-            };
-        }
-
-        if (
-            diff.newText !== null &&
-            normalizeReviewText(tombstone.acceptedText) ===
-                normalizeReviewText(diff.newText) &&
-            (!diff.previousPath ||
-                tombstone.toolCallId === toolCallId ||
-                this.#readLateAcceptedReviewTombstone(
-                    sessionId,
-                    diff.previousPath,
-                )?.acceptedText === null)
-        ) {
-            return null;
-        }
-
-        return {
-            ...diff,
-            hunks: [],
-            kind: diff.kind === "create" ? "update" : diff.kind,
-            oldText: tombstone.acceptedText,
-        };
+        return { ...snapshot, reviewActionLog };
     }
 
     async #tryApplyActionLogTrackedFileMutation(
@@ -3859,18 +3545,15 @@ export class AiService {
             return true;
         }
 
-        let nativeRejectApplied = false;
         if (decision === "reject") {
             try {
-                const nativeAi = isFallbackTrackedFile(trackedFile)
-                    ? null
-                    : this.#optionalNativeReviewGateway("rejectTrackedFile");
+                const nativeAi =
+                    this.#optionalNativeReviewDiskGateway("rejectTrackedFile");
                 if (nativeAi?.rejectTrackedFile) {
                     await nativeAi.rejectTrackedFile({
                         context: reviewSession.context,
                         input,
                     });
-                    nativeRejectApplied = true;
                 } else {
                     this.#assertFallbackTrackedFileCurrentMatches(
                         reviewSession.context,
@@ -3899,18 +3582,9 @@ export class AiService {
         }
 
         this.#rememberResolvedReviewVersion(trackedFile);
+        // keepReviewFile already recorded the accepted baseline on the action
+        // log we just persisted, so later runtime diffs reconcile against it.
         this.#persistActionLogReviewMutation(reviewSession, nextActionLog);
-        if (decision === "keep") {
-            this.#rememberLateAcceptedReviewTombstone(trackedFile);
-        }
-        if (decision === "keep" || !nativeRejectApplied) {
-            await this.#mirrorNativeTrackedFileMutation(
-                reviewSession.context,
-                input,
-                decision,
-                trackedFile,
-            );
-        }
         return true;
     }
 
@@ -3942,20 +3616,16 @@ export class AiService {
             return true;
         }
 
-        let nativeRejectApplied = false;
         if (decision === "reject") {
             try {
-                const nativeAi = isFallbackTrackedFile(trackedFile)
-                    ? null
-                    : this.#optionalNativeReviewGateway(
-                          "rejectTrackedFileHunks",
-                      );
+                const nativeAi = this.#optionalNativeReviewDiskGateway(
+                    "rejectTrackedFileHunks",
+                );
                 if (nativeAi?.rejectTrackedFileHunks) {
                     await nativeAi.rejectTrackedFileHunks({
                         context: reviewSession.context,
                         input,
                     });
-                    nativeRejectApplied = true;
                 } else {
                     this.#assertFallbackTrackedFileCurrentMatches(
                         reviewSession.context,
@@ -3989,25 +3659,10 @@ export class AiService {
         }
 
         this.#rememberResolvedReviewVersion(trackedFile);
-        const nextSnapshot = this.#persistActionLogReviewMutation(
-            reviewSession,
-            nextActionLog,
-        );
-        if (decision === "keep") {
-            this.#rememberLateAcceptedReviewTombstoneForKeptHunks(
-                reviewSession.snapshot,
-                nextSnapshot,
-                input.path,
-            );
-        }
-        if (decision === "keep" || !nativeRejectApplied) {
-            await this.#mirrorNativeTrackedFileHunkMutation(
-                reviewSession.context,
-                input,
-                decision,
-                trackedFile,
-            );
-        }
+        // keepReviewRanges advanced the action log's diff base (and recorded an
+        // accepted baseline when the file fully resolved), so the persisted log
+        // already protects later turns from re-proposing accepted hunks.
+        this.#persistActionLogReviewMutation(reviewSession, nextActionLog);
         return true;
     }
 
@@ -4029,64 +3684,6 @@ export class AiService {
         return nextSnapshot;
     }
 
-    async #mirrorNativeTrackedFileMutation(
-        context: AiReviewSessionContext,
-        input: AiTrackedFileMutationInput,
-        decision: "keep" | "reject",
-        trackedFile: AiTrackedFile,
-    ): Promise<void> {
-        if (isFallbackTrackedFile(trackedFile)) {
-            return;
-        }
-
-        const methodName =
-            decision === "keep" ? "keepTrackedFile" : "rejectTrackedFile";
-        const nativeAi = this.#optionalNativeReviewGateway(methodName);
-        if (!nativeAi) {
-            return;
-        }
-
-        try {
-            if (decision === "keep") {
-                await nativeAi.keepTrackedFile?.({ context, input });
-                return;
-            }
-            await nativeAi.rejectTrackedFile?.({ context, input });
-        } catch (error) {
-            debugBenignError("ai.service.nativeReviewMirrorFile", error);
-        }
-    }
-
-    async #mirrorNativeTrackedFileHunkMutation(
-        context: AiReviewSessionContext,
-        input: AiTrackedFileHunkMutationInput,
-        decision: "keep" | "reject",
-        trackedFile: AiTrackedFile,
-    ): Promise<void> {
-        if (isFallbackTrackedFile(trackedFile)) {
-            return;
-        }
-
-        const methodName =
-            decision === "keep"
-                ? "keepTrackedFileHunks"
-                : "rejectTrackedFileHunks";
-        const nativeAi = this.#optionalNativeReviewGateway(methodName);
-        if (!nativeAi) {
-            return;
-        }
-
-        try {
-            if (decision === "keep") {
-                await nativeAi.keepTrackedFileHunks?.({ context, input });
-                return;
-            }
-            await nativeAi.rejectTrackedFileHunks?.({ context, input });
-        } catch (error) {
-            debugBenignError("ai.service.nativeReviewMirrorHunks", error);
-        }
-    }
-
     #optionalNativeReviewGateway(
         methodName: keyof NativeAiReviewGateway,
     ): NativeAiReviewGateway | null {
@@ -4098,6 +3695,15 @@ export class AiService {
         return typeof method === "function"
             ? (this.#nativeAi as NativeAiReviewGateway)
             : null;
+    }
+
+    #optionalNativeReviewDiskGateway(
+        methodName: keyof NativeAiReviewGateway,
+    ): NativeAiReviewGateway | null {
+        if (this.#nativeAi?.shouldHandleReviewDiskMutations?.() !== true) {
+            return null;
+        }
+        return this.#optionalNativeReviewGateway(methodName);
     }
 
     async #tryApplyFallbackTrackedFileMutation(
@@ -4126,7 +3732,7 @@ export class AiService {
             this.#rejectFallbackTrackedFile(reviewSession.context, trackedFile);
         }
 
-        const nextSnapshot = {
+        const baseSnapshot = {
             ...reviewSession.snapshot,
             trackedFiles: removeTrackedFileByIdentity(
                 reviewSession.snapshot.trackedFiles,
@@ -4135,9 +3741,12 @@ export class AiService {
             updatedAt: new Date().toISOString(),
         };
         this.#rememberResolvedReviewVersion(trackedFile);
-        if (decision === "keep") {
-            this.#rememberLateAcceptedReviewTombstone(trackedFile);
-        }
+        const nextSnapshot =
+            decision === "keep"
+                ? this.#settleAcceptedReviewFiles(baseSnapshot, [
+                      trackedFile,
+                  ])
+                : baseSnapshot;
         this.#persistReviewMutation(reviewSession.snapshot, {
             ownerWindowId: reviewSession.context.ownerWindowId,
             snapshot: nextSnapshot,
@@ -4190,13 +3799,90 @@ export class AiService {
             updatedAt: new Date().toISOString(),
         };
         this.#rememberResolvedReviewVersion(trackedFile);
-        if (decision === "keep") {
-            this.#rememberLateAcceptedReviewTombstone(trackedFile);
-        }
+        // The kept-hunk result stays in trackedFiles with its diff base already
+        // advanced, so the action log rebuilt on the next consolidation keeps it
+        // as the active file and accepted hunks are not re-proposed.
         this.#persistReviewMutation(reviewSession.snapshot, {
             ownerWindowId: reviewSession.context.ownerWindowId,
             snapshot: nextSnapshot,
         });
+        return true;
+    }
+
+    async #tryApplyAllActionLogTrackedFileMutations(
+        sessionId: string,
+        decision: "keep" | "reject",
+    ): Promise<boolean> {
+        const reviewSession = await this.#buildNativeReviewContext(sessionId);
+        const reviewActionLog = validReviewActionLogForSnapshot(
+            reviewSession.snapshot,
+        );
+        if (!reviewActionLog) {
+            return false;
+        }
+
+        const pendingFiles =
+            deriveTrackedFilesFromActionLog(reviewActionLog).filter(
+                isAiTrackedFileUnresolved,
+            );
+        if (pendingFiles.length === 0) {
+            return true;
+        }
+
+        if (decision === "reject") {
+            const nativeAi =
+                this.#optionalNativeReviewDiskGateway("rejectAllTrackedFiles");
+            if (nativeAi?.rejectAllTrackedFiles) {
+                await nativeAi.rejectAllTrackedFiles({
+                    context: reviewSession.context,
+                    input: sessionId,
+                });
+            } else {
+                for (const trackedFile of pendingFiles) {
+                    this.#assertFallbackTrackedFileCurrentMatches(
+                        reviewSession.context,
+                        trackedFile,
+                    );
+                }
+                const backups = this.#createFallbackReviewBackups(
+                    reviewSession.context,
+                    pendingFiles,
+                );
+                try {
+                    for (const trackedFile of pendingFiles) {
+                        this.#rejectFallbackTrackedFile(
+                            reviewSession.context,
+                            trackedFile,
+                        );
+                    }
+                } catch (error) {
+                    this.#restoreFallbackReviewBackups(backups);
+                    throw error;
+                }
+            }
+        }
+
+        let nextActionLog = reviewActionLog;
+        for (const trackedFile of pendingFiles) {
+            this.#rememberResolvedReviewVersion(trackedFile);
+            const target: AiReviewActionLogTarget = {
+                expectedVersion: trackedFile.version,
+                path: trackedFile.path,
+                sessionId,
+                trackedFileId: trackedFile.identityKey,
+            };
+            nextActionLog =
+                decision === "keep"
+                    ? keepReviewFile(nextActionLog, target)
+                    : rejectReviewFile(nextActionLog, target);
+        }
+
+        if (nextActionLog !== reviewActionLog) {
+            this.#persistActionLogReviewMutation(
+                reviewSession,
+                nextActionLog,
+            );
+        }
         return true;
     }
 
@@ -4247,7 +3933,7 @@ export class AiService {
         const fallbackIdentityKeys = new Set(
             pendingFallbackFiles.map((trackedFile) => trackedFile.identityKey),
         );
-        const nextSnapshot = {
+        const baseSnapshot = {
             ...reviewSession.snapshot,
             trackedFiles: reviewSession.snapshot.trackedFiles.filter(
                 (trackedFile) =>
@@ -4255,11 +3941,13 @@ export class AiService {
             ),
             updatedAt: new Date().toISOString(),
         };
-        if (decision === "keep") {
-            for (const trackedFile of pendingFallbackFiles) {
-                this.#rememberLateAcceptedReviewTombstone(trackedFile);
-            }
-        }
+        const nextSnapshot =
+            decision === "keep"
+                ? this.#settleAcceptedReviewFiles(
+                      baseSnapshot,
+                      pendingFallbackFiles,
+                  )
+                : baseSnapshot;
         this.#persistReviewMutation(reviewSession.snapshot, {
             ownerWindowId: reviewSession.context.ownerWindowId,
             snapshot: nextSnapshot,
@@ -4449,21 +4137,6 @@ export class AiService {
             if (await this.#tryApplyFallbackTrackedFileMutation(input, "keep")) {
                 return;
             }
-
-            const reviewSession = await this.#buildNativeReviewContext(
-                input.sessionId,
-            );
-            const result = await this.#requireNativeReviewGateway(
-                "keepTrackedFile",
-            ).keepTrackedFile({
-                context: reviewSession.context,
-                input,
-            });
-            this.#rememberLateAcceptedReviewTombstoneForPath(
-                reviewSession.snapshot,
-                input.path,
-            );
-            this.#persistReviewMutation(reviewSession.snapshot, result);
         });
     }
 
@@ -4483,17 +4156,6 @@ export class AiService {
             ) {
                 return;
             }
-
-            const reviewSession = await this.#buildNativeReviewContext(
-                input.sessionId,
-            );
-            const result = await this.#requireNativeReviewGateway(
-                "rejectTrackedFile",
-            ).rejectTrackedFile({
-                context: reviewSession.context,
-                input,
-            });
-            this.#persistReviewMutation(reviewSession.snapshot, result);
         });
     }
 
@@ -4518,22 +4180,6 @@ export class AiService {
             ) {
                 return;
             }
-
-            const reviewSession = await this.#buildNativeReviewContext(
-                input.sessionId,
-            );
-            const result = await this.#requireNativeReviewGateway(
-                "keepTrackedFileHunks",
-            ).keepTrackedFileHunks({
-                context: reviewSession.context,
-                input,
-            });
-            this.#rememberLateAcceptedReviewTombstoneForKeptHunks(
-                reviewSession.snapshot,
-                result.snapshot,
-                input.path,
-            );
-            this.#persistReviewMutation(reviewSession.snapshot, result);
         });
     }
 
@@ -4558,22 +4204,20 @@ export class AiService {
             ) {
                 return;
             }
-
-            const reviewSession = await this.#buildNativeReviewContext(
-                input.sessionId,
-            );
-            const result = await this.#requireNativeReviewGateway(
-                "rejectTrackedFileHunks",
-            ).rejectTrackedFileHunks({
-                context: reviewSession.context,
-                input,
-            });
-            this.#persistReviewMutation(reviewSession.snapshot, result);
         });
     }
 
     async keepAllTrackedFiles(sessionId: string): Promise<void> {
         await this.#runSerializedReviewMutation(sessionId, async () => {
+            if (
+                await this.#tryApplyAllActionLogTrackedFileMutations(
+                    sessionId,
+                    "keep",
+                )
+            ) {
+                return;
+            }
+
             if (
                 await this.#tryApplyAllFallbackTrackedFileMutations(
                     sessionId,
@@ -4582,25 +4226,20 @@ export class AiService {
             ) {
                 return;
             }
-
-            const reviewSession = await this.#buildNativeReviewContext(
-                sessionId,
-            );
-            const result = await this.#requireNativeReviewGateway(
-                "keepAllTrackedFiles",
-            ).keepAllTrackedFiles({
-                context: reviewSession.context,
-                input: sessionId,
-            });
-            for (const trackedFile of reviewSession.snapshot.trackedFiles) {
-                this.#rememberLateAcceptedReviewTombstone(trackedFile);
-            }
-            this.#persistReviewMutation(reviewSession.snapshot, result);
         });
     }
 
     async rejectAllTrackedFiles(sessionId: string): Promise<void> {
         await this.#runSerializedReviewMutation(sessionId, async () => {
+            if (
+                await this.#tryApplyAllActionLogTrackedFileMutations(
+                    sessionId,
+                    "reject",
+                )
+            ) {
+                return;
+            }
+
             if (
                 await this.#tryApplyAllFallbackTrackedFileMutations(
                     sessionId,
@@ -4609,17 +4248,6 @@ export class AiService {
             ) {
                 return;
             }
-
-            const reviewSession = await this.#buildNativeReviewContext(
-                sessionId,
-            );
-            const result = await this.#requireNativeReviewGateway(
-                "rejectAllTrackedFiles",
-            ).rejectAllTrackedFiles({
-                context: reviewSession.context,
-                input: sessionId,
-            });
-            this.#persistReviewMutation(reviewSession.snapshot, result);
         });
     }
 
@@ -5170,73 +4798,6 @@ function normalizeSessionStatusTitle(
     return trimmed.length > 0 ? trimmed : null;
 }
 
-function nativeDiffFromToolActivityDiff(
-    diff: AiFileDiff,
-    sessionId: string,
-    toolCallId: string,
-    updatedAt: string,
-    normalizePath: (candidatePath: string) => string | null = (candidatePath) =>
-        candidatePath,
-): AiFileDiff | null {
-    if (!diff.isText) {
-        return null;
-    }
-
-    const normalizedPath = normalizePath(diff.path);
-    if (!normalizedPath) {
-        return null;
-    }
-    const normalizedPreviousPath = diff.previousPath
-        ? normalizePath(diff.previousPath)
-        : null;
-    if (diff.previousPath && !normalizedPreviousPath) {
-        return null;
-    }
-    const diffBase = diff.oldText ?? "";
-    const currentText = diff.newText ?? "";
-    if (
-        normalizedPreviousPath === null &&
-        normalizeReviewText(diffBase) === normalizeReviewText(currentText)
-    ) {
-        return null;
-    }
-
-    const trackedFile: AiTrackedFile = {
-        currentText,
-        diffBase,
-        hunks:
-            diff.hunks.length > 0 && normalizedPath === diff.path
-                ? diff.hunks
-                : computeDiffHunks(diffBase, currentText, normalizedPath),
-        identityKey: `tool:${sessionId}:${toolCallId}:${normalizedPreviousPath ?? ""}:${normalizedPath}`,
-        isText: true,
-        kind: diff.kind,
-        newText: diff.newText,
-        oldText: diff.oldText,
-        path: normalizedPath,
-        previousPath:
-            normalizedPreviousPath && normalizedPreviousPath !== normalizedPath
-                ? normalizedPreviousPath
-                : null,
-        reviewState: "pending",
-        reversible: diff.reversible,
-        sessionId,
-        toolCallId,
-        updatedAt,
-        version: 1,
-    };
-    return {
-        hunks: trackedFile.hunks,
-        isText: trackedFile.isText,
-        kind: trackedFile.kind,
-        newText: trackedFile.newText,
-        oldText: trackedFile.oldText,
-        path: trackedFile.path,
-        previousPath: trackedFile.previousPath,
-        reversible: trackedFile.reversible,
-    };
-}
-
 function normalizeAiFileDiffPaths(
     diff: AiFileDiff,
     normalizePath: (candidatePath: string) => string | null,
@@ -5335,18 +4896,6 @@ function fallbackReviewMutationPaths(trackedFile: AiTrackedFile): readonly strin
     return trackedFile.previousPath
         ? [trackedFile.path, trackedFile.previousPath]
         : [trackedFile.path];
-}
-
-function isTrackedFileAlreadyResolved(
-    trackedFile: AiTrackedFile,
-    resolvedVersions: ReadonlyMap<string, number>,
-): boolean {
-    const resolvedVersion = resolvedVersions.get(trackedFile.identityKey);
-    if (resolvedVersion === undefined) {
-        return false;
-    }
-
-    return (trackedFile.version ?? 1) <= resolvedVersion;
 }
 
 function removeTrackedFileByIdentity(
@@ -5851,62 +5400,6 @@ function reviewActionLogTargetFromInput(
         sessionId: input.sessionId,
         trackedFileId: input.trackedFileId ?? null,
     };
-}
-
-function applyNativeReviewMirrorConflicts(
-    reviewActionLog: AiReviewActionLogState,
-    conflicts: readonly AiReviewConflict[],
-): AiReviewActionLogState {
-    let nextActionLog = reviewActionLog;
-    const markedIdentityKeys = new Set<string>();
-
-    for (const conflict of conflicts) {
-        if (!conflict.path) {
-            continue;
-        }
-
-        const file = resolveReviewTarget(nextActionLog, {
-            path: conflict.path,
-            sessionId: nextActionLog.sessionId,
-        });
-        if (
-            !file ||
-            file.reviewState === "conflict" ||
-            markedIdentityKeys.has(file.identityKey)
-        ) {
-            continue;
-        }
-
-        markedIdentityKeys.add(file.identityKey);
-        nextActionLog = markReviewFileConflict(nextActionLog, {
-            expectedVersion: file.version,
-            path: file.path,
-            sessionId: nextActionLog.sessionId,
-            trackedFileId: file.identityKey,
-        });
-    }
-
-    return nextActionLog;
-}
-
-function collectNativeReviewConflicts(
-    trackedFiles: readonly AiTrackedFile[],
-    conflicts: readonly AiReviewConflict[] = [],
-): readonly AiReviewConflict[] {
-    const nextConflicts = [...conflicts];
-    for (const trackedFile of trackedFiles) {
-        if (trackedFile.reviewState !== "conflict") {
-            continue;
-        }
-
-        nextConflicts.push({
-            externalChangeHash: null,
-            path: trackedFile.path,
-            reason: trackedFile.conflict ?? "native_conflict",
-        });
-    }
-
-    return nextConflicts;
 }
 
 function createReviewWorkCycleId(sessionId: string, messageId: string): string {

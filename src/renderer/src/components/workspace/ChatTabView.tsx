@@ -25,6 +25,7 @@ import {
     MAX_IMAGE_ATTACHMENTS,
     MAX_IMAGE_ATTACHMENT_BYTES,
 } from "@shared/ai-attachments";
+import { deriveTrackedFilesFromActionLog } from "@shared/ai-review-action-log";
 import { resolveEditorLanguage } from "@shared/editor-language";
 
 import { useShallow } from "zustand/react/shallow";
@@ -589,10 +590,16 @@ export const ChatTabView = memo(function ChatTabView({
         agentModels.length > 0 ||
         agentModes.length > 0;
 
-    const pendingTrackedFiles = useMemo(
+    const canonicalTrackedFiles = useMemo(
         () =>
-            snapshot.trackedFiles.filter(isReviewUnresolvedFile),
-        [snapshot.trackedFiles],
+            snapshot.reviewActionLog?.sessionId === snapshot.sessionId
+                ? deriveTrackedFilesFromActionLog(snapshot.reviewActionLog)
+                : snapshot.trackedFiles,
+        [snapshot.reviewActionLog, snapshot.sessionId, snapshot.trackedFiles],
+    );
+    const pendingTrackedFiles = useMemo(
+        () => canonicalTrackedFiles.filter(isReviewUnresolvedFile),
+        [canonicalTrackedFiles],
     );
     const projectFileRoots = useMemo(() => {
         const activeWorktreeRootPath = tab.worktreeId
@@ -788,12 +795,12 @@ export const ChatTabView = memo(function ChatTabView({
                 : null;
         return reconcileChatTimelineModelFromTranscript(previousTimelineModel, {
             status: snapshot.status,
-            trackedFiles: snapshot.trackedFiles,
+            trackedFiles: canonicalTrackedFiles,
             transcript,
         });
     }, [
+        canonicalTrackedFiles,
         snapshot.status,
-        snapshot.trackedFiles,
         tab.sessionId,
         transcript,
     ]);

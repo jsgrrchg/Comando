@@ -2,50 +2,44 @@ import {
     computeDiffHunks,
     getTrackedFileCurrentText,
     getTrackedFileDiffBase,
-    isAiTrackedFileUnresolved,
     normalizeReviewText,
     resolveTrackedFileHunks,
     syncTrackedFile,
-    upsertTrackedFile,
 } from "./ai-tracked-file";
-import type { AiFileDiff, AiSessionEventOrigin, AiTrackedFile } from "./ipc";
+import type {
+    AiFileDiff,
+    AiSessionEventOrigin,
+    AiTrackedFile,
+} from "./ipc";
+
+// ---------------------------------------------------------------------------
+// Single-source-of-truth review action log.
+//
+// The action log is the ONLY owner of pending review state. It stores tracked
+// files keyed by identity; each file carries an evolving `diffBase` and the
+// `currentText` the agent last produced. The visible diff is always
+// `diffBase -> currentText`.
+//
+// The crucial invariant — and the reason accepted work never reappears — is
+// that `diffBase` evolves on accept (keep folds the accepted hunks into the
+// base) and ingestion of a fresh runtime diff for a KNOWN file reuses that
+// accumulated `diffBase`, ignoring the runtime's stale `oldText`. There is no
+// settle bookkeeping, no per-range projection, and no second store to
+// reconcile against: the file itself is the baseline.
+//
+// A resolved file is retained (hidden) with `diffBase === currentText` rather
+// than deleted, so a runtime that re-emits it on a later turn reconciles
+// against the resolved text instead of re-proposing it. This is what makes the
+// log robust across the different ACP runtimes Comando drives.
+// ---------------------------------------------------------------------------
 
 export interface AiReviewActionLogState {
-    readonly schemaVersion: 1;
+    readonly schemaVersion: 2;
     readonly sessionId: string;
     readonly updatedAt: string;
-    readonly filesByIdentityKey: Readonly<Record<string, AiReviewActionLogFile>>;
+    readonly trackedFilesByIdentityKey: Readonly<Record<string, AiTrackedFile>>;
     readonly fileOrder: readonly string[];
-    readonly versionClockByIdentityKey: Readonly<Record<string, number>>;
     readonly activeWorkCycleId: string | null;
-}
-
-export interface AiReviewActionLogFile {
-    readonly identityKey: string;
-    readonly originPath: string;
-    readonly path: string;
-    readonly previousPath: string | null;
-    readonly kind: "create" | "delete" | "move" | "update";
-    readonly diffBase: string;
-    readonly currentText: string;
-    readonly oldText: string | null;
-    readonly newText: string | null;
-    readonly pendingRanges: readonly AiReviewPendingRange[];
-    readonly reviewState: "pending" | "conflict";
-    readonly sessionId: string;
-    readonly toolCallIds: readonly string[];
-    readonly updatedAt: string;
-    readonly version: number;
-}
-
-export interface AiReviewPendingRange {
-    readonly id: string;
-    readonly baseFrom: number;
-    readonly baseTo: number;
-    readonly currentFrom: number;
-    readonly currentTo: number;
-    readonly toolCallId: string | null;
-    readonly workCycleId: string | null;
 }
 
 export interface AiReviewDiffConsolidationContext {
@@ -67,10 +61,7 @@ type AiFileDiffWithIdentity = AiFileDiff & {
     readonly identityKey?: string | null;
 };
 
-interface ReviewTrackedFileCandidate {
-    readonly mergeMode: "identity" | "none" | "path";
-    readonly trackedFile: AiTrackedFile;
-}
+// --- Construction ----------------------------------------------------------
 
 export function createEmptyReviewActionLog(
     sessionId: string,
@@ -78,11 +69,10 @@ export function createEmptyReviewActionLog(
     return {
         activeWorkCycleId: null,
         fileOrder: [],
-        filesByIdentityKey: {},
-        schemaVersion: 1,
+        schemaVersion: 2,
         sessionId,
+        trackedFilesByIdentityKey: {},
         updatedAt: new Date().toISOString(),
-        versionClockByIdentityKey: {},
     };
 }
 
@@ -101,127 +91,18 @@ export function createReviewActionLogFromTrackedFiles(
     };
 
     for (const trackedFile of trackedFiles) {
-        if (
-            !trackedFile.isText ||
-            trackedFile.sessionId !== sessionId ||
-            !isAiTrackedFileUnresolved(trackedFile)
-        ) {
+        if (trackedFile.sessionId !== sessionId || !trackedFile.isText) {
             continue;
         }
-
-        const syncedTrackedFile = syncTrackedFile(trackedFile);
-        state = replaceReviewFile(
-            state,
-            actionLogFileFromTrackedFile(
-                syncedTrackedFile,
-                state.filesByIdentityKey[syncedTrackedFile.identityKey],
-                {
-                    updatedAt: syncedTrackedFile.updatedAt,
-                },
-            ),
-            {
-                updatedAt: syncedTrackedFile.updatedAt,
-            },
-        );
+        state = putTrackedFile(state, syncTrackedFile(trackedFile), {
+            updatedAt: trackedFile.updatedAt,
+        });
     }
 
     return {
         ...state,
         updatedAt: options.updatedAt ?? state.updatedAt,
     };
-}
-
-export function replaceReviewFilesFromMirror(
-    state: AiReviewActionLogState,
-    trackedFiles: readonly AiTrackedFile[],
-    context: AiReviewDiffConsolidationContext = {},
-): AiReviewActionLogState {
-    let nextState: AiReviewActionLogState = {
-        ...state,
-        fileOrder: [],
-        filesByIdentityKey: {},
-        updatedAt: context.updatedAt ?? new Date().toISOString(),
-    };
-    for (const identityKey of state.fileOrder) {
-        const file = state.filesByIdentityKey[identityKey];
-        if (
-            file &&
-            (file.reviewState === "conflict" ||
-                (isLocalReviewFile(file) &&
-                    !trackedFiles.some((trackedFile) =>
-                        trackedFileRepresentsActionLogFile(trackedFile, file),
-                    )))
-        ) {
-            nextState = replaceReviewFile(nextState, file, context);
-        }
-    }
-
-    for (const trackedFile of trackedFiles) {
-        if (
-            !trackedFile.isText ||
-            trackedFile.sessionId !== state.sessionId ||
-            !isAiTrackedFileUnresolved(trackedFile)
-        ) {
-            continue;
-        }
-
-        const syncedTrackedFile = syncTrackedFile(trackedFile);
-        const previousFile = findActionLogFileForTrackedFile(
-            state,
-            syncedTrackedFile,
-        );
-        if (
-            previousFile &&
-            normalizeVersion(syncedTrackedFile.version) < previousFile.version
-        ) {
-            continue;
-        }
-
-        if (
-            !previousFile &&
-            normalizeVersion(syncedTrackedFile.version) <=
-                (state.versionClockByIdentityKey[
-                    syncedTrackedFile.identityKey
-                ] ?? 0)
-        ) {
-            continue;
-        }
-
-        nextState = replaceReviewFile(
-            nextState,
-            actionLogFileFromTrackedFile(
-                syncedTrackedFile,
-                previousFile,
-                context,
-            ),
-            context,
-        );
-    }
-
-    return nextState;
-}
-
-function isLocalReviewFile(file: AiReviewActionLogFile): boolean {
-    return (
-        file.identityKey.startsWith("review:") ||
-        file.identityKey.startsWith("tool:")
-    );
-}
-
-function trackedFileRepresentsActionLogFile(
-    trackedFile: AiTrackedFile,
-    file: AiReviewActionLogFile,
-): boolean {
-    return (
-        trackedFile.identityKey === file.identityKey ||
-        trackedFile.path === file.path ||
-        trackedFile.path === file.originPath ||
-        trackedFile.previousPath === file.path ||
-        trackedFile.previousPath === file.originPath ||
-        file.previousPath === trackedFile.path ||
-        (file.previousPath !== null &&
-            file.previousPath === trackedFile.previousPath)
-    );
 }
 
 export function beginReviewWorkCycle(
@@ -232,7 +113,6 @@ export function beginReviewWorkCycle(
     if (state.activeWorkCycleId === workCycleId && !options.updatedAt) {
         return state;
     }
-
     return {
         ...state,
         activeWorkCycleId: workCycleId,
@@ -240,6 +120,15 @@ export function beginReviewWorkCycle(
     };
 }
 
+// --- Ingestion -------------------------------------------------------------
+
+/**
+ * Merge freshly emitted runtime diffs into the log. For a file already tracked,
+ * the accumulated `diffBase` is preserved and only `currentText` is updated —
+ * so accepted work (already folded into the base) never reappears, regardless
+ * of the `oldText` the runtime emits. A brand-new file uses the diff's own
+ * `oldText` as the base.
+ */
 export function consolidateReviewDiffs(
     state: AiReviewActionLogState,
     diffs: readonly AiFileDiff[],
@@ -249,42 +138,208 @@ export function consolidateReviewDiffs(
         return state;
     }
 
-    let nextState = state;
+    let nextState = applyWorkCycle(state, context);
     for (const diff of diffs) {
         if (!diff.isText) {
             continue;
         }
-
-        const candidate = trackedFileFromDiff(nextState, diff, context);
-        if (!candidate) {
-            continue;
+        const existing = findTrackedFileForDiff(nextState, diff);
+        const updatedAt = context.updatedAt ?? new Date().toISOString();
+        if (existing) {
+            const updated = updateTrackedFileWithDiff(
+                existing,
+                diff,
+                context,
+                updatedAt,
+            );
+            // Skip stale re-emissions of already-resolved work: if neither the
+            // existing nor the updated file carries a visible change, the diff
+            // just reproduces resolved content — leave the log untouched so the
+            // native mirror is not re-recorded and the file is not re-proposed.
+            if (!isVisibleReviewFile(existing) && !isVisibleReviewFile(updated)) {
+                continue;
+            }
+            nextState = putTrackedFile(nextState, updated, { updatedAt });
+        } else {
+            const created = createTrackedFileFromDiff(
+                nextState.sessionId,
+                diff,
+                context,
+                updatedAt,
+            );
+            if (created) {
+                nextState = putTrackedFile(nextState, created, { updatedAt });
+            }
         }
-
-        nextState = applyTrackedFile(nextState, candidate, context);
     }
-
     return nextState;
 }
 
+function createTrackedFileFromDiff(
+    sessionId: string,
+    diff: AiFileDiff,
+    context: AiReviewDiffConsolidationContext,
+    updatedAt: string,
+): AiTrackedFile | null {
+    const diffBase = diff.kind === "create" ? "" : (diff.oldText ?? "");
+    const currentText = diff.kind === "delete" ? "" : (diff.newText ?? "");
+    if (
+        !diff.previousPath &&
+        normalizeReviewText(diffBase) === normalizeReviewText(currentText)
+    ) {
+        return null;
+    }
+    const hunks = computeDiffHunks(diffBase, currentText, diff.path);
+    if (hunks.length === 0 && !diff.previousPath) {
+        return null;
+    }
+    return {
+        currentText,
+        diffBase,
+        hunks,
+        identityKey: identityKeyForDiff(sessionId, diff),
+        isText: true,
+        kind: diff.kind,
+        newText: diff.newText,
+        oldText: diff.oldText,
+        path: diff.path,
+        previousPath: diff.previousPath,
+        reviewState: "pending",
+        reversible: diff.kind === "create" || diff.oldText !== null,
+        sessionId,
+        toolCallId: context.toolCallId ?? null,
+        updatedAt,
+        version: 1,
+    };
+}
+
+function updateTrackedFileWithDiff(
+    file: AiTrackedFile,
+    diff: AiFileDiff,
+    context: AiReviewDiffConsolidationContext,
+    updatedAt: string,
+): AiTrackedFile {
+    // Preserve the accumulated baseline; only the agent's latest full text
+    // moves. This is what keeps accepted work (folded into diffBase) from
+    // resurfacing when the runtime re-emits against its stale session baseline.
+    const diffBase = getTrackedFileDiffBase(file);
+    const currentText = diff.kind === "delete" ? "" : (diff.newText ?? "");
+    const hunks = computeDiffHunks(diffBase, currentText, diff.path);
+    const kind =
+        diff.kind === "delete"
+            ? "delete"
+            : file.kind === "delete" &&
+                (diff.kind === "update" || diff.kind === "move")
+              ? "update"
+              : file.kind;
+    return {
+        ...file,
+        conflict: undefined,
+        currentText,
+        diffBase,
+        hunks,
+        kind,
+        newText: diff.newText,
+        path: diff.path,
+        // Only adopt the diff's previous path on a genuine move (the path
+        // actually changes). A late move diff whose target already matches the
+        // tracked path is stale — keep the file's own (resolved) rename state.
+        previousPath:
+            diff.path !== file.path
+                ? (diff.previousPath ?? file.previousPath)
+                : file.previousPath,
+        reviewState: "pending",
+        toolCallId: context.toolCallId ?? file.toolCallId,
+        updatedAt,
+        version: nextVersion(file),
+    };
+}
+
+// --- Derivation ------------------------------------------------------------
+
+/** The pending files the review UI shows: those that still carry a change. */
 export function deriveTrackedFilesFromActionLog(
     state: AiReviewActionLogState,
 ): readonly AiTrackedFile[] {
-    return state.fileOrder.flatMap((identityKey) => {
-        const file = state.filesByIdentityKey[identityKey];
-        return file ? [trackedFileFromActionLogFile(file)] : [];
-    });
+    return orderedFiles(state).filter(isVisibleReviewFile);
 }
+
+function isVisibleReviewFile(file: AiTrackedFile): boolean {
+    if (file.reviewState === "conflict") {
+        return true;
+    }
+    if (file.previousPath !== null && file.previousPath !== file.path) {
+        // A pending rename stays visible even with identical content.
+        return true;
+    }
+    return (
+        normalizeReviewText(getTrackedFileDiffBase(file)) !==
+        normalizeReviewText(getTrackedFileCurrentText(file))
+    );
+}
+
+// --- Target resolution -----------------------------------------------------
+
+export function resolveReviewTarget(
+    state: AiReviewActionLogState,
+    target: AiReviewActionLogTarget,
+): AiTrackedFile | null {
+    if (target.sessionId !== state.sessionId) {
+        return null;
+    }
+    if (target.trackedFileId) {
+        // An explicit id must match exactly — no path fallback — so a stale id
+        // fails cleanly instead of resolving a different file underneath it.
+        return (
+            (state.trackedFilesByIdentityKey ?? {})[target.trackedFileId] ??
+            null
+        );
+    }
+    return (
+        orderedFiles(state).find(
+            (file) =>
+                file.path === target.path ||
+                file.previousPath === target.path,
+        ) ?? null
+    );
+}
+
+export function isReviewTargetVersionCurrent(
+    file: AiTrackedFile,
+    target: Pick<AiReviewActionLogTarget, "expectedVersion">,
+): boolean {
+    if (target.expectedVersion === undefined) {
+        return true;
+    }
+    return (
+        Number.isInteger(target.expectedVersion) &&
+        target.expectedVersion === normalizeVersion(file.version)
+    );
+}
+
+export function assertReviewTargetVersion(
+    file: AiTrackedFile,
+    target: Pick<AiReviewActionLogTarget, "expectedVersion">,
+): void {
+    if (!isReviewTargetVersionCurrent(file, target)) {
+        throw new Error("Stale AI review target version.");
+    }
+}
+
+// --- Keep / reject ---------------------------------------------------------
 
 export function keepReviewFile(
     state: AiReviewActionLogState,
     target: AiReviewActionLogTarget,
 ): AiReviewActionLogState {
-    const file = resolveReviewTarget(state, target);
-    if (!file) {
-        return state;
-    }
-    assertReviewTargetVersion(file, target);
-    return removeReviewFile(state, file.identityKey);
+    return resolveReviewFileHunks(state, target, null, "keep");
+}
+
+export function rejectReviewFile(
+    state: AiReviewActionLogState,
+    target: AiReviewActionLogTarget,
+): AiReviewActionLogState {
+    return resolveReviewFileHunks(state, target, null, "reject");
 }
 
 export function keepReviewRanges(
@@ -292,19 +347,7 @@ export function keepReviewRanges(
     target: AiReviewActionLogTarget,
     rangeIds: readonly string[],
 ): AiReviewActionLogState {
-    return resolveReviewRanges(state, target, rangeIds, "keep");
-}
-
-export function rejectReviewFile(
-    state: AiReviewActionLogState,
-    target: AiReviewActionLogTarget,
-): AiReviewActionLogState {
-    const file = resolveReviewTarget(state, target);
-    if (!file) {
-        return state;
-    }
-    assertReviewTargetVersion(file, target);
-    return removeReviewFile(state, file.identityKey);
+    return resolveReviewFileHunks(state, target, rangeIds, "keep");
 }
 
 export function rejectReviewRanges(
@@ -312,7 +355,65 @@ export function rejectReviewRanges(
     target: AiReviewActionLogTarget,
     rangeIds: readonly string[],
 ): AiReviewActionLogState {
-    return resolveReviewRanges(state, target, rangeIds, "reject");
+    return resolveReviewFileHunks(state, target, rangeIds, "reject");
+}
+
+/**
+ * Apply a keep/reject to a file. `rangeIds === null` resolves the whole file
+ * (every hunk). The engine advances `diffBase` (keep) or reverts `currentText`
+ * (reject); a fully resolved file is retained with `diffBase === currentText`
+ * so later runtime diffs reconcile against the resolved text.
+ */
+function resolveReviewFileHunks(
+    state: AiReviewActionLogState,
+    target: AiReviewActionLogTarget,
+    rangeIds: readonly string[] | null,
+    decision: "keep" | "reject",
+): AiReviewActionLogState {
+    const file = resolveReviewTarget(state, target);
+    if (!file) {
+        return state;
+    }
+    assertReviewTargetVersion(file, target);
+
+    if (rangeIds === null) {
+        // Whole-file keep/reject is unconditional: settle to the resolved text
+        // and clear any pending rename, even when there is no content hunk to
+        // resolve (a pure rename has empty hunks but must still settle).
+        const retained = retainedResolvedFile(file, decision);
+        return putTrackedFile(state, retained, {
+            updatedAt: retained.updatedAt,
+        });
+    }
+
+    const resolved = resolveTrackedFileHunks(file, rangeIds, decision);
+    const nextFile = resolved ?? retainedResolvedFile(file, decision);
+    return putTrackedFile(state, nextFile, { updatedAt: nextFile.updatedAt });
+}
+
+// A fully resolved file is kept (hidden) at the resolved text so a re-emitted
+// runtime diff reconciles against it instead of re-proposing the change.
+function retainedResolvedFile(
+    file: AiTrackedFile,
+    decision: "keep" | "reject",
+): AiTrackedFile {
+    const settledText =
+        decision === "keep"
+            ? getTrackedFileCurrentText(file)
+            : getTrackedFileDiffBase(file);
+    const isEmpty = settledText.length === 0;
+    return {
+        ...file,
+        currentText: settledText,
+        diffBase: settledText,
+        hunks: [],
+        newText: file.kind === "delete" ? null : isEmpty ? null : settledText,
+        oldText: isEmpty ? null : settledText,
+        previousPath: null,
+        reviewState: "pending",
+        updatedAt: new Date().toISOString(),
+        version: nextVersion(file),
+    };
 }
 
 export function markReviewFileConflict(
@@ -324,414 +425,152 @@ export function markReviewFileConflict(
         return state;
     }
     assertReviewTargetVersion(file, target);
-
     const updatedAt = new Date().toISOString();
-    return replaceReviewFile(
+    return putTrackedFile(
         state,
         {
             ...file,
             reviewState: "conflict",
             updatedAt,
-            version: file.version + 1,
+            version: nextVersion(file),
         },
-        {
-            updatedAt,
-        },
+        { updatedAt },
     );
 }
 
-function resolveReviewRanges(
+// --- Settle / mirror (single-store helpers) --------------------------------
+
+/**
+ * Settle an accepted tracked file directly into the log. Used by the
+ * native/fallback accept paths in the main process, which resolve a change
+ * without going through keepReviewFile. The file is retained at its accepted
+ * text so later runtime diffs reconcile against it.
+ */
+export function settleAcceptedReviewFile(
     state: AiReviewActionLogState,
-    target: AiReviewActionLogTarget,
-    rangeIds: readonly string[],
-    decision: "keep" | "reject",
+    trackedFile: AiTrackedFile,
 ): AiReviewActionLogState {
-    const file = resolveReviewTarget(state, target);
-    if (!file) {
-        return state;
-    }
-    assertReviewTargetVersion(file, target);
-
-    const trackedFile = trackedFileFromActionLogFile(file);
-    const nextTrackedFile = resolveTrackedFileHunks(
-        trackedFile,
-        rangeIds,
-        decision,
-    );
-    if (!nextTrackedFile) {
-        return removeReviewFile(state, file.identityKey);
-    }
-
-    return replaceReviewFile(
-        state,
-        actionLogFileFromTrackedFile(nextTrackedFile, file, {
-            updatedAt: nextTrackedFile.updatedAt,
-        }),
-    );
+    const synced = syncTrackedFile(trackedFile);
+    const existing = findTrackedFileForTracked(state, synced);
+    const base = existing ?? synced;
+    return putTrackedFile(state, retainedResolvedFile(base, "keep"), {
+        updatedAt: base.updatedAt,
+    });
 }
 
-export function resolveReviewTarget(
+/**
+ * Merge the native review mirror into the log additively. The log is canonical;
+ * the mirror (the turn-end on-disk reconcile) may only ADD a changed file the
+ * live path never captured — it must never overwrite or un-resolve a file the
+ * log already tracks. This keeps the native backend strictly subordinate.
+ */
+export function mergeReviewFilesFromMirror(
     state: AiReviewActionLogState,
-    target: AiReviewActionLogTarget,
-): AiReviewActionLogFile | null {
-    if (target.sessionId !== state.sessionId) {
-        return null;
+    trackedFiles: readonly AiTrackedFile[],
+    context: AiReviewDiffConsolidationContext = {},
+): AiReviewActionLogState {
+    let nextState = state;
+    for (const trackedFile of trackedFiles) {
+        if (trackedFile.sessionId !== state.sessionId || !trackedFile.isText) {
+            continue;
+        }
+        if (findTrackedFileForTracked(nextState, trackedFile)) {
+            // The log already owns this file (pending or resolved). Never let
+            // the mirror overwrite the canonical entry.
+            continue;
+        }
+        nextState = putTrackedFile(nextState, syncTrackedFile(trackedFile), {
+            updatedAt: context.updatedAt ?? trackedFile.updatedAt,
+        });
     }
-
-    if (target.trackedFileId) {
-        const exactFile = state.filesByIdentityKey[target.trackedFileId];
-        return exactFile ?? null;
-    }
-
-    return (
-        state.fileOrder
-            .map((identityKey) => state.filesByIdentityKey[identityKey])
-            .find(
-                (file) =>
-                    file &&
-                    (file.path === target.path ||
-                        file.previousPath === target.path ||
-                        file.identityKey === target.path),
-            ) ?? null
-    );
+    return nextState;
 }
 
-export function assertReviewTargetVersion(
-    file: AiReviewActionLogFile,
-    target: Pick<AiReviewActionLogTarget, "expectedVersion">,
-): void {
-    if (!isReviewTargetVersionCurrent(file, target)) {
-        throw new Error("Stale AI review target version.");
-    }
-}
+// --- Internal state helpers ------------------------------------------------
 
-export function isReviewTargetVersionCurrent(
-    file: AiReviewActionLogFile,
-    target: Pick<AiReviewActionLogTarget, "expectedVersion">,
-): boolean {
-    if (target.expectedVersion === undefined) {
-        return true;
-    }
-
-    return (
-        Number.isFinite(target.expectedVersion) &&
-        Number.isInteger(target.expectedVersion) &&
-        target.expectedVersion === file.version
-    );
-}
-
-function applyTrackedFile(
+function applyWorkCycle(
     state: AiReviewActionLogState,
-    candidate: ReviewTrackedFileCandidate,
     context: AiReviewDiffConsolidationContext,
 ): AiReviewActionLogState {
-    const { trackedFile } = candidate;
-    const trackedFiles = deriveTrackedFilesFromActionLog(state);
-    const previousFile =
-        candidate.mergeMode === "path"
-            ? findActionLogFileForTrackedFile(state, trackedFile)
-            : state.filesByIdentityKey[trackedFile.identityKey];
-    const nextTrackedFile =
-        candidate.mergeMode === "path"
-            ? resolveMergedTrackedFile(trackedFiles, trackedFile, previousFile)
-            : candidate.mergeMode === "identity" && previousFile
-              ? resolveMergedTrackedFile(
-                    [trackedFileFromActionLogFile(previousFile)],
-                    trackedFile,
-                    previousFile,
-                )
-              : syncTrackedFile(trackedFile);
-
-    if (!nextTrackedFile) {
-        return previousFile
-            ? removeReviewFile(state, previousFile.identityKey, context)
-            : state;
+    if (
+        context.workCycleId === undefined ||
+        context.workCycleId === state.activeWorkCycleId
+    ) {
+        return state;
     }
-
-    const nextFile = actionLogFileFromTrackedFile(
-        nextTrackedFile,
-        previousFile ?? undefined,
-        context,
-    );
-    return replaceReviewFile(state, nextFile, context);
+    return { ...state, activeWorkCycleId: context.workCycleId };
 }
 
-function replaceReviewFile(
+function putTrackedFile(
     state: AiReviewActionLogState,
-    file: AiReviewActionLogFile,
-    context?: Pick<
-        AiReviewDiffConsolidationContext,
-        "updatedAt" | "workCycleId"
-    >,
+    file: AiTrackedFile,
+    context: { readonly updatedAt?: string },
 ): AiReviewActionLogState {
     const fileOrder = state.fileOrder.includes(file.identityKey)
         ? state.fileOrder
         : [...state.fileOrder, file.identityKey];
-
     return {
         ...state,
-        activeWorkCycleId:
-            context?.workCycleId === undefined
-                ? state.activeWorkCycleId
-                : context.workCycleId,
         fileOrder,
-        filesByIdentityKey: {
-            ...state.filesByIdentityKey,
+        trackedFilesByIdentityKey: {
+            ...state.trackedFilesByIdentityKey,
             [file.identityKey]: file,
         },
-        updatedAt: context?.updatedAt ?? file.updatedAt,
-        versionClockByIdentityKey: updateVersionClock(
-            state.versionClockByIdentityKey,
-            file.identityKey,
-            file.version,
-        ),
+        updatedAt: context.updatedAt ?? file.updatedAt,
     };
 }
 
-function removeReviewFile(
-    state: AiReviewActionLogState,
-    identityKey: string,
-    context?: Pick<
-        AiReviewDiffConsolidationContext,
-        "updatedAt" | "workCycleId"
-    >,
-): AiReviewActionLogState {
-    if (!state.filesByIdentityKey[identityKey]) {
-        return state;
-    }
-
-    const { [identityKey]: _removed, ...filesByIdentityKey } =
-        state.filesByIdentityKey;
-    void _removed;
-    const removedVersion = state.filesByIdentityKey[identityKey]?.version ?? 0;
-
-    return {
-        ...state,
-        activeWorkCycleId:
-            context?.workCycleId === undefined
-                ? state.activeWorkCycleId
-                : context.workCycleId,
-        fileOrder: state.fileOrder.filter((candidate) => candidate !== identityKey),
-        filesByIdentityKey,
-        updatedAt: context?.updatedAt ?? new Date().toISOString(),
-        versionClockByIdentityKey: updateVersionClock(
-            state.versionClockByIdentityKey,
-            identityKey,
-            removedVersion,
-        ),
-    };
-}
-
-function resolveMergedTrackedFile(
-    trackedFiles: readonly AiTrackedFile[],
-    trackedFile: AiTrackedFile,
-    previousFile: AiReviewActionLogFile | undefined,
-): AiTrackedFile | null {
-    const nextTrackedFiles = upsertTrackedFile(trackedFiles, trackedFile);
-    return (
-        nextTrackedFiles.find(
-            (file) => file.identityKey === previousFile?.identityKey,
-        ) ??
-        nextTrackedFiles.find((file) => file.identityKey === trackedFile.identityKey) ??
-        nextTrackedFiles.find(
-            (file) =>
-                file.path === trackedFile.path ||
-                file.previousPath === trackedFile.path ||
-                (trackedFile.previousPath &&
-                    (file.path === trackedFile.previousPath ||
-                        file.previousPath === trackedFile.previousPath)),
-        ) ??
-        null
-    );
-}
-
-function trackedFileFromDiff(
-    state: AiReviewActionLogState,
-    diff: AiFileDiff,
-    context: AiReviewDiffConsolidationContext,
-): ReviewTrackedFileCandidate | null {
-    const diffBase = diff.oldText ?? "";
-    const currentText = diff.newText ?? "";
-    if (
-        !diff.previousPath &&
-        normalizeReviewText(diffBase) === normalizeReviewText(currentText)
-    ) {
-        return null;
-    }
-
-    const explicitIdentityKey = extractDiffIdentityKey(diff);
-    const previousFile = findActionLogFileForDiff(state, diff);
-    const identityKey =
-        previousFile?.identityKey ??
-        explicitIdentityKey ??
-        createReviewIdentityKey(state.sessionId, diff);
-    const hunks = computeDiffHunks(diffBase, currentText, diff.path);
-    const previousVersion =
-        previousFile?.version ?? state.versionClockByIdentityKey[identityKey] ?? 0;
-
-    return {
-        mergeMode: explicitIdentityKey
-            ? previousFile
-                ? "identity"
-                : "none"
-            : "path",
-        trackedFile: {
-            currentText,
-            diffBase,
-            hunks,
-            identityKey,
-            isText: true,
-            kind: diff.kind,
-            newText: diff.newText,
-            oldText: diff.oldText,
-            path: diff.path,
-            previousPath: diff.previousPath,
-            reviewState: "pending",
-            reversible: diff.kind === "create" || diff.oldText !== null,
-            sessionId: context.sessionId ?? state.sessionId,
-            toolCallId: context.toolCallId ?? null,
-            updatedAt: context.updatedAt ?? new Date().toISOString(),
-            version: previousVersion + 1,
-        },
-    };
-}
-
-function trackedFileFromActionLogFile(file: AiReviewActionLogFile): AiTrackedFile {
-    const hunks = computeDiffHunks(file.diffBase, file.currentText, file.path);
-
-    return {
-        currentText: file.currentText,
-        diffBase: file.diffBase,
-        hunks,
-        identityKey: file.identityKey,
-        isText: true,
-        kind: file.kind,
-        newText: file.newText,
-        oldText: file.oldText,
-        path: file.path,
-        previousPath: file.previousPath,
-        reviewState: file.reviewState,
-        reversible: file.kind === "create" || file.oldText !== null,
-        sessionId: file.sessionId,
-        toolCallId: file.toolCallIds.at(-1) ?? null,
-        updatedAt: file.updatedAt,
-        version: file.version,
-    };
-}
-
-function actionLogFileFromTrackedFile(
-    trackedFile: AiTrackedFile,
-    previousFile?: AiReviewActionLogFile,
-    context: Pick<
-        AiReviewDiffConsolidationContext,
-        "toolCallId" | "updatedAt" | "workCycleId"
-    > = {},
-): AiReviewActionLogFile {
-    const syncedTrackedFile = syncTrackedFile(trackedFile);
-    const diffBase = getTrackedFileDiffBase(syncedTrackedFile);
-    const currentText = getTrackedFileCurrentText(syncedTrackedFile);
-    const updatedAt = context.updatedAt ?? syncedTrackedFile.updatedAt;
-    const toolCallIds = mergeToolCallIds(
-        previousFile?.toolCallIds ?? [],
-        context.toolCallId ?? syncedTrackedFile.toolCallId ?? null,
-    );
-
-    return {
-        currentText,
-        diffBase,
-        identityKey: syncedTrackedFile.identityKey,
-        kind: syncedTrackedFile.kind,
-        newText: syncedTrackedFile.newText,
-        oldText: syncedTrackedFile.oldText,
-        originPath:
-            previousFile?.originPath ??
-            syncedTrackedFile.previousPath ??
-            syncedTrackedFile.path,
-        path: syncedTrackedFile.path,
-        pendingRanges: pendingRangesFromTrackedFile(
-            syncedTrackedFile,
-            previousFile,
-            context,
-        ),
-        previousPath: syncedTrackedFile.previousPath,
-        reviewState:
-            syncedTrackedFile.reviewState === "conflict" ? "conflict" : "pending",
-        sessionId: syncedTrackedFile.sessionId,
-        toolCallIds,
-        updatedAt,
-        version: normalizeVersion(syncedTrackedFile.version),
-    };
-}
-
-function pendingRangesFromTrackedFile(
-    trackedFile: AiTrackedFile,
-    previousFile: AiReviewActionLogFile | undefined,
-    context: Pick<AiReviewDiffConsolidationContext, "toolCallId" | "workCycleId">,
-): readonly AiReviewPendingRange[] {
-    const previousRangesById = new Map(
-        previousFile?.pendingRanges.map((range) => [range.id, range]) ?? [],
-    );
-
-    return trackedFile.hunks.map((hunk) => {
-        const previousRange = previousRangesById.get(hunk.id);
-        return {
-            baseFrom: Math.max(0, hunk.oldStart - 1),
-            baseTo: Math.max(0, hunk.oldStart - 1 + hunk.oldCount),
-            currentFrom: Math.max(0, hunk.newStart - 1),
-            currentTo: Math.max(0, hunk.newStart - 1 + hunk.newCount),
-            id: hunk.id,
-            toolCallId:
-                previousRange?.toolCallId ?? context.toolCallId ?? null,
-            workCycleId:
-                previousRange?.workCycleId ?? context.workCycleId ?? null,
-        };
+function orderedFiles(state: AiReviewActionLogState): readonly AiTrackedFile[] {
+    const files = state.trackedFilesByIdentityKey ?? {};
+    return state.fileOrder.flatMap((identityKey) => {
+        const file = files[identityKey];
+        return file ? [file] : [];
     });
 }
 
-function findActionLogFileForDiff(
+function findTrackedFileForDiff(
     state: AiReviewActionLogState,
     diff: AiFileDiff,
-): AiReviewActionLogFile | undefined {
+): AiTrackedFile | undefined {
     const identityKey = extractDiffIdentityKey(diff);
-    if (identityKey) {
-        return state.filesByIdentityKey[identityKey];
+    if (identityKey && state.trackedFilesByIdentityKey[identityKey]) {
+        return state.trackedFilesByIdentityKey[identityKey];
     }
-
-    return state.fileOrder
-        .map((candidate) => state.filesByIdentityKey[candidate])
-        .find(
-            (file) =>
-                file &&
-                (file.path === diff.path ||
-                    file.previousPath === diff.path ||
-                    file.originPath === diff.path ||
-                    (diff.previousPath &&
-                        (file.path === diff.previousPath ||
-                            file.previousPath === diff.previousPath ||
-                            file.originPath === diff.previousPath))),
-        );
+    return orderedFiles(state).find(
+        (file) =>
+            file.path === diff.path ||
+            file.previousPath === diff.path ||
+            (diff.previousPath !== null &&
+                (file.path === diff.previousPath ||
+                    file.previousPath === diff.previousPath)),
+    );
 }
 
-function findActionLogFileForTrackedFile(
+function findTrackedFileForTracked(
     state: AiReviewActionLogState,
     trackedFile: AiTrackedFile,
-): AiReviewActionLogFile | undefined {
+): AiTrackedFile | undefined {
     return (
-        state.filesByIdentityKey[trackedFile.identityKey] ??
-        state.fileOrder
-            .map((candidate) => state.filesByIdentityKey[candidate])
-            .find(
-                (file) =>
-                    file &&
-                    (file.path === trackedFile.path ||
-                        file.previousPath === trackedFile.path ||
-                        file.originPath === trackedFile.path ||
-                        (trackedFile.previousPath &&
-                            (file.path === trackedFile.previousPath ||
-                                file.previousPath === trackedFile.previousPath ||
-                                file.originPath === trackedFile.previousPath))),
-            )
+        state.trackedFilesByIdentityKey[trackedFile.identityKey] ??
+        orderedFiles(state).find(
+            (file) =>
+                file.path === trackedFile.path ||
+                file.previousPath === trackedFile.path ||
+                (trackedFile.previousPath !== null &&
+                    (file.path === trackedFile.previousPath ||
+                        file.previousPath === trackedFile.previousPath)),
+        )
     );
+}
+
+function identityKeyForDiff(sessionId: string, diff: AiFileDiff): string {
+    const explicit = extractDiffIdentityKey(diff);
+    if (explicit) {
+        return explicit;
+    }
+    return diff.previousPath
+        ? `review:${sessionId}:${diff.previousPath}->${diff.path}`
+        : `review:${sessionId}:${diff.path}`;
 }
 
 function extractDiffIdentityKey(diff: AiFileDiff): string | null {
@@ -741,48 +580,13 @@ function extractDiffIdentityKey(diff: AiFileDiff): string | null {
         : null;
 }
 
-function createReviewIdentityKey(sessionId: string, diff: AiFileDiff): string {
-    if (diff.previousPath) {
-        return `review:${sessionId}:${diff.previousPath}->${diff.path}`;
-    }
-
-    return `review:${sessionId}:${diff.path}`;
-}
-
-function mergeToolCallIds(
-    existingToolCallIds: readonly string[],
-    nextToolCallId: string | null,
-): readonly string[] {
-    if (!nextToolCallId || existingToolCallIds.includes(nextToolCallId)) {
-        return existingToolCallIds;
-    }
-
-    return [...existingToolCallIds, nextToolCallId];
+function nextVersion(file: AiTrackedFile): number {
+    return normalizeVersion(file.version) + 1;
 }
 
 function normalizeVersion(version: number | undefined): number {
     if (!Number.isFinite(version)) {
         return 1;
     }
-
     return Math.max(1, Math.trunc(version ?? 1));
-}
-
-function updateVersionClock(
-    versionClockByIdentityKey: Readonly<Record<string, number>>,
-    identityKey: string,
-    version: number,
-): Readonly<Record<string, number>> {
-    const nextVersion = Math.max(
-        normalizeVersion(versionClockByIdentityKey[identityKey]),
-        normalizeVersion(version),
-    );
-    if (versionClockByIdentityKey[identityKey] === nextVersion) {
-        return versionClockByIdentityKey;
-    }
-
-    return {
-        ...versionClockByIdentityKey,
-        [identityKey]: nextVersion,
-    };
 }

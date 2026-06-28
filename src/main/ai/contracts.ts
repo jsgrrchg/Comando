@@ -176,6 +176,7 @@ export interface NativeAiGateway {
     setSessionModel(input: AiSessionModelMutationInput): Promise<void>;
     shouldHandleHistory(): boolean;
     shouldHandleReview?(): boolean;
+    shouldHandleReviewDiskMutations?(): boolean;
     shouldHandleRuntime(runtimeId: AiRuntimeId): boolean;
 }
 

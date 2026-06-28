@@ -1,4 +1,6 @@
 import type { AiTrackedFile } from "@shared/ipc";
+import { deriveTrackedFilesFromActionLog } from "@shared/ai-review-action-log";
+import type { AiReviewActionLogState } from "@shared/ai-review-action-log";
 import { isAiTrackedFileUnresolved } from "@shared/ai-tracked-file";
 
 import {
@@ -9,6 +11,8 @@ import type { RuntimeWorkspaceFileReviewContext } from "./tree";
 
 type SessionWithTrackedFiles = {
     readonly snapshot?: {
+        readonly reviewActionLog?: AiReviewActionLogState | null;
+        readonly sessionId?: string;
         readonly trackedFiles?: readonly AiTrackedFile[];
     } | null;
 };
@@ -34,10 +38,26 @@ export function collectPendingTrackedFilesFromSessions(
     }
 
     const collected = Object.values(sessions)
-        .flatMap((session) => session?.snapshot?.trackedFiles ?? [])
+        .flatMap((session) => getCanonicalTrackedFiles(session))
         .filter(isAiTrackedFileUnresolved);
     collectPendingCache.set(sessions, collected);
     return collected;
+}
+
+function getCanonicalTrackedFiles(
+    session: SessionWithTrackedFiles | undefined,
+): readonly AiTrackedFile[] {
+    const snapshot = session?.snapshot;
+    if (!snapshot) {
+        return [];
+    }
+
+    const reviewActionLog = snapshot.reviewActionLog ?? null;
+    if (reviewActionLog && reviewActionLog.sessionId === snapshot.sessionId) {
+        return deriveTrackedFilesFromActionLog(reviewActionLog);
+    }
+
+    return snapshot.trackedFiles ?? [];
 }
 
 export function matchesTrackedFilePath(
