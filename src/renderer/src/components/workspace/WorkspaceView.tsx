@@ -109,11 +109,13 @@ import {
     type RuntimeWorkspaceFileOpenLocation,
     type RuntimeWorkspaceFileReviewContext,
     type RuntimeWorkspaceFileTab,
+    type RuntimeWorkspaceReviewTab,
     type RuntimeWorkspaceTab,
 } from "@renderer/app/workspace/tree";
 import {
     collectPendingTrackedFilesFromSessions,
     findBestPendingTrackedFile,
+    hasUnresolvedReviewFilesForSession,
     isInlineReviewSupported,
 } from "@renderer/app/workspace/pending-review";
 import { ChatHistoryTabView } from "@renderer/components/workspace/ChatHistoryTabView";
@@ -254,6 +256,19 @@ type QuickCreateSubmenuState = {
     readonly entries: readonly QuickCreateMenuEntry[];
 } | null;
 
+type WorkspaceReviewTabHandle = {
+    readonly id: string;
+    readonly sessionId: string;
+};
+
+type ReviewTabAutoCloseCandidate = {
+    readonly hasError: boolean;
+    readonly hasIncomingSnapshot: boolean;
+    readonly hasUnresolvedReviewFiles: boolean;
+    readonly reviewTabId: string;
+    readonly sessionId: string;
+};
+
 type MonacoSurfaceRuntime = {
     readonly DiffEditor: typeof import("@monaco-editor/react").DiffEditor;
     readonly Editor: typeof import("@monaco-editor/react").default;
@@ -285,6 +300,98 @@ function scheduleEffectStateUpdate(update: () => void): () => void {
     return () => {
         cancelled = true;
     };
+}
+
+function createReviewTabHandleKey(reviewTab: WorkspaceReviewTabHandle): string {
+    return JSON.stringify([reviewTab.id, reviewTab.sessionId]);
+}
+
+function parseReviewTabHandleKey(
+    key: string,
+): WorkspaceReviewTabHandle | null {
+    try {
+        const parsed: unknown = JSON.parse(key);
+        if (
+            Array.isArray(parsed) &&
+            typeof parsed[0] === "string" &&
+            typeof parsed[1] === "string"
+        ) {
+            return { id: parsed[0], sessionId: parsed[1] };
+        }
+    } catch {
+        // Corrupted persisted key; drop the review tab silently rather than
+        // crashing the workspace render.
+    }
+    return null;
+}
+
+function selectWorkspaceReviewTabHandleKeys(
+    state: ReturnType<typeof useWorkspaceStore.getState>,
+): readonly string[] {
+    return Object.values(state.tabsById)
+        .filter(
+            (tab): tab is RuntimeWorkspaceReviewTab => tab.kind === "review",
+        )
+        .map((tab) =>
+            createReviewTabHandleKey({
+                id: tab.id,
+                sessionId: tab.sessionId,
+            }),
+        );
+}
+
+function createReviewTabAutoCloseCandidateKey(
+    candidate: ReviewTabAutoCloseCandidate,
+): string {
+    return JSON.stringify([
+        candidate.reviewTabId,
+        candidate.sessionId,
+        candidate.hasIncomingSnapshot,
+        candidate.hasError,
+        candidate.hasUnresolvedReviewFiles,
+    ]);
+}
+
+function parseReviewTabAutoCloseCandidateKey(
+    key: string,
+): ReviewTabAutoCloseCandidate {
+    const [
+        reviewTabId,
+        sessionId,
+        hasIncomingSnapshot,
+        hasError,
+        hasUnresolvedReviewFiles,
+    ] = JSON.parse(key) as [string, string, boolean, boolean, boolean];
+    return {
+        hasError,
+        hasIncomingSnapshot,
+        hasUnresolvedReviewFiles,
+        reviewTabId,
+        sessionId,
+    };
+}
+
+function buildReviewTabAutoCloseCandidateKeys(
+    reviewTabs: readonly WorkspaceReviewTabHandle[],
+    sessions: ReturnType<typeof useAiStore.getState>["sessions"],
+): readonly string[] {
+    return reviewTabs.map((reviewTab) => {
+        const sessionState = sessions[reviewTab.sessionId];
+        return createReviewTabAutoCloseCandidateKey({
+            hasError: Boolean(
+                sessionState?.localError || sessionState?.snapshot?.lastError,
+            ),
+            hasIncomingSnapshot: Boolean(
+                sessionState?.lastIncomingSnapshotUpdatedAt,
+            ),
+            // Review action log is canonical when present; the trackedFiles
+            // mirror can be stale after resolved work is intentionally hidden.
+            hasUnresolvedReviewFiles:
+                hasUnresolvedReviewFilesForSession(sessionState),
+            reviewTabId: reviewTab.id,
+            sessionId: reviewTab.sessionId,
+        });
+    });
 }
 
 function getTrackedFileSignature(file: AiTrackedFile | null): string | null {
@@ -556,6 +663,7 @@ export function WorkspaceView({
     defaultWorktreeId,
     onRequestCreateFile,
 }: WorkspaceViewProps) {
+    const closeTab = useWorkspaceStore((state) => state.closeTab);
     const dropTabToSplit = useWorkspaceStore((state) => state.dropTabToSplit);
     const moveTabToPane = useWorkspaceStore((state) => state.moveTabToPane);
     const openChatSessionTabAtTarget = useWorkspaceStore(
@@ -579,6 +687,39 @@ export function WorkspaceView({
     const [externalDropTarget, setExternalDropTarget] =
         useState<WorkspacePaneDropTarget | null>(null);
     const workspaceRootRef = useRef<HTMLDivElement | null>(null);
+    const reviewTabKeys = useWorkspaceStore(
+        useShallow(selectWorkspaceReviewTabHandleKeys),
+    );
+    const autoClosingReviewTabIdsRef = useRef<Set<string>>(new Set());
+    const reviewTabs = useMemo(
+        () =>
+            reviewTabKeys
+                .map((key) => parseReviewTabHandleKey(key))
+                .filter(
+                    (handle): handle is WorkspaceReviewTabHandle =>
+                        handle !== null,
+                ),
+        [reviewTabKeys],
+    );
+    const reviewTabAutoCloseCandidateKeys = useAiStore(
+        useShallow(
+            useCallback(
+                (state: ReturnType<typeof useAiStore.getState>) =>
+                    buildReviewTabAutoCloseCandidateKeys(
+                        reviewTabs,
+                        state.sessions,
+                    ),
+                [reviewTabs],
+            ),
+        ),
+    );
+    const reviewTabAutoCloseCandidates = useMemo(
+        () =>
+            reviewTabAutoCloseCandidateKeys.map((key) =>
+                parseReviewTabAutoCloseCandidateKey(key),
+            ),
+        [reviewTabAutoCloseCandidateKeys],
+    );
     const tabDrag = useWorkspaceTabDrag({
         onDropToSplit: dropTabToSplit,
         onMoveToPane: moveTabToPane,
@@ -860,6 +1001,34 @@ export function WorkspaceView({
             );
         };
     }, [externalDropTargetScheduler]);
+
+    useEffect(() => {
+        const knownReviewTabIds = new Set(reviewTabs.map((tab) => tab.id));
+
+        for (const tabId of autoClosingReviewTabIdsRef.current) {
+            if (!knownReviewTabIds.has(tabId)) {
+                autoClosingReviewTabIdsRef.current.delete(tabId);
+            }
+        }
+
+        for (const candidate of reviewTabAutoCloseCandidates) {
+            if (
+                !candidate.hasIncomingSnapshot ||
+                candidate.hasError ||
+                candidate.hasUnresolvedReviewFiles ||
+                autoClosingReviewTabIdsRef.current.has(candidate.reviewTabId)
+            ) {
+                continue;
+            }
+
+            autoClosingReviewTabIdsRef.current.add(candidate.reviewTabId);
+            void closeTab(candidate.reviewTabId).finally(() => {
+                autoClosingReviewTabIdsRef.current.delete(
+                    candidate.reviewTabId,
+                );
+            });
+        }
+    }, [closeTab, reviewTabAutoCloseCandidates, reviewTabs]);
 
     useRenderProbe("WorkspaceView", {});
 

@@ -9,7 +9,7 @@ import {
 } from "@renderer/app/ai/trackedFilePath";
 import type { RuntimeWorkspaceFileReviewContext } from "./tree";
 
-type SessionWithTrackedFiles = {
+export type SessionWithTrackedFiles = {
     readonly snapshot?: {
         readonly reviewActionLog?: AiReviewActionLogState | null;
         readonly sessionId?: string;
@@ -38,13 +38,13 @@ export function collectPendingTrackedFilesFromSessions(
     }
 
     const collected = Object.values(sessions)
-        .flatMap((session) => getCanonicalTrackedFiles(session))
+        .flatMap((session) => getCanonicalTrackedFilesFromSession(session))
         .filter(isAiTrackedFileUnresolved);
     collectPendingCache.set(sessions, collected);
     return collected;
 }
 
-function getCanonicalTrackedFiles(
+export function getCanonicalTrackedFilesFromSession(
     session: SessionWithTrackedFiles | undefined,
 ): readonly AiTrackedFile[] {
     const snapshot = session?.snapshot;
@@ -58,6 +58,14 @@ function getCanonicalTrackedFiles(
     }
 
     return snapshot.trackedFiles ?? [];
+}
+
+export function hasUnresolvedReviewFilesForSession(
+    session: SessionWithTrackedFiles | undefined,
+): boolean {
+    return getCanonicalTrackedFilesFromSession(session).some(
+        isAiTrackedFileUnresolved,
+    );
 }
 
 export function matchesTrackedFilePath(
