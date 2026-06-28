@@ -584,13 +584,8 @@ function findTrackedFileForDiff(
     if (identityKey && state.trackedFilesByIdentityKey[identityKey]) {
         return state.trackedFilesByIdentityKey[identityKey];
     }
-    return orderedFiles(state).find(
-        (file) =>
-            file.path === diff.path ||
-            file.previousPath === diff.path ||
-            (diff.previousPath !== null &&
-                (file.path === diff.previousPath ||
-                    file.previousPath === diff.previousPath)),
+    return orderedFiles(state).find((file) =>
+        trackedFileMatchesDiff(file, diff),
     );
 }
 
@@ -600,14 +595,46 @@ function findTrackedFileForTracked(
 ): AiTrackedFile | undefined {
     return (
         state.trackedFilesByIdentityKey[trackedFile.identityKey] ??
-        orderedFiles(state).find(
-            (file) =>
-                file.path === trackedFile.path ||
-                file.previousPath === trackedFile.path ||
-                (trackedFile.previousPath !== null &&
-                    (file.path === trackedFile.previousPath ||
-                        file.previousPath === trackedFile.previousPath)),
+        orderedFiles(state).find((file) =>
+            trackedFilesShareReviewIdentity(file, trackedFile),
         )
+    );
+}
+
+function trackedFileMatchesDiff(
+    file: AiTrackedFile,
+    diff: AiFileDiff,
+): boolean {
+    if (file.path === diff.path) {
+        return true;
+    }
+    if (diff.previousPath === null) {
+        return false;
+    }
+
+    // `previousPath` identifies the source side of a move. Do not use an
+    // existing file's previous path to absorb an unrelated create/update at the
+    // old location; replacement files at the old path are separate review items.
+    return (
+        file.path === diff.previousPath ||
+        file.previousPath === diff.previousPath
+    );
+}
+
+function trackedFilesShareReviewIdentity(
+    file: AiTrackedFile,
+    trackedFile: AiTrackedFile,
+): boolean {
+    if (file.path === trackedFile.path) {
+        return true;
+    }
+    if (trackedFile.previousPath === null) {
+        return false;
+    }
+
+    return (
+        file.path === trackedFile.previousPath ||
+        file.previousPath === trackedFile.previousPath
     );
 }
 

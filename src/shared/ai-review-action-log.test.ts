@@ -169,6 +169,47 @@ describe("AiReviewActionLog single-store review state", () => {
         ]);
     });
 
+    it("keeps a move and a replacement create at the old path as separate entries", () => {
+        const state = consolidateReviewDiffs(
+            createEmptyReviewActionLog(SESSION_ID),
+            [
+                createDiff({
+                    kind: "move",
+                    oldText: "moved\n",
+                    newText: "moved\n",
+                    path: "src/new-name.ts",
+                    previousPath: "src/old-name.ts",
+                }),
+                createDiff({
+                    kind: "create",
+                    oldText: null,
+                    newText: "replacement\n",
+                    path: "src/old-name.ts",
+                }),
+            ],
+            liveContext(),
+        );
+
+        expect(
+            deriveTrackedFilesFromActionLog(state).map((file) => ({
+                kind: file.kind,
+                path: file.path,
+                previousPath: file.previousPath,
+            })),
+        ).toEqual([
+            {
+                kind: "move",
+                path: "src/new-name.ts",
+                previousPath: "src/old-name.ts",
+            },
+            {
+                kind: "create",
+                path: "src/old-name.ts",
+                previousPath: null,
+            },
+        ]);
+    });
+
     it("accumulates consecutive diffs for the same file into one entry", () => {
         let state = consolidateReviewDiffs(
             createEmptyReviewActionLog(SESSION_ID),
