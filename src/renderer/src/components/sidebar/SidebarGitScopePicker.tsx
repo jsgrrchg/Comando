@@ -1802,6 +1802,14 @@ export function SidebarGitScopePicker({
     useEffect(() => {
         if (focusIndex < 0 || !listRef.current) return;
 
+        const mountedRow = listRef.current.querySelector<HTMLElement>(
+            `[data-row-index="${focusIndex}"]`,
+        );
+        if (mountedRow) {
+            mountedRow.scrollIntoView({ block: "nearest" });
+            return;
+        }
+
         const renderIndex = selectableRenderIndexByFocusIndex.get(focusIndex);
         if (renderIndex == null) {
             return;
@@ -1813,11 +1821,6 @@ export function SidebarGitScopePicker({
             });
             return;
         }
-
-        const row = listRef.current.querySelector<HTMLElement>(
-            `[data-row-index="${focusIndex}"]`,
-        );
-        row?.scrollIntoView({ block: "nearest" });
     }, [focusIndex, selectableRenderIndexByFocusIndex, shouldVirtualizeList]);
 
     const toggleSection = useCallback((section: string) => {
