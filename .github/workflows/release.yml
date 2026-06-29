@@ -356,6 +356,7 @@ jobs:
             - release-windows-x64
             - release-windows-arm64
             - release-linux
+            - publish-apt-repository
         runs-on: ubuntu-latest
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -383,8 +384,10 @@ jobs:
         name: Publish APT repository
         needs:
             - release-preflight
+            - release-macos
+            - release-windows-x64
+            - release-windows-arm64
             - release-linux
-            - publish-release-notes
             - apt-repository-preflight
         runs-on: ubuntu-latest
         env:
@@ -514,6 +517,21 @@ jobs:
 
                   git -C "$PAGES_DIR" config user.name "github-actions[bot]"
                   git -C "$PAGES_DIR" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            - name: Ensure GitHub release exists
+              run: |
+                  tag="$GITHUB_REF_NAME"
+                  version="${tag#v}"
+                  title="Comando v${version}"
+
+                  if gh release view "$tag" >/dev/null 2>&1; then
+                    gh release edit "$tag" --title "$title"
+                  else
+                    gh release create "$tag" \
+                      --title "$title" \
+                      --notes "Release artifacts are still being finalized." \
+                      --verify-tag
+                  fi
 
             - name: Upload APT metadata to GitHub release
               env:
