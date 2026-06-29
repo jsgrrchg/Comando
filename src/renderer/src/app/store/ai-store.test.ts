@@ -456,6 +456,73 @@ describe("ai-store queue", () => {
         expect(reasoningConfig).toMatchObject({ value: "high" });
     });
 
+    it("sends live subagent effort changes to the child session", async () => {
+        const setAiSessionConfigOption = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    setAiSessionConfigOption,
+                },
+            },
+            writable: true,
+        });
+
+        const childSessionId = "session-1:subagent:runtime-child-1";
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                configOptions: [
+                    {
+                        category: "reasoning",
+                        description: null,
+                        id: "codex-reasoning-effort",
+                        label: "Reasoning",
+                        options: [
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "Low",
+                                value: "low",
+                            },
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "High",
+                                value: "high",
+                            },
+                        ],
+                        type: "select",
+                        value: "high",
+                    },
+                ],
+                parentSessionId: TAB.sessionId,
+                reasoningEffort: "high",
+                runtimeSessionId: "runtime-child-1",
+                sessionId: childSessionId,
+                title: "Galileo",
+            }),
+        );
+
+        await useAiStore.getState().setSessionConfigOption({
+            optionId: "codex-reasoning-effort",
+            sessionId: childSessionId,
+            value: "low",
+        });
+
+        const snapshot =
+            useAiStore.getState().sessions[childSessionId]?.snapshot ?? null;
+        const reasoningConfig = snapshot?.configOptions.find(
+            (option) => option.id === "codex-reasoning-effort",
+        );
+
+        expect(setAiSessionConfigOption).toHaveBeenCalledWith({
+            optionId: "codex-reasoning-effort",
+            sessionId: childSessionId,
+            value: "low",
+        });
+        expect(reasoningConfig).toMatchObject({ value: "low" });
+    });
+
     it("applies inferred titles from status events", () => {
         useAiStore.getState().applySessionSnapshot(
             createSnapshot({ title: "Codex 1" }),
