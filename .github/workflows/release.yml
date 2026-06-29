@@ -14,8 +14,61 @@ concurrency:
     cancel-in-progress: false
 
 jobs:
+    release-preflight:
+        name: Release preflight
+        runs-on: ubuntu-latest
+        env:
+            NODE_OPTIONS: --max-old-space-size=8192
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 10.33.0
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - uses: dtolnay/rust-toolchain@stable
+
+            - name: Validate release tag
+              run: |
+                  if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
+                    echo "Release workflow must run from a tag, got $GITHUB_REF_TYPE: $GITHUB_REF_NAME" >&2
+                    exit 1
+                  fi
+
+                  package_version="$(node -p "require('./package.json').version")"
+                  expected_tag="v${package_version}"
+
+                  if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
+                    echo "Release tag $GITHUB_REF_NAME does not match package.json version $package_version (expected $expected_tag)." >&2
+                    exit 1
+                  fi
+
+            - name: Install Linux check toolchain
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y rpm libcrypt1
+
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Build Claude ACP vendor
+              run: |
+                  npm ci --prefix vendor/Claude-agent-acp-upstream
+                  npm run build --prefix vendor/Claude-agent-acp-upstream
+
+            - name: Run release gate
+              run: pnpm run check
+
     release-macos:
         name: macOS universal
+        needs: release-preflight
         runs-on: macos-latest
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -120,6 +173,7 @@ jobs:
 
     release-windows-x64:
         name: Windows x64
+        needs: release-preflight
         runs-on: windows-latest
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -158,6 +212,7 @@ jobs:
 
     release-windows-arm64:
         name: Windows arm64
+        needs: release-preflight
         runs-on: windows-11-arm
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -196,6 +251,7 @@ jobs:
 
     release-linux:
         name: Linux ${{ matrix.arch }}
+        needs: release-preflight
         runs-on: ${{ matrix.runner }}
         strategy:
             fail-fast: false
