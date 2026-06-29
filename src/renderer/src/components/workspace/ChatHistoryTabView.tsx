@@ -1853,7 +1853,7 @@ interface HistoryTimelineHandlers {
         openLocation?: RuntimeWorkspaceFileOpenLocation | null,
     ) => Promise<void>;
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
-    readonly onOpenResolvedFileReference: (
+    readonly onOpenResolvedFileReference?: (
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onOpenSession: (sessionId: string) => Promise<void> | void;
@@ -1929,8 +1929,7 @@ function HistoryTranscriptTimeline({
             toolCardExpansionMode,
             onOpenFile: onOpenFile ?? NOOP_OPEN_FILE,
             onOpenImage: onOpenImage ?? NOOP_OPEN_IMAGE,
-            onOpenResolvedFileReference:
-                onOpenResolvedFileReference ?? NOOP_OPEN_FILE_REFERENCE,
+            onOpenResolvedFileReference,
             onOpenSession: onOpenSession ?? NOOP_OPEN_SESSION,
             resolveFileReference:
                 resolveFileReference ?? NOOP_RESOLVE_FILE_REFERENCE,
@@ -1983,7 +1982,10 @@ function HistoryTimelineRow({
                 chatFontSize={handlers.chatFontSize}
                 highlightQuery={handlers.highlightQuery}
                 message={row.message}
-                onOpenFile={handlers.onOpenResolvedFileReference}
+                onOpenFile={
+                    handlers.onOpenResolvedFileReference ??
+                    NOOP_OPEN_FILE_REFERENCE
+                }
                 onOpenImage={handlers.onOpenImage}
                 resolveFileReference={handlers.resolveFileReference}
             />
@@ -1993,6 +1995,7 @@ function HistoryTimelineRow({
     return (
         <ToolActivityItem
             activity={row.reviewEntry.activity}
+            canRenderFileReference={handlers.canRenderFileReference}
             expansionMode={handlers.toolCardExpansionMode}
             isLatestStreamingTool={false}
             onOpenFile={handlers.onOpenFile}

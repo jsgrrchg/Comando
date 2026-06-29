@@ -99,7 +99,7 @@ describe("AiService history", () => {
     it("ignores late worker snapshots after deleting a session", async () => {
         const deleteSession = vi.fn();
         const onSessionSnapshot = vi.fn();
-        const saveSessionSnapshot = vi.fn();
+        const saveSessionSnapshot = createSaveSessionSnapshotMock();
         const service = createService({
             deleteSession,
             onSessionSnapshot,
@@ -555,7 +555,8 @@ describe("AiService history", () => {
             }),
         });
 
-        const savedSnapshot = saveSessionSnapshot.mock.calls.at(-1)?.[0];
+        const savedSnapshot =
+            readLastSavedSessionSnapshot(saveSessionSnapshot);
         expect(savedSnapshot).toMatchObject({
             reviewActionLog,
             trackedFiles: [
@@ -577,7 +578,7 @@ describe("AiService history", () => {
 
     it("drops live legacy tracked files without a review action log", () => {
         const trackedFile = createTrackedFile();
-        const saveSessionSnapshot = vi.fn();
+        const saveSessionSnapshot = createSaveSessionSnapshotMock();
         const service = createService({
             saveSessionSnapshot,
         });
@@ -589,7 +590,8 @@ describe("AiService history", () => {
             }),
         });
 
-        const savedSnapshot = saveSessionSnapshot.mock.calls.at(-1)?.[0];
+        const savedSnapshot =
+            readLastSavedSessionSnapshot(saveSessionSnapshot);
         expect(savedSnapshot).toMatchObject({
             reviewActionLog: null,
             trackedFiles: [],
@@ -601,7 +603,7 @@ describe("AiService history", () => {
         const onSessionSnapshot = vi.fn<
             (ownerWindowId: string, update: AiSessionUpdate) => void
         >();
-        const saveSessionSnapshot = vi.fn();
+        const saveSessionSnapshot = createSaveSessionSnapshotMock();
         const service = createService({
             onSessionSnapshot,
             saveSessionSnapshot,
@@ -628,7 +630,8 @@ describe("AiService history", () => {
             },
         });
 
-        const savedSnapshot = saveSessionSnapshot.mock.calls.at(-1)?.[0];
+        const savedSnapshot =
+            readLastSavedSessionSnapshot(saveSessionSnapshot);
         expect(savedSnapshot).toMatchObject({
             reviewActionLog: null,
             trackedFiles: [],
@@ -799,6 +802,21 @@ function createService(overrides: {
             saveKiloRuntimeSettings: vi.fn(),
         } as never,
     });
+}
+
+function createSaveSessionSnapshotMock() {
+    return vi.fn<(snapshot: AiSessionSnapshot, draft?: string) => void>();
+}
+
+function readLastSavedSessionSnapshot(
+    saveSessionSnapshot: ReturnType<typeof createSaveSessionSnapshotMock>,
+): AiSessionSnapshot {
+    const savedSnapshot = saveSessionSnapshot.mock.calls.at(-1)?.[0];
+    if (!savedSnapshot) {
+        throw new Error("Expected a saved session snapshot.");
+    }
+
+    return savedSnapshot;
 }
 
 function createNativeAiGateway(

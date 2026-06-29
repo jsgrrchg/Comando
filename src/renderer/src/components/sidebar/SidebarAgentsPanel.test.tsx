@@ -217,7 +217,7 @@ describe("SidebarAgentsPanel history cache", () => {
         expect(markup).toContain("Agent");
     });
 
-    it("shows Working only for child agents with a busy normalized snapshot", async () => {
+    it("shows Working only for child agents with a busy normalized snapshot", () => {
         const sessions = [
             createSummary({
                 runtimeSessionId: "runtime-parent",
@@ -280,7 +280,7 @@ describe("SidebarAgentsPanel history cache", () => {
         const root = createRoot(container);
         mountedRoots.push(root);
 
-        await act(async () => {
+        act(() => {
             root.render(
                 <SidebarAgentsPanel
                     projectId="project-1"

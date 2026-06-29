@@ -3088,9 +3088,7 @@ export class AiService {
                     sessionId: snapshot.sessionId,
                     toolCallId: activity.id,
                     updatedAt: activity.updatedAt,
-                    workCycleId:
-                        reviewContext.workCycleId ??
-                        baseReviewActionLog.activeWorkCycleId,
+                    workCycleId: reviewContext.workCycleId,
                 },
             );
             if (nextReviewActionLog === baseReviewActionLog) {

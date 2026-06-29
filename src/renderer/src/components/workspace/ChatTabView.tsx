@@ -2849,6 +2849,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
         <div className="min-w-0 w-full">
             <ToolActivityItem
                 activity={row.reviewEntry.activity}
+                canRenderFileReference={canRenderFileReference}
                 expansionMode={toolCardExpansionMode}
                 isLatestStreamingTool={isLatestStreamingTool}
                 onOpenFile={onOpenFile}

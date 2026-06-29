@@ -1230,7 +1230,7 @@ function resolveAlreadyAppliedDeletionHunkDiff(
     }
 
     const [hunk] = diff.hunks;
-    if (!hunk || hunk.newCount !== 0 || hunk.oldCount === 0) {
+    if (hunk.newCount !== 0 || hunk.oldCount === 0) {
         return null;
     }
 

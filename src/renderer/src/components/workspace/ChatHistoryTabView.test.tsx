@@ -377,6 +377,7 @@ describe("ChatHistoryTabLayout", () => {
         const session = createSession();
         const handleOpenFile = vi.fn(async () => {});
         const container = renderInteractiveLayout({
+            canRenderFileReference: () => true,
             handleOpenFile,
             selectedSession: session,
             selectedSnapshot: createSnapshot({

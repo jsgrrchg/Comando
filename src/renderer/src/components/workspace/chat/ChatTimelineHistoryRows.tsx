@@ -300,6 +300,7 @@ export const ChatTimelineHistoryRows = memo(
             isResizingPanel,
             onVirtualResizeEnd,
             onVirtualResizeStart,
+            scrollRef,
             shouldVirtualize,
         ]);
 

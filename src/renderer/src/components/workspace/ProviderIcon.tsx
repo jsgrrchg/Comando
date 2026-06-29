@@ -15,9 +15,7 @@ type ProviderIconProps = {
 };
 
 function resolveProviderRuntimeId(runtimeId: AiRuntimeId): ActiveAiRuntimeId {
-    return PROVIDER_ICON_RUNTIME_IDS.includes(runtimeId as ActiveAiRuntimeId)
-        ? (runtimeId as ActiveAiRuntimeId)
-        : "codex";
+    return PROVIDER_ICON_RUNTIME_IDS.includes(runtimeId) ? runtimeId : "codex";
 }
 
 export function ProviderIcon({

@@ -870,7 +870,11 @@ function createGateway(
 function createClient() {
     let listener: ((event: NativeBackendEvent) => void) | null = null;
     const request = vi.fn(
-        <T = unknown>(command: string, _args?: unknown): Promise<T> => {
+        <T = unknown>(
+            command: string,
+            args?: Record<string, unknown>,
+        ): Promise<T> => {
+            void args;
             if (command === "ai_prepare_session") {
                 return Promise.resolve({
                     projectId: "project-1",

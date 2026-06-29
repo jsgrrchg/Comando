@@ -1776,6 +1776,7 @@ function GenericToolMessage({
 
 export const ToolActivityItem = memo(function ToolActivityItem({
     activity,
+    canRenderFileReference: canRenderFileReferenceOverride,
     expansionMode = "collapsed",
     isLatestStreamingTool = false,
     onOpenFile,
@@ -1787,6 +1788,10 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     worktreeId = null,
 }: {
     readonly activity: AiToolActivity;
+    readonly canRenderFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
     readonly expansionMode?: AiToolCardExpansionMode;
     readonly isLatestStreamingTool?: boolean;
     readonly onOpenFile: (
@@ -1815,10 +1820,12 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     // Validate file references in tool summaries against the real project file
     // index so only existing files become clickable pills (mirrors chat
     // messages). Derived here since this is where project context lives.
-    const canRenderFileReference = useFileReferenceValidator(
+    const projectCanRenderFileReference = useFileReferenceValidator(
         projectId,
         worktreeId ?? null,
     );
+    const canRenderFileReference =
+        canRenderFileReferenceOverride ?? projectCanRenderFileReference;
     const fileIndex = useProjectFileIndex(projectId, worktreeId ?? null);
 
     useRenderProbe("ToolActivityItem", {
@@ -1913,6 +1920,10 @@ ToolActivityItem.displayName = "ToolActivityItem";
 function areToolActivityItemPropsEqual(
     previous: Readonly<{
         readonly activity: AiToolActivity;
+        readonly canRenderFileReference?: (
+            rawReference: string,
+            reference: ResolvedProjectFileReference,
+        ) => boolean;
         readonly expansionMode?: AiToolCardExpansionMode;
         readonly isLatestStreamingTool?: boolean;
         readonly onOpenFile: (
@@ -1935,6 +1946,10 @@ function areToolActivityItemPropsEqual(
     }>,
     next: Readonly<{
         readonly activity: AiToolActivity;
+        readonly canRenderFileReference?: (
+            rawReference: string,
+            reference: ResolvedProjectFileReference,
+        ) => boolean;
         readonly expansionMode?: AiToolCardExpansionMode;
         readonly isLatestStreamingTool?: boolean;
         readonly onOpenFile: (
@@ -1958,6 +1973,7 @@ function areToolActivityItemPropsEqual(
 ) {
     return (
         previous.activity === next.activity &&
+        previous.canRenderFileReference === next.canRenderFileReference &&
         previous.expansionMode === next.expansionMode &&
         previous.isLatestStreamingTool === next.isLatestStreamingTool &&
         previous.onOpenSession === next.onOpenSession &&

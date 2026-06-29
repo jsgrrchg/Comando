@@ -4051,6 +4051,24 @@ describe("AiService OpenCode branch", () => {
             let resolveParentPrompt: () => void = () => {
                 throw new Error("Parent prompt was not started.");
             };
+            const sendPrompt = vi.fn<NativeAiGateway["sendPrompt"]>(
+                ({ input }) => {
+                    if (input.sessionId === "session-parent") {
+                        return new Promise((resolve) => {
+                            resolveParentPrompt = () =>
+                                resolve({
+                                    sessionId: input.sessionId,
+                                    stopReason: "accepted",
+                                });
+                        });
+                    }
+
+                    return Promise.resolve({
+                        sessionId: input.sessionId,
+                        stopReason: "accepted",
+                    });
+                },
+            );
             const nativeAi = createNativeAi({
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
                     ({ launch }) =>
@@ -4061,24 +4079,7 @@ describe("AiService OpenCode branch", () => {
                             updatedAt: "2026-06-20T00:00:00.000Z",
                         }),
                 ),
-                sendPrompt: vi.fn<NativeAiGateway["sendPrompt"]>(
-                    ({ input }) => {
-                        if (input.sessionId === "session-parent") {
-                            return new Promise((resolve) => {
-                                resolveParentPrompt = () =>
-                                    resolve({
-                                        sessionId: input.sessionId,
-                                        stopReason: "accepted",
-                                    });
-                            });
-                        }
-
-                        return Promise.resolve({
-                            sessionId: input.sessionId,
-                            stopReason: "accepted",
-                        });
-                    },
-                ),
+                sendPrompt,
             });
             const service = createService({
                 nativeAi,
@@ -4109,7 +4110,7 @@ describe("AiService OpenCode branch", () => {
                 "window-1",
             );
             await vi.waitFor(() => {
-                expect(nativeAi.sendPrompt).toHaveBeenCalledTimes(1);
+                expect(sendPrompt).toHaveBeenCalledTimes(1);
             });
             service.handleNativeSessionEvent("window-1", {
                 activeTurnStartedAt: "2026-06-20T00:00:00.500Z",
