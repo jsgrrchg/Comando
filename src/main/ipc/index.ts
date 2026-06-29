@@ -44,6 +44,7 @@ import {
     type GitCommitDetailInput,
     type GitCommitInput,
     type GitCommitResult,
+    type GitCreateBranchInput,
     type GitCreateWorktreeInput,
     type GitDeleteLocalBranchInput,
     type GitDeleteRemoteBranchInput,
@@ -264,6 +265,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.discardGitPaths);
     ipcMain.removeHandler(IPC_CHANNELS.commitGitChanges);
     ipcMain.removeHandler(IPC_CHANNELS.checkoutGitBranch);
+    ipcMain.removeHandler(IPC_CHANNELS.createGitBranch);
     ipcMain.removeHandler(IPC_CHANNELS.createGitWorktree);
     ipcMain.removeHandler(IPC_CHANNELS.removeGitWorktree);
     ipcMain.removeHandler(IPC_CHANNELS.deleteLocalGitBranch);
@@ -863,6 +865,24 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                         branchName: input.branchName,
                         force: input.force,
                         newBranchName: input.newBranchName,
+                        startPoint: input.startPoint,
+                    }),
+            ),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.createGitBranch,
+        async (
+            _event,
+            input: GitCreateBranchInput,
+        ): Promise<SharedGitRepositorySnapshot> =>
+            handleGitSnapshotMutation(
+                options.projectService,
+                options.gitService,
+                input,
+                "branch",
+                async (rootPath) =>
+                    options.gitService.createBranch(rootPath, {
+                        branchName: input.branchName,
                         startPoint: input.startPoint,
                     }),
             ),

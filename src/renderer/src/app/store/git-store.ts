@@ -4,6 +4,7 @@ import type {
     GitBranchSummary,
     GitCommitDetail,
     GitCommitInput,
+    GitCreateBranchInput,
     GitCreateWorktreeInput,
     GitFileDiff,
     GitHistoryCommitSummary,
@@ -119,6 +120,9 @@ interface GitStoreState {
         readonly commitSha: string;
         readonly branchName: string | null;
     }>;
+    createBranch: (
+        input: GitCreateBranchInput,
+    ) => Promise<GitRepositorySnapshot>;
     createWorktree: (
         input: GitCreateWorktreeInput,
     ) => Promise<GitWorktreeSummary>;
@@ -353,6 +357,16 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             branchName: result.branchName,
             commitSha: result.commitSha,
         };
+    },
+
+    createBranch: async (input) => {
+        const snapshot = await getComandoApi().createGitBranch(input);
+        applySnapshotState(set, input.projectId, snapshot);
+        void get().refreshHistory(
+            input.projectId,
+            snapshot.currentWorktreeId ?? input.worktreeId ?? null,
+        );
+        return snapshot;
     },
 
     createWorktree: async (input) => {

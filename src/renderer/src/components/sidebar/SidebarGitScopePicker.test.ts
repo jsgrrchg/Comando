@@ -10,6 +10,14 @@ import {
     resolveRemoteBranchResolution,
     stripRemotePrefix,
 } from "./SidebarGitScopePicker";
+import {
+    buildBranchCreationBaseOptions,
+    createBranchCreationDraft,
+    getBranchCreationQueryOffer,
+    getDefaultBranchCreationBase,
+    normalizeBranchNameInput,
+    validateNewBranchName,
+} from "./sidebarGitBranchCreation";
 
 function createBranch(
     overrides: Partial<GitBranchSummary> = {},
@@ -175,5 +183,151 @@ describe("SidebarGitScopePicker helpers", () => {
                 primaryWorktree,
             ),
         ).toBe(false);
+    });
+
+    it("uses the current branch as the default branch creation base when it exists", () => {
+        const branches = [
+            createBranch({ isCurrent: false, name: "main" }),
+            createBranch({ isCurrent: true, name: "feature/current" }),
+        ];
+
+        expect(
+            getDefaultBranchCreationBase({
+                branches,
+                currentBranchName: "feature/current",
+            }),
+        ).toBe("feature/current");
+    });
+
+    it("includes local and remote branches as creation base options", () => {
+        const localBranch = createBranch({ name: "feature/local" });
+        const remoteBranch = createBranch({
+            isRemote: true,
+            kind: "remote",
+            name: "origin/feature/remote",
+        });
+
+        expect(
+            buildBranchCreationBaseOptions([localBranch, remoteBranch]).map(
+                (option) => ({
+                    isRemote: option.isRemote,
+                    name: option.name,
+                }),
+            ),
+        ).toEqual([
+            { isRemote: false, name: "feature/local" },
+            { isRemote: true, name: "origin/feature/remote" },
+        ]);
+        expect(
+            createBranchCreationDraft({
+                baseBranchName: remoteBranch.name,
+                source: "context-menu",
+            }),
+        ).toMatchObject({
+            baseBranchName: remoteBranch.name,
+            checkoutAfterCreate: true,
+            source: "context-menu",
+        });
+    });
+
+    it("normalizes and validates new branch names for manual creation", () => {
+        const branches = [
+            createBranch({ name: "feature/existing" }),
+            createBranch({
+                isRemote: true,
+                kind: "remote",
+                name: "origin/main",
+            }),
+        ];
+
+        expect(normalizeBranchNameInput("  feature/new-picker  ")).toBe(
+            "feature/new-picker",
+        );
+        expect(
+            validateNewBranchName("feature/new-picker", branches),
+        ).toEqual({
+            error: null,
+            isValid: true,
+            value: "feature/new-picker",
+        });
+        expect(
+            validateNewBranchName("feature/existing", branches),
+        ).toMatchObject({
+            error: "A local branch with this name already exists.",
+            isValid: false,
+        });
+        expect(
+            validateNewBranchName("origin/main", branches),
+        ).toMatchObject({
+            error: "A remote branch with this name already exists.",
+            isValid: false,
+        });
+        expect(validateNewBranchName("", branches).isValid).toBe(false);
+        expect(validateNewBranchName("HEAD", branches).isValid).toBe(false);
+        expect(validateNewBranchName("/foo", branches).isValid).toBe(false);
+        expect(validateNewBranchName("foo/", branches).isValid).toBe(false);
+        expect(validateNewBranchName("foo..bar", branches).isValid).toBe(false);
+        expect(validateNewBranchName("feature/new picker", branches).isValid).toBe(
+            false,
+        );
+    });
+
+    it("rejects common Git ref name hazards before submitting branch creation", () => {
+        const branches: readonly GitBranchSummary[] = [];
+        const invalidCharacters = [
+            "@",
+            "feature/@{bad",
+            "feature//bad",
+            "feature\\bad",
+            "feature~bad",
+            "feature^bad",
+            "feature:bad",
+            "feature?bad",
+            "feature*bad",
+            "feature[bad",
+            "feature/.hidden",
+        ];
+
+        for (const branchName of invalidCharacters) {
+            expect(validateNewBranchName(branchName, branches)).toMatchObject({
+                error: "Branch name contains characters Git does not allow.",
+                isValid: false,
+            });
+        }
+
+        for (const branchName of [
+            "feature.",
+            "feature.lock",
+            "feature.lock/nested",
+        ]) {
+            expect(validateNewBranchName(branchName, branches)).toMatchObject({
+                error: 'Branch name cannot end with "." or ".lock".',
+                isValid: false,
+            });
+        }
+    });
+
+    it("offers branch creation from a valid search query that does not match a local branch", () => {
+        const branches = [
+            createBranch({ name: "feature/existing" }),
+            createBranch({
+                isRemote: true,
+                kind: "remote",
+                name: "origin/main",
+            }),
+        ];
+
+        expect(
+            getBranchCreationQueryOffer(" feature/new-picker ", branches),
+        ).toEqual({
+            branchName: "feature/new-picker",
+        });
+        expect(
+            getBranchCreationQueryOffer("feature/existing", branches),
+        ).toBeNull();
+        expect(
+            getBranchCreationQueryOffer("origin/main", branches),
+        ).toBeNull();
+        expect(getBranchCreationQueryOffer("foo..bar", branches)).toBeNull();
     });
 });

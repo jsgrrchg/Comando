@@ -6,6 +6,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type FormEvent,
     type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -36,6 +37,15 @@ import {
 } from "@renderer/components/virtual/MeasuredVirtualList";
 
 import { SidebarNodeRow, type SidebarBadge } from "./SidebarNodeRow";
+import {
+    buildBranchCreationBaseOptions,
+    createBranchCreationDraft,
+    getBranchCreationQueryOffer,
+    getDefaultBranchCreationBase,
+    validateNewBranchName,
+    type BranchCreationBaseOption,
+    type BranchCreationDraft,
+} from "./sidebarGitBranchCreation";
 
 type GitScopeTabId = "branches" | "worktrees";
 
@@ -62,6 +72,9 @@ const GIT_SCOPE_VIRTUALIZATION_THRESHOLD = 120;
 const GIT_SCOPE_VIRTUALIZATION_OVERSCAN = 6;
 const GIT_SCOPE_ROW_ESTIMATE = 52;
 const GIT_SCOPE_SECTION_ESTIMATE = 30;
+const GIT_SCOPE_MENU_CHROME_ESTIMATE = 144;
+const GIT_SCOPE_BRANCH_CREATION_FORM_ESTIMATE = 188;
+const GIT_SCOPE_CREATE_QUERY_ESTIMATE = 44;
 const GIT_SCOPE_MENU_SIZE_STORAGE_KEY = "comando.git.scope.menu.size";
 const GIT_SCOPE_MENU_SIZE_VERSION = 1;
 const GIT_SCOPE_MENU_MIN_WIDTH = 280;
@@ -221,6 +234,10 @@ type RenderListItem =
 
 type SelectableListItem =
     | {
+          readonly branchName: string;
+          readonly kind: "create-branch";
+      }
+    | {
           readonly branch: GitBranchSummary;
           readonly kind: "branch";
       }
@@ -240,6 +257,12 @@ export function SidebarGitScopePicker({
     const [menuPosition, setMenuPosition] = useState<MenuPosition | null>(null);
     const [query, setQuery] = useState("");
     const [focusIndex, setFocusIndex] = useState(-1);
+    const [branchCreationDraft, setBranchCreationDraft] =
+        useState<BranchCreationDraft | null>(null);
+    const [branchCreationName, setBranchCreationName] = useState("");
+    const [branchCreationBaseName, setBranchCreationBaseName] = useState("");
+    const [branchCreationCheckout, setBranchCreationCheckout] = useState(true);
+    const [branchCreationSubmitted, setBranchCreationSubmitted] = useState(false);
     const [itemContextMenu, setItemContextMenu] = useState<
         ContextMenuState<GitScopeContextMenuPayload> | null
     >(null);
@@ -286,6 +309,7 @@ export function SidebarGitScopePicker({
             : EMPTY_BRANCHES,
     );
     const checkoutBranch = useGitStore((state) => state.checkoutBranch);
+    const createBranch = useGitStore((state) => state.createBranch);
     const createWorktree = useGitStore((state) => state.createWorktree);
     const deleteLocalBranch = useGitStore((state) => state.deleteLocalBranch);
     const deleteRemoteBranch = useGitStore((state) => state.deleteRemoteBranch);
@@ -316,6 +340,34 @@ export function SidebarGitScopePicker({
     const worktrees = snapshot?.worktrees ?? EMPTY_WORKTREES;
     const availableWorktrees = worktrees.length;
     const deferredQuery = useDeferredValue(query);
+    const branchCreationBaseOptions = useMemo(
+        () => buildBranchCreationBaseOptions(branches),
+        [branches],
+    );
+    const defaultBranchCreationBase = useMemo(
+        () =>
+            getDefaultBranchCreationBase({
+                branches,
+                currentBranchName:
+                    activeWorktree?.branchName ??
+                    (snapshot?.branch?.isDetached
+                        ? null
+                        : (snapshot?.branch?.name ?? null)),
+            }),
+        [
+            activeWorktree?.branchName,
+            branches,
+            snapshot?.branch?.isDetached,
+            snapshot?.branch?.name,
+        ],
+    );
+    const branchCreationValidation = useMemo(
+        () =>
+            branchCreationDraft
+                ? validateNewBranchName(branchCreationName, branches)
+                : null,
+        [branchCreationDraft, branchCreationName, branches],
+    );
 
     const branchRows = useMemo(() => {
         const localBranchByUpstream = new Map<string, GitBranchSummary>();
@@ -442,6 +494,23 @@ export function SidebarGitScopePicker({
     );
 
     const normalizedQuery = deferredQuery.trim().toLowerCase();
+    const branchCreationQueryOffer = useMemo(
+        () =>
+            activeTab === "branches" &&
+            !canInitializeGit &&
+            !branchCreationDraft &&
+            defaultBranchCreationBase
+                ? getBranchCreationQueryOffer(deferredQuery, branches)
+                : null,
+        [
+            activeTab,
+            branchCreationDraft,
+            branches,
+            canInitializeGit,
+            defaultBranchCreationBase,
+            deferredQuery,
+        ],
+    );
     const filteredBranchRows = useMemo(() => {
         if (!normalizedQuery) {
             return branchRows;
@@ -468,7 +537,7 @@ export function SidebarGitScopePicker({
     }, [normalizedQuery, worktreeRows]);
 
     const listItems = useMemo(() => {
-        let selectableIndex = 0;
+        let selectableIndex = branchCreationQueryOffer ? 1 : 0;
         const items: RenderListItem[] = [];
 
         if (activeTab === "worktrees") {
@@ -534,6 +603,7 @@ export function SidebarGitScopePicker({
         return items;
     }, [
         activeTab,
+        branchCreationQueryOffer,
         collapsedSections.local,
         collapsedSections.remote,
         filteredWorktreeRows,
@@ -543,6 +613,12 @@ export function SidebarGitScopePicker({
 
     const flatItems = useMemo<readonly SelectableListItem[]>(() => {
         const items: SelectableListItem[] = [];
+        if (branchCreationQueryOffer) {
+            items.push({
+                branchName: branchCreationQueryOffer.branchName,
+                kind: "create-branch",
+            });
+        }
 
         for (const item of listItems) {
             if (item.kind === "section") {
@@ -558,7 +634,7 @@ export function SidebarGitScopePicker({
         }
 
         return items;
-    }, [listItems]);
+    }, [branchCreationQueryOffer, listItems]);
     const selectableRenderIndexByFocusIndex = useMemo(
         () =>
             new Map(
@@ -571,6 +647,8 @@ export function SidebarGitScopePicker({
         [listItems],
     );
     const shouldVirtualizeList = listItems.length >= GIT_SCOPE_VIRTUALIZATION_THRESHOLD;
+    const hasBranchCreationForm = branchCreationDraft !== null;
+    const hasBranchCreationQueryOffer = branchCreationQueryOffer !== null;
 
     const updateMenuPosition = useCallback(() => {
         const button = buttonRef.current;
@@ -587,13 +665,28 @@ export function SidebarGitScopePicker({
         const estimatedRows = Math.max(listItems.length, 1);
         const defaultHeight = Math.min(
             GIT_SCOPE_MENU_DEFAULT_MAX_HEIGHT,
-            estimatedRows * GIT_SCOPE_ROW_ESTIMATE + 144 + (actionError ? 40 : 0),
+            estimatedRows * GIT_SCOPE_ROW_ESTIMATE +
+                GIT_SCOPE_MENU_CHROME_ESTIMATE +
+                (hasBranchCreationForm
+                    ? GIT_SCOPE_BRANCH_CREATION_FORM_ESTIMATE
+                    : 0) +
+                (hasBranchCreationQueryOffer ? GIT_SCOPE_CREATE_QUERY_ESTIMATE : 0) +
+                (actionError ? 40 : 0),
         );
+        const measuredHeight = Math.ceil(measuredMenuRect?.height ?? 0);
+        const baseSize = userMenuSize
+            ? {
+                  height: hasBranchCreationForm
+                      ? Math.max(userMenuSize.height, defaultHeight)
+                      : userMenuSize.height,
+                  width: userMenuSize.width,
+              }
+            : {
+                  height: Math.max(measuredHeight, defaultHeight),
+                  width: defaultWidth,
+              };
         const size = clampGitScopeMenuSize(
-            userMenuSize ?? {
-                height: Math.ceil(measuredMenuRect?.height ?? defaultHeight),
-                width: defaultWidth,
-            },
+            baseSize,
             {
                 x: buttonRect.left,
                 y: buttonRect.bottom + 6,
@@ -620,6 +713,8 @@ export function SidebarGitScopePicker({
         });
     }, [
         actionError,
+        hasBranchCreationForm,
+        hasBranchCreationQueryOffer,
         listItems.length,
         userMenuSize,
     ]);
@@ -632,14 +727,65 @@ export function SidebarGitScopePicker({
         setActiveTab("branches");
         setIsBusy(false);
         setFocusIndex(-1);
+        setBranchCreationDraft(null);
+        setBranchCreationName("");
+        setBranchCreationBaseName("");
+        setBranchCreationCheckout(true);
+        setBranchCreationSubmitted(false);
         setCollapsedSections({});
     }, [projectId]);
 
     useEffect(() => {
         if (!isOpen) {
             setItemContextMenu(null);
+            setBranchCreationDraft(null);
         }
     }, [isOpen]);
+
+    useEffect(() => {
+        if (activeTab !== "branches") {
+            setBranchCreationDraft(null);
+        }
+    }, [activeTab]);
+
+    useEffect(() => {
+        if (!branchCreationDraft) {
+            return;
+        }
+
+        const currentBaseExists = branchCreationBaseOptions.some(
+            (option) => option.name === branchCreationBaseName,
+        );
+        if (currentBaseExists) {
+            return;
+        }
+
+        const fallbackBase =
+            defaultBranchCreationBase &&
+            branchCreationBaseOptions.some(
+                (option) => option.name === defaultBranchCreationBase,
+            )
+                ? defaultBranchCreationBase
+                : (branchCreationBaseOptions[0]?.name ?? null);
+
+        if (fallbackBase) {
+            setBranchCreationBaseName(fallbackBase);
+            setActionError(null);
+            return;
+        }
+
+        setBranchCreationDraft(null);
+        setBranchCreationName("");
+        setBranchCreationBaseName("");
+        setBranchCreationCheckout(true);
+        setBranchCreationSubmitted(false);
+        setActionError("The selected base branch is no longer available.");
+    }, [
+        branchCreationBaseName,
+        branchCreationBaseOptions,
+        branchCreationDraft,
+        defaultBranchCreationBase,
+    ]);
 
     useEffect(() => {
         if (!isOpen) {
@@ -936,6 +1082,124 @@ export function SidebarGitScopePicker({
             projectId,
             snapshot?.currentWorktreeId,
             snapshot?.worktrees,
+            worktreeId,
+        ],
+    );
+
+    const openBranchCreationForm = useCallback(
+        (
+            baseBranchName: string | null,
+            source: BranchCreationDraft["source"],
+            initialName = "",
+        ) => {
+            const draft = createBranchCreationDraft({
+                baseBranchName,
+                initialName,
+                source,
+            });
+            if (!draft) {
+                setActionError("Choose a base branch before creating a branch.");
+                return;
+            }
+
+            setActiveTab("branches");
+            setActionError(null);
+            setItemContextMenu(null);
+            setBranchCreationDraft(draft);
+            setBranchCreationName(draft.initialName);
+            setBranchCreationBaseName(draft.baseBranchName);
+            setBranchCreationCheckout(draft.checkoutAfterCreate);
+            setBranchCreationSubmitted(false);
+        },
+        [],
+    );
+
+    const closeBranchCreationForm = useCallback(() => {
+        setBranchCreationDraft(null);
+        setBranchCreationName("");
+        setBranchCreationBaseName("");
+        setBranchCreationCheckout(true);
+        setBranchCreationSubmitted(false);
+        setActionError(null);
+    }, []);
+
+    const handleCreateBranchSubmit = useCallback(
+        async (event: FormEvent<HTMLFormElement>) => {
+            event.preventDefault();
+
+            if (!projectId || isBusy || !branchCreationDraft) {
+                return;
+            }
+
+            setBranchCreationSubmitted(true);
+            const validation = validateNewBranchName(branchCreationName, branches);
+            if (!validation.isValid) {
+                return;
+            }
+
+            const baseBranchName = branchCreationBaseName.trim();
+            if (!baseBranchName) {
+                setActionError("Choose a base branch before creating a branch.");
+                return;
+            }
+
+            const activeWorktreeId =
+                worktreeId ?? snapshot?.currentWorktreeId ?? null;
+
+            setActionError(null);
+            setIsBusy(true);
+
+            try {
+                const result = branchCreationCheckout
+                    ? await checkoutBranch(
+                          projectId,
+                          baseBranchName,
+                          activeWorktreeId,
+                          {
+                              newBranchName: validation.value,
+                              startPoint: baseBranchName,
+                          },
+                      )
+                    : await createBranch({
+                          branchName: validation.value,
+                          projectId,
+                          startPoint: baseBranchName,
+                          worktreeId: activeWorktreeId,
+                      });
+
+                await refreshProjectTree(
+                    projectId,
+                    result.currentWorktreeId ?? activeWorktreeId,
+                );
+                setIsOpen(false);
+                setQuery("");
+                setBranchCreationDraft(null);
+                setBranchCreationName("");
+                setBranchCreationBaseName("");
+                setBranchCreationCheckout(true);
+                setBranchCreationSubmitted(false);
+            } catch (error) {
+                setActionError(
+                    error instanceof Error
+                        ? error.message
+                        : "Could not create this branch.",
+                );
+            } finally {
+                setIsBusy(false);
+            }
+        },
+        [
+            branchCreationBaseName,
+            branchCreationCheckout,
+            branchCreationDraft,
+            branchCreationName,
+            branches,
+            checkoutBranch,
+            createBranch,
+            isBusy,
+            projectId,
+            refreshProjectTree,
+            snapshot?.currentWorktreeId,
             worktreeId,
         ],
     );
@@ -1295,6 +1559,12 @@ export function SidebarGitScopePicker({
                 disabled: isBusy || row.isActive,
                 label: checkoutLabel,
             });
+            entries.push({
+                action: () =>
+                    openBranchCreationForm(row.branch.name, "context-menu"),
+                disabled: isBusy || !projectId,
+                label: "New Branch from...",
+            });
 
             if (linkedWorktree) {
                 entries.push({
@@ -1385,6 +1655,7 @@ export function SidebarGitScopePicker({
         handleSelectWorktree,
         isBusy,
         itemContextMenu,
+        openBranchCreationForm,
         projectId,
         snapshot?.currentWorktreeId,
         worktreeId,
@@ -1395,12 +1666,25 @@ export function SidebarGitScopePicker({
         const item = flatItems[focusIndex];
         if (!item) return;
 
-        if (item.kind === "branch") {
+        if (item.kind === "create-branch") {
+            openBranchCreationForm(
+                defaultBranchCreationBase,
+                "search",
+                item.branchName,
+            );
+        } else if (item.kind === "branch") {
             void handleSelectBranch(item.branch);
         } else {
             void handleSelectWorktree(item.worktree.id);
         }
-    }, [flatItems, focusIndex, handleSelectBranch, handleSelectWorktree]);
+    }, [
+        defaultBranchCreationBase,
+        flatItems,
+        focusIndex,
+        handleSelectBranch,
+        handleSelectWorktree,
+        openBranchCreationForm,
+    ]);
 
     const handleListKeyDown = useCallback(
         (event: React.KeyboardEvent) => {
@@ -1540,6 +1824,14 @@ export function SidebarGitScopePicker({
     useEffect(() => {
         if (focusIndex < 0 || !listRef.current) return;
 
+        const mountedRow = listRef.current.querySelector<HTMLElement>(
+            `[data-row-index="${focusIndex}"]`,
+        );
+        if (mountedRow) {
+            mountedRow.scrollIntoView({ block: "nearest" });
+            return;
+        }
+
         const renderIndex = selectableRenderIndexByFocusIndex.get(focusIndex);
         if (renderIndex == null) {
             return;
@@ -1551,10 +1843,6 @@ export function SidebarGitScopePicker({
             });
             return;
         }
-
-        const rows = listRef.current.querySelectorAll("[data-row-index]");
-        const row = rows[focusIndex] as HTMLElement | undefined;
-        row?.scrollIntoView({ block: "nearest" });
     }, [focusIndex, selectableRenderIndexByFocusIndex, shouldVirtualizeList]);
 
     const toggleSection = useCallback((section: string) => {
@@ -1572,6 +1860,10 @@ export function SidebarGitScopePicker({
         activeTab === "branches"
             ? "No branches match your search."
             : "No worktrees match your search.";
+    const canOpenBranchCreation =
+        activeTab === "branches" &&
+        !canInitializeGit &&
+        branchCreationBaseOptions.length > 0;
     const renderListItem = useCallback(
         (item: RenderListItem) => {
             if (item.kind === "section") {
@@ -1749,6 +2041,31 @@ export function SidebarGitScopePicker({
                                       onClick={() => setActiveTab("worktrees")}
                                   />
                               </div>
+                              {activeTab === "branches" && !canInitializeGit ? (
+                                  <div className="sidebar-git-scope-menu__actions">
+                                      <button
+                                          className="sidebar-git-scope-menu__new-branch-button"
+                                          disabled={
+                                              isBusy || !canOpenBranchCreation
+                                          }
+                                          onClick={() =>
+                                              openBranchCreationForm(
+                                                  defaultBranchCreationBase,
+                                                  "current",
+                                              )
+                                          }
+                                          title={
+                                              canOpenBranchCreation
+                                                  ? "Create a branch from the current branch"
+                                                  : "No branch is available as a base"
+                                          }
+                                          type="button"
+                                      >
+                                          <PlusIcon />
+                                          <span>New Branch</span>
+                                      </button>
+                                  </div>
+                              ) : null}
                               <div className="sidebar-git-scope-menu__search">
                                   <SearchIcon />
                                   <input
@@ -1776,16 +2093,63 @@ export function SidebarGitScopePicker({
                               </div>
                           </div>
 
+                          {branchCreationDraft ? (
+                              <BranchCreationForm
+                                  baseName={branchCreationBaseName}
+                                  baseOptions={branchCreationBaseOptions}
+                                  checkoutAfterCreate={branchCreationCheckout}
+                                  disabled={isBusy}
+                                  name={branchCreationName}
+                                  onBaseNameChange={setBranchCreationBaseName}
+                                  onCancel={closeBranchCreationForm}
+                                  onCheckoutAfterCreateChange={
+                                      setBranchCreationCheckout
+                                  }
+                                  onNameChange={(nextName) => {
+                                      setBranchCreationName(nextName);
+                                      setBranchCreationSubmitted(false);
+                                  }}
+                                  onSubmit={(event) => {
+                                      void handleCreateBranchSubmit(event);
+                                  }}
+                                  validationError={
+                                      branchCreationSubmitted
+                                          ? (branchCreationValidation?.error ??
+                                            null)
+                                          : null
+                                  }
+                              />
+                          ) : null}
+
                           <div
                               className="shell-scrollbar sidebar-git-scope-menu__list"
                               ref={listRef}
                           >
+                              {branchCreationQueryOffer ? (
+                                  <div data-row-index={0}>
+                                      <BranchCreationQueryOfferRow
+                                          branchName={
+                                              branchCreationQueryOffer.branchName
+                                          }
+                                          disabled={isBusy}
+                                          isSelected={focusIndex === 0}
+                                          onClick={() =>
+                                              openBranchCreationForm(
+                                                  defaultBranchCreationBase,
+                                                  "search",
+                                                  branchCreationQueryOffer.branchName,
+                                              )
+                                          }
+                                      />
+                                  </div>
+                              ) : null}
                               {canInitializeGit ? (
                                   <GitInitState
                                       disabled={isBusy}
                                       onInit={handleInitRepository}
                                   />
-                              ) : listItems.length === 0 ? (
+                              ) : listItems.length === 0 &&
+                                !branchCreationQueryOffer ? (
                                   <EmptyState label={emptyLabel} />
                               ) : shouldVirtualizeList ? (
                                   <MeasuredVirtualList
@@ -1926,6 +2290,39 @@ function EmptyState({ label }: { readonly label: string }) {
     return <div className="sidebar-git-scope-menu__empty">{label}</div>;
 }
 
+function BranchCreationQueryOfferRow({
+    branchName,
+    disabled,
+    isSelected,
+    onClick,
+}: {
+    readonly branchName: string;
+    readonly disabled: boolean;
+    readonly isSelected: boolean;
+    readonly onClick: () => void;
+}) {
+    return (
+        <button
+            className={[
+                "sidebar-git-scope-menu__create-query",
+                isSelected ? "sidebar-git-scope-menu__create-query--selected" : "",
+            ]
+                .filter(Boolean)
+                .join(" ")}
+            disabled={disabled}
+            onClick={onClick}
+            type="button"
+        >
+            <span className="sidebar-git-scope-menu__create-query-icon">
+                <PlusIcon />
+            </span>
+            <span className="sidebar-git-scope-menu__create-query-copy">
+                Create <span>{branchName}</span>
+            </span>
+        </button>
+    );
+}
+
 function GitInitState({
     disabled,
     onInit,
@@ -1948,6 +2345,125 @@ function GitInitState({
                 <span>Initialize Git</span>
             </button>
         </div>
+    );
+}
+
+function BranchCreationForm({
+    baseName,
+    baseOptions,
+    checkoutAfterCreate,
+    disabled,
+    name,
+    onBaseNameChange,
+    onCancel,
+    onCheckoutAfterCreateChange,
+    onNameChange,
+    onSubmit,
+    validationError,
+}: {
+    readonly baseName: string;
+    readonly baseOptions: readonly BranchCreationBaseOption[];
+    readonly checkoutAfterCreate: boolean;
+    readonly disabled: boolean;
+    readonly name: string;
+    readonly onBaseNameChange: (value: string) => void;
+    readonly onCancel: () => void;
+    readonly onCheckoutAfterCreateChange: (value: boolean) => void;
+    readonly onNameChange: (value: string) => void;
+    readonly onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+    readonly validationError: string | null;
+}) {
+    const inputRef = useRef<HTMLInputElement | null>(null);
+
+    useEffect(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+    }, []);
+
+    return (
+        <form
+            className="sidebar-git-scope-menu__branch-form"
+            onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                    event.preventDefault();
+                    onCancel();
+                }
+                event.stopPropagation();
+            }}
+            onSubmit={onSubmit}
+        >
+            <div className="sidebar-git-scope-menu__branch-form-header">
+                <span>New Branch</span>
+            </div>
+
+            <label className="sidebar-git-scope-menu__branch-form-field">
+                <span>Name</span>
+                <input
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    className="ide-input app-no-drag w-full text-xs"
+                    disabled={disabled}
+                    onChange={(event) => onNameChange(event.target.value)}
+                    placeholder="feature/my-branch"
+                    ref={inputRef}
+                    spellCheck={false}
+                    value={name}
+                />
+            </label>
+            {validationError ? (
+                <div className="sidebar-git-scope-menu__branch-form-error">
+                    {validationError}
+                </div>
+            ) : null}
+
+            <label className="sidebar-git-scope-menu__branch-form-field">
+                <span>Base</span>
+                <select
+                    className="ide-input app-no-drag w-full text-xs"
+                    disabled={disabled || baseOptions.length === 0}
+                    onChange={(event) => onBaseNameChange(event.target.value)}
+                    value={baseName}
+                >
+                    {baseOptions.map((option) => (
+                        <option key={option.name} value={option.name}>
+                            {option.name}
+                            {option.isCurrent ? " · current" : ""}
+                            {option.isRemote ? " · remote" : ""}
+                        </option>
+                    ))}
+                </select>
+            </label>
+
+            <label className="sidebar-git-scope-menu__branch-form-checkbox">
+                <input
+                    checked={checkoutAfterCreate}
+                    disabled={disabled}
+                    onChange={(event) =>
+                        onCheckoutAfterCreateChange(event.target.checked)
+                    }
+                    type="checkbox"
+                />
+                <span>Checkout branch</span>
+            </label>
+
+            <div className="sidebar-git-scope-menu__branch-form-actions">
+                <button
+                    className="sidebar-git-scope-menu__branch-form-secondary"
+                    disabled={disabled}
+                    onClick={onCancel}
+                    type="button"
+                >
+                    Cancel
+                </button>
+                <button
+                    className="sidebar-git-scope-menu__branch-form-primary"
+                    disabled={disabled || baseOptions.length === 0}
+                    type="submit"
+                >
+                    Create Branch
+                </button>
+            </div>
+        </form>
     );
 }
 
@@ -1993,6 +2509,20 @@ function SearchIcon() {
                 strokeLinecap="round"
                 strokeLinejoin="round"
                 strokeWidth="1.3"
+            />
+        </svg>
+    );
+}
+
+function PlusIcon() {
+    return (
+        <svg aria-hidden="true" fill="none" viewBox="0 0 16 16">
+            <path
+                d="M8 3.5v9M3.5 8h9"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.4"
             />
         </svg>
     );

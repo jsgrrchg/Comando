@@ -1214,6 +1214,192 @@ button {
     padding-left: 28px;
 }
 
+.sidebar-git-scope-menu__actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0 12px 8px;
+}
+
+.sidebar-git-scope-menu__new-branch-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 26px;
+    max-width: 100%;
+    border: 1px solid
+        color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
+    border-radius: 7px;
+    background: color-mix(
+        in srgb,
+        var(--color-accent) 11%,
+        var(--color-bg-elevated)
+    );
+    padding: 0 9px;
+    color: var(--color-text-primary);
+    font-size: 11px;
+    font-weight: 600;
+    transition:
+        background-color 120ms ease,
+        border-color 120ms ease,
+        color 120ms ease;
+}
+
+.sidebar-git-scope-menu__new-branch-button:hover:not(:disabled) {
+    border-color: color-mix(
+        in srgb,
+        var(--color-accent) 55%,
+        var(--color-border)
+    );
+    background: color-mix(
+        in srgb,
+        var(--color-accent) 17%,
+        var(--color-bg-elevated)
+    );
+}
+
+.sidebar-git-scope-menu__new-branch-button:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.sidebar-git-scope-menu__new-branch-button svg {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+}
+
+.sidebar-git-scope-menu__branch-form {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    gap: 8px;
+    border-bottom: 1px solid var(--color-border);
+    background: color-mix(in srgb, var(--color-bg-elevated) 58%, transparent);
+    padding: 10px 12px 12px;
+}
+
+.sidebar-git-scope-menu__branch-form-header {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.sidebar-git-scope-menu__branch-form-header span {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--color-text-primary);
+    font-size: 12px;
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sidebar-git-scope-menu__branch-form-field {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.sidebar-git-scope-menu__branch-form-field > span {
+    color: var(--color-text-secondary);
+    font-size: 10px;
+    font-weight: 600;
+}
+
+.sidebar-git-scope-menu__branch-form-field select.ide-input {
+    min-width: 0;
+}
+
+.sidebar-git-scope-menu__branch-form-error {
+    overflow-wrap: anywhere;
+    color: var(--diff-remove);
+    font-size: 10px;
+    line-height: 1.35;
+}
+
+.sidebar-git-scope-menu__branch-form-checkbox {
+    display: inline-flex;
+    min-width: 0;
+    align-items: center;
+    gap: 7px;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+}
+
+.sidebar-git-scope-menu__branch-form-checkbox input {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    accent-color: var(--color-accent);
+}
+
+.sidebar-git-scope-menu__branch-form-actions {
+    display: flex;
+    min-width: 0;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.sidebar-git-scope-menu__branch-form-primary,
+.sidebar-git-scope-menu__branch-form-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 28px;
+    min-width: 0;
+    border-radius: 7px;
+    padding: 0 10px;
+    font-size: 11px;
+    font-weight: 600;
+    transition:
+        background-color 120ms ease,
+        border-color 120ms ease,
+        color 120ms ease;
+}
+
+.sidebar-git-scope-menu__branch-form-primary {
+    border: 1px solid
+        color-mix(in srgb, var(--color-accent) 48%, var(--color-border));
+    background: color-mix(
+        in srgb,
+        var(--color-accent) 18%,
+        var(--color-bg-elevated)
+    );
+    color: var(--color-text-primary);
+}
+
+.sidebar-git-scope-menu__branch-form-primary:hover:not(:disabled) {
+    border-color: color-mix(
+        in srgb,
+        var(--color-accent) 68%,
+        var(--color-border)
+    );
+    background: color-mix(
+        in srgb,
+        var(--color-accent) 25%,
+        var(--color-bg-elevated)
+    );
+}
+
+.sidebar-git-scope-menu__branch-form-secondary {
+    border: 1px solid var(--color-border);
+    background: color-mix(in srgb, var(--color-bg-tertiary) 55%, transparent);
+    color: var(--color-text-secondary);
+}
+
+.sidebar-git-scope-menu__branch-form-secondary:hover:not(:disabled) {
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
+}
+
+.sidebar-git-scope-menu__branch-form-primary:disabled,
+.sidebar-git-scope-menu__branch-form-secondary:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
 .sidebar-git-scope-menu__section-header {
     display: flex;
     align-items: center;
@@ -1293,6 +1479,82 @@ button {
     padding: 10px 12px;
     color: var(--color-text-secondary);
     font-size: 11px;
+}
+
+.sidebar-git-scope-menu__create-query {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    min-height: 36px;
+    min-width: 0;
+    border: 1px solid
+        color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+    border-radius: 7px;
+    background: color-mix(
+        in srgb,
+        var(--color-accent) 8%,
+        var(--color-bg-elevated)
+    );
+    margin-bottom: 6px;
+    padding: 7px 9px;
+    color: var(--color-text-primary);
+    text-align: left;
+    transition:
+        background-color 120ms ease,
+        border-color 120ms ease,
+        color 120ms ease;
+}
+
+.sidebar-git-scope-menu__create-query:hover:not(:disabled),
+.sidebar-git-scope-menu__create-query--selected {
+    border-color: color-mix(
+        in srgb,
+        var(--color-accent) 45%,
+        var(--color-border)
+    );
+    background: color-mix(
+        in srgb,
+        var(--color-accent) 14%,
+        var(--color-bg-elevated)
+    );
+}
+
+.sidebar-git-scope-menu__create-query:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.sidebar-git-scope-menu__create-query-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    color: var(--color-text-primary);
+}
+
+.sidebar-git-scope-menu__create-query-icon svg {
+    width: 13px;
+    height: 13px;
+}
+
+.sidebar-git-scope-menu__create-query-copy {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sidebar-git-scope-menu__create-query-copy span {
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
 }
 
 .sidebar-git-scope-menu__init {

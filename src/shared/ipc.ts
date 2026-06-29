@@ -58,6 +58,7 @@ export const IPC_CHANNELS = {
     discardGitPaths: "git:discard-paths",
     commitGitChanges: "git:commit",
     checkoutGitBranch: "git:checkout-branch",
+    createGitBranch: "git:create-branch",
     createGitWorktree: "git:create-worktree",
     removeGitWorktree: "git:remove-worktree",
     deleteLocalGitBranch: "git:delete-local-branch",
@@ -984,6 +985,11 @@ export interface GitCheckoutBranchInput extends GitRepositoryScopeInput {
     readonly branchName: string;
     readonly force?: boolean;
     readonly newBranchName?: string | null;
+    readonly startPoint?: string | null;
+}
+
+export interface GitCreateBranchInput extends GitRepositoryScopeInput {
+    readonly branchName: string;
     readonly startPoint?: string | null;
 }
 
@@ -2854,6 +2860,9 @@ export interface ComandoApi {
     commitGitChanges: (input: GitCommitInput) => Promise<GitCommitResult>;
     checkoutGitBranch: (
         input: GitCheckoutBranchInput,
+    ) => Promise<GitRepositorySnapshot>;
+    createGitBranch: (
+        input: GitCreateBranchInput,
     ) => Promise<GitRepositorySnapshot>;
     createGitWorktree: (
         input: GitCreateWorktreeInput,
