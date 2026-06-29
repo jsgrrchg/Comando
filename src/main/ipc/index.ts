@@ -1468,42 +1468,15 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     // Cap concurrent requests on filesystem-fanout handlers so a buggy
     // renderer loop cannot swamp the projects worker / event loop. Limits are
     // generous for read paths and tighter for mutations.
-    const listProjectTreeLimiter = createIpcInFlightLimiter(
-        IPC_CHANNELS.listProjectTree,
-        12,
-    );
-    const listProjectEntriesLimiter = createIpcInFlightLimiter(
-        IPC_CHANNELS.listProjectEntries,
-        4,
-    );
-    const openProjectFileLimiter = createIpcInFlightLimiter(
-        IPC_CHANNELS.openProjectFile,
-        8,
-    );
-    const saveProjectFileLimiter = createIpcInFlightLimiter(
-        IPC_CHANNELS.saveProjectFile,
-        4,
-    );
-    const createProjectEntryLimiter = createIpcInFlightLimiter(
-        IPC_CHANNELS.createProjectEntry,
-        4,
-    );
-    const copyProjectEntriesLimiter = createIpcInFlightLimiter(
-        IPC_CHANNELS.copyProjectEntries,
-        2,
-    );
-    const copyExternalProjectEntriesLimiter = createIpcInFlightLimiter(
-        IPC_CHANNELS.copyExternalProjectEntries,
-        2,
-    );
-    const renameProjectEntryLimiter = createIpcInFlightLimiter(
-        IPC_CHANNELS.renameProjectEntry,
-        4,
-    );
-    const deleteProjectEntryLimiter = createIpcInFlightLimiter(
-        IPC_CHANNELS.deleteProjectEntry,
-        4,
-    );
+    const listProjectTreeLimiter = createIpcInFlightLimiter(12);
+    const listProjectEntriesLimiter = createIpcInFlightLimiter(4);
+    const openProjectFileLimiter = createIpcInFlightLimiter(8);
+    const saveProjectFileLimiter = createIpcInFlightLimiter(4);
+    const createProjectEntryLimiter = createIpcInFlightLimiter(4);
+    const copyProjectEntriesLimiter = createIpcInFlightLimiter(2);
+    const copyExternalProjectEntriesLimiter = createIpcInFlightLimiter(2);
+    const renameProjectEntryLimiter = createIpcInFlightLimiter(4);
+    const deleteProjectEntryLimiter = createIpcInFlightLimiter(4);
     ipcMain.handle(
         IPC_CHANNELS.listProjectTree,
         (_event, input: ListProjectTreeInput) =>
@@ -1616,10 +1589,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     // Project search fans out to the projects worker and is the handler most
     // likely to pile up if a renderer loop fires rapidly; cap concurrent
     // in-flight requests to protect the worker pool and the main event loop.
-    const searchProjectEntriesLimiter = createIpcInFlightLimiter(
-        IPC_CHANNELS.searchProjectEntries,
-        8,
-    );
+    const searchProjectEntriesLimiter = createIpcInFlightLimiter(8);
     ipcMain.handle(
         IPC_CHANNELS.searchProjectEntries,
         (_event, input: SearchProjectEntriesInput) =>
