@@ -917,7 +917,7 @@ describe("AiService Codex branch", () => {
         expect(secretValues.size).toBe(0);
     });
 
-    it("persists runtime option preferences when updating a stored session", async () => {
+    it("updates stored session options without changing runtime defaults", async () => {
         const saveRuntimeSelectionPreferenceOption = vi.fn();
         const saveSessionSnapshot = vi.fn();
         const persistedSnapshot: AiSessionSnapshot = {
@@ -1022,15 +1022,11 @@ describe("AiService Codex branch", () => {
             value: "high",
         });
 
-        expect(saveRuntimeSelectionPreferenceOption).toHaveBeenCalledWith(
-            "codex",
-            "thought_level",
-            "high",
-        );
+        expect(saveRuntimeSelectionPreferenceOption).not.toHaveBeenCalled();
         expect(saveSessionSnapshot).toHaveBeenCalled();
     });
 
-    it("persists model preferences when updating a stored model config option", async () => {
+    it("updates stored model config options without changing runtime defaults", async () => {
         const saveRuntimeModelPreference = vi.fn();
         const saveRuntimeSelectionPreferenceOption = vi.fn();
         const saveSessionSnapshot = vi.fn();
@@ -1136,15 +1132,8 @@ describe("AiService Codex branch", () => {
             value: "gpt-5.5",
         });
 
-        expect(saveRuntimeSelectionPreferenceOption).toHaveBeenCalledWith(
-            "codex",
-            "model",
-            "gpt-5.5",
-        );
-        expect(saveRuntimeModelPreference).toHaveBeenCalledWith(
-            "codex",
-            "gpt-5.5",
-        );
+        expect(saveRuntimeSelectionPreferenceOption).not.toHaveBeenCalled();
+        expect(saveRuntimeModelPreference).not.toHaveBeenCalled();
         expect(saveSessionSnapshot).toHaveBeenCalled();
     });
 });

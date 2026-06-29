@@ -1447,53 +1447,37 @@ export class AiService {
 
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
         if (!this.#liveSessionContexts.has(input.sessionId)) {
-            const snapshot = await this.#updateSessionSnapshot(
+            await this.#updateSessionSnapshot(
                 input.sessionId,
                 (currentSnapshot) =>
                     setModeOnSnapshot(currentSnapshot, input.modeId),
-            );
-            this.#persistence.saveRuntimeModePreference(
-                snapshot.runtimeId,
-                input.modeId,
             );
             return;
         }
 
         await this.#requireNativeAiGateway().setSessionMode(input);
-        const snapshot = await this.#updateSessionSnapshot(
+        await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
                 setModeOnSnapshot(currentSnapshot, input.modeId),
-        );
-        this.#persistence.saveRuntimeModePreference(
-            snapshot.runtimeId,
-            input.modeId,
         );
     }
 
     async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
         if (!this.#liveSessionContexts.has(input.sessionId)) {
-            const snapshot = await this.#updateSessionSnapshot(
+            await this.#updateSessionSnapshot(
                 input.sessionId,
                 (currentSnapshot) =>
                     setModelOnSnapshot(currentSnapshot, input.modelId),
-            );
-            this.#persistence.saveRuntimeModelPreference(
-                snapshot.runtimeId,
-                input.modelId,
             );
             return;
         }
 
         await this.#requireNativeAiGateway().setSessionModel(input);
-        const snapshot = await this.#updateSessionSnapshot(
+        await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
                 setModelOnSnapshot(currentSnapshot, input.modelId),
-        );
-        this.#persistence.saveRuntimeModelPreference(
-            snapshot.runtimeId,
-            input.modelId,
         );
     }
 
@@ -1501,7 +1485,7 @@ export class AiService {
         input: AiSessionConfigOptionMutationInput,
     ): Promise<void> {
         if (!this.#liveSessionContexts.has(input.sessionId)) {
-            const snapshot = await this.#updateSessionSnapshot(
+            await this.#updateSessionSnapshot(
                 input.sessionId,
                 (currentSnapshot) =>
                     setConfigOptionOnSnapshot(
@@ -1510,17 +1494,11 @@ export class AiService {
                         input.value,
                     ),
             );
-            this.#persistRuntimeConfigOptionSelection(
-                snapshot.runtimeId,
-                snapshot,
-                input.optionId,
-                input.value,
-            );
             return;
         }
 
         await this.#requireNativeAiGateway().setSessionConfigOption(input);
-        const snapshot = await this.#updateSessionSnapshot(
+        await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
                 setConfigOptionOnSnapshot(
@@ -1528,12 +1506,6 @@ export class AiService {
                     input.optionId,
                     input.value,
                 ),
-        );
-        this.#persistRuntimeConfigOptionSelection(
-            snapshot.runtimeId,
-            snapshot,
-            input.optionId,
-            input.value,
         );
     }
 
@@ -4359,36 +4331,6 @@ export class AiService {
             modelId: preferredModelId ?? persistedSnapshot.modelId,
             preferredConfigOptions: preferences.configOptions,
         };
-    }
-
-    #persistRuntimeConfigOptionSelection(
-        runtimeId: AiRuntimeId,
-        snapshot: Pick<AiSessionSnapshot, "configOptions"> | null,
-        optionId: string,
-        value: boolean | string,
-    ): void {
-        this.#persistence.saveRuntimeSelectionPreferenceOption(
-            runtimeId,
-            optionId,
-            value,
-        );
-
-        if (typeof value !== "string") {
-            return;
-        }
-
-        const configOptions = snapshot?.configOptions ?? [];
-        const modeConfig = getModeConfigOption(configOptions);
-        const modelConfig = getModelConfigOption(configOptions);
-        const normalizedOptionId = optionId.toLowerCase();
-
-        if (modelConfig?.id === optionId || normalizedOptionId === "model") {
-            this.#persistence.saveRuntimeModelPreference(runtimeId, value);
-        }
-
-        if (modeConfig?.id === optionId || normalizedOptionId === "mode") {
-            this.#persistence.saveRuntimeModePreference(runtimeId, value);
-        }
     }
 
     async #updateSessionSnapshot(

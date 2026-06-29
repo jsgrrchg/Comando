@@ -620,10 +620,7 @@ describe("AiService prepareSession", () => {
                 sessionId: "session-1",
             }),
         );
-        expect(saveRuntimeModePreference).toHaveBeenCalledWith(
-            "codex",
-            "agent",
-        );
+        expect(saveRuntimeModePreference).not.toHaveBeenCalled();
     });
 
     it("routes live renames through the native backend and updates the cached snapshot", async () => {
@@ -811,11 +808,27 @@ describe("AiService prepareSession", () => {
         const setSessionConfigOption = vi.fn<
             NativeAiGateway["setSessionConfigOption"]
         >(() => Promise.resolve());
+        const saveRuntimeSelectionPreferenceOption = vi.fn();
+        const saveRuntimeModePreference = vi.fn();
+        const saveRuntimeModelPreference = vi.fn();
         const service = createPrepareService({
             nativeAi: createNativeAi({
                 prepareSession,
                 setSessionConfigOption,
             }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {},
+                    modeId: null,
+                    modelId: null,
+                })),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveRuntimeSelectionPreferenceOption,
+                saveRuntimeModePreference,
+                saveRuntimeModelPreference,
+                saveSessionSnapshot: vi.fn(),
+            } as never,
         });
 
         await service.prepareSession(
@@ -846,6 +859,9 @@ describe("AiService prepareSession", () => {
                 (option) => option.id === "reasoning_effort",
             )?.value,
         ).toBe("medium");
+        expect(saveRuntimeSelectionPreferenceOption).not.toHaveBeenCalled();
+        expect(saveRuntimeModePreference).not.toHaveBeenCalled();
+        expect(saveRuntimeModelPreference).not.toHaveBeenCalled();
     });
 
     it("applies saved reasoning preferences after a fresh prepare discovers config options", async () => {
