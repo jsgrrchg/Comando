@@ -107,9 +107,35 @@ jobs:
                   printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
                   gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
 
+    ensure-github-release:
+        name: Ensure GitHub release
+        needs: release-preflight
+        runs-on: ubuntu-latest
+        env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        steps:
+            - name: Download release body
+              uses: actions/download-artifact@v4
+              with:
+                  name: release-body-${{ github.ref_name }}
+                  path: .release
+
+            - name: Create or update release shell
+              run: |
+                  tag="$GITHUB_REF_NAME"
+                  version="${tag#v}"
+                  title="Comando v${version}"
+                  notes_file=".release/release-body.md"
+
+                  if gh release view "$tag" >/dev/null 2>&1; then
+                    gh release edit "$tag" --title "$title" --notes-file "$notes_file"
+                  else
+                    gh release create "$tag" --title "$title" --notes-file "$notes_file" --verify-tag
+                  fi
+
     release-macos:
         name: macOS universal
-        needs: release-preflight
+        needs: ensure-github-release
         runs-on: macos-latest
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -214,7 +240,7 @@ jobs:
 
     release-windows-x64:
         name: Windows x64
-        needs: release-preflight
+        needs: ensure-github-release
         runs-on: windows-latest
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -253,7 +279,7 @@ jobs:
 
     release-windows-arm64:
         name: Windows arm64
-        needs: release-preflight
+        needs: ensure-github-release
         runs-on: windows-11-arm
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -292,7 +318,10 @@ jobs:
 
     release-linux:
         name: Linux ${{ matrix.arch }}
-        needs: release-preflight
+        needs:
+            - release-preflight
+            - ensure-github-release
+            - apt-repository-preflight
         runs-on: ${{ matrix.runner }}
         strategy:
             fail-fast: false
@@ -303,6 +332,9 @@ jobs:
                     - arch: arm64
                       runner: ubuntu-24.04-arm
         env:
+            APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
+            APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
+            APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
@@ -324,7 +356,8 @@ jobs:
             - name: Install Linux package toolchain
               run: |
                   sudo apt-get update
-                  sudo apt-get install -y rpm libcrypt1
+                  sudo apt-get install -y gnupg rpm libcrypt1
+                  command -v rpmsign
 
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
@@ -334,8 +367,49 @@ jobs:
                   npm ci --prefix vendor/Claude-agent-acp-upstream
                   npm run build --prefix vendor/Claude-agent-acp-upstream
 
-            - name: Publish Linux artifacts
-              run: pnpm run release:linux
+            - name: Package Linux artifacts
+              run: pnpm run package:linux
+
+            - name: Sign Linux RPM package
+              run: |
+                  export GNUPGHOME
+                  GNUPGHOME="$(mktemp -d)"
+                  trap 'rm -rf "$GNUPGHOME"' EXIT
+                  chmod 700 "$GNUPGHOME"
+                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
+                  gpg --batch --armor --export "$APT_REPO_GPG_KEY_ID" > "$RUNNER_TEMP/comando-rpm-signing-key.asc"
+                  sudo rpm --import "$RUNNER_TEMP/comando-rpm-signing-key.asc"
+
+                  node scripts/sign-rpm-packages.mjs \
+                    --rpm-dir dist \
+                    --key-id "$APT_REPO_GPG_KEY_ID"
+
+            - name: Validate Linux RPM package
+              run: |
+                  node scripts/validate-linux-rpm-package.mjs \
+                    --staged-assets-dir dist \
+                    --arch "${{ matrix.arch }}" \
+                    --version "${GITHUB_REF_NAME#v}" \
+                    --require-signature
+
+            - name: Upload Linux release assets
+              run: |
+                  shopt -s nullglob
+                  linux_assets=(
+                    dist/*.AppImage
+                    dist/*.AppImage.blockmap
+                    dist/*.deb
+                    dist/*.rpm
+                    dist/latest-linux*.yml
+                  )
+
+                  if (( ${#linux_assets[@]} == 0 )); then
+                    echo "No Linux release assets found." >&2
+                    exit 1
+                  fi
+
+                  gh release upload "$GITHUB_REF_NAME" "${linux_assets[@]}" --clobber
 
             - name: Upload Linux workflow artifacts
               uses: actions/upload-artifact@v4
@@ -344,6 +418,7 @@ jobs:
                   name: linux-${{ matrix.arch }}-dist
                   path: |
                       dist/*.AppImage
+                      dist/*.AppImage.blockmap
                       dist/*.deb
                       dist/*.rpm
                       dist/latest-linux*.yml
