@@ -1186,6 +1186,7 @@ function nativeSnapshotToIpc(snapshot: NativeAiSessionSnapshot): AiSessionSnapsh
         ) as AiSessionSnapshot["plan"],
         parentSessionId: nullableString(snapshot.parentSessionId),
         projectId: nullableString(snapshot.projectId),
+        reasoningEffort: nullableString(snapshot.reasoningEffort),
         runtimeId: snapshot.runtimeId as AiRuntimeId,
         runtimeSessionId: nullableString(snapshot.runtimeSessionId),
         sessionId: snapshot.sessionId,

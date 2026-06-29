@@ -402,6 +402,7 @@ export type NativeAiSessionSnapshot = {
     readonly lastError: string | null;
     readonly modeId: string | null;
     readonly modelId: string | null;
+    readonly reasoningEffort?: string | null;
     readonly pendingPermission: unknown;
     readonly pendingUserInput: unknown;
     readonly plan: unknown;

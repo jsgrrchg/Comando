@@ -426,6 +426,7 @@ describe("native backend fixtures", () => {
             "ai/history.snapshot.json",
         );
         expect(historySnapshot).toMatchObject({
+            reasoningEffort: "high",
             runtimeId: "codex",
             sessionId: "session_1",
         });

@@ -522,6 +522,7 @@ describe("NativeAiGateway", () => {
                         pendingUserInput: null,
                         plan: null,
                         projectId: "project-1",
+                        reasoningEffort: "high",
                         runtimeId: "opencode",
                         runtimeSessionId: "runtime-session-1",
                         sessionId: "session-1",
@@ -563,6 +564,7 @@ describe("NativeAiGateway", () => {
             }),
         ).resolves.toMatchObject({ totalMessages: 1 });
         await expect(gateway.loadSessionSnapshot("session-1")).resolves.toMatchObject({
+            reasoningEffort: "high",
             runtimeId: "opencode",
             sessionId: "session-1",
             trackedFiles: [],

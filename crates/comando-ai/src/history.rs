@@ -87,6 +87,8 @@ pub struct AiHistorySessionMetadata {
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -130,6 +132,7 @@ impl AiHistorySessionMetadata {
             message_count: 0,
             model_id: input.model_id,
             mode_id: input.mode_id,
+            reasoning_effort: input.reasoning_effort,
             models: Vec::new(),
             modes: Vec::new(),
             config_options: Vec::new(),
@@ -156,6 +159,7 @@ pub struct AiHistorySessionMetadataInput {
     pub status: NativeAiSessionStatus,
     pub model_id: Option<String>,
     pub mode_id: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub config_values: BTreeMap<String, Value>,
     pub cwd: String,
     pub additional_roots: Vec<String>,
@@ -530,6 +534,7 @@ impl AiHistoryStore {
             last_error: state.last_error,
             mode_id: metadata.mode_id,
             model_id: metadata.model_id,
+            reasoning_effort: metadata.reasoning_effort,
             pending_permission: state.pending_permission,
             pending_user_input: state.pending_user_input,
             plan: state.plan,
@@ -1062,6 +1067,7 @@ impl<'a> LegacyAiHistoryReader<'a> {
             last_error: string_field(&state, "lastError"),
             mode_id: string_field(&state, "modeId"),
             model_id: string_field(&state, "modelId"),
+            reasoning_effort: string_field(&state, "reasoningEffort"),
             pending_permission: state
                 .get("pendingPermission")
                 .cloned()
@@ -1553,6 +1559,7 @@ impl<'a> AiHistoryMigrator<'a> {
             status: snapshot.status.clone(),
             model_id: snapshot.model_id.clone(),
             mode_id: snapshot.mode_id.clone(),
+            reasoning_effort: snapshot.reasoning_effort.clone(),
             config_values: BTreeMap::new(),
             cwd: String::new(),
             additional_roots: Vec::new(),
@@ -1879,8 +1886,7 @@ fn truncate_session_preview(preview: String) -> String {
         return preview;
     }
 
-    let max_preview_bytes =
-        SESSION_PREVIEW_MAX_BYTES.saturating_sub(SESSION_PREVIEW_SUFFIX.len());
+    let max_preview_bytes = SESSION_PREVIEW_MAX_BYTES.saturating_sub(SESSION_PREVIEW_SUFFIX.len());
     let mut end = max_preview_bytes.min(preview.len());
     while end > 0 && !preview.is_char_boundary(end) {
         end -= 1;
@@ -2025,6 +2031,7 @@ mod tests {
             status: NativeAiSessionStatus::Idle,
             model_id: Some("gpt-5".to_string()),
             mode_id: Some("agent".to_string()),
+            reasoning_effort: None,
             config_values: BTreeMap::new(),
             cwd: "/tmp/project".to_string(),
             additional_roots: vec!["/tmp/other".to_string()],

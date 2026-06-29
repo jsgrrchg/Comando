@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, mpsc};
 
 use comando_settings::RuntimeSetupStore;
@@ -259,6 +259,7 @@ impl AiEngine {
                 status: NativeAiSessionStatus::Idle,
                 model_id: input.model_id.clone(),
                 mode_id: input.mode_id.clone(),
+                reasoning_effort: reasoning_effort_from_config_values(&input.config_options),
                 config_values: input.config_options.clone(),
                 cwd: input.cwd.clone(),
                 additional_roots: input.additional_roots.clone(),
@@ -665,8 +666,46 @@ impl AiEngine {
                     "Native config changes require an ACP-backed session.".to_string(),
                 )
             })?;
-        controller.set_config_option(runtime_session_id, config_id, value)?;
+        controller.set_config_option(runtime_session_id, config_id.clone(), value.clone())?;
+        self.update_history_config_value(session_id, &config_id, &value)?;
         self.update_history_status(&session.summary())
+    }
+
+    fn update_history_config_value(
+        &self,
+        session_id: &comando_types::ids::SessionId,
+        config_id: &str,
+        value: &NativeAiConfigValue,
+    ) -> AiResult<()> {
+        let Some(store) = self.history_store()? else {
+            return Ok(());
+        };
+        if !store.has_session(session_id) {
+            return Ok(());
+        }
+
+        let mut metadata = store.load_metadata(session_id)?;
+        let value_json = match value {
+            NativeAiConfigValue::Boolean(value) => json!(value),
+            NativeAiConfigValue::ValueId(value) => json!(value),
+        };
+        metadata
+            .config_values
+            .insert(config_id.to_string(), value_json);
+
+        if let NativeAiConfigValue::ValueId(value) = value {
+            if config_id == "model" {
+                metadata.model_id = Some(value.clone());
+            }
+            if config_id == "mode" {
+                metadata.mode_id = Some(value.clone());
+            }
+            if is_reasoning_effort_config_key(config_id) {
+                metadata.reasoning_effort = Some(value.clone());
+            }
+        }
+
+        store.save_metadata(&metadata)
     }
 
     fn lock_sessions(&self) -> AiResult<std::sync::MutexGuard<'_, SessionRegistry>> {
@@ -757,6 +796,7 @@ impl AiEngine {
         current.status = metadata.status;
         current.model_id = metadata.model_id;
         current.mode_id = metadata.mode_id;
+        current.reasoning_effort = metadata.reasoning_effort;
         current.config_values = metadata.config_values;
         current.cwd = metadata.cwd;
         current.additional_roots = metadata.additional_roots;
@@ -969,6 +1009,10 @@ impl AiEngine {
                 .iter()
                 .filter_map(native_config_option_to_ipc)
                 .collect();
+            if metadata.reasoning_effort.is_none() {
+                metadata.reasoning_effort =
+                    reasoning_effort_from_config_options(&metadata.config_options);
+            }
         }
         metadata.updated_at = payload
             .get("updatedAt")
@@ -1247,6 +1291,11 @@ impl AiEngine {
             mode_id: parent_metadata
                 .as_ref()
                 .and_then(|metadata| metadata.mode_id.clone()),
+            reasoning_effort: payload
+                .get("reasoningEffort")
+                .and_then(Value::as_str)
+                .filter(|reasoning_effort| !reasoning_effort.trim().is_empty())
+                .map(ToOwned::to_owned),
             config_values: parent_metadata
                 .as_ref()
                 .map(|metadata| metadata.config_values.clone())
@@ -1568,6 +1617,46 @@ fn native_config_category(category: &str) -> String {
     }
 }
 
+fn reasoning_effort_from_config_values(config_values: &BTreeMap<String, Value>) -> Option<String> {
+    REASONING_EFFORT_CONFIG_KEYS.iter().find_map(|key| {
+        config_values
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+const REASONING_EFFORT_CONFIG_KEYS: &[&str] = &[
+    "reasoning_effort",
+    "reasoning-effort",
+    "codex-reasoning-effort",
+    "effort",
+    "thought_level",
+];
+
+fn is_reasoning_effort_config_key(config_id: &str) -> bool {
+    REASONING_EFFORT_CONFIG_KEYS.contains(&config_id)
+}
+
+fn reasoning_effort_from_config_options(config_options: &[Value]) -> Option<String> {
+    config_options.iter().find_map(|option| {
+        let id = option.get("id").and_then(Value::as_str).unwrap_or_default();
+        let category = option
+            .get("category")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if category != "reasoning" && !is_reasoning_effort_config_key(id) {
+            return None;
+        }
+        option
+            .get("value")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
 fn native_status_from_event(status: &str) -> NativeAiSessionStatus {
     match status {
         "streaming" => NativeAiSessionStatus::Streaming,
@@ -1804,6 +1893,7 @@ mod tests {
             status: NativeAiSessionStatus::Idle,
             model_id: None,
             mode_id: None,
+            reasoning_effort: None,
             config_values: BTreeMap::new(),
             cwd: project.path().to_string_lossy().to_string(),
             additional_roots: vec!["/tmp/extra-root".to_string()],
@@ -1846,6 +1936,7 @@ mod tests {
             status: NativeAiSessionStatus::Idle,
             model_id: None,
             mode_id: None,
+            reasoning_effort: None,
             config_values: BTreeMap::new(),
             cwd: "/tmp/project".to_string(),
             additional_roots: Vec::new(),
