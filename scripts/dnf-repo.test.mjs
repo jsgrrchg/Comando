@@ -39,6 +39,7 @@ function writeFixtureDnfRepository(
     rootDir,
     {
         includePackageBinary = false,
+        packageLocationArchitecture = (architecture) => architecture,
         packageLocationBase = "https://github.com/jsgrrchg/Comando/releases/download/v0.1.0",
         repoExample = buildComandoRepoExample(),
         version = "0.1.0",
@@ -49,7 +50,10 @@ function writeFixtureDnfRepository(
     fs.mkdirSync(repodataDir, { recursive: true });
 
     const packages = DNF_SUPPORTED_ARCHITECTURES.map((architecture) => {
-        const assetName = buildRpmReleaseAssetName(version, architecture);
+        const assetName = buildRpmReleaseAssetName(
+            version,
+            packageLocationArchitecture(architecture),
+        );
         return [
             '<package type="rpm">',
             `<name>${DNF_PACKAGE_NAME}</name>`,
@@ -196,6 +200,21 @@ describe("DNF repository metadata", () => {
             expect(result.status).not.toBe(0);
             expect(`${result.stdout}\n${result.stderr}`).toContain(
                 "missing GitHub Release location",
+            );
+        });
+    });
+
+    it("rejects package locations assigned to the wrong architecture block", () => {
+        withTempDir((tempDir) => {
+            const dnfDir = writeFixtureDnfRepository(tempDir, {
+                packageLocationArchitecture: (architecture) =>
+                    architecture === "x86_64" ? "aarch64" : "x86_64",
+            });
+            const result = validateDnfRepository(dnfDir);
+
+            expect(result.status).not.toBe(0);
+            expect(`${result.stdout}\n${result.stderr}`).toContain(
+                "x86_64 package is missing GitHub Release location for Comando-0.1.0-linux-x64.rpm",
             );
         });
     });

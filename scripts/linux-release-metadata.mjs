@@ -1,11 +1,51 @@
 import fs from "node:fs";
 import path from "node:path";
 
-export function resolvePackagedLinuxUpdaterConfig({ packageJson }) {
+export const SUPPORTED_LINUX_RELEASE_ARCHES = Object.freeze(["x64", "arm64"]);
+
+export function resolveLinuxUpdaterChannel(targetArch) {
+    assertSupportedLinuxReleaseArch(targetArch);
+    return `latest-${targetArch}`;
+}
+
+export function resolveLinuxReleaseArtifacts({
+    distDir,
+    productName,
+    targetArch,
+    version,
+}) {
+    assertSupportedLinuxReleaseArch(targetArch);
+
+    const artifactBaseName = `${productName}-${version}-linux-${targetArch}`;
+    const updaterChannel = resolveLinuxUpdaterChannel(targetArch);
+    const linuxArchSuffix = targetArch === "x64" ? "" : `-${targetArch}`;
+
+    return {
+        appImagePath: path.join(distDir, `${artifactBaseName}.AppImage`),
+        appImageBlockmapPath: path.join(
+            distDir,
+            `${artifactBaseName}.AppImage.blockmap`,
+        ),
+        debPath: path.join(distDir, `${artifactBaseName}.deb`),
+        forbiddenSharedMetadataPath: path.join(
+            distDir,
+            `latest-linux${linuxArchSuffix}.yml`,
+        ),
+        metadataPath: path.join(
+            distDir,
+            `${updaterChannel}-linux${linuxArchSuffix}.yml`,
+        ),
+        rpmPath: path.join(distDir, `${artifactBaseName}.rpm`),
+        updaterChannel,
+    };
+}
+
+export function resolvePackagedLinuxUpdaterConfig({ packageJson, targetArch }) {
+    assertSupportedLinuxReleaseArch(targetArch);
     const repository = resolveGitHubRepository(packageJson.repository);
 
     return {
-        channel: "latest",
+        channel: resolveLinuxUpdaterChannel(targetArch),
         owner: repository.owner,
         provider: "github",
         repo: repository.repo,
@@ -16,12 +56,13 @@ export function resolvePackagedLinuxUpdaterConfig({ packageJson }) {
 export function ensurePackagedLinuxUpdaterConfig({
     appUpdateConfigPath,
     packageJson,
+    targetArch,
 }) {
     if (fs.existsSync(appUpdateConfigPath)) {
         return false;
     }
 
-    const config = resolvePackagedLinuxUpdaterConfig({ packageJson });
+    const config = resolvePackagedLinuxUpdaterConfig({ packageJson, targetArch });
     fs.mkdirSync(path.dirname(appUpdateConfigPath), { recursive: true });
     fs.writeFileSync(appUpdateConfigPath, serializeSimpleYaml(config), "utf8");
     return true;
@@ -31,8 +72,12 @@ export function verifyPackagedLinuxUpdaterConfig({
     appUpdateConfigPath,
     packageJson,
     relativePath = defaultRelativePath,
+    targetArch,
 }) {
-    const expected = resolvePackagedLinuxUpdaterConfig({ packageJson });
+    const expected = resolvePackagedLinuxUpdaterConfig({
+        packageJson,
+        targetArch,
+    });
     const content = readRequiredTextFile(appUpdateConfigPath, relativePath);
 
     for (const [key, value] of Object.entries(expected)) {
@@ -41,6 +86,63 @@ export function verifyPackagedLinuxUpdaterConfig({
                 `Packaged Linux updater config must include ${key}: ${value}. Check ${relativePath(appUpdateConfigPath)}.`,
             );
         }
+    }
+}
+
+export function verifyLinuxReleaseArtifacts({
+    distDir,
+    productName,
+    relativePath = defaultRelativePath,
+    targetArch,
+    version,
+}) {
+    const artifacts = resolveLinuxReleaseArtifacts({
+        distDir,
+        productName,
+        targetArch,
+        version,
+    });
+
+    assertFile(artifacts.appImagePath, relativePath);
+    assertFile(artifacts.appImageBlockmapPath, relativePath);
+    assertFile(artifacts.debPath, relativePath);
+    assertFile(artifacts.rpmPath, relativePath);
+    assertFile(artifacts.metadataPath, relativePath);
+
+    if (fs.existsSync(artifacts.forbiddenSharedMetadataPath)) {
+        throw new Error(
+            `Linux releases must not emit shared updater metadata: ${relativePath(artifacts.forbiddenSharedMetadataPath)}.`,
+        );
+    }
+
+    const metadata = fs.readFileSync(artifacts.metadataPath, "utf8");
+    const expectedAppImageName = path.basename(artifacts.appImagePath);
+    if (!metadata.includes(expectedAppImageName)) {
+        throw new Error(
+            `Linux updater metadata ${relativePath(artifacts.metadataPath)} does not reference ${expectedAppImageName}.`,
+        );
+    }
+
+    for (const otherArch of SUPPORTED_LINUX_RELEASE_ARCHES) {
+        if (otherArch === targetArch) {
+            continue;
+        }
+
+        if (metadata.includes(`-linux-${otherArch}.AppImage`)) {
+            throw new Error(
+                `Linux updater metadata ${relativePath(artifacts.metadataPath)} references ${otherArch} artifacts during a ${targetArch} build.`,
+            );
+        }
+    }
+
+    return artifacts;
+}
+
+function assertSupportedLinuxReleaseArch(targetArch) {
+    if (!SUPPORTED_LINUX_RELEASE_ARCHES.includes(targetArch)) {
+        throw new Error(
+            `Unsupported Linux release architecture: ${targetArch}. Expected one of ${SUPPORTED_LINUX_RELEASE_ARCHES.join(", ")}.`,
+        );
     }
 }
 
@@ -67,6 +169,15 @@ function resolveGitHubRepository(repository) {
         owner: match[1],
         repo: match[2].replace(/\.git$/u, ""),
     };
+}
+
+function assertFile(filePath, relativePath) {
+    const stats = fs.existsSync(filePath) ? fs.statSync(filePath) : null;
+    if (!stats?.isFile()) {
+        throw new Error(
+            `Missing expected Linux release artifact: ${relativePath(filePath)}.`,
+        );
+    }
 }
 
 function readRequiredTextFile(filePath, relativePath) {

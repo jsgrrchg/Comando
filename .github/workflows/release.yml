@@ -430,7 +430,7 @@ jobs:
                     dist/*.AppImage.blockmap
                     dist/*.deb
                     dist/*.rpm
-                    dist/latest-linux*.yml
+                    dist/latest*-linux*.yml
                   )
 
                   if (( ${#linux_assets[@]} == 0 )); then
@@ -450,7 +450,7 @@ jobs:
                       dist/*.AppImage.blockmap
                       dist/*.deb
                       dist/*.rpm
-                      dist/latest-linux*.yml
+                      dist/latest*-linux*.yml
 
     publish-release-notes:
         name: Publish release notes

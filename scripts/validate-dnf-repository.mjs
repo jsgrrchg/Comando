@@ -106,7 +106,8 @@ function validatePrimaryXml(dnfDir, version) {
     assertFileExists(primaryPath, "primary.xml.gz");
 
     const content = zlib.gunzipSync(fs.readFileSync(primaryPath)).toString("utf8");
-    if (!content.includes('<package type="rpm">')) {
+    const packageBlocks = extractRpmPackageBlocks(content);
+    if (packageBlocks.length === 0) {
         throw new Error("primary.xml is missing RPM package entries.");
     }
     if (!content.includes(`<name>${DNF_PACKAGE_NAME}</name>`)) {
@@ -122,7 +123,7 @@ function validatePrimaryXml(dnfDir, version) {
         throw new Error("primary.xml is missing RPM header range metadata.");
     }
 
-    const packageCount = (content.match(/<package type="rpm">/gu) ?? []).length;
+    const packageCount = packageBlocks.length;
     if (packageCount !== DNF_SUPPORTED_ARCHITECTURES.length) {
         throw new Error(
             `primary.xml must contain exactly ${DNF_SUPPORTED_ARCHITECTURES.length} RPM packages, found ${packageCount}.`,
@@ -130,11 +131,21 @@ function validatePrimaryXml(dnfDir, version) {
     }
 
     for (const architecture of DNF_SUPPORTED_ARCHITECTURES) {
-        if (!content.includes(`<arch>${architecture}</arch>`)) {
+        const architectureBlocks = packageBlocks.filter((packageBlock) =>
+            packageBlock.includes(`<arch>${architecture}</arch>`),
+        );
+        if (architectureBlocks.length !== 1) {
             throw new Error(`primary.xml is missing ${architecture} package metadata.`);
         }
-        if (version && !content.includes(`<version epoch="0" ver="${version}"`)) {
-            throw new Error(`primary.xml is missing version ${version}.`);
+
+        const packageBlock = architectureBlocks[0];
+        if (!packageBlock.includes(`<name>${DNF_PACKAGE_NAME}</name>`)) {
+            throw new Error(
+                `primary.xml ${architecture} package is missing package name "${DNF_PACKAGE_NAME}".`,
+            );
+        }
+        if (version && !packageBlock.includes(`<version epoch="0" ver="${version}"`)) {
+            throw new Error(`primary.xml ${architecture} package is missing version ${version}.`);
         }
 
         const expectedAssetName = version
@@ -147,12 +158,12 @@ function validatePrimaryXml(dnfDir, version) {
             `<location href="(https?:\\/\\/[^"]*\\/releases\\/download\\/[^"]*\\/${assetPattern})"`,
             "u",
         );
-        const locationMatch = content.match(locationPattern);
+        const locationMatch = packageBlock.match(locationPattern);
         if (!locationMatch) {
             throw new Error(
                 expectedAssetName
-                    ? `primary.xml is missing GitHub Release location for ${expectedAssetName}.`
-                    : "primary.xml is missing GitHub Release location href.",
+                    ? `primary.xml ${architecture} package is missing GitHub Release location for ${expectedAssetName}.`
+                    : `primary.xml ${architecture} package is missing GitHub Release location href.`,
             );
         }
         try {
@@ -161,6 +172,13 @@ function validatePrimaryXml(dnfDir, version) {
             throw new Error(`primary.xml has an invalid location URL: ${locationMatch[1]}`);
         }
     }
+}
+
+function extractRpmPackageBlocks(content) {
+    return Array.from(
+        String(content).matchAll(/<package type="rpm">[\s\S]*?<\/package>/gu),
+        (match) => match[0],
+    );
 }
 
 function validateFilelistsXml(dnfDir) {
