@@ -78,6 +78,35 @@ jobs:
             - name: Run release gate
               run: pnpm run check
 
+    apt-repository-preflight:
+        name: APT repository preflight
+        needs: release-preflight
+        runs-on: ubuntu-latest
+        env:
+            APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
+            APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
+            APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+        steps:
+            - name: Validate APT signing configuration
+              run: |
+                  missing=()
+                  for name in APT_REPO_GPG_PRIVATE_KEY APT_REPO_GPG_PASSPHRASE APT_REPO_GPG_KEY_ID; do
+                    if [[ -z "${!name:-}" ]]; then
+                      missing+=("$name")
+                    fi
+                  done
+
+                  if (( ${#missing[@]} > 0 )); then
+                    printf 'Missing required APT repository secrets: %s\n' "${missing[*]}" >&2
+                    exit 1
+                  fi
+
+                  export GNUPGHOME
+                  GNUPGHOME="$(mktemp -d)"
+                  chmod 700 "$GNUPGHOME"
+                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
+
     release-macos:
         name: macOS universal
         needs: release-preflight
@@ -327,6 +356,7 @@ jobs:
             - release-windows-x64
             - release-windows-arm64
             - release-linux
+            - publish-apt-repository
         runs-on: ubuntu-latest
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -348,4 +378,234 @@ jobs:
                     gh release edit "$tag" --title "$title" --notes-file "$notes_file"
                   else
                     gh release create "$tag" --title "$title" --notes-file "$notes_file" --verify-tag
+                  fi
+
+    publish-apt-repository:
+        name: Publish APT repository
+        needs:
+            - release-preflight
+            - release-macos
+            - release-windows-x64
+            - release-windows-arm64
+            - release-linux
+            - apt-repository-preflight
+        runs-on: ubuntu-latest
+        env:
+            APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
+            APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
+            APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+
+            - name: Install APT repository toolchain
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y ca-certificates dpkg gnupg gzip
+
+            - name: Download Linux workflow artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: linux-*-dist
+                  path: .artifacts/linux
+                  merge-multiple: true
+
+            - name: Build APT repository metadata
+              env:
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
+              run: |
+                  node scripts/build-apt-repository.mjs \
+                    --layout flat-release \
+                    --version "$GITHUB_REF_NAME" \
+                    --release-assets-dir .artifacts/linux \
+                    --output-dir "$APT_RELEASE_DIR" \
+                    --repo-slug "$GITHUB_REPOSITORY" \
+                    --suite stable \
+                    --component main
+
+            - name: Sign APT repository metadata
+              env:
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
+              run: |
+                  export GNUPGHOME
+                  GNUPGHOME="$(mktemp -d)"
+                  chmod 700 "$GNUPGHOME"
+                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
+
+                  node scripts/sign-apt-repository.mjs \
+                    --layout flat-release \
+                    --apt-dir "$APT_RELEASE_DIR" \
+                    --key-id "$APT_REPO_GPG_KEY_ID" \
+                    --suite stable
+
+            - name: Validate APT repository metadata
+              env:
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
+              run: |
+                  export GNUPGHOME
+                  GNUPGHOME="$(mktemp -d)"
+                  chmod 700 "$GNUPGHOME"
+                  gpg --batch --import "$APT_RELEASE_DIR/comando-archive-keyring.asc"
+
+                  node scripts/validate-apt-repository.mjs \
+                    --layout flat-release \
+                    --apt-dir "$APT_RELEASE_DIR" \
+                    --package-assets-dir .artifacts/linux \
+                    --version "$GITHUB_REF_NAME" \
+                    --suite stable \
+                    --component main
+
+            - name: Validate APT repository with apt
+              env:
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
+              run: |
+                  APT_SMOKE_DIR="$RUNNER_TEMP/apt-smoke"
+                  mkdir -p "$APT_SMOKE_DIR"
+                  cp "$APT_RELEASE_DIR"/InRelease \
+                    "$APT_RELEASE_DIR"/Release \
+                    "$APT_RELEASE_DIR"/Release.gpg \
+                    "$APT_RELEASE_DIR"/Packages \
+                    "$APT_RELEASE_DIR"/Packages.gz \
+                    "$APT_RELEASE_DIR"/comando-archive-keyring.asc \
+                    "$APT_RELEASE_DIR"/comando.sources.example \
+                    "$APT_SMOKE_DIR"/
+                  find .artifacts/linux -type f -name '*.deb' -exec cp {} "$APT_SMOKE_DIR"/ \;
+
+                  docker run --rm \
+                    -e VERSION="${GITHUB_REF_NAME#v}" \
+                    -v "$APT_SMOKE_DIR:/repo:ro" \
+                    ubuntu:24.04 \
+                    bash -lc '
+                      set -euo pipefail
+                      apt-get update
+                      apt-get install -y ca-certificates gnupg
+                      install -d -m 0755 /etc/apt/keyrings
+                      cp /repo/comando-archive-keyring.asc /etc/apt/keyrings/comando.asc
+                      chmod 0644 /etc/apt/keyrings/comando.asc
+                      sed "s|^URIs: .*|URIs: file:///repo|" \
+                        /repo/comando.sources.example \
+                        >/etc/apt/sources.list.d/comando.sources
+                      apt-get update
+                      apt-cache policy comando
+                      apt-cache policy comando | grep -F "$VERSION"
+                      apt-get --print-uris install "comando=$VERSION"
+                      apt-get install -y --download-only "comando=$VERSION"
+                    '
+
+            - name: Prepare gh-pages worktree
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  git fetch origin gh-pages || true
+
+                  if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+                    git worktree add "$PAGES_DIR" refs/remotes/origin/gh-pages
+                  else
+                    git worktree add -B gh-pages "$PAGES_DIR" HEAD
+                    git -C "$PAGES_DIR" rm -rf . || true
+                    find "$PAGES_DIR" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+                  fi
+
+                  git -C "$PAGES_DIR" config user.name "github-actions[bot]"
+                  git -C "$PAGES_DIR" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            - name: Ensure GitHub release exists
+              run: |
+                  tag="$GITHUB_REF_NAME"
+                  version="${tag#v}"
+                  title="Comando v${version}"
+
+                  if gh release view "$tag" >/dev/null 2>&1; then
+                    gh release edit "$tag" --title "$title"
+                  else
+                    gh release create "$tag" \
+                      --title "$title" \
+                      --notes "Release artifacts are still being finalized." \
+                      --verify-tag
+                  fi
+
+            - name: Upload APT metadata to GitHub release
+              env:
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
+              run: |
+                  gh release upload "$GITHUB_REF_NAME" \
+                    "$APT_RELEASE_DIR/InRelease" \
+                    "$APT_RELEASE_DIR/Release" \
+                    "$APT_RELEASE_DIR/Release.gpg" \
+                    "$APT_RELEASE_DIR/Packages" \
+                    "$APT_RELEASE_DIR/Packages.gz" \
+                    "$APT_RELEASE_DIR/comando-archive-keyring.asc" \
+                    "$APT_RELEASE_DIR/comando.sources.example" \
+                    --clobber
+
+            - name: Validate published APT release endpoint
+              env:
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
+              run: |
+                  docker run --rm \
+                    -e REPO_SLUG="$GITHUB_REPOSITORY" \
+                    -e RELEASE_TAG="$GITHUB_REF_NAME" \
+                    -e VERSION="${GITHUB_REF_NAME#v}" \
+                    -v "$APT_RELEASE_DIR:/repo:ro" \
+                    ubuntu:24.04 \
+                    bash -lc '
+                      set -euo pipefail
+                      apt-get update
+                      apt-get install -y ca-certificates gnupg
+                      install -d -m 0755 /etc/apt/keyrings
+                      cp /repo/comando-archive-keyring.asc /etc/apt/keyrings/comando.asc
+                      chmod 0644 /etc/apt/keyrings/comando.asc
+                      sed "s|^URIs: .*|URIs: https://github.com/${REPO_SLUG}/releases/download/${RELEASE_TAG}|" \
+                        /repo/comando.sources.example \
+                        >/etc/apt/sources.list.d/comando.sources
+                      apt-get update
+                      apt-cache policy comando | grep -F "$VERSION"
+                      apt-get --print-uris install "comando=$VERSION" | tee /tmp/comando-uris.txt
+                      grep -F "https://github.com/${REPO_SLUG}/releases/download/${RELEASE_TAG}" /tmp/comando-uris.txt
+                      grep -F "Comando-${VERSION}-linux-" /tmp/comando-uris.txt
+                    '
+
+            - name: Publish APT entrypoints to gh-pages
+              env:
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  touch "$PAGES_DIR/.nojekyll"
+                  mkdir -p "$PAGES_DIR/apt"
+                  rm -rf "$PAGES_DIR/apt/dists" "$PAGES_DIR/apt/pool"
+                  cp "$APT_RELEASE_DIR/comando-archive-keyring.asc" "$PAGES_DIR/apt/"
+                  cp "$APT_RELEASE_DIR/comando.sources.example" "$PAGES_DIR/apt/"
+
+                  package_asset="$(find "$PAGES_DIR/apt" -type f \( \
+                    -name '*.deb' -o \
+                    -name '*.rpm' -o \
+                    -name '*.AppImage' -o \
+                    -name '*.dmg' -o \
+                    -name '*.exe' \
+                  \) -print -quit)"
+
+                  if [[ -n "$package_asset" ]]; then
+                    echo "Package asset must stay on GitHub Releases, not gh-pages: $package_asset" >&2
+                    exit 1
+                  fi
+
+                  find "$PAGES_DIR/apt" -maxdepth 2 -type f -print
+                  test ! -d "$PAGES_DIR/apt/dists"
+                  test ! -d "$PAGES_DIR/apt/pool"
+
+                  git -C "$PAGES_DIR" add apt .nojekyll
+                  if git -C "$PAGES_DIR" diff --cached --quiet; then
+                    echo "No APT entrypoint changes to publish."
+                  else
+                    git -C "$PAGES_DIR" commit -m "Publish APT entrypoints for $GITHUB_REF_NAME"
+                    git -C "$PAGES_DIR" push origin HEAD:gh-pages
                   fi
