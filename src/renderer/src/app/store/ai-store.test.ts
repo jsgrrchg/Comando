@@ -326,6 +326,7 @@ describe("ai-store queue", () => {
                 kind: "subagent-created",
                 modelId: "gpt-5",
                 parentSessionId: "session-1",
+                reasoningEffort: null,
                 runtimeSessionId: "runtime-child-1",
                 sessionId: "session-1:subagent:runtime-child-1",
                 title: "Galileo",

@@ -2597,6 +2597,7 @@ export interface AiSessionSubagentCreatedEvent
     readonly kind: "subagent-created";
     readonly modelId: string | null;
     readonly parentSessionId: string;
+    readonly reasoningEffort: string | null;
     readonly title: string;
 }
 

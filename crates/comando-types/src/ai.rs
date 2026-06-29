@@ -687,6 +687,8 @@ pub struct NativeAiSubagentCreatedPayload {
     pub parent_runtime_session_id: Option<RuntimeSessionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub title: String,
 }
 
