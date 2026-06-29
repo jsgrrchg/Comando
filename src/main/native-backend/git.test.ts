@@ -295,9 +295,11 @@ describe("NativeGitGateway", () => {
             "git_create_branch",
             expect.objectContaining({
                 branchName: "feature/sidebar",
-                scope: expect.objectContaining({
+                scope: {
+                    projectId: "native_git",
                     rootPath: "/tmp/comando-project",
-                }),
+                    worktreeId: null,
+                },
                 startPoint: "main",
             }),
         );
