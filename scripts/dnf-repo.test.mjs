@@ -120,10 +120,10 @@ function validateDnfRepository(dnfDir, version = "0.1.0") {
 describe("DNF repository metadata", () => {
     it("maps RPM architectures to release asset names", () => {
         expect(buildRpmReleaseAssetName("0.1.0", "x86_64")).toBe(
-            "Comando-0.1.0-linux-x64.rpm",
+            "Comando-0.1.0-linux-x86_64.rpm",
         );
         expect(buildRpmReleaseAssetName("0.1.0", "aarch64")).toBe(
-            "Comando-0.1.0-linux-arm64.rpm",
+            "Comando-0.1.0-linux-aarch64.rpm",
         );
     });
 
@@ -147,7 +147,7 @@ describe("DNF repository metadata", () => {
                 "x86_64",
             ),
         ).toBe(
-            "https://github.com/jsgrrchg/Comando/releases/download/v0.1.0/Comando-0.1.0-linux-x64.rpm",
+            "https://github.com/jsgrrchg/Comando/releases/download/v0.1.0/Comando-0.1.0-linux-x86_64.rpm",
         );
     });
 
@@ -214,7 +214,7 @@ describe("DNF repository metadata", () => {
 
             expect(result.status).not.toBe(0);
             expect(`${result.stdout}\n${result.stderr}`).toContain(
-                "x86_64 package is missing GitHub Release location for Comando-0.1.0-linux-x64.rpm",
+                "x86_64 package is missing GitHub Release location for Comando-0.1.0-linux-x86_64.rpm",
             );
         });
     });

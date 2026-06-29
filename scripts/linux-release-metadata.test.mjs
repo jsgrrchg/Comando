@@ -36,6 +36,28 @@ describe("Linux updater metadata", () => {
             resolveLinuxReleaseArtifacts({
                 distDir: "dist",
                 productName: "Comando",
+                targetArch: "x64",
+                version: "1.2.3",
+            }),
+        ).toEqual({
+            appImageBlockmapPath: path.join(
+                "dist",
+                "Comando-1.2.3-linux-x86_64.AppImage.blockmap",
+            ),
+            appImagePath: path.join(
+                "dist",
+                "Comando-1.2.3-linux-x86_64.AppImage",
+            ),
+            debPath: path.join("dist", "Comando-1.2.3-linux-amd64.deb"),
+            forbiddenSharedMetadataPath: path.join("dist", "latest-linux.yml"),
+            metadataPath: path.join("dist", "latest-x64-linux.yml"),
+            rpmPath: path.join("dist", "Comando-1.2.3-linux-x86_64.rpm"),
+            updaterChannel: "latest-x64",
+        });
+        expect(
+            resolveLinuxReleaseArtifacts({
+                distDir: "dist",
+                productName: "Comando",
                 targetArch: "arm64",
                 version: "1.2.3",
             }),
@@ -57,7 +79,7 @@ describe("Linux updater metadata", () => {
                 "dist",
                 "latest-arm64-linux-arm64.yml",
             ),
-            rpmPath: path.join("dist", "Comando-1.2.3-linux-arm64.rpm"),
+            rpmPath: path.join("dist", "Comando-1.2.3-linux-aarch64.rpm"),
             updaterChannel: "latest-arm64",
         });
     });
@@ -227,7 +249,7 @@ describe("Linux updater metadata", () => {
                 targetArch: "x64",
                 version: "1.2.3",
             }),
-        ).toThrow(/does not reference Comando-1\.2\.3-linux-x64\.AppImage/u);
+        ).toThrow(/does not reference Comando-1\.2\.3-linux-x86_64\.AppImage/u);
     });
 });
 
@@ -242,7 +264,7 @@ function createTempDir() {
 function writeReleaseArtifactSet(
     distDir,
     targetArch,
-    { metadataAppImageName = `Comando-1.2.3-linux-${targetArch}.AppImage` } = {},
+    { metadataAppImageName = null } = {},
 ) {
     const artifacts = resolveLinuxReleaseArtifacts({
         distDir,
@@ -260,13 +282,14 @@ function writeReleaseArtifactSet(
         fs.writeFileSync(filePath, "", "utf8");
     }
 
+    const appImageName = metadataAppImageName ?? path.basename(artifacts.appImagePath);
     fs.writeFileSync(
         artifacts.metadataPath,
         [
             "version: 1.2.3",
             "files:",
-            `  - url: ${metadataAppImageName}`,
-            `path: ${metadataAppImageName}`,
+            `  - url: ${appImageName}`,
+            `path: ${appImageName}`,
         ].join("\n"),
         "utf8",
     );

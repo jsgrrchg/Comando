@@ -61,11 +61,11 @@ describe("release notes metadata", () => {
             "Comando-0.1.0-universal.dmg",
             "Comando-0.1.0-win-x64.exe",
             "Comando-0.1.0-win-arm64.exe",
-            "Comando-0.1.0-linux-x64.deb",
+            "Comando-0.1.0-linux-amd64.deb",
             "Comando-0.1.0-linux-arm64.deb",
-            "Comando-0.1.0-linux-x64.rpm",
-            "Comando-0.1.0-linux-arm64.rpm",
-            "Comando-0.1.0-linux-x64.AppImage",
+            "Comando-0.1.0-linux-x86_64.rpm",
+            "Comando-0.1.0-linux-aarch64.rpm",
+            "Comando-0.1.0-linux-x86_64.AppImage",
             "Comando-0.1.0-linux-arm64.AppImage",
         ]);
     });

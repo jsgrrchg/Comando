@@ -208,7 +208,7 @@ export function buildManualDownloadRows({ packageJson, version }) {
         },
         {
             architectureLabel: "amd64",
-            assetName: `${productName}-${normalizedVersion}-linux-x64.deb`,
+            assetName: `${productName}-${normalizedVersion}-linux-amd64.deb`,
             platformLabel: "Linux Ubuntu/Debian",
         },
         {
@@ -218,17 +218,17 @@ export function buildManualDownloadRows({ packageJson, version }) {
         },
         {
             architectureLabel: "x86_64",
-            assetName: `${productName}-${normalizedVersion}-linux-x64.rpm`,
+            assetName: `${productName}-${normalizedVersion}-linux-x86_64.rpm`,
             platformLabel: "Linux Fedora/RHEL",
         },
         {
             architectureLabel: "aarch64",
-            assetName: `${productName}-${normalizedVersion}-linux-arm64.rpm`,
+            assetName: `${productName}-${normalizedVersion}-linux-aarch64.rpm`,
             platformLabel: "Linux Fedora/RHEL",
         },
         {
             architectureLabel: "x64",
-            assetName: `${productName}-${normalizedVersion}-linux-x64.AppImage`,
+            assetName: `${productName}-${normalizedVersion}-linux-x86_64.AppImage`,
             platformLabel: "Linux AppImage",
         },
         {

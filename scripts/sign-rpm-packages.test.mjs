@@ -65,7 +65,7 @@ describe("RPM signing scripts", () => {
 
             expect(result.status).not.toBe(0);
             expect(`${result.stdout}\n${result.stderr}`).toContain(
-                "Comando-0.1.0-linux-x64.rpm",
+                "Comando-0.1.0-linux-x86_64.rpm",
             );
         });
     });

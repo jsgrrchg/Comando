@@ -12,9 +12,9 @@ export const DNF_PUBLIC_KEY_FILE_NAME = "comando-archive-keyring.asc";
 export const DNF_REPO_EXAMPLE_FILE_NAME = "comando.repo.example";
 export const DNF_DEFAULT_BASE_URL = "https://jsgrrchg.github.io/Comando/dnf";
 
-const ELECTRON_BUILDER_ARCHITECTURE_BY_RPM_ARCHITECTURE = {
-    aarch64: "arm64",
-    x86_64: "x64",
+const ELECTRON_BUILDER_ARTIFACT_ARCHITECTURE_BY_RPM_ARCHITECTURE = {
+    aarch64: "aarch64",
+    x86_64: "x86_64",
 };
 
 export function normalizeRpmArchitecture(value) {
@@ -38,7 +38,7 @@ export function buildRpmReleaseAssetName(version, rpmArchitecture) {
     const normalizedVersion = normalizeReleaseVersion(version);
     const arch = normalizeRpmArchitecture(rpmArchitecture);
     const electronBuilderArch =
-        ELECTRON_BUILDER_ARCHITECTURE_BY_RPM_ARCHITECTURE[arch];
+        ELECTRON_BUILDER_ARTIFACT_ARCHITECTURE_BY_RPM_ARCHITECTURE[arch];
     return `Comando-${normalizedVersion}-linux-${electronBuilderArch}.rpm`;
 }
 

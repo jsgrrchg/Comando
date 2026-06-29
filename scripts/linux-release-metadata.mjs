@@ -3,6 +3,19 @@ import path from "node:path";
 
 export const SUPPORTED_LINUX_RELEASE_ARCHES = Object.freeze(["x64", "arm64"]);
 
+const APPIMAGE_ARTIFACT_ARCHITECTURE_BY_RELEASE_ARCH = {
+    arm64: "arm64",
+    x64: "x86_64",
+};
+const DEBIAN_ARTIFACT_ARCHITECTURE_BY_RELEASE_ARCH = {
+    arm64: "arm64",
+    x64: "amd64",
+};
+const RPM_ARTIFACT_ARCHITECTURE_BY_RELEASE_ARCH = {
+    arm64: "aarch64",
+    x64: "x86_64",
+};
+
 export function resolveLinuxUpdaterChannel(targetArch) {
     assertSupportedLinuxReleaseArch(targetArch);
     return `latest-${targetArch}`;
@@ -16,17 +29,34 @@ export function resolveLinuxReleaseArtifacts({
 }) {
     assertSupportedLinuxReleaseArch(targetArch);
 
-    const artifactBaseName = `${productName}-${version}-linux-${targetArch}`;
     const updaterChannel = resolveLinuxUpdaterChannel(targetArch);
     const linuxArchSuffix = targetArch === "x64" ? "" : `-${targetArch}`;
+    const appImageBaseName = buildLinuxArtifactBaseName({
+        archByReleaseArch: APPIMAGE_ARTIFACT_ARCHITECTURE_BY_RELEASE_ARCH,
+        productName,
+        targetArch,
+        version,
+    });
+    const debBaseName = buildLinuxArtifactBaseName({
+        archByReleaseArch: DEBIAN_ARTIFACT_ARCHITECTURE_BY_RELEASE_ARCH,
+        productName,
+        targetArch,
+        version,
+    });
+    const rpmBaseName = buildLinuxArtifactBaseName({
+        archByReleaseArch: RPM_ARTIFACT_ARCHITECTURE_BY_RELEASE_ARCH,
+        productName,
+        targetArch,
+        version,
+    });
 
     return {
-        appImagePath: path.join(distDir, `${artifactBaseName}.AppImage`),
+        appImagePath: path.join(distDir, `${appImageBaseName}.AppImage`),
         appImageBlockmapPath: path.join(
             distDir,
-            `${artifactBaseName}.AppImage.blockmap`,
+            `${appImageBaseName}.AppImage.blockmap`,
         ),
-        debPath: path.join(distDir, `${artifactBaseName}.deb`),
+        debPath: path.join(distDir, `${debBaseName}.deb`),
         forbiddenSharedMetadataPath: path.join(
             distDir,
             `latest-linux${linuxArchSuffix}.yml`,
@@ -35,7 +65,7 @@ export function resolveLinuxReleaseArtifacts({
             distDir,
             `${updaterChannel}-linux${linuxArchSuffix}.yml`,
         ),
-        rpmPath: path.join(distDir, `${artifactBaseName}.rpm`),
+        rpmPath: path.join(distDir, `${rpmBaseName}.rpm`),
         updaterChannel,
     };
 }
@@ -128,7 +158,15 @@ export function verifyLinuxReleaseArtifacts({
             continue;
         }
 
-        if (metadata.includes(`-linux-${otherArch}.AppImage`)) {
+        const otherArtifacts = resolveLinuxReleaseArtifacts({
+            distDir,
+            productName,
+            targetArch: otherArch,
+            version,
+        });
+        const otherAppImageName = path.basename(otherArtifacts.appImagePath);
+
+        if (metadata.includes(otherAppImageName)) {
             throw new Error(
                 `Linux updater metadata ${relativePath(artifacts.metadataPath)} references ${otherArch} artifacts during a ${targetArch} build.`,
             );
@@ -144,6 +182,15 @@ function assertSupportedLinuxReleaseArch(targetArch) {
             `Unsupported Linux release architecture: ${targetArch}. Expected one of ${SUPPORTED_LINUX_RELEASE_ARCHES.join(", ")}.`,
         );
     }
+}
+
+function buildLinuxArtifactBaseName({
+    archByReleaseArch,
+    productName,
+    targetArch,
+    version,
+}) {
+    return `${productName}-${version}-linux-${archByReleaseArch[targetArch]}`;
 }
 
 function resolveGitHubRepository(repository) {
