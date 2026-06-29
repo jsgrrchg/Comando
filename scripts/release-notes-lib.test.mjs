@@ -94,9 +94,24 @@ describe("release notes metadata", () => {
         expect(body).toContain(
             "https://github.com/jsgrrchg/Comando/releases/latest/download",
         );
-        expect(body).toContain(
-            "For Fedora/RHEL, download the `.rpm` package directly.",
-        );
         expect(body).not.toContain("APT and DNF repositories are not configured");
+    });
+
+    it("renders DNF repository setup instructions", () => {
+        const body = buildReleaseBody({
+            notes: "Public launch.",
+            packageJson,
+            version: "v0.1.0",
+        });
+
+        expect(body).toContain("sudo tee /etc/yum.repos.d/comando.repo");
+        expect(body).toContain("repo_gpgcheck=1");
+        expect(body).toContain("sudo dnf install comando");
+        expect(body).toContain(
+            "https://jsgrrchg.github.io/Comando/dnf/comando-archive-keyring.asc",
+        );
+        expect(body).toContain(
+            "For Fedora/RHEL, use the `.rpm` package directly or configure the Comando DNF repository",
+        );
     });
 });
