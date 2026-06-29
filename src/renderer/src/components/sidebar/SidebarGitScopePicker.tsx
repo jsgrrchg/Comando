@@ -72,6 +72,9 @@ const GIT_SCOPE_VIRTUALIZATION_THRESHOLD = 120;
 const GIT_SCOPE_VIRTUALIZATION_OVERSCAN = 6;
 const GIT_SCOPE_ROW_ESTIMATE = 52;
 const GIT_SCOPE_SECTION_ESTIMATE = 30;
+const GIT_SCOPE_MENU_CHROME_ESTIMATE = 144;
+const GIT_SCOPE_BRANCH_CREATION_FORM_ESTIMATE = 188;
+const GIT_SCOPE_CREATE_QUERY_ESTIMATE = 44;
 const GIT_SCOPE_MENU_SIZE_STORAGE_KEY = "comando.git.scope.menu.size";
 const GIT_SCOPE_MENU_SIZE_VERSION = 1;
 const GIT_SCOPE_MENU_MIN_WIDTH = 280;
@@ -644,6 +647,8 @@ export function SidebarGitScopePicker({
         [listItems],
     );
     const shouldVirtualizeList = listItems.length >= GIT_SCOPE_VIRTUALIZATION_THRESHOLD;
+    const hasBranchCreationForm = branchCreationDraft !== null;
+    const hasBranchCreationQueryOffer = branchCreationQueryOffer !== null;
 
     const updateMenuPosition = useCallback(() => {
         const button = buttonRef.current;
@@ -660,13 +665,28 @@ export function SidebarGitScopePicker({
         const estimatedRows = Math.max(listItems.length, 1);
         const defaultHeight = Math.min(
             GIT_SCOPE_MENU_DEFAULT_MAX_HEIGHT,
-            estimatedRows * GIT_SCOPE_ROW_ESTIMATE + 144 + (actionError ? 40 : 0),
+            estimatedRows * GIT_SCOPE_ROW_ESTIMATE +
+                GIT_SCOPE_MENU_CHROME_ESTIMATE +
+                (hasBranchCreationForm
+                    ? GIT_SCOPE_BRANCH_CREATION_FORM_ESTIMATE
+                    : 0) +
+                (hasBranchCreationQueryOffer ? GIT_SCOPE_CREATE_QUERY_ESTIMATE : 0) +
+                (actionError ? 40 : 0),
         );
+        const measuredHeight = Math.ceil(measuredMenuRect?.height ?? 0);
+        const baseSize = userMenuSize
+            ? {
+                  height: hasBranchCreationForm
+                      ? Math.max(userMenuSize.height, defaultHeight)
+                      : userMenuSize.height,
+                  width: userMenuSize.width,
+              }
+            : {
+                  height: Math.max(measuredHeight, defaultHeight),
+                  width: defaultWidth,
+              };
         const size = clampGitScopeMenuSize(
-            userMenuSize ?? {
-                height: Math.ceil(measuredMenuRect?.height ?? defaultHeight),
-                width: defaultWidth,
-            },
+            baseSize,
             {
                 x: buttonRect.left,
                 y: buttonRect.bottom + 6,
@@ -693,6 +713,8 @@ export function SidebarGitScopePicker({
         });
     }, [
         actionError,
+        hasBranchCreationForm,
+        hasBranchCreationQueryOffer,
         listItems.length,
         userMenuSize,
     ]);

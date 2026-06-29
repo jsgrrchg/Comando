@@ -1272,6 +1272,7 @@ button {
 .sidebar-git-scope-menu__branch-form {
     display: flex;
     flex-direction: column;
+    flex-shrink: 0;
     gap: 8px;
     border-bottom: 1px solid var(--color-border);
     background: color-mix(in srgb, var(--color-bg-elevated) 58%, transparent);
