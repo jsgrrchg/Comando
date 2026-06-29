@@ -502,7 +502,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             );
         } catch (error) {
             if (isNativeAiSessionBusyError(error)) {
-                throw new Error(AI_SESSION_BUSY_MESSAGE);
+                throw new Error(AI_SESSION_BUSY_MESSAGE, { cause: error });
             }
             throw error;
         }
