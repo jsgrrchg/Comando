@@ -4711,7 +4711,7 @@ mod tests {
             json!({
                 "runtimeId": "codex",
                 "envKey": "OPENAI_API_KEY",
-                "value": "sk-native-secret",
+                "value": "test-native-backend-token",
             }),
         ));
         let response = only_response(&result);
@@ -4721,7 +4721,7 @@ mod tests {
         let setup_path = temp_dir.path().join("ai").join("runtime-setup.json");
         let encoded = fs::read_to_string(setup_path).expect("runtime setup");
         assert!(encoded.contains("OPENAI_API_KEY"));
-        assert!(!encoded.contains("sk-native-secret"));
+        assert!(!encoded.contains("test-native-backend-token"));
     }
 
     #[test]
@@ -4777,7 +4777,7 @@ mod tests {
                 "secretPatches": [{
                     "envKey": "OPENAI_API_KEY",
                     "action": "set",
-                    "value": "sk-native-status-secret",
+                    "value": "test-native-status-token",
                 }],
             }),
         ));
@@ -4796,7 +4796,7 @@ mod tests {
 
         let encoded = fs::read_to_string(temp_dir.path().join("ai").join("runtime-setup.json"))
             .expect("runtime setup");
-        assert!(!encoded.contains("sk-native-status-secret"));
+        assert!(!encoded.contains("test-native-status-token"));
     }
 
     #[test]
