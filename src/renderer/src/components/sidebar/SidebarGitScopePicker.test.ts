@@ -272,6 +272,37 @@ describe("SidebarGitScopePicker helpers", () => {
         );
     });
 
+    it("rejects common Git ref name hazards before submitting branch creation", () => {
+        const branches: readonly GitBranchSummary[] = [];
+        const invalidCharacters = [
+            "@",
+            "feature/@{bad",
+            "feature//bad",
+            "feature\\bad",
+            "feature~bad",
+            "feature^bad",
+            "feature:bad",
+            "feature?bad",
+            "feature*bad",
+            "feature[bad",
+            "feature/.hidden",
+        ];
+
+        for (const branchName of invalidCharacters) {
+            expect(validateNewBranchName(branchName, branches)).toMatchObject({
+                error: "Branch name contains characters Git does not allow.",
+                isValid: false,
+            });
+        }
+
+        for (const branchName of ["feature.", "feature.lock"]) {
+            expect(validateNewBranchName(branchName, branches)).toMatchObject({
+                error: 'Branch name cannot end with "." or ".lock".',
+                isValid: false,
+            });
+        }
+    });
+
     it("offers branch creation from a valid search query that does not match a local branch", () => {
         const branches = [
             createBranch({ name: "feature/existing" }),

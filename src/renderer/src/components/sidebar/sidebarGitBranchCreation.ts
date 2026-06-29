@@ -139,6 +139,24 @@ export function validateNewBranchName(
         return invalid(value, "Branch names cannot contain '..'.");
     }
 
+    if (
+        value === "@" ||
+        value.includes("@{") ||
+        value.includes("//") ||
+        value.includes("\\") ||
+        /[~^:?*[]/.test(value) ||
+        value.split("/").some((segment) => segment.startsWith("."))
+    ) {
+        return invalid(
+            value,
+            "Branch name contains characters Git does not allow.",
+        );
+    }
+
+    if (value.endsWith(".") || value.endsWith(".lock")) {
+        return invalid(value, 'Branch name cannot end with "." or ".lock".');
+    }
+
     if (branches.some((branch) => !branch.isRemote && branch.name === value)) {
         return invalid(value, "A local branch with this name already exists.");
     }
