@@ -38,7 +38,8 @@ use crate::history::{
 use crate::runtime::RuntimeRegistry;
 use crate::runtime_setup::{
     RuntimeAuthTerminalLaunch, invalidate_grok_auth_on_error, prepare_auth_terminal_launch,
-    prepare_runtime_auth_connection, prepare_runtime_launch, runtime_status,
+    prepare_auth_terminal_logout, prepare_runtime_auth_connection, prepare_runtime_launch,
+    runtime_status,
 };
 use crate::scope::SessionScope;
 use crate::session::{NativeAiSession, SessionRegistry, resolve_session_title_on_prompt};
@@ -153,6 +154,20 @@ impl AiEngine {
                     message: "Native runtime setup is not initialized.".to_string(),
                 })?;
         prepare_auth_terminal_launch(&store, definition, method_id)
+    }
+
+    pub fn prepare_auth_terminal_logout(
+        &self,
+        runtime_id: &str,
+    ) -> AiResult<RuntimeAuthTerminalLaunch> {
+        let definition = self.registry.require_native(runtime_id)?;
+        let store =
+            self.runtime_setup_store()?
+                .ok_or_else(|| AiError::RuntimeLaunchContextInvalid {
+                    runtime_id: runtime_id.to_string(),
+                    message: "Native runtime setup is not initialized.".to_string(),
+                })?;
+        prepare_auth_terminal_logout(&store, definition)
     }
 
     pub fn authenticate_runtime_auth(

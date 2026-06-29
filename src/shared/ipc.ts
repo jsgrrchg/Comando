@@ -2758,7 +2758,10 @@ export interface AiRuntimeAuthLaunchInput {
 }
 
 export interface AiRuntimeAuthLogoutInput {
+    readonly ownerWindowId?: string | null;
+    readonly projectId?: string | null;
     readonly runtimeId: AiRuntimeId;
+    readonly worktreeId?: string | null;
 }
 
 export interface AiRuntimeAuthDisconnectInput {

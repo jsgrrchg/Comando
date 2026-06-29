@@ -967,6 +967,7 @@ export function SettingsApp() {
 
                     await runProviderSettingsAction(runtimeId, async () => {
                         const status = await window.comando.logoutAiRuntimeAuth({
+                            projectId: runtimeProjectId,
                             runtimeId,
                         });
                         await refreshProviderSettingsState(runtimeId, status);

@@ -171,7 +171,12 @@ export type NativeAiLaunchRuntimeAuthOutput = {
 
 export type NativeAiRuntimeAuthInput = {
     readonly runtimeId: NativeAiRuntimeId;
+    readonly windowId?: string | null;
+    readonly projectId?: NativeProjectId | null;
+    readonly worktreeId?: NativeWorktreeId | null;
     readonly cwd?: string | null;
+    readonly cols?: number | null;
+    readonly rows?: number | null;
 };
 
 export type NativeAiAuthHandshakeSpec = {

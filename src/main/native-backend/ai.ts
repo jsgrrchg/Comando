@@ -178,7 +178,10 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         const status = await this.#client.request<NativeAiRuntimeStatus>(
             "ai_logout_runtime_auth",
             {
+                projectId: input.projectId ?? null,
                 runtimeId: input.runtimeId,
+                windowId: input.ownerWindowId ?? "auth",
+                worktreeId: input.worktreeId ?? null,
             },
         );
         return nativeAiRuntimeStatusToIpc(status);

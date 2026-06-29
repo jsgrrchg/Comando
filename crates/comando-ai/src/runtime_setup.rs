@@ -145,7 +145,8 @@ pub fn prepare_auth_terminal_launch(
     let mut setup = load_runtime_setup(store, definition.id)?;
     setup.auth_method = Some(method_id.to_string());
     let command = resolve_runtime_command(definition, &setup);
-    let login_args = auth_terminal_args(definition.id, method_id)?;
+    let login_args =
+        auth_terminal_args(definition.id, method_id, &command.executable, &command.args)?;
     let auth = runtime_auth_state(store, definition.id, &setup);
     let status = status_from_parts(definition, &setup, &command, &auth);
     if command.state != "ready" {
@@ -157,8 +158,49 @@ pub fn prepare_auth_terminal_launch(
                 .unwrap_or_else(|| "Native runtime binary is not ready.".to_string()),
         });
     }
-    let mut args = command.args.clone();
+    let mut args = auth_terminal_base_args(definition.id, &command.args);
     args.extend(login_args);
+    let env = runtime_spawn_env(store, definition.id, &setup, &auth, &command.executable);
+    Ok(RuntimeAuthTerminalLaunch {
+        program: command.executable,
+        args,
+        env,
+        status,
+    })
+}
+
+pub fn prepare_auth_terminal_logout(
+    store: &RuntimeSetupStore,
+    definition: RuntimeDefinition,
+) -> AiResult<RuntimeAuthTerminalLaunch> {
+    let setup = load_runtime_setup(store, definition.id)?;
+    let command = resolve_runtime_command(definition, &setup);
+    let auth = runtime_auth_state(store, definition.id, &setup);
+    let status = status_from_parts(definition, &setup, &command, &auth);
+    if !auth.can_logout {
+        return Err(AiError::RuntimeAuthMissing {
+            runtime_id: definition.id.to_string(),
+            message: format!(
+                "{} does not have a terminal logout session to close.",
+                definition.display_name
+            ),
+        });
+    }
+    if command.state != "ready" {
+        return Err(AiError::RuntimeNotReady {
+            runtime_id: definition.id.to_string(),
+            message: status
+                .message
+                .clone()
+                .unwrap_or_else(|| "Native runtime binary is not ready.".to_string()),
+        });
+    }
+    let mut args = auth_terminal_base_args(definition.id, &command.args);
+    args.extend(auth_terminal_logout_args(
+        definition.id,
+        &command.executable,
+        &command.args,
+    )?);
     let env = runtime_spawn_env(store, definition.id, &setup, &auth, &command.executable);
     Ok(RuntimeAuthTerminalLaunch {
         program: command.executable,
@@ -669,6 +711,10 @@ fn claude_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Ru
     } else {
         None
     };
+    let can_logout = matches!(
+        method.as_deref(),
+        Some("claude-login" | "claude-ai-login" | "console-login")
+    );
     RuntimeAuthState {
         ready: method.is_some(),
         method,
@@ -687,7 +733,7 @@ fn claude_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Ru
             || token_secret
             || headers_secret
             || setup.auth_invalidated_at_ms.is_some(),
-        can_logout: false,
+        can_logout,
     }
 }
 
@@ -713,6 +759,7 @@ fn grok_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Runt
     } else {
         None
     };
+    let can_logout = method.as_deref() == Some("grok-login");
     RuntimeAuthState {
         ready: method.is_some(),
         credential_source: match method.as_deref() {
@@ -733,7 +780,7 @@ fn grok_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Runt
             || stored_ready
             || setup.auth_invalidated_at_ms.is_some()
             || login_ready,
-        can_logout: false,
+        can_logout,
     }
 }
 
@@ -760,6 +807,7 @@ fn kilo_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Runt
     } else {
         None
     };
+    let can_logout = method.as_deref() == Some("kilo-login");
     RuntimeAuthState {
         ready: method.is_some(),
         credential_source: match method.as_deref() {
@@ -780,7 +828,7 @@ fn kilo_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Runt
             || stored_ready
             || setup.auth_invalidated_at_ms.is_some()
             || login_ready,
-        can_logout: false,
+        can_logout,
     }
 }
 
@@ -806,6 +854,7 @@ fn opencode_auth_state(setup: &RuntimeSetupState) -> RuntimeAuthState {
     } else {
         None
     };
+    let can_logout = method.is_some() && !env_ready;
     RuntimeAuthState {
         ready: method.is_some(),
         credential_source: if env_ready {
@@ -828,7 +877,7 @@ fn opencode_auth_state(setup: &RuntimeSetupState) -> RuntimeAuthState {
         can_disconnect: setup.auth_method.is_some()
             || setup.auth_invalidated_at_ms.is_some()
             || login_ready,
-        can_logout: false,
+        can_logout,
     }
 }
 
@@ -1121,11 +1170,33 @@ fn definition_args(definition: RuntimeDefinition) -> Vec<String> {
         .collect()
 }
 
-fn auth_terminal_args(runtime_id: &str, method_id: &str) -> AiResult<Vec<String>> {
+fn auth_terminal_base_args(runtime_id: &str, command_args: &[String]) -> Vec<String> {
+    if runtime_id == "claude" {
+        return command_args.to_vec();
+    }
+
+    Vec::new()
+}
+
+fn auth_terminal_args(
+    runtime_id: &str,
+    method_id: &str,
+    executable: &str,
+    command_args: &[String],
+) -> AiResult<Vec<String>> {
     let args = match (runtime_id, method_id) {
-        ("claude", "claude-login") => vec!["--cli"],
-        ("claude", "claude-ai-login") => vec!["--cli", "auth", "login", "--claudeai"],
-        ("claude", "console-login") => vec!["--cli", "auth", "login", "--console"],
+        ("claude", "claude-login") if is_claude_agent_wrapper(executable, command_args) => {
+            vec!["--cli"]
+        }
+        ("claude", "claude-login") => Vec::new(),
+        ("claude", "claude-ai-login") if is_claude_agent_wrapper(executable, command_args) => {
+            vec!["--cli", "auth", "login", "--claudeai"]
+        }
+        ("claude", "claude-ai-login") => vec!["auth", "login", "--claudeai"],
+        ("claude", "console-login") if is_claude_agent_wrapper(executable, command_args) => {
+            vec!["--cli", "auth", "login", "--console"]
+        }
+        ("claude", "console-login") => vec!["auth", "login", "--console"],
         ("grok", "grok-login") => vec!["login"],
         ("kilo", "kilo-login") => vec!["auth", "login"],
         ("opencode", "opencode-login") => vec!["auth", "login"],
@@ -1155,6 +1226,50 @@ fn auth_terminal_args(runtime_id: &str, method_id: &str) -> AiResult<Vec<String>
         }
     };
     Ok(args.into_iter().map(ToString::to_string).collect())
+}
+
+fn auth_terminal_logout_args(
+    runtime_id: &str,
+    executable: &str,
+    command_args: &[String],
+) -> AiResult<Vec<String>> {
+    let args = match runtime_id {
+        "claude" if is_claude_agent_wrapper(executable, command_args) => {
+            vec!["--cli", "auth", "logout"]
+        }
+        "claude" => vec!["auth", "logout"],
+        "grok" => vec!["logout"],
+        "kilo" => vec!["auth", "logout"],
+        "opencode" => vec!["auth", "logout"],
+        "codex" => {
+            return Err(AiError::RuntimeNotReady {
+                runtime_id: runtime_id.to_string(),
+                message: "Codex ChatGPT logout is handled by the runtime authentication handshake."
+                    .to_string(),
+            });
+        }
+        _ => {
+            return Err(AiError::RuntimeAuthMissing {
+                runtime_id: runtime_id.to_string(),
+                message: format!("Unsupported auth terminal logout for runtime `{runtime_id}`."),
+            });
+        }
+    };
+    Ok(args.into_iter().map(ToString::to_string).collect())
+}
+
+fn is_claude_agent_wrapper(executable: &str, command_args: &[String]) -> bool {
+    if command_args
+        .iter()
+        .any(|arg| arg.contains("claude-agent-acp"))
+    {
+        return true;
+    }
+
+    Path::new(executable)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.contains("claude-agent-acp"))
 }
 
 fn command_line(executable: &str, args: &[String]) -> String {
@@ -2136,13 +2251,68 @@ mod tests {
         )
         .expect("opencode terminal");
 
-        assert_eq!(claude.args, vec!["--cli", "auth", "login", "--claudeai"]);
+        assert_eq!(claude.args, vec!["auth", "login", "--claudeai"]);
+        assert_eq!(grok.args, vec!["login"]);
+        assert_eq!(kilo.args, vec!["auth", "login"]);
+        assert_eq!(opencode.args, vec!["auth", "login"]);
+    }
+
+    #[test]
+    fn claude_terminal_auth_uses_cli_flag_for_agent_wrapper_only() {
+        let temp = tempdir().expect("temp");
+        let store = RuntimeSetupStore::in_memory_for_tests(temp.path().join("runtime-setup.json"));
+        let wrapper = temp.path().join("claude-agent-acp");
+        write_executable(&wrapper);
+        store
+            .update_runtime("claude", |state| {
+                state.binary_path = Some(wrapper.display().to_string());
+            })
+            .expect("wrapper setup");
+        let definition = crate::runtime::RuntimeRegistry::default()
+            .get("claude")
+            .unwrap();
+        let wrapper_launch = prepare_auth_terminal_launch(&store, definition, "claude-ai-login")
+            .expect("wrapper terminal");
         assert_eq!(
-            grok.args,
-            vec!["--no-auto-update", "agent", "stdio", "login"]
+            wrapper_launch.args,
+            vec!["--cli", "auth", "login", "--claudeai"]
         );
-        assert_eq!(kilo.args, vec!["acp", "auth", "login"]);
-        assert_eq!(opencode.args, vec!["acp", "auth", "login"]);
+
+        let direct_cli = temp.path().join("claude");
+        write_executable(&direct_cli);
+        store
+            .update_runtime("claude", |state| {
+                state.binary_path = Some(direct_cli.display().to_string());
+            })
+            .expect("direct setup");
+        let direct_launch = prepare_auth_terminal_launch(&store, definition, "claude-ai-login")
+            .expect("direct terminal");
+        assert_eq!(direct_launch.args, vec!["auth", "login", "--claudeai"]);
+    }
+
+    #[test]
+    fn terminal_logout_methods_prepare_provider_cli_commands() {
+        assert_eq!(
+            auth_terminal_logout_args("claude", "/tmp/claude-agent-acp", &[])
+                .expect("claude wrapper logout"),
+            vec!["--cli", "auth", "logout"]
+        );
+        assert_eq!(
+            auth_terminal_logout_args("claude", "/tmp/claude", &[]).expect("claude cli logout"),
+            vec!["auth", "logout"]
+        );
+        assert_eq!(
+            auth_terminal_logout_args("grok", "/tmp/grok", &[]).expect("grok logout"),
+            vec!["logout"]
+        );
+        assert_eq!(
+            auth_terminal_logout_args("kilo", "/tmp/kilo", &[]).expect("kilo logout"),
+            vec!["auth", "logout"]
+        );
+        assert_eq!(
+            auth_terminal_logout_args("opencode", "/tmp/opencode", &[]).expect("opencode logout"),
+            vec!["auth", "logout"]
+        );
     }
 
     fn write_file(path: &Path, contents: &str) {

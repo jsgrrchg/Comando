@@ -1794,8 +1794,15 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.logoutAiRuntimeAuth,
-        (_event, input: AiRuntimeAuthLogoutInput) =>
-            options.aiService.logoutRuntimeAuth(input),
+        (event, input: AiRuntimeAuthLogoutInput) => {
+            const context = windowRegistry.getContextByWebContents(
+                event.sender,
+            );
+            return options.aiService.logoutRuntimeAuth({
+                ...input,
+                ownerWindowId: context?.windowId ?? null,
+            });
+        },
     );
     ipcMain.handle(
         IPC_CHANNELS.disconnectAiRuntimeAuth,

@@ -245,7 +245,17 @@ pub struct NativeAiLaunchRuntimeAuthOutput {
 pub struct NativeAiRuntimeAuthInput {
     pub runtime_id: NativeAiRuntimeId,
     #[serde(default)]
+    pub window_id: Option<WindowId>,
+    #[serde(default)]
+    pub project_id: Option<ProjectId>,
+    #[serde(default)]
+    pub worktree_id: Option<WorktreeId>,
+    #[serde(default)]
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub cols: Option<u16>,
+    #[serde(default)]
+    pub rows: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

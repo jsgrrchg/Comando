@@ -44,7 +44,7 @@ use comando_types::commands::{
 };
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::BACKEND_TEST_EVENT;
-use comando_types::ids::{RequestId, RuntimeId};
+use comando_types::ids::{RequestId, RuntimeId, WindowId};
 use comando_types::persistence::{
     NativePersistenceMode, NativePersistenceOpenStoreInput, NativePersistenceSnapshot,
 };
@@ -90,8 +90,24 @@ pub struct NativeBackend {
 
 #[derive(Debug, Clone)]
 struct AuthTerminalSession {
+    action: AuthTerminalAction,
     runtime_id: String,
     method_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthTerminalAction {
+    Login,
+    Logout,
+}
+
+impl AuthTerminalAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Login => "login",
+            Self::Logout => "logout",
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -222,6 +238,8 @@ impl NativeBackend {
                 }
                 if request.command == "ai_launch_runtime_auth" {
                     self.handle_ai_auth_terminal_request(request, background_sender)
+                } else if request.command == "ai_logout_runtime_auth" {
+                    self.handle_ai_logout_runtime_auth_request(request, background_sender)
                 } else {
                     self.handle_ai_request(request)
                 }
@@ -763,6 +781,108 @@ impl NativeBackend {
                 ),
             );
         }
+        self.codex_logout_runtime_auth(request.id, &store, input)
+    }
+
+    fn handle_ai_logout_runtime_auth_request(
+        &mut self,
+        request: RpcRequest,
+        background_sender: mpsc::SyncSender<Vec<RpcOutput>>,
+    ) -> CommandResult {
+        let Some(store) = self.runtime_setup_store.clone() else {
+            return backend_not_ready(request.id);
+        };
+        let input = match parse_args::<native_ai::NativeAiRuntimeAuthInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let runtime_id = input.runtime_id.0.clone();
+        if runtime_id == "codex" {
+            return self.codex_logout_runtime_auth(request.id, &store, input);
+        }
+        let launch = match self.ai_engine.prepare_auth_terminal_logout(&runtime_id) {
+            Ok(launch) => launch,
+            Err(error) => return error_only(request.id, error.to_native_error()),
+        };
+        let cwd = input.cwd.clone().or_else(|| {
+            self.resolve_auth_terminal_cwd(input.project_id.as_ref(), input.worktree_id.as_ref())
+        });
+        let window_id = input
+            .window_id
+            .clone()
+            .unwrap_or_else(|| WindowId("auth".to_string()));
+        let terminal_input = native_terminal::NativeTerminalCreateInput {
+            window_id,
+            terminal_id: None,
+            preferred_session_id: None,
+            project_id: input.project_id.clone(),
+            worktree_id: input.worktree_id.clone(),
+            cwd,
+            cols: input.cols,
+            rows: input.rows,
+            extra_env: launch.env.into_iter().collect(),
+            shell_preference: None,
+            purpose: native_terminal::NativeTerminalPurpose::Auth,
+            launched_by: native_terminal::NativeTerminalLaunchedBy::System,
+            launch: native_terminal::NativeTerminalLaunch::Command {
+                program: launch.program,
+                args: launch.args,
+                display_name: Some(format!("{runtime_id} logout")),
+            },
+        };
+        let session = match self
+            .ensure_terminal_service(background_sender)
+            .create_session(terminal_input)
+        {
+            Ok(session) => session,
+            Err(error) => return error_only(request.id, error.to_native_error()),
+        };
+        let method_id = launch
+            .status
+            .auth_method
+            .clone()
+            .unwrap_or_else(|| "logout".to_string());
+        if let Ok(mut sessions) = self.auth_terminal_sessions.lock() {
+            sessions.insert(
+                session.session_id.0.clone(),
+                AuthTerminalSession {
+                    action: AuthTerminalAction::Logout,
+                    runtime_id: runtime_id.clone(),
+                    method_id: method_id.clone(),
+                },
+            );
+        }
+        let status = launch.status;
+        CommandResult {
+            outputs: vec![
+                response_ok(
+                    request.id,
+                    serde_json::to_value(&status).expect("ai runtime status serializes"),
+                ),
+                event(
+                    AI_RUNTIME_STATUS_EVENT,
+                    serde_json::to_value(&status).expect("ai runtime status event serializes"),
+                ),
+                event(
+                    "ai://auth-terminal-started",
+                    json!({
+                        "action": AuthTerminalAction::Logout.as_str(),
+                        "runtimeId": runtime_id,
+                        "methodId": method_id,
+                        "terminalSessionId": session.session_id.0,
+                    }),
+                ),
+            ],
+            should_shutdown: false,
+        }
+    }
+
+    fn codex_logout_runtime_auth(
+        &mut self,
+        request_id: RequestId,
+        store: &RuntimeSetupStore,
+        input: native_ai::NativeAiRuntimeAuthInput,
+    ) -> CommandResult {
         let cwd = input.cwd.unwrap_or_else(auth_fallback_cwd);
         let result = store
             .load_runtime("codex")
@@ -781,11 +901,11 @@ impl NativeBackend {
                     .logout_runtime_auth("codex", cwd)
                     .map_err(|error| error.to_native_error())
             })
-            .and_then(|_| disconnect_runtime_auth(&store, "codex"))
+            .and_then(|_| disconnect_runtime_auth(store, "codex"))
             .and_then(|_| self.runtime_status_output("codex"));
         match result {
-            Ok(status) => runtime_status_response(request.id, status),
-            Err(error) => error_only(request.id, error),
+            Ok(status) => runtime_status_response(request_id, status),
+            Err(error) => error_only(request_id, error),
         }
     }
 
@@ -894,6 +1014,7 @@ impl NativeBackend {
             sessions.insert(
                 session.session_id.0.clone(),
                 AuthTerminalSession {
+                    action: AuthTerminalAction::Login,
                     runtime_id: runtime_id.clone(),
                     method_id: method_id.clone(),
                 },
@@ -922,6 +1043,7 @@ impl NativeBackend {
                 event(
                     "ai://auth-terminal-started",
                     json!({
+                        "action": AuthTerminalAction::Login.as_str(),
                         "runtimeId": runtime_id,
                         "methodId": method_id,
                         "terminalSessionId": session.session_id.0,
@@ -3804,11 +3926,12 @@ fn auth_terminal_runtime_outputs(
                 return Vec::new();
             };
             if payload.exit_code == Some(0) {
-                clear_auth_terminal_invalidation(runtime_setup_store, &auth_session);
+                complete_auth_terminal_success(runtime_setup_store, &auth_session);
             }
             let mut outputs = vec![event(
                 "ai://auth-terminal-exited",
                 json!({
+                    "action": auth_session.action.as_str(),
                     "runtimeId": &auth_session.runtime_id,
                     "methodId": &auth_session.method_id,
                     "terminalSessionId": &payload.session_id.0,
@@ -3835,6 +3958,7 @@ fn auth_terminal_runtime_outputs(
             let mut outputs = vec![event(
                 "ai://auth-terminal-error",
                 json!({
+                    "action": auth_session.action.as_str(),
                     "runtimeId": &auth_session.runtime_id,
                     "methodId": &auth_session.method_id,
                     "terminalSessionId": &session_id,
@@ -3855,6 +3979,7 @@ fn auth_terminal_runtime_outputs(
             vec![event(
                 "ai://auth-terminal-closed",
                 json!({
+                    "action": auth_session.action.as_str(),
                     "runtimeId": &auth_session.runtime_id,
                     "methodId": &auth_session.method_id,
                     "terminalSessionId": &payload.session_id.0,
@@ -3876,6 +4001,20 @@ fn remove_auth_terminal_session(
         .and_then(|mut sessions| sessions.remove(session_id))
 }
 
+fn complete_auth_terminal_success(
+    runtime_setup_store: &Arc<Mutex<Option<RuntimeSetupStore>>>,
+    auth_session: &AuthTerminalSession,
+) {
+    match auth_session.action {
+        AuthTerminalAction::Login => {
+            clear_auth_terminal_invalidation(runtime_setup_store, auth_session);
+        }
+        AuthTerminalAction::Logout => {
+            clear_auth_terminal_logout_state(runtime_setup_store, auth_session);
+        }
+    }
+}
+
 fn clear_auth_terminal_invalidation(
     runtime_setup_store: &Arc<Mutex<Option<RuntimeSetupStore>>>,
     auth_session: &AuthTerminalSession,
@@ -3891,6 +4030,23 @@ fn clear_auth_terminal_invalidation(
         if state.auth_method.as_deref() == Some(auth_session.method_id.as_str()) {
             state.auth_invalidated_at_ms = None;
         }
+    });
+}
+
+fn clear_auth_terminal_logout_state(
+    runtime_setup_store: &Arc<Mutex<Option<RuntimeSetupStore>>>,
+    auth_session: &AuthTerminalSession,
+) {
+    let Some(store) = runtime_setup_store
+        .lock()
+        .ok()
+        .and_then(|store| store.clone())
+    else {
+        return;
+    };
+    let _ = store.update_runtime(&auth_session.runtime_id, |state| {
+        state.auth_method = None;
+        state.auth_invalidated_at_ms = None;
     });
 }
 
@@ -4211,7 +4367,7 @@ fn emit_test_event(request: RpcRequest) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use comando_settings::{InMemoryRuntimeSecretStore, RuntimeSecretStore, SecretStoreError};
     use rusqlite::Connection;
@@ -4566,6 +4722,44 @@ mod tests {
         let encoded = fs::read_to_string(setup_path).expect("runtime setup");
         assert!(encoded.contains("OPENAI_API_KEY"));
         assert!(!encoded.contains("sk-native-secret"));
+    }
+
+    #[test]
+    fn auth_terminal_logout_preserves_stored_provider_secrets() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let store = RuntimeSetupStore::in_memory_for_tests(
+            temp_dir.path().join("ai").join("runtime-setup.json"),
+        );
+        store
+            .update_runtime("grok", |state| {
+                state.auth_method = Some("grok-login".to_string());
+            })
+            .expect("runtime setup");
+        store
+            .secrets()
+            .set_secret("grok", "XAI_API_KEY", "xai-test")
+            .expect("secret");
+        let shared_store = Arc::new(Mutex::new(Some(store.clone())));
+
+        complete_auth_terminal_success(
+            &shared_store,
+            &AuthTerminalSession {
+                action: AuthTerminalAction::Logout,
+                runtime_id: "grok".to_string(),
+                method_id: "grok-login".to_string(),
+            },
+        );
+
+        let state = store.load_runtime("grok").expect("runtime state");
+        assert_eq!(state.auth_method, None);
+        assert_eq!(state.auth_invalidated_at_ms, None);
+        assert_eq!(
+            store
+                .secrets()
+                .get_secret("grok", "XAI_API_KEY")
+                .expect("stored secret"),
+            Some("xai-test".to_string())
+        );
     }
 
     #[test]
