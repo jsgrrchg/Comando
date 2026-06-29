@@ -1,282 +1,340 @@
 # Comando
 
-> A local-first workspace for coding with AI on real codebases. Spawn as many agent chats as you need — the app is built for it.
+Comando is a local-first desktop workspace for coding with multiple AI agents. It is a lightweight agentic code editor, built to keep chats, files, terminals, Git, GitHub, and change review visible in one multipane surface without trying to become a full IDE. Many tools are moving toward chat-centric workflows, making it difficult for users to read and write code; Comando takes the opposite stance, allowing seamless collaboration with agents without compromising proximity to the code. 
 
-Comando is a multi-pane workspace designed to let AI operate as a first-class collaborator inside your development flow, without sacrificing control, or proximity to the code.
+Today the repository combines:
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
-[![Electron](https://img.shields.io/badge/Electron-41-47848F)](https://www.electronjs.org/)
-[![React](https://img.shields.io/badge/React-19-61DAFB)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6)](https://www.typescriptlang.org/)
-[![Status](https://img.shields.io/badge/status-hardening-orange)](#project-status)
+- An Electron desktop app with a Rust native backend that owns persistence, filesystem access, project indexing, Git, terminals, secrets, and AI sessions.
+- A code-oriented workspace with split panes, persistent tabs, Monaco editing, quick open, project search, Git gutters, and native terminal tabs.
+- An ACP-based AI layer with Codex, Claude, Grok, Kilo, and OpenCode runtimes.
+- An AI change-review pipeline with inline review inside files, chat-level diff cards, and a dedicated Review tab for keep/reject workflows.
+- First-class Git and GitHub surfaces for status, diffs, staging, commits, branches, worktrees, issues, pull requests, checks, Actions logs, releases, and notifications.
+- Cross-platform packaging scripts for macOS, Windows, and Linux release artifacts.
 
----
+## What Comando Is Today
 
-## Table of Contents
+The current product already includes:
 
-- [What is Comando](#what-is-comando)
-- [Features](#features)
-- [Supported AI runtimes](#supported-ai-runtimes)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Scripts](#scripts)
-- [Packaging](#packaging)
-- [Architecture](#architecture)
-- [Project structure](#project-structure)
-- [Tech stack](#tech-stack)
-- [Project status](#project-status)
-- [Contributing](#contributing)
-- [Known Issues](#known-issues)
-- [License](#license)
+- Local project opening, repository cloning, path relocation, project app-data cleanup, and worktree-aware project state
+- A desktop workspace with resizable panes, draggable tabs, tab pinning, recently closed tabs, separate project windows, and persisted layout restore
+- File tree navigation with filesystem watching, lazy loading, external drops, context actions, and quick open by name or path
+- Monaco-based text/code editing with autosave, Vim mode, relative line numbers, minimap and suggestion settings, TextMate tokenization, file icons, and editor zoom controls
+- Native terminal tabs powered by a Rust sidecar and `portable-pty`, including workspace-scoped terminal state
+- AI chat tabs with queued prompts, image attachments, file/folder/selection mentions, commit mentions, GitHub issue and pull request mentions, and runtime-specific model/mode/config controls
+- AI session history with transcript paging, pinned conversations, rename/delete flows, and project/worktree scoping
+- Explicit agent permissions, user-input routing, live tool activity, generated-image previews, and Codex subagent session projection
+- Inline AI review for supported file changes, hunk-level keep/reject actions, conflict states, and a dedicated Review tab backed by Rust/WASM diff logic
+- Git status, history, commit details, staged/unstaged diffs, staging, unstaging, discard, commit, fetch, pull, push, branch creation/checkout/deletion, and worktree creation/removal/diffing
+- GitHub issues, pull requests, comments, labels, milestones, checks, workflow runs, job logs, artifacts, annotations, failed-job reruns, run cancellation, notifications, release notes, and release publishing
+- App settings for AI providers, theme presets, light/dark/system appearance, app zoom, file tree scale, agent sidebar scale, editor typography, chat typography, terminal shell, and update behavior
 
----
+AI conversations and workspace state are stored locally in the app data area managed by the native backend. Secrets are stored through OS-backed secret storage instead of plaintext settings files.
 
-## What is Comando
+## Why It Is Different
 
-Comando is a development environment built around three principles:
+Many tools are moving toward chat-centric workflows that distance users from reading and writing code directly. Comando takes the opposite stance, code stays visible, editable, and reviewable, and agent-emitted tool activity is not hidden behind secondary menus. Everything remains inspectable for the user, with one project branch per window by design.
 
-- **Local-first**: all relevant state (sessions, history, workspaces, and encrypted credentials) lives on your machine through the Rust native backend, with secrets protected by the OS keyring. No proprietary backend, no telemetry, no mandatory remote sync.
-- **Codebase-centric**: every AI session is anchored to a specific project root, branch, or worktree.
-- **Explicit control**: edits, tool calls, and changes proposed by the AI go through a review flow before being applied. No silent auto-apply.
+- Agents are not treated as one chat sidebar. Comando is designed around many concurrent agent sessions, split panes, terminals, diffs, and files in the same working surface.
+- Agent edits stay reviewable. Comando tracks proposed changes through action logs, inline decorations, hunk controls, and a dedicated review surface before they become accepted workspace state.
+- The app is project and worktree aware. AI sessions, Git state, GitHub context, terminal tabs, and history are scoped to the codebase you are actually working in.
+- GitHub is part of the workflow. Issues, pull requests, checks, Actions logs, and release flows can be opened as workspace tabs and attached directly to prompts. You can drag issues and pull request to the composer of agents.
+- Comando is intentionally lighter than a full code editor or IDE. It is not trying to absorb language servers, debugger stacks, refactoring engines, extension marketplaces, task runners, or every deep editor feature from VS Code, JetBrains, Zed, or similar tools. 
+- The architecture is local-first. Electron is mostly the UI and orchestration layer; the Rust sidecar owns the durable and sensitive work.
 
-## Features
+## Current Capabilities
 
-- **Multi-pane workspace** with Monaco editor, integrated terminal (xterm + native pty), AI chat, and diff viewer.
-- **Persistent AI sessions** anchored to a project, with history, file mentions, and real-time streaming.
-- **Inline change review** with per-hunk rejection, similar to Zed, Cursor, Antigravity, and others. There is also a dedicated Review Changes tab.
-- **Integrated Git**: history, diff viewer, staging, and commit — all from the UI.
-- **Persistent tabs** for files, sessions, commits, and terminals.
-- **Project sidebar** with file tree and multi-repo catalog.
-- **Activity panel** with event timeline and live tool execution status.
-- **Explicit permissions and approvals** for sensitive tool calls.
-- **Separate channels** (`dev` and `release`) with independent app identities for local development and packaged builds.
+### Projects and workspace
 
-## Supported AI runtimes
+- Open local folders and clone repositories into the project catalog.
+- Track recent projects, active project, active worktree, and per-project settings.
+- Open multiple project windows with persisted window and workspace state.
+- Split panes horizontally or vertically, drag tabs between panes, pin tabs, reorder tabs, and reopen recently closed tabs.
+- Open file, chat, chat history, review, Git, Git commit, Git worktree diff, GitHub issue, GitHub pull request, GitHub list, and terminal tabs.
+- Use quick create and quick open flows for files, terminals, Git views, chat history, and new agent sessions.
+- Search project entries through the native index and fuzzy file ranking.
 
-Comando implements the [Agent Client Protocol (ACP)](https://github.com/agentclientprotocol) and talks to multiple runtimes:
+### Editing and navigation
 
-| Runtime | Provider | Delivery | Authentication |
-|---------|----------|----------|----------------|
-| **Claude** | Anthropic | Bundled/staged ACP runtime | `~/.claude.json` or `ANTHROPIC_API_KEY` (gateway-compatible via `ANTHROPIC_BASE_URL`) |
-| **Codex** | OpenAI | Bundled/staged ACP runtime (`codex-acp` 0.15.0) | ChatGPT login, Codex API key, or OpenAI API key |
-| **Grok** | xAI | External runtime | Grok CLI login or `XAI_API_KEY` |
-| **Kilo** | Kilo | External runtime | `kilo auth` |
-| **OpenCode** | SST | External runtime | OpenCode CLI auth or external provider environment |
+- Edit text and code files through Monaco.
+- Use autosave, configurable font families, font size, line height, minimap, suggestions, relative line numbers, and Vim mode.
+- Render file icons through Catppuccin-style type icons.
+- Attach selected editor lines to chat as structured context.
+- See live Git gutter changes while editing.
+- Open files at specific line ranges from transcript, review, tool, Git, and GitHub references.
+- Create, copy, rename, delete, trash, reveal, and externally open project entries.
 
-Credentials are stored in the native OS credential store through the Rust sidecar.
-The `stage:ai` flow currently bundles and packages the Claude and Codex runtimes; Grok, Kilo, and OpenCode are configured as external runtimes.
-The bundled Codex runtime is vendored from Zed's `codex-acp`, pinned to OpenAI Codex Rust `rust-v0.133.0`, and carries Comando-specific patches for Fast mode, subagent session projection, generated-image rendering, custom prompt expansion, and ACP metadata compatibility.
+### AI and change control
 
-## Requirements
+- Run ACP sessions for Codex, Claude, Grok, Kilo, and OpenCode (more to come).
+- Configure runtime auth methods, custom binary paths, gateway URLs, API keys, and diagnostics from settings.
+- Launch runtime auth flows from the app when supported.
+- Send prompts with file mentions, folder mentions, selection mentions, external file references, Git commits, GitHub issues, GitHub pull requests, and image attachments.
+- Queue prompts while a turn is active, edit queued prompts, pause queue draining, and resume manually.
+- Stream messages, tool activity, plans, status events, user-input requests, permission prompts, and generated images.
+- Keep AI session history locally with transcript paging, pinned sessions, title editing, and deletion.
+- Review agent edits inline in the editor, inside chat tool cards, or in the Review tab.
+- Keep or reject complete files, selected hunks, or all pending tracked files.
+- Preserve unresolved review state across live snapshots and persisted transcripts.
 
-- **Node.js** `^20.19.0` or `>=22.12.0`
-- **pnpm** 10.33.0 (see `packageManager` in `package.json`)
-- **Supported platforms**: macOS 15+ (universal arm64 + x64), Windows 10/11 (x64 + arm64)
-- Rust/Cargo for the required native backend sidecar and when rebuilding the vendored Codex ACP runtime locally; `pnpm stage:codex-runtime` also accepts `COMANDO_CODEX_ACP_BUNDLE_BIN` when using a prebuilt binary
-- macOS packaging must run on macOS; Windows packaging must run on Windows
+### Git and GitHub
 
-## Installation
+- Resolve repository state from the active project or worktree.
+- View Git status, sync status, remotes, branches, worktrees, history, commit details, diffs, and original file contents.
+- Stage, unstage, discard, commit, checkout, create branches, delete local/remote branches, create/remove worktrees, fetch, pull, push, clone, and initialize repositories.
+- Resolve GitHub repositories from remotes and authenticate with a saved token or available `gh` CLI token.
+- List, open, create, update, comment, close, and reopen issues.
+- List, open, create, update, comment, mark ready, convert to draft, and request reviewers on pull requests.
+- Inspect checks, workflow runs, jobs, logs, artifacts, and check-run annotations.
+- Rerun failed workflow jobs and cancel workflow runs when the token has permission.
+- List notifications, releases, labels, and milestones.
+- Generate release notes, create releases, and publish draft releases.
+
+### Native backend
+
+- JSONL stdio sidecar with protocol negotiation and typed IPC adapters.
+- SQLite-backed app persistence, project registry, workspace snapshots, settings, and app-data records.
+- OS-backed keyring/safe-storage integration for AI
+- Filesystem service for reads, writes, mutations, copy operations, tree listing, and watch invalidation.
+- Incremental project indexing and content/path search with cancellation.
+- Git command execution, parsing, status snapshots, diffs, worktrees, and mutation results.
+- Terminal lifecycle and output streaming through `portable-pty`.
+- AI runtime setup, session lifecycle, history, transcript storage, permissions, user input, and review disk mutations.
+- Rust/WASM diff engine for review hunks and action-log reconciliation.
+
+## Repository Layout
+
+```text
+apps/
+  native-backend/        Rust stdio sidecar entrypoint
+
+crates/
+  comando-ai/            ACP runtime management, sessions, history, permissions, review bridge
+  comando-diff/          Rust diff and review engine plus WASM bindings
+  comando-fs/            Project filesystem access, mutations, watchers, tree reads
+  comando-git/           Git status, diffs, history, branches, worktrees, mutations
+  comando-index/         Project indexing, ranking, path/content search
+  comando-persistence/   SQLite store, metadata, health, migrations
+  comando-projects/      Project registry and project path metadata
+  comando-settings/      Runtime setup state and secret storage
+  comando-terminal/      PTY sessions and terminal output
+  comando-types/         Shared native protocol and domain DTOs
+
+src/
+  main/                  Electron main process, IPC handlers, windows, services
+  preload/               Typed renderer bridge
+  renderer/              React app, stores, workspace, settings, Git/GitHub UI
+  shared/                Shared TypeScript contracts, settings, review helpers, native adapters
+  test/                  Shared test helpers
+
+resources/
+  ai/                    Staged AI runtime payloads used by dev/build/package flows
+  icons/                 Platform icon sources and generated icon assets
+
+scripts/
+  ai/                    AI runtime staging and validation
+  native/                Native backend build/stage/verify scripts
+  package-*.mjs          macOS, Windows, and Linux packaging workflows
+
+vendor/
+  codex-acp/             Vendored Codex ACP runtime source
+  Claude-agent-acp-upstream/
+                          Vendored Claude ACP runtime project
+```
+
+## Stack
+
+- **Desktop shell**: Electron 42, electron-vite 5, electron-builder 26, electron-updater
+- **Frontend**: React 19, TypeScript 6, Vite 8, Tailwind CSS 4, Zustand 5
+- **Editor and terminal**: Monaco Editor, vscode-textmate, vscode-oniguruma, xterm.js, Monaco Vim
+- **Native backend**: Rust 2024, `rusqlite`, `keyring`, `notify`, `portable-pty`, `agent-client-protocol`, `imara-diff`
+- **AI runtimes**: ACP over staged/bundled sidecars and external runtime commands
+- **Testing**: Vitest for TypeScript, Cargo tests for Rust crates, fixture parity tests for native protocol payloads
+
+## Development
+
+Requirements:
+
+- Node.js `^20.19.0` or `>=22.12.0`
+- pnpm `10.33.0`
+- Rust and Cargo
+- `wasm-bindgen` only when rebuilding the review WASM bundle with `pnpm native:wasm`
+
+Install and run:
 
 ```bash
-# Clone the repository
-git clone https://github.com/jsgrrchg/Comando.git
-cd Comando
-
-# Install dependencies
 pnpm install
-
-# Start in development mode (renderer HMR, main auto-restart)
 pnpm dev
 ```
 
-`pnpm dev` already stages the Rust sidecar and AI runtimes through the `predev` hook, so you normally do not need to run those steps manually.
-Run `pnpm native:stage` or `pnpm stage:ai` yourself only if you want to refresh staged runtime assets ahead of time or troubleshoot packaging/runtime issues.
+`pnpm dev` starts the Electron app in the `Comando Dev` channel. The `predev` hook builds and stages the Rust native backend in debug mode, then stages the AI runtimes.
 
-## Scripts
+Useful development commands:
 
-| Script | Description |
-|--------|-------------|
-| `pnpm dev` | Local development with hot reload on the `Comando Dev` channel |
-| `pnpm build` | Production build of `main`, `preload`, and `renderer` |
-| `pnpm icons:build` | Generate platform icon assets from source artwork |
-| `pnpm lint` | Static validation with ESLint |
-| `pnpm test` | Unit tests with Vitest |
-| `pnpm test:watch` | Tests in watch mode |
-| `pnpm typecheck` | Type checking for `node` and `web` |
-| `pnpm check` | Full CI-style check (typecheck + lint + test + build) |
-| `pnpm native:build` | Build the Rust native backend sidecar |
-| `pnpm native:stage` | Stage the Rust native backend sidecar for dev/build/package flows |
-| `pnpm native:check` | Build, test, stage, verify the sidecar, and typecheck |
-| `pnpm stage:ai` | Stage bundled AI runtimes and embedded assets used by dev/build/package flows |
-| `pnpm stage:codex-runtime` | Refresh only the staged Codex runtime payload |
-| `pnpm verify:ai-runtimes` | Verify that the staged AI runtimes are valid |
-| `pnpm package:mac` | Build the universal macOS app and local release artifacts |
-| `pnpm package:win` | Build the Windows app for the current Windows host architecture |
-| `pnpm package:win:x64` | Build the Windows app for `x64` |
-| `pnpm package:win:arm64` | Build the Windows app for `arm64` |
-| `pnpm release:mac` | Package macOS universal and publish artifacts to the configured provider |
-| `pnpm release:win:x64` | Package Windows `x64` and publish artifacts to the configured provider |
-| `pnpm release:win:arm64` | Package Windows `arm64` and publish artifacts to the configured provider |
+```bash
+pnpm build
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm check
+```
 
-## Packaging
+Native backend commands:
 
-Comando stages the bundled Claude and Codex ACP runtimes automatically before `pnpm dev` and `pnpm build` via the `predev` and `prebuild` hooks. Packaging also relies on the staged embedded Node/runtime payload under `resources/ai`.
+```bash
+pnpm native:build
+pnpm native:test
+pnpm native:stage
+pnpm native:check
+pnpm native:wasm
+```
 
-Codex staging builds or copies the vendored `codex-acp` sidecar into `resources/ai/binaries/codex-acp`. Fresh local builds use `cargo build --release --locked` with the Rust target cache under `resources/ai/embedded/codex-acp/target/`; the generated binary/cache are staging artifacts, not source edits.
-
-Run the staging step manually only when you want to refresh the staged artifacts ahead of time or diagnose runtime/package issues:
+AI runtime commands:
 
 ```bash
 pnpm stage:ai
+pnpm stage:codex-runtime
 pnpm verify:ai-runtimes
 ```
 
+## Validation
+
+Full app validation:
+
 ```bash
-# macOS only (universal arm64 + x64, produces .dmg + .zip)
+pnpm check
+```
+
+That runs TypeScript checks, ESLint, Vitest, and the production Electron build.
+
+Rust workspace tests:
+
+```bash
+cargo test --workspace
+```
+
+Native protocol and persistence checks:
+
+```bash
+pnpm native:protocol:check
+pnpm native:persistence:check
+```
+
+The repository contains broad Vitest coverage for renderer stores/components, main-process services, IPC adapters, Git/GitHub behavior, native backend bridges, review logic, and packaging helpers, plus Rust tests across the native crates.
+
+## Packaging
+
+Packaging must run on the target platform.
+
+macOS:
+
+```bash
 pnpm package:mac
-
-# macOS publish (GitHub Releases)
 pnpm release:mac
+```
 
-# Windows only
-pnpm package:win          # packages the current Windows host arch
+Windows:
+
+```bash
+pnpm package:win
 pnpm package:win:x64
 pnpm package:win:arm64
 pnpm release:win:x64
 pnpm release:win:arm64
 ```
 
-Artifacts are generated at:
+Linux:
+
+```bash
+pnpm package:linux
+pnpm package:linux:appimage
+pnpm package:linux:deb
+pnpm package:linux:rpm
+pnpm release:linux
+```
+
+Generated artifacts are written to platform-specific build output directories:
 
 - macOS: `build/macos-package/project/dist/`
-- Windows: `dist/`
+- Windows and Linux: `dist/`
 
-For automatic GitHub releases:
+Packaging stages the native backend sidecar and AI runtime payloads under `build/package-resources/`. macOS builds produce universal `.dmg` and `.zip` artifacts. Windows builds produce NSIS installers for `x64` and `arm64`. Linux builds target AppImage, deb, and rpm.
 
-- the workflow exports `GH_TOKEN` so `electron-builder` can publish to GitHub Releases
-- the publish workflow lives at `.github/workflows/release.yml`
-- macOS release packages include `app-update.yml` so packaged builds can check GitHub Releases for updates
+## AI Runtime Notes
 
-## Architecture
+Comando currently wires five ACP runtimes:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                         Renderer (React)                     │
-│  Zustand stores · Monaco · xterm.js · Tailwind              │
-└───────────────┬─────────────────────────────────────────────┘
-                │  Typed IPC (preload bridge)
-                ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Main Process (Electron)                   │
-│  ┌──────────┐  ┌─────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │   IPC    │  │ Native  │  │  Thin    │  │  Native      │  │
-│  │ handlers │  │ bridge  │  │ facades  │  │ event mux    │  │
-│  └──────────┘  └─────────┘  └──────────┘  └──────────────┘  │
-│  ┌──────────┐  ┌─────────┐  ┌──────────┐  ┌──────────────┐  │
-│  │ Projects │  │Workspace│  │ Settings │  │  Renderer    │  │
-│  │ facade   │  │ facade  │  │ facade   │  │ windows      │  │
-│  └──────────┘  └─────────┘  └──────────┘  └──────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-                │
-                ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Rust sidecar: persistence · FS/search · git · terminals · AI│
-│  External runtimes: Grok · Kilo · OpenCode via native bridge │
-└─────────────────────────────────────────────────────────────┘
-```
+- `codex`
+- `claude`
+- `grok`
+- `kilo`
+- `opencode`
 
-- **IPC** follows the `invoke/handle` pattern with typed contracts in `src/shared/ipc`.
-- **Streaming** (AI deltas, terminal output, git/watch events) is multiplexed from the native sidecar and published with `webContents.send()`.
-- **Persistence** is owned by the Rust sidecar, with Electron main retaining UI-facing facades and DTO projection.
-- **Secrets** are stored through the native OS credential store.
+Current staging status:
 
-## Project structure
+- Codex is staged as a native sidecar binary from `vendor/codex-acp`, or from `COMANDO_CODEX_ACP_BUNDLE_BIN` when a prebuilt bundle binary is provided.
+- Claude is staged from `vendor/Claude-agent-acp-upstream` with an embedded Node runtime.
+- Grok, Kilo, and OpenCode are integrated as configurable external runtimes and require their corresponding CLI/auth setup or API-key configuration.
 
-```
-src/
-├── main/                 # Electron main process
-│   ├── ai/              # AI runtimes, review flow, runtime setup
-│   ├── db/              # Shared migration fixtures and test DB types
-│   ├── git/             # Git facade contracts
-│   ├── ipc/             # Typed IPC handlers
-│   ├── observability/   # Logging
-│   ├── persistence/     # Cross-cutting persistence helpers
-│   ├── projects/        # Project catalog and FS access
-│   ├── settings/        # Settings service + encryption
-│   ├── terminals/       # Terminal facade contracts
-│   ├── testing/         # Main-process test helpers
-│   ├── windows/         # Main and settings windows
-│   ├── workers/         # Background worker supervisor
-│   ├── workspace/       # Workspace state
-│   └── index.ts         # Main process entrypoint
-├── preload/             # Typed Node ↔ Renderer bridge
-├── renderer/            # React frontend
-│   └── src/
-│       ├── app/         # State, hooks, editor, layout, settings, theme
-│       ├── assets/      # Fonts and static renderer assets
-│       ├── components/  # UI (sidebar, workspace, settings, git…)
-│       ├── App.tsx      # Main window entry
-│       ├── SettingsApp.tsx # Settings window entry
-│       ├── styles.css   # Tailwind globals
-│       └── main.tsx
-├── shared/              # IPC contracts, constants, theme tokens
-└── test/                # Shared test helpers and fixtures
-```
+Runtime binary overrides during development:
 
-## Tech stack
+- `COMANDO_CODEX_ACP_BIN`
+- `COMANDO_CLAUDE_ACP_BIN`
+- `COMANDO_GROK_ACP_BIN`
+- `COMANDO_KILO_ACP_BIN`
+- `COMANDO_OPENCODE_ACP_BIN`
 
-**Runtime and packaging**
-- Electron 41 · electron-vite 5 · electron-builder 26
+Bundle/staging overrides:
 
-**Frontend**
-- React 19 · TypeScript 6 · Tailwind CSS 4 · Zustand 5
-- Monaco Editor · xterm.js · CodeMirror 6 · vscode-textmate
+- `COMANDO_CODEX_ACP_BUNDLE_BIN`
+- `COMANDO_EMBEDDED_NODE_BIN`
 
-**Backend**
-- Rust native sidecar · `agent-client-protocol`
+Credential environment variables recognized by diagnostics include:
 
-**Tooling**
-- Vite 7 · Vitest 4 · ESLint 10 · `@typescript-eslint` 8
+- `OPENAI_API_KEY`
+- `CODEX_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_AUTH_TOKEN`
+- `ANTHROPIC_BASE_URL`
+- `ANTHROPIC_BEDROCK_BASE_URL`
+- `ANTHROPIC_CUSTOM_HEADERS`
+- `XAI_API_KEY`
+- `KILO_API_KEY`
+- `OPENCODE_API_KEY`
 
-## Project status
+Secrets saved through the settings UI are stored securely via the native secret store. External CLI logins remain owned by their respective runtimes.
 
-Comando is currently in the **hardening and UI polish** phase. The functional core (workspace, AI sessions, Git, terminal, review flow, local persistence) is complete and operational. The focus is on stability, performance, visual polish, and pre-release packaging.
+## Project Status
 
-Current version: `0.1.0`.
+Comando is in a polish and hardening phase. The core systems already exist: workspace, editor, AI sessions, review flow, Git, GitHub, terminal, native persistence, and packaging. The project is still pre-`1.0`, and the most important work now is stability, performance, UI polish, and release hardening. Do not rely on Comando as your only IDE yet.
 
-## Contributing
+The areas with the highest product sensitivity right now are:
 
-Contributions are welcome. Before opening a PR:
+- AI review and change control
+- Inline review and hunk-level keep/reject behavior
+- Session history, transcript recovery, and long conversation performance
+- Multi-pane and multi-window workspace restoration
+- Git worktree flows and GitHub Actions diagnostics
+- Packaged runtime staging across macOS, Windows, and Linux
 
-1. Make sure `pnpm check` passes locally.
-2. Follow the existing code style and project conventions.
-3. Code comments must be written in English; so must the UI.
-4. Follow the existing UI conventions. Improvements are welcome, but they should stay aligned with the product's visual language.
-5. For large changes, open an issue first to discuss the design.
+## Known Rough Edges
 
-## Known Issues
-
-1. Files with pending agent review changes cannot be edited. This is intentional: the review flow prioritizes accuracy and reliability over allowing concurrent edits.
-2. The Pending review tab may show approximate diffs for some agent edits. Comando tracks pending changes from agent tool-call diffs and reconciles snippet-based edits when possible, but ambiguous snippets can still produce incomplete review data.
-3. Scroll restoration is not accurate when switching from inline review to the editable file view.
-4. Resizing panes can cause unwanted scroll movement in agent threads because the chat timeline is virtualized. This is an intentional trade-off to prioritize chat performance in extremely long conversations.
+- Files with pending agent review changes cannot be edited until the pending AI review state is resolved. This is intentional for now.
+- Some pending review diffs can be approximate when an agent edit is based on ambiguous snippets, or when the agents makes changes without using the edit tool.
+- Scroll restoration can be imperfect when switching between inline review and editable file views.
 
 ## License
 
-Comando is distributed under the [Apache License 2.0](./LICENSE).
+Comando is distributed under the GNU General Public License v3.0.
 
-```
+```text
 Copyright 2026 Comando contributors
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ```
