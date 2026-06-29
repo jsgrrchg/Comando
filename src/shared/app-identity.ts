@@ -43,8 +43,6 @@ const APP_IDENTITIES = {
     },
 } as const satisfies Record<AppChannel, AppIdentity>;
 
-export const appIdentity = APP_IDENTITIES.release;
-
 export function parseAppChannel(
     value: string | null | undefined,
 ): AppChannel | null {
