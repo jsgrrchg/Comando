@@ -231,7 +231,14 @@ describe("SidebarGitScopePicker helpers", () => {
     });
 
     it("normalizes and validates new branch names for manual creation", () => {
-        const branches = [createBranch({ name: "feature/existing" })];
+        const branches = [
+            createBranch({ name: "feature/existing" }),
+            createBranch({
+                isRemote: true,
+                kind: "remote",
+                name: "origin/main",
+            }),
+        ];
 
         expect(normalizeBranchNameInput("  feature/new-picker  ")).toBe(
             "feature/new-picker",
@@ -249,6 +256,12 @@ describe("SidebarGitScopePicker helpers", () => {
             error: "A local branch with this name already exists.",
             isValid: false,
         });
+        expect(
+            validateNewBranchName("origin/main", branches),
+        ).toMatchObject({
+            error: "A remote branch with this name already exists.",
+            isValid: false,
+        });
         expect(validateNewBranchName("", branches).isValid).toBe(false);
         expect(validateNewBranchName("HEAD", branches).isValid).toBe(false);
         expect(validateNewBranchName("/foo", branches).isValid).toBe(false);
@@ -260,7 +273,14 @@ describe("SidebarGitScopePicker helpers", () => {
     });
 
     it("offers branch creation from a valid search query that does not match a local branch", () => {
-        const branches = [createBranch({ name: "feature/existing" })];
+        const branches = [
+            createBranch({ name: "feature/existing" }),
+            createBranch({
+                isRemote: true,
+                kind: "remote",
+                name: "origin/main",
+            }),
+        ];
 
         expect(
             getBranchCreationQueryOffer(" feature/new-picker ", branches),
@@ -269,6 +289,9 @@ describe("SidebarGitScopePicker helpers", () => {
         });
         expect(
             getBranchCreationQueryOffer("feature/existing", branches),
+        ).toBeNull();
+        expect(
+            getBranchCreationQueryOffer("origin/main", branches),
         ).toBeNull();
         expect(getBranchCreationQueryOffer("foo..bar", branches)).toBeNull();
     });

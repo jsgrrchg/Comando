@@ -139,10 +139,15 @@ export function validateNewBranchName(
         return invalid(value, "Branch names cannot contain '..'.");
     }
 
-    if (
-        branches.some((branch) => !branch.isRemote && branch.name === value)
-    ) {
+    if (branches.some((branch) => !branch.isRemote && branch.name === value)) {
         return invalid(value, "A local branch with this name already exists.");
+    }
+
+    if (branches.some((branch) => branch.isRemote && branch.name === value)) {
+        return invalid(
+            value,
+            "A remote branch with this name already exists.",
+        );
     }
 
     return {
