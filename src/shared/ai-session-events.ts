@@ -88,7 +88,7 @@ function appendSessionInfoEvents(
             kind: "subagent-created",
             modelId: nextSnapshot.modelId,
             parentSessionId: nextSnapshot.parentSessionId,
-            reasoningEffort: null,
+            reasoningEffort: nextSnapshot.reasoningEffort ?? null,
             title: nextSnapshot.title,
         });
     }

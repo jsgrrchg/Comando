@@ -112,6 +112,7 @@ import {
     setConfigOptionOnSnapshot,
     setModeOnSnapshot,
     setModelOnSnapshot,
+    setReasoningEffortOnSnapshot,
     setTitleOnSnapshot,
     type NormalizedSessionCatalogPayload,
 } from "./session-core";
@@ -714,6 +715,7 @@ export class AiService {
                     pendingPermission: null,
                     pendingUserInput: null,
                     plan: null,
+                    reasoningEffort: null,
                     runtimeSessionId:
                         event.childRuntimeSessionId ?? event.runtimeSessionId,
                     sessionId: event.childSessionId,
@@ -725,13 +727,20 @@ export class AiService {
                     trackedFiles: [],
                     updatedAt: event.updatedAt,
                 };
-                const childSnapshot = event.modelId
+                let childSnapshot = event.modelId
                     ? setModelOnSnapshot(
                           baseChildSnapshot,
                           event.modelId,
                           event.updatedAt,
                       )
                     : baseChildSnapshot;
+                childSnapshot = event.reasoningEffort
+                    ? setReasoningEffortOnSnapshot(
+                          childSnapshot,
+                          event.reasoningEffort,
+                          event.updatedAt,
+                      )
+                    : childSnapshot;
                 const cachedChildSnapshot = this.#cacheLiveSessionSnapshot(
                     childSnapshot,
                     ownerWindowId,
@@ -5047,6 +5056,7 @@ function mergePersistedCatalogIntoSessionSnapshot(
     catalog: PersistedRuntimeCatalogSnapshot,
 ): AiSessionSnapshot {
     const modelId = snapshot.modelId ?? catalog.modelId;
+    const reasoningEffort = snapshot.reasoningEffort ?? null;
     const merged = {
         ...snapshot,
         availableCommands:
@@ -5062,7 +5072,16 @@ function mergePersistedCatalogIntoSessionSnapshot(
         modelId,
         models: snapshot.models.length > 0 ? snapshot.models : catalog.models,
     };
-    return modelId ? setModelOnSnapshot(merged, modelId, merged.updatedAt) : merged;
+    const modelMerged = modelId
+        ? setModelOnSnapshot(merged, modelId, merged.updatedAt)
+        : merged;
+    return reasoningEffort
+        ? setReasoningEffortOnSnapshot(
+              modelMerged,
+              reasoningEffort,
+              modelMerged.updatedAt,
+          )
+        : modelMerged;
 }
 
 function mergePersistedCatalogIntoRuntimeStatus(

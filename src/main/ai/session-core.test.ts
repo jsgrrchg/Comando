@@ -203,6 +203,48 @@ describe("session-core model reconciliation", () => {
         expect(nextSnapshot.modeId).toBeNull();
         expect(nextSnapshot.modes).toEqual(snapshot.modes);
     });
+
+    it("applies stored subagent reasoning effort when normalized catalog options arrive", () => {
+        const snapshot = createSnapshot({
+            sessionId: "session-native",
+            reasoningEffort: "high",
+        });
+
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(snapshot, {
+            configOptions: [
+                {
+                    category: "other",
+                    description: null,
+                    id: "thought_level",
+                    label: "Reasoning",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Medium",
+                            value: "medium",
+                        },
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "High",
+                            value: "high",
+                        },
+                    ],
+                    type: "select",
+                    value: "medium",
+                },
+            ],
+        });
+
+        const reasoningConfig = nextSnapshot.configOptions.find(
+            (option) => option.id === "thought_level",
+        );
+        expect(nextSnapshot.reasoningEffort).toBe("high");
+        expect(reasoningConfig?.type === "select" && reasoningConfig.value).toBe(
+            "high",
+        );
+    });
 });
 
 describe("session-core path scope identity", () => {

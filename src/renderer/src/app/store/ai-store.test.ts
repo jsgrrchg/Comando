@@ -284,7 +284,7 @@ describe("ai-store queue", () => {
         ).toEqual(availableCommands);
     });
 
-    it("applies subagent-created model ids over the runtime catalog model", () => {
+    it("applies subagent-created model and reasoning selections over the runtime catalog", () => {
         useAiStore.getState().applyRuntimeStatus(
             createRuntimeStatus({
                 configOptions: [
@@ -310,6 +310,28 @@ describe("ai-store queue", () => {
                         type: "select",
                         value: "gpt-4o",
                     },
+                    {
+                        category: "reasoning",
+                        description: null,
+                        id: "codex-reasoning-effort",
+                        label: "Reasoning",
+                        options: [
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "Medium",
+                                value: "medium",
+                            },
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "High",
+                                value: "high",
+                            },
+                        ],
+                        type: "select",
+                        value: "medium",
+                    },
                 ],
                 modelId: "gpt-4o",
                 models: [
@@ -326,7 +348,7 @@ describe("ai-store queue", () => {
                 kind: "subagent-created",
                 modelId: "gpt-5",
                 parentSessionId: "session-1",
-                reasoningEffort: null,
+                reasoningEffort: "high",
                 runtimeSessionId: "runtime-child-1",
                 sessionId: "session-1:subagent:runtime-child-1",
                 title: "Galileo",
@@ -339,8 +361,99 @@ describe("ai-store queue", () => {
         const modelConfig = snapshot?.configOptions.find(
             (option) => option.id === "model",
         );
+        const reasoningConfig = snapshot?.configOptions.find(
+            (option) => option.id === "codex-reasoning-effort",
+        );
         expect(snapshot?.modelId).toBe("gpt-5");
+        expect(snapshot?.reasoningEffort).toBe("high");
         expect(modelConfig).toMatchObject({ value: "gpt-5" });
+        expect(reasoningConfig).toMatchObject({ value: "high" });
+    });
+
+    it("applies subagent reasoning selections when the runtime catalog arrives later", () => {
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                childRuntimeSessionId: "runtime-child-1",
+                childSessionId: "session-1:subagent:runtime-child-1",
+                kind: "subagent-created",
+                modelId: "gpt-5",
+                parentSessionId: "session-1",
+                reasoningEffort: "high",
+                runtimeSessionId: "runtime-child-1",
+                sessionId: "session-1:subagent:runtime-child-1",
+                title: "Galileo",
+            }),
+        );
+
+        useAiStore.getState().applySessionUpdate({
+            kind: "patch",
+            patch: {
+                changes: {
+                    configOptions: [
+                        {
+                            category: "model",
+                            description: null,
+                            id: "model",
+                            label: "Model",
+                            options: [
+                                {
+                                    description: null,
+                                    groupLabel: null,
+                                    label: "Default",
+                                    value: "gpt-4o",
+                                },
+                                {
+                                    description: null,
+                                    groupLabel: null,
+                                    label: "Subagent",
+                                    value: "gpt-5",
+                                },
+                            ],
+                            type: "select",
+                            value: "gpt-4o",
+                        },
+                        {
+                            category: "other",
+                            description: null,
+                            id: "thought_level",
+                            label: "Reasoning",
+                            options: [
+                                {
+                                    description: null,
+                                    groupLabel: null,
+                                    label: "Medium",
+                                    value: "medium",
+                                },
+                                {
+                                    description: null,
+                                    groupLabel: null,
+                                    label: "High",
+                                    value: "high",
+                                },
+                            ],
+                            type: "select",
+                            value: "medium",
+                        },
+                    ],
+                },
+                runtimeId: TAB.runtimeId,
+                sessionId: "session-1:subagent:runtime-child-1",
+            },
+        });
+
+        const snapshot =
+            useAiStore.getState().sessions["session-1:subagent:runtime-child-1"]
+                ?.snapshot;
+        const modelConfig = snapshot?.configOptions.find(
+            (option) => option.id === "model",
+        );
+        const reasoningConfig = snapshot?.configOptions.find(
+            (option) => option.id === "thought_level",
+        );
+        expect(snapshot?.modelId).toBe("gpt-5");
+        expect(snapshot?.reasoningEffort).toBe("high");
+        expect(modelConfig).toMatchObject({ value: "gpt-5" });
+        expect(reasoningConfig).toMatchObject({ value: "high" });
     });
 
     it("applies inferred titles from status events", () => {

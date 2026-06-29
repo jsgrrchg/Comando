@@ -6,6 +6,10 @@ import {
     toDisplayRelativePath,
     type PathIdentityPlatform,
 } from "@shared/path-identity";
+import {
+    applyModelIdToConfigOptions,
+    applyReasoningEffortToConfigOptions,
+} from "@shared/ai-config-options";
 import type {
     AiAvailableCommand,
     AiRuntimeId,
@@ -176,6 +180,7 @@ function createAiSessionPatchChanges(
         "plan",
         "parentSessionId",
         "projectId",
+        "reasoningEffort",
         "reviewActionLog",
         "runtimeSessionId",
         "status",
@@ -317,9 +322,12 @@ export function applyNormalizedSessionCatalogToSnapshot(
         ...(payload.availableCommands !== undefined
             ? { availableCommands: payload.availableCommands }
             : {}),
-        configOptions: syncSelectedModelOption(
-            syncSelectedModeOption(configOptions, modeId),
-            modelId,
+        configOptions: applyReasoningEffortToConfigOptions(
+            syncSelectedModelOption(
+                syncSelectedModeOption(configOptions, modeId),
+                modelId,
+            ),
+            snapshot.reasoningEffort ?? null,
         ),
         modeId,
         modes,
@@ -676,18 +684,27 @@ export function setModelOnSnapshot(
 ): AiSessionSnapshot {
     return {
         ...snapshot,
-        configOptions: snapshot.configOptions.map((option) =>
-            option.type === "select" &&
-            (option.category === "model" ||
-                option.id.toLowerCase() === "model") &&
-            hasSelectConfigValue(option, modelId)
-                ? {
-                      ...option,
-                      value: modelId,
-                  }
-                : option,
+        configOptions: applyModelIdToConfigOptions(
+            snapshot.configOptions,
+            modelId,
         ),
         modelId,
+        updatedAt,
+    };
+}
+
+export function setReasoningEffortOnSnapshot(
+    snapshot: AiSessionSnapshot,
+    reasoningEffort: string,
+    updatedAt: string = new Date().toISOString(),
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        configOptions: applyReasoningEffortToConfigOptions(
+            snapshot.configOptions,
+            reasoningEffort,
+        ),
+        reasoningEffort,
         updatedAt,
     };
 }
