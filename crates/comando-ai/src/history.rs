@@ -29,6 +29,8 @@ const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_COMPACT_STATE_FILE: &str = "compact-state.json";
 const DEFAULT_PAGE_LIMIT: usize = 50;
 const MAX_PAGE_LIMIT: usize = 200;
+const SESSION_PREVIEW_MAX_BYTES: usize = 280;
+const SESSION_PREVIEW_SUFFIX: &str = "...";
 const MB: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone)]
@@ -1869,13 +1871,22 @@ fn derive_session_preview<'a>(
     messages
         .rev()
         .find_map(message_preview_text)
-        .map(|preview| {
-            if preview.len() > 280 {
-                format!("{}...", &preview[..277])
-            } else {
-                preview
-            }
-        })
+        .map(truncate_session_preview)
+}
+
+fn truncate_session_preview(preview: String) -> String {
+    if preview.len() <= SESSION_PREVIEW_MAX_BYTES {
+        return preview;
+    }
+
+    let max_preview_bytes =
+        SESSION_PREVIEW_MAX_BYTES.saturating_sub(SESSION_PREVIEW_SUFFIX.len());
+    let mut end = max_preview_bytes.min(preview.len());
+    while end > 0 && !preview.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    format!("{}{}", &preview[..end], SESSION_PREVIEW_SUFFIX)
 }
 
 fn message_preview_text(message: &Value) -> Option<String> {
@@ -2230,6 +2241,23 @@ mod tests {
 
         assert_eq!(page.total_messages, 3);
         assert_eq!(page.messages, vec![message("message_2", "two")]);
+    }
+
+    #[test]
+    fn transcript_preview_truncates_unicode_without_panicking() {
+        let (_temp, store) = store();
+        let metadata = metadata("session_unicode_preview");
+        store.create_session(metadata.clone()).unwrap();
+        let content = format!("{}“ trailing text", "a".repeat(275));
+
+        store
+            .save_transcript_window(&metadata.session_id, vec![message("message_1", &content)])
+            .unwrap();
+
+        let preview = store.load_metadata(&metadata.session_id).unwrap().preview;
+        let preview = preview.expect("preview");
+        assert!(preview.ends_with("..."));
+        assert!(preview.len() <= 280);
     }
 
     #[test]
