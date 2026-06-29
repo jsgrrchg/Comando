@@ -6,6 +6,15 @@ const REASONING_EFFORT_CONFIG_OPTION_IDS = new Set([
     "thought_level",
 ]);
 
+export function isReasoningEffortConfigOption(
+    option: AiSessionConfigOption,
+): boolean {
+    return (
+        option.category === "reasoning" ||
+        REASONING_EFFORT_CONFIG_OPTION_IDS.has(option.id.toLowerCase())
+    );
+}
+
 function hasSelectConfigValue(
     option: AiSessionConfigOption,
     value: string,
@@ -46,8 +55,7 @@ export function applyReasoningEffortToConfigOptions(
 
     return configOptions.map((option) =>
         option.type === "select" &&
-        (option.category === "reasoning" ||
-            REASONING_EFFORT_CONFIG_OPTION_IDS.has(option.id.toLowerCase())) &&
+        isReasoningEffortConfigOption(option) &&
         hasSelectConfigValue(option, reasoningEffort)
             ? {
                   ...option,

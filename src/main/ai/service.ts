@@ -65,6 +65,7 @@ import {
     type AiReviewActionLogState,
     type AiReviewActionLogTarget,
 } from "@shared/ai-review-action-log";
+import { isReasoningEffortConfigOption } from "@shared/ai-config-options";
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
@@ -5245,12 +5246,6 @@ const EMPTY_SESSION_SELECTION_VALUES: SessionSelectionValues = {
     reasoningEffort: null,
 };
 
-const REASONING_EFFORT_CONFIG_OPTION_IDS = new Set([
-    "effort",
-    "reasoning_effort",
-    "thought_level",
-]);
-
 function getPreferredConfigOptionMutations(
     snapshot: Pick<
         AiSessionSnapshot,
@@ -5448,13 +5443,6 @@ function isModeConfigOption(option: AiSessionConfigOption): boolean {
 
 function isModelConfigOption(option: AiSessionConfigOption): boolean {
     return option.category === "model" || option.id.toLowerCase() === "model";
-}
-
-function isReasoningEffortConfigOption(option: AiSessionConfigOption): boolean {
-    return (
-        option.category === "reasoning" ||
-        REASONING_EFFORT_CONFIG_OPTION_IDS.has(option.id.toLowerCase())
-    );
 }
 
 function clearRestoredSnapshotReviewState(

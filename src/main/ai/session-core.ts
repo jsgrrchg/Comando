@@ -9,6 +9,7 @@ import {
 import {
     applyModelIdToConfigOptions,
     applyReasoningEffortToConfigOptions,
+    isReasoningEffortConfigOption,
 } from "@shared/ai-config-options";
 import type {
     AiAvailableCommand,
@@ -262,7 +263,7 @@ export function applySessionCatalogToSnapshot(
                       mergedConfigOptions,
                       snapshot.modelId,
                   )
-                : null
+                : snapshot.modelId
             : snapshot.modelId;
     const configOptions = syncSelectedModelOption(
         mergedConfigOptions,
@@ -320,7 +321,7 @@ export function applyNormalizedSessionCatalogToSnapshot(
         payload.configOptions !== undefined
             ? hasModelCatalog
                 ? deriveModelId(null, configOptions, snapshot.modelId)
-                : null
+                : snapshot.modelId
             : snapshot.modelId;
 
     return {
@@ -773,6 +774,8 @@ export function setConfigOptionOnSnapshot(
     value: boolean | string,
     updatedAt: string = new Date().toISOString(),
 ): AiSessionSnapshot {
+    const previousOption =
+        snapshot.configOptions.find((option) => option.id === optionId) ?? null;
     const nextConfigOptions = snapshot.configOptions.map((option) =>
         option.id !== optionId
             ? option
@@ -792,6 +795,10 @@ export function setConfigOptionOnSnapshot(
     );
     const updatedOption =
         nextConfigOptions.find((option) => option.id === optionId) ?? null;
+    const hasUpdatedOptionValue =
+        updatedOption !== null &&
+        previousOption !== null &&
+        updatedOption.value !== previousOption.value;
 
     return {
         ...snapshot,
@@ -810,6 +817,13 @@ export function setConfigOptionOnSnapshot(
             typeof value === "string"
                 ? value
                 : snapshot.modelId,
+        reasoningEffort:
+            hasUpdatedOptionValue &&
+            updatedOption?.type === "select" &&
+            isReasoningEffortConfigOption(updatedOption) &&
+            typeof value === "string"
+                ? value
+                : snapshot.reasoningEffort,
         updatedAt,
     };
 }

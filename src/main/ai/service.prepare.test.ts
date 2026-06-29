@@ -859,6 +859,7 @@ describe("AiService prepareSession", () => {
                 (option) => option.id === "reasoning_effort",
             )?.value,
         ).toBe("medium");
+        expect(updatedSnapshot?.reasoningEffort).toBe("medium");
         expect(saveRuntimeSelectionPreferenceOption).not.toHaveBeenCalled();
         expect(saveRuntimeModePreference).not.toHaveBeenCalled();
         expect(saveRuntimeModelPreference).not.toHaveBeenCalled();

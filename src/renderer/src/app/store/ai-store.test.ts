@@ -520,6 +520,7 @@ describe("ai-store queue", () => {
             sessionId: childSessionId,
             value: "low",
         });
+        expect(snapshot?.reasoningEffort).toBe("low");
         expect(reasoningConfig).toMatchObject({ value: "low" });
     });
 

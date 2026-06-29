@@ -52,6 +52,7 @@ import { isSessionBusyErrorMessage } from "@shared/ai-errors";
 import {
     applyModelIdToConfigOptions,
     applyReasoningEffortToConfigOptions,
+    isReasoningEffortConfigOption,
 } from "@shared/ai-config-options";
 
 import {
@@ -3966,6 +3967,8 @@ function setConfigOptionOnSnapshot(
     optionId: string,
     value: boolean | string,
 ): AiSessionSnapshot {
+    const previousOption =
+        snapshot.configOptions.find((option) => option.id === optionId) ?? null;
     const nextConfigOptions = snapshot.configOptions.map((option) =>
         option.id !== optionId
             ? option
@@ -3985,6 +3988,10 @@ function setConfigOptionOnSnapshot(
     );
     const updatedOption =
         nextConfigOptions.find((option) => option.id === optionId) ?? null;
+    const hasUpdatedOptionValue =
+        updatedOption !== null &&
+        previousOption !== null &&
+        updatedOption.value !== previousOption.value;
 
     return {
         ...snapshot,
@@ -4003,6 +4010,13 @@ function setConfigOptionOnSnapshot(
             typeof value === "string"
                 ? value
                 : snapshot.modelId,
+        reasoningEffort:
+            hasUpdatedOptionValue &&
+            updatedOption?.type === "select" &&
+            isReasoningEffortConfigOption(updatedOption) &&
+            typeof value === "string"
+                ? value
+                : snapshot.reasoningEffort,
         updatedAt: new Date().toISOString(),
     };
 }
