@@ -10,7 +10,7 @@ import {
     type SettingsUpdatedEvent,
 } from "@shared/ipc";
 
-import { forEachLiveWindow } from "../window";
+import { applyWindowTransparencyToWindow, forEachLiveWindow } from "../window";
 
 export function applyAppZoomToWindow(
     window: BrowserWindow,
@@ -22,6 +22,14 @@ export function applyAppZoomToWindow(
 export function applyAppZoomToAllWindows(zoomFactor: number): void {
     forEachLiveWindow((window) => {
         applyAppZoomToWindow(window, zoomFactor);
+    });
+}
+
+export function applyWindowTransparencyToAllWindows(
+    transparencyEnabled: boolean,
+): void {
+    forEachLiveWindow((window) => {
+        applyWindowTransparencyToWindow(window, transparencyEnabled);
     });
 }
 

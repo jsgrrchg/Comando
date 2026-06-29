@@ -12,6 +12,7 @@ const activeSettingsWindows = new Map<string, BrowserWindow>();
 export function openSettingsWindow(
     input: OpenSettingsWindowInput,
     zoomFactor = 1,
+    transparencyEnabled = true,
 ): void {
     const windowKey = getSettingsWindowKey(input.projectId);
     const existingWindow = activeSettingsWindows.get(windowKey);
@@ -25,7 +26,10 @@ export function openSettingsWindow(
         return;
     }
 
-    const settingsWindow = createSettingsBrowserWindow(input.projectId);
+    const settingsWindow = createSettingsBrowserWindow(
+        input.projectId,
+        transparencyEnabled,
+    );
     applyAppZoomToWindow(settingsWindow, zoomFactor);
 
     activeSettingsWindows.set(windowKey, settingsWindow);

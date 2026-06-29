@@ -145,6 +145,8 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Scale text and rows in the Agents, Issues, and Pull Requests sidebars.",
         "Sticky folders",
         "Keep parent folders pinned while scrolling the file tree.",
+        "Window transparency",
+        "Use native acrylic transparency on Windows and vibrancy on macOS.",
         "Mode",
         "System theme",
         "Choose how the app looks. System follows your OS preference.",
@@ -1642,6 +1644,10 @@ function AppearanceContent({
             "Sticky folders",
             "Keep parent folders pinned while scrolling the file tree.",
         ],
+        [
+            "Window transparency",
+            "Use native acrylic transparency on Windows and vibrancy on macOS.",
+        ],
     ]);
     const showMode = sectionHasMatches(searchQuery, "Mode", [
         [
@@ -1722,6 +1728,20 @@ function AppearanceContent({
                         value={state.stickyFoldersEnabled}
                         onChange={(v) =>
                             state.onStickyFoldersEnabledChange?.(v)
+                        }
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Workspace"
+                label="Window transparency"
+                description="Use native acrylic transparency on Windows and vibrancy on macOS."
+                control={
+                    <Toggle
+                        value={state.transparencyEnabled}
+                        onChange={(v) =>
+                            state.onTransparencyEnabledChange?.(v)
                         }
                     />
                 }

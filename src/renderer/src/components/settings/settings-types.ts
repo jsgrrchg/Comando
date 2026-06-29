@@ -37,6 +37,7 @@ export interface SettingsThemeControlState {
     readonly presetId: string;
     readonly presets: readonly ThemePresetOption[];
     readonly stickyFoldersEnabled: boolean;
+    readonly transparencyEnabled: boolean;
     readonly zoomFactor?: number;
     readonly disabled?: boolean;
     readonly onAgentsSidebarScaleChange?: (agentsSidebarScale: number) => void;
@@ -45,6 +46,7 @@ export interface SettingsThemeControlState {
     readonly onModeChange?: (mode: ThemeMode) => void;
     readonly onPresetChange?: (presetId: string) => void;
     readonly onStickyFoldersEnabledChange?: (enabled: boolean) => void;
+    readonly onTransparencyEnabledChange?: (enabled: boolean) => void;
     readonly onZoomFactorChange?: (zoomFactor: number) => void;
 }
 

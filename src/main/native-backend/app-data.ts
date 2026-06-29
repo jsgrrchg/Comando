@@ -1161,6 +1161,11 @@ function createLegacySettingsSnapshot(
                     readLegacyStringSetting(settings, "appearance.theme_preset"),
                 ) ??
                 defaults.appearance.themePreset,
+            transparencyEnabled:
+                readLegacyBooleanSetting(
+                    settings,
+                    "appearance.transparency_enabled",
+                ) ?? defaults.appearance.transparencyEnabled,
             zoomFactor:
                 readLegacyNumberSetting(settings, "appearance.zoom_factor") ??
                 defaults.appearance.zoomFactor,
@@ -1780,6 +1785,7 @@ function createDefaultSettingsSnapshot(): CompleteSettingsSnapshot {
             stickyFoldersEnabled: true,
             themeMode: "system",
             themePreset: "default",
+            transparencyEnabled: true,
             zoomFactor: APP_ZOOM_FACTOR_DEFAULT,
         },
         editor: {
@@ -1802,7 +1808,10 @@ function normalizeSettingsSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot
     return {
         ai: snapshot.ai ?? defaults.ai,
         aiChat: snapshot.aiChat ?? defaults.aiChat,
-        appearance: snapshot.appearance ?? defaults.appearance,
+        appearance: {
+            ...defaults.appearance,
+            ...(snapshot.appearance ?? {}),
+        },
         editor: snapshot.editor ?? defaults.editor,
         shellState: snapshot.shellState ?? null,
         terminal: snapshot.terminal ?? defaults.terminal,

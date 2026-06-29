@@ -108,13 +108,16 @@ function createBaseWindow(options: {
     readonly search?: string;
     readonly title: string;
     readonly trafficLightPosition?: { x: number; y: number };
+    readonly transparencyEnabled?: boolean;
     readonly width: number;
 }): BrowserWindow {
     const isMac = process.platform === "darwin";
     const isWindows = process.platform === "win32";
     const hasNativeTitleBarOverlay = supportsNativeTitleBarOverlay();
     const restoredState = normalizeRestoredState(options.restoredState);
-    const isAcrylic = isWindows;
+    const usesNativeTransparency = options.transparencyEnabled !== false;
+    const isAcrylic = isWindows && usesNativeTransparency;
+    const isMacVibrant = isMac && usesNativeTransparency;
 
     const titleBarOverlay = hasNativeTitleBarOverlay
         ? resolveDesktopTitleBarOverlay()
@@ -130,7 +133,8 @@ function createBaseWindow(options: {
         y: restoredState?.y ?? undefined,
         minWidth: options.minWidth,
         minHeight: options.minHeight,
-        backgroundColor: isMac || isAcrylic ? "#00000000" : options.backgroundColor,
+        backgroundColor:
+            isMacVibrant || isAcrylic ? "#00000000" : options.backgroundColor,
         backgroundMaterial: isAcrylic ? "acrylic" : undefined,
         titleBarOverlay,
         titleBarStyle: isMac
@@ -141,8 +145,8 @@ function createBaseWindow(options: {
         trafficLightPosition: isMac
             ? (options.trafficLightPosition ?? { x: 18, y: 18 })
             : undefined,
-        vibrancy: isMac ? "sidebar" : undefined,
-        visualEffectState: isMac ? "active" : undefined,
+        vibrancy: isMacVibrant ? "sidebar" : undefined,
+        visualEffectState: isMacVibrant ? "active" : undefined,
         webPreferences: {
             preload: path.join(rootDir, "out/preload/index.cjs"),
             contextIsolation: true,
@@ -203,6 +207,7 @@ function openExternalHttpUrl(url: string): boolean {
 
 export function createMainWindow(
     restoredState: PersistedWindowState | null = null,
+    transparencyEnabled = true,
 ): BrowserWindow {
     return createBaseWindow({
         backgroundColor: "#ffffff",
@@ -212,12 +217,14 @@ export function createMainWindow(
         minWidth: 700,
         restoredState,
         title: appIdentity.windowTitle,
+        transparencyEnabled,
         width: 1480,
     });
 }
 
 export function createSettingsWindow(
     projectId: string | null = null,
+    transparencyEnabled = true,
 ): BrowserWindow {
     const searchParams = new URLSearchParams({
         window: "settings",
@@ -236,8 +243,27 @@ export function createSettingsWindow(
         search: `?${searchParams.toString()}`,
         title: `${appIdentity.name} Settings`,
         trafficLightPosition: { x: 14, y: 14 },
+        transparencyEnabled,
         width: 980,
     });
+}
+
+export function applyWindowTransparencyToWindow(
+    window: BrowserWindow,
+    transparencyEnabled: boolean,
+): void {
+    if (process.platform === "win32") {
+        window.setBackgroundMaterial(
+            transparencyEnabled ? "acrylic" : "none",
+        );
+        return;
+    }
+
+    if (process.platform !== "darwin") {
+        return;
+    }
+
+    window.setVibrancy(transparencyEnabled ? "sidebar" : null);
 }
 
 export function refreshWindowsTitleBarOverlays(): void {

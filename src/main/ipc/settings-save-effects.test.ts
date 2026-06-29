@@ -10,6 +10,7 @@ describe("resolveSettingsSnapshotSaveEffects", () => {
             }),
         ).toEqual({
             applyAppZoom: false,
+            applyWindowTransparency: false,
             broadcastSettingsUpdated: false,
         });
     });
@@ -31,6 +32,7 @@ describe("resolveSettingsSnapshotSaveEffects", () => {
             }),
         ).toEqual({
             applyAppZoom: false,
+            applyWindowTransparency: false,
             broadcastSettingsUpdated: true,
         });
     });
@@ -43,6 +45,7 @@ describe("resolveSettingsSnapshotSaveEffects", () => {
             }),
         ).toEqual({
             applyAppZoom: true,
+            applyWindowTransparency: true,
             broadcastSettingsUpdated: true,
         });
 
@@ -53,6 +56,7 @@ describe("resolveSettingsSnapshotSaveEffects", () => {
             }),
         ).toEqual({
             applyAppZoom: false,
+            applyWindowTransparency: false,
             broadcastSettingsUpdated: true,
         });
     });

@@ -54,6 +54,7 @@ function createSettingsWindowProps(
             presetId: "default",
             presets: [],
             stickyFoldersEnabled: true,
+            transparencyEnabled: true,
         },
         appEditor: {
             autoSaveDelayMs: 900,

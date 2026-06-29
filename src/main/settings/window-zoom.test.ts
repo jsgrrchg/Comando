@@ -35,6 +35,7 @@ describe("broadcastSettingsUpdated", () => {
                 stickyFoldersEnabled: true,
                 themeMode: "dark",
                 themePreset: "default",
+                transparencyEnabled: true,
                 zoomFactor: 1,
             },
             {
@@ -82,6 +83,7 @@ describe("broadcastSettingsUpdated", () => {
                 stickyFoldersEnabled: true,
                 themeMode: "dark",
                 themePreset: "default",
+                transparencyEnabled: true,
                 zoomFactor: 1,
             },
             editor: {

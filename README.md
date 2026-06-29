@@ -321,6 +321,7 @@ The areas with the highest product sensitivity right now are:
 - Files with pending agent review changes cannot be edited until the pending AI review state is resolved. This is intentional for now.
 - Some pending review diffs can be approximate when an agent edit is based on ambiguous snippets, or when the agents makes changes without using the edit tool.
 - Scroll restoration can be imperfect when switching between inline review and editable file views.
+- Acrylic transparency does not render reliably on Windows 10; as a workaround, Windows 10 users can disable window transparency in Settings > Appearance.
 
 ## License
 

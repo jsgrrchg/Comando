@@ -237,6 +237,7 @@ export interface AppAppearanceSettings {
     readonly stickyFoldersEnabled: boolean;
     readonly themeMode: ThemeMode;
     readonly themePreset: ThemePreset;
+    readonly transparencyEnabled: boolean;
     readonly zoomFactor: number;
 }
 

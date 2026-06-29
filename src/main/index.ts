@@ -88,7 +88,11 @@ import { openSettingsWindow } from "./settings/window";
 import type { TerminalGateway } from "./terminals/service";
 import { initializeAutoUpdates } from "./updater";
 import { isLinuxAppImageEnvironment } from "./updater-config";
-import { createMainWindow, forEachLiveWindow } from "./window";
+import {
+    applyWindowTransparencyToWindow,
+    createMainWindow,
+    forEachLiveWindow,
+} from "./window";
 import { windowRegistry } from "./windows/registry";
 import type { WorkspaceGateway } from "./workspace/service";
 
@@ -767,7 +771,10 @@ function createTrackedMainWindow(snapshot: PersistenceSnapshot): BrowserWindow {
         );
     }
 
-    const window = createMainWindow(snapshot.windowState);
+    const window = createMainWindow(
+        snapshot.windowState,
+        loadCurrentTransparencyEnabled(),
+    );
     const context = snapshot.windowContext;
 
     window.webContents.once("did-finish-load", () => {
@@ -794,6 +801,12 @@ function loadCurrentAppZoomFactor(): number {
     );
 }
 
+function loadCurrentTransparencyEnabled(): boolean {
+    return (
+        settingsService?.loadAppAppearanceSettings().transparencyEnabled ?? true
+    );
+}
+
 function persistAppAppearanceSettings(): void {
     if (!settingsService) {
         return;
@@ -804,6 +817,10 @@ function persistAppAppearanceSettings(): void {
     if (appearance) {
         forEachLiveWindow((window) => {
             applyAppZoomToWindow(window, appearance.zoomFactor);
+            applyWindowTransparencyToWindow(
+                window,
+                appearance.transparencyEnabled,
+            );
         });
     }
 

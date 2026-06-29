@@ -1757,6 +1757,7 @@ export function getDefaultAppAppearance(): AppAppearanceSettings {
         stickyFoldersEnabled: true,
         themeMode: "system",
         themePreset: "default",
+        transparencyEnabled: true,
         zoomFactor: APP_ZOOM_FACTOR_DEFAULT,
     };
 }
@@ -1825,6 +1826,8 @@ export function resolveAppearance(
             defaults.stickyFoldersEnabled,
         themeMode: appAppearance?.themeMode ?? defaults.themeMode,
         themePreset: appAppearance?.themePreset ?? defaults.themePreset,
+        transparencyEnabled:
+            appAppearance?.transparencyEnabled ?? defaults.transparencyEnabled,
         zoomFactor: clampAppZoomFactor(
             appAppearance?.zoomFactor ?? defaults.zoomFactor,
         ),
@@ -1940,6 +1943,10 @@ export function applyAppearance(
     const root = document.documentElement;
 
     root.classList.toggle("dark", isDark);
+    root.setAttribute(
+        "data-transparency-enabled",
+        appearance.transparencyEnabled ? "true" : "false",
+    );
     root.style.setProperty("--color-app", palette.app);
     root.style.setProperty("--color-bg-primary", palette.bgPrimary);
     root.style.setProperty("--color-bg-secondary", palette.bgSecondary);

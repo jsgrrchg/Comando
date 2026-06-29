@@ -474,6 +474,18 @@ export function SettingsApp() {
         void saveAppAppearanceSettings(nextAppearance);
     };
 
+    const handleAppTransparencyEnabledChange = (
+        transparencyEnabled: boolean,
+    ) => {
+        const nextAppearance = {
+            ...appAppearance,
+            transparencyEnabled,
+        };
+
+        setAppAppearance(nextAppearance);
+        void saveAppAppearanceSettings(nextAppearance);
+    };
+
     const handleAppEditorFontFamilyChange = (fontFamilyId: string) => {
         const nextEditor: AppEditorSettings = {
             ...appEditor,
@@ -842,6 +854,8 @@ export function SettingsApp() {
                 onPresetChange: handleAppThemePresetChange,
                 onStickyFoldersEnabledChange:
                     handleAppStickyFoldersEnabledChange,
+                onTransparencyEnabledChange:
+                    handleAppTransparencyEnabledChange,
                 onZoomFactorChange: handleAppZoomFactorChange,
                 presetId: appAppearance.themePreset,
                 presets: THEME_PRESET_OPTIONS.map((preset) => ({
@@ -851,6 +865,7 @@ export function SettingsApp() {
                     swatches: preset.swatches,
                 })),
                 stickyFoldersEnabled: appAppearance.stickyFoldersEnabled,
+                transparencyEnabled: appAppearance.transparencyEnabled,
                 zoomFactor: appAppearance.zoomFactor,
             }}
             appEditor={{

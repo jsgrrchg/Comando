@@ -41,6 +41,7 @@ function createAppearanceSettings(
         stickyFoldersEnabled: true,
         themeMode: "system",
         themePreset: "default",
+        transparencyEnabled: true,
         zoomFactor: 1,
         ...overrides,
     };

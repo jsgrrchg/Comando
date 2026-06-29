@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 interface MockedBrowserWindow {
     readonly options: Record<string, unknown>;
+    readonly setBackgroundMaterial: ReturnType<typeof vi.fn>;
     readonly setTitleBarOverlay: ReturnType<typeof vi.fn>;
+    readonly setVibrancy: ReturnType<typeof vi.fn>;
 }
 
 const electronMocks = vi.hoisted(() => {
@@ -17,8 +19,10 @@ const electronMocks = vi.hoisted(() => {
         readonly loadURL = vi.fn(() => Promise.resolve());
         readonly maximize = vi.fn();
         readonly setFullScreen = vi.fn();
+        readonly setBackgroundMaterial = vi.fn();
         readonly setTitle = vi.fn();
         readonly setTitleBarOverlay = vi.fn();
+        readonly setVibrancy = vi.fn();
         readonly webContents = {
             on: vi.fn(),
             setWindowOpenHandler: vi.fn(),
@@ -113,6 +117,17 @@ describe("window titlebar overlays", () => {
             color: "#00000000",
             height: 40,
             symbolColor: "#e8e8e8",
+        });
+    });
+
+    it("creates solid Windows windows when transparency is disabled", () => {
+        createMainWindow(null, false);
+        const window = electronMocks.windows[0];
+
+        expect(window.options).toMatchObject({
+            backgroundColor: "#ffffff",
+            backgroundMaterial: undefined,
+            titleBarStyle: "hidden",
         });
     });
 });

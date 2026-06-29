@@ -185,6 +185,7 @@ import type { PersistenceGateway } from "@main/persistence/service";
 import type { SettingsGateway } from "@main/settings/service";
 import {
     applyAppZoomToAllWindows,
+    applyWindowTransparencyToAllWindows,
     broadcastSettingsUpdated,
 } from "@main/settings/window-zoom";
 import { openSettingsWindow } from "@main/settings/window";
@@ -498,6 +499,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                         persisted.appearance?.zoomFactor ?? 1,
                     );
                 }
+                if (effects.applyWindowTransparency) {
+                    applyWindowTransparencyToAllWindows(
+                        persisted.appearance?.transparencyEnabled ?? true,
+                    );
+                }
                 broadcastSettingsUpdated(
                     persisted.appearance ?? null,
                     persisted.editor ?? null,
@@ -518,11 +524,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.openSettingsWindow,
-        (_event, input: OpenSettingsWindowInput) =>
+        (_event, input: OpenSettingsWindowInput) => {
+            const appearance = options.settingsService.loadAppAppearanceSettings();
             openSettingsWindow(
                 input,
-                options.settingsService.loadAppAppearanceSettings().zoomFactor,
-            ),
+                appearance.zoomFactor,
+                appearance.transparencyEnabled,
+            );
+        },
     );
     ipcMain.handle(
         IPC_CHANNELS.saveActiveProjectId,
