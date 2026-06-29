@@ -11,6 +11,7 @@ import {
     nativeAiRuntimeStatusToIpc,
     nativeGitInvalidationToIpc,
     nativeProjectSummaryToIpc,
+    nativeReviewTrackedFileToIpc,
     nativeTerminalDataEventToIpc,
     nativeTerminalExitEventToIpc,
     parseNativeBackendCapabilitiesOutput,
@@ -297,6 +298,58 @@ describe("native backend fixtures", () => {
             },
             kind: "tool-activity",
         });
+        const malformedDiffEvent = nativeAiEventToIpc({
+            eventName: "ai://tool-activity",
+            payload: {
+                diffs: [
+                    {
+                        hunks: [null],
+                        isText: true,
+                        kind: "update",
+                        newText: "new\n",
+                        oldText: "old\n",
+                        path: "src/main.rs",
+                        previousPath: null,
+                        reversible: true,
+                    },
+                ],
+                kind: "edit",
+                runtimeId: "codex",
+                runtimeSessionId: "runtime_1",
+                sessionId: "session_1",
+                status: "completed",
+                summary: null,
+                title: "Edit file",
+                toolCallId: "tool_malformed_diff",
+                updatedAt: "2026-06-20T00:00:00.000Z",
+            },
+            type: "event",
+        });
+        expect(malformedDiffEvent?.kind).toBe("tool-activity");
+        if (malformedDiffEvent?.kind !== "tool-activity") {
+            throw new Error("Expected a native tool activity event.");
+        }
+        expect(malformedDiffEvent.activity.diffs[0]?.hunks).toEqual([]);
+        const malformedTrackedFile = nativeReviewTrackedFileToIpc({
+            currentText: "new\n",
+            diffBase: "old\n",
+            hunks: [null],
+            hunksAreAnchored: true,
+            identityKey: "native:session_1:src/main.rs",
+            isText: true,
+            kind: "update",
+            newText: "new\n",
+            oldText: "old\n",
+            path: "src/main.rs",
+            previousPath: null,
+            reviewState: "pending",
+            reversible: true,
+            sessionId: "session_1",
+            toolCallId: "tool_malformed_diff",
+            updatedAt: "2026-06-20T00:00:00.000Z",
+        });
+        expect(malformedTrackedFile.hunks).toEqual([]);
+        expect(malformedTrackedFile).not.toHaveProperty("hunksAreAnchored");
         expect(
             nativeAiEventToIpc({
                 eventName: "ai://status-event",

@@ -1,5 +1,7 @@
 import type {
     AiAvailableCommand,
+    AiDiffHunk,
+    AiDiffHunkLine,
     AiRuntimeId,
     AiRuntimeStatus,
     AiRuntimeSource,
@@ -784,6 +786,7 @@ export function nativeReviewCommandTrackedFilesToIpc(
 export function nativeReviewTrackedFileToIpc(value: unknown): AiTrackedFile {
     const record = requireRecord(value);
     const reviewState = readString(record, "reviewState", "pending");
+    const hunkResult = nativeAiDiffHunksToIpc(record.hunks);
     const version =
         typeof record.version === "number" && Number.isFinite(record.version)
             ? Math.max(1, Math.trunc(record.version))
@@ -798,13 +801,11 @@ export function nativeReviewTrackedFileToIpc(value: unknown): AiTrackedFile {
         ...(typeof record.conflict === "string"
             ? { conflict: record.conflict }
             : {}),
-        ...(record.hunksAreAnchored === true
+        ...(record.hunksAreAnchored === true && !hunkResult.droppedInvalidHunks
             ? { hunksAreAnchored: true }
             : {}),
         identityKey: readString(record, "identityKey", readString(record, "path", "")),
-        hunks: Array.isArray(record.hunks)
-            ? (record.hunks as AiTrackedFile["hunks"])
-            : [],
+        hunks: hunkResult.hunks,
         isText: record.isText !== false,
         kind: readTrackedFileKind(record.kind),
         newText: readNullableString(record, "newText"),
@@ -934,9 +935,7 @@ function nativeFileDiffsToIpc(value: unknown): readonly AiFileDiff[] {
 function nativeFileDiffToIpc(value: unknown): AiFileDiff {
     const record = requireRecord(value);
     return {
-        hunks: Array.isArray(record.hunks)
-            ? (record.hunks as AiFileDiff["hunks"])
-            : [],
+        hunks: nativeAiDiffHunksToIpc(record.hunks).hunks,
         isText: record.isText !== false,
         kind: readTrackedFileKind(record.kind),
         newText: readNullableString(record, "newText"),
@@ -945,6 +944,92 @@ function nativeFileDiffToIpc(value: unknown): AiFileDiff {
         previousPath: readNullableString(record, "previousPath"),
         reversible: record.reversible !== false,
     };
+}
+
+function nativeAiDiffHunksToIpc(value: unknown): {
+    readonly droppedInvalidHunks: boolean;
+    readonly hunks: readonly AiDiffHunk[];
+} {
+    if (!Array.isArray(value)) {
+        return { droppedInvalidHunks: false, hunks: [] };
+    }
+
+    const hunks = value.flatMap((entry) => {
+        const hunk = nativeAiDiffHunkToIpc(entry);
+        return hunk ? [hunk] : [];
+    });
+    return {
+        droppedInvalidHunks: hunks.length !== value.length,
+        hunks,
+    };
+}
+
+function nativeAiDiffHunkToIpc(value: unknown): AiDiffHunk | null {
+    const record = readRecord(value);
+    if (!record) {
+        return null;
+    }
+
+    const id = readNonEmptyString(record, "id");
+    const oldStart = readInteger(record, "oldStart", { min: 1 });
+    const oldCount = readInteger(record, "oldCount", { min: 0 });
+    const newStart = readInteger(record, "newStart", { min: 1 });
+    const newCount = readInteger(record, "newCount", { min: 0 });
+    if (
+        id === null ||
+        oldStart === null ||
+        oldCount === null ||
+        newStart === null ||
+        newCount === null ||
+        !Array.isArray(record.lines)
+    ) {
+        return null;
+    }
+
+    const lines = record.lines.flatMap((lineValue) => {
+        const line = nativeAiDiffHunkLineToIpc(lineValue);
+        return line ? [line] : [];
+    });
+    if (lines.length !== record.lines.length) {
+        return null;
+    }
+
+    const visualStartLine = readOptionalInteger(record, "visualStartLine", {
+        min: 1,
+    });
+    const visualEndLine = readOptionalInteger(record, "visualEndLine", {
+        min: 1,
+    });
+    return {
+        id,
+        lines,
+        newCount,
+        newStart,
+        oldCount,
+        oldStart,
+        ...(visualStartLine !== undefined ? { visualStartLine } : {}),
+        ...(visualEndLine !== undefined ? { visualEndLine } : {}),
+    };
+}
+
+function nativeAiDiffHunkLineToIpc(value: unknown): AiDiffHunkLine | null {
+    const record = readRecord(value);
+    if (!record) {
+        return null;
+    }
+
+    const id = readNonEmptyString(record, "id");
+    const text = readStringValue(record, "text");
+    const type = record.type;
+    if (
+        id === null ||
+        text === null ||
+        (type !== "add" && type !== "context" && type !== "remove")
+    ) {
+        return null;
+    }
+
+    return { id, text, type };
 }
 
 function nativeAiErrorToIpc(payload: NativeAiErrorPayload): AiSessionDomainEvent | null {
@@ -1025,6 +1110,14 @@ function requireRecord(value: unknown): Record<string, unknown> {
     return value as Record<string, unknown>;
 }
 
+function readRecord(value: unknown): Record<string, unknown> | null {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        return null;
+    }
+
+    return value as Record<string, unknown>;
+}
+
 function readString(
     record: Record<string, unknown>,
     key: string,
@@ -1034,12 +1127,53 @@ function readString(
     return typeof value === "string" ? value : fallback;
 }
 
+function readStringValue(
+    record: Record<string, unknown>,
+    key: string,
+): string | null {
+    const value = record[key];
+    return typeof value === "string" ? value : null;
+}
+
+function readNonEmptyString(
+    record: Record<string, unknown>,
+    key: string,
+): string | null {
+    const value = readStringValue(record, key);
+    return value && value.length > 0 ? value : null;
+}
+
 function readNullableString(
     record: Record<string, unknown>,
     key: string,
 ): string | null {
     const value = record[key];
     return typeof value === "string" ? value : null;
+}
+
+function readInteger(
+    record: Record<string, unknown>,
+    key: string,
+    options: { readonly min?: number } = {},
+): number | null {
+    const value = record[key];
+    if (typeof value !== "number" || !Number.isInteger(value)) {
+        return null;
+    }
+    if (options.min !== undefined && value < options.min) {
+        return null;
+    }
+    return value;
+}
+
+function readOptionalInteger(
+    record: Record<string, unknown>,
+    key: string,
+    options: { readonly min?: number } = {},
+): number | undefined {
+    return Object.prototype.hasOwnProperty.call(record, key)
+        ? (readInteger(record, key, options) ?? undefined)
+        : undefined;
 }
 
 function readTrackedFileKind(value: unknown): AiTrackedFile["kind"] {
