@@ -727,6 +727,45 @@ export function SidebarGitScopePicker({
     }, [activeTab]);
 
     useEffect(() => {
+        if (!branchCreationDraft) {
+            return;
+        }
+
+        const currentBaseExists = branchCreationBaseOptions.some(
+            (option) => option.name === branchCreationBaseName,
+        );
+        if (currentBaseExists) {
+            return;
+        }
+
+        const fallbackBase =
+            defaultBranchCreationBase &&
+            branchCreationBaseOptions.some(
+                (option) => option.name === defaultBranchCreationBase,
+            )
+                ? defaultBranchCreationBase
+                : (branchCreationBaseOptions[0]?.name ?? null);
+
+        if (fallbackBase) {
+            setBranchCreationBaseName(fallbackBase);
+            setActionError(null);
+            return;
+        }
+
+        setBranchCreationDraft(null);
+        setBranchCreationName("");
+        setBranchCreationBaseName("");
+        setBranchCreationCheckout(true);
+        setBranchCreationSubmitted(false);
+        setActionError("The selected base branch is no longer available.");
+    }, [
+        branchCreationBaseName,
+        branchCreationBaseOptions,
+        branchCreationDraft,
+        defaultBranchCreationBase,
+    ]);
+
+    useEffect(() => {
         if (!isOpen) {
             return;
         }
