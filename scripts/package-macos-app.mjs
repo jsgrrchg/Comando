@@ -81,7 +81,6 @@ const bundledArm64CodexBinary = path.join(
     "binaries",
     "codex-acp",
 );
-const legacyMacIconPath = path.join(repoRoot, "resources", "icons", "macos.icns");
 const macEntitlementsPath = path.join(
     repoRoot,
     "resources",
@@ -102,12 +101,9 @@ const codesignCommand = resolveRequiredCommand("codesign", [
     "/usr/bin/codesign",
 ]);
 const dittoCommand = resolveRequiredCommand("ditto", ["/usr/bin/ditto"]);
+const spctlCommand = resolveRequiredCommand("spctl", ["/usr/sbin/spctl"]);
 const xattrCommand = resolveRequiredCommand("xattr", ["/usr/bin/xattr"]);
-const macSigningIdentity =
-    process.env.COMANDO_MAC_SIGN_IDENTITY ??
-    (process.env.CSC_NAME
-        ? `Developer ID Application: ${process.env.CSC_NAME}`
-        : "-");
+const xcrunCommand = resolveRequiredCommand("xcrun", ["/usr/bin/xcrun"]);
 const macTargets = [{ arch: "arm64" }, { arch: "x64" }];
 const builtinModuleNames = new Set(
     builtinModules.flatMap((moduleName) => [
@@ -159,11 +155,10 @@ function main() {
         );
     }
 
-    replaceLegacyMacIcon(standalonePackagedAppPath);
     verifyPackagedUpdaterConfig(standalonePackagedAppPath);
-    repairMovedMacAppBundle(standalonePackagedAppPath);
     verifyPackagedApplication(standalonePackagedAppPath);
     verifyReleaseArtifacts();
+    verifyMacDistributionReadiness(standalonePackagedAppPath);
 
     if (shouldCopyPackagedAppToDesktop()) {
         copyPackagedAppToDesktop(standalonePackagedAppPath);
@@ -185,7 +180,6 @@ function copyPackagedAppToDesktop(packagedAppPath) {
         fs.rmSync(desktopAppPath, { force: true, recursive: true });
         run(dittoCommand, [packagedAppPath, desktopAppPath]);
         run(xattrCommand, ["-cr", desktopAppPath]);
-        repairMovedMacAppBundle(desktopAppPath);
         console.log(`[package:mac] App copied to ${desktopAppPath}`);
     } catch (error) {
         console.warn(
@@ -890,112 +884,36 @@ function verifyPackagedUpdaterConfig(packagedAppPath) {
     });
 }
 
-function replaceLegacyMacIcon(packagedAppPath) {
-    if (!isFile(legacyMacIconPath)) {
-        throw new Error(
-            `Expected legacy macOS icon at ${relativeToRepo(legacyMacIconPath)}, but it was not found.`,
-        );
+function verifyMacDistributionReadiness(packagedAppPath) {
+    if (!shouldVerifyMacDistributionReadiness()) {
+        return;
     }
 
-    const targetIconPath = path.join(
+    console.log("[package:mac] Verifying Developer ID signature and notarization.");
+    run(codesignCommand, [
+        "--verify",
+        "--deep",
+        "--strict",
+        "--verbose=2",
         packagedAppPath,
-        "Contents",
-        "Resources",
-        "icon.icns",
+    ]);
+    run(spctlCommand, [
+        "--assess",
+        "--type",
+        "execute",
+        "--verbose=4",
+        packagedAppPath,
+    ]);
+    run(xcrunCommand, ["stapler", "validate", packagedAppPath]);
+}
+
+function shouldVerifyMacDistributionReadiness() {
+    return Boolean(
+        process.env.CI &&
+            process.env.APPLE_API_KEY &&
+            process.env.APPLE_API_KEY_ID &&
+            process.env.APPLE_API_ISSUER,
     );
-
-    fs.copyFileSync(legacyMacIconPath, targetIconPath);
-    console.log(
-        `[package:mac] Replaced legacy app icon with ${relativeToRepo(legacyMacIconPath)}.`,
-    );
-}
-
-function repairMovedMacAppBundle(appPath) {
-    repairFrameworkSymlinks(path.join(appPath, "Contents", "Frameworks"));
-    run(
-        codesignCommand,
-        [
-            "--force",
-            "--deep",
-            "--options",
-            "runtime",
-            "--entitlements",
-            macEntitlementsPath,
-            "--sign",
-            macSigningIdentity,
-            appPath,
-        ],
-        {
-            cwd: repoRoot,
-        },
-    );
-}
-
-function repairFrameworkSymlinks(rootPath) {
-    if (!fs.existsSync(rootPath)) {
-        return;
-    }
-
-    for (const entry of fs.readdirSync(rootPath, { withFileTypes: true })) {
-        const entryPath = path.join(rootPath, entry.name);
-        if (entry.isDirectory() && entry.name.endsWith(".framework")) {
-            repairFrameworkBundle(entryPath);
-        }
-    }
-}
-
-function repairFrameworkBundle(frameworkPath) {
-    const versionsPath = path.join(frameworkPath, "Versions");
-    if (!fs.existsSync(versionsPath)) {
-        return;
-    }
-
-    const versionNames = fs
-        .readdirSync(versionsPath, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory() && entry.name !== "Current")
-        .map((entry) => entry.name)
-        .sort();
-
-    if (versionNames.length === 0) {
-        return;
-    }
-
-    const currentVersionName = versionNames.includes("A")
-        ? "A"
-        : versionNames[0];
-
-    replaceSymlink(path.join(versionsPath, "Current"), currentVersionName);
-
-    for (const entry of fs.readdirSync(frameworkPath, {
-        withFileTypes: true,
-    })) {
-        if (entry.name === "Versions") {
-            continue;
-        }
-
-        const entryPath = path.join(frameworkPath, entry.name);
-        if (!isSymbolicLink(entryPath)) {
-            continue;
-        }
-
-        replaceSymlink(entryPath, path.join("Versions", "Current", entry.name));
-    }
-}
-
-function replaceSymlink(linkPath, targetPath) {
-    if (fs.existsSync(linkPath) || isSymbolicLink(linkPath)) {
-        fs.rmSync(linkPath, { force: true, recursive: true });
-    }
-
-    fs.symlinkSync(targetPath, linkPath);
-}
-
-function isSymbolicLink(candidatePath) {
-    try {
-        return fs.lstatSync(candidatePath).isSymbolicLink();
-    } catch {
-        return false;
-    }
 }
 
 function stageClaudeRuntime() {

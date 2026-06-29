@@ -1,7 +1,7 @@
 # Recursos De Iconos
 
-- macOS 26+: `resources/icons/macos.icon`
-- macOS 15 fallback: `resources/icons/macos.icns`
+- macOS package icon: `resources/icons/macos.icns`
+- macOS Icon Composer source: `resources/icons/macos.icon`
 - Windows: `resources/icons/windows.ico`
 - PNG base legacy: `resources/icons/app.png`
 

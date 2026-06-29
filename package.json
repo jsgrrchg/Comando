@@ -162,7 +162,7 @@
             "entitlements": "resources/entitlements.mac.plist",
             "entitlementsInherit": "resources/entitlements.mac.inherit.plist",
             "hardenedRuntime": true,
-            "icon": "resources/icons/macos.icon",
+            "icon": "resources/icons/macos.icns",
             "x64ArchFiles": "{Contents/Resources/ai/**/*,Contents/Resources/native/**/*}",
             "target": [
                 {
