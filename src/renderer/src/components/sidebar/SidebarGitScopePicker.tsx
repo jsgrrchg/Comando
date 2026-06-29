@@ -1775,8 +1775,9 @@ export function SidebarGitScopePicker({
             return;
         }
 
-        const rows = listRef.current.querySelectorAll("[data-row-index]");
-        const row = rows[focusIndex] as HTMLElement | undefined;
+        const row = listRef.current.querySelector<HTMLElement>(
+            `[data-row-index="${focusIndex}"]`,
+        );
         row?.scrollIntoView({ block: "nearest" });
     }, [focusIndex, selectableRenderIndexByFocusIndex, shouldVirtualizeList]);
 
@@ -2056,20 +2057,22 @@ export function SidebarGitScopePicker({
                               ref={listRef}
                           >
                               {branchCreationQueryOffer ? (
-                                  <BranchCreationQueryOfferRow
-                                      branchName={
-                                          branchCreationQueryOffer.branchName
-                                      }
-                                      disabled={isBusy}
-                                      isSelected={focusIndex === 0}
-                                      onClick={() =>
-                                          openBranchCreationForm(
-                                              defaultBranchCreationBase,
-                                              "search",
-                                              branchCreationQueryOffer.branchName,
-                                          )
-                                      }
-                                  />
+                                  <div data-row-index={0}>
+                                      <BranchCreationQueryOfferRow
+                                          branchName={
+                                              branchCreationQueryOffer.branchName
+                                          }
+                                          disabled={isBusy}
+                                          isSelected={focusIndex === 0}
+                                          onClick={() =>
+                                              openBranchCreationForm(
+                                                  defaultBranchCreationBase,
+                                                  "search",
+                                                  branchCreationQueryOffer.branchName,
+                                              )
+                                          }
+                                      />
+                                  </div>
                               ) : null}
                               {canInitializeGit ? (
                                   <GitInitState
