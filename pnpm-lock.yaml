@@ -96,9 +96,6 @@ importers:
       monaco-vim:
         specifier: ^0.4.4
         version: 0.4.4(monaco-editor@0.55.1)
-      ms:
-        specifier: ^2.1.3
-        version: 2.1.3
       react:
         specifier: ^19.2.6
         version: 19.2.6
