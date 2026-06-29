@@ -10,6 +10,13 @@ import {
     resolveRemoteBranchResolution,
     stripRemotePrefix,
 } from "./SidebarGitScopePicker";
+import {
+    buildBranchCreationBaseOptions,
+    createBranchCreationDraft,
+    getDefaultBranchCreationBase,
+    normalizeBranchNameInput,
+    validateNewBranchName,
+} from "./sidebarGitBranchCreation";
 
 function createBranch(
     overrides: Partial<GitBranchSummary> = {},
@@ -175,5 +182,79 @@ describe("SidebarGitScopePicker helpers", () => {
                 primaryWorktree,
             ),
         ).toBe(false);
+    });
+
+    it("uses the current branch as the default branch creation base when it exists", () => {
+        const branches = [
+            createBranch({ isCurrent: false, name: "main" }),
+            createBranch({ isCurrent: true, name: "feature/current" }),
+        ];
+
+        expect(
+            getDefaultBranchCreationBase({
+                branches,
+                currentBranchName: "feature/current",
+            }),
+        ).toBe("feature/current");
+    });
+
+    it("includes local and remote branches as creation base options", () => {
+        const localBranch = createBranch({ name: "feature/local" });
+        const remoteBranch = createBranch({
+            isRemote: true,
+            kind: "remote",
+            name: "origin/feature/remote",
+        });
+
+        expect(
+            buildBranchCreationBaseOptions([localBranch, remoteBranch]).map(
+                (option) => ({
+                    isRemote: option.isRemote,
+                    name: option.name,
+                }),
+            ),
+        ).toEqual([
+            { isRemote: false, name: "feature/local" },
+            { isRemote: true, name: "origin/feature/remote" },
+        ]);
+        expect(
+            createBranchCreationDraft({
+                baseBranchName: remoteBranch.name,
+                source: "context-menu",
+            }),
+        ).toMatchObject({
+            baseBranchName: remoteBranch.name,
+            checkoutAfterCreate: true,
+            source: "context-menu",
+        });
+    });
+
+    it("normalizes and validates new branch names for manual creation", () => {
+        const branches = [createBranch({ name: "feature/existing" })];
+
+        expect(normalizeBranchNameInput("  feature/new-picker  ")).toBe(
+            "feature/new-picker",
+        );
+        expect(
+            validateNewBranchName("feature/new-picker", branches),
+        ).toEqual({
+            error: null,
+            isValid: true,
+            value: "feature/new-picker",
+        });
+        expect(
+            validateNewBranchName("feature/existing", branches),
+        ).toMatchObject({
+            error: "A local branch with this name already exists.",
+            isValid: false,
+        });
+        expect(validateNewBranchName("", branches).isValid).toBe(false);
+        expect(validateNewBranchName("HEAD", branches).isValid).toBe(false);
+        expect(validateNewBranchName("/foo", branches).isValid).toBe(false);
+        expect(validateNewBranchName("foo/", branches).isValid).toBe(false);
+        expect(validateNewBranchName("foo..bar", branches).isValid).toBe(false);
+        expect(validateNewBranchName("feature/new picker", branches).isValid).toBe(
+            false,
+        );
     });
 });
