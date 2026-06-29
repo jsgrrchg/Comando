@@ -79,4 +79,24 @@ describe("release notes metadata", () => {
             }),
         ).toContain(["## Release notes", "", "Public launch."].join("\n"));
     });
+
+    it("renders APT repository setup instructions", () => {
+        const body = buildReleaseBody({
+            notes: "Public launch.",
+            packageJson,
+            version: "v0.1.0",
+        });
+
+        expect(body).toContain("sudo apt install comando");
+        expect(body).toContain(
+            "https://jsgrrchg.github.io/Comando/apt/comando-archive-keyring.asc",
+        );
+        expect(body).toContain(
+            "https://github.com/jsgrrchg/Comando/releases/latest/download",
+        );
+        expect(body).toContain(
+            "For Fedora/RHEL, download the `.rpm` package directly.",
+        );
+        expect(body).not.toContain("APT and DNF repositories are not configured");
+    });
 });
