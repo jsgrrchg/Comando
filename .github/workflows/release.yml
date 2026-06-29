@@ -107,6 +107,35 @@ jobs:
                   printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
                   gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
 
+    dnf-repository-preflight:
+        name: DNF repository preflight
+        needs: release-preflight
+        runs-on: ubuntu-latest
+        env:
+            APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
+            APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
+            APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+        steps:
+            - name: Validate DNF signing configuration
+              run: |
+                  missing=()
+                  for name in APT_REPO_GPG_PRIVATE_KEY APT_REPO_GPG_PASSPHRASE APT_REPO_GPG_KEY_ID; do
+                    if [[ -z "${!name:-}" ]]; then
+                      missing+=("$name")
+                    fi
+                  done
+
+                  if (( ${#missing[@]} > 0 )); then
+                    printf 'Missing required DNF repository secrets: %s\n' "${missing[*]}" >&2
+                    exit 1
+                  fi
+
+                  export GNUPGHOME
+                  GNUPGHOME="$(mktemp -d)"
+                  chmod 700 "$GNUPGHOME"
+                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
+
     ensure-github-release:
         name: Ensure GitHub release
         needs: release-preflight
@@ -432,6 +461,7 @@ jobs:
             - release-windows-arm64
             - release-linux
             - publish-apt-repository
+            - publish-dnf-repository
         runs-on: ubuntu-latest
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -682,5 +712,151 @@ jobs:
                     echo "No APT entrypoint changes to publish."
                   else
                     git -C "$PAGES_DIR" commit -m "Publish APT entrypoints for $GITHUB_REF_NAME"
+                    git -C "$PAGES_DIR" push origin HEAD:gh-pages
+                  fi
+
+    publish-dnf-repository:
+        name: Publish DNF repository
+        needs:
+            - release-preflight
+            - ensure-github-release
+            - release-linux
+            - dnf-repository-preflight
+            - publish-apt-repository
+        runs-on: ubuntu-latest
+        env:
+            APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
+            APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
+            APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+
+            - name: Install DNF repository toolchain
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y createrepo-c gnupg gzip rpm
+
+            - name: Download Linux workflow artifacts
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: linux-*-dist
+                  path: .artifacts/linux
+                  merge-multiple: true
+
+            - name: Prepare gh-pages worktree
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  git fetch origin gh-pages || true
+
+                  if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+                    git worktree add "$PAGES_DIR" refs/remotes/origin/gh-pages
+                  else
+                    git worktree add -B gh-pages "$PAGES_DIR" HEAD
+                    git -C "$PAGES_DIR" rm -rf . || true
+                    find "$PAGES_DIR" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+                  fi
+
+                  git -C "$PAGES_DIR" config user.name "github-actions[bot]"
+                  git -C "$PAGES_DIR" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            - name: Build DNF repository metadata
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  node scripts/build-dnf-repository.mjs \
+                    --version "$GITHUB_REF_NAME" \
+                    --tag "$GITHUB_REF_NAME" \
+                    --release-assets-dir .artifacts/linux \
+                    --pages-dir "$PAGES_DIR" \
+                    --repo-slug "$GITHUB_REPOSITORY"
+
+            - name: Sign DNF repository metadata
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  export GNUPGHOME
+                  GNUPGHOME="$(mktemp -d)"
+                  chmod 700 "$GNUPGHOME"
+                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
+
+                  node scripts/sign-dnf-repository.mjs \
+                    --dnf-dir "$PAGES_DIR/dnf" \
+                    --key-id "$APT_REPO_GPG_KEY_ID"
+
+            - name: Validate DNF repository metadata
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  export GNUPGHOME
+                  GNUPGHOME="$(mktemp -d)"
+                  chmod 700 "$GNUPGHOME"
+                  gpg --batch --import "$PAGES_DIR/dnf/comando-archive-keyring.asc"
+
+                  node scripts/validate-dnf-repository.mjs \
+                    --dnf-dir "$PAGES_DIR/dnf" \
+                    --version "$GITHUB_REF_NAME"
+
+            - name: Validate DNF repository with Fedora
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  docker run --rm \
+                    -e VERSION="${GITHUB_REF_NAME#v}" \
+                    -v "$PAGES_DIR/dnf:/repo:ro" \
+                    fedora:latest \
+                    bash -lc '
+                      set -euo pipefail
+                      cp /repo/comando-archive-keyring.asc /etc/pki/rpm-gpg/comando-archive-keyring.asc
+                      rpm --import /repo/comando-archive-keyring.asc
+                      cp /repo/comando.repo.example /etc/yum.repos.d/comando.repo
+                      sed -i "s|baseurl=.*|baseurl=file:///repo|" /etc/yum.repos.d/comando.repo
+                      sed -i "s|gpgkey=.*|gpgkey=file:///repo/comando-archive-keyring.asc|" /etc/yum.repos.d/comando.repo
+                      dnf -y makecache
+                      dnf info comando
+                      dnf info comando | grep -F "$VERSION"
+                      dnf install -y --downloadonly comando
+                    '
+
+            - name: Publish DNF repository to gh-pages
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  touch "$PAGES_DIR/.nojekyll"
+
+                  package_asset="$(find "$PAGES_DIR/apt" "$PAGES_DIR/dnf" -type f \( \
+                    -name '*.deb' -o \
+                    -name '*.rpm' -o \
+                    -name '*.AppImage' -o \
+                    -name '*.dmg' -o \
+                    -name '*.exe' \
+                  \) -print -quit 2>/dev/null)"
+
+                  if [[ -n "$package_asset" ]]; then
+                    echo "Package asset must stay on GitHub Releases, not gh-pages: $package_asset" >&2
+                    exit 1
+                  fi
+
+                  find "$PAGES_DIR/dnf" -maxdepth 3 -type f -print
+                  test -f "$PAGES_DIR/dnf/comando-archive-keyring.asc"
+                  test -f "$PAGES_DIR/dnf/comando.repo.example"
+                  test -f "$PAGES_DIR/dnf/repodata/repomd.xml"
+                  test -f "$PAGES_DIR/dnf/repodata/repomd.xml.asc"
+
+                  git -C "$PAGES_DIR" add dnf .nojekyll
+                  if git -C "$PAGES_DIR" diff --cached --quiet; then
+                    echo "No DNF repository changes to publish."
+                  else
+                    git -C "$PAGES_DIR" commit -m "Publish DNF repository for $GITHUB_REF_NAME"
                     git -C "$PAGES_DIR" push origin HEAD:gh-pages
                   fi
