@@ -155,7 +155,7 @@ For automatic GitHub releases:
 
 - the workflow exports `GH_TOKEN` so `electron-builder` can publish to GitHub Releases
 - the publish workflow lives at `.github/workflows/release.yml`
-- macOS may publish ad-hoc artifacts until distribution signing and notarization are in place
+- macOS release packages include `app-update.yml` so packaged builds can check GitHub Releases for updates
 
 ## Architecture
 

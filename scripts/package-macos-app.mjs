@@ -5,6 +5,10 @@ import { spawnSync } from "node:child_process";
 import { builtinModules, createRequire } from "node:module";
 
 import {
+    ensurePackagedMacUpdaterConfig,
+    verifyPackagedMacUpdaterConfig,
+} from "./mac-release-metadata.mjs";
+import {
     claudeVendorDir,
     copyExecutable,
     copyTree,
@@ -156,6 +160,7 @@ function main() {
     }
 
     replaceLegacyMacIcon(standalonePackagedAppPath);
+    verifyPackagedUpdaterConfig(standalonePackagedAppPath);
     repairMovedMacAppBundle(standalonePackagedAppPath);
     verifyPackagedApplication(standalonePackagedAppPath);
     verifyReleaseArtifacts();
@@ -692,7 +697,29 @@ function stageStandaloneProject(copiedPackages) {
     copyTree(packageResourcesRoot, standalonePackageResourcesRoot, {
         dereference: true,
     });
+    writeStandaloneUpdaterConfig();
     writeStandaloneProjectPackageJson(copiedPackages);
+}
+
+function writeStandaloneUpdaterConfig() {
+    const appUpdateConfigPath = path.join(standaloneProjectRoot, "app-update.yml");
+
+    if (
+        ensurePackagedMacUpdaterConfig({
+            appUpdateConfigPath,
+            packageJson: rootPackageJson,
+        })
+    ) {
+        console.log(
+            `[package:mac] Wrote ${relativeToRepo(appUpdateConfigPath)}.`,
+        );
+    }
+
+    verifyPackagedMacUpdaterConfig({
+        appUpdateConfigPath,
+        packageJson: rootPackageJson,
+        relativePath: relativeToRepo,
+    });
 }
 
 function writeStandaloneProjectPackageJson(copiedPackages) {
@@ -728,6 +755,10 @@ function writeStandaloneProjectPackageJson(copiedPackages) {
                 output: "dist",
             },
             extraResources: [
+                {
+                    from: "app-update.yml",
+                    to: "app-update.yml",
+                },
                 {
                     from: "package-resources/ai",
                     to: "ai",
@@ -842,6 +873,21 @@ function verifyReleaseArtifacts() {
             );
         }
     }
+}
+
+function verifyPackagedUpdaterConfig(packagedAppPath) {
+    const appUpdateConfigPath = path.join(
+        packagedAppPath,
+        "Contents",
+        "Resources",
+        "app-update.yml",
+    );
+
+    verifyPackagedMacUpdaterConfig({
+        appUpdateConfigPath,
+        packageJson: rootPackageJson,
+        relativePath: relativeToRepo,
+    });
 }
 
 function replaceLegacyMacIcon(packagedAppPath) {
