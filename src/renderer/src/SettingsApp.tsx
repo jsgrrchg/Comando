@@ -179,24 +179,11 @@ export function SettingsApp() {
                     "data-platform",
                     snapshot.platform,
                 );
-                if (snapshot.platform === "win32") {
-                    const windowsAcrylic =
-                        snapshot.windowEffects?.windowsAcrylic ?? false;
-                    document.documentElement.setAttribute(
-                        "data-windows-acrylic",
-                        windowsAcrylic ? "true" : "false",
-                    );
-                } else {
-                    document.documentElement.removeAttribute(
-                        "data-windows-acrylic",
-                    );
-                }
             }
         });
 
         return () => {
             cancelled = true;
-            document.documentElement.removeAttribute("data-windows-acrylic");
         };
     }, []);
 

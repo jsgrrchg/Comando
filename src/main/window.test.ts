@@ -1,4 +1,3 @@
-import os from "node:os";
 import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -84,7 +83,6 @@ describe("window titlebar overlays", () => {
         electronMocks.clearWindows();
         electronMocks.nativeTheme.shouldUseDarkColors = false;
         vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-        vi.spyOn(os, "release").mockReturnValue("10.0.19045");
         Object.defineProperty(process, "resourcesPath", {
             configurable: true,
             value: path.join(process.cwd(), "out"),
@@ -96,13 +94,14 @@ describe("window titlebar overlays", () => {
         electronMocks.clearWindows();
     });
 
-    it("refreshes titlebar overlays for non-acrylic Windows windows", () => {
+    it("refreshes titlebar overlays for acrylic Windows windows", () => {
         const createdWindow = createMainWindow();
         const window = electronMocks.windows[0];
 
         expect(window).toBe(createdWindow);
         expect(window.options).toMatchObject({
-            backgroundMaterial: undefined,
+            backgroundColor: "#00000000",
+            backgroundMaterial: "acrylic",
             titleBarStyle: "hidden",
         });
         expect(window.setTitleBarOverlay).not.toHaveBeenCalled();

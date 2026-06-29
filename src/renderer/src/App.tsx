@@ -3372,21 +3372,10 @@ export function App() {
         const platform = bootstrap?.platform;
         if (!platform) return;
         document.documentElement.setAttribute("data-platform", platform);
-        if (platform === "win32") {
-            const windowsAcrylic =
-                bootstrap.windowEffects?.windowsAcrylic ?? false;
-            document.documentElement.setAttribute(
-                "data-windows-acrylic",
-                windowsAcrylic ? "true" : "false",
-            );
-        } else {
-            document.documentElement.removeAttribute("data-windows-acrylic");
-        }
         return () => {
             document.documentElement.removeAttribute("data-platform");
-            document.documentElement.removeAttribute("data-windows-acrylic");
         };
-    }, [bootstrap?.platform, bootstrap?.windowEffects.windowsAcrylic]);
+    }, [bootstrap?.platform]);
 
     const sidebarSearchValue =
         sidebarView === "files"
@@ -4124,11 +4113,6 @@ export function App() {
         <div
             className="min-h-screen text-text-primary"
             data-platform={bootstrap?.platform ?? undefined}
-            data-windows-acrylic={
-                bootstrap?.platform === "win32"
-                    ? String(bootstrap.windowEffects?.windowsAcrylic ?? false)
-                    : undefined
-            }
         >
             <div className="relative h-screen">
                 <div className="flex h-full flex-col overflow-hidden">

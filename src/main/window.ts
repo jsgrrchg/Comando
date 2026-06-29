@@ -1,12 +1,10 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { BrowserWindow, nativeTheme, screen, shell } from "electron";
 
 import type { PersistedWindowState } from "@shared/ipc";
-import { supportsWindowsAcrylicMaterial } from "@shared/windows-material";
 
 import { appIdentity } from "./app-runtime";
 import { debugBenignError } from "./observability/logging";
@@ -22,10 +20,6 @@ const nativeTitleBarOverlayWindows = new WeakSet<BrowserWindow>();
 
 function supportsNativeTitleBarOverlay(): boolean {
     return process.platform === "win32" || process.platform === "linux";
-}
-
-export function supportsCurrentWindowsAcrylicMaterial(): boolean {
-    return supportsWindowsAcrylicMaterial(process.platform, os.release());
 }
 
 function resolveDesktopTitleBarOverlay(): Electron.TitleBarOverlayOptions {
@@ -120,7 +114,7 @@ function createBaseWindow(options: {
     const isWindows = process.platform === "win32";
     const hasNativeTitleBarOverlay = supportsNativeTitleBarOverlay();
     const restoredState = normalizeRestoredState(options.restoredState);
-    const isAcrylic = isWindows && supportsCurrentWindowsAcrylicMaterial();
+    const isAcrylic = isWindows;
 
     const titleBarOverlay = hasNativeTitleBarOverlay
         ? resolveDesktopTitleBarOverlay()

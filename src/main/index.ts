@@ -88,11 +88,7 @@ import { openSettingsWindow } from "./settings/window";
 import type { TerminalGateway } from "./terminals/service";
 import { initializeAutoUpdates } from "./updater";
 import { isLinuxAppImageEnvironment } from "./updater-config";
-import {
-    createMainWindow,
-    forEachLiveWindow,
-    supportsCurrentWindowsAcrylicMaterial,
-} from "./window";
+import { createMainWindow, forEachLiveWindow } from "./window";
 import { windowRegistry } from "./windows/registry";
 import type { WorkspaceGateway } from "./workspace/service";
 
@@ -278,9 +274,6 @@ if (!hasSingleInstanceLock) {
                     chrome: process.versions.chrome,
                     electron: process.versions.electron,
                     node: process.versions.node,
-                },
-                windowEffects: {
-                    windowsAcrylic: supportsCurrentWindowsAcrylicMaterial(),
                 },
             };
 

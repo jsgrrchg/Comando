@@ -76,8 +76,5 @@ function createBootstrap(platform: string): AppBootstrapSnapshot {
             electron: "0",
             node: "0",
         },
-        windowEffects: {
-            windowsAcrylic: false,
-        },
     };
 }
