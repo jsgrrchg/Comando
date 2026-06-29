@@ -15,6 +15,7 @@ import type {
 
 import { createEmptyAiSessionSnapshot } from "@main/ai/persistence";
 import type { AiSessionLaunchInput } from "@main/ai/contracts";
+import { AI_SESSION_BUSY_MESSAGE } from "@shared/ai-errors";
 
 import {
     NativeAiGateway,
@@ -829,9 +830,18 @@ describe("NativeAiGateway", () => {
         });
     });
 
-    it("does not emit a local user message when the native backend rejects the prompt", async () => {
+    it("maps native session busy rejections to the IPC-safe busy marker", async () => {
         const client = createClient();
-        client.request.mockRejectedValueOnce(new Error("session busy"));
+        client.request.mockRejectedValueOnce(
+            new NativeBackendError({
+                code: "ai_session_busy",
+                details: {
+                    sessionId: "session-1",
+                },
+                message: "AI session `session-1` is busy.",
+                retryable: false,
+            }),
+        );
         const onSessionEvent = vi.fn<NativeAiGatewayOptions["onSessionEvent"]>();
         const gateway = createGateway(client, { onSessionEvent });
 
@@ -840,7 +850,7 @@ describe("NativeAiGateway", () => {
                 input: createPromptInput(),
                 launch: createLaunch(),
             }),
-        ).rejects.toThrow("session busy");
+        ).rejects.toThrow(AI_SESSION_BUSY_MESSAGE);
 
         expect(onSessionEvent).not.toHaveBeenCalled();
     });

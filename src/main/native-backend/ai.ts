@@ -48,6 +48,7 @@ import {
     type NativeBackendEvent,
 } from "@shared/native-backend";
 
+import { AI_SESSION_BUSY_MESSAGE } from "@shared/ai-errors";
 import type {
     AiReviewMutationResult,
     AiReviewSessionRpcInput,
@@ -480,23 +481,31 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             this.#rememberOwner(request.input.sessionId, request.launch);
         }
 
-        const result = await this.#client.request<NativeAiSendPromptOutput>(
-            "ai_send_prompt",
-            {
-                messageId: request.input.messageId,
-                prompt: {
-                    attachments: request.input.attachments,
-                    displayText: serializeComposerPartsForDisplay(
-                        request.input.composerParts,
-                        request.input.prompt,
-                    ),
-                    text: request.input.prompt,
+        let result: NativeAiSendPromptOutput;
+        try {
+            result = await this.#client.request<NativeAiSendPromptOutput>(
+                "ai_send_prompt",
+                {
+                    messageId: request.input.messageId,
+                    prompt: {
+                        attachments: request.input.attachments,
+                        displayText: serializeComposerPartsForDisplay(
+                            request.input.composerParts,
+                            request.input.prompt,
+                        ),
+                        text: request.input.prompt,
+                    },
+                    runtimeSessionId: target.runtimeSessionId,
+                    sessionId: target.backendSessionId,
+                    targetSessionId: target.targetSessionId,
                 },
-                runtimeSessionId: target.runtimeSessionId,
-                sessionId: target.backendSessionId,
-                targetSessionId: target.targetSessionId,
-            },
-        );
+            );
+        } catch (error) {
+            if (isNativeAiSessionBusyError(error)) {
+                throw new Error(AI_SESSION_BUSY_MESSAGE);
+            }
+            throw error;
+        }
 
         if (result.accepted) {
             this.#emitUserMessage(request.input, request.launch);
@@ -1279,6 +1288,12 @@ function isCleanupSessionNotFoundError(error: unknown): boolean {
         error instanceof NativeBackendError &&
         (error.code === "ai_session_not_found" ||
             error.message.includes("was not found"))
+    );
+}
+
+function isNativeAiSessionBusyError(error: unknown): boolean {
+    return (
+        error instanceof NativeBackendError && error.code === "ai_session_busy"
     );
 }
 
