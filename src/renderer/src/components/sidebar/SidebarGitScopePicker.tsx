@@ -2029,6 +2029,11 @@ export function SidebarGitScopePicker({
                                                   "current",
                                               )
                                           }
+                                          title={
+                                              canOpenBranchCreation
+                                                  ? "Create a branch from the current branch"
+                                                  : "No branch is available as a base"
+                                          }
                                           type="button"
                                       >
                                           <PlusIcon />
