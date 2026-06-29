@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
     hasPackagedUpdateConfig,
+    isLinuxAppImageEnvironment,
     resolvePackagedUpdateConfigPath,
     resolveAutoUpdateSupportState,
     shouldEnableAutoUpdates,
@@ -42,7 +43,7 @@ describe("shouldEnableAutoUpdates", () => {
         ).toBe(false);
     });
 
-    it("supports packaged release builds on macOS and Windows", () => {
+    it("supports packaged release builds on macOS, Windows, and Linux AppImage", () => {
         expect(
             shouldEnableAutoUpdates({
                 appChannel: "release",
@@ -58,9 +59,18 @@ describe("shouldEnableAutoUpdates", () => {
                 platform: "win32",
             }),
         ).toBe(true);
+
+        expect(
+            shouldEnableAutoUpdates({
+                appChannel: "release",
+                isLinuxAppImage: true,
+                isPackaged: true,
+                platform: "linux",
+            }),
+        ).toBe(true);
     });
 
-    it("skips unsupported platforms", () => {
+    it("skips unsupported platforms and non-AppImage Linux packages", () => {
         expect(
             shouldEnableAutoUpdates({
                 appChannel: "release",
@@ -68,6 +78,24 @@ describe("shouldEnableAutoUpdates", () => {
                 platform: "linux",
             }),
         ).toBe(false);
+
+        expect(
+            shouldEnableAutoUpdates({
+                appChannel: "release",
+                isLinuxAppImage: false,
+                isPackaged: true,
+                platform: "linux",
+            }),
+        ).toBe(false);
+    });
+});
+
+describe("isLinuxAppImageEnvironment", () => {
+    it("detects AppImage runtime environments", () => {
+        expect(isLinuxAppImageEnvironment({ APPIMAGE: "/opt/Comando.AppImage" }))
+            .toBe(true);
+        expect(isLinuxAppImageEnvironment({ APPIMAGE: "   " })).toBe(false);
+        expect(isLinuxAppImageEnvironment({})).toBe(false);
     });
 });
 
@@ -120,8 +148,9 @@ describe("resolveAutoUpdateSupportState", () => {
         expect(
             resolveAutoUpdateSupportState({
                 appChannel: "release",
+                isLinuxAppImage: true,
                 isPackaged: true,
-                platform: "darwin",
+                platform: "linux",
                 resourcesPath,
             }),
         ).toEqual({
@@ -139,8 +168,9 @@ describe("resolveAutoUpdateSupportState", () => {
         expect(
             resolveAutoUpdateSupportState({
                 appChannel: "release",
+                isLinuxAppImage: true,
                 isPackaged: true,
-                platform: "darwin",
+                platform: "linux",
                 resourcesPath,
             }),
         ).toEqual({

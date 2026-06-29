@@ -12,6 +12,7 @@ export interface AutoUpdateSupportState {
 
 export function shouldEnableAutoUpdates(options: {
     readonly appChannel: AppChannel;
+    readonly isLinuxAppImage?: boolean;
     readonly isPackaged: boolean;
     readonly platform: NodeJS.Platform;
 }): boolean {
@@ -19,7 +20,11 @@ export function shouldEnableAutoUpdates(options: {
         return false;
     }
 
-    return options.platform === "darwin" || options.platform === "win32";
+    if (options.platform === "darwin" || options.platform === "win32") {
+        return true;
+    }
+
+    return options.platform === "linux" && options.isLinuxAppImage === true;
 }
 
 export function resolvePackagedUpdateConfigPath(resourcesPath: string): string {
@@ -32,6 +37,7 @@ export function hasPackagedUpdateConfig(resourcesPath: string): boolean {
 
 export function resolveAutoUpdateSupportState(options: {
     readonly appChannel: AppChannel;
+    readonly isLinuxAppImage?: boolean;
     readonly isPackaged: boolean;
     readonly platform: NodeJS.Platform;
     readonly resourcesPath?: string | null;
@@ -55,7 +61,7 @@ export function resolveAutoUpdateSupportState(options: {
         return {
             enabled: false,
             message:
-                "Auto-updates are currently supported on macOS and Windows release builds.",
+                "Auto-updates are currently supported on macOS, Windows, and Linux AppImage release builds.",
         };
     }
 
@@ -75,4 +81,10 @@ export function resolveAutoUpdateSupportState(options: {
         message:
             "Automatic updates are enabled for this packaged release build.",
     };
+}
+
+export function isLinuxAppImageEnvironment(
+    env: NodeJS.ProcessEnv = process.env,
+): boolean {
+    return typeof env.APPIMAGE === "string" && env.APPIMAGE.trim().length > 0;
 }

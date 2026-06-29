@@ -18,6 +18,7 @@ let appUpdateState: AppUpdateState = createInitialAppUpdateState();
 
 export function initializeAutoUpdates(options: {
     readonly appChannel: AppChannel;
+    readonly isLinuxAppImage?: boolean;
     readonly isPackaged: boolean;
     readonly platform: NodeJS.Platform;
     readonly resourcesPath: string;

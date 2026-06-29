@@ -3,11 +3,22 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import {
+    ensurePackagedLinuxUpdaterConfig,
+    verifyPackagedLinuxUpdaterConfig,
+} from "./linux-release-metadata.mjs";
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const packageResourcesRoot = path.join(repoRoot, "build", "package-resources");
 const stagedAiRoot = path.join(packageResourcesRoot, "ai");
+const appUpdateConfigPath = path.join(packageResourcesRoot, "app-update.yml");
+const linuxBuilderConfigPath = path.join(
+    packageResourcesRoot,
+    "electron-builder-linux.json",
+);
 const sourceAiRoot = path.join(repoRoot, "resources", "ai");
+const packageJson = readJson(path.join(repoRoot, "package.json"));
 
 function run(command, args, options = {}) {
     const result = spawnSync(command, args, {
@@ -34,6 +45,8 @@ function stageLinuxPackageResources() {
     copyAiPayload(path.join("embedded", "node"));
     copyAiPayload(path.join("embedded", "claude-agent-acp"));
     copyAiPayload("README.md");
+    writeLinuxUpdaterConfig();
+    writeLinuxBuilderConfig();
 }
 
 function stageLinuxNativeBackendPayload(pnpmCommand) {
@@ -84,7 +97,63 @@ function main() {
     });
     stageLinuxPackageResources();
     stageLinuxNativeBackendPayload(pnpmCommand);
-    run("electron-builder", ["--linux", ...packageArgs]);
+    run("electron-builder", [
+        "--linux",
+        ...packageArgs,
+        "--config",
+        linuxBuilderConfigPath,
+    ]);
+}
+
+function writeLinuxUpdaterConfig() {
+    if (
+        ensurePackagedLinuxUpdaterConfig({
+            appUpdateConfigPath,
+            packageJson,
+        })
+    ) {
+        console.log(`[package:linux] Wrote ${relativeToRepo(appUpdateConfigPath)}.`);
+    }
+
+    verifyPackagedLinuxUpdaterConfig({
+        appUpdateConfigPath,
+        packageJson,
+        relativePath: relativeToRepo,
+    });
+}
+
+function writeLinuxBuilderConfig() {
+    const buildConfig = packageJson.build ?? {};
+    const extraResources = [
+        ...(Array.isArray(buildConfig.extraResources)
+            ? buildConfig.extraResources
+            : []),
+        {
+            from: appUpdateConfigPath,
+            to: "app-update.yml",
+        },
+    ];
+
+    fs.writeFileSync(
+        linuxBuilderConfigPath,
+        `${JSON.stringify(
+            {
+                ...buildConfig,
+                extraResources,
+            },
+            null,
+            4,
+        )}\n`,
+        "utf8",
+    );
+}
+
+function readJson(filePath) {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function relativeToRepo(filePath) {
+    return path.relative(repoRoot, filePath);
 }
 
 main();

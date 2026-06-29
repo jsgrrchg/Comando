@@ -87,6 +87,7 @@ import {
 import { openSettingsWindow } from "./settings/window";
 import type { TerminalGateway } from "./terminals/service";
 import { initializeAutoUpdates } from "./updater";
+import { isLinuxAppImageEnvironment } from "./updater-config";
 import {
     createMainWindow,
     forEachLiveWindow,
@@ -362,6 +363,7 @@ if (!hasSingleInstanceLock) {
             restoreMainWindows();
             initializeAutoUpdates({
                 appChannel,
+                isLinuxAppImage: isLinuxAppImageEnvironment(process.env),
                 isPackaged: app.isPackaged,
                 platform: process.platform,
                 resourcesPath: process.resourcesPath,
