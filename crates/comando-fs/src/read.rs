@@ -40,10 +40,19 @@ pub fn read_file(
         .is_some_and(|mime_type| mime_type.starts_with("image/"));
     let probe = read_probe_buffer(&resolved.absolute_path, BINARY_PROBE_BYTES)?;
     let is_binary = !is_image && buffer_looks_binary(&probe);
-    let bytes_for_hash = fs::read(&resolved.absolute_path)?;
-    let content_hash = Some(hash_content_bytes(&bytes_for_hash));
+    let should_read_full = if is_image {
+        size_bytes <= IMAGE_PREVIEW_MAX_BYTES
+    } else {
+        !is_too_large
+    };
+    let full_bytes = if should_read_full {
+        Some(fs::read(&resolved.absolute_path)?)
+    } else {
+        None
+    };
+    let content_hash = full_bytes.as_deref().map(hash_content_bytes);
     let line_ending = (!is_binary && !is_image)
-        .then(|| detect_line_ending(&bytes_for_hash))
+        .then(|| full_bytes.as_deref().and_then(detect_line_ending))
         .flatten();
 
     let (kind, content, image_data_base64, encoding) = if is_image {
@@ -62,7 +71,13 @@ pub fn read_file(
             (
                 "image".to_string(),
                 Some("Image preview ready.".to_string()),
-                Some(base64::engine::general_purpose::STANDARD.encode(&bytes_for_hash)),
+                Some(
+                    base64::engine::general_purpose::STANDARD.encode(
+                        full_bytes
+                            .as_deref()
+                            .expect("image preview bytes should be loaded"),
+                    ),
+                ),
                 Some("base64".to_string()),
             )
         }
@@ -90,7 +105,14 @@ pub fn read_file(
     } else {
         (
             "text".to_string(),
-            Some(String::from_utf8_lossy(&bytes_for_hash).into_owned()),
+            Some(
+                String::from_utf8_lossy(
+                    full_bytes
+                        .as_deref()
+                        .expect("inline text bytes should be loaded"),
+                )
+                .into_owned(),
+            ),
             None,
             Some("utf8".to_string()),
         )
@@ -257,6 +279,58 @@ mod tests {
 
         assert!(result.is_binary);
         assert_eq!(result.kind.as_deref(), Some("binary"));
+        assert!(result.content_hash.is_some());
+    }
+
+    #[test]
+    fn oversized_binary_file_skips_full_read_hash() {
+        let temp = TempDir::new().expect("temp");
+        fs::write(temp.path().join("blob.bin"), b"abc\0def").expect("file");
+        let root = project_root(temp.path());
+
+        let result = read_file(
+            &root,
+            &NativeFsReadFileInput {
+                project_id: root.project_id.clone(),
+                worktree_id: root.worktree_id.clone(),
+                relative_path: "blob.bin".into(),
+                max_bytes: Some(3),
+            },
+        )
+        .expect("read");
+
+        assert!(result.is_binary);
+        assert!(result.is_too_large);
+        assert_eq!(result.kind.as_deref(), Some("binary"));
+        assert!(result.content_hash.is_none());
+        assert!(result.image_data_base64.is_none());
+    }
+
+    #[test]
+    fn oversized_text_file_skips_full_read_hash_and_content() {
+        let temp = TempDir::new().expect("temp");
+        fs::write(temp.path().join("large.log"), "hello world\n").expect("file");
+        let root = project_root(temp.path());
+
+        let result = read_file(
+            &root,
+            &NativeFsReadFileInput {
+                project_id: root.project_id.clone(),
+                worktree_id: root.worktree_id.clone(),
+                relative_path: "large.log".into(),
+                max_bytes: Some(5),
+            },
+        )
+        .expect("read");
+
+        assert!(result.is_too_large);
+        assert_eq!(result.kind.as_deref(), Some("text"));
+        assert_eq!(result.encoding.as_deref(), Some("utf8"));
+        assert!(result.content_hash.is_none());
+        assert!(result.line_ending.is_none());
+        assert!(result.content.as_deref().is_some_and(|content| {
+            content.contains("exceeds") && !content.contains("hello world")
+        }));
     }
 
     #[test]
@@ -278,5 +352,35 @@ mod tests {
 
         assert_eq!(result.kind.as_deref(), Some("image"));
         assert!(result.image_data_base64.is_some());
+    }
+
+    #[test]
+    fn oversized_image_skips_base64_and_hash() {
+        let temp = TempDir::new().expect("temp");
+        let image_path = temp.path().join("large.png");
+        let image = fs::File::create(&image_path).expect("file");
+        image
+            .set_len(IMAGE_PREVIEW_MAX_BYTES + 1)
+            .expect("sparse image");
+        let root = project_root(temp.path());
+
+        let result = read_file(
+            &root,
+            &NativeFsReadFileInput {
+                project_id: root.project_id.clone(),
+                worktree_id: root.worktree_id.clone(),
+                relative_path: "large.png".into(),
+                max_bytes: None,
+            },
+        )
+        .expect("read");
+
+        assert!(result.is_too_large);
+        assert_eq!(result.kind.as_deref(), Some("image"));
+        assert!(result.content_hash.is_none());
+        assert!(result.image_data_base64.is_none());
+        assert!(result.content.as_deref().is_some_and(|content| {
+            content.contains("exceeds") && content.contains("preview limit")
+        }));
     }
 }
