@@ -153,7 +153,10 @@ export function validateNewBranchName(
         );
     }
 
-    if (value.endsWith(".") || value.endsWith(".lock")) {
+    if (
+        value.endsWith(".") ||
+        value.split("/").some((segment) => segment.endsWith(".lock"))
+    ) {
         return invalid(value, 'Branch name cannot end with "." or ".lock".');
     }
 

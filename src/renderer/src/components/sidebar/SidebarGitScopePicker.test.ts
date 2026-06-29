@@ -295,7 +295,11 @@ describe("SidebarGitScopePicker helpers", () => {
             });
         }
 
-        for (const branchName of ["feature.", "feature.lock"]) {
+        for (const branchName of [
+            "feature.",
+            "feature.lock",
+            "feature.lock/nested",
+        ]) {
             expect(validateNewBranchName(branchName, branches)).toMatchObject({
                 error: 'Branch name cannot end with "." or ".lock".',
                 isValid: false,
