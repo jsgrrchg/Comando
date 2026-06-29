@@ -359,9 +359,7 @@ function materializeRuntimePackage(
         manifest: sourceManifest,
         manifestPath: resolvedManifestPath,
         packageRoot,
-    } = resolvePackage(packageName, sourceManifestPath, {
-        preferPackageManifest: options.allowBuiltinPackage === true,
-    });
+    } = resolvePackage(packageName, sourceManifestPath);
     const existingPackage = copiedPackages.get(packageName);
     if (existingPackage) {
         if (existingPackage.version !== sourceManifest.version) {
@@ -484,7 +482,6 @@ function resolvePnpmPackageMatchingRange(packageName, range) {
             );
             return {
                 manifestPath,
-                packageRoot: path.dirname(manifestPath),
                 version,
             };
         })
@@ -500,11 +497,7 @@ function resolvePnpmPackageMatchingRange(packageName, range) {
         return null;
     }
 
-    return {
-        manifest: readJson(candidate.manifestPath),
-        manifestPath: candidate.manifestPath,
-        packageRoot: candidate.packageRoot,
-    };
+    return readPackageManifest(candidate.manifestPath);
 }
 
 function versionSatisfiesRange(version, range) {
@@ -539,33 +532,34 @@ function parseSemver(version) {
     return version.split(".").map((part) => Number.parseInt(part, 10) || 0);
 }
 
-function resolvePackage(packageName, sourceManifestPath, options = {}) {
-    const preferredManifestPath = options.preferPackageManifest
-        ? findNodeModulesPackageManifest(packageName, sourceManifestPath)
-        : null;
+function resolvePackage(packageName, sourceManifestPath) {
+    const canonicalSourceManifestPath =
+        canonicalizePackageManifestPath(sourceManifestPath);
+    const preferredManifestPath = findNodeModulesPackageManifest(
+        packageName,
+        canonicalSourceManifestPath,
+    );
 
     if (preferredManifestPath) {
-        return {
-            manifest: readJson(preferredManifestPath),
-            manifestPath: preferredManifestPath,
-            packageRoot: path.dirname(preferredManifestPath),
-        };
+        return readPackageManifest(preferredManifestPath);
     }
 
-    const resolver = createRequire(sourceManifestPath);
+    if (builtinModuleNames.has(packageName)) {
+        throw new Error(`Cannot materialize Node builtin module: ${packageName}.`);
+    }
+
+    const resolver = createRequire(canonicalSourceManifestPath);
     const resolvedEntryPath = resolver.resolve(packageName);
     const manifestPath = findPackageManifestPath(resolvedEntryPath);
 
-    return {
-        manifest: readJson(manifestPath),
-        manifestPath,
-        packageRoot: path.dirname(manifestPath),
-    };
+    return readPackageManifest(manifestPath);
 }
 
 function findNodeModulesPackageManifest(packageName, sourceManifestPath) {
     const packagePathParts = packageName.split("/");
-    let currentDirectory = path.dirname(sourceManifestPath);
+    let currentDirectory = path.dirname(
+        canonicalizePackageManifestPath(sourceManifestPath),
+    );
 
     while (currentDirectory !== path.dirname(currentDirectory)) {
         const manifestPath = path.join(
@@ -576,13 +570,26 @@ function findNodeModulesPackageManifest(packageName, sourceManifestPath) {
         );
 
         if (isFile(manifestPath)) {
-            return manifestPath;
+            return canonicalizePackageManifestPath(manifestPath);
         }
 
         currentDirectory = path.dirname(currentDirectory);
     }
 
     return null;
+}
+
+function canonicalizePackageManifestPath(manifestPath) {
+    return fs.realpathSync(manifestPath);
+}
+
+function readPackageManifest(manifestPath) {
+    const canonicalManifestPath = canonicalizePackageManifestPath(manifestPath);
+    return {
+        manifest: readJson(canonicalManifestPath),
+        manifestPath: canonicalManifestPath,
+        packageRoot: path.dirname(canonicalManifestPath),
+    };
 }
 
 function findPackageManifestPath(resolvedEntryPath) {
