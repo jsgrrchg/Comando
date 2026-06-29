@@ -50,6 +50,18 @@ jobs:
                     exit 1
                   fi
 
+            - name: Build release notes
+              run: |
+                  node scripts/extract-changelog-release-notes.mjs "$GITHUB_REF_NAME" > release-notes.md
+                  node scripts/build-release-body.mjs --version "$GITHUB_REF_NAME" --notes-file release-notes.md --output release-body.md
+
+            - name: Upload release body
+              uses: actions/upload-artifact@v4
+              with:
+                  name: release-body-${{ github.ref_name }}
+                  path: release-body.md
+                  if-no-files-found: error
+
             - name: Install Linux check toolchain
               run: |
                   sudo apt-get update
@@ -306,3 +318,34 @@ jobs:
                       dist/*.deb
                       dist/*.rpm
                       dist/latest-linux*.yml
+
+    publish-release-notes:
+        name: Publish release notes
+        needs:
+            - release-preflight
+            - release-macos
+            - release-windows-x64
+            - release-windows-arm64
+            - release-linux
+        runs-on: ubuntu-latest
+        env:
+            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        steps:
+            - name: Download release body
+              uses: actions/download-artifact@v4
+              with:
+                  name: release-body-${{ github.ref_name }}
+                  path: .release
+
+            - name: Create or update GitHub release notes
+              run: |
+                  tag="$GITHUB_REF_NAME"
+                  version="${tag#v}"
+                  title="Comando v${version}"
+                  notes_file=".release/release-body.md"
+
+                  if gh release view "$tag" >/dev/null 2>&1; then
+                    gh release edit "$tag" --title "$title" --notes-file "$notes_file"
+                  else
+                    gh release create "$tag" --title "$title" --notes-file "$notes_file" --verify-tag
+                  fi
