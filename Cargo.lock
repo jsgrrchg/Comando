@@ -393,7 +393,6 @@ dependencies = [
  "imara-diff",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
  "wasm-bindgen",
 ]
 
@@ -404,13 +403,11 @@ dependencies = [
  "base64",
  "comando-types",
  "notify",
- "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "time",
- "walkdir",
 ]
 
 [[package]]
@@ -418,7 +415,6 @@ name = "comando-git"
 version = "0.1.0"
 dependencies = [
  "comando-types",
- "serde",
  "serde_json",
  "sha2",
  "tempfile",
@@ -437,7 +433,6 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "uuid",
- "walkdir",
 ]
 
 [[package]]
@@ -467,7 +462,6 @@ version = "0.1.0"
 dependencies = [
  "comando-types",
  "rusqlite",
- "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -505,7 +499,6 @@ version = "0.1.0"
 dependencies = [
  "comando-types",
  "portable-pty",
- "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -518,7 +511,6 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "thiserror 2.0.18",
 ]
 
 [[package]]

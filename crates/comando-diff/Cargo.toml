@@ -10,8 +10,6 @@ crate-type = ["rlib", "cdylib"]
 imara-diff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen.workspace = true
-

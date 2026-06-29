@@ -10,7 +10,6 @@ serde.workspace = true
 thiserror.workspace = true
 time.workspace = true
 uuid.workspace = true
-walkdir.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"
