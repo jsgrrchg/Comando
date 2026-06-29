@@ -20,8 +20,6 @@ import { inferCodexGeneratedImageMimeType } from "@shared/file-preview";
 import { readOpenFileBuffer } from "./openFileBuffers";
 import {
     CODEX_ACP_DIFF_PREVIOUS_PATH_KEY,
-    CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX,
-    CODEX_ACP_IMAGE_GENERATION_EVENT_TYPE,
     CODEX_ACP_STATUS_EVENT_ID_PREFIX,
     CODEX_ACP_STATUS_EVENT_TYPE,
     CODEX_ACP_STATUS_EVENT_TYPE_KEY,
@@ -72,24 +70,6 @@ interface AiReviewToolUpdate {
     readonly status?: AiReviewToolStatus | null;
     readonly title?: string | null;
     readonly toolCallId: string;
-}
-
-export function isImageGenerationToolUpdate(
-    update: Pick<AiReviewToolUpdate, "_meta" | "toolCallId">,
-): boolean {
-    if (
-        update.toolCallId.startsWith(CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX)
-    ) {
-        return true;
-    }
-
-    return (
-        readDiffMetaString(
-            update._meta,
-            CODEX_ACP_STATUS_EVENT_TYPE_KEY,
-            COMANDO_STATUS_EVENT_TYPE_KEY,
-        ) === CODEX_ACP_IMAGE_GENERATION_EVENT_TYPE
-    );
 }
 
 export function mapImageGenerationToolUpdate(
@@ -492,20 +472,6 @@ export function normalizeTrackedDiffPath(
     return resolvedPath.isAbsoluteInput
         ? resolvedPath.absolutePath
         : toPosixPath(candidatePath);
-}
-
-export async function readTextIfExists(
-    absolutePath: string,
-): Promise<string | null> {
-    try {
-        return await fs.promises.readFile(absolutePath, "utf8");
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-            return null;
-        }
-
-        throw error;
-    }
 }
 
 export interface ReconcilePendingTrackedFilesInput {

@@ -15,18 +15,8 @@ import type {
     AiSessionSnapshot,
     AiSessionUpdate,
     AiToolActivity,
-    AiUserInputRequest,
-    AiUserInputResponseInput,
     SendAiPromptInput,
 } from "@shared/ipc";
-import {
-    inferChatTitleFromPrompt,
-    isDefaultChatTitle,
-} from "@shared/chatTitle";
-
-import {
-    CODEX_ACP_USER_INPUT_RESPONSE_PREFIX,
-} from "./contracts";
 
 interface AcpSessionCatalogPayload {
     readonly configOptions?: readonly AiRuntimeCatalogConfigOption[] | null;
@@ -83,17 +73,6 @@ interface AiRuntimeModelState {
         readonly name: string;
     }[];
     readonly currentModelId?: string | null;
-}
-
-export function shouldFlushLiveSessionImmediately(
-    snapshot: AiSessionSnapshot,
-): boolean {
-    return (
-        snapshot.status !== "streaming" ||
-        snapshot.pendingPermission !== null ||
-        snapshot.pendingUserInput !== null ||
-        snapshot.lastError !== null
-    );
 }
 
 export function normalizeRestoredAiSessionSnapshot(
@@ -725,26 +704,6 @@ export function setTitleOnSnapshot(
     };
 }
 
-export function resolveSessionTitleOnPrompt(params: {
-    readonly currentTitle: string;
-    readonly fallbackTitle: string;
-    readonly displayContent: string;
-    readonly hasPriorUserMessage: boolean;
-}): string {
-    const { currentTitle, fallbackTitle, displayContent, hasPriorUserMessage } =
-        params;
-    if (currentTitle && !isDefaultChatTitle(currentTitle)) {
-        return currentTitle;
-    }
-    if (!hasPriorUserMessage) {
-        const inferred = inferChatTitleFromPrompt(displayContent);
-        if (inferred) {
-            return inferred;
-        }
-    }
-    return fallbackTitle || currentTitle;
-}
-
 export function setConfigOptionOnSnapshot(
     snapshot: AiSessionSnapshot,
     optionId: string,
@@ -792,47 +751,6 @@ export function setConfigOptionOnSnapshot(
     };
 }
 
-export function buildUserInputResponsePrompt(
-    turnId: string | null,
-    answers: AiUserInputResponseInput["answers"],
-): string {
-    const payload = {
-        response: {
-            answers: Object.fromEntries(
-                answers.map((answer) => [
-                    answer.questionId,
-                    {
-                        answers: [...answer.answers],
-                    },
-                ]),
-            ),
-        },
-        turn_id: turnId ?? "",
-    };
-
-    return `${CODEX_ACP_USER_INPUT_RESPONSE_PREFIX}${JSON.stringify(payload)}`;
-}
-
-export function summarizeUserInputAnswers(
-    questions: readonly AiUserInputRequest["questions"][number][],
-    answers: AiUserInputResponseInput["answers"],
-): string {
-    if (answers.length === 0) {
-        return "Responded to guided input.";
-    }
-
-    return answers
-        .map((answer) => {
-            const question = questions.find(
-                (candidate) => candidate.id === answer.questionId,
-            );
-            const label =
-                question?.header || question?.question || answer.questionId;
-            return `${label}: ${answer.answers.join(", ")}`;
-        })
-        .join("\n");
-}
-
 const PILL_OPEN = "\u200B\u00AB";
 const PILL_CLOSE = "\u00BB\u200B";
 
@@ -875,58 +793,6 @@ export function serializeComposerPartsForDisplay(
         .trim();
 }
 
-export function getPreparedSessionStatus(
-    snapshot: Pick<
-        AiSessionSnapshot,
-        "lastError" | "pendingPermission" | "pendingUserInput"
-    >,
-): AiSessionSnapshot["status"] {
-    if (snapshot.pendingPermission) {
-        return "waiting_permission";
-    }
-    if (snapshot.pendingUserInput) {
-        return "waiting_user_input";
-    }
-    if (snapshot.lastError) {
-        return "error";
-    }
-    return "idle";
-}
-
-export function getRecentStderrText(stderrChunks: readonly string[]): string {
-    const normalized = stripAnsiControlSequences(stderrChunks.join(""))
-        .trim()
-        .split("\n")
-        .map((line) => line.trimEnd())
-        .filter((line) => line.length > 0);
-
-    if (normalized.length === 0) {
-        return "";
-    }
-
-    return normalized.slice(-4).join("\n");
-}
-
-const ANSI_ESCAPE_RE = new RegExp(
-    `${String.fromCharCode(27)}\\[[0-9;]*m`,
-    "g",
-);
-
-function stripAnsiControlSequences(value: string): string {
-    return value.replace(ANSI_ESCAPE_RE, "");
-}
-
-export function isBusyAiSessionStatus(
-    status: AiSessionSnapshot["status"],
-): boolean {
-    return (
-        status === "starting" ||
-        status === "streaming" ||
-        status === "waiting_permission" ||
-        status === "waiting_user_input"
-    );
-}
-
 export function normalizeAdditionalRoots(
     roots: readonly string[] | undefined,
     options: ResolveSessionPathOptions = {},
@@ -956,17 +822,6 @@ export function normalizeAdditionalRoots(
 
     normalizedRoots.sort((left, right) => left.localeCompare(right));
     return normalizedRoots;
-}
-
-export function sameAdditionalRoots(
-    left: readonly string[],
-    right: readonly string[],
-): boolean {
-    if (left.length !== right.length) {
-        return false;
-    }
-
-    return left.every((entry, index) => entry === right[index]);
 }
 
 export function isPathInsideRoot(
