@@ -29,7 +29,7 @@ use crate::events::{
     AI_STATUS_EVENT, AI_SUBAGENT_BREADCRUMB_EVENT, AI_SUBAGENT_CREATED_EVENT,
     AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
     AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, AI_USER_INPUT_REQUEST_EVENT, AiRuntimeEvent,
-    now_iso8601,
+    now_iso8601, status_event,
 };
 use crate::history::{
     AiHistorySessionMetadata, AiHistorySessionMetadataInput, AiHistoryStore,
@@ -375,6 +375,7 @@ impl AiEngine {
             summary.status = NativeAiSessionStatus::Streaming;
         }
         drop(sessions);
+        self.emit_synthetic_turn_started_status(&summary, &input.message_id.0)?;
         self.update_history_status(&summary)?;
         self.push_history_user_message(
             &target_session_id,
@@ -664,6 +665,30 @@ impl AiEngine {
             .lock()
             .map(|sender| sender.clone())
             .map_err(|error| AiError::Internal(format!("AI event sender lock failed: {error}")))
+    }
+
+    fn emit_synthetic_turn_started_status(
+        &self,
+        summary: &NativeAiSessionSummary,
+        message_id: &str,
+    ) -> AiResult<()> {
+        if summary.runtime_id.0 == "codex" {
+            return Ok(());
+        }
+
+        if let Some(sender) = self.event_sender()? {
+            let _ = sender.send(AiRuntimeEvent::new(
+                AI_STATUS_EVENT,
+                &status_event(
+                    summary,
+                    format!("comando:status:turn:{message_id}"),
+                    "completed",
+                    "New turn",
+                    None,
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn history_store(&self) -> AiResult<Option<AiHistoryStore>> {
@@ -1648,6 +1673,64 @@ mod tests {
             name: Some("capture.png".to_string()),
             size_bytes: Some(5),
         }
+    }
+
+    #[test]
+    fn synthetic_turn_started_status_emits_for_non_codex_runtime() {
+        let engine = AiEngine::default();
+        let (sender, receiver) = mpsc::sync_channel(8);
+        engine.set_event_sender(sender).unwrap();
+        let mut summary = NativeAiSession::from_prepare_input(prepare_input("s1", "opencode"))
+            .unwrap()
+            .summary();
+        summary.runtime_session_id = Some(RuntimeSessionId("runtime-1".to_string()));
+        summary.status = NativeAiSessionStatus::Streaming;
+
+        engine
+            .emit_synthetic_turn_started_status(&summary, "message-1")
+            .unwrap();
+
+        let event = receiver.recv().unwrap();
+        assert_eq!(event.event_name, AI_STATUS_EVENT);
+        assert_eq!(
+            event.payload.get("eventId").and_then(Value::as_str),
+            Some("comando:status:turn:message-1")
+        );
+        assert_eq!(
+            event.payload.get("sessionId").and_then(Value::as_str),
+            Some("s1")
+        );
+        assert_eq!(
+            event.payload.get("runtimeId").and_then(Value::as_str),
+            Some("opencode")
+        );
+        assert_eq!(
+            event
+                .payload
+                .get("runtimeSessionId")
+                .and_then(Value::as_str),
+            Some("runtime-1")
+        );
+        assert_eq!(
+            event.payload.get("title").and_then(Value::as_str),
+            Some("New turn")
+        );
+    }
+
+    #[test]
+    fn synthetic_turn_started_status_skips_codex_runtime() {
+        let engine = AiEngine::default();
+        let (sender, receiver) = mpsc::sync_channel(8);
+        engine.set_event_sender(sender).unwrap();
+        let summary = NativeAiSession::from_prepare_input(prepare_input("s1", "codex"))
+            .unwrap()
+            .summary();
+
+        engine
+            .emit_synthetic_turn_started_status(&summary, "message-1")
+            .unwrap();
+
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
