@@ -89,6 +89,13 @@ export interface GitGateway {
             readonly startPoint?: string | null;
         },
     ): Promise<GitRepositorySnapshot>;
+    createBranch(
+        inputPath: string,
+        options: {
+            readonly branchName: string;
+            readonly startPoint?: string | null;
+        },
+    ): Promise<GitRepositorySnapshot>;
     createWorktree(
         inputPath: string,
         options: {

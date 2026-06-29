@@ -77,6 +77,7 @@ import {
     type GitCommitDetailInput,
     type GitCommitInput,
     type GitCommitResult,
+    type GitCreateBranchInput,
     type GitCreateWorktreeInput,
     type GitDeleteLocalBranchInput,
     type GitDeleteRemoteBranchInput,
@@ -977,6 +978,11 @@ const comandoApi: ComandoApi = {
     checkoutGitBranch: (input: GitCheckoutBranchInput) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.checkoutGitBranch,
+            input,
+        ) as Promise<GitRepositorySnapshot>,
+    createGitBranch: (input: GitCreateBranchInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.createGitBranch,
             input,
         ) as Promise<GitRepositorySnapshot>,
     createGitWorktree: (input: GitCreateWorktreeInput) =>

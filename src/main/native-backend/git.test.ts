@@ -262,6 +262,10 @@ describe("NativeGitGateway", () => {
             branchName: "main",
             newBranchName: "feature/current",
         });
+        await gateway.createBranch("/tmp/comando-project", {
+            branchName: "feature/sidebar",
+            startPoint: "main",
+        });
         await gateway.createWorktree("/tmp/comando-project", {
             branchName: "feature/worktree",
             path: "/tmp/feature-worktree",
@@ -284,6 +288,16 @@ describe("NativeGitGateway", () => {
             expect.objectContaining({
                 branchName: "main",
                 newBranchName: "feature/current",
+                startPoint: "main",
+            }),
+        );
+        expect(requestMock).toHaveBeenCalledWith(
+            "git_create_branch",
+            expect.objectContaining({
+                branchName: "feature/sidebar",
+                scope: expect.objectContaining({
+                    rootPath: "/tmp/comando-project",
+                }),
                 startPoint: "main",
             }),
         );

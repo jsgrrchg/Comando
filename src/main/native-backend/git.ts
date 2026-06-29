@@ -304,6 +304,26 @@ export class NativeGitGateway implements ClosableGitGateway {
         );
     }
 
+    async createBranch(
+        inputPath: string,
+        options: {
+            readonly branchName: string;
+            readonly startPoint?: string | null;
+        },
+    ): Promise<GitRepositorySnapshot> {
+        return nativeOperationSnapshot(
+            parseNativeOperationResult(
+                await this.#client.request("git_create_branch", {
+                    branchName: options.branchName,
+                    force: null,
+                    newBranchName: null,
+                    scope: nativeGitScope(inputPath),
+                    startPoint: options.startPoint ?? null,
+                }),
+            ),
+        );
+    }
+
     async createWorktree(
         inputPath: string,
         options: {
