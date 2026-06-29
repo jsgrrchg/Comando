@@ -496,6 +496,25 @@ jobs:
                       apt-get install -y --download-only "comando=$VERSION"
                     '
 
+            - name: Prepare gh-pages worktree
+              env:
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  git fetch origin gh-pages || true
+
+                  if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+                    git worktree add "$PAGES_DIR" refs/remotes/origin/gh-pages
+                  else
+                    git worktree add -B gh-pages "$PAGES_DIR" HEAD
+                    git -C "$PAGES_DIR" rm -rf . || true
+                    find "$PAGES_DIR" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+                  fi
+
+                  git -C "$PAGES_DIR" config user.name "github-actions[bot]"
+                  git -C "$PAGES_DIR" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
             - name: Upload APT metadata to GitHub release
               env:
                   APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
@@ -536,3 +555,39 @@ jobs:
                       grep -F "https://github.com/${REPO_SLUG}/releases/download/${RELEASE_TAG}" /tmp/comando-uris.txt
                       grep -F "Comando-${VERSION}-linux-" /tmp/comando-uris.txt
                     '
+
+            - name: Publish APT entrypoints to gh-pages
+              env:
+                  APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
+                  PAGES_DIR: ${{ runner.temp }}/gh-pages
+              run: |
+                  touch "$PAGES_DIR/.nojekyll"
+                  mkdir -p "$PAGES_DIR/apt"
+                  rm -rf "$PAGES_DIR/apt/dists" "$PAGES_DIR/apt/pool"
+                  cp "$APT_RELEASE_DIR/comando-archive-keyring.asc" "$PAGES_DIR/apt/"
+                  cp "$APT_RELEASE_DIR/comando.sources.example" "$PAGES_DIR/apt/"
+
+                  package_asset="$(find "$PAGES_DIR/apt" -type f \( \
+                    -name '*.deb' -o \
+                    -name '*.rpm' -o \
+                    -name '*.AppImage' -o \
+                    -name '*.dmg' -o \
+                    -name '*.exe' \
+                  \) -print -quit)"
+
+                  if [[ -n "$package_asset" ]]; then
+                    echo "Package asset must stay on GitHub Releases, not gh-pages: $package_asset" >&2
+                    exit 1
+                  fi
+
+                  find "$PAGES_DIR/apt" -maxdepth 2 -type f -print
+                  test ! -d "$PAGES_DIR/apt/dists"
+                  test ! -d "$PAGES_DIR/apt/pool"
+
+                  git -C "$PAGES_DIR" add apt .nojekyll
+                  if git -C "$PAGES_DIR" diff --cached --quiet; then
+                    echo "No APT entrypoint changes to publish."
+                  else
+                    git -C "$PAGES_DIR" commit -m "Publish APT entrypoints for $GITHUB_REF_NAME"
+                    git -C "$PAGES_DIR" push origin HEAD:gh-pages
+                  fi
