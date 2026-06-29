@@ -289,7 +289,13 @@ export function applyNormalizedSessionCatalogToSnapshot(
     snapshot: AiSessionSnapshot,
     payload: NormalizedSessionCatalogPayload,
 ): AiSessionSnapshot {
-    const configOptions = payload.configOptions ?? snapshot.configOptions;
+    const configOptions =
+        payload.configOptions !== undefined
+            ? preserveConfigOptionSelections(
+                  payload.configOptions,
+                  snapshot.configOptions,
+              )
+            : snapshot.configOptions;
     const modes =
         payload.configOptions !== undefined
             ? buildModesFromConfigOptions(configOptions)
@@ -585,6 +591,46 @@ function syncSelectedModelOption(
               }
             : option,
     );
+}
+
+function preserveConfigOptionSelections(
+    incomingOptions: readonly AiSessionConfigOption[],
+    existingOptions: readonly AiSessionConfigOption[],
+): readonly AiSessionConfigOption[] {
+    if (incomingOptions.length === 0 || existingOptions.length === 0) {
+        return incomingOptions;
+    }
+
+    const existingById = new Map(
+        existingOptions.map((option) => [option.id, option]),
+    );
+
+    return incomingOptions.map((option) => {
+        const existing = existingById.get(option.id);
+        if (!existing || existing.type !== option.type) {
+            return option;
+        }
+
+        if (option.type === "boolean" && existing.type === "boolean") {
+            return {
+                ...option,
+                value: existing.value,
+            };
+        }
+
+        if (
+            option.type === "select" &&
+            existing.type === "select" &&
+            hasSelectConfigValue(option, existing.value)
+        ) {
+            return {
+                ...option,
+                value: existing.value,
+            };
+        }
+
+        return option;
+    });
 }
 
 function syncSelectedModeOption(

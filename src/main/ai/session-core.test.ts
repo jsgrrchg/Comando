@@ -245,6 +245,69 @@ describe("session-core model reconciliation", () => {
             "high",
         );
     });
+
+    it("preserves existing config selections when normalized catalog options refresh", () => {
+        const snapshot = createSnapshot({
+            configOptions: [
+                {
+                    category: "reasoning",
+                    description: null,
+                    id: "reasoning_effort",
+                    label: "Reasoning",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Low",
+                            value: "low",
+                        },
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "High",
+                            value: "high",
+                        },
+                    ],
+                    type: "select",
+                    value: "high",
+                },
+            ],
+            sessionId: "session-native",
+        });
+
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(snapshot, {
+            configOptions: [
+                {
+                    category: "reasoning",
+                    description: null,
+                    id: "reasoning_effort",
+                    label: "Reasoning",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Low",
+                            value: "low",
+                        },
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "High",
+                            value: "high",
+                        },
+                    ],
+                    type: "select",
+                    value: "low",
+                },
+            ],
+        });
+
+        expect(
+            nextSnapshot.configOptions.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("high");
+    });
 });
 
 describe("session-core path scope identity", () => {
