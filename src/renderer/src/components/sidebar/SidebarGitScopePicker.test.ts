@@ -13,6 +13,7 @@ import {
 import {
     buildBranchCreationBaseOptions,
     createBranchCreationDraft,
+    getBranchCreationQueryOffer,
     getDefaultBranchCreationBase,
     normalizeBranchNameInput,
     validateNewBranchName,
@@ -256,5 +257,19 @@ describe("SidebarGitScopePicker helpers", () => {
         expect(validateNewBranchName("feature/new picker", branches).isValid).toBe(
             false,
         );
+    });
+
+    it("offers branch creation from a valid search query that does not match a local branch", () => {
+        const branches = [createBranch({ name: "feature/existing" })];
+
+        expect(
+            getBranchCreationQueryOffer(" feature/new-picker ", branches),
+        ).toEqual({
+            branchName: "feature/new-picker",
+        });
+        expect(
+            getBranchCreationQueryOffer("feature/existing", branches),
+        ).toBeNull();
+        expect(getBranchCreationQueryOffer("foo..bar", branches)).toBeNull();
     });
 });

@@ -28,6 +28,10 @@ export type BranchNameValidationResult =
           readonly value: string;
       };
 
+export type BranchCreationQueryOffer = {
+    readonly branchName: string;
+};
+
 export function normalizeBranchNameInput(input: string): string {
     return input.trim();
 }
@@ -145,6 +149,20 @@ export function validateNewBranchName(
         error: null,
         isValid: true,
         value,
+    };
+}
+
+export function getBranchCreationQueryOffer(
+    query: string,
+    branches: readonly GitBranchSummary[],
+): BranchCreationQueryOffer | null {
+    const validation = validateNewBranchName(query, branches);
+    if (!validation.isValid) {
+        return null;
+    }
+
+    return {
+        branchName: validation.value,
     };
 }
 
