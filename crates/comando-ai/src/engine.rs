@@ -685,26 +685,7 @@ impl AiEngine {
         }
 
         let mut metadata = store.load_metadata(session_id)?;
-        let value_json = match value {
-            NativeAiConfigValue::Boolean(value) => json!(value),
-            NativeAiConfigValue::ValueId(value) => json!(value),
-        };
-        metadata
-            .config_values
-            .insert(config_id.to_string(), value_json);
-
-        if let NativeAiConfigValue::ValueId(value) = value {
-            if config_id == "model" {
-                metadata.model_id = Some(value.clone());
-            }
-            if config_id == "mode" {
-                metadata.mode_id = Some(value.clone());
-            }
-            if is_reasoning_effort_config_key(config_id) {
-                metadata.reasoning_effort = Some(value.clone());
-            }
-        }
-
+        update_history_metadata_config_value(&mut metadata, config_id, value);
         store.save_metadata(&metadata)
     }
 
@@ -1013,6 +994,12 @@ impl AiEngine {
                 metadata.reasoning_effort =
                     reasoning_effort_from_config_options(&metadata.config_options);
             }
+            if let Some(reasoning_effort) = metadata.reasoning_effort.clone() {
+                update_reasoning_effort_config_options(
+                    &mut metadata.config_options,
+                    &reasoning_effort,
+                );
+            }
         }
         metadata.updated_at = payload
             .get("updatedAt")
@@ -1262,6 +1249,18 @@ impl AiEngine {
         let parent_metadata = parent_session_id
             .as_ref()
             .and_then(|parent_session_id| store.load_metadata(parent_session_id).ok());
+        let reasoning_effort = payload
+            .get("reasoningEffort")
+            .and_then(Value::as_str)
+            .filter(|reasoning_effort| !reasoning_effort.trim().is_empty())
+            .map(ToOwned::to_owned);
+        let mut config_values = parent_metadata
+            .as_ref()
+            .map(|metadata| metadata.config_values.clone())
+            .unwrap_or_default();
+        if let Some(reasoning_effort) = reasoning_effort.as_deref() {
+            update_reasoning_effort_config_values(&mut config_values, reasoning_effort);
+        }
         let mut metadata = AiHistorySessionMetadata::new_native(AiHistorySessionMetadataInput {
             session_id: session_id.clone(),
             runtime_id: comando_types::ids::RuntimeId(runtime_id.to_string()),
@@ -1291,15 +1290,8 @@ impl AiEngine {
             mode_id: parent_metadata
                 .as_ref()
                 .and_then(|metadata| metadata.mode_id.clone()),
-            reasoning_effort: payload
-                .get("reasoningEffort")
-                .and_then(Value::as_str)
-                .filter(|reasoning_effort| !reasoning_effort.trim().is_empty())
-                .map(ToOwned::to_owned),
-            config_values: parent_metadata
-                .as_ref()
-                .map(|metadata| metadata.config_values.clone())
-                .unwrap_or_default(),
+            reasoning_effort,
+            config_values,
             cwd: parent_metadata
                 .as_ref()
                 .and_then(|metadata| metadata.cwd.clone())
@@ -1639,14 +1631,77 @@ fn is_reasoning_effort_config_key(config_id: &str) -> bool {
     REASONING_EFFORT_CONFIG_KEYS.contains(&config_id)
 }
 
+fn update_history_metadata_config_value(
+    metadata: &mut AiHistorySessionMetadata,
+    config_id: &str,
+    value: &NativeAiConfigValue,
+) {
+    let value_json = match value {
+        NativeAiConfigValue::Boolean(value) => json!(value),
+        NativeAiConfigValue::ValueId(value) => json!(value),
+    };
+    metadata
+        .config_values
+        .insert(config_id.to_string(), value_json.clone());
+    update_history_config_options_value(&mut metadata.config_options, config_id, &value_json);
+
+    if let NativeAiConfigValue::ValueId(value) = value {
+        if config_id == "model" {
+            metadata.model_id = Some(value.clone());
+        }
+        if config_id == "mode" {
+            metadata.mode_id = Some(value.clone());
+        }
+        if is_reasoning_effort_config_key(config_id) {
+            metadata.reasoning_effort = Some(value.clone());
+        }
+    }
+}
+
+fn update_history_config_options_value(
+    config_options: &mut [Value],
+    config_id: &str,
+    value: &Value,
+) {
+    for option in config_options {
+        let option_matches = option
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id == config_id);
+        let reasoning_matches =
+            is_reasoning_effort_config_key(config_id) && is_reasoning_effort_config_option(option);
+
+        if (option_matches || reasoning_matches)
+            && let Some(object) = option.as_object_mut()
+        {
+            object.insert("value".to_string(), value.clone());
+        }
+    }
+}
+
+fn update_reasoning_effort_config_values(
+    config_values: &mut BTreeMap<String, Value>,
+    reasoning_effort: &str,
+) {
+    let key = REASONING_EFFORT_CONFIG_KEYS
+        .iter()
+        .find(|key| config_values.contains_key(**key))
+        .copied()
+        .unwrap_or("reasoning_effort");
+    config_values.insert(key.to_string(), json!(reasoning_effort));
+}
+
+fn update_reasoning_effort_config_options(config_options: &mut [Value], reasoning_effort: &str) {
+    update_history_config_options_value(
+        config_options,
+        "reasoning_effort",
+        &json!(reasoning_effort),
+    );
+}
+
 fn reasoning_effort_from_config_options(config_options: &[Value]) -> Option<String> {
     config_options.iter().find_map(|option| {
-        let id = option.get("id").and_then(Value::as_str).unwrap_or_default();
-        let category = option
-            .get("category")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if category != "reasoning" && !is_reasoning_effort_config_key(id) {
+        if !is_reasoning_effort_config_option(option) {
             return None;
         }
         option
@@ -1655,6 +1710,15 @@ fn reasoning_effort_from_config_options(config_options: &[Value]) -> Option<Stri
             .filter(|value| !value.trim().is_empty())
             .map(ToOwned::to_owned)
     })
+}
+
+fn is_reasoning_effort_config_option(option: &Value) -> bool {
+    let id = option.get("id").and_then(Value::as_str).unwrap_or_default();
+    let category = option
+        .get("category")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    category == "reasoning" || is_reasoning_effort_config_key(id)
 }
 
 fn native_status_from_event(status: &str) -> NativeAiSessionStatus {
@@ -1918,6 +1982,175 @@ mod tests {
         );
         assert_eq!(session.scope.cwd, project.path().to_string_lossy());
         assert_eq!(session.scope.additional_roots, vec!["/tmp/extra-root"]);
+    }
+
+    #[test]
+    fn history_config_updates_keep_snapshot_options_aligned() {
+        let app_data = tempfile::tempdir().expect("app data");
+        let store = AiHistoryStore::new(app_data.path()).expect("history store");
+        let session_id = SessionId("s-history".to_string());
+        let mut metadata = AiHistorySessionMetadata::new_native(AiHistorySessionMetadataInput {
+            session_id: session_id.clone(),
+            runtime_id: RuntimeId("codex".to_string()),
+            runtime_session_id: Some(RuntimeSessionId("runtime-history".to_string())),
+            parent_session_id: None,
+            project_id: None,
+            worktree_id: None,
+            title: "Historical session".to_string(),
+            status: NativeAiSessionStatus::Idle,
+            model_id: None,
+            mode_id: None,
+            reasoning_effort: Some("low".to_string()),
+            config_values: BTreeMap::from([("reasoning_effort".to_string(), json!("low"))]),
+            cwd: "/tmp/project".to_string(),
+            additional_roots: Vec::new(),
+        });
+        metadata.config_options = vec![json!({
+            "category": "reasoning",
+            "description": null,
+            "id": "reasoning_effort",
+            "label": "Reasoning",
+            "options": [
+                { "description": null, "groupLabel": null, "label": "Low", "value": "low" },
+                { "description": null, "groupLabel": null, "label": "High", "value": "high" }
+            ],
+            "type": "select",
+            "value": "low"
+        })];
+        store
+            .create_session(metadata)
+            .expect("create history session");
+        let engine = AiEngine::default();
+        engine
+            .set_history_store(Some(store.clone()))
+            .expect("install history store");
+
+        engine
+            .update_history_config_value(
+                &session_id,
+                "reasoning_effort",
+                &NativeAiConfigValue::ValueId("high".to_string()),
+            )
+            .expect("update history config value");
+
+        let metadata = store.load_metadata(&session_id).expect("metadata");
+        let snapshot = store
+            .load_session_snapshot(&session_id)
+            .expect("snapshot")
+            .expect("snapshot");
+
+        assert_eq!(metadata.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            metadata
+                .config_values
+                .get("reasoning_effort")
+                .and_then(Value::as_str),
+            Some("high")
+        );
+        assert_eq!(snapshot.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(snapshot.config_options[0]["value"], "high");
+    }
+
+    #[test]
+    fn subagent_history_overrides_inherited_reasoning_values() {
+        let app_data = tempfile::tempdir().expect("app data");
+        let store = AiHistoryStore::new(app_data.path()).expect("history store");
+        let parent_session_id = SessionId("s-parent".to_string());
+        let mut parent = AiHistorySessionMetadata::new_native(AiHistorySessionMetadataInput {
+            session_id: parent_session_id.clone(),
+            runtime_id: RuntimeId("codex".to_string()),
+            runtime_session_id: Some(RuntimeSessionId("runtime-parent".to_string())),
+            parent_session_id: None,
+            project_id: None,
+            worktree_id: None,
+            title: "Parent session".to_string(),
+            status: NativeAiSessionStatus::Idle,
+            model_id: Some("gpt-5".to_string()),
+            mode_id: None,
+            reasoning_effort: Some("low".to_string()),
+            config_values: BTreeMap::from([("reasoning_effort".to_string(), json!("low"))]),
+            cwd: "/tmp/project".to_string(),
+            additional_roots: Vec::new(),
+        });
+        parent.config_options = vec![json!({
+            "category": "reasoning",
+            "description": null,
+            "id": "reasoning_effort",
+            "label": "Reasoning",
+            "options": [
+                { "description": null, "groupLabel": null, "label": "Low", "value": "low" },
+                { "description": null, "groupLabel": null, "label": "High", "value": "high" }
+            ],
+            "type": "select",
+            "value": "low"
+        })];
+        store.create_session(parent).expect("create parent");
+        let engine = AiEngine::default();
+        engine
+            .set_history_store(Some(store.clone()))
+            .expect("install history store");
+
+        engine
+            .record_history_event(&AiRuntimeEvent::new(
+                AI_SUBAGENT_CREATED_EVENT,
+                &json!({
+                    "childRuntimeSessionId": "runtime-child",
+                    "childSessionId": "s-child",
+                    "parentRuntimeSessionId": "runtime-parent",
+                    "parentSessionId": "s-parent",
+                    "reasoningEffort": "high",
+                    "runtimeId": "codex",
+                    "runtimeSessionId": "runtime-child",
+                    "sessionId": "s-child",
+                    "title": "Child agent"
+                }),
+            ))
+            .expect("record subagent");
+        let child_session_id = SessionId("s-child".to_string());
+        let child = store
+            .load_metadata(&child_session_id)
+            .expect("child metadata");
+        assert_eq!(child.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            child
+                .config_values
+                .get("reasoning_effort")
+                .and_then(Value::as_str),
+            Some("high")
+        );
+
+        engine
+            .record_history_event(&AiRuntimeEvent::new(
+                AI_SESSION_CATALOG_UPDATED_EVENT,
+                &json!({
+                    "configOptions": [
+                        {
+                            "category": "effort",
+                            "currentValue": "low",
+                            "description": null,
+                            "id": "reasoning_effort",
+                            "name": "Reasoning",
+                            "options": [
+                                { "description": null, "name": "Low", "value": "low" },
+                                { "description": null, "name": "High", "value": "high" }
+                            ],
+                            "type": "select"
+                        }
+                    ],
+                    "runtimeId": "codex",
+                    "runtimeSessionId": "runtime-child",
+                    "sessionId": "s-child",
+                    "updatedAt": "2026-06-20T00:00:00.000Z"
+                }),
+            ))
+            .expect("record child catalog");
+
+        let snapshot = store
+            .load_session_snapshot(&child_session_id)
+            .expect("snapshot")
+            .expect("snapshot");
+        assert_eq!(snapshot.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(snapshot.config_options[0]["value"], "high");
     }
 
     #[test]
