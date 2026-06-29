@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import {
     ensurePackagedLinuxUpdaterConfig,
+    resolveLinuxUpdaterChannel,
+    verifyLinuxReleaseArtifacts,
     verifyPackagedLinuxUpdaterConfig,
 } from "./linux-release-metadata.mjs";
 
@@ -19,6 +21,7 @@ const linuxBuilderConfigPath = path.join(
 );
 const sourceAiRoot = path.join(repoRoot, "resources", "ai");
 const packageJson = readJson(path.join(repoRoot, "package.json"));
+const targetArch = process.arch;
 
 function run(command, args, options = {}) {
     const result = spawnSync(command, args, {
@@ -103,6 +106,15 @@ function main() {
         "--config",
         linuxBuilderConfigPath,
     ]);
+    if (isFullLinuxPackageBuild(packageArgs)) {
+        verifyLinuxReleaseArtifacts({
+            distDir: path.join(repoRoot, "dist"),
+            productName: packageJson.build?.productName ?? packageJson.name,
+            relativePath: relativeToRepo,
+            targetArch,
+            version: packageJson.version,
+        });
+    }
 }
 
 function writeLinuxUpdaterConfig() {
@@ -110,6 +122,7 @@ function writeLinuxUpdaterConfig() {
         ensurePackagedLinuxUpdaterConfig({
             appUpdateConfigPath,
             packageJson,
+            targetArch,
         })
     ) {
         console.log(`[package:linux] Wrote ${relativeToRepo(appUpdateConfigPath)}.`);
@@ -119,11 +132,16 @@ function writeLinuxUpdaterConfig() {
         appUpdateConfigPath,
         packageJson,
         relativePath: relativeToRepo,
+        targetArch,
     });
 }
 
 function writeLinuxBuilderConfig() {
     const buildConfig = packageJson.build ?? {};
+    const linuxConfig =
+        buildConfig.linux && typeof buildConfig.linux === "object"
+            ? buildConfig.linux
+            : {};
     const extraResources = [
         ...(Array.isArray(buildConfig.extraResources)
             ? buildConfig.extraResources
@@ -140,6 +158,15 @@ function writeLinuxBuilderConfig() {
             {
                 ...buildConfig,
                 extraResources,
+                linux: {
+                    ...linuxConfig,
+                    publish: [
+                        {
+                            provider: "github",
+                            channel: resolveLinuxUpdaterChannel(targetArch),
+                        },
+                    ],
+                },
             },
             null,
             4,
@@ -150,6 +177,11 @@ function writeLinuxBuilderConfig() {
 
 function readJson(filePath) {
     return JSON.parse(fs.readFileSync(filePath, "utf8"));
+}
+
+function isFullLinuxPackageBuild(packageArgs) {
+    const explicitTargets = new Set(["AppImage", "deb", "rpm"]);
+    return !packageArgs.some((arg) => explicitTargets.has(arg));
 }
 
 function relativeToRepo(filePath) {

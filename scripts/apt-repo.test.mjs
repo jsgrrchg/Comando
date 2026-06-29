@@ -127,7 +127,7 @@ function validateFixtureFlatAptRepository(aptDir, packageAssetsDir) {
 describe("APT repository metadata", () => {
     it("maps Debian architectures to release asset names", () => {
         expect(buildDebianReleaseAssetName("0.1.0", "amd64")).toBe(
-            "Comando-0.1.0-linux-x64.deb",
+            "Comando-0.1.0-linux-amd64.deb",
         );
         expect(buildDebianReleaseAssetName("0.1.0", "arm64")).toBe(
             "Comando-0.1.0-linux-arm64.deb",
@@ -160,7 +160,7 @@ describe("APT repository metadata", () => {
                     "",
                 ].join("\n"),
             ),
-            filename: "Comando-0.1.0-linux-x64.deb",
+            filename: "Comando-0.1.0-linux-amd64.deb",
             hashes: {
                 MD5Sum: "a".repeat(32),
                 SHA1: "b".repeat(40),
@@ -169,7 +169,7 @@ describe("APT repository metadata", () => {
             sizeBytes: 1234,
         });
 
-        expect(stanza).toContain("Filename: Comando-0.1.0-linux-x64.deb");
+        expect(stanza).toContain("Filename: Comando-0.1.0-linux-amd64.deb");
         expect(stanza).toContain("Size: 1234");
         expect(stanza).toContain(`SHA256: ${"c".repeat(64)}`);
     });
@@ -188,7 +188,7 @@ describe("APT repository metadata", () => {
     it("rejects flat release filenames that are URLs", () => {
         const { aptDir, packageAssetsDir } = writeFixtureFlatAptRepository({
             filenamesByArchitecture: {
-                amd64: "https://github.com/jsgrrchg/Comando/releases/latest/download/Comando-0.1.0-linux-x64.deb",
+                amd64: "https://github.com/jsgrrchg/Comando/releases/latest/download/Comando-0.1.0-linux-amd64.deb",
             },
         });
         const result = validateFixtureFlatAptRepository(
@@ -203,7 +203,7 @@ describe("APT repository metadata", () => {
     it("rejects flat release filenames that include paths", () => {
         const { aptDir, packageAssetsDir } = writeFixtureFlatAptRepository({
             filenamesByArchitecture: {
-                amd64: "pool/main/comando/Comando-0.1.0-linux-x64.deb",
+                amd64: "pool/main/comando/Comando-0.1.0-linux-amd64.deb",
             },
         });
         const result = validateFixtureFlatAptRepository(
@@ -218,7 +218,7 @@ describe("APT repository metadata", () => {
     it("rejects flat release filenames that escape the repository root", () => {
         const { aptDir, packageAssetsDir } = writeFixtureFlatAptRepository({
             filenamesByArchitecture: {
-                amd64: "../Comando-0.1.0-linux-x64.deb",
+                amd64: "../Comando-0.1.0-linux-amd64.deb",
             },
         });
         const result = validateFixtureFlatAptRepository(

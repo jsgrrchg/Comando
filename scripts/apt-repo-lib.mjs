@@ -32,12 +32,12 @@ export const APT_PACKAGE_CHECKSUMS = [
 const STRICT_SEMVER_RE = /^\d+\.\d+\.\d+$/u;
 const RELEASE_TAG_RE = /^v(\d+\.\d+\.\d+)$/u;
 const HASH_READ_BUFFER_SIZE_BYTES = 1024 * 1024;
-const ELECTRON_BUILDER_ARCHITECTURE_BY_DEBIAN_ARCHITECTURE = {
-    amd64: "x64",
+const ELECTRON_BUILDER_ARTIFACT_ARCHITECTURE_BY_DEBIAN_ARCHITECTURE = {
+    amd64: "amd64",
     arm64: "arm64",
 };
-const DEBIAN_ARCHITECTURE_BY_ELECTRON_BUILDER_ARCHITECTURE = {
-    x64: "amd64",
+const DEBIAN_ARCHITECTURE_BY_ELECTRON_BUILDER_ARTIFACT_ARCHITECTURE = {
+    amd64: "amd64",
     arm64: "arm64",
 };
 const CONTROL_FIELD_ORDER = [
@@ -153,12 +153,12 @@ export function buildDebianReleaseAssetName(version, debianArchitecture) {
     const normalizedVersion = normalizeReleaseVersion(version);
     const arch = normalizeDebianArchitecture(debianArchitecture);
     const electronBuilderArch =
-        ELECTRON_BUILDER_ARCHITECTURE_BY_DEBIAN_ARCHITECTURE[arch];
+        ELECTRON_BUILDER_ARTIFACT_ARCHITECTURE_BY_DEBIAN_ARCHITECTURE[arch];
     return `Comando-${normalizedVersion}-linux-${electronBuilderArch}.deb`;
 }
 
 export function parseDebianReleaseAssetName(fileName) {
-    const match = /^Comando-(\d+\.\d+\.\d+)-linux-(x64|arm64)\.deb$/u.exec(
+    const match = /^Comando-(\d+\.\d+\.\d+)-linux-(amd64|arm64)\.deb$/u.exec(
         String(fileName ?? ""),
     );
     if (!match) {
@@ -167,7 +167,9 @@ export function parseDebianReleaseAssetName(fileName) {
 
     return {
         architecture:
-            DEBIAN_ARCHITECTURE_BY_ELECTRON_BUILDER_ARCHITECTURE[match[2]],
+            DEBIAN_ARCHITECTURE_BY_ELECTRON_BUILDER_ARTIFACT_ARCHITECTURE[
+                match[2]
+            ],
         version: match[1],
     };
 }
