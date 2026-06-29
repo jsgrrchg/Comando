@@ -201,6 +201,40 @@ describe("chatTimelineModel", () => {
         );
     });
 
+    it("does not revive completed context compaction as the live tail for a later prompt", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    content: "Prompt after compacting already finished",
+                    createdAt: "2026-04-14T00:00:03.000Z",
+                    id: "message-after-compact",
+                    kind: "user",
+                }),
+            ],
+            status: "streaming",
+            toolActivity: [
+                createActivity({
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    id: "codex-acp:status:turn:turn-1",
+                    kind: "status",
+                    title: "New turn",
+                    updatedAt: "2026-04-14T00:00:00.000Z",
+                }),
+                createActivity({
+                    createdAt: "2026-04-14T00:00:01.000Z",
+                    id: "codex-acp:status:item:compact-1",
+                    kind: "item_activity",
+                    status: "completed",
+                    title: "Compacting context",
+                    updatedAt: "2026-04-14T00:00:02.000Z",
+                }),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(model.liveTailRowId).toBe("message:message-after-compact");
+    });
+
     it("reuses unchanged tool rows when only the latest tool activity changes", () => {
         const initialModel = reconcileChatTimelineModel(null, {
             messages: [],
