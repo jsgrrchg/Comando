@@ -69,7 +69,7 @@ export function getCodexRuntimeStatus(
     };
 }
 
-export function getCodexCredentialSource(
+function getCodexCredentialSource(
     settings: CodexRuntimeSettings,
     secrets: CodexSecretBundle,
     env: NodeJS.ProcessEnv = process.env,

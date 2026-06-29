@@ -133,7 +133,7 @@ export function nativeProjectStateToStoreSnapshot(
     };
 }
 
-export function nativeProjectAddResultToStoreResult(
+function nativeProjectAddResultToStoreResult(
     result: NativeProjectAddResult,
 ): ProjectStoreAddPathsResult {
     return {

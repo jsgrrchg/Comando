@@ -7,7 +7,7 @@ export interface AiSessionStreamDeliveryHandlers {
     readonly reportWarning: (message: string, error?: unknown) => void;
 }
 
-export function isAiSessionStreamMessage(
+function isAiSessionStreamMessage(
     message: unknown,
 ): message is AiSessionStreamMessage {
     if (typeof message !== "object" || message === null) {

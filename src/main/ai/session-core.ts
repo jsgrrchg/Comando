@@ -536,7 +536,7 @@ function buildModelsFromConfigOptions(
     }));
 }
 
-export function mergeMissingModelOptions(
+function mergeMissingModelOptions(
     configOptions: readonly AiSessionConfigOption[],
     models: readonly AiSessionModel[],
 ): readonly AiSessionConfigOption[] {
@@ -573,7 +573,7 @@ export function mergeMissingModelOptions(
     );
 }
 
-export function syncSelectedModelOption(
+function syncSelectedModelOption(
     configOptions: readonly AiSessionConfigOption[],
     modelId: string | null,
 ): readonly AiSessionConfigOption[] {
@@ -600,7 +600,7 @@ export function syncSelectedModelOption(
     );
 }
 
-export function syncSelectedModeOption(
+function syncSelectedModeOption(
     configOptions: readonly AiSessionConfigOption[],
     modeId: string | null,
 ): readonly AiSessionConfigOption[] {

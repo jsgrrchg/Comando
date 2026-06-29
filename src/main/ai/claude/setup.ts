@@ -263,7 +263,7 @@ export function loadClaudeSecretBundle(
     };
 }
 
-export function getClaudeCredentialSource(
+function getClaudeCredentialSource(
     authMethod: ClaudeAuthMethodId | null,
     secrets: ClaudeSecretBundle,
     env: NodeJS.ProcessEnv = process.env,
@@ -852,7 +852,7 @@ export function gatewayValidationError(
     }
 }
 
-export function bedrockGatewayValidationError(
+function bedrockGatewayValidationError(
     settings: ClaudeRuntimeSettings,
 ): string | null {
     try {

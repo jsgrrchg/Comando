@@ -538,7 +538,7 @@ export class NativeGitGateway implements ClosableGitGateway {
     }
 }
 
-export function nativeRepositorySnapshotToMain(
+function nativeRepositorySnapshotToMain(
     snapshot: NativeGitRepositorySnapshot,
 ): GitRepositorySnapshot {
     return {
@@ -550,7 +550,7 @@ export function nativeRepositorySnapshotToMain(
     };
 }
 
-export function nativeFileDiffToMain(diff: NativeGitFileDiff): GitFileDiff {
+function nativeFileDiffToMain(diff: NativeGitFileDiff): GitFileDiff {
     return {
         changedPath: diff.path,
         hunks: diff.hunks.map(nativeDiffHunkToMain),

@@ -189,7 +189,7 @@ export function getKiloAuthMethods(): readonly AiAuthMethod[] {
     ];
 }
 
-export function getKiloCredentialSource(
+function getKiloCredentialSource(
     authMethod: KiloAuthMethodId | null,
     secrets: KiloSecretBundle,
     env: NodeJS.ProcessEnv = process.env,

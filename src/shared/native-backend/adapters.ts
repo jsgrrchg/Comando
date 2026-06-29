@@ -303,7 +303,7 @@ export function nativeProjectSummaryToIpc(
     };
 }
 
-export function nativeProjectTreeEntryToIpc(
+function nativeProjectTreeEntryToIpc(
     entry: NativeProjectTreeEntry,
 ): ProjectTreeNode {
     return {
@@ -325,7 +325,7 @@ export function nativeProjectTreeEntriesToIpc(
     return entries.map(nativeProjectTreeEntryToIpc);
 }
 
-export function nativeIndexedProjectEntryToIpc(
+function nativeIndexedProjectEntryToIpc(
     entry: NativeIndexedProjectEntry,
 ): ProjectTreeNode {
     return nativeProjectTreeEntryToIpc(entry);

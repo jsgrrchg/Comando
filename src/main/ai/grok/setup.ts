@@ -195,7 +195,7 @@ export function getGrokAuthMethods(): readonly AiAuthMethod[] {
     ];
 }
 
-export function getGrokCredentialSource(
+function getGrokCredentialSource(
     authMethod: GrokAuthMethodId | null,
     secrets: GrokSecretBundle,
     env: NodeJS.ProcessEnv = process.env,
