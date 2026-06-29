@@ -49,6 +49,11 @@ import {
 } from "@shared/ai-review-action-log";
 import { resolveTrackedFileHunks } from "@shared/ai-tracked-file";
 import { isSessionBusyErrorMessage } from "@shared/ai-errors";
+import {
+    applyModelIdToConfigOptions,
+    applyReasoningEffortToConfigOptions,
+    isReasoningEffortConfigOption,
+} from "@shared/ai-config-options";
 
 import {
     appendSelectionMentionDraftPart,
@@ -2316,15 +2321,17 @@ function createSessionSnapshotFromEvent(
         event.kind === "subagent-created"
             ? (event.modelId ?? catalog?.modelId ?? null)
             : (catalog?.modelId ?? null);
+    const reasoningEffort =
+        event.kind === "subagent-created" ? event.reasoningEffort : null;
 
     return {
         activeTurnStartedAt:
             event.kind === "status" ? event.activeTurnStartedAt : null,
         availableCommands: catalog?.availableCommands ?? [],
         closedAt: event.kind === "session-closed" ? event.closedAt : null,
-        configOptions: applyModelIdToConfigOptions(
-            catalog?.configOptions ?? [],
-            modelId,
+        configOptions: applyReasoningEffortToConfigOptions(
+            applyModelIdToConfigOptions(catalog?.configOptions ?? [], modelId),
+            reasoningEffort,
         ),
         lastError: event.kind === "status" ? event.lastError : null,
         messages: [],
@@ -2339,6 +2346,7 @@ function createSessionSnapshotFromEvent(
         plan: event.kind === "plan" ? event.plan : null,
         parentSessionId: event.parentSessionId,
         projectId: event.kind === "session-info" ? event.projectId : null,
+        reasoningEffort,
         runtimeId: event.runtimeId,
         runtimeSessionId: event.runtimeSessionId,
         sessionId: event.sessionId,
@@ -2510,20 +2518,27 @@ function applySessionDomainEventToSnapshot(
                 updatedAt: event.updatedAt,
                 worktreeId: event.worktreeId,
             };
-        case "subagent-created":
+        case "subagent-created": {
+            const reasoningEffort =
+                event.reasoningEffort ?? snapshot.reasoningEffort ?? null;
             return {
                 ...snapshot,
-                configOptions: applyModelIdToConfigOptions(
-                    snapshot.configOptions,
-                    event.modelId,
+                configOptions: applyReasoningEffortToConfigOptions(
+                    applyModelIdToConfigOptions(
+                        snapshot.configOptions,
+                        event.modelId,
+                    ),
+                    reasoningEffort,
                 ),
                 modelId: event.modelId ?? snapshot.modelId,
                 parentSessionId: event.parentSessionId,
+                reasoningEffort,
                 runtimeSessionId:
                     event.runtimeSessionId ?? snapshot.runtimeSessionId,
                 title: event.title,
                 updatedAt: event.updatedAt,
             };
+        }
         case "subagent-breadcrumb":
             return {
                 ...snapshot,
@@ -2713,22 +2728,27 @@ function mergeRuntimeCatalogIntoSnapshot(
     catalog: AiRuntimeCatalog,
 ): AiSessionSnapshot {
     const modelId = snapshot.modelId ?? catalog.modelId;
+    const reasoningEffort = snapshot.reasoningEffort ?? null;
     return {
         ...snapshot,
         availableCommands:
             snapshot.availableCommands.length > 0
                 ? snapshot.availableCommands
                 : catalog.availableCommands,
-        configOptions: applyModelIdToConfigOptions(
-            snapshot.configOptions.length > 0
-                ? snapshot.configOptions
-                : catalog.configOptions,
-            modelId,
+        configOptions: applyReasoningEffortToConfigOptions(
+            applyModelIdToConfigOptions(
+                snapshot.configOptions.length > 0
+                    ? snapshot.configOptions
+                    : catalog.configOptions,
+                modelId,
+            ),
+            reasoningEffort,
         ),
         modeId: snapshot.modeId ?? catalog.modeId,
         modes: snapshot.modes.length > 0 ? snapshot.modes : catalog.modes,
         modelId,
         models: snapshot.models.length > 0 ? snapshot.models : catalog.models,
+        reasoningEffort,
     };
 }
 
@@ -2951,11 +2971,25 @@ function applySessionPatch(
     snapshot: AiSessionSnapshot,
     patch: AiSessionPatch,
 ): AiSessionSnapshot {
-    return {
+    const patchedSnapshot = {
         ...snapshot,
         ...patch.changes,
         runtimeId: snapshot.runtimeId,
         sessionId: snapshot.sessionId,
+    };
+    if (patch.changes.configOptions === undefined) {
+        return patchedSnapshot;
+    }
+
+    return {
+        ...patchedSnapshot,
+        configOptions: applyReasoningEffortToConfigOptions(
+            applyModelIdToConfigOptions(
+                patchedSnapshot.configOptions,
+                patchedSnapshot.modelId,
+            ),
+            patchedSnapshot.reasoningEffort ?? null,
+        ),
     };
 }
 
@@ -3891,26 +3925,6 @@ function hasSelectConfigValue(
     );
 }
 
-function applyModelIdToConfigOptions(
-    configOptions: readonly AiSessionConfigOption[],
-    modelId: string | null,
-): readonly AiSessionConfigOption[] {
-    if (!modelId) {
-        return configOptions;
-    }
-
-    return configOptions.map((option) =>
-        option.type === "select" &&
-        (option.category === "model" || option.id.toLowerCase() === "model") &&
-        hasSelectConfigValue(option, modelId)
-            ? {
-                  ...option,
-                  value: modelId,
-              }
-            : option,
-    );
-}
-
 function setModeOnSnapshot(
     snapshot: AiSessionSnapshot,
     modeId: string,
@@ -3939,16 +3953,9 @@ function setModelOnSnapshot(
 ): AiSessionSnapshot {
     return {
         ...snapshot,
-        configOptions: snapshot.configOptions.map((option) =>
-            option.type === "select" &&
-            (option.category === "model" ||
-                option.id.toLowerCase() === "model") &&
-            hasSelectConfigValue(option, modelId)
-                ? {
-                      ...option,
-                      value: modelId,
-                  }
-                : option,
+        configOptions: applyModelIdToConfigOptions(
+            snapshot.configOptions,
+            modelId,
         ),
         modelId,
         updatedAt: new Date().toISOString(),
@@ -3960,6 +3967,8 @@ function setConfigOptionOnSnapshot(
     optionId: string,
     value: boolean | string,
 ): AiSessionSnapshot {
+    const previousOption =
+        snapshot.configOptions.find((option) => option.id === optionId) ?? null;
     const nextConfigOptions = snapshot.configOptions.map((option) =>
         option.id !== optionId
             ? option
@@ -3979,6 +3988,10 @@ function setConfigOptionOnSnapshot(
     );
     const updatedOption =
         nextConfigOptions.find((option) => option.id === optionId) ?? null;
+    const hasUpdatedOptionValue =
+        updatedOption !== null &&
+        previousOption !== null &&
+        updatedOption.value !== previousOption.value;
 
     return {
         ...snapshot,
@@ -3997,6 +4010,13 @@ function setConfigOptionOnSnapshot(
             typeof value === "string"
                 ? value
                 : snapshot.modelId,
+        reasoningEffort:
+            hasUpdatedOptionValue &&
+            updatedOption?.type === "select" &&
+            isReasoningEffortConfigOption(updatedOption) &&
+            typeof value === "string"
+                ? value
+                : snapshot.reasoningEffort,
         updatedAt: new Date().toISOString(),
     };
 }

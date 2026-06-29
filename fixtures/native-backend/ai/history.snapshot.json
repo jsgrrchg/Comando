@@ -13,6 +13,7 @@
   "lastError": null,
   "modeId": "agent",
   "modelId": "gpt-5",
+  "reasoningEffort": "high",
   "pendingPermission": null,
   "pendingUserInput": null,
   "plan": null,

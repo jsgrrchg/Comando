@@ -620,10 +620,7 @@ describe("AiService prepareSession", () => {
                 sessionId: "session-1",
             }),
         );
-        expect(saveRuntimeModePreference).toHaveBeenCalledWith(
-            "codex",
-            "agent",
-        );
+        expect(saveRuntimeModePreference).not.toHaveBeenCalled();
     });
 
     it("routes live renames through the native backend and updates the cached snapshot", async () => {
@@ -811,11 +808,27 @@ describe("AiService prepareSession", () => {
         const setSessionConfigOption = vi.fn<
             NativeAiGateway["setSessionConfigOption"]
         >(() => Promise.resolve());
+        const saveRuntimeSelectionPreferenceOption = vi.fn();
+        const saveRuntimeModePreference = vi.fn();
+        const saveRuntimeModelPreference = vi.fn();
         const service = createPrepareService({
             nativeAi: createNativeAi({
                 prepareSession,
                 setSessionConfigOption,
             }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {},
+                    modeId: null,
+                    modelId: null,
+                })),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveRuntimeSelectionPreferenceOption,
+                saveRuntimeModePreference,
+                saveRuntimeModelPreference,
+                saveSessionSnapshot: vi.fn(),
+            } as never,
         });
 
         await service.prepareSession(
@@ -846,6 +859,10 @@ describe("AiService prepareSession", () => {
                 (option) => option.id === "reasoning_effort",
             )?.value,
         ).toBe("medium");
+        expect(updatedSnapshot?.reasoningEffort).toBe("medium");
+        expect(saveRuntimeSelectionPreferenceOption).not.toHaveBeenCalled();
+        expect(saveRuntimeModePreference).not.toHaveBeenCalled();
+        expect(saveRuntimeModelPreference).not.toHaveBeenCalled();
     });
 
     it("applies saved reasoning preferences after a fresh prepare discovers config options", async () => {
@@ -907,7 +924,66 @@ describe("AiService prepareSession", () => {
         ).toBe("medium");
     });
 
-    it("prefers runtime model preferences over stale persisted selections when preparing", async () => {
+    it("keeps existing reasoning selections over runtime defaults when preparing", async () => {
+        const persistedSnapshot = createSnapshot({
+            configOptions: [createReasoningConfig("high")],
+        });
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(() =>
+            Promise.resolve(persistedSnapshot),
+        );
+        const setSessionConfigOption = vi.fn<
+            NativeAiGateway["setSessionConfigOption"]
+        >(() => Promise.resolve());
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                loadSessionSnapshot: vi.fn(() =>
+                    Promise.resolve(persistedSnapshot),
+                ),
+                prepareSession,
+                setSessionConfigOption,
+            }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {
+                        reasoning_effort: "low",
+                    },
+                    modeId: null,
+                    modelId: null,
+                })),
+                loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+        });
+
+        const snapshot = await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        expect(setSessionConfigOption).not.toHaveBeenCalled();
+        expect(
+            prepareSession.mock.calls[0]?.[0].launch.desiredSelections
+                .configOptions.find((option) => option.id === "reasoning_effort")
+                ?.value,
+        ).toBe("high");
+        expect(
+            snapshot.configOptions.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("high");
+    });
+
+    it("keeps persisted model selections over runtime defaults when preparing", async () => {
         const persistedSnapshot = createSnapshot({
             configOptions: [createModelConfig("gpt-5.4-mini")],
             modelId: "gpt-5.4-mini",
@@ -951,12 +1027,131 @@ describe("AiService prepareSession", () => {
         const desiredSelections =
             prepareSession.mock.calls[0]?.[0].launch.desiredSelections;
         expect(desiredSelections).toMatchObject({
-            modelId: "gpt-5.5",
+            modelId: "gpt-5.4-mini",
         });
         expect(
             desiredSelections?.configOptions.find((option) => option.id === "model")
                 ?.value,
-        ).toBe("gpt-5.5");
+        ).toBe("gpt-5.4-mini");
+    });
+
+    it("uses runtime defaults for new sessions without their own selections", async () => {
+        const runtimeCatalog = createSnapshot({
+            configOptions: [createReasoningConfig("medium")],
+        });
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+            ({ launch }) => Promise.resolve(launch.persistedSnapshot),
+        );
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession,
+            }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => ({
+                    availableCommands: runtimeCatalog.availableCommands,
+                    configOptions: runtimeCatalog.configOptions,
+                    modeId: runtimeCatalog.modeId,
+                    modes: runtimeCatalog.modes,
+                    modelId: runtimeCatalog.modelId,
+                    models: runtimeCatalog.models,
+                })),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {
+                        reasoning_effort: "low",
+                    },
+                    modeId: null,
+                    modelId: null,
+                })),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        const desiredSelections =
+            prepareSession.mock.calls[0]?.[0].launch.desiredSelections;
+        expect(
+            desiredSelections?.configOptions.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("low");
+    });
+
+    it("keeps authoritative subagent reasoning effort over runtime defaults", async () => {
+        const runtimeCatalog = createSnapshot({
+            configOptions: [createReasoningConfig("medium")],
+        });
+        const persistedSnapshot = createSnapshot({
+            configOptions: [],
+            parentSessionId: "session-parent",
+            reasoningEffort: "high",
+            sessionId: "session-parent:subagent:runtime-child",
+        });
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+            ({ launch }) => Promise.resolve(launch.persistedSnapshot),
+        );
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                loadSessionSnapshot: vi.fn(() =>
+                    Promise.resolve(persistedSnapshot),
+                ),
+                prepareSession,
+            }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => ({
+                    availableCommands: runtimeCatalog.availableCommands,
+                    configOptions: runtimeCatalog.configOptions,
+                    modeId: runtimeCatalog.modeId,
+                    modes: runtimeCatalog.modes,
+                    modelId: runtimeCatalog.modelId,
+                    models: runtimeCatalog.models,
+                })),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {
+                        reasoning_effort: "low",
+                    },
+                    modeId: null,
+                    modelId: null,
+                })),
+                loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-parent:subagent:runtime-child",
+                title: "Child",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        const desiredSelections =
+            prepareSession.mock.calls[0]?.[0].launch.desiredSelections;
+        expect(
+            desiredSelections?.configOptions.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("high");
     });
 
     it("does not restore persisted review files before native prepare", async () => {

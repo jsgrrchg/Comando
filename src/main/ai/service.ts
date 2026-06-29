@@ -65,6 +65,7 @@ import {
     type AiReviewActionLogState,
     type AiReviewActionLogTarget,
 } from "@shared/ai-review-action-log";
+import { isReasoningEffortConfigOption } from "@shared/ai-config-options";
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
@@ -112,6 +113,7 @@ import {
     setConfigOptionOnSnapshot,
     setModeOnSnapshot,
     setModelOnSnapshot,
+    setReasoningEffortOnSnapshot,
     setTitleOnSnapshot,
     type NormalizedSessionCatalogPayload,
 } from "./session-core";
@@ -444,6 +446,7 @@ export class AiService {
             readonly order: number;
         }
     >();
+    readonly #sessionsWithoutOwnSelections = new Set<string>();
     #nativeAi: NativeAiGateway | null;
     readonly #nativeAuthMigratedRuntimeIds = new Set<AiRuntimeId>();
     readonly #nativeChildParentSessionIds = new Map<string, string>();
@@ -714,6 +717,7 @@ export class AiService {
                     pendingPermission: null,
                     pendingUserInput: null,
                     plan: null,
+                    reasoningEffort: null,
                     runtimeSessionId:
                         event.childRuntimeSessionId ?? event.runtimeSessionId,
                     sessionId: event.childSessionId,
@@ -725,13 +729,20 @@ export class AiService {
                     trackedFiles: [],
                     updatedAt: event.updatedAt,
                 };
-                const childSnapshot = event.modelId
+                let childSnapshot = event.modelId
                     ? setModelOnSnapshot(
                           baseChildSnapshot,
                           event.modelId,
                           event.updatedAt,
                       )
                     : baseChildSnapshot;
+                childSnapshot = event.reasoningEffort
+                    ? setReasoningEffortOnSnapshot(
+                          childSnapshot,
+                          event.reasoningEffort,
+                          event.updatedAt,
+                      )
+                    : childSnapshot;
                 const cachedChildSnapshot = this.#cacheLiveSessionSnapshot(
                     childSnapshot,
                     ownerWindowId,
@@ -1437,53 +1448,37 @@ export class AiService {
 
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
         if (!this.#liveSessionContexts.has(input.sessionId)) {
-            const snapshot = await this.#updateSessionSnapshot(
+            await this.#updateSessionSnapshot(
                 input.sessionId,
                 (currentSnapshot) =>
                     setModeOnSnapshot(currentSnapshot, input.modeId),
-            );
-            this.#persistence.saveRuntimeModePreference(
-                snapshot.runtimeId,
-                input.modeId,
             );
             return;
         }
 
         await this.#requireNativeAiGateway().setSessionMode(input);
-        const snapshot = await this.#updateSessionSnapshot(
+        await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
                 setModeOnSnapshot(currentSnapshot, input.modeId),
-        );
-        this.#persistence.saveRuntimeModePreference(
-            snapshot.runtimeId,
-            input.modeId,
         );
     }
 
     async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
         if (!this.#liveSessionContexts.has(input.sessionId)) {
-            const snapshot = await this.#updateSessionSnapshot(
+            await this.#updateSessionSnapshot(
                 input.sessionId,
                 (currentSnapshot) =>
                     setModelOnSnapshot(currentSnapshot, input.modelId),
-            );
-            this.#persistence.saveRuntimeModelPreference(
-                snapshot.runtimeId,
-                input.modelId,
             );
             return;
         }
 
         await this.#requireNativeAiGateway().setSessionModel(input);
-        const snapshot = await this.#updateSessionSnapshot(
+        await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
                 setModelOnSnapshot(currentSnapshot, input.modelId),
-        );
-        this.#persistence.saveRuntimeModelPreference(
-            snapshot.runtimeId,
-            input.modelId,
         );
     }
 
@@ -1491,7 +1486,7 @@ export class AiService {
         input: AiSessionConfigOptionMutationInput,
     ): Promise<void> {
         if (!this.#liveSessionContexts.has(input.sessionId)) {
-            const snapshot = await this.#updateSessionSnapshot(
+            await this.#updateSessionSnapshot(
                 input.sessionId,
                 (currentSnapshot) =>
                     setConfigOptionOnSnapshot(
@@ -1500,17 +1495,11 @@ export class AiService {
                         input.value,
                     ),
             );
-            this.#persistRuntimeConfigOptionSelection(
-                snapshot.runtimeId,
-                snapshot,
-                input.optionId,
-                input.value,
-            );
             return;
         }
 
         await this.#requireNativeAiGateway().setSessionConfigOption(input);
-        const snapshot = await this.#updateSessionSnapshot(
+        await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
                 setConfigOptionOnSnapshot(
@@ -1518,12 +1507,6 @@ export class AiService {
                     input.optionId,
                     input.value,
                 ),
-        );
-        this.#persistRuntimeConfigOptionSelection(
-            snapshot.runtimeId,
-            snapshot,
-            input.optionId,
-            input.value,
         );
     }
 
@@ -2461,9 +2444,12 @@ export class AiService {
         const preferences = this.#persistence.loadRuntimeSelectionPreferences(
             snapshot.runtimeId,
         );
+        const allowRuntimeDefaults =
+            this.#sessionsWithoutOwnSelections.has(sessionId);
         const modelConfig = getModelConfigOption(snapshot.configOptions);
         if (
             !modelConfig &&
+            (allowRuntimeDefaults || !snapshot.modelId) &&
             preferences.modelId &&
             preferences.modelId !== snapshot.modelId &&
             snapshot.models.some((model) => model.id === preferences.modelId)
@@ -2478,6 +2464,7 @@ export class AiService {
         const modeConfig = getModeConfigOption(snapshot.configOptions);
         if (
             !modeConfig &&
+            (allowRuntimeDefaults || !snapshot.modeId) &&
             preferences.modeId &&
             preferences.modeId !== snapshot.modeId &&
             snapshot.modes.some((mode) => mode.id === preferences.modeId)
@@ -2492,6 +2479,9 @@ export class AiService {
         const mutations = getPreferredConfigOptionMutations(
             snapshot,
             preferences,
+            {
+                applyRuntimeDefaults: allowRuntimeDefaults,
+            },
         );
         for (const mutation of mutations) {
             await this.setSessionConfigOption({
@@ -2500,6 +2490,13 @@ export class AiService {
                 value: mutation.value,
             });
             snapshot = this.#liveSnapshots.get(sessionId) ?? snapshot;
+        }
+
+        if (
+            allowRuntimeDefaults &&
+            snapshotHasEffectiveSelections(snapshot)
+        ) {
+            this.#sessionsWithoutOwnSelections.delete(sessionId);
         }
 
         return snapshot;
@@ -3340,18 +3337,24 @@ export class AiService {
             );
         }
 
-        const persistedSnapshot = this.#hydrateSnapshotRuntimeCatalog(
+        const sourceSnapshot =
             snapshotOverride ??
-                this.#liveSnapshots.get(input.sessionId) ??
-                (await this.#loadPersistedSessionSnapshot(input.sessionId)) ??
-                createEmptyAiSessionSnapshot({
-                    projectId: input.projectId,
-                    runtimeId: input.runtimeId,
-                    sessionId: input.sessionId,
-                    title: input.title,
-                    worktreeId: input.worktreeId ?? null,
-                }),
-        );
+            this.#liveSnapshots.get(input.sessionId) ??
+            (await this.#loadPersistedSessionSnapshot(input.sessionId)) ??
+            createEmptyAiSessionSnapshot({
+                projectId: input.projectId,
+                runtimeId: input.runtimeId,
+                sessionId: input.sessionId,
+                title: input.title,
+                worktreeId: input.worktreeId ?? null,
+            });
+        const persistedSnapshot =
+            this.#hydrateSnapshotRuntimeCatalog(sourceSnapshot);
+        if (hasAnySessionSelectionValue(sourceSnapshot)) {
+            this.#sessionsWithoutOwnSelections.delete(input.sessionId);
+        } else {
+            this.#sessionsWithoutOwnSelections.add(input.sessionId);
+        }
         const persistedSubagentSessionMappings =
             await this.#listPersistedRuntimeMappingsForParent(
                 persistedSnapshot.sessionId,
@@ -3363,6 +3366,7 @@ export class AiService {
             desiredSelections: this.#resolveDesiredSelections(
                 input.runtimeId,
                 persistedSnapshot,
+                sourceSnapshot,
             ),
             input: {
                 ...input,
@@ -4289,12 +4293,18 @@ export class AiService {
             AiSessionSnapshot,
             "configOptions" | "modeId" | "modelId"
         >,
+        sourceSnapshot: Pick<
+            AiSessionSnapshot,
+            "configOptions" | "modeId" | "modelId" | "reasoningEffort"
+        >,
     ): Pick<AiSessionSnapshot, "configOptions" | "modeId" | "modelId"> & {
         readonly preferredConfigOptions: Record<string, boolean | string>;
     } {
         const preferences =
             this.#persistence.loadRuntimeSelectionPreferences(runtimeId);
+        const sessionSelections = getSessionSelectionValues(sourceSnapshot);
         const preferredModeId =
+            sessionSelections.modeId ??
             preferences.modeId ??
             getPreferredConfigSelectionId(
                 preferences.configOptions,
@@ -4302,6 +4312,7 @@ export class AiService {
                 isModeConfigOption,
             );
         const preferredModelId =
+            sessionSelections.modelId ??
             preferences.modelId ??
             getPreferredConfigSelectionId(
                 preferences.configOptions,
@@ -4315,41 +4326,12 @@ export class AiService {
                 preferences.configOptions,
                 preferredModeId,
                 preferredModelId,
+                sessionSelections,
             ),
             modeId: preferredModeId ?? persistedSnapshot.modeId,
             modelId: preferredModelId ?? persistedSnapshot.modelId,
             preferredConfigOptions: preferences.configOptions,
         };
-    }
-
-    #persistRuntimeConfigOptionSelection(
-        runtimeId: AiRuntimeId,
-        snapshot: Pick<AiSessionSnapshot, "configOptions"> | null,
-        optionId: string,
-        value: boolean | string,
-    ): void {
-        this.#persistence.saveRuntimeSelectionPreferenceOption(
-            runtimeId,
-            optionId,
-            value,
-        );
-
-        if (typeof value !== "string") {
-            return;
-        }
-
-        const configOptions = snapshot?.configOptions ?? [];
-        const modeConfig = getModeConfigOption(configOptions);
-        const modelConfig = getModelConfigOption(configOptions);
-        const normalizedOptionId = optionId.toLowerCase();
-
-        if (modelConfig?.id === optionId || normalizedOptionId === "model") {
-            this.#persistence.saveRuntimeModelPreference(runtimeId, value);
-        }
-
-        if (modeConfig?.id === optionId || normalizedOptionId === "mode") {
-            this.#persistence.saveRuntimeModePreference(runtimeId, value);
-        }
     }
 
     async #updateSessionSnapshot(
@@ -5047,6 +5029,7 @@ function mergePersistedCatalogIntoSessionSnapshot(
     catalog: PersistedRuntimeCatalogSnapshot,
 ): AiSessionSnapshot {
     const modelId = snapshot.modelId ?? catalog.modelId;
+    const reasoningEffort = snapshot.reasoningEffort ?? null;
     const merged = {
         ...snapshot,
         availableCommands:
@@ -5062,7 +5045,16 @@ function mergePersistedCatalogIntoSessionSnapshot(
         modelId,
         models: snapshot.models.length > 0 ? snapshot.models : catalog.models,
     };
-    return modelId ? setModelOnSnapshot(merged, modelId, merged.updatedAt) : merged;
+    const modelMerged = modelId
+        ? setModelOnSnapshot(merged, modelId, merged.updatedAt)
+        : merged;
+    return reasoningEffort
+        ? setReasoningEffortOnSnapshot(
+              modelMerged,
+              reasoningEffort,
+              modelMerged.updatedAt,
+          )
+        : modelMerged;
 }
 
 function mergePersistedCatalogIntoRuntimeStatus(
@@ -5170,17 +5162,23 @@ function applyRuntimeSelectionPreferencesToConfigOptions(
     preferences: Record<string, boolean | string>,
     preferredModeId: string | null,
     preferredModelId: string | null,
+    sessionSelections: SessionSelectionValues = EMPTY_SESSION_SELECTION_VALUES,
 ): readonly AiSessionConfigOption[] {
     return configOptions.map((option) => {
-        const savedValue = getRuntimeSelectionPreferenceValue(
-            preferences,
-            option.id,
-        );
-        const preferredValue = savedValue ?? getTopLevelSelectionPreference(
+        const sessionValue = getSessionSelectionValue(
+            sessionSelections,
             option,
-            preferredModeId,
-            preferredModelId,
         );
+        const savedValue =
+            sessionValue ??
+            getRuntimeSelectionPreferenceValue(preferences, option.id);
+        const preferredValue =
+            savedValue ??
+            getTopLevelSelectionPreference(
+                option,
+                preferredModeId,
+                preferredModelId,
+            );
         if (preferredValue === undefined || option.value === preferredValue) {
             return option;
         }
@@ -5234,19 +5232,42 @@ interface PreferredConfigOptionMutation {
     readonly value: boolean | string;
 }
 
+interface SessionSelectionValues {
+    readonly configOptions: Readonly<Record<string, boolean | string>>;
+    readonly modeId: string | null;
+    readonly modelId: string | null;
+    readonly reasoningEffort: string | null;
+}
+
+const EMPTY_SESSION_SELECTION_VALUES: SessionSelectionValues = {
+    configOptions: {},
+    modeId: null,
+    modelId: null,
+    reasoningEffort: null,
+};
+
 function getPreferredConfigOptionMutations(
     snapshot: Pick<
         AiSessionSnapshot,
-        "configOptions" | "modeId" | "modelId"
+        "configOptions" | "modeId" | "modelId" | "reasoningEffort"
     >,
     preferences: {
         readonly configOptions: Record<string, boolean | string>;
         readonly modeId: string | null;
         readonly modelId: string | null;
     },
+    options: { readonly applyRuntimeDefaults?: boolean } = {},
 ): readonly PreferredConfigOptionMutation[] {
+    const sessionSelections = options.applyRuntimeDefaults
+        ? EMPTY_SESSION_SELECTION_VALUES
+        : getSessionSelectionValues(snapshot);
+
     return snapshot.configOptions
         .map((option) => {
+            if (getSessionSelectionValue(sessionSelections, option) !== undefined) {
+                return null;
+            }
+
             const savedValue = getRuntimeSelectionPreferenceValue(
                 preferences.configOptions,
                 option.id,
@@ -5293,6 +5314,88 @@ function getPreferredConfigOptionMutations(
                 mutation !== null,
         )
         .sort((left, right) => left.priority - right.priority);
+}
+
+function getSessionSelectionValues(
+    snapshot: Pick<
+        AiSessionSnapshot,
+        "configOptions" | "modeId" | "modelId" | "reasoningEffort"
+    >,
+): SessionSelectionValues {
+    const configOptions: Record<string, boolean | string> = {};
+    for (const option of snapshot.configOptions) {
+        configOptions[option.id] = option.value;
+    }
+
+    return {
+        configOptions,
+        modeId:
+            snapshot.modeId ??
+            getSessionConfigSelectionId(snapshot.configOptions, isModeConfigOption),
+        modelId:
+            snapshot.modelId ??
+            getSessionConfigSelectionId(snapshot.configOptions, isModelConfigOption),
+        reasoningEffort: snapshot.reasoningEffort ?? null,
+    };
+}
+
+function hasAnySessionSelectionValue(
+    snapshot: Pick<
+        AiSessionSnapshot,
+        "configOptions" | "modeId" | "modelId" | "reasoningEffort"
+    >,
+): boolean {
+    const selections = getSessionSelectionValues(snapshot);
+    return (
+        selections.modeId !== null ||
+        selections.modelId !== null ||
+        selections.reasoningEffort !== null ||
+        Object.keys(selections.configOptions).length > 0
+    );
+}
+
+function snapshotHasEffectiveSelections(
+    snapshot: Pick<
+        AiSessionSnapshot,
+        "configOptions" | "modeId" | "modelId" | "reasoningEffort"
+    >,
+): boolean {
+    return hasAnySessionSelectionValue(snapshot);
+}
+
+function getSessionSelectionValue(
+    selections: SessionSelectionValues,
+    option: AiSessionConfigOption,
+): boolean | string | undefined {
+    const optionValue = getRuntimeSelectionPreferenceValue(
+        selections.configOptions,
+        option.id,
+    );
+    if (optionValue !== undefined) {
+        return optionValue;
+    }
+
+    if (isModeConfigOption(option)) {
+        return selections.modeId ?? undefined;
+    }
+
+    if (isModelConfigOption(option)) {
+        return selections.modelId ?? undefined;
+    }
+
+    if (isReasoningEffortConfigOption(option)) {
+        return selections.reasoningEffort ?? undefined;
+    }
+
+    return undefined;
+}
+
+function getSessionConfigSelectionId(
+    configOptions: readonly AiSessionConfigOption[],
+    matchesOption: (option: AiSessionConfigOption) => boolean,
+): string | null {
+    const option = configOptions.find(matchesOption);
+    return option?.type === "select" ? option.value : null;
 }
 
 function getConfigOptionPreferencePriority(

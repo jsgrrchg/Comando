@@ -11,6 +11,7 @@
     "parentSessionId": "session_1",
     "parentRuntimeSessionId": "runtime_session_1",
     "modelId": "gpt-5",
+    "reasoningEffort": "high",
     "title": "Aristotle"
   },
   "meta": {

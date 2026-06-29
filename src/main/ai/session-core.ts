@@ -6,6 +6,11 @@ import {
     toDisplayRelativePath,
     type PathIdentityPlatform,
 } from "@shared/path-identity";
+import {
+    applyModelIdToConfigOptions,
+    applyReasoningEffortToConfigOptions,
+    isReasoningEffortConfigOption,
+} from "@shared/ai-config-options";
 import type {
     AiAvailableCommand,
     AiRuntimeId,
@@ -176,6 +181,7 @@ function createAiSessionPatchChanges(
         "plan",
         "parentSessionId",
         "projectId",
+        "reasoningEffort",
         "reviewActionLog",
         "runtimeSessionId",
         "status",
@@ -257,7 +263,7 @@ export function applySessionCatalogToSnapshot(
                       mergedConfigOptions,
                       snapshot.modelId,
                   )
-                : null
+                : snapshot.modelId
             : snapshot.modelId;
     const configOptions = syncSelectedModelOption(
         mergedConfigOptions,
@@ -284,7 +290,13 @@ export function applyNormalizedSessionCatalogToSnapshot(
     snapshot: AiSessionSnapshot,
     payload: NormalizedSessionCatalogPayload,
 ): AiSessionSnapshot {
-    const configOptions = payload.configOptions ?? snapshot.configOptions;
+    const configOptions =
+        payload.configOptions !== undefined
+            ? preserveConfigOptionSelections(
+                  payload.configOptions,
+                  snapshot.configOptions,
+              )
+            : snapshot.configOptions;
     const modes =
         payload.configOptions !== undefined
             ? buildModesFromConfigOptions(configOptions)
@@ -309,7 +321,7 @@ export function applyNormalizedSessionCatalogToSnapshot(
         payload.configOptions !== undefined
             ? hasModelCatalog
                 ? deriveModelId(null, configOptions, snapshot.modelId)
-                : null
+                : snapshot.modelId
             : snapshot.modelId;
 
     return {
@@ -317,9 +329,12 @@ export function applyNormalizedSessionCatalogToSnapshot(
         ...(payload.availableCommands !== undefined
             ? { availableCommands: payload.availableCommands }
             : {}),
-        configOptions: syncSelectedModelOption(
-            syncSelectedModeOption(configOptions, modeId),
-            modelId,
+        configOptions: applyReasoningEffortToConfigOptions(
+            syncSelectedModelOption(
+                syncSelectedModeOption(configOptions, modeId),
+                modelId,
+            ),
+            snapshot.reasoningEffort ?? null,
         ),
         modeId,
         modes,
@@ -579,6 +594,46 @@ function syncSelectedModelOption(
     );
 }
 
+function preserveConfigOptionSelections(
+    incomingOptions: readonly AiSessionConfigOption[],
+    existingOptions: readonly AiSessionConfigOption[],
+): readonly AiSessionConfigOption[] {
+    if (incomingOptions.length === 0 || existingOptions.length === 0) {
+        return incomingOptions;
+    }
+
+    const existingById = new Map(
+        existingOptions.map((option) => [option.id, option]),
+    );
+
+    return incomingOptions.map((option) => {
+        const existing = existingById.get(option.id);
+        if (!existing || existing.type !== option.type) {
+            return option;
+        }
+
+        if (option.type === "boolean" && existing.type === "boolean") {
+            return {
+                ...option,
+                value: existing.value,
+            };
+        }
+
+        if (
+            option.type === "select" &&
+            existing.type === "select" &&
+            hasSelectConfigValue(option, existing.value)
+        ) {
+            return {
+                ...option,
+                value: existing.value,
+            };
+        }
+
+        return option;
+    });
+}
+
 function syncSelectedModeOption(
     configOptions: readonly AiSessionConfigOption[],
     modeId: string | null,
@@ -676,18 +731,27 @@ export function setModelOnSnapshot(
 ): AiSessionSnapshot {
     return {
         ...snapshot,
-        configOptions: snapshot.configOptions.map((option) =>
-            option.type === "select" &&
-            (option.category === "model" ||
-                option.id.toLowerCase() === "model") &&
-            hasSelectConfigValue(option, modelId)
-                ? {
-                      ...option,
-                      value: modelId,
-                  }
-                : option,
+        configOptions: applyModelIdToConfigOptions(
+            snapshot.configOptions,
+            modelId,
         ),
         modelId,
+        updatedAt,
+    };
+}
+
+export function setReasoningEffortOnSnapshot(
+    snapshot: AiSessionSnapshot,
+    reasoningEffort: string,
+    updatedAt: string = new Date().toISOString(),
+): AiSessionSnapshot {
+    return {
+        ...snapshot,
+        configOptions: applyReasoningEffortToConfigOptions(
+            snapshot.configOptions,
+            reasoningEffort,
+        ),
+        reasoningEffort,
         updatedAt,
     };
 }
@@ -710,6 +774,8 @@ export function setConfigOptionOnSnapshot(
     value: boolean | string,
     updatedAt: string = new Date().toISOString(),
 ): AiSessionSnapshot {
+    const previousOption =
+        snapshot.configOptions.find((option) => option.id === optionId) ?? null;
     const nextConfigOptions = snapshot.configOptions.map((option) =>
         option.id !== optionId
             ? option
@@ -729,6 +795,10 @@ export function setConfigOptionOnSnapshot(
     );
     const updatedOption =
         nextConfigOptions.find((option) => option.id === optionId) ?? null;
+    const hasUpdatedOptionValue =
+        updatedOption !== null &&
+        previousOption !== null &&
+        updatedOption.value !== previousOption.value;
 
     return {
         ...snapshot,
@@ -747,6 +817,13 @@ export function setConfigOptionOnSnapshot(
             typeof value === "string"
                 ? value
                 : snapshot.modelId,
+        reasoningEffort:
+            hasUpdatedOptionValue &&
+            updatedOption?.type === "select" &&
+            isReasoningEffortConfigOption(updatedOption) &&
+            typeof value === "string"
+                ? value
+                : snapshot.reasoningEffort,
         updatedAt,
     };
 }

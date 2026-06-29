@@ -79,6 +79,7 @@ const CODEX_ACP_AGENT_NICKNAME_KEY: &str = "codexAcpAgentNickname";
 const CODEX_ACP_AGENT_STATUS_KEY: &str = "codexAcpAgentStatus";
 const CODEX_ACP_AGENT_STATUSES_KEY: &str = "codexAcpAgentStatuses";
 const CODEX_ACP_MODEL_KEY: &str = "codexAcpModel";
+const CODEX_ACP_REASONING_EFFORT_KEY: &str = "codexAcpReasoningEffort";
 const ACP_TERMINAL_OUTPUT_META_KEY: &str = "terminal_output";
 const ACP_TERMINAL_EXIT_META_KEY: &str = "terminal_exit";
 const ACP_TERMINAL_ID_META_KEY: &str = "terminal_id";
@@ -1892,6 +1893,7 @@ struct SubagentRuntimeSession {
     runtime_session_id: RuntimeSessionId,
     session_id: SessionId,
     model_id: Option<String>,
+    reasoning_effort: Option<String>,
     title: String,
 }
 
@@ -1923,6 +1925,7 @@ impl NotificationContextInner {
                             runtime_session_id: mapping.runtime_session_id.clone(),
                             session_id: mapping.app_session_id,
                             model_id: None,
+                            reasoning_effort: None,
                             title: "Subagent".to_string(),
                         },
                     );
@@ -2937,6 +2940,8 @@ impl NotificationContextInner {
             .unwrap_or_else(|| "Subagent".to_string());
         let model_id =
             meta_string(meta, CODEX_ACP_MODEL_KEY).filter(|model_id| !model_id.trim().is_empty());
+        let reasoning_effort = meta_string(meta, CODEX_ACP_REASONING_EFFORT_KEY)
+            .filter(|reasoning_effort| !reasoning_effort.trim().is_empty());
         let session_id = self
             .app_session_id_by_runtime_session_id
             .get(&child_runtime_session_id.0)
@@ -2952,6 +2957,7 @@ impl NotificationContextInner {
             runtime_session_id: child_runtime_session_id.clone(),
             session_id: session_id.clone(),
             model_id,
+            reasoning_effort,
             title,
         };
         self.app_session_id_by_runtime_session_id
@@ -2967,6 +2973,7 @@ impl NotificationContextInner {
                 parent_runtime_session_id,
                 parent_session_id: subagent.parent_session_id.clone(),
                 model_id: subagent.model_id.clone(),
+                reasoning_effort: subagent.reasoning_effort.clone(),
                 title: subagent.title.clone(),
             },
         );
@@ -5106,6 +5113,7 @@ mod tests {
             (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-1"),
             (CODEX_ACP_AGENT_NICKNAME_KEY, "Galileo"),
             (CODEX_ACP_MODEL_KEY, "gpt-5"),
+            (CODEX_ACP_REASONING_EFFORT_KEY, "high"),
         ]);
         context.handle(
             SessionNotification::new(
@@ -5126,6 +5134,7 @@ mod tests {
         );
         assert_eq!(created_event.payload["parentSessionId"], "session-1");
         assert_eq!(created_event.payload["modelId"], "gpt-5");
+        assert_eq!(created_event.payload["reasoningEffort"], "high");
         assert_eq!(created_event.payload["title"], "Galileo");
 
         let breadcrumb_meta = test_meta(&[
@@ -5188,10 +5197,9 @@ mod tests {
             )
             .meta(created_meta),
         );
-        assert_eq!(
-            receiver.recv().unwrap().event_name,
-            AI_SUBAGENT_CREATED_EVENT
-        );
+        let created_event = receiver.recv().unwrap();
+        assert_eq!(created_event.event_name, AI_SUBAGENT_CREATED_EVENT);
+        assert!(created_event.payload.get("reasoningEffort").is_none());
 
         context.handle(SessionNotification::new(
             "runtime-child-1",

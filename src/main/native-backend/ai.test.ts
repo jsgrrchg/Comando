@@ -280,6 +280,7 @@ describe("NativeAiGateway", () => {
                 parentRuntimeSessionId: "runtime-session-1",
                 parentSessionId: "session-1",
                 modelId: "gpt-5",
+                reasoningEffort: "high",
                 runtimeId: "opencode",
                 runtimeSessionId: "runtime-child-1",
                 sessionId: "session-1:subagent:runtime-child-1",
@@ -310,6 +311,7 @@ describe("NativeAiGateway", () => {
                 kind: "subagent-created",
                 modelId: "gpt-5",
                 parentSessionId: "session-1",
+                reasoningEffort: "high",
                 sessionId: "session-1:subagent:runtime-child-1",
                 title: "Galileo",
             }),
@@ -520,6 +522,7 @@ describe("NativeAiGateway", () => {
                         pendingUserInput: null,
                         plan: null,
                         projectId: "project-1",
+                        reasoningEffort: "high",
                         runtimeId: "opencode",
                         runtimeSessionId: "runtime-session-1",
                         sessionId: "session-1",
@@ -561,6 +564,7 @@ describe("NativeAiGateway", () => {
             }),
         ).resolves.toMatchObject({ totalMessages: 1 });
         await expect(gateway.loadSessionSnapshot("session-1")).resolves.toMatchObject({
+            reasoningEffort: "high",
             runtimeId: "opencode",
             sessionId: "session-1",
             trackedFiles: [],

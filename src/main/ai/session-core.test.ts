@@ -9,6 +9,7 @@ import {
     isSamePath,
     normalizeAdditionalRoots,
     resolveSessionScopedPath,
+    setConfigOptionOnSnapshot,
 } from "./session-core";
 
 describe("session-core model reconciliation", () => {
@@ -202,6 +203,386 @@ describe("session-core model reconciliation", () => {
 
         expect(nextSnapshot.modeId).toBeNull();
         expect(nextSnapshot.modes).toEqual(snapshot.modes);
+    });
+
+    it("applies stored subagent reasoning effort when normalized catalog options arrive", () => {
+        const snapshot = createSnapshot({
+            sessionId: "session-native",
+            reasoningEffort: "high",
+        });
+
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(snapshot, {
+            configOptions: [
+                {
+                    category: "other",
+                    description: null,
+                    id: "thought_level",
+                    label: "Reasoning",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Medium",
+                            value: "medium",
+                        },
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "High",
+                            value: "high",
+                        },
+                    ],
+                    type: "select",
+                    value: "medium",
+                },
+            ],
+        });
+
+        const reasoningConfig = nextSnapshot.configOptions.find(
+            (option) => option.id === "thought_level",
+        );
+        expect(nextSnapshot.reasoningEffort).toBe("high");
+        expect(reasoningConfig?.type === "select" && reasoningConfig.value).toBe(
+            "high",
+        );
+    });
+
+    it("preserves existing config selections when normalized catalog options refresh", () => {
+        const snapshot = createSnapshot({
+            configOptions: [
+                {
+                    category: "reasoning",
+                    description: null,
+                    id: "reasoning_effort",
+                    label: "Reasoning",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Low",
+                            value: "low",
+                        },
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "High",
+                            value: "high",
+                        },
+                    ],
+                    type: "select",
+                    value: "high",
+                },
+            ],
+            sessionId: "session-native",
+        });
+
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(snapshot, {
+            configOptions: [
+                {
+                    category: "reasoning",
+                    description: null,
+                    id: "reasoning_effort",
+                    label: "Reasoning",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Low",
+                            value: "low",
+                        },
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "High",
+                            value: "high",
+                        },
+                    ],
+                    type: "select",
+                    value: "low",
+                },
+            ],
+        });
+
+        expect(
+            nextSnapshot.configOptions.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("high");
+    });
+
+    it("keeps old snapshots without config options compatible", () => {
+        const snapshot = createSnapshot({
+            modelId: "gpt-5-mini",
+            sessionId: "session-native",
+        });
+
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(snapshot, {
+            availableCommands: [
+                {
+                    description: "Create a plan",
+                    id: "plan",
+                    insertText: "/plan ",
+                    label: "/plan",
+                },
+            ],
+        });
+
+        expect(nextSnapshot.configOptions).toEqual([]);
+        expect(nextSnapshot.modelId).toBe("gpt-5-mini");
+        expect(nextSnapshot.reasoningEffort).toBeUndefined();
+    });
+
+    it("keeps a snapshot modelId when refreshed options omit the model config", () => {
+        const snapshot = createSnapshot({
+            modelId: "gpt-5-mini",
+            sessionId: "session-native",
+        });
+
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(snapshot, {
+            configOptions: [
+                {
+                    category: "reasoning",
+                    description: null,
+                    id: "reasoning_effort",
+                    label: "Reasoning",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Low",
+                            value: "low",
+                        },
+                    ],
+                    type: "select",
+                    value: "low",
+                },
+            ],
+        });
+
+        expect(nextSnapshot.modelId).toBe("gpt-5-mini");
+        expect(nextSnapshot.models).toEqual([]);
+    });
+
+    it("does not invent reasoning effort when null or absent", () => {
+        const snapshot = createSnapshot({
+            reasoningEffort: null,
+            sessionId: "session-native",
+        });
+
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(snapshot, {
+            configOptions: [
+                {
+                    category: "reasoning",
+                    description: null,
+                    id: "reasoning_effort",
+                    label: "Reasoning",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Low",
+                            value: "low",
+                        },
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "High",
+                            value: "high",
+                        },
+                    ],
+                    type: "select",
+                    value: "low",
+                },
+            ],
+        });
+
+        const reasoningConfig = nextSnapshot.configOptions.find(
+            (option) => option.id === "reasoning_effort",
+        );
+        expect(nextSnapshot.reasoningEffort).toBeNull();
+        expect(reasoningConfig?.type === "select" && reasoningConfig.value).toBe(
+            "low",
+        );
+    });
+
+    it("does not apply stored reasoning effort to models without a matching effort value", () => {
+        const snapshot = createSnapshot({
+            reasoningEffort: "high",
+            sessionId: "session-native",
+        });
+
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(snapshot, {
+            configOptions: [
+                {
+                    category: "reasoning",
+                    description: null,
+                    id: "reasoning_effort",
+                    label: "Reasoning",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Low",
+                            value: "low",
+                        },
+                    ],
+                    type: "select",
+                    value: "low",
+                },
+            ],
+        });
+
+        const reasoningConfig = nextSnapshot.configOptions.find(
+            (option) => option.id === "reasoning_effort",
+        );
+        expect(nextSnapshot.reasoningEffort).toBe("high");
+        expect(reasoningConfig?.type === "select" && reasoningConfig.value).toBe(
+            "low",
+        );
+    });
+
+    it("updates reasoningEffort when the reasoning config option changes", () => {
+        const snapshot = createSnapshot({
+            configOptions: [
+                {
+                    category: "reasoning",
+                    description: null,
+                    id: "reasoning_effort",
+                    label: "Reasoning",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Low",
+                            value: "low",
+                        },
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "High",
+                            value: "high",
+                        },
+                    ],
+                    type: "select",
+                    value: "high",
+                },
+            ],
+            reasoningEffort: "high",
+            sessionId: "session-native",
+        });
+
+        const nextSnapshot = setConfigOptionOnSnapshot(
+            snapshot,
+            "reasoning_effort",
+            "low",
+        );
+
+        expect(nextSnapshot.reasoningEffort).toBe("low");
+    });
+
+    it("keeps valid reasoning effort when model refreshes regenerate options", () => {
+        const snapshot = createSnapshot({
+            configOptions: [
+                {
+                    category: "model",
+                    description: null,
+                    id: "model",
+                    label: "Model",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "GPT-5 Mini",
+                            value: "gpt-5-mini",
+                        },
+                    ],
+                    type: "select",
+                    value: "gpt-5-mini",
+                },
+                {
+                    category: "reasoning",
+                    description: null,
+                    id: "reasoning_effort",
+                    label: "Reasoning",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Low",
+                            value: "low",
+                        },
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "High",
+                            value: "high",
+                        },
+                    ],
+                    type: "select",
+                    value: "high",
+                },
+            ],
+            modelId: "gpt-5-mini",
+            reasoningEffort: "high",
+            sessionId: "session-native",
+        });
+
+        const nextSnapshot = applyNormalizedSessionCatalogToSnapshot(snapshot, {
+            configOptions: [
+                {
+                    category: "model",
+                    description: null,
+                    id: "model",
+                    label: "Model",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "GPT-5 Mini",
+                            value: "gpt-5-mini",
+                        },
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "GPT-5 Pro",
+                            value: "gpt-5-pro",
+                        },
+                    ],
+                    type: "select",
+                    value: "gpt-5-pro",
+                },
+                {
+                    category: "reasoning",
+                    description: null,
+                    id: "reasoning_effort",
+                    label: "Reasoning",
+                    options: [
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "Low",
+                            value: "low",
+                        },
+                        {
+                            description: null,
+                            groupLabel: null,
+                            label: "High",
+                            value: "high",
+                        },
+                    ],
+                    type: "select",
+                    value: "low",
+                },
+            ],
+        });
+
+        const reasoningConfig = nextSnapshot.configOptions.find(
+            (option) => option.id === "reasoning_effort",
+        );
+        expect(nextSnapshot.reasoningEffort).toBe("high");
+        expect(reasoningConfig?.type === "select" && reasoningConfig.value).toBe(
+            "high",
+        );
     });
 });
 

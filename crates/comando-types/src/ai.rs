@@ -566,6 +566,8 @@ pub struct NativeAiSessionSnapshot {
     pub last_error: Option<String>,
     pub mode_id: Option<String>,
     pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub pending_permission: Option<serde_json::Value>,
     pub pending_user_input: Option<serde_json::Value>,
     pub plan: Option<serde_json::Value>,
@@ -687,6 +689,8 @@ pub struct NativeAiSubagentCreatedPayload {
     pub parent_runtime_session_id: Option<RuntimeSessionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     pub title: String,
 }
 

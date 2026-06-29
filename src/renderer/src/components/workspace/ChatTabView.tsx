@@ -1949,6 +1949,9 @@ export const ChatTabView = memo(function ChatTabView({
                                 hasAgentControls ? (
                                     <AIChatAgentControls
                                         configOptions={agentConfigOptions}
+                                        disabled={
+                                            closedSubagentMessage !== null
+                                        }
                                         modeId={agentModeId}
                                         modelId={agentModelId}
                                         modes={agentModes}

@@ -2421,6 +2421,7 @@ export interface AiSessionSnapshot {
     readonly plan: AiPlan | null;
     readonly parentSessionId?: string | null;
     readonly projectId: string | null;
+    readonly reasoningEffort?: string | null;
     readonly runtimeId: AiRuntimeId;
     readonly runtimeSessionId: string | null;
     readonly reviewActionLog?: AiReviewActionLogState | null;
@@ -2597,6 +2598,7 @@ export interface AiSessionSubagentCreatedEvent
     readonly kind: "subagent-created";
     readonly modelId: string | null;
     readonly parentSessionId: string;
+    readonly reasoningEffort: string | null;
     readonly title: string;
 }
 
