@@ -794,11 +794,13 @@ export const ChatTabView = memo(function ChatTabView({
                 ? previousTimelineState.model
                 : null;
         return reconcileChatTimelineModelFromTranscript(previousTimelineModel, {
+            activeTurnStartedAt,
             status: snapshot.status,
             trackedFiles: canonicalTrackedFiles,
             transcript,
         });
     }, [
+        activeTurnStartedAt,
         canonicalTrackedFiles,
         snapshot.status,
         tab.sessionId,

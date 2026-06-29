@@ -226,15 +226,24 @@ function getRowCreatedAt(row: ChatTimelineRow): string {
         : row.reviewEntry.activity.createdAt;
 }
 
-function isContextCompactionActivity(row: ChatTimelineRow): boolean {
+function isContextCompactionActivity(
+    row: ChatTimelineRow,
+    activeTurnStartedAt: string | null | undefined,
+): boolean {
     if (row.kind !== "tool") {
+        return false;
+    }
+
+    if (!activeTurnStartedAt) {
         return false;
     }
 
     const activity = row.reviewEntry.activity;
     return (
         activity.id.startsWith("codex-acp:status:item:") &&
-        activity.title === "Compacting context"
+        activity.title === "Compacting context" &&
+        activity.status === "in_progress" &&
+        activity.updatedAt >= activeTurnStartedAt
     );
 }
 
@@ -346,6 +355,7 @@ function isStreamingStatus(status: AiSessionSnapshot["status"]): boolean {
 function getStreamingLiveTailRow(
     status: AiSessionSnapshot["status"],
     orderedRows: readonly ChatTimelineRow[],
+    activeTurnStartedAt: string | null | undefined,
 ): ChatTimelineRow | null {
     if (!isStreamingStatus(status) || orderedRows.length === 0) {
         return null;
@@ -362,7 +372,7 @@ function getStreamingLiveTailRow(
     ) {
         for (let index = orderedRows.length - 2; index >= 0; index -= 1) {
             const row = orderedRows[index];
-            if (row && isContextCompactionActivity(row)) {
+            if (row && isContextCompactionActivity(row, activeTurnStartedAt)) {
                 return row;
             }
         }
@@ -376,7 +386,9 @@ export function reconcileChatTimelineModel(
     snapshot: Pick<
         AiSessionSnapshot,
         "messages" | "status" | "toolActivity" | "trackedFiles"
-    >,
+    > & {
+        readonly activeTurnStartedAt?: string | null;
+    },
 ): ChatTimelineModel {
     const toolEntries = deriveToolActivityReviewEntries(
         snapshot.toolActivity,
@@ -388,7 +400,11 @@ export function reconcileChatTimelineModel(
         buildOrderedRows(nextRowById),
     );
     const orderedRowIds = reuseRowIds(previous?.orderedRowIds, orderedRows);
-    const liveTailRow = getStreamingLiveTailRow(snapshot.status, orderedRows);
+    const liveTailRow = getStreamingLiveTailRow(
+        snapshot.status,
+        orderedRows,
+        snapshot.activeTurnStartedAt,
+    );
     const liveTailRowId = liveTailRow?.id ?? null;
     const nextHistoryRows =
         liveTailRow == null
@@ -411,6 +427,7 @@ export function reconcileChatTimelineModel(
 export function reconcileChatTimelineModelFromTranscript(
     previous: ChatTimelineModel | null,
     input: {
+        readonly activeTurnStartedAt?: string | null;
         readonly status: AiSessionSnapshot["status"];
         readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
         readonly transcript: AiSessionTranscriptModel;
@@ -418,6 +435,7 @@ export function reconcileChatTimelineModelFromTranscript(
 ): ChatTimelineModel {
     return reconcileChatTimelineModel(previous, {
         messages: getAiSessionTranscriptMessages(input.transcript),
+        activeTurnStartedAt: input.activeTurnStartedAt,
         status: input.status,
         toolActivity: getAiSessionTranscriptToolActivity(input.transcript),
         trackedFiles: input.trackedFiles,

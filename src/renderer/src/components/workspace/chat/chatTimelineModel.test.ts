@@ -166,6 +166,7 @@ describe("chatTimelineModel", () => {
                     kind: "user",
                 }),
             ],
+            activeTurnStartedAt: "2026-04-14T00:00:00.000Z",
             status: "streaming",
             toolActivity: [
                 createActivity({
@@ -211,6 +212,7 @@ describe("chatTimelineModel", () => {
                     kind: "user",
                 }),
             ],
+            activeTurnStartedAt: "2026-04-14T00:00:03.000Z",
             status: "streaming",
             toolActivity: [
                 createActivity({
@@ -233,6 +235,34 @@ describe("chatTimelineModel", () => {
         });
 
         expect(model.liveTailRowId).toBe("message:message-after-compact");
+    });
+
+    it("does not revive stale in-progress context compaction from an earlier turn", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    content: "Prompt after stale compacting activity",
+                    createdAt: "2026-04-14T00:00:04.000Z",
+                    id: "message-after-stale-compact",
+                    kind: "user",
+                }),
+            ],
+            activeTurnStartedAt: "2026-04-14T00:00:03.000Z",
+            status: "streaming",
+            toolActivity: [
+                createActivity({
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    id: "codex-acp:status:item:compact-1",
+                    kind: "item_activity",
+                    status: "in_progress",
+                    title: "Compacting context",
+                    updatedAt: "2026-04-14T00:00:01.000Z",
+                }),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(model.liveTailRowId).toBe("message:message-after-stale-compact");
     });
 
     it("reuses unchanged tool rows when only the latest tool activity changes", () => {
