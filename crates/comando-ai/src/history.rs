@@ -1145,10 +1145,10 @@ impl<'a> LegacyAiHistoryReader<'a> {
         if !shadow.is_empty() {
             return Ok(shadow);
         }
-        if let Some(messages) = self.load_runtime_state_messages(session_id)? {
-            if !messages.is_empty() {
-                return Ok(messages);
-            }
+        if let Some(messages) = self.load_runtime_state_messages(session_id)?
+            && !messages.is_empty()
+        {
+            return Ok(messages);
         }
         Ok(self
             .load_transcript_json_messages(session_id)?
@@ -1178,10 +1178,10 @@ impl<'a> LegacyAiHistoryReader<'a> {
         for row in rows {
             let payload_json =
                 row.map_err(|error| history_sql("read legacy shadow message", error))?;
-            if let Ok(value) = serde_json::from_str::<Value>(&payload_json) {
-                if value.is_object() {
-                    messages.push(value);
-                }
+            if let Ok(value) = serde_json::from_str::<Value>(&payload_json)
+                && value.is_object()
+            {
+                messages.push(value);
             }
         }
         Ok(messages)
