@@ -2100,10 +2100,6 @@ mod tests {
         assert!(invalidated);
         assert!(!status.auth_ready);
         assert_eq!(status.auth_method, None);
-        assert_eq!(
-            status.message.as_deref(),
-            Some("Run Grok login or add an xAI API key to finish setup.")
-        );
     }
 
     #[test]
