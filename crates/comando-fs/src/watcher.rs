@@ -198,13 +198,15 @@ impl WatcherRegistry {
                 };
 
                 handle_notify_event(
-                    &key_for_callback,
-                    &root_for_callback,
-                    &watch_root,
-                    &write_tracker,
-                    &pending,
-                    &pending_git_invalidations,
-                    &fs_events,
+                    NotifyEventContext {
+                        key: &key_for_callback,
+                        root: &root_for_callback,
+                        watch_root: &watch_root,
+                        write_tracker: &write_tracker,
+                        pending: &pending,
+                        pending_git_invalidations: &pending_git_invalidations,
+                        fs_events: &fs_events,
+                    },
                     event,
                 );
             })?;
@@ -244,16 +246,17 @@ impl Default for WatcherRegistry {
     }
 }
 
-fn handle_notify_event(
-    key: &str,
-    root: &ProjectRoot,
-    watch_root: &Path,
-    write_tracker: &WriteTracker,
-    pending: &Arc<Mutex<HashMap<String, PendingInvalidation>>>,
-    pending_git_invalidations: &Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
-    fs_events: &Arc<Mutex<Vec<(String, NativeFsWatchEvent)>>>,
-    event: Event,
-) {
+struct NotifyEventContext<'a> {
+    key: &'a str,
+    root: &'a ProjectRoot,
+    watch_root: &'a Path,
+    write_tracker: &'a WriteTracker,
+    pending: &'a Arc<Mutex<HashMap<String, PendingInvalidation>>>,
+    pending_git_invalidations: &'a Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
+    fs_events: &'a Arc<Mutex<Vec<(String, NativeFsWatchEvent)>>>,
+}
+
+fn handle_notify_event(context: NotifyEventContext<'_>, event: Event) {
     let event_name = event_name_for_kind(&event.kind);
     let event_kind = event_kind_for_kind(&event.kind);
 
@@ -261,14 +264,14 @@ fn handle_notify_event(
         let absolute_path = if path.is_absolute() {
             path.clone()
         } else {
-            watch_root.join(&path)
+            context.watch_root.join(&path)
         };
 
-        if absolute_path == watch_root {
+        if absolute_path == context.watch_root {
             continue;
         }
 
-        let Some(relative_path) = normalize_watched_path(watch_root, &absolute_path) else {
+        let Some(relative_path) = normalize_watched_path(context.watch_root, &absolute_path) else {
             continue;
         };
         if should_ignore_watch_path(&relative_path) {
@@ -276,23 +279,31 @@ fn handle_notify_event(
         }
 
         if let Some(reason) = git_watch_invalidation_reason(&relative_path) {
-            record_pending_git_invalidation(key, root, reason, pending_git_invalidations);
+            record_pending_git_invalidation(
+                context.key,
+                context.root,
+                reason,
+                context.pending_git_invalidations,
+            );
             continue;
         }
 
         let current_hash = std::fs::read(&absolute_path)
             .ok()
             .map(|bytes| hash_bytes(&bytes));
-        if write_tracker.has_recent_match(&absolute_path, current_hash) {
+        if context
+            .write_tracker
+            .has_recent_match(&absolute_path, current_hash)
+        {
             continue;
         }
 
-        record_pending_invalidation(key, root, &relative_path, pending);
-        fs_events.lock().expect("watch events lock").push((
+        record_pending_invalidation(context.key, context.root, &relative_path, context.pending);
+        context.fs_events.lock().expect("watch events lock").push((
             event_name.to_string(),
             NativeFsWatchEvent {
-                project_id: root.project_id.clone(),
-                worktree_id: root.worktree_id.clone(),
+                project_id: context.root.project_id.clone(),
+                worktree_id: context.root.worktree_id.clone(),
                 relative_path: Some(RelativePath(relative_path)),
                 kind: event_kind.to_string(),
                 origin: NativeFsMutationOrigin::External,
