@@ -153,6 +153,7 @@ jobs:
               shell: pwsh
               run: |
                   $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
+                  $env:COMANDO_WINDOWS_ACP_PAYLOAD_DIR = "$env:GITHUB_WORKSPACE\build\windows-acp\win-x64\ai"
                   pnpm run package:win:x64
 
             - name: Upload Windows package artifacts
