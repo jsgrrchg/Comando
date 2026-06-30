@@ -30,7 +30,8 @@ impl PermissionWaiters {
         let keys = self
             .waiters
             .iter()
-            .filter_map(|(key, waiter)| (waiter.session_id == session_id).then(|| key.clone()))
+            .filter(|(_, waiter)| waiter.session_id == session_id)
+            .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
         let count = keys.len();
         for key in keys {
