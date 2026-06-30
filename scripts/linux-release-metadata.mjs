@@ -126,17 +126,15 @@ export function verifyLinuxReleaseArtifacts({
     targetArch,
     version,
 }) {
-    const artifacts = resolveLinuxReleaseArtifacts({
+    const artifacts = verifyLinuxPackageArtifacts({
         distDir,
         productName,
+        relativePath,
         targetArch,
         version,
     });
 
-    assertFile(artifacts.appImagePath, relativePath);
     assertFile(artifacts.appImageBlockmapPath, relativePath);
-    assertFile(artifacts.debPath, relativePath);
-    assertFile(artifacts.rpmPath, relativePath);
     assertFile(artifacts.metadataPath, relativePath);
 
     if (fs.existsSync(artifacts.forbiddenSharedMetadataPath)) {
@@ -172,6 +170,27 @@ export function verifyLinuxReleaseArtifacts({
             );
         }
     }
+
+    return artifacts;
+}
+
+export function verifyLinuxPackageArtifacts({
+    distDir,
+    productName,
+    relativePath = defaultRelativePath,
+    targetArch,
+    version,
+}) {
+    const artifacts = resolveLinuxReleaseArtifacts({
+        distDir,
+        productName,
+        targetArch,
+        version,
+    });
+
+    assertFile(artifacts.appImagePath, relativePath);
+    assertFile(artifacts.debPath, relativePath);
+    assertFile(artifacts.rpmPath, relativePath);
 
     return artifacts;
 }
