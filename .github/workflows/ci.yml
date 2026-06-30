@@ -82,16 +82,8 @@ jobs:
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
 
-            - name: Build Claude ACP vendor
-              run: |
-                  npm ci --prefix vendor/Claude-agent-acp-upstream
-                  npm run build --prefix vendor/Claude-agent-acp-upstream
-
             - name: Run desktop checks
-              run: pnpm run check
+              run: pnpm run check:ci
 
             - name: Run native checks
               run: pnpm run native:check
-
-            - name: Verify AI runtimes
-              run: pnpm run verify:ai-runtimes

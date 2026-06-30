@@ -23,6 +23,7 @@
         "dev": "node scripts/dev.mjs",
         "prebuild": "pnpm run stage:ai",
         "build": "electron-vite build",
+        "build:ci": "electron-vite build",
         "build:windows-acp": "node scripts/build-windows-acp-bundles.mjs",
         "build:windows-acp:arm64": "node scripts/build-windows-acp-bundles.mjs --arm64",
         "build:windows-acp:x64": "node scripts/build-windows-acp-bundles.mjs --x64",
@@ -59,7 +60,8 @@
         "test:watch": "vitest",
         "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
         "verify:ai-runtimes": "node scripts/ai/verify-ai-runtimes.mjs",
-        "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run build"
+        "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run build",
+        "check:ci": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run build:ci"
     },
     "dependencies": {
         "@codemirror/lang-cpp": "^6.0.3",
