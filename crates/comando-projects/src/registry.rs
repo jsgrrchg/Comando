@@ -1253,7 +1253,7 @@ mod tests {
         let mut connection = create_current_schema();
 
         let result = ProjectRegistry::new(&mut connection)
-            .add_project_paths(&[project_root.clone()])
+            .add_project_paths(std::slice::from_ref(&project_root))
             .expect("add project");
 
         assert_eq!(result.project_ids_to_open.len(), 1);
