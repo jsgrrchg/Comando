@@ -574,15 +574,17 @@ fn codex_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Run
         setup.auth_method.as_deref(),
         &["chatgpt", "codex-api-key", "openai-api-key"],
     );
+    let selected_ready = match selected.as_deref() {
+        Some("chatgpt") => chatgpt_ready,
+        Some("codex-api-key") => codex_secret,
+        Some("openai-api-key") => openai_secret,
+        _ => false,
+    };
     let method = if codex_env {
         Some("codex-api-key".to_string())
     } else if openai_env {
         Some("openai-api-key".to_string())
-    } else if selected.as_deref() == Some("chatgpt") && chatgpt_ready {
-        selected
-    } else if selected.as_deref() == Some("codex-api-key") && codex_secret {
-        selected
-    } else if selected.as_deref() == Some("openai-api-key") && openai_secret {
+    } else if selected_ready {
         selected
     } else if selected.is_some() {
         None
@@ -644,38 +646,36 @@ fn claude_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Ru
     );
     let gateway_url = validate_gateway_url(setup.gateway_base_url.as_deref());
     let bedrock_url = validate_gateway_url(setup.bedrock_gateway_base_url.as_deref());
+    let gateway_has_url = gateway_url
+        .as_ref()
+        .ok()
+        .and_then(|value| value.as_ref())
+        .is_some();
+    let bedrock_has_url = bedrock_url
+        .as_ref()
+        .ok()
+        .and_then(|value| value.as_ref())
+        .is_some();
+    let selected_ready = match selected.as_deref() {
+        Some("anthropic-api-key") => api_key_secret,
+        Some("gateway") => {
+            gateway_url.is_ok()
+                && gateway_has_url
+                && (token_env || headers_env || token_secret || headers_secret)
+        }
+        Some("gateway-bedrock") => bedrock_url.is_ok() && bedrock_has_url,
+        Some("claude-login" | "claude-ai-login" | "console-login") => {
+            external_auth_available(claude_auth_file_path(), setup.auth_invalidated_at_ms)
+        }
+        _ => false,
+    };
     let method = if bedrock_url_env {
         Some("gateway-bedrock".to_string())
     } else if base_url_env {
         Some("gateway".to_string())
     } else if anthropic_env {
         Some("anthropic-api-key".to_string())
-    } else if selected.as_deref() == Some("anthropic-api-key") && api_key_secret {
-        selected
-    } else if selected.as_deref() == Some("gateway")
-        && gateway_url.is_ok()
-        && gateway_url
-            .as_ref()
-            .ok()
-            .and_then(|value| value.as_ref())
-            .is_some()
-        && (token_env || headers_env || token_secret || headers_secret)
-    {
-        selected
-    } else if selected.as_deref() == Some("gateway-bedrock")
-        && bedrock_url.is_ok()
-        && bedrock_url
-            .as_ref()
-            .ok()
-            .and_then(|value| value.as_ref())
-            .is_some()
-    {
-        selected
-    } else if matches!(
-        selected.as_deref(),
-        Some("claude-login" | "claude-ai-login" | "console-login")
-    ) && external_auth_available(claude_auth_file_path(), setup.auth_invalidated_at_ms)
-    {
+    } else if selected_ready {
         selected
     } else if selected.is_some() {
         None
@@ -792,11 +792,14 @@ fn kilo_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Runt
         &["kilo-login", "kilo-api-key"],
     );
     let login_ready = external_auth_available(kilo_auth_file_path(), setup.auth_invalidated_at_ms);
+    let selected_ready = match selected.as_deref() {
+        Some("kilo-api-key") => stored_ready,
+        Some("kilo-login") => login_ready,
+        _ => false,
+    };
     let method = if env_ready {
         Some("kilo-api-key".to_string())
-    } else if selected.as_deref() == Some("kilo-api-key") && stored_ready {
-        selected
-    } else if selected.as_deref() == Some("kilo-login") && login_ready {
+    } else if selected_ready {
         selected
     } else if selected.is_some() {
         None
