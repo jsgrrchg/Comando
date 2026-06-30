@@ -49,6 +49,14 @@ pub struct ProjectSearchOperation {
 }
 
 #[derive(Debug, Clone)]
+pub struct ProjectSearchResult {
+    pub entries: Vec<IndexedProjectEntry>,
+    pub matches: Vec<SearchMatch>,
+    pub operation_id: OperationId,
+    pub events: Vec<IndexEvent>,
+}
+
+#[derive(Debug, Clone)]
 pub struct IndexService {
     indexes: HashMap<String, ProjectIndex>,
     options: IndexBuildOptions,
@@ -155,17 +163,17 @@ impl IndexService {
         limit: usize,
         include_ancestor_directories: bool,
         context_key: Option<&str>,
-    ) -> IndexResult<(
-        Vec<IndexedProjectEntry>,
-        Vec<SearchMatch>,
-        OperationId,
-        Vec<IndexEvent>,
-    )> {
+    ) -> IndexResult<ProjectSearchResult> {
         if query.is_empty() {
             let token = self.cancellations.start_operation(context_key);
             let operation_id = token.operation_id().clone();
             self.cancellations.clear(&operation_id);
-            return Ok((Vec::new(), Vec::new(), operation_id, Vec::new()));
+            return Ok(ProjectSearchResult {
+                entries: Vec::new(),
+                matches: Vec::new(),
+                operation_id,
+                events: Vec::new(),
+            });
         }
 
         let events = self.ensure_ready(root)?;
@@ -181,7 +189,12 @@ impl IndexService {
             operation,
         )?;
 
-        Ok((entries, matches, operation_id, events.1))
+        Ok(ProjectSearchResult {
+            entries,
+            matches,
+            operation_id,
+            events: events.1,
+        })
     }
 
     pub fn ensure_project_index(&mut self, root: ProjectRoot) -> IndexResult<Vec<IndexEvent>> {
@@ -581,7 +594,7 @@ mod tests {
         fs::write(temp.path().join("src/shared/search.ts"), "search").expect("file");
         let mut service = IndexService::default();
 
-        let (entries, _, _, _) = service
+        let result = service
             .search_project_entries(
                 project_root(temp.path()),
                 &ProjectSearchQuery::new("search"),
@@ -590,7 +603,8 @@ mod tests {
                 None,
             )
             .expect("search");
-        let paths = entries
+        let paths = result
+            .entries
             .iter()
             .map(|entry| entry.relative_path.as_str())
             .collect::<Vec<_>>();

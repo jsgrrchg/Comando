@@ -23,7 +23,7 @@ pub use policy::{IndexPolicy, IndexPolicyState};
 pub use query::{ProjectSearchQuery, normalize_project_search_query};
 pub use ranking::{SearchMatch, search_entries};
 pub use service::{
-    IndexEvent, IndexService, ProjectSearchOperation, ProjectSearchSnapshot,
+    IndexEvent, IndexService, ProjectSearchOperation, ProjectSearchResult, ProjectSearchSnapshot,
     search_project_entries_snapshot,
 };
 pub use stats::{IndexBuildStats, IndexStatus, IndexStatusSnapshot};

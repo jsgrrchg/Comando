@@ -1895,23 +1895,27 @@ impl NativeBackend {
             input.include_ancestor_directories,
             input.context_key.as_deref(),
         ) {
-            Ok((entries, matches, operation_id, events)) => {
+            Ok(result) => {
                 let status = self
                     .index_service
                     .get_status(&input.project_id, input.worktree_id.as_ref());
                 let mut outputs = vec![response_ok(
                     request.id,
                     serde_json::to_value(native_index::NativeProjectEntrySearchResult {
-                        operation_id,
+                        operation_id: result.operation_id,
                         generation: status.generation,
                         status: native_index_status_kind(status.status),
-                        entries: entries.into_iter().map(indexed_project_entry).collect(),
-                        matches: path_search_matches(matches),
+                        entries: result
+                            .entries
+                            .into_iter()
+                            .map(indexed_project_entry)
+                            .collect(),
+                        matches: path_search_matches(result.matches),
                         stats: native_index_stats(status.stats),
                     })
                     .expect("project entry search result serializes"),
                 )];
-                outputs.extend(index_event_outputs(events));
+                outputs.extend(index_event_outputs(result.events));
                 CommandResult {
                     outputs,
                     should_shutdown: false,
@@ -1947,23 +1951,27 @@ impl NativeBackend {
                 input.include_ancestor_directories,
                 input.context_key.as_deref(),
             ) {
-                Ok((entries, matches, operation_id, events)) => {
+                Ok(result) => {
                     let status = self
                         .index_service
                         .get_status(&input.project_id, input.worktree_id.as_ref());
                     let mut outputs = vec![response_ok(
                         request.id,
                         serde_json::to_value(native_index::NativeProjectEntrySearchResult {
-                            operation_id,
+                            operation_id: result.operation_id,
                             generation: status.generation,
                             status: native_index_status_kind(status.status),
-                            entries: entries.into_iter().map(indexed_project_entry).collect(),
-                            matches: path_search_matches(matches),
+                            entries: result
+                                .entries
+                                .into_iter()
+                                .map(indexed_project_entry)
+                                .collect(),
+                            matches: path_search_matches(result.matches),
                             stats: native_index_stats(status.stats),
                         })
                         .expect("project entry search result serializes"),
                     )];
-                    outputs.extend(index_event_outputs(events));
+                    outputs.extend(index_event_outputs(result.events));
                     CommandResult {
                         outputs,
                         should_shutdown: false,
