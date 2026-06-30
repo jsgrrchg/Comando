@@ -1156,10 +1156,7 @@ fn credential_source_label(runtime_id: &str, source: &NativeAiCredentialSource) 
 
 fn normalize_auth_method(method: Option<&str>, allowed: &[&str]) -> Option<String> {
     let method = method?.trim();
-    allowed
-        .iter()
-        .any(|allowed| *allowed == method)
-        .then(|| method.to_string())
+    allowed.contains(&method).then(|| method.to_string())
 }
 
 fn definition_args(definition: RuntimeDefinition) -> Vec<String> {
