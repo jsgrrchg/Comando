@@ -435,10 +435,11 @@ fn include_ancestor_directory_entries(
 
     for match_ in matches {
         for ancestor_path in ancestor_directory_paths(&match_.entry.relative_path) {
-            if let Some(ancestor) = entries_by_path.get(ancestor_path.as_str()) {
-                if ancestor.kind.is_directory() && seen.insert(ancestor.relative_path.clone()) {
-                    result.push((*ancestor).clone());
-                }
+            if let Some(ancestor) = entries_by_path.get(ancestor_path.as_str())
+                && ancestor.kind.is_directory()
+                && seen.insert(ancestor.relative_path.clone())
+            {
+                result.push((*ancestor).clone());
             }
         }
 
