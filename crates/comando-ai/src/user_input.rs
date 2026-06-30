@@ -43,6 +43,10 @@ impl UserInputWaiters {
     pub fn len(&self) -> usize {
         self.waiters.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.waiters.is_empty()
+    }
 }
 
 #[cfg(test)]
