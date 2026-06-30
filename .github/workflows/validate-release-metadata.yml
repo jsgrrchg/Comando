@@ -1,0 +1,62 @@
+name: Validate Release Metadata
+
+on:
+    pull_request:
+        paths:
+            - CHANGELOG.md
+            - package.json
+            - pnpm-lock.yaml
+            - scripts/*.mjs
+            - scripts/**/*.mjs
+            - .github/workflows/release.yml
+            - .github/workflows/validate-release-metadata.yml
+            - resources/icons/**
+            - resources/entitlements*.plist
+    workflow_dispatch:
+
+concurrency:
+    group: validate-release-metadata-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
+jobs:
+    validate:
+        name: Validate release metadata
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+
+            - name: Setup pnpm
+              uses: pnpm/action-setup@v6
+              with:
+                  version: 10.33.0
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Run script tests
+              run: pnpm exec vitest run scripts/*.test.mjs
+
+            - name: Check release metadata scripts
+              run: |
+                  node --check scripts/build-apt-repository.mjs
+                  node --check scripts/build-dnf-repository.mjs
+                  node --check scripts/build-release-body.mjs
+                  node --check scripts/extract-changelog-release-notes.mjs
+                  node --check scripts/sign-apt-repository.mjs
+                  node --check scripts/sign-dnf-repository.mjs
+                  node --check scripts/sign-rpm-packages.mjs
+                  node --check scripts/validate-apt-repository.mjs
+                  node --check scripts/validate-dnf-repository.mjs
+                  node --check scripts/validate-linux-rpm-package.mjs
