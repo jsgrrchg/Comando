@@ -51,14 +51,12 @@ pub fn rename_entry(
         .map(str::to_string)
         .or_else(|| parent_relative_path(&current_relative_path));
 
-    if current_metadata.is_dir() {
-        if let Some(parent) = next_parent_relative_path.as_deref() {
-            if parent == current_relative_path
-                || parent.starts_with(&format!("{current_relative_path}/"))
-            {
-                return Err(FsError::DirectoryIntoItself);
-            }
-        }
+    if current_metadata.is_dir()
+        && let Some(parent) = next_parent_relative_path.as_deref()
+        && (parent == current_relative_path
+            || parent.starts_with(&format!("{current_relative_path}/")))
+    {
+        return Err(FsError::DirectoryIntoItself);
     }
 
     let parent = resolve_scoped_path(
