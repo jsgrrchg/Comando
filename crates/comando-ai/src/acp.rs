@@ -1394,10 +1394,10 @@ fn mark_session_status(
 }
 
 fn send_start_result(sender: &AcpStartSender, result: AcpStartResult) {
-    if let Ok(mut sender) = sender.lock() {
-        if let Some(sender) = sender.take() {
-            let _ = sender.send(result);
-        }
+    if let Ok(mut sender) = sender.lock()
+        && let Some(sender) = sender.take()
+    {
+        let _ = sender.send(result);
     }
 }
 
