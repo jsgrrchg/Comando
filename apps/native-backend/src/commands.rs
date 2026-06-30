@@ -4639,7 +4639,7 @@ mod tests {
         };
         assert_eq!(updated_event.event_name, "project://updated");
         assert_eq!(updated_event.payload["reason"], "project_add");
-        assert_eq!(updated_event.payload["projectId"].as_str().is_some(), true);
+        assert!(updated_event.payload["projectId"].as_str().is_some());
         assert_eq!(
             updated_event.payload["worktreeId"].as_str().unwrap(),
             format!(
