@@ -321,7 +321,9 @@ export function applyNormalizedSessionCatalogToSnapshot(
         payload.configOptions !== undefined
             ? hasModelCatalog
                 ? deriveModelId(null, configOptions, snapshot.modelId)
-                : snapshot.modelId
+                : configOptions.length === 0
+                  ? null
+                  : snapshot.modelId
             : snapshot.modelId;
 
     return {
