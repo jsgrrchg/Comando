@@ -603,18 +603,16 @@ pub fn start_acp_session(
     let task_sessions = Arc::clone(&sessions);
 
     runtime.spawn(async move {
-        let result = run_acp_session(
-            spec,
-            task_session,
-            task_sessions,
+        let context = AcpSessionRuntimeContext {
+            sessions: task_sessions,
             event_sender,
             command_receiver,
-            Arc::clone(&task_started_sender),
+            started_sender: Arc::clone(&task_started_sender),
             permission_waiters,
             prompt_capabilities,
             user_input_waiters,
-        )
-        .await;
+        };
+        let result = run_acp_session(spec, task_session, context).await;
         if let Err(error) = result {
             send_start_result(&task_started_sender, Err(error.clone()));
         }
@@ -734,17 +732,31 @@ async fn run_acp_runtime_auth_async(
     result
 }
 
-async fn run_acp_session(
-    spec: AcpProcessSpec,
-    session: NativeAiSession,
+struct AcpSessionRuntimeContext {
     sessions: Arc<Mutex<SessionRegistry>>,
     event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
-    mut command_receiver: tokio_mpsc::UnboundedReceiver<AcpSessionCommand>,
+    command_receiver: tokio_mpsc::UnboundedReceiver<AcpSessionCommand>,
     started_sender: AcpStartSender,
     permission_waiters: PermissionWaiterMap,
     prompt_capabilities: PromptCapabilitiesState,
     user_input_waiters: UserInputWaiterMap,
+}
+
+async fn run_acp_session(
+    spec: AcpProcessSpec,
+    session: NativeAiSession,
+    context: AcpSessionRuntimeContext,
 ) -> Result<(), String> {
+    let AcpSessionRuntimeContext {
+        sessions,
+        event_sender,
+        mut command_receiver,
+        started_sender,
+        permission_waiters,
+        prompt_capabilities,
+        user_input_waiters,
+    } = context;
+
     let mut command = Command::new(&spec.executable);
     command
         .args(&spec.args)
