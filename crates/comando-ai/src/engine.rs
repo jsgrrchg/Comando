@@ -534,10 +534,10 @@ impl AiEngine {
             session.session.title = input.title.clone();
             session.session.updated_at = now_iso8601();
         }
-        if let Some(store) = self.history_store()? {
-            if store.has_session(&input.session_id) {
-                store.rename_session(&input.session_id, input.title)?;
-            }
+        if let Some(store) = self.history_store()?
+            && store.has_session(&input.session_id)
+        {
+            store.rename_session(&input.session_id, input.title)?;
         }
         Ok(())
     }
@@ -789,18 +789,18 @@ impl AiEngine {
     }
 
     fn update_history_status(&self, summary: &NativeAiSessionSummary) -> AiResult<()> {
-        if let Some(store) = self.history_store()? {
-            if store.has_session(&summary.session_id) {
-                let mut metadata = store.load_metadata(&summary.session_id)?;
-                metadata.runtime_session_id = summary.runtime_session_id.clone();
-                metadata.status = summary.status.clone();
-                metadata.title = summary.title.clone();
-                metadata.updated_at = summary.updated_at.clone();
-                if summary.status == NativeAiSessionStatus::Closed {
-                    metadata.closed_at = Some(summary.updated_at.clone());
-                }
-                store.save_metadata(&metadata)?;
+        if let Some(store) = self.history_store()?
+            && store.has_session(&summary.session_id)
+        {
+            let mut metadata = store.load_metadata(&summary.session_id)?;
+            metadata.runtime_session_id = summary.runtime_session_id.clone();
+            metadata.status = summary.status.clone();
+            metadata.title = summary.title.clone();
+            metadata.updated_at = summary.updated_at.clone();
+            if summary.status == NativeAiSessionStatus::Closed {
+                metadata.closed_at = Some(summary.updated_at.clone());
             }
+            store.save_metadata(&metadata)?;
         }
         Ok(())
     }
@@ -1375,28 +1375,28 @@ impl AiEngine {
         let Some(session_id) = payload_session_id(payload) else {
             return Ok(());
         };
-        if let Some(store) = self.history_store()? {
-            if store.has_session(&session_id) {
-                let mut metadata = store.load_metadata(&session_id)?;
-                metadata.status = NativeAiSessionStatus::Error;
-                metadata.updated_at = payload
-                    .get("updatedAt")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&metadata.updated_at)
-                    .to_string();
-                store.save_metadata(&metadata)?;
-                let message = payload
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Native AI session failed.")
-                    .to_string();
-                store.update_session_state(&session_id, |state| {
-                    state.active_turn_started_at = None;
-                    state.last_error = Some(message);
-                    state.pending_permission = None;
-                    state.pending_user_input = None;
-                })?;
-            }
+        if let Some(store) = self.history_store()?
+            && store.has_session(&session_id)
+        {
+            let mut metadata = store.load_metadata(&session_id)?;
+            metadata.status = NativeAiSessionStatus::Error;
+            metadata.updated_at = payload
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .unwrap_or(&metadata.updated_at)
+                .to_string();
+            store.save_metadata(&metadata)?;
+            let message = payload
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Native AI session failed.")
+                .to_string();
+            store.update_session_state(&session_id, |state| {
+                state.active_turn_started_at = None;
+                state.last_error = Some(message);
+                state.pending_permission = None;
+                state.pending_user_input = None;
+            })?;
         }
         Ok(())
     }

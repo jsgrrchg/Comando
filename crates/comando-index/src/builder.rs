@@ -11,17 +11,9 @@ use crate::error::IndexResult;
 use crate::policy::{IndexPolicy, IndexPolicyState};
 use crate::stats::IndexBuildStats;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct IndexBuildOptions {
     pub policy: IndexPolicy,
-}
-
-impl Default for IndexBuildOptions {
-    fn default() -> Self {
-        Self {
-            policy: IndexPolicy::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

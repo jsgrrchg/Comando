@@ -91,6 +91,8 @@ const TERMINAL_OUTPUT_MAX_LENGTH: usize = 10_000;
 type PermissionWaiterMap = Arc<Mutex<HashMap<String, PendingPermissionRequest>>>;
 type PromptCapabilitiesState = Arc<Mutex<AcpPromptCapabilities>>;
 type UserInputWaiterMap = Arc<Mutex<HashMap<String, PendingUserInputRequest>>>;
+type AcpStartResult = Result<RuntimeSessionId, String>;
+type AcpStartSender = Arc<Mutex<Option<oneshot::Sender<AcpStartResult>>>>;
 
 #[derive(Debug)]
 struct PendingPermissionRequest {
@@ -594,32 +596,30 @@ pub fn start_acp_session(
         sender: command_sender,
         user_input_waiters: Arc::clone(&user_input_waiters),
     };
-    let (started_sender, started_receiver) = oneshot::channel::<Result<RuntimeSessionId, String>>();
-    let started_sender = Arc::new(Mutex::new(Some(started_sender)));
+    let (started_sender, started_receiver) = oneshot::channel::<AcpStartResult>();
+    let started_sender: AcpStartSender = Arc::new(Mutex::new(Some(started_sender)));
     let task_started_sender = Arc::clone(&started_sender);
     let task_session = session.clone();
     let task_sessions = Arc::clone(&sessions);
 
     runtime.spawn(async move {
-        let result = run_acp_session(
-            spec,
-            task_session,
-            task_sessions,
+        let context = AcpSessionRuntimeContext {
+            sessions: task_sessions,
             event_sender,
             command_receiver,
-            Arc::clone(&task_started_sender),
+            started_sender: Arc::clone(&task_started_sender),
             permission_waiters,
             prompt_capabilities,
             user_input_waiters,
-        )
-        .await;
+        };
+        let result = run_acp_session(spec, task_session, context).await;
         if let Err(error) = result {
             send_start_result(&task_started_sender, Err(error.clone()));
         }
     });
 
     let runtime_session_id = runtime
-        .block_on(async { started_receiver.await })
+        .block_on(started_receiver)
         .map_err(|_| AiError::RuntimeExited {
             message: "The ACP runtime exited before creating a session.".to_string(),
         })?
@@ -732,17 +732,31 @@ async fn run_acp_runtime_auth_async(
     result
 }
 
-async fn run_acp_session(
-    spec: AcpProcessSpec,
-    session: NativeAiSession,
+struct AcpSessionRuntimeContext {
     sessions: Arc<Mutex<SessionRegistry>>,
     event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
-    mut command_receiver: tokio_mpsc::UnboundedReceiver<AcpSessionCommand>,
-    started_sender: Arc<Mutex<Option<oneshot::Sender<Result<RuntimeSessionId, String>>>>>,
+    command_receiver: tokio_mpsc::UnboundedReceiver<AcpSessionCommand>,
+    started_sender: AcpStartSender,
     permission_waiters: PermissionWaiterMap,
     prompt_capabilities: PromptCapabilitiesState,
     user_input_waiters: UserInputWaiterMap,
+}
+
+async fn run_acp_session(
+    spec: AcpProcessSpec,
+    session: NativeAiSession,
+    context: AcpSessionRuntimeContext,
 ) -> Result<(), String> {
+    let AcpSessionRuntimeContext {
+        sessions,
+        event_sender,
+        mut command_receiver,
+        started_sender,
+        permission_waiters,
+        prompt_capabilities,
+        user_input_waiters,
+    } = context;
+
     let mut command = Command::new(&spec.executable);
     command
         .args(&spec.args)
@@ -930,20 +944,22 @@ async fn run_acp_session(
                             let root_session_id = session.session_id.clone();
                             let sessions = Arc::clone(&sessions);
                             tokio::spawn(async move {
-                                run_prompt(
-                                    &connection,
-                                    &root_session_id,
-                                    &target_session_id,
-                                    &runtime_id,
-                                    &runtime_session_id,
+                                let request = RunPromptRequest {
+                                    session_id: root_session_id,
+                                    target_session_id,
+                                    runtime_id,
+                                    runtime_session_id,
                                     message_id,
                                     prompt,
                                     attachments,
-                                    &sessions,
-                                    event_sender.as_ref(),
-                                    &notification_context,
-                                )
-                                .await;
+                                };
+                                let context = RunPromptContext {
+                                    connection: &connection,
+                                    sessions: &sessions,
+                                    event_sender: event_sender.as_ref(),
+                                    notification_context: &notification_context,
+                                };
+                                run_prompt(request, context).await;
                             });
                         }
                         AcpSessionCommand::Cancel { runtime_session_id } => {
@@ -990,19 +1006,40 @@ async fn run_acp_session(
     connect_result.map_err(|error| error.to_string())
 }
 
-async fn run_prompt(
-    connection: &ConnectionTo<Agent>,
-    session_id: &SessionId,
-    target_session_id: &SessionId,
-    runtime_id: &RuntimeId,
-    runtime_session_id: &RuntimeSessionId,
+struct RunPromptRequest {
+    session_id: SessionId,
+    target_session_id: SessionId,
+    runtime_id: RuntimeId,
+    runtime_session_id: RuntimeSessionId,
     message_id: MessageId,
     prompt: String,
     attachments: Vec<NativeAiImageAttachment>,
-    sessions: &Arc<Mutex<SessionRegistry>>,
-    event_sender: Option<&std_mpsc::SyncSender<AiRuntimeEvent>>,
-    notification_context: &NotificationContext,
-) {
+}
+
+struct RunPromptContext<'a> {
+    connection: &'a ConnectionTo<Agent>,
+    sessions: &'a Arc<Mutex<SessionRegistry>>,
+    event_sender: Option<&'a std_mpsc::SyncSender<AiRuntimeEvent>>,
+    notification_context: &'a NotificationContext,
+}
+
+async fn run_prompt(request: RunPromptRequest, context: RunPromptContext<'_>) {
+    let RunPromptRequest {
+        session_id,
+        target_session_id,
+        runtime_id,
+        runtime_session_id,
+        message_id,
+        prompt,
+        attachments,
+    } = request;
+    let RunPromptContext {
+        connection,
+        sessions,
+        event_sender,
+        notification_context,
+    } = context;
+
     let runtime_session =
         agent_client_protocol::schema::SessionId::from(runtime_session_id.0.clone());
     let prompt_request =
@@ -1012,7 +1049,7 @@ async fn run_prompt(
     notification_context.complete_open_messages();
     match response {
         Ok(response) => {
-            let summary = mark_session_idle(sessions, session_id);
+            let summary = mark_session_idle(sessions, &session_id);
             if let Some(summary) = summary.as_ref() {
                 let mut target_summary = summary.clone();
                 if target_session_id != session_id {
@@ -1042,7 +1079,7 @@ async fn run_prompt(
             }
         }
         Err(error) => {
-            let summary = mark_session_error(sessions, session_id);
+            let summary = mark_session_error(sessions, &session_id);
             let updated_at = now_iso8601();
             emit_event(
                 event_sender,
@@ -1356,14 +1393,11 @@ fn mark_session_status(
     Some(session.session.summary())
 }
 
-fn send_start_result(
-    sender: &Arc<Mutex<Option<oneshot::Sender<Result<RuntimeSessionId, String>>>>>,
-    result: Result<RuntimeSessionId, String>,
-) {
-    if let Ok(mut sender) = sender.lock() {
-        if let Some(sender) = sender.take() {
-            let _ = sender.send(result);
-        }
+fn send_start_result(sender: &AcpStartSender, result: AcpStartResult) {
+    if let Ok(mut sender) = sender.lock()
+        && let Some(sender) = sender.take()
+    {
+        let _ = sender.send(result);
     }
 }
 
@@ -2067,12 +2101,11 @@ impl NotificationContextInner {
                     update.current_mode_id.0.to_string(),
                 );
             }
-            SessionUpdate::UserMessageChunk(chunk) => {
+            SessionUpdate::UserMessageChunk(chunk)
                 if self.supports_subagents
-                    && self.runtime_session_id.as_ref() != Some(&runtime_session_id)
-                {
-                    self.handle_user_message_chunk(&runtime_session_id, chunk);
-                }
+                    && self.runtime_session_id.as_ref() != Some(&runtime_session_id) =>
+            {
+                self.handle_user_message_chunk(&runtime_session_id, chunk);
             }
             _ => {}
         }
@@ -4290,10 +4323,10 @@ fn anchored_candidate_matches_diff(
     path: &str,
     cwd: &str,
 ) -> bool {
-    if let Some(candidate_path) = candidate.path.as_deref() {
-        if !paths_match(candidate_path, path, cwd) {
-            return false;
-        }
+    if let Some(candidate_path) = candidate.path.as_deref()
+        && !paths_match(candidate_path, path, cwd)
+    {
+        return false;
     }
 
     match candidate.match_mode {

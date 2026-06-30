@@ -362,15 +362,15 @@ fn resolve_runtime_command(
         "opencode" => "COMANDO_OPENCODE_ACP_BIN",
         _ => "",
     };
-    if let Ok(value) = env::var(env_var) {
-        if !value.trim().is_empty() {
-            return resolve_command_candidate(definition, value.trim(), "env");
-        }
+    if let Ok(value) = env::var(env_var)
+        && !value.trim().is_empty()
+    {
+        return resolve_command_candidate(definition, value.trim(), "env");
     }
-    if let Some(binary_path) = setup.binary_path.as_deref() {
-        if !binary_path.trim().is_empty() {
-            return resolve_command_candidate(definition, binary_path.trim(), "settings");
-        }
+    if let Some(binary_path) = setup.binary_path.as_deref()
+        && !binary_path.trim().is_empty()
+    {
+        return resolve_command_candidate(definition, binary_path.trim(), "settings");
     }
     if definition.id == "claude" {
         if let Some(command) = find_explicit_ai_resource_runtime(definition) {
@@ -394,18 +394,18 @@ fn resolve_runtime_command(
     if let Some(candidate) = resolve_from_runtime_path(definition.default_executable, None) {
         return command_from_existing_path(definition, candidate, "path");
     }
-    if definition.id == "codex" {
-        if let Some(candidate) = resolve_from_runtime_path("codex", None) {
-            return ResolvedCommand {
-                executable: candidate.display().to_string(),
-                args: Vec::new(),
-                command: Some(candidate.display().to_string()),
-                source: Some("path".to_string()),
-                state: "error".to_string(),
-                message: Some("`codex` was found, but this CLI exposes App Server/MCP instead of an ACP runtime. Current Comando integration still uses ACP.".to_string()),
-                has_custom_binary_path: false,
-            };
-        }
+    if definition.id == "codex"
+        && let Some(candidate) = resolve_from_runtime_path("codex", None)
+    {
+        return ResolvedCommand {
+            executable: candidate.display().to_string(),
+            args: Vec::new(),
+            command: Some(candidate.display().to_string()),
+            source: Some("path".to_string()),
+            state: "error".to_string(),
+            message: Some("`codex` was found, but this CLI exposes App Server/MCP instead of an ACP runtime. Current Comando integration still uses ACP.".to_string()),
+            has_custom_binary_path: false,
+        };
     }
     ResolvedCommand {
         executable: definition.default_executable.to_string(),
@@ -574,15 +574,17 @@ fn codex_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Run
         setup.auth_method.as_deref(),
         &["chatgpt", "codex-api-key", "openai-api-key"],
     );
+    let selected_ready = match selected.as_deref() {
+        Some("chatgpt") => chatgpt_ready,
+        Some("codex-api-key") => codex_secret,
+        Some("openai-api-key") => openai_secret,
+        _ => false,
+    };
     let method = if codex_env {
         Some("codex-api-key".to_string())
     } else if openai_env {
         Some("openai-api-key".to_string())
-    } else if selected.as_deref() == Some("chatgpt") && chatgpt_ready {
-        selected
-    } else if selected.as_deref() == Some("codex-api-key") && codex_secret {
-        selected
-    } else if selected.as_deref() == Some("openai-api-key") && openai_secret {
+    } else if selected_ready {
         selected
     } else if selected.is_some() {
         None
@@ -644,38 +646,36 @@ fn claude_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Ru
     );
     let gateway_url = validate_gateway_url(setup.gateway_base_url.as_deref());
     let bedrock_url = validate_gateway_url(setup.bedrock_gateway_base_url.as_deref());
+    let gateway_has_url = gateway_url
+        .as_ref()
+        .ok()
+        .and_then(|value| value.as_ref())
+        .is_some();
+    let bedrock_has_url = bedrock_url
+        .as_ref()
+        .ok()
+        .and_then(|value| value.as_ref())
+        .is_some();
+    let selected_ready = match selected.as_deref() {
+        Some("anthropic-api-key") => api_key_secret,
+        Some("gateway") => {
+            gateway_url.is_ok()
+                && gateway_has_url
+                && (token_env || headers_env || token_secret || headers_secret)
+        }
+        Some("gateway-bedrock") => bedrock_url.is_ok() && bedrock_has_url,
+        Some("claude-login" | "claude-ai-login" | "console-login") => {
+            external_auth_available(claude_auth_file_path(), setup.auth_invalidated_at_ms)
+        }
+        _ => false,
+    };
     let method = if bedrock_url_env {
         Some("gateway-bedrock".to_string())
     } else if base_url_env {
         Some("gateway".to_string())
     } else if anthropic_env {
         Some("anthropic-api-key".to_string())
-    } else if selected.as_deref() == Some("anthropic-api-key") && api_key_secret {
-        selected
-    } else if selected.as_deref() == Some("gateway")
-        && gateway_url.is_ok()
-        && gateway_url
-            .as_ref()
-            .ok()
-            .and_then(|value| value.as_ref())
-            .is_some()
-        && (token_env || headers_env || token_secret || headers_secret)
-    {
-        selected
-    } else if selected.as_deref() == Some("gateway-bedrock")
-        && bedrock_url.is_ok()
-        && bedrock_url
-            .as_ref()
-            .ok()
-            .and_then(|value| value.as_ref())
-            .is_some()
-    {
-        selected
-    } else if matches!(
-        selected.as_deref(),
-        Some("claude-login" | "claude-ai-login" | "console-login")
-    ) && external_auth_available(claude_auth_file_path(), setup.auth_invalidated_at_ms)
-    {
+    } else if selected_ready {
         selected
     } else if selected.is_some() {
         None
@@ -792,11 +792,14 @@ fn kilo_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Runt
         &["kilo-login", "kilo-api-key"],
     );
     let login_ready = external_auth_available(kilo_auth_file_path(), setup.auth_invalidated_at_ms);
+    let selected_ready = match selected.as_deref() {
+        Some("kilo-api-key") => stored_ready,
+        Some("kilo-login") => login_ready,
+        _ => false,
+    };
     let method = if env_ready {
         Some("kilo-api-key".to_string())
-    } else if selected.as_deref() == Some("kilo-api-key") && stored_ready {
-        selected
-    } else if selected.as_deref() == Some("kilo-login") && login_ready {
+    } else if selected_ready {
         selected
     } else if selected.is_some() {
         None
@@ -961,10 +964,10 @@ fn apply_claude_env(
         return;
     }
     if auth.method.as_deref() == Some("gateway-bedrock") {
-        if !env_secret_present_in(env_map, "ANTHROPIC_BEDROCK_BASE_URL") {
-            if let Some(url) = setup.bedrock_gateway_base_url.as_deref() {
-                env_map.insert("ANTHROPIC_BEDROCK_BASE_URL".to_string(), url.to_string());
-            }
+        if !env_secret_present_in(env_map, "ANTHROPIC_BEDROCK_BASE_URL")
+            && let Some(url) = setup.bedrock_gateway_base_url.as_deref()
+        {
+            env_map.insert("ANTHROPIC_BEDROCK_BASE_URL".to_string(), url.to_string());
         }
         env_map
             .entry("CLAUDE_CODE_USE_BEDROCK".to_string())
@@ -978,10 +981,10 @@ fn apply_claude_env(
         return;
     }
     if auth.method.as_deref() == Some("gateway") {
-        if !env_secret_present_in(env_map, "ANTHROPIC_BASE_URL") {
-            if let Some(url) = setup.gateway_base_url.as_deref() {
-                env_map.insert("ANTHROPIC_BASE_URL".to_string(), url.to_string());
-            }
+        if !env_secret_present_in(env_map, "ANTHROPIC_BASE_URL")
+            && let Some(url) = setup.gateway_base_url.as_deref()
+        {
+            env_map.insert("ANTHROPIC_BASE_URL".to_string(), url.to_string());
         }
         if !env_secret_present_in(env_map, "ANTHROPIC_AUTH_TOKEN") {
             insert_secret_env(store, env_map, "claude", "ANTHROPIC_AUTH_TOKEN");
@@ -998,10 +1001,10 @@ fn insert_secret_env(
     runtime_id: &str,
     env_key: &str,
 ) {
-    if let Ok(Some(value)) = store.secrets().get_secret(runtime_id, env_key) {
-        if !value.trim().is_empty() {
-            env_map.insert(env_key.to_string(), value);
-        }
+    if let Ok(Some(value)) = store.secrets().get_secret(runtime_id, env_key)
+        && !value.trim().is_empty()
+    {
+        env_map.insert(env_key.to_string(), value);
     }
 }
 
@@ -1156,10 +1159,7 @@ fn credential_source_label(runtime_id: &str, source: &NativeAiCredentialSource) 
 
 fn normalize_auth_method(method: Option<&str>, allowed: &[&str]) -> Option<String> {
     let method = method?.trim();
-    allowed
-        .iter()
-        .any(|allowed| *allowed == method)
-        .then(|| method.to_string())
+    allowed.contains(&method).then(|| method.to_string())
 }
 
 fn definition_args(definition: RuntimeDefinition) -> Vec<String> {
@@ -1320,12 +1320,11 @@ fn packaged_darwin_arch() -> &'static str {
 
 fn find_explicit_ai_resource_runtime(definition: RuntimeDefinition) -> Option<ResolvedCommand> {
     let resource_dir = explicit_ai_resource_dir()?;
-    if definition.id == "claude" {
-        if let Some(command) =
+    if definition.id == "claude"
+        && let Some(command) =
             claude_embedded_node_command_from_ai_resource_dir(&resource_dir, "bundled")
-        {
-            return Some(command);
-        }
+    {
+        return Some(command);
     }
     find_ai_resource_binary(definition, &resource_dir)
         .map(|candidate| command_from_existing_path(definition, candidate, "bundled"))
@@ -1527,10 +1526,10 @@ fn find_app_root() -> Option<PathBuf> {
 
 fn runtime_search_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    if let Ok(exe) = env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            roots.push(parent.to_path_buf());
-        }
+    if let Ok(exe) = env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        roots.push(parent.to_path_buf());
     }
     if let Ok(cwd) = env::current_dir() {
         roots.push(cwd);
@@ -1585,10 +1584,10 @@ fn runtime_path_entries(
 ) -> Vec<String> {
     let mut entries = Vec::new();
     let executable_path = Path::new(executable);
-    if executable_path.is_absolute() {
-        if let Some(parent) = executable_path.parent() {
-            entries.push(parent.display().to_string());
-        }
+    if executable_path.is_absolute()
+        && let Some(parent) = executable_path.parent()
+    {
+        entries.push(parent.display().to_string());
     }
     if let Some(home) = env_map
         .get("HOME")
@@ -1784,11 +1783,12 @@ fn external_auth_dir_available(path: Option<PathBuf>, invalidated_at_ms: Option<
     let mut newest = modified_at_ms(&path);
     let mut has_non_empty_file = false;
     for entry in entries.flatten() {
-        if let Ok(metadata) = entry.metadata() {
-            if metadata.is_file() && metadata.len() > 0 {
-                has_non_empty_file = true;
-                newest = newest.max(modified_at_ms(&entry.path()));
-            }
+        if let Ok(metadata) = entry.metadata()
+            && metadata.is_file()
+            && metadata.len() > 0
+        {
+            has_non_empty_file = true;
+            newest = newest.max(modified_at_ms(&entry.path()));
         }
     }
     has_non_empty_file
@@ -1811,17 +1811,16 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn xdg_data_dir() -> Option<PathBuf> {
-    if let Ok(value) = env::var("XDG_DATA_HOME") {
-        if !value.trim().is_empty() {
-            return Some(PathBuf::from(value));
-        }
+    if let Ok(value) = env::var("XDG_DATA_HOME")
+        && !value.trim().is_empty()
+    {
+        return Some(PathBuf::from(value));
     }
-    if cfg!(windows) {
-        if let Ok(value) = env::var("LOCALAPPDATA") {
-            if !value.trim().is_empty() {
-                return Some(PathBuf::from(value));
-            }
-        }
+    if cfg!(windows)
+        && let Ok(value) = env::var("LOCALAPPDATA")
+        && !value.trim().is_empty()
+    {
+        return Some(PathBuf::from(value));
     }
     home_dir().map(|home| home.join(".local").join("share"))
 }
@@ -1864,10 +1863,10 @@ fn opencode_auth_file_path() -> Option<PathBuf> {
 }
 
 fn codex_auth_file_path() -> Option<PathBuf> {
-    if let Ok(value) = env::var("CODEX_HOME") {
-        if !value.trim().is_empty() {
-            return Some(PathBuf::from(value).join("auth.json"));
-        }
+    if let Ok(value) = env::var("CODEX_HOME")
+        && !value.trim().is_empty()
+    {
+        return Some(PathBuf::from(value).join("auth.json"));
     }
     home_dir().map(|home| home.join(".codex").join("auth.json"))
 }

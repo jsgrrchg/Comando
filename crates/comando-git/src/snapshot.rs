@@ -2,9 +2,7 @@ use std::path::PathBuf;
 
 use comando_types::git::{
     NativeGitBranchSummary, NativeGitRepositoryScope, NativeGitRepositorySnapshot,
-    NativeGitStatusSnapshot,
 };
-use comando_types::ids::RepositoryId;
 
 use crate::branches::{GitBranchListScope, list_branches};
 use crate::error::GitResult;
@@ -67,33 +65,7 @@ pub fn get_repository_snapshot(
     .unwrap_or_default();
     let branch = current_branch(&branches);
 
-    Ok(snapshot_from_parts(
-        repository_id,
-        scope,
-        root_path,
-        resolution,
-        status,
-        branches,
-        branch,
-        remotes,
-        worktrees,
-        updated_at,
-    ))
-}
-
-fn snapshot_from_parts(
-    repository_id: RepositoryId,
-    scope: &NativeGitRepositoryScope,
-    root_path: String,
-    resolution: comando_types::git::NativeGitRepositoryResolution,
-    status: NativeGitStatusSnapshot,
-    branches: Vec<NativeGitBranchSummary>,
-    branch: Option<NativeGitBranchSummary>,
-    remotes: Vec<comando_types::git::NativeGitRemoteSummary>,
-    worktrees: Vec<comando_types::git::NativeGitWorktreeSummary>,
-    updated_at: String,
-) -> NativeGitRepositorySnapshot {
-    NativeGitRepositorySnapshot {
+    Ok(NativeGitRepositorySnapshot {
         repository_id,
         project_id: scope.project_id.clone(),
         current_worktree_id: scope.worktree_id.clone(),
@@ -108,7 +80,7 @@ fn snapshot_from_parts(
         status,
         worktrees,
         updated_at,
-    }
+    })
 }
 
 fn current_branch(branches: &[NativeGitBranchSummary]) -> Option<NativeGitBranchSummary> {

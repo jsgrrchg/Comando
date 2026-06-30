@@ -88,12 +88,11 @@ fn release_session_runtime_resources(
     killer: &Arc<Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>>,
     terminate_process: bool,
 ) {
-    if terminate_process {
-        if let Ok(mut killer_guard) = killer.lock() {
-            if let Some(killer) = killer_guard.as_mut() {
-                let _ = killer.kill();
-            }
-        }
+    if terminate_process
+        && let Ok(mut killer_guard) = killer.lock()
+        && let Some(killer) = killer_guard.as_mut()
+    {
+        let _ = killer.kill();
     }
 
     if let Ok(mut writer_guard) = writer.lock() {

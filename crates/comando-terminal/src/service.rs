@@ -799,12 +799,11 @@ fn release_runtime_resources(
     killer: &Arc<Mutex<Option<Box<dyn portable_pty::ChildKiller + Send + Sync>>>>,
     terminate_process: bool,
 ) {
-    if terminate_process {
-        if let Ok(mut killer_guard) = killer.lock() {
-            if let Some(killer) = killer_guard.as_mut() {
-                let _ = killer.kill();
-            }
-        }
+    if terminate_process
+        && let Ok(mut killer_guard) = killer.lock()
+        && let Some(killer) = killer_guard.as_mut()
+    {
+        let _ = killer.kill();
     }
 
     if let Ok(mut writer_guard) = writer.lock() {
@@ -830,14 +829,13 @@ fn remove_session_from_state(
         .lock()
         .map_err(|error| TerminalError::State(error.to_string()))?;
     state.sessions.remove(session_id);
-    if let Some(owner_key) = owner_key {
-        if state
+    if let Some(owner_key) = owner_key
+        && state
             .session_ids_by_owner_terminal_id
             .get(owner_key)
             .is_some_and(|tracked_session_id| tracked_session_id == session_id)
-        {
-            state.session_ids_by_owner_terminal_id.remove(owner_key);
-        }
+    {
+        state.session_ids_by_owner_terminal_id.remove(owner_key);
     }
     Ok(())
 }

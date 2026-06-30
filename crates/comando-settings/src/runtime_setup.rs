@@ -76,11 +76,8 @@ impl RuntimeSetupState {
         self.auth_method = normalize_optional_text(self.auth_method);
         self.gateway_base_url = normalize_optional_text(self.gateway_base_url);
         self.bedrock_gateway_base_url = normalize_optional_text(self.bedrock_gateway_base_url);
-        self.secret_env_keys = self
-            .secret_env_keys
-            .into_iter()
-            .filter(|key| is_secret_env_key_for_runtime(runtime_id, key))
-            .collect();
+        self.secret_env_keys
+            .retain(|key| is_secret_env_key_for_runtime(runtime_id, key));
         self.non_secret_env = self
             .non_secret_env
             .into_iter()

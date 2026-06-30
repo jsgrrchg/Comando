@@ -287,9 +287,8 @@ impl SessionRegistry {
         let session_ids = self
             .sessions
             .iter()
-            .filter_map(|(session_id, session)| {
-                (session.session.owner_window_id == owner_window_id).then(|| session_id.clone())
-            })
+            .filter(|(_, session)| session.session.owner_window_id == owner_window_id)
+            .map(|(session_id, _)| session_id.clone())
             .collect::<Vec<_>>();
 
         session_ids
