@@ -372,15 +372,12 @@ mod tests {
         let root = project_root(temp.path());
 
         let entries = list_tree_children(&root, None).expect("entries");
-        assert_eq!(find_entry(&entries, "local.env").is_git_ignored, true);
-        assert_eq!(find_entry(&entries, "logs").is_git_ignored, true);
-        assert_eq!(find_entry(&entries, "tracked.env").is_git_ignored, false);
+        assert!(find_entry(&entries, "local.env").is_git_ignored);
+        assert!(find_entry(&entries, "logs").is_git_ignored);
+        assert!(!find_entry(&entries, "tracked.env").is_git_ignored);
 
         let all_entries = list_entries(&root, None).expect("all entries").entries;
-        assert_eq!(
-            find_entry(&all_entries, "logs/app.log").is_git_ignored,
-            true
-        );
+        assert!(find_entry(&all_entries, "logs/app.log").is_git_ignored);
     }
 
     fn find_entry<'a>(
