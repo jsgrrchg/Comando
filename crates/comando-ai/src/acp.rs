@@ -619,7 +619,7 @@ pub fn start_acp_session(
     });
 
     let runtime_session_id = runtime
-        .block_on(async { started_receiver.await })
+        .block_on(started_receiver)
         .map_err(|_| AiError::RuntimeExited {
             message: "The ACP runtime exited before creating a session.".to_string(),
         })?
