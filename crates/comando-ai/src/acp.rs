@@ -4323,10 +4323,10 @@ fn anchored_candidate_matches_diff(
     path: &str,
     cwd: &str,
 ) -> bool {
-    if let Some(candidate_path) = candidate.path.as_deref() {
-        if !paths_match(candidate_path, path, cwd) {
-            return false;
-        }
+    if let Some(candidate_path) = candidate.path.as_deref()
+        && !paths_match(candidate_path, path, cwd)
+    {
+        return false;
     }
 
     match candidate.match_mode {
