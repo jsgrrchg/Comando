@@ -22,6 +22,7 @@ export default tseslint.config(
             "out/**",
             "resources/**",
             "scripts/**",
+            "target/**",
             "vendor/**",
             "electron.vite.config.js",
             "vitest.config.js",
