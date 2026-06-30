@@ -44,13 +44,13 @@ pub fn list_remotes(
 }
 
 fn default_remote_name(names: &[&str], tracking_branch_name: Option<&str>) -> Option<String> {
-    if let Some(remote_name) = tracking_branch_name.and_then(|name| name.split('/').next()) {
-        if names.iter().any(|name| *name == remote_name) {
-            return Some(remote_name.to_string());
-        }
+    if let Some(remote_name) = tracking_branch_name.and_then(|name| name.split('/').next())
+        && names.contains(&remote_name)
+    {
+        return Some(remote_name.to_string());
     }
 
-    if names.iter().any(|name| *name == "origin") {
+    if names.contains(&"origin") {
         return Some("origin".to_string());
     }
 
