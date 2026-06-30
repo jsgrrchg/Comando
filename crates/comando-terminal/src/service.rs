@@ -829,14 +829,13 @@ fn remove_session_from_state(
         .lock()
         .map_err(|error| TerminalError::State(error.to_string()))?;
     state.sessions.remove(session_id);
-    if let Some(owner_key) = owner_key {
-        if state
+    if let Some(owner_key) = owner_key
+        && state
             .session_ids_by_owner_terminal_id
             .get(owner_key)
             .is_some_and(|tracked_session_id| tracked_session_id == session_id)
-        {
-            state.session_ids_by_owner_terminal_id.remove(owner_key);
-        }
+    {
+        state.session_ids_by_owner_terminal_id.remove(owner_key);
     }
     Ok(())
 }
