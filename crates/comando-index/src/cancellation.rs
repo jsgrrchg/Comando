@@ -41,18 +41,17 @@ impl CancellationRegistry {
             .lock()
             .expect("cancel registry lock")
             .insert(operation_id.0.clone());
-        if let Some(context_key) = context_key {
-            if let Some(previous_operation_id) = self
+        if let Some(context_key) = context_key
+            && let Some(previous_operation_id) = self
                 .contexts
                 .lock()
                 .expect("cancel registry lock")
                 .insert(context_key.to_string(), operation_id.0.clone())
-            {
-                self.cancelled
-                    .lock()
-                    .expect("cancel registry lock")
-                    .insert(previous_operation_id);
-            }
+        {
+            self.cancelled
+                .lock()
+                .expect("cancel registry lock")
+                .insert(previous_operation_id);
         }
         CancellationToken {
             operation_id,
