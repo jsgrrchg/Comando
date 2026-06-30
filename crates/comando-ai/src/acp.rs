@@ -91,6 +91,8 @@ const TERMINAL_OUTPUT_MAX_LENGTH: usize = 10_000;
 type PermissionWaiterMap = Arc<Mutex<HashMap<String, PendingPermissionRequest>>>;
 type PromptCapabilitiesState = Arc<Mutex<AcpPromptCapabilities>>;
 type UserInputWaiterMap = Arc<Mutex<HashMap<String, PendingUserInputRequest>>>;
+type AcpStartResult = Result<RuntimeSessionId, String>;
+type AcpStartSender = Arc<Mutex<Option<oneshot::Sender<AcpStartResult>>>>;
 
 #[derive(Debug)]
 struct PendingPermissionRequest {
@@ -594,8 +596,8 @@ pub fn start_acp_session(
         sender: command_sender,
         user_input_waiters: Arc::clone(&user_input_waiters),
     };
-    let (started_sender, started_receiver) = oneshot::channel::<Result<RuntimeSessionId, String>>();
-    let started_sender = Arc::new(Mutex::new(Some(started_sender)));
+    let (started_sender, started_receiver) = oneshot::channel::<AcpStartResult>();
+    let started_sender: AcpStartSender = Arc::new(Mutex::new(Some(started_sender)));
     let task_started_sender = Arc::clone(&started_sender);
     let task_session = session.clone();
     let task_sessions = Arc::clone(&sessions);
@@ -738,7 +740,7 @@ async fn run_acp_session(
     sessions: Arc<Mutex<SessionRegistry>>,
     event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
     mut command_receiver: tokio_mpsc::UnboundedReceiver<AcpSessionCommand>,
-    started_sender: Arc<Mutex<Option<oneshot::Sender<Result<RuntimeSessionId, String>>>>>,
+    started_sender: AcpStartSender,
     permission_waiters: PermissionWaiterMap,
     prompt_capabilities: PromptCapabilitiesState,
     user_input_waiters: UserInputWaiterMap,
@@ -1356,10 +1358,7 @@ fn mark_session_status(
     Some(session.session.summary())
 }
 
-fn send_start_result(
-    sender: &Arc<Mutex<Option<oneshot::Sender<Result<RuntimeSessionId, String>>>>>,
-    result: Result<RuntimeSessionId, String>,
-) {
+fn send_start_result(sender: &AcpStartSender, result: AcpStartResult) {
     if let Ok(mut sender) = sender.lock() {
         if let Some(sender) = sender.take() {
             let _ = sender.send(result);
