@@ -2101,12 +2101,11 @@ impl NotificationContextInner {
                     update.current_mode_id.0.to_string(),
                 );
             }
-            SessionUpdate::UserMessageChunk(chunk) => {
+            SessionUpdate::UserMessageChunk(chunk)
                 if self.supports_subagents
-                    && self.runtime_session_id.as_ref() != Some(&runtime_session_id)
-                {
-                    self.handle_user_message_chunk(&runtime_session_id, chunk);
-                }
+                    && self.runtime_session_id.as_ref() != Some(&runtime_session_id) =>
+            {
+                self.handle_user_message_chunk(&runtime_session_id, chunk);
             }
             _ => {}
         }
