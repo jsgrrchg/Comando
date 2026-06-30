@@ -7,10 +7,18 @@ on:
             - pnpm-lock.yaml
             - electron.vite.config.*
             - resources/**
+            - scripts/build-icons.mjs
+            - scripts/build-windows-acp-bundles.mjs
+            - scripts/linux-release-metadata.mjs
+            - scripts/mac-release-metadata.mjs
             - scripts/package-*.mjs
             - scripts/*release*.mjs
             - scripts/ai/**
             - scripts/native/**
+            - scripts/validate-linux-rpm-package.mjs
+            - scripts/windows-executable-metadata.mjs
+            - scripts/windows-packaging-preflight.mjs
+            - scripts/windows-release-metadata.mjs
             - apps/native-backend/**
             - crates/**
             - vendor/codex-acp/**
