@@ -30,10 +30,10 @@ pub fn list_branches(
     let output = runner.run(root_path, &args, GitRunOptions::read_only())?;
     let mut branches = parse_branch_rows(&output.stdout, sync);
 
-    if branches.iter().all(|branch| !branch.is_current) {
-        if let Some(detached) = detached_branch(sync) {
-            branches.push(detached);
-        }
+    if branches.iter().all(|branch| !branch.is_current)
+        && let Some(detached) = detached_branch(sync)
+    {
+        branches.push(detached);
     }
 
     branches.sort_by(|left, right| {
