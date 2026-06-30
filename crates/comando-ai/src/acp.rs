@@ -944,20 +944,22 @@ async fn run_acp_session(
                             let root_session_id = session.session_id.clone();
                             let sessions = Arc::clone(&sessions);
                             tokio::spawn(async move {
-                                run_prompt(
-                                    &connection,
-                                    &root_session_id,
-                                    &target_session_id,
-                                    &runtime_id,
-                                    &runtime_session_id,
+                                let request = RunPromptRequest {
+                                    session_id: root_session_id,
+                                    target_session_id,
+                                    runtime_id,
+                                    runtime_session_id,
                                     message_id,
                                     prompt,
                                     attachments,
-                                    &sessions,
-                                    event_sender.as_ref(),
-                                    &notification_context,
-                                )
-                                .await;
+                                };
+                                let context = RunPromptContext {
+                                    connection: &connection,
+                                    sessions: &sessions,
+                                    event_sender: event_sender.as_ref(),
+                                    notification_context: &notification_context,
+                                };
+                                run_prompt(request, context).await;
                             });
                         }
                         AcpSessionCommand::Cancel { runtime_session_id } => {
@@ -1004,19 +1006,40 @@ async fn run_acp_session(
     connect_result.map_err(|error| error.to_string())
 }
 
-async fn run_prompt(
-    connection: &ConnectionTo<Agent>,
-    session_id: &SessionId,
-    target_session_id: &SessionId,
-    runtime_id: &RuntimeId,
-    runtime_session_id: &RuntimeSessionId,
+struct RunPromptRequest {
+    session_id: SessionId,
+    target_session_id: SessionId,
+    runtime_id: RuntimeId,
+    runtime_session_id: RuntimeSessionId,
     message_id: MessageId,
     prompt: String,
     attachments: Vec<NativeAiImageAttachment>,
-    sessions: &Arc<Mutex<SessionRegistry>>,
-    event_sender: Option<&std_mpsc::SyncSender<AiRuntimeEvent>>,
-    notification_context: &NotificationContext,
-) {
+}
+
+struct RunPromptContext<'a> {
+    connection: &'a ConnectionTo<Agent>,
+    sessions: &'a Arc<Mutex<SessionRegistry>>,
+    event_sender: Option<&'a std_mpsc::SyncSender<AiRuntimeEvent>>,
+    notification_context: &'a NotificationContext,
+}
+
+async fn run_prompt(request: RunPromptRequest, context: RunPromptContext<'_>) {
+    let RunPromptRequest {
+        session_id,
+        target_session_id,
+        runtime_id,
+        runtime_session_id,
+        message_id,
+        prompt,
+        attachments,
+    } = request;
+    let RunPromptContext {
+        connection,
+        sessions,
+        event_sender,
+        notification_context,
+    } = context;
+
     let runtime_session =
         agent_client_protocol::schema::SessionId::from(runtime_session_id.0.clone());
     let prompt_request =
@@ -1026,7 +1049,7 @@ async fn run_prompt(
     notification_context.complete_open_messages();
     match response {
         Ok(response) => {
-            let summary = mark_session_idle(sessions, session_id);
+            let summary = mark_session_idle(sessions, &session_id);
             if let Some(summary) = summary.as_ref() {
                 let mut target_summary = summary.clone();
                 if target_session_id != session_id {
@@ -1056,7 +1079,7 @@ async fn run_prompt(
             }
         }
         Err(error) => {
-            let summary = mark_session_error(sessions, session_id);
+            let summary = mark_session_error(sessions, &session_id);
             let updated_at = now_iso8601();
             emit_event(
                 event_sender,
