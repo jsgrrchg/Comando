@@ -37,16 +37,9 @@ jobs:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: pnpm/action-setup@v4
-              with:
-                  version: 10.33.0
-
             - uses: actions/setup-node@v4
               with:
                   node-version: 22
-                  cache: pnpm
-
-            - uses: dtolnay/rust-toolchain@stable
 
             - name: Validate release metadata
               id: release
@@ -81,6 +74,29 @@ jobs:
                   path: release-body.md
                   if-no-files-found: error
 
+    release-gate:
+        name: Release gate
+        needs: prepare
+        runs-on: ubuntu-latest
+        env:
+            NODE_OPTIONS: --max-old-space-size=8192
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
+
+            - uses: pnpm/action-setup@v4
+              with:
+                  version: 10.33.0
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - uses: ./.github/actions/setup-rust
+
             - name: Install Linux check toolchain
               run: |
                   sudo apt-get update
@@ -94,8 +110,14 @@ jobs:
                   npm ci --prefix vendor/Claude-agent-acp-upstream
                   npm run build --prefix vendor/Claude-agent-acp-upstream
 
-            - name: Run release gate
-              run: pnpm run check
+            - name: Run desktop release checks
+              run: pnpm run check:ci
+
+            - name: Run native release checks
+              run: pnpm run native:check
+
+            - name: Run release script tests
+              run: pnpm exec vitest run scripts/*.test.mjs
 
     apt-repository-preflight:
         name: APT repository preflight
@@ -157,7 +179,9 @@ jobs:
 
     ensure-github-release:
         name: Ensure GitHub release
-        needs: prepare
+        needs:
+            - prepare
+            - release-gate
         runs-on: ubuntu-latest
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -208,6 +232,10 @@ jobs:
                   node-version: 22
                   cache: pnpm
 
+            - uses: ./.github/actions/setup-rust
+              with:
+                  targets: aarch64-apple-darwin,x86_64-apple-darwin
+
             - name: Validate macOS release secrets
               run: |
                   required=(
@@ -251,7 +279,6 @@ jobs:
                   npm ci --prefix vendor/Claude-agent-acp-upstream
                   npm run build --prefix vendor/Claude-agent-acp-upstream
 
-                  rustup target add aarch64-apple-darwin x86_64-apple-darwin
                   export CARGO_TARGET_DIR="$PWD/resources/ai/embedded/codex-acp/target"
                   cargo build --manifest-path vendor/codex-acp/Cargo.toml --release --locked --target aarch64-apple-darwin
                   cargo build --manifest-path vendor/codex-acp/Cargo.toml --release --locked --target x86_64-apple-darwin
@@ -309,7 +336,7 @@ jobs:
                   node-version: 22
                   cache: pnpm
 
-            - uses: dtolnay/rust-toolchain@stable
+            - uses: ./.github/actions/setup-rust
 
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
@@ -349,7 +376,7 @@ jobs:
                   node-version: 22
                   cache: pnpm
 
-            - uses: dtolnay/rust-toolchain@stable
+            - uses: ./.github/actions/setup-rust
 
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
@@ -403,7 +430,7 @@ jobs:
                   node-version: 22
                   cache: pnpm
 
-            - uses: dtolnay/rust-toolchain@stable
+            - uses: ./.github/actions/setup-rust
 
             - name: Install Linux package toolchain
               run: |
