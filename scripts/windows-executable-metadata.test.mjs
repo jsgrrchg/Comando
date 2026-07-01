@@ -66,6 +66,8 @@ describe("Windows executable metadata", () => {
         ]);
         expect(args[6]).toContain("Get-AuthenticodeSignature");
         expect(args[6]).toContain("ExtractAssociatedIcon");
+        expect(args[6]).toContain("$result = [pscustomobject]@{\n");
+        expect(args[6]).not.toContain("@{;");
         expect(args.at(-1)).toBe("dist/win-unpacked/Comando.exe");
     });
 

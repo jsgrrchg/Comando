@@ -63,7 +63,7 @@ export function buildReadWindowsExecutableMetadataPowerShellArgs(executablePath)
             "  SignatureSubject = $signatureSubject",
             "}",
             "$result | ConvertTo-Json -Compress",
-        ].join("; "),
+        ].join("\n"),
         executablePath,
     ];
 }
