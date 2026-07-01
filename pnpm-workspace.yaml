@@ -13,6 +13,9 @@ overrides:
   "form-data@4.0.5": 4.0.6
   "tar@7.5.13": 7.5.16
   "tmp@0.2.5": 0.2.7
+  "undici@6.25.0": 6.27.0
+  "undici@7.25.0": 7.28.0
+  "undici@7.27.2": 7.28.0
   "@xmldom/xmldom": 0.8.13
   postcss: 8.5.15
   "brace-expansion@5.0.5": 5.0.6
