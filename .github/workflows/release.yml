@@ -491,14 +491,41 @@ jobs:
                       dist/latest*-linux*.yml
                   if-no-files-found: error
 
-    publish-release-notes:
-        name: Publish release notes
+    validate-release-assets:
+        name: Validate release assets
         needs:
-            - prepare
             - build-macos
             - build-windows-x64
             - build-windows-arm64
             - build-linux
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+
+            - name: Download staged release assets
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: release-assets-*
+                  path: .artifacts/release-assets
+
+            - name: Validate staged release asset coverage
+              run: |
+                  node scripts/validate-release-assets.mjs \
+                    --assets-dir .artifacts/release-assets \
+                    --version "$RELEASE_TAG"
+
+    publish-release-notes:
+        name: Publish release notes
+        needs:
+            - prepare
+            - validate-release-assets
             - publish-apt-repository
             - publish-dnf-repository
         runs-on: ubuntu-latest
@@ -528,10 +555,7 @@ jobs:
         name: Publish APT repository
         needs:
             - prepare
-            - build-macos
-            - build-windows-x64
-            - build-windows-arm64
-            - build-linux
+            - validate-release-assets
             - apt-repository-preflight
         runs-on: ubuntu-latest
         env:
@@ -760,7 +784,7 @@ jobs:
         needs:
             - prepare
             - ensure-github-release
-            - build-linux
+            - validate-release-assets
             - dnf-repository-preflight
             - publish-apt-repository
         runs-on: ubuntu-latest
