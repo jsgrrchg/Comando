@@ -5,17 +5,80 @@ on:
         tags:
             - "v*"
     workflow_dispatch:
+        inputs:
+            tag:
+                description: Existing release tag to publish, for example v0.1.0
+                required: true
+                type: string
 
 permissions:
-    contents: write
+    contents: read
+
+env:
+    RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 concurrency:
-    group: release-${{ github.ref }}
+    group: release-${{ github.event.inputs.tag || github.ref_name }}
     cancel-in-progress: false
 
 jobs:
-    release-preflight:
-        name: Release preflight
+    prepare:
+        name: Prepare release
+        runs-on: ubuntu-latest
+        outputs:
+            tag: ${{ steps.release.outputs.tag }}
+            version: ${{ steps.release.outputs.version }}
+            repo_slug: ${{ steps.release.outputs.repo_slug }}
+        env:
+            NODE_OPTIONS: --max-old-space-size=8192
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+
+            - name: Validate release metadata
+              id: release
+              run: |
+                  if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    echo "Release tag must use vX.Y.Z format, got $RELEASE_TAG." >&2
+                    exit 1
+                  fi
+
+                  package_version="$(node -p "require('./package.json').version")"
+                  expected_tag="v${package_version}"
+
+                  if [[ "$RELEASE_TAG" != "$expected_tag" ]]; then
+                    echo "Release tag $RELEASE_TAG does not match package.json version $package_version (expected $expected_tag)." >&2
+                    exit 1
+                  fi
+
+                  {
+                    echo "tag=$RELEASE_TAG"
+                    echo "version=$package_version"
+                    echo "repo_slug=$GITHUB_REPOSITORY"
+                  } >> "$GITHUB_OUTPUT"
+
+            - name: Build release notes
+              run: |
+                  node scripts/extract-changelog-release-notes.mjs "$RELEASE_TAG" > release-notes.md
+                  node scripts/build-release-body.mjs --version "$RELEASE_TAG" --notes-file release-notes.md --output release-body.md
+                  test -s release-body.md
+
+            - name: Upload release body
+              uses: actions/upload-artifact@v4
+              with:
+                  name: release-body-${{ env.RELEASE_TAG }}
+                  path: release-body.md
+                  if-no-files-found: error
+
+    release-gate:
+        name: Release gate
+        needs: prepare
         runs-on: ubuntu-latest
         env:
             NODE_OPTIONS: --max-old-space-size=8192
@@ -23,6 +86,7 @@ jobs:
             - uses: actions/checkout@v4
               with:
                   fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
 
             - uses: pnpm/action-setup@v4
               with:
@@ -33,34 +97,7 @@ jobs:
                   node-version: 22
                   cache: pnpm
 
-            - uses: dtolnay/rust-toolchain@stable
-
-            - name: Validate release tag
-              run: |
-                  if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
-                    echo "Release workflow must run from a tag, got $GITHUB_REF_TYPE: $GITHUB_REF_NAME" >&2
-                    exit 1
-                  fi
-
-                  package_version="$(node -p "require('./package.json').version")"
-                  expected_tag="v${package_version}"
-
-                  if [[ "$GITHUB_REF_NAME" != "$expected_tag" ]]; then
-                    echo "Release tag $GITHUB_REF_NAME does not match package.json version $package_version (expected $expected_tag)." >&2
-                    exit 1
-                  fi
-
-            - name: Build release notes
-              run: |
-                  node scripts/extract-changelog-release-notes.mjs "$GITHUB_REF_NAME" > release-notes.md
-                  node scripts/build-release-body.mjs --version "$GITHUB_REF_NAME" --notes-file release-notes.md --output release-body.md
-
-            - name: Upload release body
-              uses: actions/upload-artifact@v4
-              with:
-                  name: release-body-${{ github.ref_name }}
-                  path: release-body.md
-                  if-no-files-found: error
+            - uses: ./.github/actions/setup-rust
 
             - name: Install Linux check toolchain
               run: |
@@ -75,12 +112,18 @@ jobs:
                   npm ci --prefix vendor/Claude-agent-acp-upstream
                   npm run build --prefix vendor/Claude-agent-acp-upstream
 
-            - name: Run release gate
-              run: pnpm run check
+            - name: Run desktop release checks
+              run: pnpm run check:ci
+
+            - name: Run native release checks
+              run: pnpm run native:check
+
+            - name: Run release script tests
+              run: pnpm exec vitest run scripts/*.test.mjs
 
     apt-repository-preflight:
         name: APT repository preflight
-        needs: release-preflight
+        needs: prepare
         runs-on: ubuntu-latest
         env:
             APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
@@ -109,7 +152,7 @@ jobs:
 
     dnf-repository-preflight:
         name: DNF repository preflight
-        needs: release-preflight
+        needs: prepare
         runs-on: ubuntu-latest
         env:
             APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
@@ -136,38 +179,11 @@ jobs:
                   printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
                   gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
 
-    ensure-github-release:
-        name: Ensure GitHub release
-        needs: release-preflight
-        runs-on: ubuntu-latest
-        env:
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        steps:
-            - name: Download release body
-              uses: actions/download-artifact@v4
-              with:
-                  name: release-body-${{ github.ref_name }}
-                  path: .release
-
-            - name: Create or update release shell
-              run: |
-                  tag="$GITHUB_REF_NAME"
-                  version="${tag#v}"
-                  title="Comando v${version}"
-                  notes_file=".release/release-body.md"
-
-                  if gh release view "$tag" >/dev/null 2>&1; then
-                    gh release edit "$tag" --title "$title" --notes-file "$notes_file"
-                  else
-                    gh release create "$tag" --title "$title" --notes-file "$notes_file" --verify-tag
-                  fi
-
-    release-macos:
+    build-macos:
         name: macOS universal
-        needs: ensure-github-release
+        needs: release-gate
         runs-on: macos-latest
         env:
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
             APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
             APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY }}
             APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -178,6 +194,7 @@ jobs:
             - uses: actions/checkout@v4
               with:
                   fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
 
             - uses: pnpm/action-setup@v4
               with:
@@ -187,6 +204,10 @@ jobs:
               with:
                   node-version: 22
                   cache: pnpm
+
+            - uses: ./.github/actions/setup-rust
+              with:
+                  targets: aarch64-apple-darwin,x86_64-apple-darwin
 
             - name: Validate macOS release secrets
               run: |
@@ -231,7 +252,6 @@ jobs:
                   npm ci --prefix vendor/Claude-agent-acp-upstream
                   npm run build --prefix vendor/Claude-agent-acp-upstream
 
-                  rustup target add aarch64-apple-darwin x86_64-apple-darwin
                   export CARGO_TARGET_DIR="$PWD/resources/ai/embedded/codex-acp/target"
                   cargo build --manifest-path vendor/codex-acp/Cargo.toml --release --locked --target aarch64-apple-darwin
                   cargo build --manifest-path vendor/codex-acp/Cargo.toml --release --locked --target x86_64-apple-darwin
@@ -257,27 +277,32 @@ jobs:
                     chmod +x "resources/ai/prebuilt/node/darwin-${arch}/bin/node"
                   done
 
-            - name: Publish macOS artifacts
-              run: pnpm run release:mac -- --config.forceCodeSigning=true
+            - name: Package macOS artifacts
+              run: pnpm run package:mac -- --config.forceCodeSigning=true
 
-            - name: Upload macOS workflow artifacts
+            - name: Stage macOS release assets
               uses: actions/upload-artifact@v4
-              if: always()
               with:
-                  name: macos-universal-dist
-                  path: build/macos-package/project/dist/*
+                  name: release-assets-macos-universal
+                  path: |
+                      build/macos-package/project/dist/*.dmg
+                      build/macos-package/project/dist/*.zip
+                      build/macos-package/project/dist/*.blockmap
+                      build/macos-package/project/dist/latest*.yml
+                  if-no-files-found: error
 
-    release-windows-x64:
+    build-windows-x64:
         name: Windows x64
-        needs: ensure-github-release
+        needs: release-gate
         runs-on: windows-latest
         env:
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            CSC_IDENTITY_AUTO_DISCOVERY: "false"
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
             - uses: actions/checkout@v4
               with:
                   fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
 
             - uses: pnpm/action-setup@v4
               with:
@@ -288,7 +313,7 @@ jobs:
                   node-version: 22
                   cache: pnpm
 
-            - uses: dtolnay/rust-toolchain@stable
+            - uses: ./.github/actions/setup-rust
 
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
@@ -296,27 +321,31 @@ jobs:
             - name: Build Windows x64 ACP payload
               run: pnpm run build:windows-acp:x64
 
-            - name: Publish Windows x64 artifacts
-              run: pnpm run release:win:x64
+            - name: Package Windows x64 artifacts
+              run: pnpm run package:win:x64 -- --publish never
 
-            - name: Upload Windows x64 workflow artifacts
+            - name: Stage Windows x64 release assets
               uses: actions/upload-artifact@v4
-              if: always()
               with:
-                  name: windows-x64-dist
-                  path: dist/*
+                  name: release-assets-windows-x64
+                  path: |
+                      dist/*.exe
+                      dist/*.exe.blockmap
+                      dist/latest*.yml
+                  if-no-files-found: error
 
-    release-windows-arm64:
+    build-windows-arm64:
         name: Windows arm64
-        needs: ensure-github-release
+        needs: release-gate
         runs-on: windows-11-arm
         env:
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            CSC_IDENTITY_AUTO_DISCOVERY: "false"
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
             - uses: actions/checkout@v4
               with:
                   fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
 
             - uses: pnpm/action-setup@v4
               with:
@@ -327,7 +356,7 @@ jobs:
                   node-version: 22
                   cache: pnpm
 
-            - uses: dtolnay/rust-toolchain@stable
+            - uses: ./.github/actions/setup-rust
 
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
@@ -335,21 +364,23 @@ jobs:
             - name: Build Windows arm64 ACP payload
               run: pnpm run build:windows-acp:arm64
 
-            - name: Publish Windows arm64 artifacts
-              run: pnpm run release:win:arm64
+            - name: Package Windows arm64 artifacts
+              run: pnpm run package:win:arm64 -- --publish never
 
-            - name: Upload Windows arm64 workflow artifacts
+            - name: Stage Windows arm64 release assets
               uses: actions/upload-artifact@v4
-              if: always()
               with:
-                  name: windows-arm64-dist
-                  path: dist/*
+                  name: release-assets-windows-arm64
+                  path: |
+                      dist/*.exe
+                      dist/*.exe.blockmap
+                      dist/latest*.yml
+                  if-no-files-found: error
 
-    release-linux:
+    build-linux:
         name: Linux ${{ matrix.arch }}
         needs:
-            - release-preflight
-            - ensure-github-release
+            - release-gate
             - apt-repository-preflight
         runs-on: ${{ matrix.runner }}
         strategy:
@@ -364,12 +395,12 @@ jobs:
             APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
             APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
             APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
             - uses: actions/checkout@v4
               with:
                   fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
 
             - uses: pnpm/action-setup@v4
               with:
@@ -380,7 +411,7 @@ jobs:
                   node-version: 22
                   cache: pnpm
 
-            - uses: dtolnay/rust-toolchain@stable
+            - uses: ./.github/actions/setup-rust
 
             - name: Install Linux package toolchain
               run: |
@@ -419,62 +450,87 @@ jobs:
                   node scripts/validate-linux-rpm-package.mjs \
                     --staged-assets-dir dist \
                     --arch "${{ matrix.arch }}" \
-                    --version "${GITHUB_REF_NAME#v}" \
+                    --version "${RELEASE_TAG#v}" \
                     --require-signature
 
-            - name: Upload Linux release assets
-              run: |
-                  shopt -s nullglob
-                  linux_assets=(
-                    dist/*.AppImage
-                    dist/*.AppImage.blockmap
-                    dist/*.deb
-                    dist/*.rpm
-                    dist/latest*-linux*.yml
-                  )
-
-                  if (( ${#linux_assets[@]} == 0 )); then
-                    echo "No Linux release assets found." >&2
-                    exit 1
-                  fi
-
-                  gh release upload "$GITHUB_REF_NAME" "${linux_assets[@]}" --clobber
-
-            - name: Upload Linux workflow artifacts
+            - name: Stage Linux release assets
               uses: actions/upload-artifact@v4
-              if: always()
               with:
-                  name: linux-${{ matrix.arch }}-dist
+                  name: release-assets-linux-${{ matrix.arch }}
                   path: |
                       dist/*.AppImage
                       dist/*.AppImage.blockmap
                       dist/*.deb
                       dist/*.rpm
                       dist/latest*-linux*.yml
+                  if-no-files-found: error
 
-    publish-release-notes:
-        name: Publish release notes
+    validate-release-assets:
+        name: Validate release assets
         needs:
-            - release-preflight
-            - release-macos
-            - release-windows-x64
-            - release-windows-arm64
-            - release-linux
-            - publish-apt-repository
-            - publish-dnf-repository
+            - build-macos
+            - build-windows-x64
+            - build-windows-arm64
+            - build-linux
         runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
+
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 22
+
+            - name: Download staged release assets
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: release-assets-*
+                  path: .artifacts/release-assets
+
+            - name: Validate staged release asset coverage
+              run: |
+                  node scripts/validate-release-assets.mjs \
+                    --assets-dir .artifacts/release-assets \
+                    --version "$RELEASE_TAG"
+
+    publish-github-release:
+        name: Publish GitHub release
+        needs:
+            - prepare
+            - release-gate
+            - build-macos
+            - build-windows-x64
+            - build-windows-arm64
+            - build-linux
+            - validate-release-assets
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
+
             - name: Download release body
               uses: actions/download-artifact@v4
               with:
-                  name: release-body-${{ github.ref_name }}
+                  name: release-body-${{ needs.prepare.outputs.tag }}
                   path: .release
 
-            - name: Create or update GitHub release notes
+            - name: Download staged release assets
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: release-assets-*
+                  path: .artifacts/release-assets
+
+            - name: Publish GitHub release assets
               run: |
-                  tag="$GITHUB_REF_NAME"
+                  tag="$RELEASE_TAG"
                   version="${tag#v}"
                   title="Comando v${version}"
                   notes_file=".release/release-body.md"
@@ -485,16 +541,24 @@ jobs:
                     gh release create "$tag" --title "$title" --notes-file "$notes_file" --verify-tag
                   fi
 
+                  mapfile -t release_assets < <(find .artifacts/release-assets -type f | sort)
+
+                  if (( ${#release_assets[@]} == 0 )); then
+                    echo "No staged release assets found." >&2
+                    exit 1
+                  fi
+
+                  gh release upload "$tag" "${release_assets[@]}" --clobber
+
     publish-apt-repository:
         name: Publish APT repository
         needs:
-            - release-preflight
-            - release-macos
-            - release-windows-x64
-            - release-windows-arm64
-            - release-linux
+            - prepare
+            - publish-github-release
             - apt-repository-preflight
         runs-on: ubuntu-latest
+        permissions:
+            contents: write
         env:
             APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
             APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
@@ -504,6 +568,7 @@ jobs:
             - uses: actions/checkout@v4
               with:
                   fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
 
             - uses: actions/setup-node@v4
               with:
@@ -514,10 +579,10 @@ jobs:
                   sudo apt-get update
                   sudo apt-get install -y ca-certificates dpkg gnupg gzip
 
-            - name: Download Linux workflow artifacts
+            - name: Download staged Linux release assets
               uses: actions/download-artifact@v4
               with:
-                  pattern: linux-*-dist
+                  pattern: release-assets-linux-*
                   path: .artifacts/linux
                   merge-multiple: true
 
@@ -527,7 +592,7 @@ jobs:
               run: |
                   node scripts/build-apt-repository.mjs \
                     --layout flat-release \
-                    --version "$GITHUB_REF_NAME" \
+                    --version "$RELEASE_TAG" \
                     --release-assets-dir .artifacts/linux \
                     --output-dir "$APT_RELEASE_DIR" \
                     --repo-slug "$GITHUB_REPOSITORY" \
@@ -563,7 +628,7 @@ jobs:
                     --layout flat-release \
                     --apt-dir "$APT_RELEASE_DIR" \
                     --package-assets-dir .artifacts/linux \
-                    --version "$GITHUB_REF_NAME" \
+                    --version "$RELEASE_TAG" \
                     --suite stable \
                     --component main
 
@@ -584,7 +649,7 @@ jobs:
                   find .artifacts/linux -type f -name '*.deb' -exec cp {} "$APT_SMOKE_DIR"/ \;
 
                   docker run --rm \
-                    -e VERSION="${GITHUB_REF_NAME#v}" \
+                    -e VERSION="${RELEASE_TAG#v}" \
                     -v "$APT_SMOKE_DIR:/repo:ro" \
                     ubuntu:24.04 \
                     bash -lc '
@@ -623,26 +688,11 @@ jobs:
                   git -C "$PAGES_DIR" config user.name "github-actions[bot]"
                   git -C "$PAGES_DIR" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-            - name: Ensure GitHub release exists
-              run: |
-                  tag="$GITHUB_REF_NAME"
-                  version="${tag#v}"
-                  title="Comando v${version}"
-
-                  if gh release view "$tag" >/dev/null 2>&1; then
-                    gh release edit "$tag" --title "$title"
-                  else
-                    gh release create "$tag" \
-                      --title "$title" \
-                      --notes "Release artifacts are still being finalized." \
-                      --verify-tag
-                  fi
-
             - name: Upload APT metadata to GitHub release
               env:
                   APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
               run: |
-                  gh release upload "$GITHUB_REF_NAME" \
+                  gh release upload "$RELEASE_TAG" \
                     "$APT_RELEASE_DIR/InRelease" \
                     "$APT_RELEASE_DIR/Release" \
                     "$APT_RELEASE_DIR/Release.gpg" \
@@ -658,8 +708,8 @@ jobs:
               run: |
                   docker run --rm \
                     -e REPO_SLUG="$GITHUB_REPOSITORY" \
-                    -e RELEASE_TAG="$GITHUB_REF_NAME" \
-                    -e VERSION="${GITHUB_REF_NAME#v}" \
+                    -e RELEASE_TAG="$RELEASE_TAG" \
+                    -e VERSION="${RELEASE_TAG#v}" \
                     -v "$APT_RELEASE_DIR:/repo:ro" \
                     ubuntu:24.04 \
                     bash -lc '
@@ -711,28 +761,30 @@ jobs:
                   if git -C "$PAGES_DIR" diff --cached --quiet; then
                     echo "No APT entrypoint changes to publish."
                   else
-                    git -C "$PAGES_DIR" commit -m "Publish APT entrypoints for $GITHUB_REF_NAME"
+                    git -C "$PAGES_DIR" commit -m "Publish APT entrypoints for $RELEASE_TAG"
                     git -C "$PAGES_DIR" push origin HEAD:gh-pages
                   fi
 
     publish-dnf-repository:
         name: Publish DNF repository
         needs:
-            - release-preflight
-            - ensure-github-release
-            - release-linux
+            - prepare
+            - publish-github-release
+            - validate-release-assets
             - dnf-repository-preflight
             - publish-apt-repository
         runs-on: ubuntu-latest
+        permissions:
+            contents: write
         env:
             APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
             APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
             APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         steps:
             - uses: actions/checkout@v4
               with:
                   fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
 
             - uses: actions/setup-node@v4
               with:
@@ -743,10 +795,10 @@ jobs:
                   sudo apt-get update
                   sudo apt-get install -y createrepo-c gnupg gzip rpm
 
-            - name: Download Linux workflow artifacts
+            - name: Download staged Linux release assets
               uses: actions/download-artifact@v4
               with:
-                  pattern: linux-*-dist
+                  pattern: release-assets-linux-*
                   path: .artifacts/linux
                   merge-multiple: true
 
@@ -774,8 +826,8 @@ jobs:
                   PAGES_DIR: ${{ runner.temp }}/gh-pages
               run: |
                   node scripts/build-dnf-repository.mjs \
-                    --version "$GITHUB_REF_NAME" \
-                    --tag "$GITHUB_REF_NAME" \
+                    --version "$RELEASE_TAG" \
+                    --tag "$RELEASE_TAG" \
                     --release-assets-dir .artifacts/linux \
                     --pages-dir "$PAGES_DIR" \
                     --repo-slug "$GITHUB_REPOSITORY"
@@ -805,14 +857,14 @@ jobs:
 
                   node scripts/validate-dnf-repository.mjs \
                     --dnf-dir "$PAGES_DIR/dnf" \
-                    --version "$GITHUB_REF_NAME"
+                    --version "$RELEASE_TAG"
 
             - name: Validate DNF repository with Fedora
               env:
                   PAGES_DIR: ${{ runner.temp }}/gh-pages
               run: |
                   docker run --rm \
-                    -e VERSION="${GITHUB_REF_NAME#v}" \
+                    -e VERSION="${RELEASE_TAG#v}" \
                     -v "$PAGES_DIR/dnf:/repo:ro" \
                     fedora:latest \
                     bash -lc '
@@ -857,6 +909,45 @@ jobs:
                   if git -C "$PAGES_DIR" diff --cached --quiet; then
                     echo "No DNF repository changes to publish."
                   else
-                    git -C "$PAGES_DIR" commit -m "Publish DNF repository for $GITHUB_REF_NAME"
+                    git -C "$PAGES_DIR" commit -m "Publish DNF repository for $RELEASE_TAG"
                     git -C "$PAGES_DIR" push origin HEAD:gh-pages
                   fi
+
+            - name: Validate published DNF repository endpoint
+              run: |
+                  repo_name="${GITHUB_REPOSITORY#*/}"
+                  baseurl="https://${GITHUB_REPOSITORY_OWNER}.github.io/${repo_name}/dnf"
+                  version="${RELEASE_TAG#v}"
+
+                  for attempt in {1..12}; do
+                    echo "Validating published DNF repository endpoint, attempt ${attempt}/12."
+                    if docker run --rm \
+                      -e BASEURL="$baseurl" \
+                      -e VERSION="$version" \
+                      fedora:latest \
+                      bash -lc '
+                        set -euo pipefail
+                        dnf install -y ca-certificates curl
+                        curl -fsSL "$BASEURL/comando-archive-keyring.asc" \
+                          -o /etc/pki/rpm-gpg/comando-archive-keyring.asc
+                        rpm --import /etc/pki/rpm-gpg/comando-archive-keyring.asc
+                        {
+                          printf "%s\n" "[comando]"
+                          printf "%s\n" "name=Comando"
+                          printf "%s\n" "baseurl=${BASEURL}"
+                          printf "%s\n" "enabled=1"
+                          printf "%s\n" "gpgcheck=1"
+                          printf "%s\n" "repo_gpgcheck=1"
+                          printf "%s\n" "gpgkey=${BASEURL}/comando-archive-keyring.asc"
+                        } >/etc/yum.repos.d/comando.repo
+                        dnf -y makecache
+                        dnf info comando | grep -F "$VERSION"
+                        dnf install -y --downloadonly comando
+                      '; then
+                      exit 0
+                    fi
+
+                    sleep 10
+                  done
+
+                  exit 1
