@@ -141,6 +141,10 @@ import { buildLiveGitGutterDiff } from "@renderer/components/workspace/gitGutter
 import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
 import {
+    resolveInlineReviewRestoreCandidate,
+    resolvePendingEditorInlineReviewRestoreState,
+} from "@renderer/components/workspace/inlineReviewRestorePriority";
+import {
     acquireWorkspaceFileModel,
     buildWorkspaceEditorModelPath,
     buildWorkspaceFileEditorModelPath,
@@ -3870,6 +3874,7 @@ function FileTabView({
         ReturnType<typeof captureDiffEditorScrollState>
     >(captureDiffEditorScrollState(null));
     const pendingEditorInlineReviewRestoreStateRef = useRef<{
+        readonly reviewSignature: string | null;
         readonly state: PortableEditorRestoreState;
         readonly tabId: string;
     } | null>(null);
@@ -3878,6 +3883,8 @@ function FileTabView({
         readonly tabId: string;
     } | null>(null);
     const fileTabIdRef = useRef(tab.id);
+    const inlineReviewActiveRef = useRef(false);
+    const inlineReviewSignatureRef = useRef<string | null>(null);
     const latestDraftContentRef = useRef(tab.draftContent);
     const gitGutterDecoratorRef = useRef<GitGutterDecorator | null>(null);
     const inlineReviewDecorationsRef =
@@ -4285,12 +4292,18 @@ function FileTabView({
 
     const captureEditorStateForInlineReview = useCallback(
         (editor: MonacoEditor.IStandaloneCodeEditor | null) => {
+            // Once inline review is active, the hidden editor may report stale layout scroll.
+            if (inlineReviewActiveRef.current) {
+                return;
+            }
+
             const state = capturePortableEditorRestoreState(editor);
             if (!state) {
                 return;
             }
 
             pendingEditorInlineReviewRestoreStateRef.current = {
+                reviewSignature: inlineReviewSignatureRef.current,
                 state,
                 tabId: fileTabIdRef.current,
             };
@@ -4317,6 +4330,11 @@ function FileTabView({
             pendingEditorViewStateTabIdRef.current = fileTabIdRef.current;
         }
     }, []);
+
+    useLayoutEffect(() => {
+        inlineReviewActiveRef.current = isInlineReviewActive;
+        inlineReviewSignatureRef.current = reviewSignature;
+    }, [isInlineReviewActive, reviewSignature]);
 
     const handleKeepInlineReviewFile = useCallback(() => {
         if (!inlineReviewTrackedFile) {
@@ -5208,10 +5226,16 @@ function FileTabView({
             });
 
             const pendingInlineReviewRestoreState =
-                pendingEditorInlineReviewRestoreStateRef.current?.tabId ===
-                tab.id
-                    ? pendingEditorInlineReviewRestoreStateRef.current.state
-                    : null;
+                pendingEditorInlineReviewRestoreStateRef.current;
+            const pendingInlineReviewRestoreResolution =
+                resolvePendingEditorInlineReviewRestoreState({
+                    pendingState: pendingInlineReviewRestoreState,
+                    reviewSignature,
+                    tabId: tab.id,
+                });
+            if (pendingInlineReviewRestoreResolution.shouldClear) {
+                pendingEditorInlineReviewRestoreStateRef.current = null;
+            }
 
             try {
                 inlineReviewDecorationsRef.current?.clear();
@@ -5228,28 +5252,53 @@ function FileTabView({
                     modified: nextModifiedModel,
                     original: nextOriginalModel,
                 };
-                if (consumePendingInlineReviewOpenLocation(diffEditor)) {
-                    // Explicit file reference navigation wins over review view state.
-                } else if (currentInlineReviewRestoreState) {
-                    restorePortableInlineReviewState(
-                        diffEditor,
-                        currentInlineReviewRestoreState,
-                    );
-                } else if (pendingInlineReviewRestoreState) {
-                    restorePortableInlineReviewState(
-                        diffEditor,
-                        pendingInlineReviewRestoreState,
-                    );
-                    pendingEditorInlineReviewRestoreStateRef.current = null;
-                } else if (persistedInlineReviewViewState) {
-                    restoreInlineReviewViewState(
-                        diffEditor,
-                        persistedInlineReviewViewState,
-                    );
-                    pendingEditorViewStateRef.current =
-                        persistedInlineReviewViewState;
-                } else {
-                    restoreInlineReviewScrollState(diffEditor, scrollState);
+                const restoreCandidate = resolveInlineReviewRestoreCandidate({
+                    currentInlineReviewRestoreState,
+                    didConsumePendingOpenLocation:
+                        consumePendingInlineReviewOpenLocation(diffEditor),
+                    pendingEditorInlineReviewRestoreState:
+                        pendingInlineReviewRestoreResolution.state,
+                    persistedInlineReviewViewState,
+                    scrollState,
+                });
+
+                switch (restoreCandidate.kind) {
+                    case "openLocation":
+                        // Explicit file reference navigation wins over review view state.
+                        break;
+                    case "currentInlineReviewState":
+                        restorePortableInlineReviewState(
+                            diffEditor,
+                            restoreCandidate.state,
+                        );
+                        break;
+                    case "portableEditorState":
+                        restorePortableInlineReviewState(
+                            diffEditor,
+                            restoreCandidate.state,
+                        );
+                        if (
+                            pendingEditorInlineReviewRestoreStateRef.current ===
+                            pendingInlineReviewRestoreState
+                        ) {
+                            pendingEditorInlineReviewRestoreStateRef.current =
+                                null;
+                        }
+                        break;
+                    case "viewState":
+                        restoreInlineReviewViewState(
+                            diffEditor,
+                            restoreCandidate.state,
+                        );
+                        pendingEditorViewStateRef.current =
+                            restoreCandidate.state;
+                        break;
+                    case "diffScrollState":
+                        restoreInlineReviewScrollState(
+                            diffEditor,
+                            restoreCandidate.state,
+                        );
+                        break;
                 }
             } catch (error) {
                 if (!isMonacoDisposedError(error)) {
@@ -5281,6 +5330,7 @@ function FileTabView({
             restoreInlineReviewScrollState,
             restoreInlineReviewViewState,
             restorePortableInlineReviewState,
+            reviewSignature,
             tab.id,
             tab.viewState,
         ],
