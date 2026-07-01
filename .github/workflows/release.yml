@@ -573,7 +573,7 @@ jobs:
                   sudo apt-get update
                   sudo apt-get install -y ca-certificates dpkg gnupg gzip
 
-            - name: Download Linux workflow artifacts
+            - name: Download staged Linux release assets
               uses: actions/download-artifact@v4
               with:
                   pattern: release-assets-linux-*
@@ -788,7 +788,7 @@ jobs:
                   sudo apt-get update
                   sudo apt-get install -y createrepo-c gnupg gzip rpm
 
-            - name: Download Linux workflow artifacts
+            - name: Download staged Linux release assets
               uses: actions/download-artifact@v4
               with:
                   pattern: release-assets-linux-*
@@ -905,3 +905,42 @@ jobs:
                     git -C "$PAGES_DIR" commit -m "Publish DNF repository for $RELEASE_TAG"
                     git -C "$PAGES_DIR" push origin HEAD:gh-pages
                   fi
+
+            - name: Validate published DNF repository endpoint
+              run: |
+                  repo_name="${GITHUB_REPOSITORY#*/}"
+                  baseurl="https://${GITHUB_REPOSITORY_OWNER}.github.io/${repo_name}/dnf"
+                  version="${RELEASE_TAG#v}"
+
+                  for attempt in {1..12}; do
+                    echo "Validating published DNF repository endpoint, attempt ${attempt}/12."
+                    if docker run --rm \
+                      -e BASEURL="$baseurl" \
+                      -e VERSION="$version" \
+                      fedora:latest \
+                      bash -lc '
+                        set -euo pipefail
+                        dnf install -y ca-certificates curl
+                        curl -fsSL "$BASEURL/comando-archive-keyring.asc" \
+                          -o /etc/pki/rpm-gpg/comando-archive-keyring.asc
+                        rpm --import /etc/pki/rpm-gpg/comando-archive-keyring.asc
+                        {
+                          printf "%s\n" "[comando]"
+                          printf "%s\n" "name=Comando"
+                          printf "%s\n" "baseurl=${BASEURL}"
+                          printf "%s\n" "enabled=1"
+                          printf "%s\n" "gpgcheck=1"
+                          printf "%s\n" "repo_gpgcheck=1"
+                          printf "%s\n" "gpgkey=${BASEURL}/comando-archive-keyring.asc"
+                        } >/etc/yum.repos.d/comando.repo
+                        dnf -y makecache
+                        dnf info comando | grep -F "$VERSION"
+                        dnf install -y --downloadonly comando
+                      '; then
+                      exit 0
+                    fi
+
+                    sleep 10
+                  done
+
+                  exit 1
