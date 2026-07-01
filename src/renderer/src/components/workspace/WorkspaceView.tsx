@@ -4292,6 +4292,7 @@ function FileTabView({
 
     const captureEditorStateForInlineReview = useCallback(
         (editor: MonacoEditor.IStandaloneCodeEditor | null) => {
+            // Once inline review is active, the hidden editor may report stale layout scroll.
             if (inlineReviewActiveRef.current) {
                 return;
             }
