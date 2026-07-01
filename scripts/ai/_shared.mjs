@@ -181,7 +181,7 @@ export function prepareCommandForSpawnSync(
             "/c",
             buildWindowsBatchCommandLine(command, args),
         ],
-        command: launchOptions.comSpec ?? process.env.ComSpec ?? "cmd.exe",
+        command: launchOptions.comSpec ?? "cmd.exe",
         options: withWindowsVerbatimArguments(options),
     };
 }
