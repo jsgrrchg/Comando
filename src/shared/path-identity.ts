@@ -196,7 +196,9 @@ function formatDisplayPath(parts: NormalizedPathParts): string {
     }
 
     if (parts.root.endsWith("/")) {
-        return `${parts.root}${parts.segments.join("/")}`.replace(/\/$/, "/");
+        return parts.segments.length > 0
+            ? `${parts.root}${parts.segments.join("/")}`
+            : parts.root;
     }
 
     return parts.segments.length > 0

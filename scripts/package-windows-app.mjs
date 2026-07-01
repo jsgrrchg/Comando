@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 
 import {
     buildRceditExecutableMetadataArgs,
@@ -23,10 +22,10 @@ import {
     ensureDir,
     isExecutableFile,
     isFile,
-    prepareCommandForSpawnSync,
     relativeToRepo,
     repoRoot,
     resetDir,
+    spawnPreparedSync,
 } from "./ai/_shared.mjs";
 
 const buildRoot = path.join(repoRoot, "build");
@@ -462,12 +461,7 @@ function run(command, args, options = {}) {
         stdio: "inherit",
         ...options,
     };
-    const prepared = prepareCommandForSpawnSync(command, args, spawnOptions);
-    const result = spawnSync(
-        prepared.command,
-        prepared.args,
-        prepared.options,
-    );
+    const result = spawnPreparedSync(command, args, spawnOptions);
 
     if (result.error) {
         throw result.error;
@@ -492,12 +486,7 @@ function runCaptured(command, args, options = {}) {
         maxBuffer: 1024 * 1024,
         ...options,
     };
-    const prepared = prepareCommandForSpawnSync(command, args, spawnOptions);
-    const result = spawnSync(
-        prepared.command,
-        prepared.args,
-        prepared.options,
-    );
+    const result = spawnPreparedSync(command, args, spawnOptions);
 
     if (result.error) {
         throw result.error;
