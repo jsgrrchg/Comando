@@ -146,12 +146,14 @@ const monacoHarness = vi.hoisted(() => {
         readonly hasTextFocus: () => boolean;
         readonly hasWidgetFocus: () => boolean;
         readonly layout: () => void;
-        readonly onDidChangeCursorSelection: () => Disposable;
+        readonly onDidChangeCursorSelection: (
+            listener: () => void,
+        ) => Disposable;
         readonly onDidChangeHiddenAreas: () => Disposable;
         readonly onDidChangeModel: (listener: () => void) => Disposable;
         readonly onDidDispose: (listener: () => void) => Disposable;
         readonly onDidLayoutChange: () => Disposable;
-        readonly onDidScrollChange: () => Disposable;
+        readonly onDidScrollChange: (listener: () => void) => Disposable;
         readonly onWillChangeModel: (listener: () => void) => Disposable;
         readonly onMouseLeave: () => Disposable;
         readonly onMouseMove: () => Disposable;
@@ -332,6 +334,8 @@ const monacoHarness = vi.hoisted(() => {
         const disposeListeners = new Set<() => void>();
         const modelChangeListeners = new Set<() => void>();
         const modelWillChangeListeners = new Set<() => void>();
+        const cursorSelectionListeners = new Set<() => void>();
+        const scrollListeners = new Set<() => void>();
         const editor: FakeCodeEditor = {
             createDecorationsCollection: vi.fn(
                 (decorations: readonly unknown[] = []) => {
@@ -392,7 +396,14 @@ const monacoHarness = vi.hoisted(() => {
             layout: vi.fn(),
             model: null,
             name,
-            onDidChangeCursorSelection: () => createDisposable(),
+            onDidChangeCursorSelection: (listener) => {
+                cursorSelectionListeners.add(listener);
+                return {
+                    dispose: () => {
+                        cursorSelectionListeners.delete(listener);
+                    },
+                };
+            },
             onDidChangeHiddenAreas: () => createDisposable(),
             onDidChangeModel: (listener) => {
                 modelChangeListeners.add(listener);
@@ -411,7 +422,14 @@ const monacoHarness = vi.hoisted(() => {
                 };
             },
             onDidLayoutChange: () => createDisposable(),
-            onDidScrollChange: () => createDisposable(),
+            onDidScrollChange: (listener) => {
+                scrollListeners.add(listener);
+                return {
+                    dispose: () => {
+                        scrollListeners.delete(listener);
+                    },
+                };
+            },
             onWillChangeModel: (listener) => {
                 modelWillChangeListeners.add(listener);
                 return {
@@ -457,14 +475,23 @@ const monacoHarness = vi.hoisted(() => {
                     readonly lineNumber: number;
                 }) => {
                     editor.position = position;
+                    for (const listener of cursorSelectionListeners) {
+                        listener();
+                    }
                 },
             ),
             setSelection: vi.fn(),
             setScrollLeft: vi.fn((scrollLeft: number) => {
                 editor.scrollLeft = scrollLeft;
+                for (const listener of scrollListeners) {
+                    listener();
+                }
             }),
             setScrollTop: vi.fn((scrollTop: number) => {
                 editor.scrollTop = scrollTop;
+                for (const listener of scrollListeners) {
+                    listener();
+                }
             }),
             updateOptions: vi.fn(),
         };
@@ -1604,6 +1631,86 @@ describe("WorkspaceFileEditorHost", () => {
         expect(
             mockWorkspaceStoreState.current.updateFilePendingOpenLocation,
         ).toHaveBeenCalledWith("file-1", null);
+    });
+
+    it("preserves the normal editor viewport when new inline review changes arrive", async () => {
+        const content = [
+            "const first = 1;",
+            "const second = 2;",
+            "const third = 3;",
+            "const fourth = 4;",
+            "",
+        ].join("\n");
+        const updatedContent = [
+            "const first = 1;",
+            "const second = 22;",
+            "const third = 3;",
+            "const fourth = 4;",
+            "",
+        ].join("\n");
+        const fileTab = createFileTab("file-1", "src/app.ts", content);
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: fileTab,
+                    fileTabs: [fileTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const normalEditor = monacoHarness.codeEditors.find((editor) =>
+            editor.name.startsWith("editor-"),
+        );
+        expect(normalEditor).toBeDefined();
+        if (!normalEditor) {
+            throw new Error("Expected normal file editor to mount.");
+        }
+
+        normalEditor.setPosition({ column: 7, lineNumber: 3 });
+        normalEditor.setScrollLeft(13);
+        normalEditor.setScrollTop(360);
+
+        mockAiStoreState.current.sessions = {
+            "session-1": {
+                snapshot: {
+                    trackedFiles: [
+                        {
+                            ...createTrackedFile(),
+                            newText: updatedContent,
+                            oldText: content,
+                        },
+                    ],
+                },
+            },
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: fileTab,
+                    fileTabs: [fileTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const diffEditor = monacoHarness.diffEditors[0];
+        expect(diffEditor).toBeDefined();
+        if (!diffEditor) {
+            throw new Error("Expected inline review diff editor to mount.");
+        }
+
+        const modifiedEditor = diffEditor.getModifiedEditor();
+        expect(modifiedEditor.getPosition()).toEqual({
+            column: 7,
+            lineNumber: 3,
+        });
+        expect(modifiedEditor.getScrollLeft()).toBe(13);
+        expect(modifiedEditor.getScrollTop()).toBe(360);
+        expect(diffEditor.getOriginalEditor().getScrollLeft()).toBe(13);
+        expect(diffEditor.getOriginalEditor().getScrollTop()).toBe(360);
     });
 
     it("applies a pending file open range that arrives after inline review mounts", async () => {
