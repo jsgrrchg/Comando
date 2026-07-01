@@ -463,6 +463,23 @@ export function GitHubPullRequestTabView({
                         <section
                             className="space-y-3 rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary px-4 py-3"
                         >
+                            {isEditingDescription ? (
+                                <input
+                                    className="h-9 w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 text-[18px] font-semibold leading-7 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
+                                    disabled={isUpdatingPullRequest}
+                                    onChange={(event) =>
+                                        setTitleDraft(
+                                            event.currentTarget.value,
+                                        )
+                                    }
+                                    placeholder="Pull request title"
+                                    value={titleDraft}
+                                />
+                            ) : (
+                                <h1 className="text-[18px] font-semibold leading-7 text-text-primary">
+                                    {detail.title}
+                                </h1>
+                            )}
                             <div className="flex flex-wrap items-center gap-2">
                                 <GitHubStatePill tone={stateTone}>
                                     {stateLabel}
@@ -600,17 +617,6 @@ export function GitHubPullRequestTabView({
                         >
                             {isEditingDescription ? (
                                 <>
-                                    <input
-                                        className="h-9 w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 text-[15px] font-semibold text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
-                                        disabled={isUpdatingPullRequest}
-                                        onChange={(event) =>
-                                            setTitleDraft(
-                                                event.currentTarget.value,
-                                            )
-                                        }
-                                        placeholder="Pull request title"
-                                        value={titleDraft}
-                                    />
                                     <textarea
                                         className="min-h-56 w-full resize-y rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
                                         disabled={isUpdatingPullRequest}
