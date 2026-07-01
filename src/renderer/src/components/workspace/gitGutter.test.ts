@@ -677,12 +677,12 @@ describe("GitGutterDecorator", () => {
 });
 
 describe("getGitGutterLineNumbersMinChars", () => {
-    it("keeps line-number width independent from git marker space", () => {
+    it("keeps left breathing room independent from git marker space", () => {
         expect(getGitGutterLineNumbersMinChars(9)).toBe(4);
         expect(getGitGutterLineNumbersMinChars(87)).toBe(4);
         expect(getGitGutterLineNumbersMinChars(120)).toBe(4);
-        expect(getGitGutterLineNumbersMinChars(2048)).toBe(4);
-        expect(getGitGutterLineNumbersMinChars(10000)).toBe(5);
+        expect(getGitGutterLineNumbersMinChars(2048)).toBe(5);
+        expect(getGitGutterLineNumbersMinChars(10000)).toBe(6);
     });
 });
 

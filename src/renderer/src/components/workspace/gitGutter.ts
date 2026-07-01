@@ -5,6 +5,7 @@ import type { GitFileDiff } from "@shared/ipc";
 import {
     computeGitGutterMarkers,
     type GitGutterChangeType,
+    getEditorLineNumbersMinChars,
     getGitGutterLineNumbersMinChars,
     hasRenderableGitGutterChange,
     type GitGutterMarker,
@@ -12,6 +13,7 @@ import {
 
 export {
     computeGitGutterMarkers,
+    getEditorLineNumbersMinChars,
     getGitGutterLineNumbersMinChars,
     hasRenderableGitGutterChange,
 };

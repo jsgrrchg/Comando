@@ -134,7 +134,7 @@ import { persistChatDraftForTab } from "@renderer/components/workspace/chatDraft
 import {
     GIT_GUTTER_LINE_DECORATIONS_WIDTH,
     GitGutterDecorator,
-    getGitGutterLineNumbersMinChars,
+    getEditorLineNumbersMinChars,
     hasRenderableGitGutterChange,
 } from "@renderer/components/workspace/gitGutter";
 import { buildLiveGitGutterDiff } from "@renderer/components/workspace/gitGutterLiveDiff";
@@ -3959,8 +3959,8 @@ function FileTabView({
             : gitGutterLiveState?.status === "unavailable"
               ? null
               : (gitGutterSource?.diff ?? null);
-    const gitGutterLineNumbersMinChars = useMemo(
-        () => getGitGutterLineNumbersMinChars(countTextLines(tab.draftContent)),
+    const editorLineNumbersMinChars = useMemo(
+        () => getEditorLineNumbersMinChars(countTextLines(tab.draftContent)),
         [tab.draftContent],
     );
     const canShowInlineReview = isInlineReviewSupported(trackedFile);
@@ -5625,9 +5625,7 @@ function FileTabView({
             lineHeight: editorLineHeightPx,
             lineDecorationsWidth: GIT_GUTTER_LINE_DECORATIONS_WIDTH,
             lineNumbers: editorLineNumbers,
-            lineNumbersMinChars: shouldShowGitGutter
-                ? gitGutterLineNumbersMinChars
-                : 4,
+            lineNumbersMinChars: editorLineNumbersMinChars,
             minimap: {
                 enabled: editorSettings.minimapEnabled,
             },
@@ -5656,10 +5654,9 @@ function FileTabView({
         editorFontFamily,
         editorLineHeightPx,
         editorLineNumbers,
+        editorLineNumbersMinChars,
         editorSettings.fontSize,
         editorSettings.minimapEnabled,
-        gitGutterLineNumbersMinChars,
-        shouldShowGitGutter,
     ]);
 
     useEffect(() => {
@@ -5733,9 +5730,7 @@ function FileTabView({
             lineHeight: editorLineHeightPx,
             lineDecorationsWidth: GIT_GUTTER_LINE_DECORATIONS_WIDTH,
             lineNumbers: editorLineNumbers,
-            lineNumbersMinChars: shouldShowGitGutter
-                ? gitGutterLineNumbersMinChars
-                : 4,
+            lineNumbersMinChars: editorLineNumbersMinChars,
             ...createComandoEditorFeatureOptions(),
             largeFileOptimizations: true,
             maxTokenizationLineLength: MONACO_MAX_TOKENIZATION_LINE_LENGTH,
@@ -5773,10 +5768,9 @@ function FileTabView({
             editorFontFamily,
             editorLineHeightPx,
             editorLineNumbers,
+            editorLineNumbersMinChars,
             editorSettings.fontSize,
             editorSettings.minimapEnabled,
-            gitGutterLineNumbersMinChars,
-            shouldShowGitGutter,
         ],
     );
 

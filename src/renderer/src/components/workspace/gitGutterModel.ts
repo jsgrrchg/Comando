@@ -32,10 +32,20 @@ export function computeGitGutterMarkers(
     return dedupeMarkers(markers);
 }
 
-export function getGitGutterLineNumbersMinChars(lineCount: number): number {
+const MIN_EDITOR_LINE_NUMBER_CHARS = 4;
+const EDITOR_LINE_NUMBER_LEFT_PADDING_CHARS = 1;
+
+export function getEditorLineNumbersMinChars(lineCount: number): number {
     const digits = String(Math.max(1, lineCount)).length;
 
-    return Math.max(4, digits);
+    return Math.max(
+        MIN_EDITOR_LINE_NUMBER_CHARS,
+        digits + EDITOR_LINE_NUMBER_LEFT_PADDING_CHARS,
+    );
+}
+
+export function getGitGutterLineNumbersMinChars(lineCount: number): number {
+    return getEditorLineNumbersMinChars(lineCount);
 }
 
 function computeHunkMarkers(
