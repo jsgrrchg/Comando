@@ -821,7 +821,7 @@ export function setConfigOptionOnSnapshot(
                 : snapshot.modelId,
         reasoningEffort:
             hasUpdatedOptionValue &&
-            updatedOption?.type === "select" &&
+            updatedOption.type === "select" &&
             isReasoningEffortConfigOption(updatedOption) &&
             typeof value === "string"
                 ? value
