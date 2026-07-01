@@ -177,34 +177,6 @@ jobs:
                   printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
                   gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
 
-    ensure-github-release:
-        name: Ensure GitHub release
-        needs:
-            - prepare
-            - release-gate
-        runs-on: ubuntu-latest
-        env:
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        steps:
-            - name: Download release body
-              uses: actions/download-artifact@v4
-              with:
-                  name: release-body-${{ needs.prepare.outputs.tag }}
-                  path: .release
-
-            - name: Create or update release shell
-              run: |
-                  tag="$RELEASE_TAG"
-                  version="${tag#v}"
-                  title="Comando v${version}"
-                  notes_file=".release/release-body.md"
-
-                  if gh release view "$tag" >/dev/null 2>&1; then
-                    gh release edit "$tag" --title "$title" --notes-file "$notes_file"
-                  else
-                    gh release create "$tag" --title "$title" --notes-file "$notes_file" --verify-tag
-                  fi
-
     build-macos:
         name: macOS universal
         needs: release-gate
@@ -521,24 +493,38 @@ jobs:
                     --assets-dir .artifacts/release-assets \
                     --version "$RELEASE_TAG"
 
-    publish-release-notes:
-        name: Publish release notes
+    publish-github-release:
+        name: Publish GitHub release
         needs:
             - prepare
+            - release-gate
+            - build-macos
+            - build-windows-x64
+            - build-windows-arm64
+            - build-linux
             - validate-release-assets
-            - publish-apt-repository
-            - publish-dnf-repository
         runs-on: ubuntu-latest
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+                  ref: ${{ env.RELEASE_TAG }}
+
             - name: Download release body
               uses: actions/download-artifact@v4
               with:
                   name: release-body-${{ needs.prepare.outputs.tag }}
                   path: .release
 
-            - name: Create or update GitHub release notes
+            - name: Download staged release assets
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: release-assets-*
+                  path: .artifacts/release-assets
+
+            - name: Publish GitHub release assets
               run: |
                   tag="$RELEASE_TAG"
                   version="${tag#v}"
@@ -551,11 +537,20 @@ jobs:
                     gh release create "$tag" --title "$title" --notes-file "$notes_file" --verify-tag
                   fi
 
+                  mapfile -t release_assets < <(find .artifacts/release-assets -type f | sort)
+
+                  if (( ${#release_assets[@]} == 0 )); then
+                    echo "No staged release assets found." >&2
+                    exit 1
+                  fi
+
+                  gh release upload "$tag" "${release_assets[@]}" --clobber
+
     publish-apt-repository:
         name: Publish APT repository
         needs:
             - prepare
-            - validate-release-assets
+            - publish-github-release
             - apt-repository-preflight
         runs-on: ubuntu-latest
         env:
@@ -687,21 +682,6 @@ jobs:
                   git -C "$PAGES_DIR" config user.name "github-actions[bot]"
                   git -C "$PAGES_DIR" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-            - name: Ensure GitHub release exists
-              run: |
-                  tag="$RELEASE_TAG"
-                  version="${tag#v}"
-                  title="Comando v${version}"
-
-                  if gh release view "$tag" >/dev/null 2>&1; then
-                    gh release edit "$tag" --title "$title"
-                  else
-                    gh release create "$tag" \
-                      --title "$title" \
-                      --notes "Release artifacts are still being finalized." \
-                      --verify-tag
-                  fi
-
             - name: Upload APT metadata to GitHub release
               env:
                   APT_RELEASE_DIR: ${{ runner.temp }}/apt-release
@@ -783,7 +763,7 @@ jobs:
         name: Publish DNF repository
         needs:
             - prepare
-            - ensure-github-release
+            - publish-github-release
             - validate-release-assets
             - dnf-repository-preflight
             - publish-apt-repository
