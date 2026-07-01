@@ -21,6 +21,12 @@ export type InlineReviewRestoreCandidate<
           readonly state: TScrollState;
       };
 
+export type PendingEditorInlineReviewRestoreState<TPortableState> = {
+    readonly reviewSignature: string | null;
+    readonly state: TPortableState;
+    readonly tabId: string;
+};
+
 export function resolveInlineReviewRestoreCandidate<
     TPortableState,
     TViewState,
@@ -60,5 +66,38 @@ export function resolveInlineReviewRestoreCandidate<
     return {
         kind: "diffScrollState",
         state: input.scrollState,
+    };
+}
+
+export function resolvePendingEditorInlineReviewRestoreState<TPortableState>(
+    input: {
+        readonly pendingState: PendingEditorInlineReviewRestoreState<TPortableState> | null;
+        readonly reviewSignature: string | null;
+        readonly tabId: string;
+    },
+): {
+    readonly shouldClear: boolean;
+    readonly state: TPortableState | null;
+} {
+    if (!input.pendingState || input.pendingState.tabId !== input.tabId) {
+        return {
+            shouldClear: false,
+            state: null,
+        };
+    }
+
+    if (
+        input.pendingState.reviewSignature !== null &&
+        input.pendingState.reviewSignature !== input.reviewSignature
+    ) {
+        return {
+            shouldClear: true,
+            state: null,
+        };
+    }
+
+    return {
+        shouldClear: false,
+        state: input.pendingState.state,
     };
 }

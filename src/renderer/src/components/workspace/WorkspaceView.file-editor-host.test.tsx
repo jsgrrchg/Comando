@@ -1606,6 +1606,86 @@ describe("WorkspaceFileEditorHost", () => {
         ).toHaveBeenCalledWith("file-1", null);
     });
 
+    it("preserves the normal editor viewport when new inline review changes arrive", async () => {
+        const content = [
+            "const first = 1;",
+            "const second = 2;",
+            "const third = 3;",
+            "const fourth = 4;",
+            "",
+        ].join("\n");
+        const updatedContent = [
+            "const first = 1;",
+            "const second = 22;",
+            "const third = 3;",
+            "const fourth = 4;",
+            "",
+        ].join("\n");
+        const fileTab = createFileTab("file-1", "src/app.ts", content);
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: fileTab,
+                    fileTabs: [fileTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const normalEditor = monacoHarness.codeEditors.find((editor) =>
+            editor.name.startsWith("editor-"),
+        );
+        expect(normalEditor).toBeDefined();
+        if (!normalEditor) {
+            throw new Error("Expected normal file editor to mount.");
+        }
+
+        normalEditor.setPosition({ column: 7, lineNumber: 3 });
+        normalEditor.setScrollLeft(13);
+        normalEditor.setScrollTop(360);
+
+        mockAiStoreState.current.sessions = {
+            "session-1": {
+                snapshot: {
+                    trackedFiles: [
+                        {
+                            ...createTrackedFile(),
+                            newText: updatedContent,
+                            oldText: content,
+                        },
+                    ],
+                },
+            },
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: fileTab,
+                    fileTabs: [fileTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const diffEditor = monacoHarness.diffEditors[0];
+        expect(diffEditor).toBeDefined();
+        if (!diffEditor) {
+            throw new Error("Expected inline review diff editor to mount.");
+        }
+
+        const modifiedEditor = diffEditor.getModifiedEditor();
+        expect(modifiedEditor.getPosition()).toEqual({
+            column: 7,
+            lineNumber: 3,
+        });
+        expect(modifiedEditor.getScrollLeft()).toBe(13);
+        expect(modifiedEditor.getScrollTop()).toBe(360);
+        expect(diffEditor.getOriginalEditor().getScrollLeft()).toBe(13);
+        expect(diffEditor.getOriginalEditor().getScrollTop()).toBe(360);
+    });
+
     it("applies a pending file open range that arrives after inline review mounts", async () => {
         const tab = createFileTab("file-1");
         mockAiStoreState.current.sessions = {

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveInlineReviewRestoreCandidate } from "./inlineReviewRestorePriority";
+import {
+    resolveInlineReviewRestoreCandidate,
+    resolvePendingEditorInlineReviewRestoreState,
+} from "./inlineReviewRestorePriority";
 
 describe("resolveInlineReviewRestoreCandidate", () => {
     const scrollState = { scrollTop: 10 };
@@ -77,6 +80,27 @@ describe("resolveInlineReviewRestoreCandidate", () => {
         ).toEqual({
             kind: "diffScrollState",
             state: scrollState,
+        });
+    });
+});
+
+describe("resolvePendingEditorInlineReviewRestoreState", () => {
+    const portableEditorState = { lineNumber: 30, source: "editor" };
+
+    it("ignores stale portable state from a different review signature", () => {
+        expect(
+            resolvePendingEditorInlineReviewRestoreState({
+                pendingState: {
+                    reviewSignature: "review:v1",
+                    state: portableEditorState,
+                    tabId: "file-1",
+                },
+                reviewSignature: "review:v2",
+                tabId: "file-1",
+            }),
+        ).toEqual({
+            shouldClear: true,
+            state: null,
         });
     });
 });

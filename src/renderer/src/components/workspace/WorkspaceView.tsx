@@ -140,7 +140,10 @@ import {
 import { buildLiveGitGutterDiff } from "@renderer/components/workspace/gitGutterLiveDiff";
 import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
-import { resolveInlineReviewRestoreCandidate } from "@renderer/components/workspace/inlineReviewRestorePriority";
+import {
+    resolveInlineReviewRestoreCandidate,
+    resolvePendingEditorInlineReviewRestoreState,
+} from "@renderer/components/workspace/inlineReviewRestorePriority";
 import {
     acquireWorkspaceFileModel,
     buildWorkspaceEditorModelPath,
@@ -5232,21 +5235,15 @@ function FileTabView({
 
             const pendingInlineReviewRestoreState =
                 pendingEditorInlineReviewRestoreStateRef.current;
-            if (
-                pendingInlineReviewRestoreState?.tabId === tab.id &&
-                pendingInlineReviewRestoreState.reviewSignature !== null &&
-                pendingInlineReviewRestoreState.reviewSignature !==
-                    reviewSignature
-            ) {
+            const pendingInlineReviewRestoreResolution =
+                resolvePendingEditorInlineReviewRestoreState({
+                    pendingState: pendingInlineReviewRestoreState,
+                    reviewSignature,
+                    tabId: tab.id,
+                });
+            if (pendingInlineReviewRestoreResolution.shouldClear) {
                 pendingEditorInlineReviewRestoreStateRef.current = null;
             }
-            const pendingInlineReviewPortableState =
-                pendingInlineReviewRestoreState?.tabId === tab.id &&
-                (pendingInlineReviewRestoreState.reviewSignature === null ||
-                    pendingInlineReviewRestoreState.reviewSignature ===
-                        reviewSignature)
-                    ? pendingInlineReviewRestoreState.state
-                    : null;
 
             try {
                 inlineReviewDecorationsRef.current?.clear();
@@ -5268,7 +5265,7 @@ function FileTabView({
                     didConsumePendingOpenLocation:
                         consumePendingInlineReviewOpenLocation(diffEditor),
                     pendingEditorInlineReviewRestoreState:
-                        pendingInlineReviewPortableState,
+                        pendingInlineReviewRestoreResolution.state,
                     persistedInlineReviewViewState,
                     scrollState,
                 });
