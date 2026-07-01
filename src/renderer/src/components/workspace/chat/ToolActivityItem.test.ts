@@ -1219,6 +1219,108 @@ describe("ToolActivityItem", () => {
         expect(markup).not.toContain("cm-static-code");
     });
 
+    it("colors successful terminal cards green without rendering an exit badge", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    exitCode: 0,
+                    kind: "shell",
+                    locations: [],
+                    rawInputJson: JSON.stringify({ command: "echo ok" }),
+                    status: "completed",
+                    summary: null,
+                    terminalOutput: null,
+                    title: "Run echo ok",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Run echo ok");
+        expect(markup).toContain("var(--diff-add)");
+        expect(markup).not.toContain("exit 0");
+    });
+
+    it("colors non-zero terminal exits red without rendering an exit badge", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    exitCode: 1,
+                    kind: "shell",
+                    locations: [],
+                    rawInputJson: JSON.stringify({ command: "false" }),
+                    status: "completed",
+                    summary: null,
+                    terminalOutput: null,
+                    title: "Run false",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Run false");
+        expect(markup).toContain("#ef4444");
+        expect(markup).not.toContain("exit 1");
+    });
+
+    it("keeps in-progress terminal cards neutral and shows the live indicator", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    exitCode: null,
+                    kind: "shell",
+                    locations: [],
+                    rawInputJson: JSON.stringify({ command: "pnpm dev" }),
+                    status: "in_progress",
+                    summary: null,
+                    terminalOutput: null,
+                    title: "Run pnpm dev",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Run pnpm dev");
+        expect(markup).toContain("#6b7280");
+        expect(markup).toContain("animate-pulse");
+    });
+
+    it("treats terminal output as danger when exit code is non-zero", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    exitCode: 1,
+                    kind: "shell",
+                    locations: [],
+                    rawInputJson: JSON.stringify({ command: "pnpm test" }),
+                    status: "completed",
+                    summary: null,
+                    terminalOutput: "Tests failed\n",
+                    title: "Run pnpm test",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Tests failed");
+        expect(markup).toContain(
+            "color-mix(in srgb, #ef4444 6%, var(--color-bg-tertiary))",
+        );
+        expect(markup).toContain("color:#ef4444");
+    });
+
     it("does not repeat duplicated terminal commands in expanded output", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
