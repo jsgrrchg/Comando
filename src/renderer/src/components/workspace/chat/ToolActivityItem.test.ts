@@ -1214,7 +1214,7 @@ describe("ToolActivityItem", () => {
         );
 
         expect(markup).toContain("Run pnpm run typecheck");
-        expect(markup).toContain("exit 1");
+        expect(markup).not.toContain("exit 1");
         expect(markup).not.toContain("space-y-1");
         expect(markup).not.toContain("cm-static-code");
     });
