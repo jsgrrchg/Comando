@@ -478,8 +478,9 @@ async function loadVueLanguage(): Promise<LanguageSupport | Language> {
                 { regex: /\b[A-Za-z_$][\w$-]*\b/, token: "variableName" },
             ],
             comment: [
-                { regex: /.*?-->/, token: "comment", next: "start" },
-                { regex: /.*/, token: "comment" },
+                { regex: /-->/, token: "comment", next: "start" },
+                { regex: /[^-]+/, token: "comment" },
+                { regex: /-/, token: "comment" },
             ],
         }),
     );
@@ -517,8 +518,9 @@ async function loadSvelteLanguage(): Promise<LanguageSupport | Language> {
                 { regex: /\b[A-Za-z_$][\w$-]*\b/, token: "variableName" },
             ],
             comment: [
-                { regex: /.*?-->/, token: "comment", next: "start" },
-                { regex: /.*/, token: "comment" },
+                { regex: /-->/, token: "comment", next: "start" },
+                { regex: /[^-]+/, token: "comment" },
+                { regex: /-/, token: "comment" },
             ],
         }),
     );
@@ -553,8 +555,9 @@ async function loadAstroLanguage(): Promise<LanguageSupport | Language> {
                 { regex: /\b[A-Za-z_$][\w$-]*\b/, token: "variableName" },
             ],
             comment: [
-                { regex: /.*?-->/, token: "comment", next: "start" },
-                { regex: /.*/, token: "comment" },
+                { regex: /-->/, token: "comment", next: "start" },
+                { regex: /[^-]+/, token: "comment" },
+                { regex: /-/, token: "comment" },
             ],
         }),
     );

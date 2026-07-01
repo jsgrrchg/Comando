@@ -187,16 +187,20 @@ export function prepareCommandForSpawnSync(
 }
 
 export function spawnPreparedSync(command, args = [], options = {}, launchOptions = {}) {
-    const prepared = prepareCommandForSpawnSync(
-        command,
-        args,
-        options,
-        launchOptions,
-    );
+    const platform = launchOptions.platform ?? process.platform;
 
-    // codeql[js/shell-command-injection-from-environment]
+    if (platform !== "win32" || !isWindowsBatchCommand(command)) {
+        return spawnSync(command, args, options);
+    }
+
     // Windows batch commands must go through cmd.exe; prepareCommandForSpawnSync quotes every argument first.
-    return spawnSync(prepared.command, prepared.args, prepared.options);
+    const prepared = prepareCommandForSpawnSync(command, args, options, {
+        ...launchOptions,
+        comSpec: "cmd.exe",
+        platform,
+    });
+
+    return spawnSync("cmd.exe", prepared.args, prepared.options);
 }
 
 export function isWindowsBatchCommand(command) {
