@@ -5330,6 +5330,7 @@ function FileTabView({
             restoreInlineReviewScrollState,
             restoreInlineReviewViewState,
             restorePortableInlineReviewState,
+            reviewSignature,
             tab.id,
             tab.viewState,
         ],
