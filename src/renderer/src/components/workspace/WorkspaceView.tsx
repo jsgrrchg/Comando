@@ -3882,8 +3882,8 @@ function FileTabView({
         readonly state: PortableEditorRestoreState;
         readonly tabId: string;
     } | null>(null);
-    const previousInlineReviewSignatureRef = useRef<string | null>(null);
     const fileTabIdRef = useRef(tab.id);
+    const inlineReviewActiveRef = useRef(false);
     const inlineReviewSignatureRef = useRef<string | null>(null);
     const latestDraftContentRef = useRef(tab.draftContent);
     const gitGutterDecoratorRef = useRef<GitGutterDecorator | null>(null);
@@ -4292,6 +4292,10 @@ function FileTabView({
 
     const captureEditorStateForInlineReview = useCallback(
         (editor: MonacoEditor.IStandaloneCodeEditor | null) => {
+            if (inlineReviewActiveRef.current) {
+                return;
+            }
+
             const state = capturePortableEditorRestoreState(editor);
             if (!state) {
                 return;
@@ -4327,17 +4331,9 @@ function FileTabView({
     }, []);
 
     useLayoutEffect(() => {
+        inlineReviewActiveRef.current = isInlineReviewActive;
         inlineReviewSignatureRef.current = reviewSignature;
-
-        const previousSignature = previousInlineReviewSignatureRef.current;
-        previousInlineReviewSignatureRef.current = reviewSignature;
-
-        if (previousSignature || !reviewSignature || !editorRef.current) {
-            return;
-        }
-
-        captureEditorStateForInlineReview(editorRef.current);
-    }, [captureEditorStateForInlineReview, reviewSignature]);
+    }, [isInlineReviewActive, reviewSignature]);
 
     const handleKeepInlineReviewFile = useCallback(() => {
         if (!inlineReviewTrackedFile) {
@@ -5228,11 +5224,6 @@ function FileTabView({
                 value: trackedFile.newText ?? "",
             });
 
-            if (!currentReviewModels.revision && editorRef.current) {
-                // Capture the live editor position before the diff editor replaces the surface.
-                captureEditorStateForInlineReview(editorRef.current);
-            }
-
             const pendingInlineReviewRestoreState =
                 pendingEditorInlineReviewRestoreStateRef.current;
             const pendingInlineReviewRestoreResolution =
@@ -5338,7 +5329,6 @@ function FileTabView({
             restoreInlineReviewScrollState,
             restoreInlineReviewViewState,
             restorePortableInlineReviewState,
-            captureEditorStateForInlineReview,
             tab.id,
             tab.viewState,
         ],

@@ -146,12 +146,14 @@ const monacoHarness = vi.hoisted(() => {
         readonly hasTextFocus: () => boolean;
         readonly hasWidgetFocus: () => boolean;
         readonly layout: () => void;
-        readonly onDidChangeCursorSelection: () => Disposable;
+        readonly onDidChangeCursorSelection: (
+            listener: () => void,
+        ) => Disposable;
         readonly onDidChangeHiddenAreas: () => Disposable;
         readonly onDidChangeModel: (listener: () => void) => Disposable;
         readonly onDidDispose: (listener: () => void) => Disposable;
         readonly onDidLayoutChange: () => Disposable;
-        readonly onDidScrollChange: () => Disposable;
+        readonly onDidScrollChange: (listener: () => void) => Disposable;
         readonly onWillChangeModel: (listener: () => void) => Disposable;
         readonly onMouseLeave: () => Disposable;
         readonly onMouseMove: () => Disposable;
@@ -332,6 +334,8 @@ const monacoHarness = vi.hoisted(() => {
         const disposeListeners = new Set<() => void>();
         const modelChangeListeners = new Set<() => void>();
         const modelWillChangeListeners = new Set<() => void>();
+        const cursorSelectionListeners = new Set<() => void>();
+        const scrollListeners = new Set<() => void>();
         const editor: FakeCodeEditor = {
             createDecorationsCollection: vi.fn(
                 (decorations: readonly unknown[] = []) => {
@@ -392,7 +396,14 @@ const monacoHarness = vi.hoisted(() => {
             layout: vi.fn(),
             model: null,
             name,
-            onDidChangeCursorSelection: () => createDisposable(),
+            onDidChangeCursorSelection: (listener) => {
+                cursorSelectionListeners.add(listener);
+                return {
+                    dispose: () => {
+                        cursorSelectionListeners.delete(listener);
+                    },
+                };
+            },
             onDidChangeHiddenAreas: () => createDisposable(),
             onDidChangeModel: (listener) => {
                 modelChangeListeners.add(listener);
@@ -411,7 +422,14 @@ const monacoHarness = vi.hoisted(() => {
                 };
             },
             onDidLayoutChange: () => createDisposable(),
-            onDidScrollChange: () => createDisposable(),
+            onDidScrollChange: (listener) => {
+                scrollListeners.add(listener);
+                return {
+                    dispose: () => {
+                        scrollListeners.delete(listener);
+                    },
+                };
+            },
             onWillChangeModel: (listener) => {
                 modelWillChangeListeners.add(listener);
                 return {
@@ -457,14 +475,23 @@ const monacoHarness = vi.hoisted(() => {
                     readonly lineNumber: number;
                 }) => {
                     editor.position = position;
+                    for (const listener of cursorSelectionListeners) {
+                        listener();
+                    }
                 },
             ),
             setSelection: vi.fn(),
             setScrollLeft: vi.fn((scrollLeft: number) => {
                 editor.scrollLeft = scrollLeft;
+                for (const listener of scrollListeners) {
+                    listener();
+                }
             }),
             setScrollTop: vi.fn((scrollTop: number) => {
                 editor.scrollTop = scrollTop;
+                for (const listener of scrollListeners) {
+                    listener();
+                }
             }),
             updateOptions: vi.fn(),
         };
