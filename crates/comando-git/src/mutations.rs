@@ -643,7 +643,7 @@ mod tests {
     fn pushes_fetches_and_deletes_remote_branches_against_local_remotes() {
         let temp = initialized_repo();
         let remote = TempDir::new().expect("remote temp");
-        run_git_fixture(remote.path(), &["init", "--bare"]);
+        initialized_bare_remote(&remote);
         run_git_fixture(
             temp.path(),
             &[
@@ -699,7 +699,7 @@ mod tests {
         let temp = initialized_repo();
         let remote = TempDir::new().expect("remote temp");
         let clone = TempDir::new().expect("clone temp");
-        run_git_fixture(remote.path(), &["init", "--bare"]);
+        initialized_bare_remote(&remote);
         run_git_fixture(
             temp.path(),
             &[
@@ -793,6 +793,11 @@ mod tests {
         run_git_fixture(temp.path(), &["add", "tracked.txt"]);
         run_git_fixture(temp.path(), &["commit", "-m", "initial"]);
         temp
+    }
+
+    fn initialized_bare_remote(temp: &TempDir) {
+        run_git_fixture(temp.path(), &["init", "--bare"]);
+        run_git_fixture(temp.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
     }
 
     fn status(temp: &TempDir) -> String {

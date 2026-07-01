@@ -9,6 +9,7 @@ import {
     resolveLinuxReleaseArtifacts,
     resolveLinuxUpdaterChannel,
     resolvePackagedLinuxUpdaterConfig,
+    verifyLinuxPackageArtifacts,
     verifyLinuxReleaseArtifacts,
     verifyPackagedLinuxUpdaterConfig,
 } from "./linux-release-metadata.mjs";
@@ -221,6 +222,34 @@ describe("Linux updater metadata", () => {
         ).not.toThrow();
     });
 
+    it("verifies Linux package artifacts without updater metadata", () => {
+        const distDir = createTempDir();
+        writePackageArtifactSet(distDir, "arm64");
+
+        expect(() =>
+            verifyLinuxPackageArtifacts({
+                distDir,
+                productName: "Comando",
+                targetArch: "arm64",
+                version: "1.2.3",
+            }),
+        ).not.toThrow();
+    });
+
+    it("keeps updater metadata required for final Linux releases", () => {
+        const distDir = createTempDir();
+        writePackageArtifactSet(distDir, "x64");
+
+        expect(() =>
+            verifyLinuxReleaseArtifacts({
+                distDir,
+                productName: "Comando",
+                targetArch: "x64",
+                version: "1.2.3",
+            }),
+        ).toThrow(/AppImage\.blockmap/u);
+    });
+
     it("rejects shared Linux updater metadata", () => {
         const distDir = createTempDir();
         writeReleaseArtifactSet(distDir, "arm64");
@@ -275,12 +304,13 @@ function writeReleaseArtifactSet(
 
     for (const filePath of [
         artifacts.appImagePath,
-        artifacts.appImageBlockmapPath,
         artifacts.debPath,
         artifacts.rpmPath,
     ]) {
         fs.writeFileSync(filePath, "", "utf8");
     }
+
+    fs.writeFileSync(artifacts.appImageBlockmapPath, "", "utf8");
 
     const appImageName = metadataAppImageName ?? path.basename(artifacts.appImagePath);
     fs.writeFileSync(
@@ -293,4 +323,21 @@ function writeReleaseArtifactSet(
         ].join("\n"),
         "utf8",
     );
+}
+
+function writePackageArtifactSet(distDir, targetArch) {
+    const artifacts = resolveLinuxReleaseArtifacts({
+        distDir,
+        productName: "Comando",
+        targetArch,
+        version: "1.2.3",
+    });
+
+    for (const filePath of [
+        artifacts.appImagePath,
+        artifacts.debPath,
+        artifacts.rpmPath,
+    ]) {
+        fs.writeFileSync(filePath, "", "utf8");
+    }
 }

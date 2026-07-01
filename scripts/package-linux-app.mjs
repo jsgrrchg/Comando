@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
     ensurePackagedLinuxUpdaterConfig,
     resolveLinuxUpdaterChannel,
+    verifyLinuxPackageArtifacts,
     verifyLinuxReleaseArtifacts,
     verifyPackagedLinuxUpdaterConfig,
 } from "./linux-release-metadata.mjs";
@@ -107,13 +108,17 @@ function main() {
         linuxBuilderConfigPath,
     ]);
     if (isFullLinuxPackageBuild(packageArgs)) {
-        verifyLinuxReleaseArtifacts({
+        const artifactArgs = {
             distDir: path.join(repoRoot, "dist"),
             productName: packageJson.build?.productName ?? packageJson.name,
             relativePath: relativeToRepo,
             targetArch,
             version: packageJson.version,
-        });
+        };
+        verifyLinuxPackageArtifacts(artifactArgs);
+        if (shouldVerifyLinuxReleaseArtifacts(packageArgs)) {
+            verifyLinuxReleaseArtifacts(artifactArgs);
+        }
     }
 }
 
@@ -182,6 +187,31 @@ function readJson(filePath) {
 function isFullLinuxPackageBuild(packageArgs) {
     const explicitTargets = new Set(["AppImage", "deb", "rpm"]);
     return !packageArgs.some((arg) => explicitTargets.has(arg));
+}
+
+function shouldVerifyLinuxReleaseArtifacts(packageArgs) {
+    const publishMode = resolvePublishMode(packageArgs);
+    return publishMode !== "never";
+}
+
+function resolvePublishMode(packageArgs) {
+    for (let index = 0; index < packageArgs.length; index += 1) {
+        const arg = packageArgs[index];
+
+        if (arg === "--publish" || arg === "-p") {
+            return packageArgs[index + 1] ?? "";
+        }
+
+        if (arg.startsWith("--publish=")) {
+            return arg.slice("--publish=".length);
+        }
+
+        if (arg.startsWith("-p=")) {
+            return arg.slice("-p=".length);
+        }
+    }
+
+    return "onTagOrDraft";
 }
 
 function relativeToRepo(filePath) {

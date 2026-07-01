@@ -18,10 +18,8 @@ import {
 import { resolveWindowsPackagingPreflight } from "./windows-packaging-preflight.mjs";
 import {
     claudeVendorDir,
-    codexBundledBinary,
     copyExecutable,
     copyTree,
-    embeddedNodeBin,
     ensureDir,
     isExecutableFile,
     isFile,
@@ -49,6 +47,7 @@ const packagedNodeBinary = path.join(
 );
 const appAiRoot = path.join(repoRoot, "resources", "ai");
 const bundledClaudeRoot = path.join(appAiRoot, "embedded", "claude-agent-acp");
+const windowsAcpPayloadEnvKey = "COMANDO_WINDOWS_ACP_PAYLOAD_DIR";
 const windowsIconPath = path.join(repoRoot, "resources", "icons", "windows.ico");
 const packageJson = readJson(path.join(repoRoot, "package.json"));
 const productName = packageJson.build?.productName ?? packageJson.name ?? "Comando";
@@ -77,9 +76,13 @@ function main() {
 
     console.log(`[package:win] Preflight passed for ${targetArch}.`);
 
+    const preparedAiPayloadRoot = resolvePreparedWindowsAiPayloadRoot(targetArch);
     console.log("[package:win] Building Electron production bundles.");
     prepareWorkspace();
-    run(preflight.pnpmCommand, ["run", "build"]);
+    run(preflight.pnpmCommand, [
+        "run",
+        preparedAiPayloadRoot ? "build:ci" : "build",
+    ]);
 
     console.log(`[package:win] Staging Windows AI payload for ${targetArch}.`);
     stageWindowsAiPayload(targetArch);
@@ -288,12 +291,33 @@ function stageWindowsNativeBackendPayload(targetArch, preflight) {
 }
 
 function resolveAiSourceRoot(targetArch) {
-    const bundleRoot = path.join(repoRoot, "build", "windows-acp", `win-${targetArch}`, "ai");
+    return resolvePreparedWindowsAiPayloadRoot(targetArch) ?? appAiRoot;
+}
+
+function resolvePreparedWindowsAiPayloadRoot(targetArch) {
+    const configuredRoot = process.env[windowsAcpPayloadEnvKey]?.trim();
+    if (configuredRoot) {
+        if (!fs.existsSync(configuredRoot)) {
+            throw new Error(
+                `${windowsAcpPayloadEnvKey} points to a missing Windows ACP payload: ${configuredRoot}.`,
+            );
+        }
+
+        return path.resolve(configuredRoot);
+    }
+
+    const bundleRoot = path.join(
+        repoRoot,
+        "build",
+        "windows-acp",
+        `win-${targetArch}`,
+        "ai",
+    );
     if (fs.existsSync(bundleRoot)) {
         return bundleRoot;
     }
 
-    return appAiRoot;
+    return null;
 }
 
 function stageCodexBinary(targetArch) {
@@ -314,7 +338,13 @@ function stageCodexBinary(targetArch) {
 
 function stageEmbeddedNodeBinary(targetArch) {
     const aiSourceRoot = resolveAiSourceRoot(targetArch);
-    const sourceNodeBinary = path.join(aiSourceRoot, "embedded", "node", "bin", "node.exe");
+    const sourceNodeBinary = path.join(
+        aiSourceRoot,
+        "embedded",
+        "node",
+        "bin",
+        "node.exe",
+    );
 
     if (!isExecutableFile(sourceNodeBinary)) {
         throw new Error(

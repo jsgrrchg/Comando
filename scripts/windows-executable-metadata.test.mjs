@@ -66,7 +66,23 @@ describe("Windows executable metadata", () => {
         ]);
         expect(args[6]).toContain("Get-AuthenticodeSignature");
         expect(args[6]).toContain("ExtractAssociatedIcon");
-        expect(args.at(-1)).toBe("dist/win-unpacked/Comando.exe");
+        expect(args[6]).toContain("$result = [pscustomobject]@{\n");
+        expect(args[6]).not.toContain("@{;");
+        expect(args[6]).toContain(
+            "$exePath = 'dist/win-unpacked/Comando.exe'",
+        );
+        expect(args[6]).not.toContain("$args[0]");
+        expect(args).toHaveLength(7);
+    });
+
+    it("escapes executable paths in the PowerShell command", () => {
+        const args = buildReadWindowsExecutableMetadataPowerShellArgs(
+            "dist/win-unpacked/Comando's.exe",
+        );
+
+        expect(args[6]).toContain(
+            "$exePath = 'dist/win-unpacked/Comando''s.exe'",
+        );
     });
 
     it("parses PowerShell metadata JSON", () => {

@@ -33,6 +33,8 @@ export function buildRceditExecutableMetadataArgs({
 }
 
 export function buildReadWindowsExecutableMetadataPowerShellArgs(executablePath) {
+    const quotedExecutablePath = quotePowerShellSingleQuotedString(executablePath);
+
     return [
         "-NoLogo",
         "-NoProfile",
@@ -42,7 +44,7 @@ export function buildReadWindowsExecutableMetadataPowerShellArgs(executablePath)
         "-Command",
         [
             "$ErrorActionPreference = 'Stop'",
-            "$exePath = $args[0]",
+            `$exePath = ${quotedExecutablePath}`,
             "$versionInfo = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exePath)",
             "Add-Type -AssemblyName System.Drawing",
             "$icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exePath)",
@@ -63,8 +65,7 @@ export function buildReadWindowsExecutableMetadataPowerShellArgs(executablePath)
             "  SignatureSubject = $signatureSubject",
             "}",
             "$result | ConvertTo-Json -Compress",
-        ].join("; "),
-        executablePath,
+        ].join("\n"),
     ];
 }
 
@@ -186,6 +187,10 @@ function isTruthyEnvValue(value) {
 
 function formatValue(value) {
     return JSON.stringify(value ?? "");
+}
+
+function quotePowerShellSingleQuotedString(value) {
+    return `'${String(value).replace(/'/g, "''")}'`;
 }
 
 function defaultRelativePath(filePath) {

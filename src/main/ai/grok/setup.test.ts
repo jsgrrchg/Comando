@@ -166,8 +166,10 @@ describe("Grok setup", () => {
             process.env.HOME = tempDir;
             delete process.env.USERPROFILE;
             process.env.PATH = "";
+            process.env.COMANDO_GROK_ACP_BIN = "missing-grok";
 
             const missing = getGrokRuntimeStatus(createEmptyGrokSettings());
+            delete process.env.COMANDO_GROK_ACP_BIN;
             const notExecutable = getGrokRuntimeStatus({
                 ...createEmptyGrokSettings(),
                 binaryPath: nonExecutablePath,
@@ -175,7 +177,7 @@ describe("Grok setup", () => {
 
             expect(missing.state).toBe("missing");
             expect(missing.message).toBe(
-                "Grok CLI was not found. Install `grok` or provide a custom runtime path.",
+                "Configured command was not found: missing-grok",
             );
             expect(notExecutable.state).toBe("error");
             expect(notExecutable.message).toContain(

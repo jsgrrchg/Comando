@@ -1,0 +1,235 @@
+name: Electron Package Smoke
+
+on:
+    pull_request:
+        paths:
+            - package.json
+            - pnpm-lock.yaml
+            - electron.vite.config.*
+            - rust-toolchain.toml
+            - resources/**
+            - scripts/build-icons.mjs
+            - scripts/build-windows-acp-bundles.mjs
+            - scripts/linux-release-metadata.mjs
+            - scripts/mac-release-metadata.mjs
+            - scripts/package-*.mjs
+            - scripts/*release*.mjs
+            - scripts/ai/**
+            - scripts/native/**
+            - scripts/validate-linux-rpm-package.mjs
+            - scripts/windows-executable-metadata.mjs
+            - scripts/windows-packaging-preflight.mjs
+            - scripts/windows-release-metadata.mjs
+            - apps/native-backend/**
+            - crates/**
+            - vendor/codex-acp/**
+            - vendor/Claude-agent-acp-upstream/**
+            - .github/workflows/electron-package-smoke.yml
+            - .github/workflows/release.yml
+    workflow_dispatch:
+
+concurrency:
+    group: electron-package-smoke-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+permissions:
+    contents: read
+
+jobs:
+    macos-universal:
+        name: macOS universal
+        runs-on: macos-latest
+        timeout-minutes: 120
+        env:
+            CSC_IDENTITY_AUTO_DISCOVERY: "false"
+            NODE_OPTIONS: --max-old-space-size=8192
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+
+            - name: Setup pnpm
+              uses: pnpm/action-setup@v6
+              with:
+                  version: 10.33.0
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - name: Setup Rust toolchain
+              uses: ./.github/actions/setup-rust
+              with:
+                  targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+            - name: Cache Rust build outputs
+              uses: Swatinem/rust-cache@v2
+
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Prepare Claude ACP vendor
+              run: |
+                  npm ci --prefix vendor/Claude-agent-acp-upstream
+                  npm run build --prefix vendor/Claude-agent-acp-upstream
+
+            - name: Prepare macOS Codex ACP payload
+              run: |
+                  export CARGO_TARGET_DIR="$PWD/resources/ai/embedded/codex-acp/target"
+                  cargo build --manifest-path vendor/codex-acp/Cargo.toml --release --locked --target aarch64-apple-darwin
+                  cargo build --manifest-path vendor/codex-acp/Cargo.toml --release --locked --target x86_64-apple-darwin
+
+                  mkdir -p resources/ai/prebuilt/codex-acp/darwin-arm64
+                  mkdir -p resources/ai/prebuilt/codex-acp/darwin-x64
+                  cp "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/codex-acp" resources/ai/prebuilt/codex-acp/darwin-arm64/codex-acp
+                  cp "$CARGO_TARGET_DIR/x86_64-apple-darwin/release/codex-acp" resources/ai/prebuilt/codex-acp/darwin-x64/codex-acp
+                  chmod +x resources/ai/prebuilt/codex-acp/darwin-arm64/codex-acp
+                  chmod +x resources/ai/prebuilt/codex-acp/darwin-x64/codex-acp
+
+            - name: Prepare macOS embedded Node payload
+              run: |
+                  node_version="$(node -p 'process.version')"
+                  node_tmp="$RUNNER_TEMP/comando-node-prebuilt"
+                  rm -rf "$node_tmp"
+                  mkdir -p "$node_tmp"
+
+                  for arch in arm64 x64; do
+                    archive="node-${node_version}-darwin-${arch}.tar.gz"
+                    curl -fsSL "https://nodejs.org/dist/${node_version}/${archive}" -o "$node_tmp/$archive"
+                    tar -xzf "$node_tmp/$archive" -C "$node_tmp"
+                    mkdir -p "resources/ai/prebuilt/node/darwin-${arch}/bin"
+                    cp "$node_tmp/node-${node_version}-darwin-${arch}/bin/node" "resources/ai/prebuilt/node/darwin-${arch}/bin/node"
+                    chmod +x "resources/ai/prebuilt/node/darwin-${arch}/bin/node"
+                  done
+
+            - name: Package unsigned macOS app
+              run: pnpm run package:mac
+
+            - name: Upload macOS package artifacts
+              if: failure()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: macos-universal-smoke-dist
+                  path: build/macos-package/project/dist/*
+
+    windows-x64:
+        name: Windows x64
+        runs-on: windows-latest
+        timeout-minutes: 120
+        env:
+            CSC_IDENTITY_AUTO_DISCOVERY: "false"
+            NODE_OPTIONS: --max-old-space-size=8192
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+
+            - name: Setup pnpm
+              uses: pnpm/action-setup@v6
+              with:
+                  version: 10.33.0
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - name: Setup Rust toolchain
+              uses: ./.github/actions/setup-rust
+
+            - name: Cache Rust build outputs
+              uses: Swatinem/rust-cache@v2
+
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Build Windows x64 ACP payload
+              run: pnpm run build:windows-acp:x64
+
+            - name: Package unsigned Windows app
+              shell: pwsh
+              run: |
+                  $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
+                  $env:COMANDO_WINDOWS_ACP_PAYLOAD_DIR = "$env:GITHUB_WORKSPACE\build\windows-acp\win-x64\ai"
+                  pnpm run package:win:x64
+
+            - name: Upload Windows package artifacts
+              if: failure()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: windows-x64-smoke-dist
+                  path: dist/*
+
+    linux:
+        name: Linux ${{ matrix.arch }}
+        runs-on: ${{ matrix.runner }}
+        timeout-minutes: 120
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - arch: x64
+                      runner: ubuntu-latest
+                    - arch: arm64
+                      runner: ubuntu-24.04-arm
+        env:
+            NODE_OPTIONS: --max-old-space-size=8192
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+
+            - name: Setup pnpm
+              uses: pnpm/action-setup@v6
+              with:
+                  version: 10.33.0
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - name: Setup Rust toolchain
+              uses: ./.github/actions/setup-rust
+
+            - name: Cache Rust build outputs
+              uses: Swatinem/rust-cache@v2
+
+            - name: Install Linux package toolchain
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y gnupg rpm libcrypt1
+
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Build Claude ACP vendor
+              run: |
+                  npm ci --prefix vendor/Claude-agent-acp-upstream
+                  npm run build --prefix vendor/Claude-agent-acp-upstream
+
+            - name: Package Linux app
+              run: pnpm run package:linux
+
+            - name: Validate Linux RPM package
+              run: |
+                  node scripts/validate-linux-rpm-package.mjs \
+                    --staged-assets-dir dist \
+                    --arch "${{ matrix.arch }}" \
+                    --version "$(node -p "require('./package.json').version")"
+
+            - name: Upload Linux package artifacts
+              if: failure()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: linux-${{ matrix.arch }}-smoke-dist
+                  path: |
+                      dist/*.AppImage
+                      dist/*.AppImage.blockmap
+                      dist/*.deb
+                      dist/*.rpm
+                      dist/latest*-linux*.yml
