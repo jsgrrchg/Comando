@@ -3878,6 +3878,7 @@ function FileTabView({
         readonly state: PortableEditorRestoreState;
         readonly tabId: string;
     } | null>(null);
+    const previousInlineReviewSignatureRef = useRef<string | null>(null);
     const fileTabIdRef = useRef(tab.id);
     const latestDraftContentRef = useRef(tab.draftContent);
     const gitGutterDecoratorRef = useRef<GitGutterDecorator | null>(null);
@@ -4318,6 +4319,17 @@ function FileTabView({
             pendingEditorViewStateTabIdRef.current = fileTabIdRef.current;
         }
     }, []);
+
+    useLayoutEffect(() => {
+        const previousSignature = previousInlineReviewSignatureRef.current;
+        previousInlineReviewSignatureRef.current = reviewSignature;
+
+        if (previousSignature || !reviewSignature || !editorRef.current) {
+            return;
+        }
+
+        captureEditorStateForInlineReview(editorRef.current);
+    }, [captureEditorStateForInlineReview, reviewSignature]);
 
     const handleKeepInlineReviewFile = useCallback(() => {
         if (!inlineReviewTrackedFile) {
@@ -5208,6 +5220,11 @@ function FileTabView({
                 value: trackedFile.newText ?? "",
             });
 
+            if (!currentReviewModels.revision && editorRef.current) {
+                // Capture the live editor position before the diff editor replaces the surface.
+                captureEditorStateForInlineReview(editorRef.current);
+            }
+
             const pendingInlineReviewRestoreState =
                 pendingEditorInlineReviewRestoreStateRef.current?.tabId ===
                 tab.id
@@ -5301,6 +5318,7 @@ function FileTabView({
             restoreInlineReviewScrollState,
             restoreInlineReviewViewState,
             restorePortableInlineReviewState,
+            captureEditorStateForInlineReview,
             tab.id,
             tab.viewState,
         ],
