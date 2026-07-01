@@ -1481,18 +1481,46 @@ function isCommandDuplicatedByTitle(title: string, command: string): boolean {
     );
 }
 
+type TerminalToolTone = "neutral" | "success" | "danger";
+
+function getTerminalToolTone(activity: AiToolActivity): TerminalToolTone {
+    if (
+        activity.status === "failed" ||
+        (activity.exitCode !== null && activity.exitCode !== 0)
+    ) {
+        return "danger";
+    }
+
+    if (activity.status === "completed" && activity.exitCode === 0) {
+        return "success";
+    }
+
+    return "neutral";
+}
+
+function getTerminalToolToneColor(tone: TerminalToolTone): string {
+    if (tone === "danger") {
+        return "#ef4444";
+    }
+
+    if (tone === "success") {
+        return "var(--diff-add)";
+    }
+
+    return "#6b7280";
+}
+
 function TerminalToolMessage({
     activity,
 }: {
     readonly activity: AiToolActivity;
 }) {
-    const isFailed = activity.status === "failed";
-    const hasNonZeroExit =
-        activity.exitCode !== null && activity.exitCode !== 0;
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
 
-    const accent = isFailed || hasNonZeroExit ? "#ef4444" : "#6b7280";
+    const terminalTone = getTerminalToolTone(activity);
+    const isDangerTone = terminalTone === "danger";
+    const accent = getTerminalToolToneColor(terminalTone);
     const command = extractCommand(activity.rawInputJson);
     const shouldShowCommand =
         !!command && !isCommandDuplicatedByTitle(activity.title, command);
@@ -1500,7 +1528,7 @@ function TerminalToolMessage({
     const hasDetail = shouldShowCommand || hasTerminalOutput;
     const [expanded, setExpanded] = usePersistentToolExpansion(
         `${activity.id}:terminal`,
-        (isFailed || hasNonZeroExit) && hasTerminalOutput,
+        isDangerTone && hasTerminalOutput,
     );
 
     return (
@@ -1546,23 +1574,6 @@ function TerminalToolMessage({
                         style={{ backgroundColor: "var(--color-accent)" }}
                     />
                 ) : null}
-                {activity.exitCode !== null ? (
-                    <span
-                        className="rounded-full px-2 py-0.5 text-[10px] uppercase tracking-[0.12em]"
-                        style={{
-                            backgroundColor:
-                                activity.exitCode === 0
-                                    ? "color-mix(in srgb, var(--diff-add) 10%, transparent)"
-                                    : "color-mix(in srgb, var(--diff-remove) 10%, transparent)",
-                            color:
-                                activity.exitCode === 0
-                                    ? "var(--diff-add)"
-                                    : "var(--diff-remove)",
-                        }}
-                    >
-                        exit {activity.exitCode}
-                    </span>
-                ) : null}
                 {hasDetail ? (
                     <span className="shrink-0">
                         <Chevron expanded={expanded} />
@@ -1578,17 +1589,17 @@ function TerminalToolMessage({
                     {activity.terminalOutput ? (
                         <ToolDetailCodeBlock
                             accentBorder={
-                                isFailed
+                                isDangerTone
                                     ? "1px solid color-mix(in srgb, #ef4444 20%, var(--color-border))"
                                     : "1px solid var(--color-border)"
                             }
                             backgroundColor={
-                                isFailed
+                                isDangerTone
                                     ? "color-mix(in srgb, #ef4444 6%, var(--color-bg-tertiary))"
                                     : "var(--color-bg-tertiary)"
                             }
                             color={
-                                isFailed
+                                isDangerTone
                                     ? "#ef4444"
                                     : "var(--color-text-secondary)"
                             }
