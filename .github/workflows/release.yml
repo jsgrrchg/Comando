@@ -57,9 +57,11 @@ jobs:
                     exit 1
                   fi
 
-                  echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-                  echo "version=$package_version" >> "$GITHUB_OUTPUT"
-                  echo "repo_slug=$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
+                  {
+                    echo "tag=$RELEASE_TAG"
+                    echo "version=$package_version"
+                    echo "repo_slug=$GITHUB_REPOSITORY"
+                  } >> "$GITHUB_OUTPUT"
 
             - name: Build release notes
               run: |
