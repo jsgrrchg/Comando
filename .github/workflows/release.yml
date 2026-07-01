@@ -205,12 +205,11 @@ jobs:
                     gh release create "$tag" --title "$title" --notes-file "$notes_file" --verify-tag
                   fi
 
-    release-macos:
+    build-macos:
         name: macOS universal
-        needs: ensure-github-release
+        needs: release-gate
         runs-on: macos-latest
         env:
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
             APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
             APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY }}
             APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
@@ -304,22 +303,26 @@ jobs:
                     chmod +x "resources/ai/prebuilt/node/darwin-${arch}/bin/node"
                   done
 
-            - name: Publish macOS artifacts
-              run: pnpm run release:mac -- --config.forceCodeSigning=true
+            - name: Package macOS artifacts
+              run: pnpm run package:mac -- --config.forceCodeSigning=true
 
-            - name: Upload macOS workflow artifacts
+            - name: Stage macOS release assets
               uses: actions/upload-artifact@v4
-              if: always()
               with:
-                  name: macos-universal-dist
-                  path: build/macos-package/project/dist/*
+                  name: release-assets-macos-universal
+                  path: |
+                      build/macos-package/project/dist/*.dmg
+                      build/macos-package/project/dist/*.zip
+                      build/macos-package/project/dist/*.blockmap
+                      build/macos-package/project/dist/latest*.yml
+                  if-no-files-found: error
 
-    release-windows-x64:
+    build-windows-x64:
         name: Windows x64
-        needs: ensure-github-release
+        needs: release-gate
         runs-on: windows-latest
         env:
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            CSC_IDENTITY_AUTO_DISCOVERY: "false"
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
             - uses: actions/checkout@v4
@@ -344,22 +347,25 @@ jobs:
             - name: Build Windows x64 ACP payload
               run: pnpm run build:windows-acp:x64
 
-            - name: Publish Windows x64 artifacts
-              run: pnpm run release:win:x64
+            - name: Package Windows x64 artifacts
+              run: pnpm run package:win:x64 -- --publish never
 
-            - name: Upload Windows x64 workflow artifacts
+            - name: Stage Windows x64 release assets
               uses: actions/upload-artifact@v4
-              if: always()
               with:
-                  name: windows-x64-dist
-                  path: dist/*
+                  name: release-assets-windows-x64
+                  path: |
+                      dist/*.exe
+                      dist/*.exe.blockmap
+                      dist/latest*.yml
+                  if-no-files-found: error
 
-    release-windows-arm64:
+    build-windows-arm64:
         name: Windows arm64
-        needs: ensure-github-release
+        needs: release-gate
         runs-on: windows-11-arm
         env:
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            CSC_IDENTITY_AUTO_DISCOVERY: "false"
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
             - uses: actions/checkout@v4
@@ -384,21 +390,23 @@ jobs:
             - name: Build Windows arm64 ACP payload
               run: pnpm run build:windows-acp:arm64
 
-            - name: Publish Windows arm64 artifacts
-              run: pnpm run release:win:arm64
+            - name: Package Windows arm64 artifacts
+              run: pnpm run package:win:arm64 -- --publish never
 
-            - name: Upload Windows arm64 workflow artifacts
+            - name: Stage Windows arm64 release assets
               uses: actions/upload-artifact@v4
-              if: always()
               with:
-                  name: windows-arm64-dist
-                  path: dist/*
+                  name: release-assets-windows-arm64
+                  path: |
+                      dist/*.exe
+                      dist/*.exe.blockmap
+                      dist/latest*.yml
+                  if-no-files-found: error
 
-    release-linux:
+    build-linux:
         name: Linux ${{ matrix.arch }}
         needs:
-            - prepare
-            - ensure-github-release
+            - release-gate
             - apt-repository-preflight
         runs-on: ${{ matrix.runner }}
         strategy:
@@ -413,7 +421,6 @@ jobs:
             APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
             APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
             APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
             - uses: actions/checkout@v4
@@ -472,44 +479,26 @@ jobs:
                     --version "${RELEASE_TAG#v}" \
                     --require-signature
 
-            - name: Upload Linux release assets
-              run: |
-                  shopt -s nullglob
-                  linux_assets=(
-                    dist/*.AppImage
-                    dist/*.AppImage.blockmap
-                    dist/*.deb
-                    dist/*.rpm
-                    dist/latest*-linux*.yml
-                  )
-
-                  if (( ${#linux_assets[@]} == 0 )); then
-                    echo "No Linux release assets found." >&2
-                    exit 1
-                  fi
-
-                  gh release upload "$RELEASE_TAG" "${linux_assets[@]}" --clobber
-
-            - name: Upload Linux workflow artifacts
+            - name: Stage Linux release assets
               uses: actions/upload-artifact@v4
-              if: always()
               with:
-                  name: linux-${{ matrix.arch }}-dist
+                  name: release-assets-linux-${{ matrix.arch }}
                   path: |
                       dist/*.AppImage
                       dist/*.AppImage.blockmap
                       dist/*.deb
                       dist/*.rpm
                       dist/latest*-linux*.yml
+                  if-no-files-found: error
 
     publish-release-notes:
         name: Publish release notes
         needs:
             - prepare
-            - release-macos
-            - release-windows-x64
-            - release-windows-arm64
-            - release-linux
+            - build-macos
+            - build-windows-x64
+            - build-windows-arm64
+            - build-linux
             - publish-apt-repository
             - publish-dnf-repository
         runs-on: ubuntu-latest
@@ -539,10 +528,10 @@ jobs:
         name: Publish APT repository
         needs:
             - prepare
-            - release-macos
-            - release-windows-x64
-            - release-windows-arm64
-            - release-linux
+            - build-macos
+            - build-windows-x64
+            - build-windows-arm64
+            - build-linux
             - apt-repository-preflight
         runs-on: ubuntu-latest
         env:
@@ -568,7 +557,7 @@ jobs:
             - name: Download Linux workflow artifacts
               uses: actions/download-artifact@v4
               with:
-                  pattern: linux-*-dist
+                  pattern: release-assets-linux-*
                   path: .artifacts/linux
                   merge-multiple: true
 
@@ -771,7 +760,7 @@ jobs:
         needs:
             - prepare
             - ensure-github-release
-            - release-linux
+            - build-linux
             - dnf-repository-preflight
             - publish-apt-repository
         runs-on: ubuntu-latest
@@ -798,7 +787,7 @@ jobs:
             - name: Download Linux workflow artifacts
               uses: actions/download-artifact@v4
               with:
-                  pattern: linux-*-dist
+                  pattern: release-assets-linux-*
                   path: .artifacts/linux
                   merge-multiple: true
 
