@@ -2,22 +2,21 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 const repoRoot = path.resolve(scriptDir, "..");
 const iconsRoot = path.join(repoRoot, "resources", "icons");
 const appPngPath = path.join(iconsRoot, "app.png");
 const macIconComposerPath = path.join(iconsRoot, "macos.icon");
 const macIcnsPath = path.join(iconsRoot, "macos.icns");
 const windowsIcoPath = path.join(iconsRoot, "windows.ico");
+const appBuilderBinRoot = path.dirname(require.resolve("app-builder-bin/package.json"));
 const appBuilderPath = path.join(
-    repoRoot,
-    "node_modules",
-    ".pnpm",
-    "node_modules",
-    "app-builder-bin",
-    process.platform === "darwin" ? "mac" : process.platform === "win32" ? path.join("win", process.arch) : path.join("linux", process.arch),
+    appBuilderBinRoot,
+    resolveAppBuilderPlatformDir(),
     resolveAppBuilderBinaryName(),
 );
 
@@ -65,6 +64,18 @@ function resolveAppBuilderBinaryName() {
     }
 
     return "app-builder";
+}
+
+function resolveAppBuilderPlatformDir() {
+    if (process.platform === "darwin") {
+        return "mac";
+    }
+
+    if (process.platform === "win32") {
+        return path.join("win", process.arch);
+    }
+
+    return path.join("linux", process.arch);
 }
 
 function buildIcon(format, inputPath, outputPath, tempRoot) {
