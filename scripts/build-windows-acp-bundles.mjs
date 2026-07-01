@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -11,11 +10,11 @@ import {
     ensureDir,
     isExecutableFile,
     isFile,
-    prepareCommandForSpawnSync,
     relativeToRepo,
     repoRoot,
     resetDir,
     resolveFromPath,
+    spawnPreparedSync,
 } from "./ai/_shared.mjs";
 
 const supportedTargets = new Map([
@@ -302,12 +301,7 @@ function capture(command, args, options = {}) {
         stdio: ["ignore", "pipe", "inherit"],
         ...options,
     };
-    const prepared = prepareCommandForSpawnSync(command, args, spawnOptions);
-    const result = spawnSync(
-        prepared.command,
-        prepared.args,
-        prepared.options,
-    );
+    const result = spawnPreparedSync(command, args, spawnOptions);
 
     if (result.error) {
         throw result.error;
@@ -330,12 +324,7 @@ function run(command, args, options = {}) {
         stdio: "inherit",
         ...options,
     };
-    const prepared = prepareCommandForSpawnSync(command, args, spawnOptions);
-    const result = spawnSync(
-        prepared.command,
-        prepared.args,
-        prepared.options,
-    );
+    const result = spawnPreparedSync(command, args, spawnOptions);
 
     if (result.error) {
         throw result.error;

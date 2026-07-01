@@ -456,7 +456,7 @@ async function loadVueLanguage(): Promise<LanguageSupport | Language> {
     return StreamLanguage.define(
         simpleMode({
             start: [
-                { regex: /<!--.*?-->/, token: "comment" },
+                { regex: /<!--/, token: "comment", next: "comment" },
                 { regex: /\/\/.*/, token: "comment" },
                 { regex: /\/\*.*?\*\//, token: "comment" },
                 { regex: /<\/?[A-Za-z][\w:-]*/, token: "tag" },
@@ -477,6 +477,11 @@ async function loadVueLanguage(): Promise<LanguageSupport | Language> {
                 { regex: /\b[A-Z][A-Za-z0-9_]*\b/, token: "typeName" },
                 { regex: /\b[A-Za-z_$][\w$-]*\b/, token: "variableName" },
             ],
+            comment: [
+                { regex: /--!?>/, token: "comment", next: "start" },
+                { regex: /[^-]+/, token: "comment" },
+                { regex: /-/, token: "comment" },
+            ],
         }),
     );
 }
@@ -488,7 +493,7 @@ async function loadSvelteLanguage(): Promise<LanguageSupport | Language> {
     return StreamLanguage.define(
         simpleMode({
             start: [
-                { regex: /<!--.*?-->/, token: "comment" },
+                { regex: /<!--/, token: "comment", next: "comment" },
                 { regex: /\/\/.*/, token: "comment" },
                 { regex: /\/\*.*?\*\//, token: "comment" },
                 { regex: /<\/?[A-Za-z][\w:-]*/, token: "tag" },
@@ -512,6 +517,11 @@ async function loadSvelteLanguage(): Promise<LanguageSupport | Language> {
                 { regex: /\b[A-Z][A-Za-z0-9_]*\b/, token: "typeName" },
                 { regex: /\b[A-Za-z_$][\w$-]*\b/, token: "variableName" },
             ],
+            comment: [
+                { regex: /--!?>/, token: "comment", next: "start" },
+                { regex: /[^-]+/, token: "comment" },
+                { regex: /-/, token: "comment" },
+            ],
         }),
     );
 }
@@ -524,7 +534,7 @@ async function loadAstroLanguage(): Promise<LanguageSupport | Language> {
         simpleMode({
             start: [
                 { regex: /^---$/, token: "meta" },
-                { regex: /<!--.*?-->/, token: "comment" },
+                { regex: /<!--/, token: "comment", next: "comment" },
                 { regex: /\/\/.*/, token: "comment" },
                 { regex: /\/\*.*?\*\//, token: "comment" },
                 { regex: /<\/?[A-Za-z][\w:-]*/, token: "tag" },
@@ -543,6 +553,11 @@ async function loadAstroLanguage(): Promise<LanguageSupport | Language> {
                 },
                 { regex: /\b[A-Z][A-Za-z0-9_]*\b/, token: "typeName" },
                 { regex: /\b[A-Za-z_$][\w$-]*\b/, token: "variableName" },
+            ],
+            comment: [
+                { regex: /--!?>/, token: "comment", next: "start" },
+                { regex: /[^-]+/, token: "comment" },
+                { regex: /-/, token: "comment" },
             ],
         }),
     );
@@ -631,7 +646,7 @@ async function loadNixLanguage(): Promise<LanguageSupport | Language> {
                     token: "function",
                 },
                 { regex: /''(?:[^']|'(?!'))*''/, token: "string" },
-                { regex: /"(?:[^"\\]|\\"|\\.)*"/, token: "string" },
+                { regex: /"(?:[^"\\]|\\.)*"/, token: "string" },
                 { regex: /\$\{[^}]*\}/, token: "meta" },
                 { regex: /\b(?:true|false|null)\b/, token: "atom" },
                 { regex: /\b\d+(?:\.\d+)?\b/, token: "number" },

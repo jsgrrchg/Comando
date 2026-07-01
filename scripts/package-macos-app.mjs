@@ -15,11 +15,11 @@ import {
     ensureDir,
     isExecutableFile,
     isFile,
-    prepareCommandForSpawnSync,
     relativeToRepo,
     repoRoot,
     resolveFromPath,
     resetDir,
+    spawnPreparedSync,
 } from "./ai/_shared.mjs";
 
 const buildRoot = path.join(repoRoot, "build");
@@ -1281,7 +1281,7 @@ function run(command, args, options = {}) {
     ]
         .filter(Boolean)
         .join(path.delimiter);
-    const prepared = prepareCommandForSpawnSync(command, args, {
+    const result = spawnPreparedSync(command, args, {
         cwd: repoRoot,
         env: {
             ...process.env,
@@ -1291,11 +1291,6 @@ function run(command, args, options = {}) {
         stdio: "inherit",
         ...spawnOptions,
     });
-    const result = spawnSync(
-        prepared.command,
-        prepared.args,
-        prepared.options,
-    );
 
     if (result.error) {
         throw result.error;

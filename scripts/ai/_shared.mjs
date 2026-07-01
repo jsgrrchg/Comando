@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const scriptDir = fileURLToPath(new URL(".", import.meta.url));
@@ -180,9 +181,26 @@ export function prepareCommandForSpawnSync(
             "/c",
             buildWindowsBatchCommandLine(command, args),
         ],
-        command: launchOptions.comSpec ?? process.env.ComSpec ?? "cmd.exe",
+        command: launchOptions.comSpec ?? "cmd.exe",
         options: withWindowsVerbatimArguments(options),
     };
+}
+
+export function spawnPreparedSync(command, args = [], options = {}, launchOptions = {}) {
+    const platform = launchOptions.platform ?? process.platform;
+
+    if (platform !== "win32" || !isWindowsBatchCommand(command)) {
+        return spawnSync(command, args, options);
+    }
+
+    // Windows batch commands must go through cmd.exe; prepareCommandForSpawnSync quotes every argument first.
+    const prepared = prepareCommandForSpawnSync(command, args, options, {
+        ...launchOptions,
+        comSpec: "cmd.exe",
+        platform,
+    });
+
+    return spawnSync("cmd.exe", prepared.args, prepared.options);
 }
 
 export function isWindowsBatchCommand(command) {

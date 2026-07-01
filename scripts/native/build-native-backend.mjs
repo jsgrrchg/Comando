@@ -1,8 +1,6 @@
-import { spawnSync } from "node:child_process";
-
 import {
-    prepareCommandForSpawnSync,
     repoRoot,
+    spawnPreparedSync,
 } from "../ai/_shared.mjs";
 
 const args = parseArgs(process.argv.slice(2));
@@ -23,16 +21,11 @@ console.log(
 run("cargo", cargoArgs);
 
 function run(command, commandArgs) {
-    const prepared = prepareCommandForSpawnSync(command, commandArgs, {
+    const result = spawnPreparedSync(command, commandArgs, {
         cwd: repoRoot,
         env: process.env,
         stdio: "inherit",
     });
-    const result = spawnSync(
-        prepared.command,
-        prepared.args,
-        prepared.options,
-    );
 
     if (result.error) {
         throw result.error;
