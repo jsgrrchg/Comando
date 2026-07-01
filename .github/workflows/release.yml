@@ -12,7 +12,7 @@ on:
                 type: string
 
 permissions:
-    contents: write
+    contents: read
 
 env:
     RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
@@ -504,6 +504,8 @@ jobs:
             - build-linux
             - validate-release-assets
         runs-on: ubuntu-latest
+        permissions:
+            contents: write
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         steps:
@@ -553,6 +555,8 @@ jobs:
             - publish-github-release
             - apt-repository-preflight
         runs-on: ubuntu-latest
+        permissions:
+            contents: write
         env:
             APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
             APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
@@ -768,11 +772,12 @@ jobs:
             - dnf-repository-preflight
             - publish-apt-repository
         runs-on: ubuntu-latest
+        permissions:
+            contents: write
         env:
             APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
             APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
             APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
-            GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         steps:
             - uses: actions/checkout@v4
               with:
