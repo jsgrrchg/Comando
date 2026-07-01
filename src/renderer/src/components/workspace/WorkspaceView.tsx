@@ -3871,6 +3871,7 @@ function FileTabView({
         ReturnType<typeof captureDiffEditorScrollState>
     >(captureDiffEditorScrollState(null));
     const pendingEditorInlineReviewRestoreStateRef = useRef<{
+        readonly reviewSignature: string | null;
         readonly state: PortableEditorRestoreState;
         readonly tabId: string;
     } | null>(null);
@@ -3880,6 +3881,7 @@ function FileTabView({
     } | null>(null);
     const previousInlineReviewSignatureRef = useRef<string | null>(null);
     const fileTabIdRef = useRef(tab.id);
+    const inlineReviewSignatureRef = useRef<string | null>(null);
     const latestDraftContentRef = useRef(tab.draftContent);
     const gitGutterDecoratorRef = useRef<GitGutterDecorator | null>(null);
     const inlineReviewDecorationsRef =
@@ -4293,6 +4295,7 @@ function FileTabView({
             }
 
             pendingEditorInlineReviewRestoreStateRef.current = {
+                reviewSignature: inlineReviewSignatureRef.current,
                 state,
                 tabId: fileTabIdRef.current,
             };
@@ -4321,6 +4324,8 @@ function FileTabView({
     }, []);
 
     useLayoutEffect(() => {
+        inlineReviewSignatureRef.current = reviewSignature;
+
         const previousSignature = previousInlineReviewSignatureRef.current;
         previousInlineReviewSignatureRef.current = reviewSignature;
 
@@ -5226,9 +5231,21 @@ function FileTabView({
             }
 
             const pendingInlineReviewRestoreState =
-                pendingEditorInlineReviewRestoreStateRef.current?.tabId ===
-                tab.id
-                    ? pendingEditorInlineReviewRestoreStateRef.current.state
+                pendingEditorInlineReviewRestoreStateRef.current;
+            if (
+                pendingInlineReviewRestoreState?.tabId === tab.id &&
+                pendingInlineReviewRestoreState.reviewSignature !== null &&
+                pendingInlineReviewRestoreState.reviewSignature !==
+                    reviewSignature
+            ) {
+                pendingEditorInlineReviewRestoreStateRef.current = null;
+            }
+            const pendingInlineReviewPortableState =
+                pendingInlineReviewRestoreState?.tabId === tab.id &&
+                (pendingInlineReviewRestoreState.reviewSignature === null ||
+                    pendingInlineReviewRestoreState.reviewSignature ===
+                        reviewSignature)
+                    ? pendingInlineReviewRestoreState.state
                     : null;
 
             try {
@@ -5251,7 +5268,7 @@ function FileTabView({
                     didConsumePendingOpenLocation:
                         consumePendingInlineReviewOpenLocation(diffEditor),
                     pendingEditorInlineReviewRestoreState:
-                        pendingInlineReviewRestoreState,
+                        pendingInlineReviewPortableState,
                     persistedInlineReviewViewState,
                     scrollState,
                 });
@@ -5271,7 +5288,13 @@ function FileTabView({
                             diffEditor,
                             restoreCandidate.state,
                         );
-                        pendingEditorInlineReviewRestoreStateRef.current = null;
+                        if (
+                            pendingEditorInlineReviewRestoreStateRef.current ===
+                            pendingInlineReviewRestoreState
+                        ) {
+                            pendingEditorInlineReviewRestoreStateRef.current =
+                                null;
+                        }
                         break;
                     case "viewState":
                         restoreInlineReviewViewState(
