@@ -140,6 +140,7 @@ import {
 import { buildLiveGitGutterDiff } from "@renderer/components/workspace/gitGutterLiveDiff";
 import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
+import { resolveInlineReviewRestoreCandidate } from "@renderer/components/workspace/inlineReviewRestorePriority";
 import {
     acquireWorkspaceFileModel,
     buildWorkspaceEditorModelPath,
@@ -5228,28 +5229,47 @@ function FileTabView({
                     modified: nextModifiedModel,
                     original: nextOriginalModel,
                 };
-                if (consumePendingInlineReviewOpenLocation(diffEditor)) {
-                    // Explicit file reference navigation wins over review view state.
-                } else if (currentInlineReviewRestoreState) {
-                    restorePortableInlineReviewState(
-                        diffEditor,
-                        currentInlineReviewRestoreState,
-                    );
-                } else if (pendingInlineReviewRestoreState) {
-                    restorePortableInlineReviewState(
-                        diffEditor,
+                const restoreCandidate = resolveInlineReviewRestoreCandidate({
+                    currentInlineReviewRestoreState,
+                    didConsumePendingOpenLocation:
+                        consumePendingInlineReviewOpenLocation(diffEditor),
+                    pendingEditorInlineReviewRestoreState:
                         pendingInlineReviewRestoreState,
-                    );
-                    pendingEditorInlineReviewRestoreStateRef.current = null;
-                } else if (persistedInlineReviewViewState) {
-                    restoreInlineReviewViewState(
-                        diffEditor,
-                        persistedInlineReviewViewState,
-                    );
-                    pendingEditorViewStateRef.current =
-                        persistedInlineReviewViewState;
-                } else {
-                    restoreInlineReviewScrollState(diffEditor, scrollState);
+                    persistedInlineReviewViewState,
+                    scrollState,
+                });
+
+                switch (restoreCandidate.kind) {
+                    case "openLocation":
+                        // Explicit file reference navigation wins over review view state.
+                        break;
+                    case "currentInlineReviewState":
+                        restorePortableInlineReviewState(
+                            diffEditor,
+                            restoreCandidate.state,
+                        );
+                        break;
+                    case "portableEditorState":
+                        restorePortableInlineReviewState(
+                            diffEditor,
+                            restoreCandidate.state,
+                        );
+                        pendingEditorInlineReviewRestoreStateRef.current = null;
+                        break;
+                    case "viewState":
+                        restoreInlineReviewViewState(
+                            diffEditor,
+                            restoreCandidate.state,
+                        );
+                        pendingEditorViewStateRef.current =
+                            restoreCandidate.state;
+                        break;
+                    case "diffScrollState":
+                        restoreInlineReviewScrollState(
+                            diffEditor,
+                            restoreCandidate.state,
+                        );
+                        break;
                 }
             } catch (error) {
                 if (!isMonacoDisposedError(error)) {
