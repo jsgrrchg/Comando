@@ -8,6 +8,8 @@ onlyBuiltDependencies:
 overrides:
   dompurify: 3.4.11
   "js-yaml@4.1.1": 4.2.0
+  "esbuild@0.27.7": 0.28.1
+  "@babel/core@7.29.0": 7.29.6
   "@xmldom/xmldom": 0.8.13
   postcss: 8.5.15
   "brace-expansion@5.0.5": 5.0.6

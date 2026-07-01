@@ -116,8 +116,8 @@
         "tailwindcss": "^4.3.0",
         "typescript": "^6.0.3",
         "typescript-eslint": "^8.59.4",
-        "vite": "^8.0.14",
-        "vitest": "^4.1.7"
+        "vite": "^8.0.16",
+        "vitest": "^4.1.9"
     },
     "build": {
         "appId": "io.github.jsgrrchg.comando",
