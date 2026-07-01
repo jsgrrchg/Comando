@@ -1481,6 +1481,35 @@ function isCommandDuplicatedByTitle(title: string, command: string): boolean {
     );
 }
 
+type TerminalToolTone = "neutral" | "success" | "danger";
+
+function getTerminalToolTone(activity: AiToolActivity): TerminalToolTone {
+    if (
+        activity.status === "failed" ||
+        (activity.exitCode !== null && activity.exitCode !== 0)
+    ) {
+        return "danger";
+    }
+
+    if (activity.status === "completed" && activity.exitCode === 0) {
+        return "success";
+    }
+
+    return "neutral";
+}
+
+function getTerminalToolToneColor(tone: TerminalToolTone): string {
+    if (tone === "danger") {
+        return "#ef4444";
+    }
+
+    if (tone === "success") {
+        return "var(--diff-add)";
+    }
+
+    return "#6b7280";
+}
+
 function TerminalToolMessage({
     activity,
 }: {
@@ -1492,7 +1521,8 @@ function TerminalToolMessage({
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
 
-    const accent = isFailed || hasNonZeroExit ? "#ef4444" : "#6b7280";
+    const terminalTone = getTerminalToolTone(activity);
+    const accent = getTerminalToolToneColor(terminalTone);
     const command = extractCommand(activity.rawInputJson);
     const shouldShowCommand =
         !!command && !isCommandDuplicatedByTitle(activity.title, command);
