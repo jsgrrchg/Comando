@@ -979,7 +979,7 @@ export function SidebarAgentsPanel({
             <div className="sidebar-agents-summary flex shrink-0 items-center gap-1 px-2.5 py-2">
                 <span
                     className={[
-                        "min-w-0 flex-1 truncate text-[11px] font-medium",
+                        "min-w-0 flex-1 truncate text-[12px] font-medium",
                         visibleError
                             ? "text-[var(--diff-remove)]"
                             : "text-text-secondary",
@@ -990,7 +990,7 @@ export function SidebarAgentsPanel({
                 <button
                     aria-haspopup="menu"
                     aria-label="New agent thread"
-                    className="sidebar-agents-summary-action flex h-6 w-6 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+                    className="sidebar-agents-summary-action sidebar-agents-summary-action--icon"
                     onClick={handleOpenNewAgentMenu}
                     title="New agent thread"
                     type="button"
@@ -998,7 +998,7 @@ export function SidebarAgentsPanel({
                     <PlusIcon />
                 </button>
                 <button
-                    className="sidebar-agents-summary-action rounded px-1.5 py-0.5 text-[10px] font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+                    className="sidebar-agents-summary-action"
                     onClick={handleOpenHistoryTab}
                     title="Open full history"
                     type="button"
