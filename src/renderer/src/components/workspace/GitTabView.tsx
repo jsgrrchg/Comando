@@ -1389,17 +1389,17 @@ function GitCommitDetailSidebar({
                                     const canOpenFile = file.kind !== "delete";
                                     const rowContent = (
                                         <>
-                                            <div className="flex min-w-0 items-center gap-1.5">
-                                                <span className="shrink-0 font-mono text-text-primary transition-colors duration-150 group-hover/file:text-text-primary">
+                                            <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+                                                <span className="min-w-0 truncate font-mono text-text-primary transition-colors duration-150 group-hover/file:text-text-primary">
                                                     {fileName}
                                                 </span>
                                                 {dirPath ? (
-                                                    <span className="truncate text-text-tertiary transition-colors duration-150 group-hover/file:text-text-secondary">
+                                                    <span className="min-w-0 truncate text-text-tertiary transition-colors duration-150 group-hover/file:text-text-secondary">
                                                         {dirPath}
                                                     </span>
                                                 ) : null}
                                             </div>
-                                            <div className="flex shrink-0 items-center gap-1.5 text-text-secondary">
+                                            <div className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] text-text-secondary">
                                                 {file.additions ? (
                                                     <span
                                                         style={{
