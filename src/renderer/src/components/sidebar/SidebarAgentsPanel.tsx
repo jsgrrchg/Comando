@@ -990,7 +990,7 @@ export function SidebarAgentsPanel({
                 <button
                     aria-haspopup="menu"
                     aria-label="New agent thread"
-                    className="sidebar-agents-summary-action sidebar-agents-summary-action--icon"
+                    className="sidebar-toolbar-action sidebar-toolbar-action--icon"
                     onClick={handleOpenNewAgentMenu}
                     title="New agent thread"
                     type="button"
@@ -998,7 +998,7 @@ export function SidebarAgentsPanel({
                     <PlusIcon />
                 </button>
                 <button
-                    className="sidebar-agents-summary-action"
+                    className="sidebar-toolbar-action"
                     onClick={handleOpenHistoryTab}
                     title="Open full history"
                     type="button"

@@ -960,14 +960,15 @@ button {
         calc(8px * var(--sidebar-list-scale, 1));
 }
 
-/* Tactile, uniformly sized buttons for the agents summary toolbar */
-.sidebar-agents-summary-action {
+/* Tactile, uniformly sized buttons shared by the sidebar toolbars
+   (agents summary + git changes). One ownership boundary for all of them. */
+.sidebar-toolbar-action {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    height: calc(22px * var(--sidebar-list-scale, 1));
+    height: calc(24px * var(--sidebar-list-scale, 1));
     padding: 0 calc(9px * var(--sidebar-list-scale, 1));
-    font-size: calc(10.5px * var(--sidebar-list-scale, 1));
+    font-size: calc(11px * var(--sidebar-list-scale, 1));
     font-weight: 500;
     line-height: 1;
     border-radius: 6px;
@@ -981,13 +982,13 @@ button {
         transform 75ms ease;
 }
 
-/* Square variant for the icon-only "+" button */
-.sidebar-agents-summary-action--icon {
-    width: calc(22px * var(--sidebar-list-scale, 1));
+/* Square variant for icon-only toolbar buttons */
+.sidebar-toolbar-action--icon {
+    width: calc(24px * var(--sidebar-list-scale, 1));
     padding: 0;
 }
 
-.sidebar-agents-summary-action:hover {
+.sidebar-toolbar-action:hover:not(:disabled) {
     background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
     box-shadow: inset 0 0 0 1px
         color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
@@ -995,11 +996,28 @@ button {
 }
 
 /* Depress into the surface while held down */
-.sidebar-agents-summary-action:active {
+.sidebar-toolbar-action:active:not(:disabled) {
     transform: translateY(1px) scale(0.98);
     box-shadow:
         inset 0 0 0 1px color-mix(in srgb, var(--color-border) 90%, transparent),
         inset 0 1px 2px rgb(0 0 0 / 0.14);
+}
+
+.sidebar-toolbar-action:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+/* Destructive variant (e.g. discard all) — same button shape, danger color */
+.sidebar-toolbar-action--danger {
+    color: var(--diff-remove);
+}
+
+.sidebar-toolbar-action--danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--diff-remove) 14%, transparent);
+    box-shadow: inset 0 0 0 1px
+        color-mix(in srgb, var(--diff-remove) 45%, var(--color-border));
+    color: var(--diff-remove);
 }
 
 .sidebar-agents-section-header {
