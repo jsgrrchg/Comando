@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
     isWindowsBatchCommand,
@@ -6,45 +10,65 @@ import {
     spawnPreparedSync,
 } from "./_shared.mjs";
 
+const temporaryDirectories = new Set();
+
+afterEach(() => {
+    for (const directoryPath of temporaryDirectories) {
+        fs.rmSync(directoryPath, {
+            force: true,
+            recursive: true,
+        });
+    }
+    temporaryDirectories.clear();
+});
+
 describe("script command launch helpers", () => {
-    it.each(["pnpm.cmd", "npm.cmd"])(
-        "wraps %s through cmd.exe",
-        (commandName) => {
-            const options = {
-                cwd: "C:\\Workspaces\\Project With Spaces",
-                env: {
-                    PATH: "C:\\Program Files\\nodejs",
-                },
-                stdio: "inherit",
-            };
-
-            const prepared = prepareCommandForSpawnSync(
-                commandName,
-                ["run", "build & package", "%TEMP%"],
-                options,
-                {
-                    platform: "win32",
-                },
-            );
-
-            expect(prepared).toEqual({
-                args: [
-                    "/d",
-                    "/s",
-                    "/v:off",
-                    "/c",
-                    `""${commandName}" "run" "build & package" ""^%"TEMP"^%"""`,
-                ],
-                command: "cmd.exe",
-                options: {
-                    ...options,
-                    windowsVerbatimArguments: true,
-                },
-            });
-            expect(prepared.options).not.toBe(options);
-            expect(options.windowsVerbatimArguments).toBeUndefined();
+    it.each([
+        {
+            cliFileName: "pnpm.cjs",
+            commandName: "pnpm.cmd",
+            cliOptionName: "pnpmCliPath",
         },
-    );
+        {
+            cliFileName: "npm-cli.js",
+            commandName: "npm.cmd",
+            cliOptionName: "npmCliPath",
+        },
+    ])("runs $commandName through node instead of cmd.exe", (fixture) => {
+        const tempDir = createTempDir();
+        const commandPath = path.join(tempDir, fixture.commandName);
+        const cliPath = path.join(tempDir, fixture.cliFileName);
+        fs.writeFileSync(commandPath, "", "utf8");
+        fs.writeFileSync(cliPath, "", "utf8");
+
+        const options = {
+            cwd: "C:\\Workspaces\\Project With Spaces",
+            env: {
+                PATH: tempDir,
+                PATHEXT: ".CMD",
+            },
+            stdio: "inherit",
+        };
+
+        const prepared = prepareCommandForSpawnSync(
+            fixture.commandName,
+            ["run", "build & package", "%TEMP%"],
+            options,
+            {
+                [fixture.cliOptionName]: cliPath,
+                commandPath,
+                nodeCommand: "node.exe",
+                platform: "win32",
+            },
+        );
+
+        expect(prepared).toEqual({
+            args: [cliPath, "run", "build & package", "%TEMP%"],
+            command: "node.exe",
+            options,
+        });
+        expect(prepared.options).toBe(options);
+    });
 
     it("does not wrap Windows non-batch executables", () => {
         const prepared = prepareCommandForSpawnSync(
@@ -61,19 +85,30 @@ describe("script command launch helpers", () => {
         });
     });
 
-    it("quotes cmd metacharacters before launching a batch command", () => {
-        // Keep this mirrored with src/main/shell/command-launch.test.ts so runtime and packaging quoting stay aligned.
+    it("passes cmd metacharacters as node CLI arguments", () => {
+        const tempDir = createTempDir();
+        const commandPath = path.join(tempDir, "npm.cmd");
+        const npmCliPath = path.join(tempDir, "npm-cli.js");
+        fs.writeFileSync(commandPath, "", "utf8");
+        fs.writeFileSync(npmCliPath, "", "utf8");
+
         const prepared = prepareCommandForSpawnSync(
             "npm.cmd",
             ["A&B", "(group)", "100%", "has^caret", "say \"hi\""],
-            undefined,
-            { platform: "win32" },
+            { env: { PATH: tempDir, PATHEXT: ".CMD" } },
+            {
+                commandPath,
+                nodeCommand: "node.exe",
+                npmCliPath,
+                platform: "win32",
+            },
         );
 
-        expect(prepared.args[4]).toBe(
-            '""npm.cmd" "A&B" "(group)" "100"^%"" "has^caret" "say \\"hi\\"""',
-        );
-        expect(prepared.options.windowsVerbatimArguments).toBe(true);
+        expect(prepared).toEqual({
+            args: [npmCliPath, "A&B", "(group)", "100%", "has^caret", "say \"hi\""],
+            command: "node.exe",
+            options: { env: { PATH: tempDir, PATHEXT: ".CMD" } },
+        });
     });
 
     it("does not wrap batch commands outside Windows", () => {
@@ -103,8 +138,13 @@ describe("script command launch helpers", () => {
     });
 
     it("rejects unsupported Windows batch commands", () => {
+        const tempDir = createTempDir();
+        const commandPath = path.join(tempDir, "run.cmd");
+        fs.writeFileSync(commandPath, "", "utf8");
+
         expect(() =>
             prepareCommandForSpawnSync("run.cmd", [], undefined, {
+                commandPath,
                 platform: "win32",
             }),
         ).toThrow(/Unsupported Windows batch command/);
@@ -128,3 +168,11 @@ describe("script command launch helpers", () => {
         expect(isWindowsBatchCommand("pnpm")).toBe(false);
     });
 });
+
+function createTempDir() {
+    const directoryPath = fs.mkdtempSync(
+        path.join(os.tmpdir(), "comando-command-launch-test-"),
+    );
+    temporaryDirectories.add(directoryPath);
+    return directoryPath;
+}

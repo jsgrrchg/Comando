@@ -173,23 +173,12 @@ export function prepareCommandForSpawnSync(
         };
     }
 
-    if (path.win32.isAbsolute(command)) {
-        throw new Error(
-            `Refusing to prepare an absolute Windows batch command: ${command}`,
-        );
-    }
-    const batchCommand = resolveKnownWindowsBatchCommand(command);
+    const cli = resolveKnownWindowsNodeCli(command, options, launchOptions);
 
     return {
-        args: [
-            "/d",
-            "/s",
-            "/v:off",
-            "/c",
-            buildWindowsBatchCommandLine(batchCommand, args),
-        ],
-        command: "cmd.exe",
-        options: withWindowsVerbatimArguments(options),
+        args: [cli.entrypointPath, ...args],
+        command: cli.nodeCommand,
+        options,
     };
 }
 
@@ -200,13 +189,12 @@ export function spawnPreparedSync(command, args = [], options = {}, launchOption
         return spawnSync(command, args, options);
     }
 
-    // Windows batch commands must go through cmd.exe; prepareCommandForSpawnSync quotes every argument first.
     const prepared = prepareCommandForSpawnSync(command, args, options, {
         ...launchOptions,
         platform,
     });
 
-    return spawnSync("cmd.exe", prepared.args, prepared.options);
+    return spawnSync(prepared.command, prepared.args, prepared.options);
 }
 
 export function isWindowsBatchCommand(command) {
@@ -214,59 +202,138 @@ export function isWindowsBatchCommand(command) {
     return extension === ".cmd" || extension === ".bat";
 }
 
-function resolveKnownWindowsBatchCommand(command) {
-    switch (command.toLowerCase()) {
-        case "npm.cmd":
-            return "npm.cmd";
-        case "pnpm.cmd":
-            return "pnpm.cmd";
-        default:
-            throw new Error(`Unsupported Windows batch command: ${command}`);
-    }
-}
-
-function buildWindowsBatchCommandLine(command, args) {
-    const innerCommandLine = [command, ...args]
-        .map(quoteWindowsCmdArgument)
-        .join(" ");
-
-    return `"${innerCommandLine}"`;
-}
-
-function quoteWindowsCmdArgument(value) {
-    let escapedValue = "";
-    let backslashCount = 0;
-
-    for (const character of String(value)) {
-        if (character === "\\") {
-            backslashCount += 1;
-            continue;
-        }
-
-        if (character === '"') {
-            escapedValue += `${"\\".repeat(backslashCount * 2 + 1)}"`;
-            backslashCount = 0;
-            continue;
-        }
-
-        if (character === "%") {
-            escapedValue += `${"\\".repeat(backslashCount)}"^%"`;
-            backslashCount = 0;
-            continue;
-        }
-
-        escapedValue += `${"\\".repeat(backslashCount)}${character}`;
-        backslashCount = 0;
+function resolveKnownWindowsNodeCli(command, options = {}, launchOptions = {}) {
+    if (path.win32.isAbsolute(command)) {
+        throw new Error(
+            `Refusing to prepare an absolute Windows batch command: ${command}`,
+        );
     }
 
-    escapedValue += "\\".repeat(backslashCount * 2);
+    const commandName = command.toLowerCase();
+    const commandPath =
+        launchOptions.commandPath ??
+        resolveFromPathForPlatform(command, {
+            env: options.env,
+            platform: "win32",
+        });
 
-    return `"${escapedValue}"`;
-}
+    if (!commandPath) {
+        throw new Error(
+            `Required Windows batch command was not found on PATH: ${command}`,
+        );
+    }
 
-function withWindowsVerbatimArguments(options) {
+    const entrypointPath = resolveKnownWindowsNodeCliEntrypoint(
+        commandName,
+        commandPath,
+        launchOptions,
+    );
+
     return {
-        ...options,
-        windowsVerbatimArguments: true,
+        entrypointPath,
+        nodeCommand: launchOptions.nodeCommand ?? process.execPath,
     };
+}
+
+function resolveKnownWindowsNodeCliEntrypoint(
+    commandName,
+    commandPath,
+    launchOptions = {},
+) {
+    switch (commandName) {
+        case "npm.cmd":
+            return resolveExistingFile(
+                [
+                    launchOptions.npmCliPath,
+                    path.win32.join(
+                        path.win32.dirname(commandPath),
+                        "node_modules",
+                        "npm",
+                        "bin",
+                        "npm-cli.js",
+                    ),
+                ],
+                "npm CLI",
+            );
+        case "pnpm.cmd":
+            return resolveExistingFile(
+                [
+                    launchOptions.pnpmCliPath,
+                    path.win32.join(
+                        path.win32.dirname(commandPath),
+                        "node_modules",
+                        "pnpm",
+                        "bin",
+                        "pnpm.cjs",
+                    ),
+                    path.win32.join(
+                        path.win32.dirname(commandPath),
+                        "node_modules",
+                        "pnpm",
+                        "bin",
+                        "pnpm.js",
+                    ),
+                    parseWindowsCmdNodeEntrypoint(commandPath),
+                ],
+                "pnpm CLI",
+            );
+        default:
+            throw new Error(`Unsupported Windows batch command: ${commandName}`);
+    }
+}
+
+function resolveFromPathForPlatform(command, { env = process.env, platform }) {
+    const pathValue = env?.PATH ?? env?.Path ?? env?.path ?? "";
+    const pathEntries = pathValue
+        .split(platform === "win32" ? path.win32.delimiter : path.delimiter)
+        .filter(Boolean);
+    const pathextEntries =
+        platform === "win32"
+            ? (env?.PATHEXT ?? ".EXE;.CMD;.BAT;.COM")
+                  .split(";")
+                  .filter(Boolean)
+            : [""];
+
+    for (const entry of pathEntries) {
+        for (const ext of pathextEntries) {
+            const candidate = path.win32.join(
+                entry,
+                platform === "win32" &&
+                    !command.toLowerCase().endsWith(ext.toLowerCase())
+                    ? `${command}${ext}`
+                    : command,
+            );
+
+            if (isFile(candidate)) {
+                return candidate;
+            }
+        }
+    }
+
+    return null;
+}
+
+function resolveExistingFile(candidates, label) {
+    const candidate = candidates
+        .filter(Boolean)
+        .find((filePath) => isFile(filePath));
+    if (!candidate) {
+        throw new Error(`Required ${label} entrypoint was not found.`);
+    }
+    return candidate;
+}
+
+function parseWindowsCmdNodeEntrypoint(commandPath) {
+    if (!isFile(commandPath)) {
+        return null;
+    }
+
+    const content = fs.readFileSync(commandPath, "utf8");
+    const commandDir = path.win32.dirname(commandPath);
+    const match = content.match(/"%dp0%\\([^"]+\.(?:cjs|js))"/iu);
+    if (!match) {
+        return null;
+    }
+
+    return path.win32.join(commandDir, match[1]);
 }
