@@ -414,6 +414,16 @@ fn parse_name_status_line(
 
 fn normalize_diff_stat_path(path: &str) -> String {
     if let Some((_, current)) = path.rsplit_once(" => ") {
+        let arrow_index = path.find(" => ").unwrap_or(0);
+        if let Some(open_brace_index) = path[..arrow_index].rfind('{') {
+            if let Some(close_brace_index) = current.find('}') {
+                let prefix = &path[..open_brace_index];
+                let replacement = current[..close_brace_index].trim();
+                let suffix = &current[close_brace_index + 1..];
+                return format!("{prefix}{replacement}{suffix}");
+            }
+        }
+
         current.trim_end_matches('}').to_string()
     } else {
         path.to_string()
@@ -633,6 +643,19 @@ mod tests {
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].kind, "move");
         assert_eq!(files[0].previous_path.as_deref(), Some("src/old.rs"));
+        assert_eq!(files[0].path, "src/new.rs");
+        assert_eq!(files[0].additions, Some(2));
+        assert_eq!(files[0].deletions, Some(1));
+    }
+
+    #[test]
+    fn parses_commit_diff_summary_compact_rename_paths() {
+        let files = super::parse_commit_diff_summary_files(
+            "2\t1\tsrc/{old.rs => new.rs}\n",
+            "R087\tsrc/old.rs\tsrc/new.rs\n",
+        );
+
+        assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "src/new.rs");
         assert_eq!(files[0].additions, Some(2));
         assert_eq!(files[0].deletions, Some(1));

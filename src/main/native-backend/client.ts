@@ -3,6 +3,7 @@ import type {
     ChildProcessWithoutNullStreams,
     SpawnOptionsWithoutStdio,
 } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 import { buildRuntimeSpawnEnv } from "../ai/runtime-env";
 
@@ -95,6 +96,7 @@ export class NativeBackendClient {
     private exited = false;
     private nextRequestId = 1;
     private stderrRemainder = "";
+    private readonly stdoutDecoder = new StringDecoder("utf8");
     private stdoutRemainder = "";
 
     constructor(options: NativeBackendClientOptions) {
@@ -272,7 +274,10 @@ export class NativeBackendClient {
     }
 
     private handleStdoutChunk(chunk: Buffer | string): void {
-        this.stdoutRemainder += chunk.toString();
+        this.stdoutRemainder +=
+            typeof chunk === "string"
+                ? chunk
+                : this.stdoutDecoder.write(chunk);
         const lines = this.stdoutRemainder.split("\n");
         this.stdoutRemainder = lines.pop() ?? "";
 
@@ -282,6 +287,7 @@ export class NativeBackendClient {
     }
 
     private flushStdoutRemainder(): void {
+        this.stdoutRemainder += this.stdoutDecoder.end();
         if (!this.stdoutRemainder) {
             return;
         }
