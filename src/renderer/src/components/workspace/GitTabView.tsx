@@ -1375,35 +1375,6 @@ function GitCommitDetailSidebar({
                     <>
                         {changedFiles.length > 0 ? (
                             <div className="mb-4 space-y-1">
-                                <div
-                                    className="mb-2 flex items-center gap-2"
-                                    style={{ fontFamily: "var(--font-mono)" }}
-                                >
-                                    <IdeBarLabel>
-                                        {changedFiles.length} Changed Files
-                                    </IdeBarLabel>
-                                    {activeDetail &&
-                                    activeDetail.insertions > 0 ? (
-                                        <span
-                                            className="text-[10px]"
-                                            style={{ color: "var(--diff-add)" }}
-                                        >
-                                            +{activeDetail.insertions}
-                                        </span>
-                                    ) : null}
-                                    {activeDetail &&
-                                    activeDetail.deletions > 0 ? (
-                                        <span
-                                            className="text-[10px]"
-                                            style={{
-                                                color: "var(--diff-remove)",
-                                            }}
-                                        >
-                                            -{activeDetail.deletions}
-                                        </span>
-                                    ) : null}
-                                </div>
-
                                 {changedFiles.map((file) => {
                                     const lastSlash =
                                         file.path.lastIndexOf("/");
