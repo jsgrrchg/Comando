@@ -3386,7 +3386,7 @@ function applyLocalPromptAcceptanceToSession(
         pendingPermission: null,
         pendingUserInput: null,
         status: "starting",
-        updatedAt: baseSnapshot.updatedAt,
+        updatedAt: acceptedAt,
     };
     const nextTranscript = mergeAiSessionTranscriptSources(
         getSessionTranscript(session, snapshot),

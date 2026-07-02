@@ -2281,6 +2281,12 @@ describe("ai-store queue", () => {
                 status: "completed",
             }),
         );
+        expect(pendingSession?.snapshot?.updatedAt).toBe(
+            pendingSession?.snapshot?.activeTurnStartedAt,
+        );
+        expect(pendingSession?.snapshot?.updatedAt).not.toBe(
+            "2026-04-14T00:00:00.000Z",
+        );
         expect(pendingSession?.activeQueuedPrompt?.queuedPrompt.id).toBe(
             messageId,
         );
