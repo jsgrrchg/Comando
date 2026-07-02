@@ -64,14 +64,14 @@ describe("script command launch helpers", () => {
     it("quotes cmd metacharacters before launching a batch command", () => {
         // Keep this mirrored with src/main/shell/command-launch.test.ts so runtime and packaging quoting stay aligned.
         const prepared = prepareCommandForSpawnSync(
-            "run.cmd",
+            "npm.cmd",
             ["A&B", "(group)", "100%", "has^caret", "say \"hi\""],
             undefined,
             { platform: "win32" },
         );
 
         expect(prepared.args[4]).toBe(
-            '""run.cmd" "A&B" "(group)" "100"^%"" "has^caret" "say \\"hi\\"""',
+            '""npm.cmd" "A&B" "(group)" "100"^%"" "has^caret" "say \\"hi\\"""',
         );
         expect(prepared.options.windowsVerbatimArguments).toBe(true);
     });
@@ -100,6 +100,14 @@ describe("script command launch helpers", () => {
                 { platform: "win32" },
             ),
         ).toThrow(/absolute Windows batch command/);
+    });
+
+    it("rejects unsupported Windows batch commands", () => {
+        expect(() =>
+            prepareCommandForSpawnSync("run.cmd", [], undefined, {
+                platform: "win32",
+            }),
+        ).toThrow(/Unsupported Windows batch command/);
     });
 
     it("rejects absolute Windows batch commands before spawning", () => {

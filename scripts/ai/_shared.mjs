@@ -178,6 +178,7 @@ export function prepareCommandForSpawnSync(
             `Refusing to prepare an absolute Windows batch command: ${command}`,
         );
     }
+    const batchCommand = resolveKnownWindowsBatchCommand(command);
 
     return {
         args: [
@@ -185,7 +186,7 @@ export function prepareCommandForSpawnSync(
             "/s",
             "/v:off",
             "/c",
-            buildWindowsBatchCommandLine(command, args),
+            buildWindowsBatchCommandLine(batchCommand, args),
         ],
         command: "cmd.exe",
         options: withWindowsVerbatimArguments(options),
@@ -205,12 +206,23 @@ export function spawnPreparedSync(command, args = [], options = {}, launchOption
         platform,
     });
 
-    return spawnSync(prepared.command, prepared.args, prepared.options);
+    return spawnSync("cmd.exe", prepared.args, prepared.options);
 }
 
 export function isWindowsBatchCommand(command) {
     const extension = path.win32.extname(command).toLowerCase();
     return extension === ".cmd" || extension === ".bat";
+}
+
+function resolveKnownWindowsBatchCommand(command) {
+    switch (command.toLowerCase()) {
+        case "npm.cmd":
+            return "npm.cmd";
+        case "pnpm.cmd":
+            return "pnpm.cmd";
+        default:
+            throw new Error(`Unsupported Windows batch command: ${command}`);
+    }
 }
 
 function buildWindowsBatchCommandLine(command, args) {

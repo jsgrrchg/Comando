@@ -10,7 +10,6 @@ import {
     ensureDir,
     isExecutableFile,
     isFile,
-    isWindowsBatchCommand,
     relativeToRepo,
     repoRoot,
     resetDir,
@@ -126,16 +125,18 @@ function ensureClaudeVendorReady() {
         );
     }
 
-    const npmCommand = resolveRequiredBatchCommandName("npm.cmd");
+    const npmCliPath = resolveRequiredNpmCliPath();
 
     if (!fs.existsSync(nodeModulesDir)) {
         console.log("[build:windows-acp] Installing Claude ACP vendor dependencies.");
-        run(npmCommand, ["ci"], { cwd: claudeVendorDir });
+        run(process.execPath, [npmCliPath, "ci"], { cwd: claudeVendorDir });
     }
 
     if (!isFile(distEntry) || isNewerThan(packageJsonPath, distEntry)) {
         console.log("[build:windows-acp] Building Claude ACP vendor dist.");
-        run(npmCommand, ["run", "build"], { cwd: claudeVendorDir });
+        run(process.execPath, [npmCliPath, "run", "build"], {
+            cwd: claudeVendorDir,
+        });
     }
 }
 
@@ -291,17 +292,26 @@ function resolveRequiredCommand(command) {
     throw new Error(`Required command was not found: ${command}`);
 }
 
-function resolveRequiredBatchCommandName(command) {
-    const resolved = resolveFromPath(command);
-    if (!resolved) {
-        throw new Error(`Required command was not found: ${command}`);
+function resolveRequiredNpmCliPath() {
+    const npmCommand = resolveFromPath("npm.cmd");
+    if (!npmCommand) {
+        throw new Error("Required command was not found: npm.cmd");
     }
 
-    if (!isWindowsBatchCommand(resolved)) {
-        throw new Error(`Required command is not a Windows batch file: ${command}`);
+    const npmCliPath = path.join(
+        path.dirname(npmCommand),
+        "node_modules",
+        "npm",
+        "bin",
+        "npm-cli.js",
+    );
+    if (isFile(npmCliPath)) {
+        return npmCliPath;
     }
 
-    return path.win32.basename(command);
+    throw new Error(
+        `Required npm CLI was not found next to npm.cmd: ${npmCliPath}`,
+    );
 }
 
 function capture(command, args, options = {}) {
