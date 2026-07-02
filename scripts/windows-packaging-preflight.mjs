@@ -33,7 +33,7 @@ export function resolveWindowsPackagingPreflight({
         });
 
     const paths = resolveWindowsPackagingPaths(repoRoot);
-    const pnpmCommand = requireCommand("pnpm.cmd", resolveCommand);
+    const pnpmCommand = requireBatchCommandName("pnpm.cmd", resolveCommand);
     const powerShellCommand =
         resolveCommand("pwsh.exe") ??
         resolveCommand("pwsh") ??
@@ -240,6 +240,20 @@ function requireCommand(command, resolveCommand) {
     throw new Error(
         `Required command was not found: ${command}. Run pnpm install --frozen-lockfile and make sure Node's bin directory is on PATH.`,
     );
+}
+
+function requireBatchCommandName(command, resolveCommand) {
+    const resolved = requireCommand(command, resolveCommand);
+    if (!isWindowsBatchCommand(resolved)) {
+        throw new Error(`Required command is not a Windows batch file: ${command}`);
+    }
+
+    return path.win32.basename(command);
+}
+
+function isWindowsBatchCommand(command) {
+    const extension = path.win32.extname(command).toLowerCase();
+    return extension === ".cmd" || extension === ".bat";
 }
 
 function assertFile(filePath, { isFile, label, relativePath, suggestion }) {

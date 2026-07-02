@@ -10,6 +10,7 @@ import {
     ensureDir,
     isExecutableFile,
     isFile,
+    isWindowsBatchCommand,
     relativeToRepo,
     repoRoot,
     resetDir,
@@ -125,7 +126,7 @@ function ensureClaudeVendorReady() {
         );
     }
 
-    const npmCommand = resolveRequiredCommand("npm.cmd");
+    const npmCommand = resolveRequiredBatchCommandName("npm.cmd");
 
     if (!fs.existsSync(nodeModulesDir)) {
         console.log("[build:windows-acp] Installing Claude ACP vendor dependencies.");
@@ -288,6 +289,19 @@ function resolveRequiredCommand(command) {
     }
 
     throw new Error(`Required command was not found: ${command}`);
+}
+
+function resolveRequiredBatchCommandName(command) {
+    const resolved = resolveFromPath(command);
+    if (!resolved) {
+        throw new Error(`Required command was not found: ${command}`);
+    }
+
+    if (!isWindowsBatchCommand(resolved)) {
+        throw new Error(`Required command is not a Windows batch file: ${command}`);
+    }
+
+    return path.win32.basename(command);
 }
 
 function capture(command, args, options = {}) {

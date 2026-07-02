@@ -173,6 +173,12 @@ export function prepareCommandForSpawnSync(
         };
     }
 
+    if (path.win32.isAbsolute(command)) {
+        throw new Error(
+            `Refusing to prepare an absolute Windows batch command: ${command}`,
+        );
+    }
+
     return {
         args: [
             "/d",
@@ -181,7 +187,7 @@ export function prepareCommandForSpawnSync(
             "/c",
             buildWindowsBatchCommandLine(command, args),
         ],
-        command: launchOptions.comSpec ?? "cmd.exe",
+        command: "cmd.exe",
         options: withWindowsVerbatimArguments(options),
     };
 }
@@ -196,11 +202,10 @@ export function spawnPreparedSync(command, args = [], options = {}, launchOption
     // Windows batch commands must go through cmd.exe; prepareCommandForSpawnSync quotes every argument first.
     const prepared = prepareCommandForSpawnSync(command, args, options, {
         ...launchOptions,
-        comSpec: "cmd.exe",
         platform,
     });
 
-    return spawnSync("cmd.exe", prepared.args, prepared.options);
+    return spawnSync(prepared.command, prepared.args, prepared.options);
 }
 
 export function isWindowsBatchCommand(command) {

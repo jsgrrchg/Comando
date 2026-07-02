@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
     isWindowsBatchCommand,
     prepareCommandForSpawnSync,
+    spawnPreparedSync,
 } from "./_shared.mjs";
 
 describe("script command launch helpers", () => {
     it.each(["pnpm.cmd", "npm.cmd"])(
-        "wraps %s paths with spaces through cmd.exe",
+        "wraps %s through cmd.exe",
         (commandName) => {
-            const command = `C:\\Program Files\\nodejs\\${commandName}`;
             const options = {
                 cwd: "C:\\Workspaces\\Project With Spaces",
                 env: {
@@ -19,11 +19,10 @@ describe("script command launch helpers", () => {
             };
 
             const prepared = prepareCommandForSpawnSync(
-                command,
+                commandName,
                 ["run", "build & package", "%TEMP%"],
                 options,
                 {
-                    comSpec: "C:\\Windows\\System32\\cmd.exe",
                     platform: "win32",
                 },
             );
@@ -34,9 +33,9 @@ describe("script command launch helpers", () => {
                     "/s",
                     "/v:off",
                     "/c",
-                    `""${command}" "run" "build & package" ""^%"TEMP"^%"""`,
+                    `""${commandName}" "run" "build & package" ""^%"TEMP"^%"""`,
                 ],
-                command: "C:\\Windows\\System32\\cmd.exe",
+                command: "cmd.exe",
                 options: {
                     ...options,
                     windowsVerbatimArguments: true,
@@ -65,14 +64,14 @@ describe("script command launch helpers", () => {
     it("quotes cmd metacharacters before launching a batch command", () => {
         // Keep this mirrored with src/main/shell/command-launch.test.ts so runtime and packaging quoting stay aligned.
         const prepared = prepareCommandForSpawnSync(
-            "C:\\Tools\\run.cmd",
+            "run.cmd",
             ["A&B", "(group)", "100%", "has^caret", "say \"hi\""],
             undefined,
             { platform: "win32" },
         );
 
         expect(prepared.args[4]).toBe(
-            '""C:\\Tools\\run.cmd" "A&B" "(group)" "100"^%"" "has^caret" "say \\"hi\\"""',
+            '""run.cmd" "A&B" "(group)" "100"^%"" "has^caret" "say \\"hi\\"""',
         );
         expect(prepared.options.windowsVerbatimArguments).toBe(true);
     });
@@ -90,6 +89,28 @@ describe("script command launch helpers", () => {
             command: "C:\\Program Files\\nodejs\\pnpm.cmd",
             options: { cwd: "/repo" },
         });
+    });
+
+    it("rejects absolute Windows batch commands before preparing", () => {
+        expect(() =>
+            prepareCommandForSpawnSync(
+                "C:\\Program Files\\nodejs\\npm.cmd",
+                ["ci"],
+                undefined,
+                { platform: "win32" },
+            ),
+        ).toThrow(/absolute Windows batch command/);
+    });
+
+    it("rejects absolute Windows batch commands before spawning", () => {
+        expect(() =>
+            spawnPreparedSync(
+                "C:\\Program Files\\nodejs\\npm.cmd",
+                ["ci"],
+                undefined,
+                { platform: "win32" },
+            ),
+        ).toThrow(/absolute Windows batch command/);
     });
 
     it("detects Windows batch command extensions", () => {

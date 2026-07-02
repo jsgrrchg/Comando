@@ -99,7 +99,7 @@ describe("Windows packaging preflight", () => {
             targetArch: "x64",
         });
 
-        expect(preflight.pnpmCommand).toBe(path.join(nodeBinDir, "pnpm.cmd"));
+        expect(preflight.pnpmCommand).toBe("pnpm.cmd");
         expect(preflight.powerShellCommand).toBe(
             path.join(powerShellDir, "pwsh.exe"),
         );
