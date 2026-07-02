@@ -83,6 +83,16 @@ const GIT_SCOPE_MENU_MIN_HEIGHT = 260;
 const GIT_SCOPE_MENU_DEFAULT_MAX_HEIGHT = 420;
 const GIT_SCOPE_MENU_MAX_HEIGHT = 720;
 
+export function compareGitScopeBranchNames(left: string, right: string): number {
+    const leftIsMain = left === "main";
+    const rightIsMain = right === "main";
+    if (leftIsMain === rightIsMain) {
+        return 0;
+    }
+
+    return leftIsMain ? -1 : 1;
+}
+
 function getStorage(): Storage | null {
     try {
         return globalThis.localStorage ?? null;
@@ -520,7 +530,15 @@ export function SidebarGitScopePicker({
     }, [branchRows, normalizedQuery]);
 
     const localBranchRows = useMemo(
-        () => filteredBranchRows.filter((row) => !row.branch.isRemote),
+        () =>
+            filteredBranchRows
+                .filter((row) => !row.branch.isRemote)
+                .toSorted((left, right) =>
+                    compareGitScopeBranchNames(
+                        left.branch.name,
+                        right.branch.name,
+                    ),
+                ),
         [filteredBranchRows],
     );
     const remoteBranchRows = useMemo(

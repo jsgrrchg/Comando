@@ -5,6 +5,7 @@ import type { GitBranchSummary, GitWorktreeSummary } from "@shared/ipc";
 import {
     buildSuggestedWorktreePath,
     buildUniqueLocalBranchName,
+    compareGitScopeBranchNames,
     isGitScopeWorktreeActive,
     parseRemoteBranchReference,
     resolveRemoteBranchResolution,
@@ -56,6 +57,17 @@ function createWorktree(
 }
 
 describe("SidebarGitScopePicker helpers", () => {
+    it("keeps main first while preserving the remaining branch order", () => {
+        const branches = ["feature/zeta", "main", "alpha", "feature/beta"];
+
+        expect(branches.toSorted(compareGitScopeBranchNames)).toEqual([
+            "main",
+            "feature/zeta",
+            "alpha",
+            "feature/beta",
+        ]);
+    });
+
     it("resolves a remote branch to its tracking local branch and worktree", () => {
         const remoteBranch = createBranch({
             isRemote: true,
