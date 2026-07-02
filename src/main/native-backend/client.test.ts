@@ -175,6 +175,28 @@ describe("NativeBackendClient", () => {
         await expect(second).resolves.toEqual({ protocolVersion: 1 });
     });
 
+    it("parses stdout JSONL with unicode line separators inside strings", async () => {
+        const { child, client } = createClient();
+        const linePromise = readStdinLine(child);
+
+        const requestPromise = client.request("backend_ping");
+        const request = parseRequestLine(await linePromise);
+        child.stdout.write(
+            `${JSON.stringify({
+                type: "response",
+                id: request.id,
+                ok: true,
+                result: {
+                    message: "first line\u2028second line",
+                },
+            })}\n`,
+        );
+
+        await expect(requestPromise).resolves.toEqual({
+            message: "first line\u2028second line",
+        });
+    });
+
     it("delivers native backend events", async () => {
         const { child, client } = createClient();
         const listener = vi.fn();

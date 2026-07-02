@@ -95,8 +95,13 @@ pub fn get_commit_detail(
         .next()
         .ok_or(GitError::NotRepository)?;
     let diff_args = commit_diff_args(&summary);
-    let diff_output = runner.run(root_path, &diff_args, GitRunOptions::read_only())?;
-    let files = parse_commit_diff_files(&diff_output.stdout);
+    let files = match runner.run(root_path.as_ref(), &diff_args, GitRunOptions::read_only()) {
+        Ok(diff_output) => parse_commit_diff_files(&diff_output.stdout),
+        Err(GitError::OutputTooLarge { .. }) => {
+            get_commit_diff_summary_files(runner, root_path.as_ref(), &summary)?
+        }
+        Err(error) => return Err(error),
+    };
     let insertions = files.iter().map(|file| file.additions.unwrap_or(0)).sum();
     let deletions = files.iter().map(|file| file.deletions.unwrap_or(0)).sum();
 
@@ -260,6 +265,157 @@ fn commit_diff_args(commit: &NativeGitCommitSummary) -> Vec<String> {
         "--unified=3".to_string(),
         commit.sha.clone(),
     ]
+}
+
+fn commit_numstat_args(commit: &NativeGitCommitSummary) -> Vec<String> {
+    commit_summary_diff_args(commit, "--numstat")
+}
+
+fn commit_name_status_args(commit: &NativeGitCommitSummary) -> Vec<String> {
+    commit_summary_diff_args(commit, "--name-status")
+}
+
+fn commit_summary_diff_args(commit: &NativeGitCommitSummary, output_flag: &str) -> Vec<String> {
+    if let Some(parent) = commit.parent_shas.first() {
+        return vec![
+            "diff".to_string(),
+            "--find-renames".to_string(),
+            "--find-copies".to_string(),
+            output_flag.to_string(),
+            parent.clone(),
+            commit.sha.clone(),
+        ];
+    }
+
+    vec![
+        "show".to_string(),
+        "--root".to_string(),
+        "--format=".to_string(),
+        "--find-renames".to_string(),
+        "--find-copies".to_string(),
+        output_flag.to_string(),
+        commit.sha.clone(),
+    ]
+}
+
+fn get_commit_diff_summary_files(
+    runner: &GitRunner,
+    root_path: &Path,
+    commit: &NativeGitCommitSummary,
+) -> GitResult<Vec<NativeGitCommitDiffFile>> {
+    let numstat_output = runner.run(
+        root_path,
+        &commit_numstat_args(commit),
+        GitRunOptions::read_only(),
+    )?;
+    let name_status_output = runner.run(
+        root_path,
+        &commit_name_status_args(commit),
+        GitRunOptions::read_only(),
+    )?;
+
+    Ok(parse_commit_diff_summary_files(
+        &numstat_output.stdout,
+        &name_status_output.stdout,
+    ))
+}
+
+fn parse_commit_diff_summary_files(
+    numstat_raw: &str,
+    name_status_raw: &str,
+) -> Vec<NativeGitCommitDiffFile> {
+    let stats = parse_numstat(numstat_raw);
+
+    name_status_raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| parse_name_status_line(line, &stats))
+        .collect()
+}
+
+fn parse_numstat(raw: &str) -> std::collections::HashMap<String, (Option<i64>, Option<i64>)> {
+    raw.lines()
+        .filter_map(|line| {
+            let fields = line.split('\t').collect::<Vec<_>>();
+            let [additions, deletions, path] = fields.as_slice() else {
+                return None;
+            };
+
+            Some((
+                normalize_diff_stat_path(path),
+                (
+                    parse_numstat_value(additions),
+                    parse_numstat_value(deletions),
+                ),
+            ))
+        })
+        .collect()
+}
+
+fn parse_numstat_value(value: &str) -> Option<i64> {
+    if value == "-" {
+        None
+    } else {
+        value.parse::<i64>().ok()
+    }
+}
+
+fn parse_name_status_line(
+    line: &str,
+    stats: &std::collections::HashMap<String, (Option<i64>, Option<i64>)>,
+) -> Option<NativeGitCommitDiffFile> {
+    let fields = line.split('\t').collect::<Vec<_>>();
+    let [status, rest @ ..] = fields.as_slice() else {
+        return None;
+    };
+    let status_code = status.chars().next().unwrap_or('M');
+    let (kind, path, previous_path) = match status_code {
+        'A' => ("create", rest.first()?.to_string(), None),
+        'D' => ("delete", rest.first()?.to_string(), None),
+        'R' | 'C' => {
+            let [previous, current, ..] = rest else {
+                return None;
+            };
+            (
+                "move",
+                (*current).to_string(),
+                Some((*previous).to_string()),
+            )
+        }
+        _ => ("update", rest.first()?.to_string(), None),
+    };
+    let (additions, deletions) = stats.get(&path).copied().unwrap_or((None, None));
+
+    Some(NativeGitCommitDiffFile {
+        additions,
+        deletions,
+        hunks: Vec::new(),
+        is_text: additions.is_some() || deletions.is_some(),
+        kind: kind.to_string(),
+        new_text: None,
+        old_text: None,
+        path,
+        previous_path,
+        reversible: false,
+        status_label: Some(
+            match kind {
+                "create" => "added",
+                "delete" => "deleted",
+                "move" => "renamed",
+                _ => "modified",
+            }
+            .to_string(),
+        ),
+    })
+}
+
+fn normalize_diff_stat_path(path: &str) -> String {
+    if let Some((_, current)) = path.rsplit_once(" => ") {
+        current.trim_end_matches('}').to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 fn parse_commit_diff_file(lines: Vec<&str>, index: usize) -> NativeGitCommitDiffFile {
@@ -444,6 +600,40 @@ mod tests {
         assert_eq!(detail.changed_file_count, 1);
         assert_eq!(detail.files[0].kind, "create");
         assert_eq!(detail.insertions, 1);
+    }
+
+    #[test]
+    fn parses_commit_diff_summary_files_without_hunks() {
+        let files = super::parse_commit_diff_summary_files(
+            "12\t3\tsrc/main.rs\n-\t-\tassets/logo.png\n5\t0\tsrc/new.rs\n",
+            "M\tsrc/main.rs\nD\tassets/logo.png\nA\tsrc/new.rs\n",
+        );
+
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].path, "src/main.rs");
+        assert_eq!(files[0].kind, "update");
+        assert_eq!(files[0].additions, Some(12));
+        assert_eq!(files[0].deletions, Some(3));
+        assert!(files[0].hunks.is_empty());
+        assert_eq!(files[1].kind, "delete");
+        assert_eq!(files[1].additions, None);
+        assert_eq!(files[1].deletions, None);
+        assert_eq!(files[2].kind, "create");
+    }
+
+    #[test]
+    fn parses_commit_diff_summary_renames() {
+        let files = super::parse_commit_diff_summary_files(
+            "2\t1\tsrc/old.rs => src/new.rs\n",
+            "R087\tsrc/old.rs\tsrc/new.rs\n",
+        );
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].kind, "move");
+        assert_eq!(files[0].previous_path.as_deref(), Some("src/old.rs"));
+        assert_eq!(files[0].path, "src/new.rs");
+        assert_eq!(files[0].additions, Some(2));
+        assert_eq!(files[0].deletions, Some(1));
     }
 
     fn init_repo(temp: &TempDir) {
