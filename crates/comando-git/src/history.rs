@@ -29,6 +29,7 @@ pub fn list_history(
             root_path,
             &[
                 "log",
+                "--all",
                 "--date-order",
                 format!("--pretty=format:{format}").as_str(),
             ],
@@ -55,6 +56,7 @@ pub fn list_history(
         root_path.as_ref(),
         &[
             "log",
+            "--all",
             "--date-order",
             format!("--max-count={limit}").as_str(),
             format!("--pretty=format:{format}").as_str(),
@@ -233,7 +235,7 @@ fn matches_query(commit: &NativeGitCommitSummary, query: &str, case_sensitive: b
 fn count_commits(runner: &GitRunner, root_path: impl AsRef<Path>) -> GitResult<u32> {
     match runner.run(
         root_path,
-        &["rev-list", "--count", "HEAD"],
+        &["rev-list", "--all", "--count"],
         GitRunOptions::read_only(),
     ) {
         Ok(output) => Ok(output.stdout.trim().parse::<u32>().unwrap_or(0)),
