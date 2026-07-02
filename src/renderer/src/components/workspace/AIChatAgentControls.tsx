@@ -215,7 +215,7 @@ function DropdownField({
     return (
         <div className="relative" ref={containerRef}>
             <button
-                className="app-no-drag flex items-center gap-1 rounded-md px-2 py-1 text-xs"
+                className="app-no-drag flex items-center gap-1 rounded-md px-2 py-1 text-xs active:scale-90"
                 disabled={isDisabled}
                 ref={buttonRef}
                 onClick={() => {
@@ -248,7 +248,8 @@ function DropdownField({
                         : "var(--color-text-secondary)",
                     cursor: isDisabled ? "default" : "pointer",
                     opacity: isDisabled ? 0.45 : 1,
-                    transition: "background-color 100ms ease, color 100ms ease",
+                    transition:
+                        "background-color 100ms ease, color 100ms ease, transform 75ms ease",
                 }}
                 title={label}
                 type="button"
@@ -377,7 +378,7 @@ function BooleanField({
     return (
         <div className="relative">
             <button
-                className="app-no-drag flex items-center gap-1.5 rounded-md px-2 py-1 text-xs"
+                className="app-no-drag flex items-center gap-1.5 rounded-md px-2 py-1 text-xs active:scale-90"
                 disabled={disabled}
                 onClick={() => onChange(!value)}
                 onMouseEnter={(e) => {
@@ -398,7 +399,8 @@ function BooleanField({
                     color: "var(--color-text-secondary)",
                     cursor: disabled ? "default" : "pointer",
                     opacity: disabled ? 0.45 : 1,
-                    transition: "background-color 100ms ease, color 100ms ease",
+                    transition:
+                        "background-color 100ms ease, color 100ms ease, transform 75ms ease",
                 }}
                 title={label}
                 type="button"
