@@ -205,6 +205,23 @@ export function buildGitHistoryGraphRows(
         });
     };
 
+    const appendOpenLine = (laneIndex: number) => {
+        const state = laneStates[laneIndex];
+        if (!state) {
+            return;
+        }
+
+        laneStates[laneIndex] = null;
+        graphLines.push({
+            childSha: state.childSha,
+            colorId: state.colorId ?? getLaneColor(laneIndex),
+            parentSha: state.parentSha,
+            segments: [...state.segments],
+            startColumn: state.startColumn,
+            startRow: state.startRow,
+        });
+    };
+
     for (const commit of commits) {
         const rowIndex = rows.length;
         const pendingLanes = parentToLanes.get(commit.sha) ?? [];
@@ -269,6 +286,10 @@ export function buildGitHistoryGraphRows(
             topLanes,
         });
     }
+
+    laneStates.forEach((_state, laneIndex) => {
+        appendOpenLine(laneIndex);
+    });
 
     return rows;
 }

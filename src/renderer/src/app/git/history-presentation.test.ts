@@ -94,4 +94,29 @@ describe("buildGitHistoryGraphRows", () => {
             toColumn: 0,
         });
     });
+
+    it("keeps a drawable open line when the parent is outside the loaded history", () => {
+        const rows = buildGitHistoryGraphRows([
+            createCommit({
+                parentShas: ["commit-2"],
+                sha: "commit-1",
+                subject: "Commit 1",
+            }),
+            createCommit({
+                parentShas: ["commit-3"],
+                sha: "commit-2",
+                subject: "Commit 2",
+            }),
+        ]);
+
+        const lines = rows[0]?.graphLines ?? [];
+        expect(lines.map((line) => [line.childSha, line.parentSha])).toEqual([
+            ["commit-1", "commit-2"],
+            ["commit-2", "commit-3"],
+        ]);
+        expect(lines[1]?.segments.at(-1)).toEqual({
+            kind: "straight",
+            toRow: Number.MAX_SAFE_INTEGER,
+        });
+    });
 });

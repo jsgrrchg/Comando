@@ -1731,7 +1731,10 @@ function GitHistoryGraphSVG({
         for (const segment of line.segments) {
             const targetRow =
                 segment.kind === "straight" ? segment.toRow : segment.onRow;
-            const targetY = getAbsoluteYCenterByRow(targetRow);
+            const targetY =
+                targetRow >= graphRows.length
+                    ? rangeBottom
+                    : getAbsoluteYCenterByRow(targetRow);
             if (targetY === null) {
                 continue;
             }
