@@ -1356,15 +1356,23 @@ button {
     color: var(--color-text-primary);
 }
 
-.sidebar-git-scope-menu__search {
-    position: relative;
+.sidebar-git-scope-menu__search-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     margin-bottom: 10px;
     padding: 0 12px;
 }
 
+.sidebar-git-scope-menu__search {
+    position: relative;
+    min-width: 0;
+    flex: 1;
+}
+
 .sidebar-git-scope-menu__search-icon {
     position: absolute;
-    left: 20px;
+    left: 8px;
     top: 50%;
     transform: translateY(-50%);
     width: 13px;
@@ -1396,19 +1404,15 @@ button {
         color-mix(in srgb, var(--color-accent) 16%, transparent);
 }
 
-.sidebar-git-scope-menu__actions {
-    display: flex;
-    justify-content: flex-end;
-    padding: 0 12px 8px;
-}
-
 .sidebar-git-scope-menu__new-branch-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
     height: 26px;
+    width: 32px;
     min-height: 26px;
+    flex-shrink: 0;
     max-width: 100%;
     border: 1px solid
         color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
@@ -1418,7 +1422,7 @@ button {
         var(--color-accent) 11%,
         var(--color-bg-elevated)
     );
-    padding: 0 9px;
+    padding: 0;
     color: var(--color-text-primary);
     font-size: 11px;
     font-weight: 600;
