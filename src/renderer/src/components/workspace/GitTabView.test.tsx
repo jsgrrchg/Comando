@@ -219,7 +219,7 @@ describe("GitTabView", () => {
         expect(markup).toContain("load more");
     });
 
-    it("shows the repository total even when only one page is loaded", () => {
+    it("keeps history refresh available in the search toolbar", () => {
         resetStoreState();
         mockGitStoreState.current.historyTotalsByContext = {
             [CONTEXT_KEY]: 325,
@@ -232,7 +232,8 @@ describe("GitTabView", () => {
             createElement(GitTabView, { tab: TAB }),
         );
 
-        expect(markup).toContain("325 commits");
+        expect(markup).toContain('title="Refresh history"');
+        expect(markup).not.toContain("325 commits");
     });
 
     it("keeps the detail panel hidden before any commit is selected", () => {
@@ -341,7 +342,6 @@ describe("GitTabView", () => {
             createElement(GitTabView, { tab: TAB }),
         );
 
-        expect(markup).toContain(`${commitCount} commits`);
         expect(markup).toContain('data-measured-virtual-list="true"');
         expect(markup).toContain("Baseline commit 1");
         expect(markup).toContain(

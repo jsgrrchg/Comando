@@ -49,9 +49,6 @@ import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/useP
 
 import {
     IdeActionButton,
-    IdeBarDotSeparator,
-    IdeBarHeader,
-    IdeBarLabel,
     IdeBarSearchIcon,
     IdeIconButton,
 } from "./ide-bar";
@@ -760,16 +757,6 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         searchQuery.trim().length > 0 && matchedCommitShas.length === 0;
     const canLoadMoreHistory =
         history.length > 0 && history.length < historyMatchedCount;
-    const historyCountLabel = hasActiveSearch
-        ? `${historyMatchedCount} ${
-              historyMatchedCount === 1 ? "match" : "matches"
-          } / ${historyTotalCount} ${
-              historyTotalCount === 1 ? "commit" : "commits"
-          }`
-        : historyTotalCount === 1
-          ? "1 commit"
-          : `${historyTotalCount} commits`;
-
     return (
         <div
             className="flex h-full min-h-0 flex-col bg-bg-primary"
@@ -784,30 +771,6 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                     {error}
                 </div>
             ) : null}
-
-            <IdeBarHeader>
-                <IdeBarLabel>Git</IdeBarLabel>
-                <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-text-secondary">
-                    <span className="shrink-0">
-                        {historyCountLabel}
-                    </span>
-                    {isHistoryLoading ? (
-                        <>
-                            <IdeBarDotSeparator />
-                            <span className="shrink-0">Loading...</span>
-                        </>
-                    ) : null}
-                </div>
-                <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                    <IdeActionButton
-                        disabled={isHistoryLoading}
-                        onClick={handleRefreshHistory}
-                        title="Refresh history"
-                    >
-                        refresh
-                    </IdeActionButton>
-                </div>
-            </IdeBarHeader>
 
             <div
                 className="shrink-0 px-2 py-1.5"
@@ -903,6 +866,13 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                             ? `${selectedMatchIndex + 1}/${matchedCommitShas.length}`
                             : `0/${matchedCommitShas.length}`}
                     </span>
+                    <IdeActionButton
+                        disabled={isHistoryLoading}
+                        onClick={handleRefreshHistory}
+                        title="Refresh history"
+                    >
+                        refresh
+                    </IdeActionButton>
                 </div>
             </div>
 
