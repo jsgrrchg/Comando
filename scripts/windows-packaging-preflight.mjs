@@ -33,7 +33,7 @@ export function resolveWindowsPackagingPreflight({
         });
 
     const paths = resolveWindowsPackagingPaths(repoRoot);
-    const pnpmCommand = requireCommand("pnpm.cmd", resolveCommand);
+    const pnpmCliPath = resolveRequiredPnpmCliPath({ env, isFile });
     const powerShellCommand =
         resolveCommand("pwsh.exe") ??
         resolveCommand("pwsh") ??
@@ -78,7 +78,7 @@ export function resolveWindowsPackagingPreflight({
         aiPayload,
         electronBuilderCli: paths.electronBuilderCli,
         powerShellCommand,
-        pnpmCommand,
+        pnpmCliPath,
         rceditPath,
         windowsIconPath: paths.windowsIconPath,
     };
@@ -240,6 +240,21 @@ function requireCommand(command, resolveCommand) {
     throw new Error(
         `Required command was not found: ${command}. Run pnpm install --frozen-lockfile and make sure Node's bin directory is on PATH.`,
     );
+}
+
+function resolveRequiredPnpmCliPath({ env, isFile }) {
+    const npmExecPath = env.npm_execpath?.trim();
+    if (npmExecPath && isPnpmCliPath(npmExecPath) && isFile(npmExecPath)) {
+        return npmExecPath;
+    }
+
+    throw new Error(
+        "Required pnpm CLI was not found. Run Windows packaging through pnpm so npm_execpath points to pnpm.cjs.",
+    );
+}
+
+function isPnpmCliPath(candidatePath) {
+    return path.win32.basename(candidatePath).toLowerCase() === "pnpm.cjs";
 }
 
 function assertFile(filePath, { isFile, label, relativePath, suggestion }) {

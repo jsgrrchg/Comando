@@ -173,15 +173,22 @@ export function prepareCommandForSpawnSync(
         };
     }
 
+    if (path.win32.isAbsolute(command)) {
+        throw new Error(
+            `Refusing to prepare an absolute Windows batch command: ${command}`,
+        );
+    }
+    const batchCommand = resolveKnownWindowsBatchCommand(command);
+
     return {
         args: [
             "/d",
             "/s",
             "/v:off",
             "/c",
-            buildWindowsBatchCommandLine(command, args),
+            buildWindowsBatchCommandLine(batchCommand, args),
         ],
-        command: launchOptions.comSpec ?? "cmd.exe",
+        command: "cmd.exe",
         options: withWindowsVerbatimArguments(options),
     };
 }
@@ -196,7 +203,6 @@ export function spawnPreparedSync(command, args = [], options = {}, launchOption
     // Windows batch commands must go through cmd.exe; prepareCommandForSpawnSync quotes every argument first.
     const prepared = prepareCommandForSpawnSync(command, args, options, {
         ...launchOptions,
-        comSpec: "cmd.exe",
         platform,
     });
 
@@ -206,6 +212,17 @@ export function spawnPreparedSync(command, args = [], options = {}, launchOption
 export function isWindowsBatchCommand(command) {
     const extension = path.win32.extname(command).toLowerCase();
     return extension === ".cmd" || extension === ".bat";
+}
+
+function resolveKnownWindowsBatchCommand(command) {
+    switch (command.toLowerCase()) {
+        case "npm.cmd":
+            return "npm.cmd";
+        case "pnpm.cmd":
+            return "pnpm.cmd";
+        default:
+            throw new Error(`Unsupported Windows batch command: ${command}`);
+    }
 }
 
 function buildWindowsBatchCommandLine(command, args) {
