@@ -27,12 +27,14 @@ export function ContextMenu<T>({
     menu,
     minWidth = 180,
     onClose,
+    variant = "default",
     zIndex = 10000,
 }: {
     readonly entries: readonly ContextMenuEntry[];
     readonly menu: ContextMenuState<T>;
     readonly minWidth?: number;
     readonly onClose: () => void;
+    readonly variant?: "default" | "popover";
     readonly zIndex?: number;
 }) {
     const ref = useRef<HTMLDivElement | null>(null);
@@ -87,7 +89,10 @@ export function ContextMenu<T>({
 
     return createPortal(
         <div
-            className="fixed rounded-lg border border-border bg-bg-panel p-1 shadow-[0_10px_30px_rgba(15,23,42,0.18)]"
+            className={[
+                "fixed border border-border bg-bg-panel shadow-[0_10px_30px_rgba(15,23,42,0.18)]",
+                variant === "popover" ? "rounded-md p-2" : "rounded-lg p-1",
+            ].join(" ")}
             data-context-menu-root="true"
             ref={ref}
             style={{
@@ -101,7 +106,11 @@ export function ContextMenu<T>({
                 if (entry.type === "separator") {
                     return (
                         <div
-                            className="my-1 border-t border-border"
+                            className={
+                                variant === "popover"
+                                    ? "my-2 border-t border-border"
+                                    : "my-1 border-t border-border"
+                            }
                             key={`separator-${index}`}
                         />
                     );
@@ -110,7 +119,10 @@ export function ContextMenu<T>({
                 return (
                     <button
                         className={[
-                            "flex w-full items-center rounded-md px-3 py-1.5 text-left text-xs transition",
+                            "flex w-full items-center rounded-md text-left transition",
+                            variant === "popover"
+                                ? "px-2.5 py-1.5 text-[13px]"
+                                : "px-3 py-1.5 text-xs",
                             entry.disabled
                                 ? "cursor-not-allowed text-text-secondary/50"
                                 : entry.danger
