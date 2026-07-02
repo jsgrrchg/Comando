@@ -1694,8 +1694,6 @@ function GitHistoryGraphSVG({
         : totalHeight;
     const circleStartIndex = visibleGraphRange?.startIndex ?? 0;
     const circleEndIndex = visibleGraphRange?.endIndex ?? graphRows.length - 1;
-    const pathStartIndex = Math.max(0, circleStartIndex - 1);
-    const pathEndIndex = circleEndIndex;
     const toSvgY = (y: number): number => y - rangeTop;
     const clampToSvgRange = (y: number): number =>
         Math.min(Math.max(y, rangeTop), rangeBottom) - rangeTop;
@@ -1706,6 +1704,13 @@ function GitHistoryGraphSVG({
         const pos = rowPositions.get(sha);
         if (!pos) return null;
         return toSvgY(pos.top + pos.height / 2);
+    };
+    const getAbsoluteYCenterByRow = (rowIndex: number): number | null => {
+        const row = graphRows[rowIndex];
+        if (!row) return null;
+        const pos = rowPositions.get(row.commit.sha);
+        if (!pos) return null;
+        return pos.top + pos.height / 2;
     };
 
     const colorPaths = new Map<number, string[]>();
@@ -1718,90 +1723,52 @@ function GitHistoryGraphSVG({
         paths.push(d);
     };
 
-    for (let i = pathStartIndex; i <= pathEndIndex; i++) {
-        const row = graphRows[i];
-        const pos = rowPositions.get(row.commit.sha);
-        if (!pos) continue;
-        const yCenter = pos.top + pos.height / 2;
-        const yBottom = pos.top + pos.height;
+    for (const line of graphRows[0]?.graphLines ?? []) {
+        let currentColumn = line.startColumn;
+        let currentY = getAbsoluteYCenterByRow(line.startRow);
+        if (currentY === null) continue;
 
-        const nextRow = graphRows[i + 1];
-        const nextPos = nextRow ? rowPositions.get(nextRow.commit.sha) : null;
-        const nextYCenter = nextPos ? nextPos.top + nextPos.height / 2 : null;
+        for (const segment of line.segments) {
+            const targetRow =
+                segment.kind === "straight" ? segment.toRow : segment.onRow;
+            const targetY = getAbsoluteYCenterByRow(targetRow);
+            if (targetY === null) {
+                continue;
+            }
 
-        if (
-            nextYCenter !== null &&
-            doesSegmentIntersectRange(yCenter, nextYCenter)
-        ) {
-            const maxLanes = Math.max(
-                row.bottomLanes.length,
-                nextRow.topLanes.length,
-            );
-            for (let lane = 0; lane < maxLanes; lane++) {
-                const bottomColorId = row.bottomLanes[lane];
-                const topColorId = nextRow.topLanes[lane];
-                if (bottomColorId !== undefined && topColorId !== undefined) {
-                    const x = laneX(lane);
+            const fromX = laneX(currentColumn);
+
+            if (doesSegmentIntersectRange(currentY, targetY)) {
+                if (segment.kind === "straight") {
                     addPath(
-                        bottomColorId,
-                        `M ${x} ${clampToSvgRange(yCenter)} L ${x} ${clampToSvgRange(nextYCenter)}`,
+                        line.colorId,
+                        `M ${fromX} ${clampToSvgRange(currentY)} L ${fromX} ${clampToSvgRange(targetY)}`,
+                    );
+                } else {
+                    const toX = laneX(segment.toColumn);
+                    addPath(
+                        line.colorId,
+                        segment.curveKind === "merge"
+                            ? buildMergePath(
+                                  fromX,
+                                  toSvgY(currentY),
+                                  toX,
+                                  toSvgY(targetY),
+                              )
+                            : buildCheckoutPath(
+                                  fromX,
+                                  toSvgY(currentY),
+                                  toX,
+                                  toSvgY(targetY),
+                              ),
                     );
                 }
             }
-        }
 
-        if (
-            i === graphRows.length - 1 &&
-            doesSegmentIntersectRange(yCenter, yBottom)
-        ) {
-            for (let lane = 0; lane < row.bottomLanes.length; lane++) {
-                const laneColorId = row.bottomLanes[lane];
-                if (laneColorId !== undefined) {
-                    const x = laneX(lane);
-                    addPath(
-                        laneColorId,
-                        `M ${x} ${clampToSvgRange(yCenter)} L ${x} ${clampToSvgRange(yBottom)}`,
-                    );
-                }
+            if (segment.kind === "curve") {
+                currentColumn = segment.toColumn;
             }
-        }
-
-        if (i < circleStartIndex || i > circleEndIndex) {
-            continue;
-        }
-
-        const { parentColumns, laneIndex, colorId } = row;
-        const fromX = laneX(laneIndex);
-
-        for (let p = 0; p < parentColumns.length; p++) {
-            const parentCol = parentColumns[p];
-            if (parentCol === laneIndex) continue;
-
-            const toX = laneX(parentCol);
-            const curveTargetY = Math.min(yBottom, yCenter + 40);
-            const edgeColorId = row.bottomLanes[parentCol] ?? colorId;
-
-            if (p === 0) {
-                addPath(
-                    edgeColorId,
-                    buildCheckoutPath(
-                        fromX,
-                        toSvgY(yCenter),
-                        toX,
-                        toSvgY(curveTargetY),
-                    ),
-                );
-            } else {
-                addPath(
-                    edgeColorId,
-                    buildMergePath(
-                        fromX,
-                        toSvgY(yCenter),
-                        toX,
-                        toSvgY(curveTargetY),
-                    ),
-                );
-            }
+            currentY = targetY;
         }
     }
 
