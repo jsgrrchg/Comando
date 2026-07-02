@@ -267,6 +267,15 @@ function getLocalTurnSessionId(
     );
 }
 
+function hasUserMessageBefore(
+    messages: readonly AiSessionSnapshot["messages"][number][],
+    createdAt: string,
+): boolean {
+    return messages.some(
+        (message) => message.kind === "user" && message.createdAt < createdAt,
+    );
+}
+
 function prepareTimelineToolActivity(
     snapshot: Pick<
         AiSessionSnapshot,
@@ -275,18 +284,28 @@ function prepareTimelineToolActivity(
         readonly activeTurnStartedAt?: string | null;
     },
 ): readonly AiSessionSnapshot["toolActivity"][number][] {
+    const visibleToolActivity = snapshot.toolActivity.filter(
+        (activity) =>
+            !isTurnStartedActivity(activity) ||
+            hasUserMessageBefore(snapshot.messages, activity.createdAt),
+    );
+
     if (
         !isStreamingStatus(snapshot.status) ||
         !snapshot.activeTurnStartedAt
     ) {
-        return snapshot.toolActivity;
+        return visibleToolActivity;
     }
 
     const currentTurnStartedAt = snapshot.activeTurnStartedAt;
-    const toolActivity = snapshot.toolActivity.filter(
+    const toolActivity = visibleToolActivity.filter(
         (activity) =>
             !isCurrentTurnStartedActivity(activity, currentTurnStartedAt),
     );
+
+    if (!hasUserMessageBefore(snapshot.messages, currentTurnStartedAt)) {
+        return toolActivity;
+    }
 
     return [
         ...toolActivity,
