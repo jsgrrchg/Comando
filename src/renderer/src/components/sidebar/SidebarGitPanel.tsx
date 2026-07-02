@@ -327,7 +327,7 @@ export function SidebarGitPanel({
                         title="Open Uncommitted Changes"
                         type="button"
                     >
-                        Review Changes
+                        Review
                     </button>
                     {hasChanges && (
                         <button
