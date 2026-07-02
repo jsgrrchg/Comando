@@ -78,6 +78,47 @@ type SidebarGitHubPanelKind = "issues" | "pull_requests";
 type SidebarIssueFilter = GitHubIssueState | "all" | "assigned";
 type SidebarPullRequestFilter = "all" | "branch" | "closed" | "draft" | "open";
 
+/* Circular-arrows glyph for the refresh action */
+function RefreshIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="14"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.4"
+            viewBox="0 0 16 16"
+            width="14"
+        >
+            <path d="M13 8a5 5 0 1 1-1.46-3.54" />
+            <path d="M13 2.5V5H10.5" />
+        </svg>
+    );
+}
+
+/* Open-in-view glyph (arrow leaving a panel) for the open-list action */
+function OpenListIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="14"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.4"
+            viewBox="0 0 16 16"
+            width="14"
+        >
+            <path d="M8.5 3H4a1.5 1.5 0 0 0-1.5 1.5V12A1.5 1.5 0 0 0 4 13.5h7.5A1.5 1.5 0 0 0 13 12V7.5" />
+            <path d="M9.5 2.5H13.5V6.5" />
+            <path d="M13.5 2.5 8 8" />
+        </svg>
+    );
+}
+
 type SidebarGitHubDragPreview = {
     readonly kindLabel: string;
     readonly meta: string;
@@ -912,19 +953,31 @@ export function SidebarGitHubPanel({
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                         <button
-                            className="review-action-btn"
+                            aria-label="Refresh"
+                            className="review-icon-btn"
                             disabled={isLoading}
                             onClick={() => void handleRefresh()}
+                            title="Refresh"
                             type="button"
                         >
-                            Refresh
+                            <RefreshIcon />
                         </button>
                         <button
-                            className="review-action-btn"
+                            aria-label={
+                                kind === "issues"
+                                    ? "Open issues in a tab"
+                                    : "Open pull requests in a tab"
+                            }
+                            className="review-icon-btn"
                             onClick={handleOpenList}
+                            title={
+                                kind === "issues"
+                                    ? "Open issues in a tab"
+                                    : "Open pull requests in a tab"
+                            }
                             type="button"
                         >
-                            Open
+                            <OpenListIcon />
                         </button>
                     </div>
                 </div>
