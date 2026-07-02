@@ -1282,12 +1282,15 @@ button {
     border: 1px solid var(--color-border);
     border-radius: 12px;
     background: color-mix(in srgb, var(--color-bg-secondary) 96%, black 4%);
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.34);
+    box-shadow:
+        0 16px 40px rgba(0, 0, 0, 0.34),
+        inset 0 1px 0 color-mix(in srgb, white 6%, transparent);
     backdrop-filter: blur(16px);
 }
 
 .sidebar-git-scope-menu__header {
     border-bottom: 1px solid var(--color-border);
+    background: color-mix(in srgb, var(--color-bg-elevated) 22%, transparent);
 }
 
 .sidebar-git-scope-menu__title {
@@ -1300,18 +1303,22 @@ button {
 
 .sidebar-git-scope-menu__title > span:first-child {
     min-width: 0;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--color-text-secondary);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: color-mix(in srgb, var(--color-text-secondary) 82%, transparent);
 }
 
 .sidebar-git-scope-menu__tabs {
     display: flex;
-    gap: 2px;
+    gap: 3px;
     margin: 0 12px 10px;
     padding: 3px;
-    border-radius: 8px;
+    border-radius: 9px;
     background: color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent);
+    box-shadow: inset 0 0 0 1px
+        color-mix(in srgb, var(--color-border) 60%, transparent);
 }
 
 .sidebar-git-scope-menu__tab {
@@ -1327,16 +1334,25 @@ button {
     transition:
         background-color 120ms ease,
         color 120ms ease,
-        box-shadow 120ms ease;
+        box-shadow 120ms ease,
+        transform 75ms ease;
 }
 
 .sidebar-git-scope-menu__tab:hover:not(.sidebar-git-scope-menu__tab--active) {
+    background: color-mix(in srgb, var(--color-text-primary) 5%, transparent);
     color: var(--color-text-primary);
+}
+
+/* Depress a tab while switching to it */
+.sidebar-git-scope-menu__tab:active:not(.sidebar-git-scope-menu__tab--active) {
+    transform: translateY(1px) scale(0.99);
 }
 
 .sidebar-git-scope-menu__tab--active {
     background: var(--color-bg-elevated);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    box-shadow:
+        0 1px 3px rgba(0, 0, 0, 0.1),
+        inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 24%, transparent);
     color: var(--color-text-primary);
 }
 
@@ -1356,10 +1372,28 @@ button {
     color: var(--color-text-secondary);
     pointer-events: none;
     opacity: 0.6;
+    transition:
+        color 120ms ease,
+        opacity 120ms ease;
+}
+
+/* Light the icon up when the field is focused */
+.sidebar-git-scope-menu__search:focus-within .sidebar-git-scope-menu__search-icon {
+    color: var(--color-accent);
+    opacity: 0.95;
 }
 
 .sidebar-git-scope-menu__search .ide-input {
     padding-left: 28px;
+    transition:
+        border-color 120ms ease,
+        background-color 120ms ease,
+        box-shadow 120ms ease;
+}
+
+.sidebar-git-scope-menu__search .ide-input:focus {
+    box-shadow: 0 0 0 3px
+        color-mix(in srgb, var(--color-accent) 16%, transparent);
 }
 
 .sidebar-git-scope-menu__actions {
@@ -1373,6 +1407,7 @@ button {
     align-items: center;
     justify-content: center;
     gap: 6px;
+    height: 26px;
     min-height: 26px;
     max-width: 100%;
     border: 1px solid
@@ -1387,10 +1422,14 @@ button {
     color: var(--color-text-primary);
     font-size: 11px;
     font-weight: 600;
+    line-height: normal;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
     transition:
         background-color 120ms ease,
         border-color 120ms ease,
-        color 120ms ease;
+        color 120ms ease,
+        box-shadow 120ms ease,
+        transform 75ms ease;
 }
 
 .sidebar-git-scope-menu__new-branch-button:hover:not(:disabled) {
@@ -1404,11 +1443,20 @@ button {
         var(--color-accent) 17%,
         var(--color-bg-elevated)
     );
+    box-shadow: 0 2px 6px
+        color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+
+/* Depress into the surface while held down */
+.sidebar-git-scope-menu__new-branch-button:active:not(:disabled) {
+    transform: translateY(1px) scale(0.99);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.16);
 }
 
 .sidebar-git-scope-menu__new-branch-button:disabled {
     cursor: default;
     opacity: 0.55;
+    box-shadow: none;
 }
 
 .sidebar-git-scope-menu__new-branch-button svg {
@@ -1495,16 +1543,27 @@ button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    height: 28px;
     min-height: 28px;
     min-width: 0;
     border-radius: 7px;
     padding: 0 10px;
     font-size: 11px;
     font-weight: 600;
+    line-height: normal;
     transition:
         background-color 120ms ease,
         border-color 120ms ease,
-        color 120ms ease;
+        color 120ms ease,
+        transform 75ms ease,
+        box-shadow 120ms ease;
+}
+
+/* Depress form buttons while held down */
+.sidebar-git-scope-menu__branch-form-primary:active:not(:disabled),
+.sidebar-git-scope-menu__branch-form-secondary:active:not(:disabled) {
+    transform: translateY(1px) scale(0.99);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.14);
 }
 
 .sidebar-git-scope-menu__branch-form-primary {
@@ -1651,7 +1710,12 @@ button {
     transition:
         background-color 120ms ease,
         border-color 120ms ease,
-        color 120ms ease;
+        color 120ms ease,
+        transform 75ms ease;
+}
+
+.sidebar-git-scope-menu__create-query:active:not(:disabled) {
+    transform: translateY(1px) scale(0.995);
 }
 
 .sidebar-git-scope-menu__create-query:hover:not(:disabled),
@@ -1738,7 +1802,14 @@ button {
     font-weight: 600;
     transition:
         border-color 120ms ease,
-        background-color 120ms ease;
+        background-color 120ms ease,
+        transform 75ms ease,
+        box-shadow 120ms ease;
+}
+
+.sidebar-git-scope-menu__init-button:active:not(:disabled) {
+    transform: translateY(1px) scale(0.99);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.14);
 }
 
 .sidebar-git-scope-menu__init-button:hover:not(:disabled) {
