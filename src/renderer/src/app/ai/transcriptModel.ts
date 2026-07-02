@@ -260,6 +260,7 @@ export function mergeAiSessionTranscriptSources(
     options: TranscriptMergeOptions,
 ): AiSessionTranscriptModel {
     const entriesById: Record<string, AiSessionTranscriptEntry> = {};
+    const currentEntriesById = current.messagesById;
     const incomingHasPlan = hasTranscriptEntryKind(incoming, "plan");
     const incomingHasStatus = hasTranscriptEntryKind(incoming, "status");
 
@@ -285,7 +286,13 @@ export function mergeAiSessionTranscriptSources(
             continue;
         }
 
-        entriesById[entryId] = mergeTranscriptEntry(entriesById[entryId], entry);
+        const existingEntry =
+            entriesById[entryId] ??
+            (entry.kind === "tool" ? currentEntriesById[entryId] : undefined);
+        entriesById[entryId] = mergeTranscriptEntry(existingEntry, entry, {
+            preserveCreatedAt:
+                existingEntry?.kind === "tool" && entry.kind === "tool",
+        });
     }
 
     return buildAiSessionTranscriptModelFromEntries(Object.values(entriesById));
