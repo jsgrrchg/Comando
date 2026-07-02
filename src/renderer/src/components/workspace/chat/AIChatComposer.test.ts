@@ -11,6 +11,7 @@ import {
     shouldAutoFocusComposerForKeyChange,
     shouldResetComposerForNonceChange,
 } from "./AIChatComposer";
+import { getCommandPickerWidth } from "./AIChatCommandPicker";
 import { getChatPillMetrics } from "./chatPillMetrics";
 import {
     appendWorkspaceTabComposerItem,
@@ -374,5 +375,10 @@ describe("AIChatComposer", () => {
         expect(getComposerShellSizingStyle(320, { expanded: true })).toEqual({
             minHeight: 112,
         });
+    });
+
+    it("sizes the slash command menu to the composer width within the viewport", () => {
+        expect(getCommandPickerWidth(640, 900)).toBe(640);
+        expect(getCommandPickerWidth(900, 640)).toBe(624);
     });
 });
