@@ -825,6 +825,35 @@ button {
     gap: 8px;
     padding: 5px 8px;
     font-size: 12px;
+    /* Give the view-switcher tabs a real, tactile button surface */
+    background: color-mix(in srgb, var(--color-text-primary) 4%, transparent);
+    box-shadow: inset 0 0 0 1px var(--color-border);
+    transition:
+        background-color 120ms ease,
+        box-shadow 120ms ease,
+        color 120ms ease,
+        transform 75ms ease;
+}
+
+.sidebar-action-row--compact:hover {
+    background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+    box-shadow: inset 0 0 0 1px
+        color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
+    color: var(--color-text-primary);
+}
+
+/* Depress into the surface while held down */
+.sidebar-action-row--compact:active:not(:disabled) {
+    transform: translateY(1px) scale(0.99);
+    box-shadow:
+        inset 0 0 0 1px color-mix(in srgb, var(--color-border) 90%, transparent),
+        inset 0 1px 2px rgb(0 0 0 / 0.14);
+}
+
+.sidebar-action-row--compact:disabled {
+    background: color-mix(in srgb, var(--color-text-primary) 2%, transparent);
+    box-shadow: inset 0 0 0 1px
+        color-mix(in srgb, var(--color-border) 60%, transparent);
 }
 
 .sidebar-action-row--icon {
