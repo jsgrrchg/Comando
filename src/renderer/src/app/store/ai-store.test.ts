@@ -2355,6 +2355,163 @@ describe("ai-store queue", () => {
         await sendPromise;
     });
 
+    it("keeps the optimistic user message stable when the runtime echo has a different id", async () => {
+        const firstDispatch = createDeferred<void>();
+        const sendAiPrompt = vi
+            .fn()
+            .mockImplementationOnce(() => firstDispatch.promise);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        const sendPromise = useAiStore.getState().sendPrompt(TAB, "hello");
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        });
+
+        const firstSendInput = sendAiPrompt.mock.calls[0]?.[0] as
+            | SendAiPromptInput
+            | undefined;
+        const messageId = firstSendInput?.messageId ?? "";
+        expect(messageId).toBeTruthy();
+        const activePromptCreatedAt =
+            useAiStore.getState().sessions[TAB.sessionId]?.activeQueuedPrompt
+                ?.queuedPrompt.createdAt ?? "2026-04-14T00:00:01.000Z";
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                activeTurnStartedAt: activePromptCreatedAt,
+                messages: [
+                    {
+                        attachments: [],
+                        content: "hello",
+                        createdAt: activePromptCreatedAt,
+                        id: "runtime-user-echo",
+                        kind: "user",
+                        status: "completed",
+                    },
+                ],
+                status: "starting",
+                updatedAt: activePromptCreatedAt,
+            }),
+        );
+
+        const echoedSession = useAiStore.getState().sessions[TAB.sessionId];
+        expect(echoedSession?.snapshot?.messages).toContainEqual(
+            expect.objectContaining({
+                content: "hello",
+                id: messageId,
+                kind: "user",
+            }),
+        );
+        expect(
+            echoedSession?.snapshot?.messages.some(
+                (message) => message.id === "runtime-user-echo",
+            ),
+        ).toBe(false);
+
+        firstDispatch.resolve(undefined);
+        await sendPromise;
+    });
+
+    it("keeps the optimistic user message stable when runtime message events use a different id", async () => {
+        const firstDispatch = createDeferred<void>();
+        const sendAiPrompt = vi
+            .fn()
+            .mockImplementationOnce(() => firstDispatch.promise);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    sendAiPrompt,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        const sendPromise = useAiStore.getState().sendPrompt(TAB, "hello");
+
+        await vi.waitFor(() => {
+            expect(sendAiPrompt).toHaveBeenCalledTimes(1);
+        });
+
+        const firstSendInput = sendAiPrompt.mock.calls[0]?.[0] as
+            | SendAiPromptInput
+            | undefined;
+        const messageId = firstSendInput?.messageId ?? "";
+        const activePromptCreatedAt =
+            useAiStore.getState().sessions[TAB.sessionId]?.activeQueuedPrompt
+                ?.queuedPrompt.createdAt ?? "2026-04-14T00:00:01.000Z";
+        expect(messageId).toBeTruthy();
+
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "message-started",
+                message: {
+                    attachments: [],
+                    content: "",
+                    createdAt: activePromptCreatedAt,
+                    id: "runtime-user-event",
+                    kind: "user",
+                    status: "streaming",
+                },
+                messageKind: "user",
+                updatedAt: activePromptCreatedAt,
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                content: "hello",
+                delta: "hello",
+                kind: "message-delta",
+                messageId: "runtime-user-event",
+                messageKind: "user",
+                updatedAt: activePromptCreatedAt,
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "message-completed",
+                messageId: "runtime-user-event",
+                messageKind: "user",
+                updatedAt: activePromptCreatedAt,
+            }),
+        );
+
+        const echoedSession = useAiStore.getState().sessions[TAB.sessionId];
+        expect(echoedSession?.snapshot?.messages).toContainEqual(
+            expect.objectContaining({
+                content: "hello",
+                id: messageId,
+                kind: "user",
+                status: "completed",
+            }),
+        );
+        expect(
+            echoedSession?.snapshot?.messages.some(
+                (message) => message.id === "runtime-user-event",
+            ),
+        ).toBe(false);
+
+        firstDispatch.resolve(undefined);
+        await sendPromise;
+    });
+
     it("marks an immediately accepted prompt as failed when dispatch hard-fails", async () => {
         const sendAiPrompt = vi
             .fn()
