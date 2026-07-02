@@ -160,6 +160,7 @@ export function GitCommitFooter({
                     >
                         {syncActions && syncMenuEntries.length > 0 ? (
                             <button
+                                className="git-sync-action-button"
                                 onClick={(e) => {
                                     const rect =
                                         e.currentTarget.getBoundingClientRect();
@@ -168,37 +169,6 @@ export function GitCommitFooter({
                                         y: rect.bottom + 4,
                                         payload: undefined,
                                     });
-                                }}
-                                style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    gap: 5,
-                                    height: 22,
-                                    borderRadius: 5,
-                                    border: "1px solid var(--color-border)",
-                                    background: "var(--color-bg-elevated)",
-                                    color: "var(--color-text-primary)",
-                                    cursor: "pointer",
-                                    flexShrink: 0,
-                                    padding: "0 7px",
-                                    fontFamily: "var(--font-mono, monospace)",
-                                    fontSize: 11,
-                                    lineHeight: 1,
-                                    transition:
-                                        "background 100ms ease, border-color 100ms ease",
-                                }}
-                                onMouseEnter={(e) => {
-                                    e.currentTarget.style.background =
-                                        "var(--color-bg-tertiary)";
-                                    e.currentTarget.style.borderColor =
-                                        "var(--color-border-strong)";
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.currentTarget.style.background =
-                                        "var(--color-bg-elevated)";
-                                    e.currentTarget.style.borderColor =
-                                        "var(--color-border)";
                                 }}
                                 title="Sync actions"
                                 type="button"
