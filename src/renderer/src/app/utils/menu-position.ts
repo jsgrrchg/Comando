@@ -2,6 +2,15 @@ export const CHAT_COMPOSER_PICKER_MIN_WIDTH = 300;
 export const CHAT_COMPOSER_PICKER_MAX_WIDTH = 420;
 export const CHAT_COMPOSER_PICKER_MAX_HEIGHT = 360;
 
+export function getComposerAnchoredPickerWidth(
+    anchorWidth: number,
+    viewportWidth: number,
+    padding = 8,
+): number {
+    const safeViewportWidth = Math.max(0, viewportWidth - padding * 2);
+    return Math.max(0, Math.min(Math.ceil(anchorWidth), safeViewportWidth));
+}
+
 export function getViewportSafeMenuPosition(
     x: number,
     y: number,

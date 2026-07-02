@@ -13,6 +13,7 @@ import type { AiAvailableCommand } from "@shared/ipc";
 import {
     CHAT_COMPOSER_PICKER_MAX_HEIGHT,
     CHAT_COMPOSER_PICKER_MIN_WIDTH,
+    getComposerAnchoredPickerWidth,
     getViewportSafeMenuPosition,
 } from "@renderer/app/utils/menu-position";
 
@@ -33,15 +34,6 @@ interface PickerPosition {
     readonly width: number;
     readonly x: number;
     readonly y: number;
-}
-
-export function getCommandPickerWidth(
-    anchorWidth: number,
-    viewportWidth: number,
-    padding = 8,
-): number {
-    const safeViewportWidth = Math.max(0, viewportWidth - padding * 2);
-    return Math.max(0, Math.min(Math.ceil(anchorWidth), safeViewportWidth));
 }
 
 export function getCommandSuggestions(
@@ -78,7 +70,7 @@ export function AIChatCommandPicker({
 
         const anchorRect = anchor.getBoundingClientRect();
         const menuRect = listRef.current?.getBoundingClientRect();
-        const width = getCommandPickerWidth(
+        const width = getComposerAnchoredPickerWidth(
             anchorRect.width ||
                 menuRect?.width ||
                 CHAT_COMPOSER_PICKER_MIN_WIDTH,
