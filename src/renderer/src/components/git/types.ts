@@ -149,6 +149,7 @@ export interface GitTreeViewProps {
     readonly activePath?: string | null;
     readonly className?: string;
     readonly constrainWidth?: boolean;
+    readonly contextTargetResetSignal?: number;
     readonly editingDraftName?: string | null;
     readonly editingPath?: string | null;
     readonly enableNodeDrag?: boolean;

@@ -387,6 +387,10 @@ export function App() {
         gitHubSidebarSelectionResetSignal,
         setGitHubSidebarSelectionResetSignal,
     ] = useState(0);
+    const [
+        fileTreeContextTargetResetSignal,
+        setFileTreeContextTargetResetSignal,
+    ] = useState(0);
     const [fileTreeSelectedPaths, setFileTreeSelectedPaths] = useState<
         readonly string[]
     >([]);
@@ -1473,6 +1477,7 @@ export function App() {
     const focusWorkspaceSurface = useCallback(() => {
         focusSurface("workspace");
         clearFileTreeSelection({ suppressActivePathFallback: true });
+        setFileTreeContextTargetResetSignal((signal) => signal + 1);
         setGitHubSidebarSelectionResetSignal((signal) => signal + 1);
         setFileTreeContextMenu(null);
     }, [clearFileTreeSelection, focusSurface]);
@@ -3946,6 +3951,9 @@ export function App() {
                                 ) : null}
                                 <GitTreeView
                                     activePath={activeFilePath}
+                                    contextTargetResetSignal={
+                                        fileTreeContextTargetResetSignal
+                                    }
                                     editingDraftName={
                                         fileTreeInlineEditor?.draftName ?? null
                                     }
