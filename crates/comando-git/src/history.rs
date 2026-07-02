@@ -415,13 +415,13 @@ fn parse_name_status_line(
 fn normalize_diff_stat_path(path: &str) -> String {
     if let Some((_, current)) = path.rsplit_once(" => ") {
         let arrow_index = path.find(" => ").unwrap_or(0);
-        if let Some(open_brace_index) = path[..arrow_index].rfind('{') {
-            if let Some(close_brace_index) = current.find('}') {
-                let prefix = &path[..open_brace_index];
-                let replacement = current[..close_brace_index].trim();
-                let suffix = &current[close_brace_index + 1..];
-                return format!("{prefix}{replacement}{suffix}");
-            }
+        if let Some(open_brace_index) = path[..arrow_index].rfind('{')
+            && let Some(close_brace_index) = current.find('}')
+        {
+            let prefix = &path[..open_brace_index];
+            let replacement = current[..close_brace_index].trim();
+            let suffix = &current[close_brace_index + 1..];
+            return format!("{prefix}{replacement}{suffix}");
         }
 
         current.trim_end_matches('}').to_string()
