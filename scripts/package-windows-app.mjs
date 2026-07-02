@@ -78,7 +78,8 @@ function main() {
     const preparedAiPayloadRoot = resolvePreparedWindowsAiPayloadRoot(targetArch);
     console.log("[package:win] Building Electron production bundles.");
     prepareWorkspace();
-    run(preflight.pnpmCommand, [
+    run(process.execPath, [
+        preflight.pnpmCliPath,
         "run",
         preparedAiPayloadRoot ? "build:ci" : "build",
     ]);
@@ -277,8 +278,9 @@ function stageWindowsNativeBackendPayload(targetArch, preflight) {
     console.log(
         `[package:win] Building and staging native backend sidecar for ${targetArch}.`,
     );
-    run(preflight.pnpmCommand, ["run", "native:build"]);
-    run(preflight.pnpmCommand, [
+    run(process.execPath, [preflight.pnpmCliPath, "run", "native:build"]);
+    run(process.execPath, [
+        preflight.pnpmCliPath,
         "run",
         "native:stage",
         "--",

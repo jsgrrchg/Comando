@@ -80,8 +80,9 @@ describe("Windows packaging preflight", () => {
         const repoRoot = createTempDir();
         const nodeBinDir = path.join(repoRoot, "node-bin");
         const powerShellDir = path.join(repoRoot, "powershell");
+        const pnpmCliPath = path.join(repoRoot, "pnpm", "bin", "pnpm.cjs");
 
-        writeExecutable(nodeBinDir, "pnpm.cmd");
+        writeFile(pnpmCliPath);
         writeExecutable(powerShellDir, "pwsh.exe");
         writeFile(path.join(repoRoot, "node_modules", "electron-builder", "cli.js"));
         writeFile(path.join(repoRoot, "resources", "icons", "windows.ico"));
@@ -90,6 +91,7 @@ describe("Windows packaging preflight", () => {
 
         const preflight = resolveWindowsPackagingPreflight({
             env: {
+                npm_execpath: pnpmCliPath,
                 PATH: powerShellDir,
                 PATHEXT: ".EXE;.CMD",
             },
@@ -99,7 +101,7 @@ describe("Windows packaging preflight", () => {
             targetArch: "x64",
         });
 
-        expect(preflight.pnpmCommand).toBe("pnpm.cmd");
+        expect(preflight.pnpmCliPath).toBe(pnpmCliPath);
         expect(preflight.powerShellCommand).toBe(
             path.join(powerShellDir, "pwsh.exe"),
         );
@@ -115,8 +117,9 @@ describe("Windows packaging preflight", () => {
         const repoRoot = createTempDir();
         const nodeBinDir = path.join(repoRoot, "node-bin");
         const powerShellDir = path.join(repoRoot, "powershell");
+        const pnpmCliPath = path.join(repoRoot, "pnpm", "bin", "pnpm.cjs");
 
-        writeExecutable(nodeBinDir, "pnpm.cmd");
+        writeFile(pnpmCliPath);
         writeExecutable(powerShellDir, "powershell.exe");
         writeFile(path.join(repoRoot, "node_modules", "electron-builder", "cli.js"));
         writeFile(path.join(repoRoot, "resources", "icons", "windows.ico"));
@@ -125,6 +128,7 @@ describe("Windows packaging preflight", () => {
         expect(() =>
             resolveWindowsPackagingPreflight({
                 env: {
+                    npm_execpath: pnpmCliPath,
                     PATH: powerShellDir,
                     PATHEXT: ".EXE;.CMD",
                 },

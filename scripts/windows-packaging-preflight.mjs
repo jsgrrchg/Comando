@@ -33,7 +33,7 @@ export function resolveWindowsPackagingPreflight({
         });
 
     const paths = resolveWindowsPackagingPaths(repoRoot);
-    const pnpmCommand = requireBatchCommandName("pnpm.cmd", resolveCommand);
+    const pnpmCliPath = resolveRequiredPnpmCliPath({ env, isFile });
     const powerShellCommand =
         resolveCommand("pwsh.exe") ??
         resolveCommand("pwsh") ??
@@ -78,7 +78,7 @@ export function resolveWindowsPackagingPreflight({
         aiPayload,
         electronBuilderCli: paths.electronBuilderCli,
         powerShellCommand,
-        pnpmCommand,
+        pnpmCliPath,
         rceditPath,
         windowsIconPath: paths.windowsIconPath,
     };
@@ -242,18 +242,19 @@ function requireCommand(command, resolveCommand) {
     );
 }
 
-function requireBatchCommandName(command, resolveCommand) {
-    const resolved = requireCommand(command, resolveCommand);
-    if (!isWindowsBatchCommand(resolved)) {
-        throw new Error(`Required command is not a Windows batch file: ${command}`);
+function resolveRequiredPnpmCliPath({ env, isFile }) {
+    const npmExecPath = env.npm_execpath?.trim();
+    if (npmExecPath && isPnpmCliPath(npmExecPath) && isFile(npmExecPath)) {
+        return npmExecPath;
     }
 
-    return path.win32.basename(command);
+    throw new Error(
+        "Required pnpm CLI was not found. Run Windows packaging through pnpm so npm_execpath points to pnpm.cjs.",
+    );
 }
 
-function isWindowsBatchCommand(command) {
-    const extension = path.win32.extname(command).toLowerCase();
-    return extension === ".cmd" || extension === ".bat";
+function isPnpmCliPath(candidatePath) {
+    return path.win32.basename(candidatePath).toLowerCase() === "pnpm.cjs";
 }
 
 function assertFile(filePath, { isFile, label, relativePath, suggestion }) {
