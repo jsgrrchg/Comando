@@ -4912,22 +4912,30 @@ mod tests {
         let (_temp_dir, backend) = backend_with_memory_runtime_setup();
         let store = backend.runtime_setup_store.clone().expect("runtime setup");
         store
-            .update_runtime("claude", |state| {
-                state.auth_method = Some("gateway-bedrock".to_string());
-                state.bedrock_gateway_base_url = Some("https://bedrock.example.com".to_string());
+            .update_runtime("grok", |state| {
+                state.auth_method = Some("xai-api-key".to_string());
             })
-            .expect("claude setup");
+            .expect("grok setup");
+        store
+            .secrets()
+            .set_secret("grok", "XAI_API_KEY", "xai-test")
+            .expect("grok secret");
+        store
+            .update_runtime("grok", |state| {
+                state.secret_env_keys.insert("XAI_API_KEY".to_string());
+            })
+            .expect("grok secret marker");
 
         let result = ai_prepare_session_error_result(
             RequestId::Number(1),
             &backend.runtime_setup_store_shared,
             &backend.ai_engine,
-            "claude",
+            "grok",
             NativeError::new(
                 NativeErrorCode::AiRuntimeExited,
                 "Native runtime exited: request failed with 401 unauthorized",
             ),
-            "request failed with 401 unauthorized",
+            "grok authentication failed: invalid api key",
         );
 
         let response = only_response(&result);
@@ -4937,12 +4945,13 @@ mod tests {
                 output,
                 RpcOutput::Event(event)
                     if event.event_name == AI_RUNTIME_STATUS_EVENT
-                        && event.payload["runtimeId"] == "claude"
+                        && event.payload["runtimeId"] == "grok"
+                        && event.payload["authReady"] == false
             )
         }));
-        let setup = store.load_runtime("claude").expect("claude setup");
-        assert_eq!(setup.auth_method, None);
-        assert_eq!(setup.bedrock_gateway_base_url, None);
+        let setup = store.load_runtime("grok").expect("grok setup");
+        assert_eq!(setup.auth_method.as_deref(), Some("xai-api-key"));
+        assert!(setup.auth_invalidated_at_ms.is_some());
     }
 
     #[test]
