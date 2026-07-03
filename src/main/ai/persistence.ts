@@ -96,6 +96,7 @@ export function createEmptyAiSessionSnapshot(options: {
         closedAt: null,
         configOptions: [],
         lastError: null,
+        manualTitle: null,
         messages: [],
         modeId: null,
         modes: [],

@@ -10,6 +10,8 @@ import {
     normalizeAdditionalRoots,
     resolveSessionScopedPath,
     setConfigOptionOnSnapshot,
+    setManualTitleOnSnapshot,
+    setRuntimeTitleOnSnapshot,
 } from "./session-core";
 
 describe("session-core model reconciliation", () => {
@@ -583,6 +585,49 @@ describe("session-core model reconciliation", () => {
         expect(reasoningConfig?.type === "select" && reasoningConfig.value).toBe(
             "high",
         );
+    });
+
+    it("keeps manual titles when runtime titles arrive later", () => {
+        const snapshot = createSnapshot({
+            sessionId: "session-claude",
+            title: "Initial runtime title",
+        });
+
+        const renamed = setManualTitleOnSnapshot(
+            snapshot,
+            "Manual title",
+            "2026-04-23T00:01:00.000Z",
+        );
+        const updated = setRuntimeTitleOnSnapshot(
+            renamed,
+            "Late Claude title",
+            "2026-04-23T00:02:00.000Z",
+        );
+
+        expect(updated).toMatchObject({
+            manualTitle: "Manual title",
+            title: "Manual title",
+            updatedAt: "2026-04-23T00:02:00.000Z",
+        });
+    });
+
+    it("applies runtime titles when the session was not manually renamed", () => {
+        const snapshot = createSnapshot({
+            sessionId: "session-claude",
+            title: "Initial runtime title",
+        });
+
+        const updated = setRuntimeTitleOnSnapshot(
+            snapshot,
+            "Late Claude title",
+            "2026-04-23T00:02:00.000Z",
+        );
+
+        expect(updated).toMatchObject({
+            title: "Late Claude title",
+            updatedAt: "2026-04-23T00:02:00.000Z",
+        });
+        expect(updated.manualTitle).toBeUndefined();
     });
 });
 

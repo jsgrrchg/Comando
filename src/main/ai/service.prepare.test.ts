@@ -735,13 +735,124 @@ describe("AiService prepareSession", () => {
         expect(lastSnapshotCall?.[1]).toMatchObject({
             kind: "patch",
             patch: {
-                changes: { title: "Manual title" },
+                changes: {
+                    manualTitle: "Manual title",
+                    title: "Manual title",
+                },
                 sessionId: "session-1",
             },
         });
         expect(await service.getSessionSnapshot("session-1")).toMatchObject({
+            manualTitle: "Manual title",
             sessionId: "session-1",
             title: "Manual title",
+        });
+    });
+
+    it("keeps manual titles when native session-info titles arrive later", async () => {
+        const onSessionSnapshot = vi.fn();
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(() =>
+                    Promise.resolve(createSnapshot({ runtimeId: "claude" })),
+                ),
+                renameSession: vi.fn<NativeAiGateway["renameSession"]>(() =>
+                    Promise.resolve(),
+                ),
+                shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "claude"),
+            }),
+            onSessionSnapshot,
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "claude",
+                sessionId: "session-1",
+                title: "Claude 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.renameSession({
+            sessionId: "session-1",
+            title: "Manual title",
+        });
+        onSessionSnapshot.mockClear();
+
+        service.handleNativeSessionEvent("window-1", {
+            kind: "session-info",
+            origin: "live",
+            parentSessionId: null,
+            projectId: null,
+            runtimeId: "claude",
+            runtimeSessionId: null,
+            sessionId: "session-1",
+            title: "Late Claude title",
+            updatedAt: "2026-04-15T22:24:00.000Z",
+            worktreeId: null,
+        });
+
+        expect(await service.getSessionSnapshot("session-1")).toMatchObject({
+            manualTitle: "Manual title",
+            title: "Manual title",
+            updatedAt: "2026-04-15T22:24:00.000Z",
+        });
+        expect(onSessionSnapshot).toHaveBeenCalledWith(
+            "window-1",
+            expect.objectContaining({
+                kind: "patch",
+                patch: expect.objectContaining({
+                    changes: expect.not.objectContaining({
+                        title: "Late Claude title",
+                    }),
+                }),
+            }),
+        );
+    });
+
+    it("keeps manual titles when full native snapshots arrive later", async () => {
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(() =>
+                    Promise.resolve(createSnapshot({ runtimeId: "claude" })),
+                ),
+                renameSession: vi.fn<NativeAiGateway["renameSession"]>(() =>
+                    Promise.resolve(),
+                ),
+                shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "claude"),
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "claude",
+                sessionId: "session-1",
+                title: "Claude 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.renameSession({
+            sessionId: "session-1",
+            title: "Manual title",
+        });
+
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSnapshot({
+                runtimeId: "claude",
+                sessionId: "session-1",
+                title: "Late Claude title",
+                updatedAt: "2026-04-15T22:25:00.000Z",
+            }),
+        });
+
+        expect(await service.getSessionSnapshot("session-1")).toMatchObject({
+            manualTitle: "Manual title",
+            title: "Manual title",
+            updatedAt: "2026-04-15T22:25:00.000Z",
         });
     });
 

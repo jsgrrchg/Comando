@@ -1704,11 +1704,15 @@ export const useAiStore = create<AiStore>((set, get) => ({
             .updateSessionTabTitles(input.sessionId, input.title);
         await runOptimisticSnapshotMutation(
             input.sessionId,
-            (snapshot) => ({
-                ...snapshot,
-                title: input.title,
-                updatedAt: new Date().toISOString(),
-            }),
+            (snapshot) => {
+                const manualTitle = input.title.trim() || null;
+                return {
+                    ...snapshot,
+                    manualTitle,
+                    title: manualTitle || snapshot.title,
+                    updatedAt: new Date().toISOString(),
+                };
+            },
             () => getComandoApi().renameAiSession(input),
             set,
             get,

@@ -171,6 +171,7 @@ function createAiSessionPatchChanges(
         "closedAt",
         "configOptions",
         "lastError",
+        "manualTitle",
         "messages",
         "modeId",
         "modes",
@@ -766,6 +767,47 @@ export function setTitleOnSnapshot(
     return {
         ...snapshot,
         title,
+        updatedAt,
+    };
+}
+
+export function getSessionDisplayTitle(snapshot: AiSessionSnapshot): string {
+    const manualTitle = snapshot.manualTitle?.trim();
+    return manualTitle || snapshot.title;
+}
+
+export function setManualTitleOnSnapshot(
+    snapshot: AiSessionSnapshot,
+    title: string,
+    updatedAt: string = new Date().toISOString(),
+): AiSessionSnapshot {
+    const manualTitle = title.trim();
+    return {
+        ...snapshot,
+        manualTitle: manualTitle || null,
+        title: manualTitle || snapshot.title,
+        updatedAt,
+    };
+}
+
+export function setRuntimeTitleOnSnapshot(
+    snapshot: AiSessionSnapshot,
+    title: string,
+    updatedAt: string = new Date().toISOString(),
+): AiSessionSnapshot {
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) {
+        return snapshot;
+    }
+    if (snapshot.manualTitle?.trim()) {
+        return {
+            ...snapshot,
+            updatedAt,
+        };
+    }
+    return {
+        ...snapshot,
+        title: trimmedTitle,
         updatedAt,
     };
 }
