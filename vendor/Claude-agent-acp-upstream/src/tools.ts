@@ -8,12 +8,14 @@ import {
 import { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import {
   AgentInput,
+  AskUserQuestionInput,
   BashInput,
   FileEditInput,
   FileReadInput,
   FileWriteInput,
   GlobInput,
   GrepInput,
+  ReportFindingsInput,
   TaskCreateInput,
   TaskCreateOutput,
   TaskUpdateInput,
@@ -370,6 +372,25 @@ export function toolInfoFromToolUse(
       };
     }
 
+    case "ReportFindings": {
+      const input = toolUse.input as ReportFindingsInput | undefined;
+      const findings = input?.findings ?? [];
+      return {
+        title:
+          findings.length === 0
+            ? "Report findings: none found"
+            : `Report ${findings.length} finding${findings.length === 1 ? "" : "s"}`,
+        kind: "think",
+        content: findings.map((finding) => ({
+          type: "content" as const,
+          content: {
+            type: "text" as const,
+            text: `**${finding.file}${finding.line ? `:${finding.line}` : ""}** — ${finding.summary}`,
+          },
+        })),
+      };
+    }
+
     case "TaskCreate": {
       const input = toolUse.input as TaskCreateInput | undefined;
       return {
@@ -412,6 +433,24 @@ export function toolInfoFromToolUse(
         content: planInput?.plan
           ? [{ type: "content" as const, content: { type: "text" as const, text: planInput.plan } }]
           : [],
+      };
+    }
+
+    case "AskUserQuestion": {
+      const input = toolUse.input as Partial<AskUserQuestionInput> | undefined;
+      const questions = Array.isArray(input?.questions) ? input.questions : [];
+      return {
+        title:
+          questions.length === 1 && questions[0]?.question
+            ? questions[0].question
+            : "Asking for your input",
+        kind: "other",
+        content: questions
+          .filter((q) => typeof q?.question === "string")
+          .map((q) => ({
+            type: "content" as const,
+            content: { type: "text" as const, text: q.question },
+          })),
       };
     }
 
@@ -466,7 +505,8 @@ export function toolUpdateFromToolResult(
     "is_error" in toolResult &&
     toolResult.is_error &&
     toolResult.content &&
-    toolResult.content.length > 0
+    toolResult.content.length > 0 &&
+    !(toolUse?.name === "Bash" && supportsTerminalOutput)
   ) {
     // Only return errors
     return toAcpContentUpdate(toolResult.content, true);
@@ -510,7 +550,9 @@ export function toolUpdateFromToolResult(
       // Extract output and exit code from either format:
       // 1. BetaBashCodeExecutionResultBlock: { type: "bash_code_execution_result", stdout, stderr, return_code }
       // 2. Plain string content from a regular tool_result
-      // 3. Array content (e.g. [{ type: "text", text: "..." }])
+      // 3. Array content (e.g. [{ type: "text", text: "..." }] for stdout,
+      //    or [{ type: "image", source: {...} }] when the local Bash tool
+      //    produces an image, e.g. piping a base64 data URI)
       let output = "";
       let exitCode = isError ? 1 : 0;
 
@@ -525,13 +567,20 @@ export function toolUpdateFromToolResult(
         exitCode = bashResult.return_code;
       } else if (typeof result === "string") {
         output = result;
-      } else if (
-        Array.isArray(result) &&
-        result.length > 0 &&
-        "text" in result[0] &&
-        typeof result[0].text === "string"
-      ) {
-        output = result.map((c: any) => c.text).join("\n");
+      } else if (Array.isArray(result) && result.length > 0) {
+        const textOnly = result.every(
+          (c: any) => c && typeof c === "object" && typeof c.text === "string",
+        );
+        if (textOnly) {
+          output = result.map((c: any) => c.text).join("\n");
+        } else {
+          // Image (or mixed non-text) content. Binary payloads can't be
+          // streamed through the terminal-output _meta channel, so bypass
+          // it and surface the blocks as ACP content. This handles the
+          // local Bash tool's image output, which previously failed the
+          // text-only guard and was silently dropped.
+          return toAcpContentUpdate(result, isError);
+        }
       }
 
       if (supportsTerminalOutput) {

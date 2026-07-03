@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { AgentSideConnection, SessionNotification } from "@agentclientprotocol/sdk";
+import { SessionNotification } from "@agentclientprotocol/sdk";
 import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
-import type { ClaudeAcpAgent as ClaudeAcpAgentType } from "../acp-agent.js";
+import type { AcpClient, ClaudeAcpAgent as ClaudeAcpAgentType } from "../acp-agent.js";
 
 const { registerHookCallbackSpy } = vi.hoisted(() => ({
   registerHookCallbackSpy: vi.fn(),
@@ -84,7 +84,7 @@ describe("session config options", () => {
   let setModelSpy: ReturnType<typeof vi.fn>;
   let applyFlagSettingsSpy: ReturnType<typeof vi.fn>;
 
-  function createMockClient(): AgentSideConnection {
+  function createMockClient(): AcpClient {
     return {
       sessionUpdate: async (notification: SessionNotification) => {
         sessionUpdates.push(notification);
@@ -92,7 +92,7 @@ describe("session config options", () => {
       requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
       readTextFile: async () => ({ content: "" }),
       writeTextFile: async () => ({}),
-    } as unknown as AgentSideConnection;
+    } as unknown as AcpClient;
   }
 
   function populateSession() {
@@ -113,17 +113,17 @@ describe("session config options", () => {
       settingsManager: {},
       modes: structuredClone(MOCK_MODES),
       models: structuredClone(MOCK_MODELS),
-      modelInfos: MOCK_MODELS.availableModels.map(
-        (m): ModelInfo => ({
-          value: m.modelId,
-          displayName: m.name,
-          description: m.description,
-          supportsEffort: true,
-          supportedEffortLevels: ["low", "medium", "high"],
-        }),
-      ),
+      modelInfos: MOCK_MODELS.availableModels.map((m): ModelInfo => ({
+        value: m.modelId,
+        displayName: m.name,
+        description: m.description,
+        supportsEffort: true,
+        supportedEffortLevels: ["low", "medium", "high"],
+      })),
       configOptions: structuredClone(MOCK_CONFIG_OPTIONS),
       contextWindowSize: 200000,
+      toolUseCache: {},
+      emittedToolCalls: new Set(),
     };
   }
 
@@ -148,13 +148,13 @@ describe("session config options", () => {
 
   describe("newSession returns configOptions", () => {
     it("includes configOptions in the response", async () => {
-      const response = await agent.newSession({ cwd: "/test", mcpServers: [] });
+      const response = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
       expect(response.configOptions).toBeDefined();
       expect(response.configOptions).toEqual(MOCK_CONFIG_OPTIONS);
     });
 
     it("includes mode and model config options", async () => {
-      const response = await agent.newSession({ cwd: "/test", mcpServers: [] });
+      const response = await agent.newSession({ cwd: process.cwd(), mcpServers: [] });
       const modeOption = response.configOptions?.find((o) => o.id === "mode");
       const modelOption = response.configOptions?.find((o) => o.id === "model");
       expect(modeOption).toBeDefined();
@@ -173,7 +173,7 @@ describe("session config options", () => {
       (agent as unknown as { loadSession: typeof loadSessionSpy }).loadSession = loadSessionSpy;
 
       const response = await agent.loadSession({
-        cwd: "/test",
+        cwd: process.cwd(),
         sessionId: SESSION_ID,
         mcpServers: [],
       });
@@ -214,6 +214,31 @@ describe("session config options", () => {
           value: "invalid-mode",
         }),
       ).rejects.toThrow("Invalid value for config option mode: invalid-mode");
+    });
+
+    it("rejects mode and config changes once the query stream has closed (husk session)", async () => {
+      // After an unexpected stream death the session lingers as a husk
+      // (queryClosed=true) so prompt() can answer with a clear error. The
+      // config/mode handlers must do the same rather than calling setModel/
+      // setPermissionMode on the closed query.
+      const session = (agent as unknown as { sessions: Record<string, { queryClosed?: boolean }> })
+        .sessions[SESSION_ID];
+      session.queryClosed = true;
+
+      await expect(
+        agent.setSessionConfigOption({
+          sessionId: SESSION_ID,
+          configId: "model",
+          value: "claude-sonnet-4-6",
+        }),
+      ).rejects.toThrow(/start a new session/);
+      await expect(agent.setSessionMode({ sessionId: SESSION_ID, modeId: "plan" })).rejects.toThrow(
+        /start a new session/,
+      );
+
+      // Short-circuited before touching the (closed) query.
+      expect(setModelSpy).not.toHaveBeenCalled();
+      expect(setPermissionModeSpy).not.toHaveBeenCalled();
     });
 
     it("changes mode, sends current_mode_update but not config_option_update", async () => {
@@ -1088,6 +1113,10 @@ describe("session config options", () => {
         ],
       };
 
+      // The tool_call was already surfaced (by the streamed tool_use chunk), so
+      // the permission request won't re-emit one — keep this focused on options.
+      session.emittedToolCalls.add("toolu_1");
+
       const canUseTool = (agent as any).canUseTool(SESSION_ID);
       const signal = new AbortController().signal;
       try {
@@ -1119,6 +1148,10 @@ describe("session config options", () => {
         ],
       };
       permissionResponse = { outcome: { outcome: "selected", optionId: "auto" } };
+      // The tool_call was already surfaced (by the streamed tool_use chunk), so
+      // the permission request won't re-emit one — the deny path below should
+      // produce no session updates at all.
+      session.emittedToolCalls.add("toolu_2");
 
       const canUseTool = (agent as any).canUseTool(SESSION_ID);
       const result = await canUseTool(
@@ -1146,6 +1179,10 @@ describe("session config options", () => {
           { id: "dontAsk", name: "Don't Ask", description: "Deny if not pre-approved" },
         ],
       };
+
+      // The tool_call was already surfaced (by the streamed tool_use chunk), so
+      // the permission request won't re-emit one — keep this focused on options.
+      session.emittedToolCalls.add("toolu_3");
 
       const canUseTool = (agent as any).canUseTool(SESSION_ID);
       const signal = new AbortController().signal;
