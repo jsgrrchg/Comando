@@ -131,7 +131,6 @@ import {
     applyCodexAuthEnv,
     buildCodexSecretPatches,
     getCodexRuntimeStatus,
-    isCodexAuthenticationError,
     type CodexSecretBundle,
     loadCodexSecretBundle,
 } from "./codex/setup";
@@ -139,7 +138,6 @@ import {
     applyClaudeAuthEnv,
     buildClaudeSecretPatches,
     getClaudeRuntimeStatus,
-    isClaudeAuthenticationError,
     launchClaudeLogin,
     loadClaudeSecretBundle,
     markClaudeAuthInvalidated,
@@ -149,7 +147,6 @@ import {
     applyKiloAuthEnv,
     buildKiloSecretPatches,
     getKiloRuntimeStatus,
-    isKiloAuthenticationError,
     launchKiloLogin,
     markKiloAuthInvalidated,
     resolveKiloRuntime,
@@ -158,7 +155,6 @@ import {
     applyGrokAuthEnv,
     buildGrokSecretPatches,
     getGrokRuntimeStatus,
-    isGrokAuthenticationError,
     isGrokExternalCredentialReady,
     launchGrokLogin,
     loadGrokSecretBundle,
@@ -169,7 +165,6 @@ import {
     applyOpenCodeAuthEnv,
     getOpenCodeRuntimeStatus,
     isOpenCodeEnvironmentCredentialReady,
-    isOpenCodeAuthenticationError,
     launchOpenCodeLogin,
     markOpenCodeAuthInvalidated,
     resolveOpenCodeRuntime,
@@ -636,12 +631,6 @@ export class AiService {
             ownerWindowId,
         );
         this.#persistence.saveSessionSnapshot(cachedSnapshot);
-        if (cachedSnapshot.lastError) {
-            this.#invalidateRuntimeAuthIfNeeded(
-                cachedSnapshot.runtimeId,
-                cachedSnapshot.lastError,
-            );
-        }
         this.#onSessionSnapshot(
             ownerWindowId,
             buildAiSessionUpdate(previousSnapshot, cachedSnapshot),
@@ -676,12 +665,6 @@ export class AiService {
                 ownerWindowId,
                 buildAiSessionUpdate(previousSnapshot, cachedSnapshot),
             );
-            if (cachedSnapshot.lastError) {
-                this.#invalidateRuntimeAuthIfNeeded(
-                    cachedSnapshot.runtimeId,
-                    cachedSnapshot.lastError,
-                );
-            }
             if (this.#isNativeAiSession(event.sessionId)) {
                 if (event.kind === "status" && event.status === "streaming") {
                     this.#markNativeReviewTurnStarted(event.sessionId);
@@ -4656,136 +4639,6 @@ export class AiService {
             executable: resolved.executable,
             status: getCodexRuntimeStatus(settings, secrets),
         };
-    }
-
-    #invalidateRuntimeAuthIfNeeded(
-        runtimeId: AiRuntimeId,
-        message: string,
-    ): void {
-        if (runtimeId === "codex" && isCodexAuthenticationError(message)) {
-            if (this.#nativeAuthGateway(runtimeId)) {
-                return;
-            }
-
-            const currentSettings =
-                this.#settingsService.loadCodexRuntimeSettings();
-            const nextSettings = {
-                ...currentSettings,
-                authMethod: null,
-            } satisfies CodexRuntimeSettings;
-            this.#settingsService.saveCodexRuntimeSettings(nextSettings);
-            this.#onRuntimeStatus(
-                getCodexRuntimeStatus(
-                    nextSettings,
-                    loadCodexSecretBundle(this.#secretStore),
-                ),
-            );
-            return;
-        }
-
-        if (runtimeId === "claude" && isClaudeAuthenticationError(message)) {
-            if (this.#nativeAuthGateway(runtimeId)) {
-                return;
-            }
-
-            const nextSettings = markClaudeAuthInvalidated(
-                this.#settingsService.loadClaudeRuntimeSettings(),
-            );
-            this.#settingsService.saveClaudeRuntimeSettings(nextSettings);
-            this.#onRuntimeStatus(
-                getClaudeRuntimeStatus(nextSettings, this.#secretStore),
-            );
-            return;
-        }
-
-        if (runtimeId === "grok" && isGrokAuthenticationError(message)) {
-            if (this.#nativeAuthGateway(runtimeId)) {
-                return;
-            }
-
-            const currentSettings =
-                this.#settingsService.loadGrokRuntimeSettings();
-            const currentStatus = getGrokRuntimeStatus(
-                currentSettings,
-                this.#secretStore,
-            );
-
-            if (currentStatus.authCredentialSource === "external-runtime") {
-                const nextSettings = markGrokAuthInvalidated({
-                    ...currentSettings,
-                    authMethod: "grok-login",
-                });
-                this.#settingsService.saveGrokRuntimeSettings(nextSettings);
-                this.#onRuntimeStatus(
-                    this.#withPersistedRuntimeCatalog(
-                        getGrokRuntimeStatus(nextSettings, this.#secretStore),
-                    ),
-                );
-                return;
-            }
-
-            if (currentStatus.authCredentialSource !== "comando-secret") {
-                return;
-            }
-
-            const secretPatch = buildGrokSecretPatches(this.#secretStore, {
-                xaiApiKey: null,
-            });
-            const nextSettings = {
-                ...currentSettings,
-                authMethod: null,
-                hasXaiApiKey: secretPatch.flags.hasXaiApiKey,
-            } satisfies GrokRuntimeSettings;
-            this.#secretStore.cacheSecretPatches?.(secretPatch.patches);
-            void this.#saveSecretPatches(secretPatch.patches).catch(
-                (error: unknown) => {
-                    debugBenignError("ai.grok.invalidateStoredApiKey", error);
-                },
-            );
-            this.#settingsService.saveGrokRuntimeSettings(nextSettings);
-            this.#onRuntimeStatus(
-                this.#withPersistedRuntimeCatalog(
-                    getGrokRuntimeStatus(nextSettings, this.#secretStore),
-                ),
-            );
-            return;
-        }
-
-        if (runtimeId === "kilo" && isKiloAuthenticationError(message)) {
-            if (this.#nativeAuthGateway(runtimeId)) {
-                return;
-            }
-
-            const currentSettings =
-                this.#settingsService.loadKiloRuntimeSettings();
-            const nextSettings = markKiloAuthInvalidated({
-                ...currentSettings,
-                authMethod: "kilo-login",
-            });
-            this.#settingsService.saveKiloRuntimeSettings(nextSettings);
-            this.#onRuntimeStatus(
-                getKiloRuntimeStatus(nextSettings, this.#secretStore),
-            );
-            return;
-        }
-
-        if (
-            runtimeId === "opencode" &&
-            isOpenCodeAuthenticationError(message)
-        ) {
-            if (this.#nativeAuthGateway(runtimeId)) {
-                return;
-            }
-
-            const nextSettings = markOpenCodeAuthInvalidated({
-                ...this.#settingsService.loadOpenCodeRuntimeSettings(),
-                authMethod: "opencode-login",
-            });
-            this.#settingsService.saveOpenCodeRuntimeSettings(nextSettings);
-            this.#onRuntimeStatus(
-                getOpenCodeRuntimeStatus(nextSettings, this.#secretStore),
-            );
-        }
     }
 }
 
