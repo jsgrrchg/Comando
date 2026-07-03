@@ -798,16 +798,12 @@ describe("AiService prepareSession", () => {
             title: "Manual title",
             updatedAt: "2026-04-15T22:24:00.000Z",
         });
-        expect(onSessionSnapshot).toHaveBeenCalledWith(
-            "window-1",
-            expect.objectContaining({
-                kind: "patch",
-                patch: expect.objectContaining({
-                    changes: expect.not.objectContaining({
-                        title: "Late Claude title",
-                    }),
-                }),
-            }),
+        const update = onSessionSnapshot.mock.lastCall?.[1] as
+            | AiSessionUpdate
+            | undefined;
+        expect(update?.kind).toBe("patch");
+        expect(update?.kind === "patch" ? update.patch.changes.title : null).not.toBe(
+            "Late Claude title",
         );
     });
 
