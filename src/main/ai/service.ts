@@ -111,10 +111,11 @@ import {
     normalizeRestoredAiSessionSnapshot,
     resolveSessionScopedPath,
     setConfigOptionOnSnapshot,
+    setManualTitleOnSnapshot,
     setModeOnSnapshot,
     setModelOnSnapshot,
     setReasoningEffortOnSnapshot,
-    setTitleOnSnapshot,
+    setRuntimeTitleOnSnapshot,
     type NormalizedSessionCatalogPayload,
 } from "./session-core";
 import {
@@ -1514,7 +1515,7 @@ export class AiService {
         if (this.#liveSessionContexts.has(input.sessionId)) {
             await this.#requireNativeAiGateway().renameSession(input);
             await this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
-                setTitleOnSnapshot(snapshot, input.title),
+                setManualTitleOnSnapshot(snapshot, input.title),
             );
             return;
         }
@@ -1525,7 +1526,7 @@ export class AiService {
         }
 
         await this.#updateSessionSnapshot(input.sessionId, (snapshot) =>
-            setTitleOnSnapshot(snapshot, input.title),
+            setManualTitleOnSnapshot(snapshot, input.title),
         );
     }
 
@@ -2582,10 +2583,16 @@ export class AiService {
         };
 
         if (event.kind === "session-info") {
+            const titledSnapshot = setRuntimeTitleOnSnapshot(
+                snapshot,
+                event.title,
+                event.updatedAt,
+            );
             return {
                 ...base,
                 projectId: event.projectId,
-                title: event.title,
+                manualTitle: titledSnapshot.manualTitle ?? null,
+                title: titledSnapshot.title,
                 worktreeId: event.worktreeId,
             };
         }
@@ -2605,7 +2612,10 @@ export class AiService {
                         ? snapshot.pendingUserInput
                         : null,
                 status: event.status,
-                title: title ?? snapshot.title,
+                title: title
+                    ? setRuntimeTitleOnSnapshot(snapshot, title, event.updatedAt)
+                          .title
+                    : snapshot.title,
             };
         }
 
@@ -3124,6 +3134,14 @@ export class AiService {
         incomingSnapshot: AiSessionSnapshot,
         previousSnapshot: AiSessionSnapshot | null,
     ): AiSessionSnapshot {
+        const snapshot =
+            previousSnapshot?.manualTitle?.trim()
+                ? {
+                      ...incomingSnapshot,
+                      manualTitle: previousSnapshot.manualTitle,
+                      title: previousSnapshot.title,
+                  }
+                : incomingSnapshot;
         const previousReviewActionLog = previousSnapshot
             ? validReviewActionLogForSnapshot(previousSnapshot)
             : null;
@@ -3131,7 +3149,7 @@ export class AiService {
             // The TS action log is canonical; passive native snapshots cannot
             // overwrite pending, accepted, rejected, or conflict state.
             return {
-                ...incomingSnapshot,
+                ...snapshot,
                 reviewActionLog: previousReviewActionLog,
                 trackedFiles: deriveTrackedFilesFromActionLog(
                     previousReviewActionLog,
@@ -3139,7 +3157,7 @@ export class AiService {
             };
         }
 
-        return normalizeLiveSnapshotReviewState(incomingSnapshot);
+        return normalizeLiveSnapshotReviewState(snapshot);
     }
 
     #shouldFinishNativeReviewBaseline(event: AiSessionDomainEvent): boolean {

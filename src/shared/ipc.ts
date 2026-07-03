@@ -2411,6 +2411,7 @@ export interface AiSessionSnapshot {
     readonly configOptions: readonly AiSessionConfigOption[];
     readonly lastError: string | null;
     readonly messages: readonly AiMessage[];
+    readonly manualTitle?: string | null;
     readonly modeId: string | null;
     readonly modes: readonly AiSessionMode[];
     readonly modelId: string | null;

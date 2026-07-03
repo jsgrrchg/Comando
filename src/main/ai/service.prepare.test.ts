@@ -735,13 +735,118 @@ describe("AiService prepareSession", () => {
         expect(lastSnapshotCall?.[1]).toMatchObject({
             kind: "patch",
             patch: {
-                changes: { title: "Manual title" },
+                changes: {
+                    manualTitle: "Manual title",
+                    title: "Manual title",
+                },
                 sessionId: "session-1",
             },
         });
         expect(await service.getSessionSnapshot("session-1")).toMatchObject({
+            manualTitle: "Manual title",
             sessionId: "session-1",
             title: "Manual title",
+        });
+    });
+
+    it("keeps manual titles when native session-info titles arrive later", async () => {
+        const onSessionSnapshot = vi.fn();
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(() =>
+                    Promise.resolve(createSnapshot({ runtimeId: "codex" })),
+                ),
+                renameSession: vi.fn<NativeAiGateway["renameSession"]>(() =>
+                    Promise.resolve(),
+                ),
+            }),
+            onSessionSnapshot,
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.renameSession({
+            sessionId: "session-1",
+            title: "Manual title",
+        });
+        onSessionSnapshot.mockClear();
+
+        service.handleNativeSessionEvent("window-1", {
+            kind: "session-info",
+            origin: "live",
+            parentSessionId: null,
+            projectId: null,
+            runtimeId: "codex",
+            runtimeSessionId: null,
+            sessionId: "session-1",
+            title: "Late runtime title",
+            updatedAt: "2026-04-15T22:24:00.000Z",
+            worktreeId: null,
+        });
+
+        expect(await service.getSessionSnapshot("session-1")).toMatchObject({
+            manualTitle: "Manual title",
+            title: "Manual title",
+            updatedAt: "2026-04-15T22:24:00.000Z",
+        });
+        const update = onSessionSnapshot.mock.lastCall?.[1] as
+            | AiSessionUpdate
+            | undefined;
+        expect(update?.kind).toBe("patch");
+        expect(update?.kind === "patch" ? update.patch.changes.title : null).not.toBe(
+            "Late runtime title",
+        );
+    });
+
+    it("keeps manual titles when full native snapshots arrive later", async () => {
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(() =>
+                    Promise.resolve(createSnapshot({ runtimeId: "codex" })),
+                ),
+                renameSession: vi.fn<NativeAiGateway["renameSession"]>(() =>
+                    Promise.resolve(),
+                ),
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.renameSession({
+            sessionId: "session-1",
+            title: "Manual title",
+        });
+
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSnapshot({
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Late runtime title",
+                updatedAt: "2026-04-15T22:25:00.000Z",
+            }),
+        });
+
+        expect(await service.getSessionSnapshot("session-1")).toMatchObject({
+            manualTitle: "Manual title",
+            title: "Manual title",
+            updatedAt: "2026-04-15T22:25:00.000Z",
         });
     });
 
