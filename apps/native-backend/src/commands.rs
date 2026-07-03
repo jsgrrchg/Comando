@@ -11,7 +11,7 @@ use comando_ai::history::{
     AiHistoryMigrationMode, AiHistoryMigrationOptions, AiHistoryMigrator, AiHistoryStore,
     LegacyAiHistoryReader,
 };
-use comando_ai::runtime_setup::invalidate_grok_auth_on_error;
+use comando_ai::runtime_setup::invalidate_runtime_auth_on_error;
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
 use comando_git::{
     GitBranchListScope, GitError, GitFileDiffRequest, GitRunOptions, GitRunner, checkout_branch,
@@ -2191,6 +2191,7 @@ impl NativeBackend {
                     Ok(input) => input,
                     Err(error) => return error_only(request.id, error),
                 };
+                let runtime_id = input.runtime_id.0.clone();
                 match self.ai_engine.prepare_session(input) {
                     Ok(summary) => CommandResult {
                         outputs: vec![
@@ -2212,7 +2213,14 @@ impl NativeBackend {
                         ],
                         should_shutdown: false,
                     },
-                    Err(error) => error_only(request.id, error.to_native_error()),
+                    Err(error) => ai_prepare_session_error_result(
+                        request.id,
+                        &self.runtime_setup_store_shared,
+                        &self.ai_engine,
+                        &runtime_id,
+                        error.to_native_error(),
+                        &error.to_string(),
+                    ),
                 }
             }
             "ai_send_prompt" => {
@@ -3711,6 +3719,27 @@ fn error_only(id: RequestId, error: NativeError) -> CommandResult {
     }
 }
 
+fn ai_prepare_session_error_result(
+    request_id: RequestId,
+    runtime_setup_store: &Arc<Mutex<Option<RuntimeSetupStore>>>,
+    ai_engine: &AiEngine,
+    runtime_id: &str,
+    error: NativeError,
+    message: &str,
+) -> CommandResult {
+    let mut outputs = vec![error_response(Some(request_id), error)];
+    outputs.extend(ai_auth_error_status_outputs(
+        runtime_setup_store,
+        ai_engine,
+        runtime_id,
+        message,
+    ));
+    CommandResult {
+        outputs,
+        should_shutdown: false,
+    }
+}
+
 fn backend_not_ready(id: RequestId) -> CommandResult {
     error_only(
         id,
@@ -4072,6 +4101,33 @@ fn runtime_status_event(ai_engine: &AiEngine, runtime_id: &str) -> Option<RpcOut
     ))
 }
 
+fn ai_auth_error_status_outputs(
+    runtime_setup_store: &Arc<Mutex<Option<RuntimeSetupStore>>>,
+    ai_engine: &AiEngine,
+    runtime_id: &str,
+    message: &str,
+) -> Vec<RpcOutput> {
+    if !matches!(
+        runtime_id,
+        "codex" | "claude" | "grok" | "kilo" | "opencode"
+    ) {
+        return Vec::new();
+    }
+    let Some(store) = runtime_setup_store
+        .lock()
+        .ok()
+        .and_then(|store| store.clone())
+    else {
+        return Vec::new();
+    };
+    match invalidate_runtime_auth_on_error(&store, runtime_id, message) {
+        Ok(true) => runtime_status_event(ai_engine, runtime_id)
+            .into_iter()
+            .collect(),
+        Ok(false) | Err(_) => Vec::new(),
+    }
+}
+
 fn ai_error_runtime_outputs(
     runtime_setup_store: &Arc<Mutex<Option<RuntimeSetupStore>>>,
     ai_engine: &AiEngine,
@@ -4085,27 +4141,12 @@ fn ai_error_runtime_outputs(
         .get("runtimeId")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if runtime_id != "grok" {
-        return Vec::new();
-    }
     let message = ai_event
         .payload
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let Some(store) = runtime_setup_store
-        .lock()
-        .ok()
-        .and_then(|store| store.clone())
-    else {
-        return Vec::new();
-    };
-    match invalidate_grok_auth_on_error(&store, message) {
-        Ok(true) => runtime_status_event(ai_engine, runtime_id)
-            .into_iter()
-            .collect(),
-        Ok(false) | Err(_) => Vec::new(),
-    }
+    ai_auth_error_status_outputs(runtime_setup_store, ai_engine, runtime_id, message)
 }
 
 fn ai_runtime_event_output(event_payload: AiRuntimeEvent) -> RpcOutput {
@@ -4806,6 +4847,111 @@ mod tests {
         let encoded = fs::read_to_string(temp_dir.path().join("ai").join("runtime-setup.json"))
             .expect("runtime setup");
         assert!(!encoded.contains("test-native-status-token"));
+    }
+
+    #[test]
+    fn ai_error_auth_invalidation_emits_runtime_status_for_claude_and_opencode() {
+        let (_temp_dir, backend) = backend_with_memory_runtime_setup();
+        let store = backend.runtime_setup_store.clone().expect("runtime setup");
+        store
+            .update_runtime("claude", |state| {
+                state.auth_method = Some("anthropic-api-key".to_string());
+            })
+            .expect("claude setup");
+        store
+            .secrets()
+            .set_secret("claude", "ANTHROPIC_API_KEY", "sk-ant-test")
+            .expect("claude secret");
+        store
+            .update_runtime("claude", |state| {
+                state
+                    .secret_env_keys
+                    .insert("ANTHROPIC_API_KEY".to_string());
+            })
+            .expect("claude secret marker");
+        store
+            .update_runtime("opencode", |state| {
+                state.auth_method = Some("opencode-login".to_string());
+                state.auth_invalidated_at_ms = None;
+            })
+            .expect("opencode setup");
+
+        let shared_store = Arc::new(Mutex::new(Some(store.clone())));
+        let cases = [
+            ("claude", "invalid api key"),
+            ("opencode", "no provider configured"),
+        ];
+
+        for (runtime_id, message) in cases {
+            let outputs = ai_error_runtime_outputs(
+                &shared_store,
+                &backend.ai_engine,
+                &AiRuntimeEvent {
+                    event_name: AI_ERROR_EVENT.to_string(),
+                    payload: json!({
+                        "runtimeId": runtime_id,
+                        "message": message,
+                    }),
+                },
+            );
+
+            assert!(outputs.iter().any(|output| {
+                matches!(
+                    output,
+                    RpcOutput::Event(event)
+                        if event.event_name == AI_RUNTIME_STATUS_EVENT
+                            && event.payload["runtimeId"] == runtime_id
+                            && event.payload["authReady"] == false
+                )
+            }));
+        }
+    }
+
+    #[test]
+    fn ai_prepare_session_auth_error_returns_error_and_runtime_status() {
+        let (_temp_dir, backend) = backend_with_memory_runtime_setup();
+        let store = backend.runtime_setup_store.clone().expect("runtime setup");
+        store
+            .update_runtime("grok", |state| {
+                state.auth_method = Some("xai-api-key".to_string());
+            })
+            .expect("grok setup");
+        store
+            .secrets()
+            .set_secret("grok", "XAI_API_KEY", "xai-test")
+            .expect("grok secret");
+        store
+            .update_runtime("grok", |state| {
+                state.secret_env_keys.insert("XAI_API_KEY".to_string());
+            })
+            .expect("grok secret marker");
+
+        let result = ai_prepare_session_error_result(
+            RequestId::Number(1),
+            &backend.runtime_setup_store_shared,
+            &backend.ai_engine,
+            "grok",
+            NativeError::new(
+                NativeErrorCode::AiRuntimeExited,
+                "Native runtime exited: request failed with 401 unauthorized",
+            ),
+            "grok authentication failed: invalid api key",
+        );
+
+        let response = only_response(&result);
+        assert!(!response.ok);
+        assert!(result.outputs.iter().any(|output| {
+            matches!(
+                output,
+                RpcOutput::Event(event)
+                    if event.event_name == AI_RUNTIME_STATUS_EVENT
+                        && event.payload["runtimeId"] == "grok"
+                        && event.payload["authReady"] == false
+            )
+        }));
+        let setup = store.load_runtime("grok").expect("grok setup");
+        assert_eq!(setup.auth_method.as_deref(), Some("xai-api-key"));
+        assert!(setup.auth_invalidated_at_ms.is_some());
     }
 
     #[test]

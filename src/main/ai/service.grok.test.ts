@@ -545,7 +545,7 @@ describe("AiService Grok branch", () => {
         }
     });
 
-    it("invalidates Grok login after an authentication error", () => {
+    it("leaves Grok login authentication errors to native runtime setup", () => {
         let savedSettings: GrokRuntimeSettings | null = null;
         const service = createService({
             settingsService: createSettingsService({
@@ -569,15 +569,10 @@ describe("AiService Grok branch", () => {
             },
         });
 
-        expect(savedSettings).toMatchObject({
-            authMethod: "grok-login",
-            binaryPath: "/opt/homebrew/bin/grok",
-        });
-        const nextSettings = savedSettings as unknown as GrokRuntimeSettings;
-        expect(nextSettings.authInvalidatedAtMs).toEqual(expect.any(Number));
+        expect(savedSettings).toBeNull();
     });
 
-    it("clears a stored xAI API key after a Grok API key authentication error", async () => {
+    it("leaves stored xAI API key authentication errors to native runtime setup", async () => {
         let savedSettings: GrokRuntimeSettings | null = null;
         const runtimeStatusEvents: AiRuntimeStatus[] = [];
         const secretValues = new Map<string, string>([
@@ -609,17 +604,9 @@ describe("AiService Grok branch", () => {
         });
         await flushAsyncWork();
 
-        expect(savedSettings).toMatchObject({
-            authMethod: null,
-            hasXaiApiKey: false,
-        });
-        expect(secretValues.has("ai.grok:xai_api_key")).toBe(false);
-        expect(runtimeStatusEvents.at(-1)).toMatchObject({
-            authCredentialSource: "none",
-            authMethod: null,
-            authReady: false,
-            runtimeId: "grok",
-        });
+        expect(savedSettings).toBeNull();
+        expect(secretValues.get("ai.grok:xai_api_key")).toBe("invalid-xai-key");
+        expect(runtimeStatusEvents).toEqual([]);
     });
 
     it("does not rewrite environment xAI API key errors to Grok login", () => {

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { AiRuntimeStatus, KiloRuntimeSettings } from "@shared/ipc";
+import type {
+    AiRuntimeStatus,
+    KiloRuntimeSettings,
+} from "@shared/ipc";
 
 import { AiService } from "./service";
 
@@ -134,4 +137,5 @@ describe("AiService Kilo branch", () => {
         expect(nextSettings.authMethod).toBeNull();
         expect(nextSettings.authInvalidatedAtMs).toEqual(expect.any(Number));
     });
+
 });
