@@ -656,6 +656,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         try {
             const result = await getComandoApi().listGitHistory({
                 caseSensitive: nextSearch.caseSensitive,
+                includeAllRefs: true,
                 limit,
                 projectId,
                 query: nextSearch.query || undefined,

@@ -880,6 +880,7 @@ export interface GitBranchListInput extends GitRepositoryScopeInput {
 
 export interface GitHistoryListInput extends GitRepositoryScopeInput {
     readonly caseSensitive?: boolean;
+    readonly includeAllRefs?: boolean;
     readonly limit?: number;
     readonly query?: string;
 }
