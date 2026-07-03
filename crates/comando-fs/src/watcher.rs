@@ -23,6 +23,8 @@ use crate::policy::{
 use crate::registry::ProjectRoot;
 
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(140);
+const SELF_WRITE_HASH_RETRY_DELAY: Duration = Duration::from_millis(20);
+const SELF_WRITE_HASH_RETRY_ATTEMPTS: usize = 5;
 const MAX_RELATIVE_PATHS_PER_INVALIDATION: usize = 256;
 
 #[derive(Debug)]
@@ -260,7 +262,7 @@ fn handle_notify_event(context: NotifyEventContext<'_>, event: Event) {
     let event_name = event_name_for_kind(&event.kind);
     let event_kind = event_kind_for_kind(&event.kind);
 
-    for path in event.paths {
+    'paths: for path in event.paths {
         let absolute_path = if path.is_absolute() {
             path.clone()
         } else {
@@ -296,6 +298,23 @@ fn handle_notify_event(context: NotifyEventContext<'_>, event: Event) {
             .has_recent_match(&absolute_path, current_hash)
         {
             continue;
+        }
+        if context.write_tracker.has_recent_entry(&absolute_path) {
+            // Some platforms can report a modify event while the file is between
+            // truncate and final write. Give the content hash a tiny chance to
+            // settle before treating the event as external.
+            for _ in 0..SELF_WRITE_HASH_RETRY_ATTEMPTS {
+                std::thread::sleep(SELF_WRITE_HASH_RETRY_DELAY);
+                let current_hash = std::fs::read(&absolute_path)
+                    .ok()
+                    .map(|bytes| hash_bytes(&bytes));
+                if context
+                    .write_tracker
+                    .has_recent_match(&absolute_path, current_hash)
+                {
+                    continue 'paths;
+                }
+            }
         }
 
         record_pending_invalidation(context.key, context.root, &relative_path, context.pending);
