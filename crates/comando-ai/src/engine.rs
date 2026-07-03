@@ -281,16 +281,13 @@ impl AiEngine {
         let event_sender = self.event_sender()?;
         drop(sessions);
         let spec = AcpProcessSpec::from_launch(definition, &launch)?;
-        let (session, controller) = match start_acp_session(
+        let (session, controller) = start_acp_session(
             &self.runtime,
             spec,
             session,
             Arc::clone(&self.sessions),
             event_sender,
-        ) {
-            Ok(result) => result,
-            Err(error) => return Err(error),
-        };
+        )?;
         let mut sessions = self.lock_sessions()?;
         let summary = sessions.insert_with_acp_controller(session, controller)?;
         drop(sessions);
