@@ -41,6 +41,7 @@ interface DropdownOption {
 }
 
 interface DropdownFieldProps {
+    readonly buttonLabel?: string;
     readonly disabled?: boolean;
     readonly emptySearchMessage?: string;
     readonly label: string;
@@ -99,6 +100,7 @@ function ChevronIcon({ open }: { readonly open: boolean }) {
 }
 
 function DropdownField({
+    buttonLabel,
     disabled = false,
     emptySearchMessage = "No matches found.",
     label,
@@ -117,6 +119,8 @@ function DropdownField({
     const [menuPosition, setMenuPosition] =
         useState<DropdownMenuPosition | null>(null);
     const selectedOption = options.find((option) => option.value === value);
+    const displayValue =
+        buttonLabel ?? selectedOption?.label ?? formatFallbackLabel(value);
     const isDisabled = disabled || options.length === 0;
     const filteredOptions = useMemo(() => {
         const normalizedQuery = query.trim().toLowerCase();
@@ -255,7 +259,7 @@ function DropdownField({
                 type="button"
             >
                 <span className="min-w-0 max-w-[160px] truncate">
-                    {selectedOption?.label ?? formatFallbackLabel(value)}
+                    {displayValue}
                 </span>
                 <ChevronIcon open={isOpen} />
             </button>
@@ -462,6 +466,15 @@ function filterConfigOptions(option: AiSessionConfigOption) {
     return { ...option, options: mapConfigOption(option) };
 }
 
+function getConfigButtonLabel(option: AiSessionConfigOption): string | undefined {
+    if (option.type !== "select" || option.id !== "fast") {
+        return undefined;
+    }
+
+    const selectedOption = option.options.find((item) => item.value === option.value);
+    return `Fast: ${selectedOption?.label ?? formatFallbackLabel(option.value)}`;
+}
+
 export function AIChatAgentControls({
     configOptions,
     disabled = false,
@@ -581,6 +594,7 @@ export function AIChatAgentControls({
                     />
                 ) : (
                     <DropdownField
+                        buttonLabel={getConfigButtonLabel(option)}
                         disabled={disabled}
                         key={option.id}
                         label={option.label}
