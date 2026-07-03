@@ -411,6 +411,93 @@ describe("AiService Codex branch", () => {
         expect(status.runtimeId).toBe("codex");
     });
 
+    it("clears stored Codex API keys when a stored credential fails authentication", async () => {
+        let savedSettings: CodexRuntimeSettings | null = null;
+        const runtimeStatusEvents: AiRuntimeStatus[] = [];
+        const secretValues = new Map<string, string>([
+            ["ai.codex:codex_api_key", "invalid-codex-secret"],
+        ]);
+        const service = new AiService({
+            onRuntimeStatus: (status) => runtimeStatusEvents.push(status),
+            onSessionSnapshot: vi.fn(),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+            projectService: {
+                getProjectRootPath: vi.fn(() => process.cwd()),
+            } as never,
+            secretStore: {
+                loadSecret: (namespace: string, secretId: string) =>
+                    secretValues.get(`${namespace}:${secretId}`) ?? null,
+                saveSecret: (
+                    namespace: string,
+                    secretId: string,
+                    value: string | null,
+                ) => {
+                    const key = `${namespace}:${secretId}`;
+                    if (!value?.trim()) {
+                        secretValues.delete(key);
+                        return;
+                    }
+
+                    secretValues.set(key, value.trim());
+                },
+            },
+            settingsService: {
+                loadClaudeRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    authMethod: null,
+                    binaryPath: null,
+                    gatewayBaseUrl: null,
+                    hasGatewayAuthToken: false,
+                    hasGatewayCustomHeaders: false,
+                })),
+                loadCodexRuntimeSettings: vi.fn(() => ({
+                    authMethod: "codex-api-key",
+                    binaryPath: "/usr/local/bin/codex-acp",
+                    hasCodexApiKey: true,
+                    hasOpenAiApiKey: false,
+                })),
+                loadKiloRuntimeSettings: vi.fn(() => ({
+                    authInvalidatedAtMs: null,
+                    binaryPath: null,
+                })),
+                saveClaudeRuntimeSettings: vi.fn(),
+                saveCodexRuntimeSettings: (settings: CodexRuntimeSettings) => {
+                    savedSettings = settings;
+                },
+                saveKiloRuntimeSettings: vi.fn(),
+            } as never,
+        });
+
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSessionSnapshot({
+                lastError: "authentication required",
+                runtimeId: "codex",
+            }),
+        });
+        await Promise.resolve();
+
+        expect(savedSettings).toEqual({
+            authMethod: "codex-api-key",
+            binaryPath: "/usr/local/bin/codex-acp",
+            hasCodexApiKey: false,
+            hasOpenAiApiKey: false,
+        });
+        expect(secretValues.size).toBe(0);
+        expect(runtimeStatusEvents.at(-1)).toEqual(
+            expect.objectContaining({
+                authCredentialSource: "none",
+                authMethod: null,
+                authReady: false,
+                runtimeId: "codex",
+            }),
+        );
+    });
+
     it("delegates Codex logout to native auth", async () => {
         const runtimeStatusEvents: AiRuntimeStatus[] = [];
         const saveRuntimeSettings = vi.fn(() =>
@@ -1155,6 +1242,36 @@ function createNativeCodexStatus(
         runtimeId: "codex",
         source: null,
         state: "ready",
+        ...overrides,
+    };
+}
+
+function createSessionSnapshot(
+    overrides: Partial<AiSessionSnapshot> = {},
+): AiSessionSnapshot {
+    return {
+        availableCommands: [],
+        configOptions: [],
+        lastError: null,
+        messages: [],
+        modeId: null,
+        modes: [],
+        modelId: null,
+        models: [],
+        pendingPermission: null,
+        pendingUserInput: null,
+        plan: null,
+        projectId: null,
+        runtimeId: "codex",
+        runtimeSessionId: null,
+        sessionId: "session-1",
+        status: "error",
+        title: "Codex 1",
+        tokenUsage: null,
+        toolActivity: [],
+        trackedFiles: [],
+        updatedAt: "2026-04-15T00:00:00.000Z",
+        worktreeId: null,
         ...overrides,
     };
 }

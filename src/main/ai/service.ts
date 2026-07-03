@@ -4665,6 +4665,45 @@ export class AiService {
         if (runtimeId === "codex" && isCodexAuthenticationError(message)) {
             const currentSettings =
                 this.#settingsService.loadCodexRuntimeSettings();
+            const currentSecrets = loadCodexSecretBundle(this.#secretStore);
+            const currentStatus = getCodexRuntimeStatus(
+                currentSettings,
+                currentSecrets,
+            );
+
+            if (currentStatus.authCredentialSource === "environment") {
+                return;
+            }
+
+            if (currentStatus.authCredentialSource === "comando-secret") {
+                const secretPatch = buildCodexSecretPatches(this.#secretStore, {
+                    codexApiKey: null,
+                    openaiApiKey: null,
+                });
+                const nextSettings = {
+                    ...currentSettings,
+                    hasCodexApiKey: secretPatch.flags.hasCodexApiKey,
+                    hasOpenAiApiKey: secretPatch.flags.hasOpenAiApiKey,
+                } satisfies CodexRuntimeSettings;
+                this.#secretStore.cacheSecretPatches?.(secretPatch.patches);
+                void this.#saveSecretPatches(secretPatch.patches).catch(
+                    (error: unknown) => {
+                        debugBenignError(
+                            "ai.codex.invalidateStoredApiKey",
+                            error,
+                        );
+                    },
+                );
+                this.#settingsService.saveCodexRuntimeSettings(nextSettings);
+                this.#onRuntimeStatus(
+                    getCodexRuntimeStatus(
+                        nextSettings,
+                        loadCodexSecretBundle(this.#secretStore),
+                    ),
+                );
+                return;
+            }
+
             const nextSettings = {
                 ...currentSettings,
                 authMethod: null,
@@ -4740,8 +4779,43 @@ export class AiService {
         }
 
         if (runtimeId === "kilo" && isKiloAuthenticationError(message)) {
+            const currentSettings =
+                this.#settingsService.loadKiloRuntimeSettings();
+            const currentStatus = getKiloRuntimeStatus(
+                currentSettings,
+                this.#secretStore,
+            );
+
+            if (currentStatus.authCredentialSource === "environment") {
+                return;
+            }
+
+            if (currentStatus.authCredentialSource === "comando-secret") {
+                const secretPatch = buildKiloSecretPatches(this.#secretStore, {
+                    kiloApiKey: null,
+                });
+                const nextSettings = {
+                    ...currentSettings,
+                    hasKiloApiKey: secretPatch.flags.hasKiloApiKey,
+                };
+                this.#secretStore.cacheSecretPatches?.(secretPatch.patches);
+                void this.#saveSecretPatches(secretPatch.patches).catch(
+                    (error: unknown) => {
+                        debugBenignError(
+                            "ai.kilo.invalidateStoredApiKey",
+                            error,
+                        );
+                    },
+                );
+                this.#settingsService.saveKiloRuntimeSettings(nextSettings);
+                this.#onRuntimeStatus(
+                    getKiloRuntimeStatus(nextSettings, this.#secretStore),
+                );
+                return;
+            }
+
             const nextSettings = markKiloAuthInvalidated({
-                ...this.#settingsService.loadKiloRuntimeSettings(),
+                ...currentSettings,
                 authMethod: "kilo-login",
             });
             this.#settingsService.saveKiloRuntimeSettings(nextSettings);
