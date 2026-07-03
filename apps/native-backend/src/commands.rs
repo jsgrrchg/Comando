@@ -11,7 +11,7 @@ use comando_ai::history::{
     AiHistoryMigrationMode, AiHistoryMigrationOptions, AiHistoryMigrator, AiHistoryStore,
     LegacyAiHistoryReader,
 };
-use comando_ai::runtime_setup::invalidate_grok_auth_on_error;
+use comando_ai::runtime_setup::invalidate_runtime_auth_on_error;
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
 use comando_git::{
     GitBranchListScope, GitError, GitFileDiffRequest, GitRunOptions, GitRunner, checkout_branch,
@@ -4085,7 +4085,10 @@ fn ai_error_runtime_outputs(
         .get("runtimeId")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if runtime_id != "grok" {
+    if !matches!(
+        runtime_id,
+        "codex" | "claude" | "grok" | "kilo" | "opencode"
+    ) {
         return Vec::new();
     }
     let message = ai_event
@@ -4100,7 +4103,7 @@ fn ai_error_runtime_outputs(
     else {
         return Vec::new();
     };
-    match invalidate_grok_auth_on_error(&store, message) {
+    match invalidate_runtime_auth_on_error(&store, runtime_id, message) {
         Ok(true) => runtime_status_event(ai_engine, runtime_id)
             .into_iter()
             .collect(),
@@ -4806,6 +4809,64 @@ mod tests {
         let encoded = fs::read_to_string(temp_dir.path().join("ai").join("runtime-setup.json"))
             .expect("runtime setup");
         assert!(!encoded.contains("test-native-status-token"));
+    }
+
+    #[test]
+    fn ai_error_auth_invalidation_emits_runtime_status_for_claude_and_opencode() {
+        let (_temp_dir, backend) = backend_with_memory_runtime_setup();
+        let store = backend.runtime_setup_store.clone().expect("runtime setup");
+        store
+            .update_runtime("claude", |state| {
+                state.auth_method = Some("anthropic-api-key".to_string());
+            })
+            .expect("claude setup");
+        store
+            .secrets()
+            .set_secret("claude", "ANTHROPIC_API_KEY", "sk-ant-test")
+            .expect("claude secret");
+        store
+            .update_runtime("claude", |state| {
+                state
+                    .secret_env_keys
+                    .insert("ANTHROPIC_API_KEY".to_string());
+            })
+            .expect("claude secret marker");
+        store
+            .update_runtime("opencode", |state| {
+                state.auth_method = Some("opencode-login".to_string());
+                state.auth_invalidated_at_ms = None;
+            })
+            .expect("opencode setup");
+
+        let shared_store = Arc::new(Mutex::new(Some(store.clone())));
+        let cases = [
+            ("claude", "invalid api key"),
+            ("opencode", "no provider configured"),
+        ];
+
+        for (runtime_id, message) in cases {
+            let outputs = ai_error_runtime_outputs(
+                &shared_store,
+                &backend.ai_engine,
+                &AiRuntimeEvent {
+                    event_name: AI_ERROR_EVENT.to_string(),
+                    payload: json!({
+                        "runtimeId": runtime_id,
+                        "message": message,
+                    }),
+                },
+            );
+
+            assert!(outputs.iter().any(|output| {
+                matches!(
+                    output,
+                    RpcOutput::Event(event)
+                        if event.event_name == AI_RUNTIME_STATUS_EVENT
+                            && event.payload["runtimeId"] == runtime_id
+                            && event.payload["authReady"] == false
+                )
+            }));
+        }
     }
 
     #[test]

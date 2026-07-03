@@ -277,7 +277,83 @@ pub fn prepare_runtime_auth_connection(
     })
 }
 
-pub fn invalidate_grok_auth_on_error(store: &RuntimeSetupStore, message: &str) -> AiResult<bool> {
+pub fn invalidate_runtime_auth_on_error(
+    store: &RuntimeSetupStore,
+    runtime_id: &str,
+    message: &str,
+) -> AiResult<bool> {
+    match runtime_id {
+        "codex" => invalidate_codex_auth_on_error(store, message),
+        "claude" => invalidate_claude_auth_on_error(store, message),
+        "grok" => invalidate_grok_auth_on_error(store, message),
+        "kilo" => invalidate_kilo_auth_on_error(store, message),
+        "opencode" => invalidate_opencode_auth_on_error(store, message),
+        _ => Ok(false),
+    }
+}
+
+fn invalidate_codex_auth_on_error(store: &RuntimeSetupStore, message: &str) -> AiResult<bool> {
+    if !is_codex_auth_error(message) {
+        return Ok(false);
+    }
+
+    let setup = load_runtime_setup(store, "codex")?;
+    let auth = codex_auth_state(store, &setup);
+    match auth.credential_source {
+        NativeAiCredentialSource::Environment => Ok(false),
+        NativeAiCredentialSource::ComandoSecret => {
+            clear_runtime_secrets(store, "codex", &["CODEX_API_KEY", "OPENAI_API_KEY"])?;
+            Ok(true)
+        }
+        _ => {
+            store
+                .update_runtime("codex", |state| {
+                    state.auth_method = None;
+                })
+                .map_err(|error| {
+                    AiError::Internal(format!("Native Codex auth invalidation failed: {error}"))
+                })?;
+            Ok(true)
+        }
+    }
+}
+
+fn invalidate_claude_auth_on_error(store: &RuntimeSetupStore, message: &str) -> AiResult<bool> {
+    if !is_claude_auth_error(message) {
+        return Ok(false);
+    }
+
+    let setup = load_runtime_setup(store, "claude")?;
+    let auth = claude_auth_state(store, &setup);
+    match auth.credential_source {
+        NativeAiCredentialSource::Environment => Ok(false),
+        NativeAiCredentialSource::ComandoSecret => {
+            clear_runtime_secrets(
+                store,
+                "claude",
+                &[
+                    "ANTHROPIC_API_KEY",
+                    "ANTHROPIC_AUTH_TOKEN",
+                    "ANTHROPIC_CUSTOM_HEADERS",
+                ],
+            )?;
+            Ok(true)
+        }
+        NativeAiCredentialSource::ExternalRuntime => {
+            store
+                .update_runtime("claude", |state| {
+                    state.auth_invalidated_at_ms = Some(now_ms());
+                })
+                .map_err(|error| {
+                    AiError::Internal(format!("Native Claude auth invalidation failed: {error}"))
+                })?;
+            Ok(true)
+        }
+        NativeAiCredentialSource::None => Ok(false),
+    }
+}
+
+fn invalidate_grok_auth_on_error(store: &RuntimeSetupStore, message: &str) -> AiResult<bool> {
     if !is_grok_auth_error(message) {
         return Ok(false);
     }
@@ -298,6 +374,72 @@ pub fn invalidate_grok_auth_on_error(store: &RuntimeSetupStore, message: &str) -
             AiError::Internal(format!("Native Grok auth invalidation failed: {error}"))
         })?;
     Ok(true)
+}
+
+fn invalidate_kilo_auth_on_error(store: &RuntimeSetupStore, message: &str) -> AiResult<bool> {
+    if !is_kilo_auth_error(message) {
+        return Ok(false);
+    }
+
+    let setup = load_runtime_setup(store, "kilo")?;
+    let auth = kilo_auth_state(store, &setup);
+    match auth.credential_source {
+        NativeAiCredentialSource::Environment => Ok(false),
+        NativeAiCredentialSource::ComandoSecret => {
+            clear_runtime_secrets(store, "kilo", &["KILO_API_KEY"])?;
+            Ok(true)
+        }
+        _ => {
+            store
+                .update_runtime("kilo", |state| {
+                    state.auth_method = Some("kilo-login".to_string());
+                    state.auth_invalidated_at_ms = Some(now_ms());
+                })
+                .map_err(|error| {
+                    AiError::Internal(format!("Native Kilo auth invalidation failed: {error}"))
+                })?;
+            Ok(true)
+        }
+    }
+}
+
+fn invalidate_opencode_auth_on_error(store: &RuntimeSetupStore, message: &str) -> AiResult<bool> {
+    if !is_opencode_auth_error(message) {
+        return Ok(false);
+    }
+
+    let setup = load_runtime_setup(store, "opencode")?;
+    let auth = opencode_auth_state(&setup);
+    match auth.credential_source {
+        NativeAiCredentialSource::Environment => Ok(false),
+        NativeAiCredentialSource::ExternalRuntime => {
+            store
+                .update_runtime("opencode", |state| {
+                    state.auth_method = Some("opencode-login".to_string());
+                    state.auth_invalidated_at_ms = Some(now_ms());
+                })
+                .map_err(|error| {
+                    AiError::Internal(format!("Native OpenCode auth invalidation failed: {error}"))
+                })?;
+            Ok(true)
+        }
+        NativeAiCredentialSource::ComandoSecret | NativeAiCredentialSource::None => Ok(false),
+    }
+}
+
+fn clear_runtime_secrets(
+    store: &RuntimeSetupStore,
+    runtime_id: &str,
+    env_keys: &[&str],
+) -> AiResult<()> {
+    for env_key in env_keys {
+        store.delete_secret(runtime_id, env_key).map_err(|error| {
+            AiError::Internal(format!(
+                "Native {runtime_id} auth secret invalidation failed: {error}"
+            ))
+        })?;
+    }
+    Ok(())
 }
 
 fn load_runtime_setup(store: &RuntimeSetupStore, runtime_id: &str) -> AiResult<RuntimeSetupState> {
@@ -1731,6 +1873,24 @@ fn is_remote_claude_auth_environment() -> bool {
     .any(|key| env_secret_present(key))
 }
 
+fn is_codex_auth_error(message: &str) -> bool {
+    let lower = message.trim().to_ascii_lowercase();
+    lower.contains("auth_required")
+        || lower.contains("authentication required")
+        || lower.contains("login required")
+}
+
+fn is_claude_auth_error(message: &str) -> bool {
+    let lower = message.trim().to_ascii_lowercase();
+    lower.contains("auth_required")
+        || lower.contains("authentication required")
+        || lower.contains("login required")
+        || lower.contains("please run `claude login`")
+        || lower.contains("invalid api key")
+        || lower.contains("401")
+        || lower.contains("unauthorized")
+}
+
 fn is_grok_auth_error(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
     let auth_hint = [
@@ -1751,6 +1911,29 @@ fn is_grok_auth_error(message: &str) -> bool {
     .iter()
     .any(|needle| lower.contains(needle));
     auth_hint && (lower.contains("grok") || lower.contains("xai") || lower.contains("auth"))
+}
+
+fn is_kilo_auth_error(message: &str) -> bool {
+    let lower = message.trim().to_ascii_lowercase();
+    lower.contains("auth_required")
+        || lower.contains("authentication required")
+        || lower.contains("run `kilo auth login`")
+        || lower.contains("you were signed out")
+        || lower.contains("reconnect kilo")
+}
+
+fn is_opencode_auth_error(message: &str) -> bool {
+    let lower = message.trim().to_ascii_lowercase();
+    lower.contains("auth required")
+        || lower.contains("auth_required")
+        || lower.contains("authentication required")
+        || lower.contains("missing api key")
+        || lower.contains("no provider configured")
+        || lower.contains("run opencode auth login")
+        || lower.contains("run `opencode auth login`")
+        || lower.contains("use /connect")
+        || lower.contains("unauthorized")
+        || lower.contains("401")
 }
 
 fn now_ms() -> u64 {
@@ -1948,6 +2131,65 @@ mod tests {
     }
 
     #[test]
+    fn codex_auth_error_clears_stored_api_keys() {
+        let store = store_with_secret("codex", "OPENAI_API_KEY", "sk-test");
+        store
+            .update_runtime("codex", |state| {
+                state.auth_method = Some("openai-api-key".to_string());
+            })
+            .expect("setup");
+        let definition = crate::runtime::RuntimeRegistry::default()
+            .get("codex")
+            .unwrap();
+        let ready = runtime_status(&store, definition).expect("ready status");
+        assert!(ready.auth_ready);
+
+        let invalidated =
+            invalidate_runtime_auth_on_error(&store, "codex", "authentication required")
+                .expect("invalidate");
+        let status = runtime_status(&store, definition).expect("status");
+
+        assert!(invalidated);
+        assert!(!status.auth_ready);
+        assert_eq!(
+            store
+                .secrets()
+                .get_secret("codex", "OPENAI_API_KEY")
+                .expect("secret"),
+            None
+        );
+    }
+
+    #[test]
+    fn claude_auth_error_clears_stored_api_key() {
+        let store = store_with_secret("claude", "ANTHROPIC_API_KEY", "sk-ant-test");
+        store
+            .update_runtime("claude", |state| {
+                state.auth_method = Some("anthropic-api-key".to_string());
+            })
+            .expect("setup");
+        let definition = crate::runtime::RuntimeRegistry::default()
+            .get("claude")
+            .unwrap();
+        let ready = runtime_status(&store, definition).expect("ready status");
+        assert!(ready.auth_ready);
+
+        let invalidated = invalidate_runtime_auth_on_error(&store, "claude", "invalid api key")
+            .expect("invalidate");
+        let status = runtime_status(&store, definition).expect("status");
+
+        assert!(invalidated);
+        assert!(!status.auth_ready);
+        assert_eq!(
+            store
+                .secrets()
+                .get_secret("claude", "ANTHROPIC_API_KEY")
+                .expect("secret"),
+            None
+        );
+    }
+
+    #[test]
     fn claude_gateway_rejects_embedded_credentials() {
         let temp = tempdir().expect("temp");
         let store = RuntimeSetupStore::in_memory_for_tests(temp.path().join("runtime-setup.json"));
@@ -2100,6 +2342,65 @@ mod tests {
         assert!(invalidated);
         assert!(!status.auth_ready);
         assert_eq!(status.auth_method, None);
+    }
+
+    #[test]
+    fn kilo_auth_error_clears_stored_api_key() {
+        let store = store_with_secret("kilo", "KILO_API_KEY", "kilo-test");
+        store
+            .update_runtime("kilo", |state| {
+                state.auth_method = Some("kilo-api-key".to_string());
+            })
+            .expect("setup");
+        let definition = crate::runtime::RuntimeRegistry::default()
+            .get("kilo")
+            .unwrap();
+        let ready = runtime_status(&store, definition).expect("ready status");
+        assert!(ready.auth_ready);
+
+        let invalidated =
+            invalidate_runtime_auth_on_error(&store, "kilo", "authentication required")
+                .expect("invalidate");
+        let status = runtime_status(&store, definition).expect("status");
+
+        assert!(invalidated);
+        assert!(!status.auth_ready);
+        assert_eq!(
+            store
+                .secrets()
+                .get_secret("kilo", "KILO_API_KEY")
+                .expect("secret"),
+            None
+        );
+    }
+
+    #[test]
+    fn opencode_auth_error_invalidates_selected_login() {
+        let temp = tempdir().expect("temp");
+        let store = RuntimeSetupStore::in_memory_for_tests(temp.path().join("runtime-setup.json"));
+        store
+            .update_runtime("opencode", |state| {
+                state.auth_method = Some("opencode-login".to_string());
+                state.auth_invalidated_at_ms = None;
+            })
+            .expect("setup");
+        let definition = crate::runtime::RuntimeRegistry::default()
+            .get("opencode")
+            .unwrap();
+        let ready = runtime_status(&store, definition).expect("ready status");
+        assert!(ready.auth_ready);
+
+        let invalidated =
+            invalidate_runtime_auth_on_error(&store, "opencode", "no provider configured")
+                .expect("invalidate");
+        let status = runtime_status(&store, definition).expect("status");
+        let setup = store.load_runtime("opencode").expect("setup");
+
+        assert!(invalidated);
+        assert!(!status.auth_ready);
+        assert_eq!(status.auth_method, None);
+        assert_eq!(setup.auth_method.as_deref(), Some("opencode-login"));
+        assert!(setup.auth_invalidated_at_ms.is_some());
     }
 
     #[test]

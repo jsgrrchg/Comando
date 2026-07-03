@@ -37,7 +37,7 @@ use crate::history::{
 };
 use crate::runtime::RuntimeRegistry;
 use crate::runtime_setup::{
-    RuntimeAuthTerminalLaunch, invalidate_grok_auth_on_error, prepare_auth_terminal_launch,
+    RuntimeAuthTerminalLaunch, invalidate_runtime_auth_on_error, prepare_auth_terminal_launch,
     prepare_auth_terminal_logout, prepare_runtime_auth_connection, prepare_runtime_launch,
     runtime_status,
 };
@@ -745,13 +745,10 @@ impl AiEngine {
     }
 
     fn invalidate_runtime_auth_on_error(&self, runtime_id: &str, message: &str) {
-        if runtime_id != "grok" {
-            return;
-        }
         let Ok(Some(store)) = self.runtime_setup_store() else {
             return;
         };
-        let _ = invalidate_grok_auth_on_error(&store, message);
+        let _ = invalidate_runtime_auth_on_error(&store, runtime_id, message);
     }
 
     fn initialize_history_session(
