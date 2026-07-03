@@ -752,6 +752,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const scope = resolveGitScope(options.projectService, input);
             return options.gitService.listHistory(scope.rootPath, {
                 caseSensitive: input.caseSensitive,
+                includeAllRefs: input.includeAllRefs,
                 limit: input.limit,
                 query: input.query,
             });

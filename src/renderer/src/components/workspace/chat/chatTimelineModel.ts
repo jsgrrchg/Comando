@@ -13,6 +13,7 @@ import {
     deriveToolActivityReviewEntries,
     type ToolActivityReviewEntry,
 } from "./toolActivityReviewModel";
+import { isTurnStartedActivity } from "./toolActivityKinds";
 
 export type ChatTimelineRow =
     | {
@@ -220,10 +221,123 @@ function getToolRowId(entry: ToolActivityReviewEntry): string {
     return `tool:${entry.activity.id}`;
 }
 
+const LOCAL_TURN_STARTED_ACTIVITY_ID_PREFIX = "comando:status:turn:local:";
+
+function createLocalTurnStartedActivity(input: {
+    readonly activeTurnStartedAt: string;
+    readonly sessionId: string;
+}): AiSessionSnapshot["toolActivity"][number] {
+    return {
+        action: null,
+        createdAt: input.activeTurnStartedAt,
+        diffs: [],
+        exitCode: null,
+        id: `${LOCAL_TURN_STARTED_ACTIVITY_ID_PREFIX}${input.activeTurnStartedAt}`,
+        kind: "status",
+        locations: [],
+        rawInputJson: null,
+        rawOutputJson: null,
+        sessionId: input.sessionId,
+        status: "completed",
+        summary: null,
+        terminalOutput: null,
+        title: "New turn",
+        updatedAt: input.activeTurnStartedAt,
+    };
+}
+
+function isCurrentTurnStartedActivity(
+    activity: AiSessionSnapshot["toolActivity"][number],
+    activeTurnStartedAt: string,
+): boolean {
+    return (
+        isTurnStartedActivity(activity) &&
+        activity.createdAt >= activeTurnStartedAt
+    );
+}
+
+function getLocalTurnSessionId(
+    messages: readonly AiSessionSnapshot["messages"][number][],
+    toolActivity: readonly AiSessionSnapshot["toolActivity"][number][],
+): string {
+    return (
+        toolActivity[toolActivity.length - 1]?.sessionId ??
+        messages[messages.length - 1]?.id ??
+        "local"
+    );
+}
+
+function hasUserMessageBefore(
+    messages: readonly AiSessionSnapshot["messages"][number][],
+    createdAt: string,
+): boolean {
+    return messages.some(
+        (message) => message.kind === "user" && message.createdAt < createdAt,
+    );
+}
+
+function prepareTimelineToolActivity(
+    snapshot: Pick<
+        AiSessionSnapshot,
+        "messages" | "status" | "toolActivity"
+    > & {
+        readonly activeTurnStartedAt?: string | null;
+    },
+): readonly AiSessionSnapshot["toolActivity"][number][] {
+    const visibleToolActivity = snapshot.toolActivity.filter(
+        (activity) =>
+            !isTurnStartedActivity(activity) ||
+            hasUserMessageBefore(snapshot.messages, activity.createdAt),
+    );
+
+    if (
+        !isStreamingStatus(snapshot.status) ||
+        !snapshot.activeTurnStartedAt
+    ) {
+        return visibleToolActivity;
+    }
+
+    const currentTurnStartedAt = snapshot.activeTurnStartedAt;
+    const toolActivity = visibleToolActivity.filter(
+        (activity) =>
+            !isCurrentTurnStartedActivity(activity, currentTurnStartedAt),
+    );
+
+    if (!hasUserMessageBefore(snapshot.messages, currentTurnStartedAt)) {
+        return toolActivity;
+    }
+
+    return [
+        ...toolActivity,
+        createLocalTurnStartedActivity({
+            activeTurnStartedAt: currentTurnStartedAt,
+            sessionId: getLocalTurnSessionId(
+                snapshot.messages,
+                snapshot.toolActivity,
+            ),
+        }),
+    ];
+}
+
 function getRowCreatedAt(row: ChatTimelineRow): string {
     return row.kind === "message"
         ? row.message.createdAt
         : row.reviewEntry.activity.createdAt;
+}
+
+function getRowSortPriority(row: ChatTimelineRow): number {
+    if (
+        row.kind === "tool" &&
+        isTurnStartedActivity(row.reviewEntry.activity)
+    ) {
+        return 0;
+    }
+
+    if (row.kind === "message" && row.message.kind === "user") {
+        return 1;
+    }
+
+    return 2;
 }
 
 function isContextCompactionActivity(
@@ -254,6 +368,12 @@ function compareRows(left: ChatTimelineRow, right: ChatTimelineRow): number {
 
     if (createdAtComparison !== 0) {
         return createdAtComparison;
+    }
+
+    const priorityComparison =
+        getRowSortPriority(left) - getRowSortPriority(right);
+    if (priorityComparison !== 0) {
+        return priorityComparison;
     }
 
     return left.id.localeCompare(right.id);
@@ -391,7 +511,7 @@ export function reconcileChatTimelineModel(
     },
 ): ChatTimelineModel {
     const toolEntries = deriveToolActivityReviewEntries(
-        snapshot.toolActivity,
+        prepareTimelineToolActivity(snapshot),
         snapshot.trackedFiles,
     );
     const nextRowById = createRowById(previous, snapshot.messages, toolEntries);

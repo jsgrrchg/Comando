@@ -294,7 +294,7 @@ export function SidebarGitPanel({
     return (
         <div className="flex h-full min-h-0 flex-col">
             <div className="flex items-center justify-between px-2 py-1.5">
-                <div className="flex items-center gap-1.5 text-[11px] font-medium text-text-secondary">
+                <div className="flex items-center gap-1.5 text-[12px] font-medium text-text-secondary">
                     <span>
                         {hasFilter
                             ? `${filteredChangesCount} of ${totalChanges}`
@@ -321,17 +321,17 @@ export function SidebarGitPanel({
                 </div>
                 <div className="flex items-center gap-1">
                     <button
-                        className="rounded px-1.5 py-0.5 text-[10px] font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
+                        className="sidebar-toolbar-action"
                         disabled={!hasChanges}
                         onClick={handleReviewChanges}
                         title="Open Uncommitted Changes"
                         type="button"
                     >
-                        Review Changes
+                        Review
                     </button>
                     {hasChanges && (
                         <button
-                            className="rounded px-1.5 py-0.5 text-[10px] font-medium text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+                            className="sidebar-toolbar-action"
                             onClick={
                                 allStaged ? handleUnstageAll : handleStageAll
                             }
@@ -343,7 +343,7 @@ export function SidebarGitPanel({
                     {hasChanges && (
                         <button
                             aria-label="Discard all changes"
-                            className="review-icon-btn review-icon-btn--reject"
+                            className="sidebar-toolbar-action sidebar-toolbar-action--icon sidebar-toolbar-action--danger"
                             onClick={handleDiscardAll}
                             title="Discard all changes"
                             type="button"

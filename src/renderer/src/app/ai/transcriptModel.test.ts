@@ -273,6 +273,52 @@ describe("transcriptModel", () => {
         expect(merged.lastTurnStartedMessageId).toBeNull();
     });
 
+    it("anchors existing tool activity while applying incoming content updates", () => {
+        const current = buildAiSessionTranscriptModel({
+            messages: [],
+            toolActivity: [
+                createToolActivity({
+                    createdAt: "2026-04-14T00:00:01.000Z",
+                    status: "in_progress",
+                    summary: "Running",
+                    terminalOutput: "running",
+                    updatedAt: "2026-04-14T00:00:01.000Z",
+                }),
+            ],
+        });
+        const incoming = buildAiSessionTranscriptModel({
+            messages: [],
+            toolActivity: [
+                createToolActivity({
+                    createdAt: "2026-04-14T00:00:05.000Z",
+                    exitCode: 0,
+                    status: "completed",
+                    summary: "Done",
+                    terminalOutput: "done",
+                    updatedAt: "2026-04-14T00:00:05.000Z",
+                }),
+            ],
+        });
+
+        const merged = mergeAiSessionTranscriptSources(current, incoming, {
+            includeMessages: false,
+            includePlan: false,
+            includeStatus: false,
+            includeTools: true,
+        });
+
+        expect(getAiSessionTranscriptToolActivity(merged)).toEqual([
+            expect.objectContaining({
+                createdAt: "2026-04-14T00:00:01.000Z",
+                exitCode: 0,
+                status: "completed",
+                summary: "Done",
+                terminalOutput: "done",
+                updatedAt: "2026-04-14T00:00:05.000Z",
+            }),
+        ]);
+    });
+
     it("replaces tool entries when incoming tool activity is explicit", () => {
         const current = buildAiSessionTranscriptModel({
             messages: [

@@ -387,6 +387,10 @@ export function App() {
         gitHubSidebarSelectionResetSignal,
         setGitHubSidebarSelectionResetSignal,
     ] = useState(0);
+    const [
+        fileTreeContextTargetResetSignal,
+        setFileTreeContextTargetResetSignal,
+    ] = useState(0);
     const [fileTreeSelectedPaths, setFileTreeSelectedPaths] = useState<
         readonly string[]
     >([]);
@@ -1473,6 +1477,7 @@ export function App() {
     const focusWorkspaceSurface = useCallback(() => {
         focusSurface("workspace");
         clearFileTreeSelection({ suppressActivePathFallback: true });
+        setFileTreeContextTargetResetSignal((signal) => signal + 1);
         setGitHubSidebarSelectionResetSignal((signal) => signal + 1);
         setFileTreeContextMenu(null);
     }, [clearFileTreeSelection, focusSurface]);
@@ -3561,23 +3566,40 @@ export function App() {
                             fill="none"
                             viewBox="0 0 16 16"
                         >
-                            <path
-                                d="M3 4.25A1.25 1.25 0 0 1 4.25 3h7.5A1.25 1.25 0 0 1 13 4.25v5.5A1.25 1.25 0 0 1 11.75 11H8.6l-2.2 2.05A.5.5 0 0 1 5.6 12.7V11H4.25A1.25 1.25 0 0 1 3 9.75v-5.5Z"
+                            {/* Robot head — reads clearly as an agent */}
+                            <rect
+                                x="3.75"
+                                y="5.5"
+                                width="8.5"
+                                height="7"
+                                rx="2"
                                 stroke="currentColor"
-                                strokeWidth="1.1"
+                                strokeWidth="1.2"
                                 fill="currentColor"
-                                fillOpacity="0.18"
+                                fillOpacity="0.15"
+                            />
+                            <path
+                                d="M8 5.5V3.4"
+                                stroke="currentColor"
+                                strokeWidth="1.2"
+                                strokeLinecap="round"
                             />
                             <circle
-                                cx="6"
-                                cy="7"
-                                r="0.85"
+                                cx="8"
+                                cy="2.8"
+                                r="0.95"
                                 fill="currentColor"
                             />
                             <circle
-                                cx="10"
-                                cy="7"
-                                r="0.85"
+                                cx="6.3"
+                                cy="9"
+                                r="1"
+                                fill="currentColor"
+                            />
+                            <circle
+                                cx="9.7"
+                                cy="9"
+                                r="1"
                                 fill="currentColor"
                             />
                         </svg>
@@ -3608,27 +3630,39 @@ export function App() {
                             fill="none"
                             viewBox="0 0 16 16"
                         >
-                            <path
-                                d="M5.1 2.9 2.9 5.1a1 1 0 0 0 0 1.4l5.6 5.6a1 1 0 0 0 1.4 0l2.2-2.2a1 1 0 0 0 0-1.4L6.5 2.9a1 1 0 0 0-1.4 0Z"
+                            {/* Classic git-branch glyph */}
+                            <circle
+                                cx="4.5"
+                                cy="4"
+                                r="1.6"
                                 stroke="currentColor"
-                                strokeWidth="1.15"
+                                strokeWidth="1.2"
                             />
                             <circle
-                                cx="5"
-                                cy="5"
-                                r="0.85"
-                                fill="currentColor"
-                                stroke="none"
+                                cx="4.5"
+                                cy="12"
+                                r="1.6"
+                                stroke="currentColor"
+                                strokeWidth="1.2"
+                            />
+                            <circle
+                                cx="11.5"
+                                cy="4"
+                                r="1.6"
+                                stroke="currentColor"
+                                strokeWidth="1.2"
                             />
                             <path
-                                d="M7.2 7.2 10.6 10.6"
+                                d="M4.5 5.6v4.8"
                                 stroke="currentColor"
-                                strokeWidth="1"
+                                strokeWidth="1.2"
+                                strokeLinecap="round"
                             />
                             <path
-                                d="M8.8 5.6 10.4 7.2"
+                                d="M11.5 5.6v1.4A2.5 2.5 0 0 1 9 9.5H7a2.5 2.5 0 0 0-2.5 2.5"
                                 stroke="currentColor"
-                                strokeWidth="1"
+                                strokeWidth="1.2"
+                                strokeLinecap="round"
                             />
                         </svg>
                         <span>Git</span>
@@ -3917,6 +3951,9 @@ export function App() {
                                 ) : null}
                                 <GitTreeView
                                     activePath={activeFilePath}
+                                    contextTargetResetSignal={
+                                        fileTreeContextTargetResetSignal
+                                    }
                                     editingDraftName={
                                         fileTreeInlineEditor?.draftName ?? null
                                     }

@@ -160,77 +160,32 @@ export function GitCommitFooter({
                     >
                         {syncActions && syncMenuEntries.length > 0 ? (
                             <button
+                                className="git-sync-action-button"
                                 onClick={(e) => {
                                     const rect =
                                         e.currentTarget.getBoundingClientRect();
                                     setSyncMenu({
-                                        x: rect.right,
-                                        y: rect.top,
+                                        x: rect.left,
+                                        y: rect.bottom + 4,
                                         payload: undefined,
                                     });
-                                }}
-                                style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    width: 22,
-                                    height: 22,
-                                    borderRadius: 5,
-                                    border: "none",
-                                    background: "transparent",
-                                    color: "var(--color-text-secondary)",
-                                    cursor: "pointer",
-                                    flexShrink: 0,
-                                    padding: 0,
-                                    transition:
-                                        "background 100ms ease, color 100ms ease",
-                                }}
-                                onMouseEnter={(e) => {
-                                    e.currentTarget.style.background =
-                                        "var(--color-bg-tertiary)";
-                                    e.currentTarget.style.color =
-                                        "var(--color-text-primary)";
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.currentTarget.style.background =
-                                        "transparent";
-                                    e.currentTarget.style.color =
-                                        "var(--color-text-secondary)";
                                 }}
                                 title="Sync actions"
                                 type="button"
                             >
+                                <span>Fetch</span>
                                 <svg
                                     fill="none"
-                                    height="13"
-                                    viewBox="0 0 16 16"
-                                    width="13"
+                                    height="10"
+                                    viewBox="0 0 10 10"
+                                    width="10"
                                 >
                                     <path
-                                        d="M4.5 2v4.5M4.5 2L2 4.5M4.5 2L7 4.5"
+                                        d="M2.5 3.75L5 6.25L7.5 3.75"
                                         stroke="currentColor"
                                         strokeLinecap="round"
                                         strokeLinejoin="round"
-                                        strokeWidth="1.3"
-                                    />
-                                    <path
-                                        d="M11.5 14v-4.5M11.5 14L9 11.5M11.5 14L14 11.5"
-                                        stroke="currentColor"
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        strokeWidth="1.3"
-                                    />
-                                    <path
-                                        d="M4.5 6.5v3c0 1.1.9 2 2 2h5"
-                                        stroke="currentColor"
-                                        strokeLinecap="round"
-                                        strokeWidth="1.3"
-                                    />
-                                    <path
-                                        d="M11.5 9.5v-3c0-1.1-.9-2-2-2h-5"
-                                        stroke="currentColor"
-                                        strokeLinecap="round"
-                                        strokeWidth="1.3"
+                                        strokeWidth="1.4"
                                     />
                                 </svg>
                             </button>
@@ -429,8 +384,10 @@ export function GitCommitFooter({
             {syncMenu ? (
                 <ContextMenu
                     entries={syncMenuEntries}
+                    minWidth={180}
                     onClose={() => setSyncMenu(null)}
                     menu={syncMenu}
+                    variant="popover"
                 />
             ) : null}
         </div>

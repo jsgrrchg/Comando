@@ -3,7 +3,7 @@ import type {
     ChildProcessWithoutNullStreams,
     SpawnOptionsWithoutStdio,
 } from "node:child_process";
-import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { StringDecoder } from "node:string_decoder";
 
 import { buildRuntimeSpawnEnv } from "../ai/runtime-env";
 
@@ -92,11 +92,12 @@ export class NativeBackendClient {
     private readonly pendingRequests = new Map<string, PendingRequest>();
     private readonly requestTimeoutMs: number;
     private readonly shutdownTimeoutMs: number;
-    private readonly stdoutLines: ReadlineInterface;
     private disposePromise: Promise<void> | null = null;
     private exited = false;
     private nextRequestId = 1;
     private stderrRemainder = "";
+    private readonly stdoutDecoder = new StringDecoder("utf8");
+    private stdoutRemainder = "";
 
     constructor(options: NativeBackendClientOptions) {
         this.onDiagnostic = options.onDiagnostic;
@@ -117,13 +118,11 @@ export class NativeBackendClient {
             stdio: "pipe",
             windowsHide: true,
         });
-        this.stdoutLines = createInterface({
-            crlfDelay: Number.POSITIVE_INFINITY,
-            input: this.child.stdout,
+        this.child.stdout.on("data", (chunk: Buffer | string) => {
+            this.handleStdoutChunk(chunk);
         });
-
-        this.stdoutLines.on("line", (line) => {
-            this.handleStdoutLine(line);
+        this.child.stdout.on("end", () => {
+            this.flushStdoutRemainder();
         });
         this.child.stderr.on("data", (chunk: Buffer | string) => {
             this.handleStderrChunk(chunk);
@@ -214,7 +213,6 @@ export class NativeBackendClient {
             }
         }
 
-        this.stdoutLines.close();
         this.rejectPendingRequests(
             new Error("Native backend client has been disposed."),
         );
@@ -273,6 +271,30 @@ export class NativeBackendClient {
                 this.rejectPendingRequest(id, error);
             });
         });
+    }
+
+    private handleStdoutChunk(chunk: Buffer | string): void {
+        this.stdoutRemainder +=
+            typeof chunk === "string"
+                ? chunk
+                : this.stdoutDecoder.write(chunk);
+        const lines = this.stdoutRemainder.split("\n");
+        this.stdoutRemainder = lines.pop() ?? "";
+
+        for (const line of lines) {
+            this.handleStdoutLine(line.endsWith("\r") ? line.slice(0, -1) : line);
+        }
+    }
+
+    private flushStdoutRemainder(): void {
+        this.stdoutRemainder += this.stdoutDecoder.end();
+        if (!this.stdoutRemainder) {
+            return;
+        }
+
+        const line = this.stdoutRemainder;
+        this.stdoutRemainder = "";
+        this.handleStdoutLine(line.endsWith("\r") ? line.slice(0, -1) : line);
     }
 
     private handleStdoutLine(line: string): void {
@@ -360,7 +382,6 @@ export class NativeBackendClient {
         }
 
         this.exited = true;
-        this.stdoutLines.close();
         this.rejectPendingRequests(error);
     }
 

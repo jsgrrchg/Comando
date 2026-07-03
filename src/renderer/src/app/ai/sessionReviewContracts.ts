@@ -25,6 +25,7 @@ export interface QueuedPrompt {
     readonly createdAt: string;
     readonly fileContextsSnapshot: readonly AiFileContextAttachment[];
     readonly id: string;
+    readonly optimisticMessageId?: string;
     readonly prompt: string;
     readonly status: AiQueuedPromptStatus;
 }

@@ -2984,6 +2984,7 @@ impl NativeBackend {
                 input.query.as_deref(),
                 input.case_sensitive.unwrap_or(false),
                 input.limit,
+                input.include_all_refs.unwrap_or(false),
             ),
             "git history serializes",
         )

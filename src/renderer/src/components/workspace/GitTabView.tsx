@@ -49,9 +49,6 @@ import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/useP
 
 import {
     IdeActionButton,
-    IdeBarDotSeparator,
-    IdeBarHeader,
-    IdeBarLabel,
     IdeBarSearchIcon,
     IdeIconButton,
 } from "./ide-bar";
@@ -760,16 +757,6 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         searchQuery.trim().length > 0 && matchedCommitShas.length === 0;
     const canLoadMoreHistory =
         history.length > 0 && history.length < historyMatchedCount;
-    const historyCountLabel = hasActiveSearch
-        ? `${historyMatchedCount} ${
-              historyMatchedCount === 1 ? "match" : "matches"
-          } / ${historyTotalCount} ${
-              historyTotalCount === 1 ? "commit" : "commits"
-          }`
-        : historyTotalCount === 1
-          ? "1 commit"
-          : `${historyTotalCount} commits`;
-
     return (
         <div
             className="flex h-full min-h-0 flex-col bg-bg-primary"
@@ -784,30 +771,6 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                     {error}
                 </div>
             ) : null}
-
-            <IdeBarHeader>
-                <IdeBarLabel>Git</IdeBarLabel>
-                <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-text-secondary">
-                    <span className="shrink-0">
-                        {historyCountLabel}
-                    </span>
-                    {isHistoryLoading ? (
-                        <>
-                            <IdeBarDotSeparator />
-                            <span className="shrink-0">Loading...</span>
-                        </>
-                    ) : null}
-                </div>
-                <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                    <IdeActionButton
-                        disabled={isHistoryLoading}
-                        onClick={handleRefreshHistory}
-                        title="Refresh history"
-                    >
-                        refresh
-                    </IdeActionButton>
-                </div>
-            </IdeBarHeader>
 
             <div
                 className="shrink-0 px-2 py-1.5"
@@ -903,6 +866,13 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
                             ? `${selectedMatchIndex + 1}/${matchedCommitShas.length}`
                             : `0/${matchedCommitShas.length}`}
                     </span>
+                    <IdeActionButton
+                        disabled={isHistoryLoading}
+                        onClick={handleRefreshHistory}
+                        title="Refresh history"
+                    >
+                        refresh
+                    </IdeActionButton>
                 </div>
             </div>
 
@@ -1375,35 +1345,6 @@ function GitCommitDetailSidebar({
                     <>
                         {changedFiles.length > 0 ? (
                             <div className="mb-4 space-y-1">
-                                <div
-                                    className="mb-2 flex items-center gap-2"
-                                    style={{ fontFamily: "var(--font-mono)" }}
-                                >
-                                    <IdeBarLabel>
-                                        {changedFiles.length} Changed Files
-                                    </IdeBarLabel>
-                                    {activeDetail &&
-                                    activeDetail.insertions > 0 ? (
-                                        <span
-                                            className="text-[10px]"
-                                            style={{ color: "var(--diff-add)" }}
-                                        >
-                                            +{activeDetail.insertions}
-                                        </span>
-                                    ) : null}
-                                    {activeDetail &&
-                                    activeDetail.deletions > 0 ? (
-                                        <span
-                                            className="text-[10px]"
-                                            style={{
-                                                color: "var(--diff-remove)",
-                                            }}
-                                        >
-                                            -{activeDetail.deletions}
-                                        </span>
-                                    ) : null}
-                                </div>
-
                                 {changedFiles.map((file) => {
                                     const lastSlash =
                                         file.path.lastIndexOf("/");
@@ -1418,17 +1359,17 @@ function GitCommitDetailSidebar({
                                     const canOpenFile = file.kind !== "delete";
                                     const rowContent = (
                                         <>
-                                            <div className="flex min-w-0 items-center gap-1.5">
-                                                <span className="shrink-0 font-mono text-text-primary transition-colors duration-150 group-hover/file:text-text-primary">
+                                            <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
+                                                <span className="min-w-0 truncate font-mono text-text-primary transition-colors duration-150 group-hover/file:text-text-primary">
                                                     {fileName}
                                                 </span>
                                                 {dirPath ? (
-                                                    <span className="truncate text-text-tertiary transition-colors duration-150 group-hover/file:text-text-secondary">
+                                                    <span className="min-w-0 truncate text-text-tertiary transition-colors duration-150 group-hover/file:text-text-secondary">
                                                         {dirPath}
                                                     </span>
                                                 ) : null}
                                             </div>
-                                            <div className="flex shrink-0 items-center gap-1.5 text-text-secondary">
+                                            <div className="flex shrink-0 items-center gap-1.5 font-mono text-[10px] text-text-secondary">
                                                 {file.additions ? (
                                                     <span
                                                         style={{
@@ -1723,8 +1664,6 @@ function GitHistoryGraphSVG({
         : totalHeight;
     const circleStartIndex = visibleGraphRange?.startIndex ?? 0;
     const circleEndIndex = visibleGraphRange?.endIndex ?? graphRows.length - 1;
-    const pathStartIndex = Math.max(0, circleStartIndex - 1);
-    const pathEndIndex = circleEndIndex;
     const toSvgY = (y: number): number => y - rangeTop;
     const clampToSvgRange = (y: number): number =>
         Math.min(Math.max(y, rangeTop), rangeBottom) - rangeTop;
@@ -1735,6 +1674,13 @@ function GitHistoryGraphSVG({
         const pos = rowPositions.get(sha);
         if (!pos) return null;
         return toSvgY(pos.top + pos.height / 2);
+    };
+    const getAbsoluteYCenterByRow = (rowIndex: number): number | null => {
+        const row = graphRows[rowIndex];
+        if (!row) return null;
+        const pos = rowPositions.get(row.commit.sha);
+        if (!pos) return null;
+        return pos.top + pos.height / 2;
     };
 
     const colorPaths = new Map<number, string[]>();
@@ -1747,90 +1693,55 @@ function GitHistoryGraphSVG({
         paths.push(d);
     };
 
-    for (let i = pathStartIndex; i <= pathEndIndex; i++) {
-        const row = graphRows[i];
-        const pos = rowPositions.get(row.commit.sha);
-        if (!pos) continue;
-        const yCenter = pos.top + pos.height / 2;
-        const yBottom = pos.top + pos.height;
+    for (const line of graphRows[0]?.graphLines ?? []) {
+        let currentColumn = line.startColumn;
+        let currentY = getAbsoluteYCenterByRow(line.startRow);
+        if (currentY === null) continue;
 
-        const nextRow = graphRows[i + 1];
-        const nextPos = nextRow ? rowPositions.get(nextRow.commit.sha) : null;
-        const nextYCenter = nextPos ? nextPos.top + nextPos.height / 2 : null;
+        for (const segment of line.segments) {
+            const targetRow =
+                segment.kind === "straight" ? segment.toRow : segment.onRow;
+            const targetY =
+                targetRow >= graphRows.length
+                    ? rangeBottom
+                    : getAbsoluteYCenterByRow(targetRow);
+            if (targetY === null) {
+                continue;
+            }
 
-        if (
-            nextYCenter !== null &&
-            doesSegmentIntersectRange(yCenter, nextYCenter)
-        ) {
-            const maxLanes = Math.max(
-                row.bottomLanes.length,
-                nextRow.topLanes.length,
-            );
-            for (let lane = 0; lane < maxLanes; lane++) {
-                const bottomColorId = row.bottomLanes[lane];
-                const topColorId = nextRow.topLanes[lane];
-                if (bottomColorId !== undefined && topColorId !== undefined) {
-                    const x = laneX(lane);
+            const fromX = laneX(currentColumn);
+
+            if (doesSegmentIntersectRange(currentY, targetY)) {
+                if (segment.kind === "straight") {
                     addPath(
-                        bottomColorId,
-                        `M ${x} ${clampToSvgRange(yCenter)} L ${x} ${clampToSvgRange(nextYCenter)}`,
+                        line.colorId,
+                        `M ${fromX} ${clampToSvgRange(currentY)} L ${fromX} ${clampToSvgRange(targetY)}`,
+                    );
+                } else {
+                    const toX = laneX(segment.toColumn);
+                    addPath(
+                        line.colorId,
+                        segment.curveKind === "merge"
+                            ? buildMergePath(
+                                  fromX,
+                                  toSvgY(currentY),
+                                  toX,
+                                  toSvgY(targetY),
+                              )
+                            : buildCheckoutPath(
+                                  fromX,
+                                  toSvgY(currentY),
+                                  toX,
+                                  toSvgY(targetY),
+                              ),
                     );
                 }
             }
-        }
 
-        if (
-            i === graphRows.length - 1 &&
-            doesSegmentIntersectRange(yCenter, yBottom)
-        ) {
-            for (let lane = 0; lane < row.bottomLanes.length; lane++) {
-                const laneColorId = row.bottomLanes[lane];
-                if (laneColorId !== undefined) {
-                    const x = laneX(lane);
-                    addPath(
-                        laneColorId,
-                        `M ${x} ${clampToSvgRange(yCenter)} L ${x} ${clampToSvgRange(yBottom)}`,
-                    );
-                }
+            if (segment.kind === "curve") {
+                currentColumn = segment.toColumn;
             }
-        }
-
-        if (i < circleStartIndex || i > circleEndIndex) {
-            continue;
-        }
-
-        const { parentColumns, laneIndex, colorId } = row;
-        const fromX = laneX(laneIndex);
-
-        for (let p = 0; p < parentColumns.length; p++) {
-            const parentCol = parentColumns[p];
-            if (parentCol === laneIndex) continue;
-
-            const toX = laneX(parentCol);
-            const curveTargetY = Math.min(yBottom, yCenter + 40);
-            const edgeColorId = row.bottomLanes[parentCol] ?? colorId;
-
-            if (p === 0) {
-                addPath(
-                    edgeColorId,
-                    buildCheckoutPath(
-                        fromX,
-                        toSvgY(yCenter),
-                        toX,
-                        toSvgY(curveTargetY),
-                    ),
-                );
-            } else {
-                addPath(
-                    edgeColorId,
-                    buildMergePath(
-                        fromX,
-                        toSvgY(yCenter),
-                        toX,
-                        toSvgY(curveTargetY),
-                    ),
-                );
-            }
+            currentY = targetY;
         }
     }
 

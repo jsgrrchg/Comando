@@ -402,6 +402,7 @@ export function GitTreeView({
     activePath = null,
     className,
     constrainWidth = false,
+    contextTargetResetSignal = 0,
     editingDraftName = null,
     editingPath = null,
     enableNodeDrag = false,
@@ -451,6 +452,11 @@ export function GitTreeView({
         () => (expandedPaths ? new Set(expandedPaths) : null),
         [expandedPaths],
     );
+
+    useEffect(() => {
+        setContextTargetPath(null);
+    }, [contextTargetResetSignal]);
+
     const flatRows = useMemo(
         () =>
             flattenGitTreeRows({

@@ -10,14 +10,40 @@ export interface GitHistoryGraphRow {
     readonly bottomLanes: readonly number[];
     readonly colorId: number;
     readonly commit: GitHistoryCommitSummary;
+    readonly graphLines: readonly GitHistoryGraphLine[];
     readonly laneIndex: number;
     readonly parentColumns: readonly number[];
     readonly topLanes: readonly number[];
 }
 
-type ActiveLane = {
+export type GitHistoryGraphLineSegment =
+    | {
+          readonly kind: "straight";
+          readonly toRow: number;
+      }
+    | {
+          readonly kind: "curve";
+          readonly curveKind: "checkout" | "merge";
+          readonly onRow: number;
+          readonly toColumn: number;
+      };
+
+export interface GitHistoryGraphLine {
+    readonly childSha: string;
     readonly colorId: number;
-    readonly sha: string;
+    readonly parentSha: string;
+    readonly segments: readonly GitHistoryGraphLineSegment[];
+    readonly startColumn: number;
+    readonly startRow: number;
+}
+
+type ActiveLineState = {
+    readonly childSha: string;
+    readonly colorId: number | null;
+    readonly parentSha: string;
+    readonly segments: GitHistoryGraphLineSegment[];
+    readonly startColumn: number;
+    readonly startRow: number;
 };
 
 export function filterGitHistory(
@@ -54,6 +80,7 @@ export function buildGitHistoryGraphRows(
             bottomLanes: [],
             colorId: row.colorId,
             commit: row.commit,
+            graphLines: [],
             laneIndex: 0,
             parentColumns: [],
             topLanes: [0],
@@ -61,75 +88,208 @@ export function buildGitHistoryGraphRows(
     }
 
     const rows: GitHistoryGraphRow[] = [];
-    let lanes: ActiveLane[] = [];
+    const graphLines: GitHistoryGraphLine[] = [];
+    const laneStates: (ActiveLineState | null)[] = [];
+    const laneColors = new Map<number, number>();
+    const parentToLanes = new Map<string, number[]>();
     let nextColorId = 0;
 
-    for (const commit of commits) {
-        let laneIndex = lanes.findIndex((lane) => lane.sha === commit.sha);
-        if (laneIndex === -1) {
-            laneIndex = lanes.length;
-            lanes = [
-                ...lanes,
-                {
-                    colorId: nextColorId++,
-                    sha: commit.sha,
-                },
-            ];
+    const firstEmptyLaneIndex = (): number => {
+        const emptyIndex = laneStates.findIndex((state) => state === null);
+        if (emptyIndex >= 0) {
+            return emptyIndex;
         }
 
-        const currentLane = lanes[laneIndex];
-        if (!currentLane) {
-            continue;
+        laneStates.push(null);
+        return laneStates.length - 1;
+    };
+
+    const getLaneColor = (laneIndex: number): number => {
+        const existingColor = laneColors.get(laneIndex);
+        if (existingColor !== undefined) {
+            return existingColor;
         }
 
-        const topLanes = lanes.map((lane) => lane.colorId);
-        let nextLanes = [...lanes];
+        const colorId = nextColorId++;
+        laneColors.set(laneIndex, colorId);
+        return colorId;
+    };
 
-        if (commit.parentShas.length === 0) {
-            nextLanes.splice(laneIndex, 1);
-        } else {
-            nextLanes[laneIndex] = {
-                colorId: currentLane.colorId,
-                sha: commit.parentShas[0] ?? commit.sha,
-            };
-
-            for (const parentSha of commit.parentShas.slice(1)) {
-                if (nextLanes.some((lane) => lane.sha === parentSha)) {
-                    continue;
-                }
-
-                nextLanes.splice(laneIndex + 1, 0, {
-                    colorId: nextColorId++,
-                    sha: parentSha,
-                });
+    const activeLaneColors = (): readonly number[] =>
+        laneStates.map((state, laneIndex) => {
+            if (!state) {
+                return getLaneColor(laneIndex);
             }
 
-            const seen = new Set<string>();
-            nextLanes = nextLanes.filter((lane) => {
-                if (seen.has(lane.sha)) {
-                    return false;
-                }
-
-                seen.add(lane.sha);
-                return true;
-            });
-        }
-
-        rows.push({
-            bottomLanes: nextLanes.map((lane) => lane.colorId),
-            colorId: currentLane.colorId,
-            commit,
-            laneIndex,
-            parentColumns: commit.parentShas
-                .map((parentSha) =>
-                    nextLanes.findIndex((lane) => lane.sha === parentSha),
-                )
-                .filter((index) => index >= 0),
-            topLanes,
+            return state.colorId ?? getLaneColor(laneIndex);
         });
 
-        lanes = nextLanes;
+    const finalizeLine = (
+        laneIndex: number,
+        parentColumn: number,
+        parentColorId: number,
+        endingRow: number,
+    ) => {
+        const state = laneStates[laneIndex];
+        laneStates[laneIndex] = null;
+        if (!state) {
+            return;
+        }
+
+        const finalColorId = state.colorId ?? parentColorId;
+        const segments = [...state.segments];
+        const lastSegment = segments[segments.length - 1];
+
+        if (lastSegment?.kind === "straight") {
+            if (parentColumn !== laneIndex) {
+                const straightEndRow = endingRow - 1;
+                if (straightEndRow > state.startRow) {
+                    segments[segments.length - 1] = {
+                        kind: "straight",
+                        toRow: straightEndRow,
+                    };
+                    segments.push({
+                        curveKind: "checkout",
+                        kind: "curve",
+                        onRow: endingRow,
+                        toColumn: parentColumn,
+                    });
+                } else {
+                    segments[segments.length - 1] = {
+                        curveKind: "checkout",
+                        kind: "curve",
+                        onRow: endingRow,
+                        toColumn: parentColumn,
+                    };
+                }
+            } else {
+                segments[segments.length - 1] = {
+                    kind: "straight",
+                    toRow: endingRow,
+                };
+            }
+        } else if (lastSegment?.kind === "curve") {
+            if (
+                lastSegment.curveKind === "merge" &&
+                lastSegment.onRow === state.startRow + 1 &&
+                lastSegment.onRow < endingRow
+            ) {
+                if (lastSegment.toColumn !== parentColumn) {
+                    segments.push({ kind: "straight", toRow: endingRow - 1 });
+                    segments.push({
+                        curveKind: "checkout",
+                        kind: "curve",
+                        onRow: endingRow,
+                        toColumn: parentColumn,
+                    });
+                } else {
+                    segments.push({ kind: "straight", toRow: endingRow });
+                }
+            } else if (lastSegment.toColumn !== parentColumn) {
+                segments.push({
+                    curveKind: "checkout",
+                    kind: "curve",
+                    onRow: endingRow,
+                    toColumn: parentColumn,
+                });
+            }
+        }
+
+        graphLines.push({
+            childSha: state.childSha,
+            colorId: finalColorId,
+            parentSha: state.parentSha,
+            segments,
+            startColumn: state.startColumn,
+            startRow: state.startRow,
+        });
+    };
+
+    const appendOpenLine = (laneIndex: number) => {
+        const state = laneStates[laneIndex];
+        if (!state) {
+            return;
+        }
+
+        laneStates[laneIndex] = null;
+        graphLines.push({
+            childSha: state.childSha,
+            colorId: state.colorId ?? getLaneColor(laneIndex),
+            parentSha: state.parentSha,
+            segments: [...state.segments],
+            startColumn: state.startColumn,
+            startRow: state.startRow,
+        });
+    };
+
+    for (const commit of commits) {
+        const rowIndex = rows.length;
+        const pendingLanes = parentToLanes.get(commit.sha) ?? [];
+        parentToLanes.delete(commit.sha);
+        const laneIndex =
+            pendingLanes.length > 0
+                ? Math.min(...pendingLanes)
+                : firstEmptyLaneIndex();
+        const colorId = getLaneColor(laneIndex);
+        const topLanes = activeLaneColors();
+
+        for (const pendingLane of pendingLanes) {
+            finalizeLine(pendingLane, laneIndex, colorId, rowIndex);
+        }
+
+        const parentColumns: number[] = [];
+        const claimedParents = new Set<string>();
+        commit.parentShas.forEach((parentSha, parentIndex) => {
+            if (claimedParents.has(parentSha)) {
+                return;
+            }
+
+            claimedParents.add(parentSha);
+            const parentLaneIndex =
+                parentIndex === 0 ? laneIndex : firstEmptyLaneIndex();
+            const parentColorId =
+                parentIndex === 0 ? colorId : getLaneColor(parentLaneIndex);
+            parentColumns.push(parentLaneIndex);
+
+            laneStates[parentLaneIndex] = {
+                childSha: commit.sha,
+                colorId: parentIndex === 0 ? parentColorId : null,
+                parentSha,
+                segments:
+                    parentIndex === 0
+                        ? [{ kind: "straight", toRow: Number.MAX_SAFE_INTEGER }]
+                        : [
+                              {
+                                  curveKind: "merge",
+                                  kind: "curve",
+                                  onRow: rowIndex + 1,
+                                  toColumn: parentLaneIndex,
+                              },
+                          ],
+                startColumn: laneIndex,
+                startRow: rowIndex,
+            };
+
+            const lanesForParent = parentToLanes.get(parentSha) ?? [];
+            lanesForParent.push(parentLaneIndex);
+            parentToLanes.set(parentSha, lanesForParent);
+        });
+
+        const bottomLanes = activeLaneColors();
+        rows.push({
+            bottomLanes,
+            colorId,
+            commit,
+            graphLines,
+            laneIndex,
+            parentColumns,
+            topLanes,
+        });
     }
+
+    laneStates.forEach((_state, laneIndex) => {
+        appendOpenLine(laneIndex);
+    });
 
     return rows;
 }

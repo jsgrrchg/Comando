@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { getComposerAnchoredPickerWidth } from "@renderer/app/utils/menu-position";
+
 import {
     appendComposerProjectEntries,
     getComposerPillLayoutStyle,
@@ -374,5 +376,10 @@ describe("AIChatComposer", () => {
         expect(getComposerShellSizingStyle(320, { expanded: true })).toEqual({
             minHeight: 112,
         });
+    });
+
+    it("sizes the slash command menu to the composer width within the viewport", () => {
+        expect(getComposerAnchoredPickerWidth(640, 900)).toBe(640);
+        expect(getComposerAnchoredPickerWidth(900, 640)).toBe(624);
     });
 });

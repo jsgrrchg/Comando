@@ -67,6 +67,12 @@ impl WriteTracker {
         }
     }
 
+    pub fn has_recent_entry(&self, path: &PathBuf) -> bool {
+        let mut written = self.written.lock().expect("write tracker lock");
+        prune_expired(&mut written);
+        written.contains_key(path)
+    }
+
     fn track_entry(&self, path: PathBuf, kind: TrackedWriteKind) {
         let mut written = self.written.lock().expect("write tracker lock");
         prune_expired(&mut written);

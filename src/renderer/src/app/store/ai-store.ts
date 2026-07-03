@@ -131,6 +131,7 @@ interface ActiveQueuedPromptState {
 
 interface AiSessionClientState {
     readonly activeDispatchToken: string | null;
+    readonly activePromptMessageAliases: Readonly<Record<string, string>>;
     readonly activeQueuedPrompt: ActiveQueuedPromptState | null;
     readonly draftAttachments: readonly AiImageAttachment[];
     readonly draftComposerParts: readonly AiComposerDraftPart[];
@@ -781,28 +782,42 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     applySessionEvent: (event) => {
-        if (!isFlushingBufferedSessionDeltas && isSessionDeltaEvent(event)) {
-            bufferSessionDeltaEvent(event, get);
+        const sessionBeforeEvent = get().sessions[event.sessionId] ?? null;
+        const activePromptMessageAlias = getActivePromptMessageAlias(
+            event,
+            sessionBeforeEvent,
+        );
+        const normalizedEvent = normalizeIncomingActivePromptEvent(
+            event,
+            sessionBeforeEvent,
+            activePromptMessageAlias,
+        );
+        if (
+            !isFlushingBufferedSessionDeltas &&
+            isSessionDeltaEvent(normalizedEvent)
+        ) {
+            bufferSessionDeltaEvent(normalizedEvent, get);
             return;
         }
-        if (!isSessionDeltaEvent(event)) {
+        if (!isSessionDeltaEvent(normalizedEvent)) {
             flushBufferedSessionDeltas(get);
         }
 
         let syncedTitle: string | null = null;
         set((state) => {
             const session =
-                state.sessions[event.sessionId] ?? createSessionState();
-            const existingCatalog = state.runtimeCatalogById[event.runtimeId] ?? null;
+                state.sessions[normalizedEvent.sessionId] ?? createSessionState();
+            const existingCatalog =
+                state.runtimeCatalogById[normalizedEvent.runtimeId] ?? null;
             const baseSnapshot =
                 session.snapshot ??
-                createSessionSnapshotFromEvent(event, existingCatalog);
+                createSessionSnapshotFromEvent(normalizedEvent, existingCatalog);
             const nextTranscript = applyAiSessionDomainEventToTranscript(
                 getSessionTranscript(session, baseSnapshot),
-                event,
+                normalizedEvent,
             );
             const nextSnapshot = writeAiSessionTranscriptToSnapshot(
-                applySessionDomainEventToSnapshot(baseSnapshot, event),
+                applySessionDomainEventToSnapshot(baseSnapshot, normalizedEvent),
                 nextTranscript,
             );
             const nextMeta = session.meta
@@ -817,8 +832,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return {
                 sessions: {
                     ...state.sessions,
-                    [event.sessionId]: {
+                    [normalizedEvent.sessionId]: {
                         ...session,
+                        activePromptMessageAliases:
+                            getNextActivePromptMessageAliases(
+                                session,
+                                event,
+                                activePromptMessageAlias,
+                            ),
                         ...reconcileDispatchStateForIncomingSnapshot(
                             session,
                             nextSnapshot,
@@ -840,11 +861,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
         if (syncedTitle !== null) {
             void useWorkspaceStore
                 .getState()
-                .updateSessionTabTitles(event.sessionId, syncedTitle);
+                .updateSessionTabTitles(normalizedEvent.sessionId, syncedTitle);
         }
 
-        void drainQueueIfNeeded(event.sessionId, get, set);
-        scheduleAiSessionResyncWatchdog(event.sessionId, get);
+        void drainQueueIfNeeded(normalizedEvent.sessionId, get, set);
+        scheduleAiSessionResyncWatchdog(normalizedEvent.sessionId, get);
     },
 
     applySessionUpdate: (update) => {
@@ -1864,6 +1885,7 @@ function createSessionState(
 ): AiSessionClientState {
     return {
         activeDispatchToken: null,
+        activePromptMessageAliases: {},
         activeQueuedPrompt: null,
         draftAttachments: [],
         draftComposerParts: createEmptyComposerDraftParts(),
@@ -2759,12 +2781,16 @@ function resolveIncomingSessionSnapshot(
 ): ResolvedIncomingSessionSnapshot {
     const session = currentSession ?? null;
     const currentSnapshot = session?.snapshot ?? null;
+    const normalizedIncomingSnapshot = normalizeIncomingActivePromptEcho(
+        incomingSnapshot,
+        session,
+    );
     const effectiveIncomingSnapshot = options.preserveCurrentReviewState
         ? preserveCurrentReviewTrackedFiles(
-              incomingSnapshot,
+              normalizedIncomingSnapshot,
               currentSnapshot,
           )
-        : incomingSnapshot;
+        : normalizedIncomingSnapshot;
     const incomingTranscript =
         buildAiSessionTranscriptModelFromSnapshot(effectiveIncomingSnapshot);
     if (
@@ -2850,6 +2876,276 @@ function resolveIncomingSessionSnapshot(
         ),
         transcript: currentTranscript,
     };
+}
+
+function normalizeIncomingActivePromptEcho(
+    incomingSnapshot: AiSessionSnapshot,
+    session: AiSessionClientState | null,
+): AiSessionSnapshot {
+    const activeQueuedPrompt = session?.activeQueuedPrompt?.queuedPrompt ?? null;
+    const optimisticMessageId =
+        activeQueuedPrompt?.optimisticMessageId ?? activeQueuedPrompt?.id ?? null;
+    if (!activeQueuedPrompt || !optimisticMessageId) {
+        return incomingSnapshot;
+    }
+
+    const promptContent = getQueuedPromptDisplayContent(activeQueuedPrompt);
+    let changed = false;
+    const messages: AiMessage[] = [];
+
+    for (const message of incomingSnapshot.messages) {
+        const isActivePromptEcho =
+            message.kind === "user" &&
+            message.id !== optimisticMessageId &&
+            isTimestampAtOrAfter(message.createdAt, activeQueuedPrompt.createdAt) &&
+            message.content === promptContent;
+        const nextMessage = isActivePromptEcho
+            ? {
+                  ...message,
+                  id: optimisticMessageId,
+              }
+            : message;
+
+        if (isActivePromptEcho) {
+            changed = true;
+        }
+
+        const existingIndex = messages.findIndex(
+            (candidate) => candidate.id === nextMessage.id,
+        );
+        if (existingIndex === -1) {
+            messages.push(nextMessage);
+            continue;
+        }
+
+        changed = true;
+        const existing = messages[existingIndex];
+        messages[existingIndex] = {
+            ...nextMessage,
+            attachments:
+                existing.attachments.length > nextMessage.attachments.length
+                    ? existing.attachments
+                    : nextMessage.attachments,
+            content:
+                existing.content.length > nextMessage.content.length
+                    ? existing.content
+                    : nextMessage.content,
+            generatedImage: nextMessage.generatedImage ?? existing.generatedImage,
+            status:
+                existing.status === "completed" &&
+                nextMessage.status !== "completed"
+                    ? "completed"
+                    : nextMessage.status,
+        };
+    }
+
+    return changed
+        ? {
+              ...incomingSnapshot,
+              messages,
+          }
+        : incomingSnapshot;
+}
+
+function normalizeIncomingActivePromptEvent(
+    event: AiSessionDomainEvent,
+    session: AiSessionClientState | null,
+    activePromptMessageAlias: ActivePromptMessageAlias | null = null,
+): AiSessionDomainEvent {
+    const aliasedMessageId = getAliasedIncomingMessageId(event, session);
+    if (aliasedMessageId) {
+        return rewriteIncomingMessageEventId(event, aliasedMessageId);
+    }
+
+    const activeQueuedPrompt = session?.activeQueuedPrompt?.queuedPrompt ?? null;
+    const optimisticMessageId =
+        activePromptMessageAlias?.optimisticMessageId ??
+        activeQueuedPrompt?.optimisticMessageId ??
+        activeQueuedPrompt?.id ??
+        null;
+    if (!activeQueuedPrompt || !optimisticMessageId) {
+        return event;
+    }
+
+    const promptContent = getQueuedPromptDisplayContent(activeQueuedPrompt);
+    switch (event.kind) {
+        case "message-started":
+            if (
+                event.messageKind !== "user" ||
+                event.message.id === optimisticMessageId ||
+                !isActivePromptEchoMessage(
+                    event.message,
+                    activeQueuedPrompt,
+                    promptContent,
+                )
+            ) {
+                return event;
+            }
+
+            return {
+                ...event,
+                message: {
+                    ...event.message,
+                    id: optimisticMessageId,
+                },
+            };
+        case "message-delta":
+            if (
+                event.messageKind !== "user" ||
+                event.messageId === optimisticMessageId ||
+                !isActivePromptEchoContent(event, promptContent)
+            ) {
+                return event;
+            }
+
+            return {
+                ...event,
+                messageId: optimisticMessageId,
+            };
+        case "message-completed":
+            if (
+                event.messageKind !== "user" ||
+                event.messageId === optimisticMessageId
+            ) {
+                return event;
+            }
+
+            return {
+                ...event,
+                messageId: optimisticMessageId,
+            };
+        default:
+            return event;
+    }
+}
+
+interface ActivePromptMessageAlias {
+    readonly optimisticMessageId: string;
+    readonly remoteMessageId: string;
+}
+
+function getActivePromptMessageAlias(
+    event: AiSessionDomainEvent,
+    session: AiSessionClientState | null,
+): ActivePromptMessageAlias | null {
+    const activeQueuedPrompt = session?.activeQueuedPrompt?.queuedPrompt ?? null;
+    const optimisticMessageId =
+        activeQueuedPrompt?.optimisticMessageId ?? activeQueuedPrompt?.id ?? null;
+    if (
+        !activeQueuedPrompt ||
+        !optimisticMessageId ||
+        event.kind !== "message-started" ||
+        event.messageKind !== "user" ||
+        event.message.id === optimisticMessageId
+    ) {
+        return null;
+    }
+
+    const promptContent = getQueuedPromptDisplayContent(activeQueuedPrompt);
+    if (
+        !isActivePromptEchoMessage(
+            event.message,
+            activeQueuedPrompt,
+            promptContent,
+        )
+    ) {
+        return null;
+    }
+
+    return {
+        optimisticMessageId,
+        remoteMessageId: event.message.id,
+    };
+}
+
+function getAliasedIncomingMessageId(
+    event: AiSessionDomainEvent,
+    session: AiSessionClientState | null,
+): string | null {
+    switch (event.kind) {
+        case "message-started":
+            return session?.activePromptMessageAliases[event.message.id] ?? null;
+        case "message-delta":
+        case "message-completed":
+            return session?.activePromptMessageAliases[event.messageId] ?? null;
+        default:
+            return null;
+    }
+}
+
+function rewriteIncomingMessageEventId(
+    event: AiSessionDomainEvent,
+    messageId: string,
+): AiSessionDomainEvent {
+    switch (event.kind) {
+        case "message-started":
+            return {
+                ...event,
+                message: {
+                    ...event.message,
+                    id: messageId,
+                },
+            };
+        case "message-delta":
+        case "message-completed":
+            return {
+                ...event,
+                messageId,
+            };
+        default:
+            return event;
+    }
+}
+
+function getNextActivePromptMessageAliases(
+    session: AiSessionClientState,
+    event: AiSessionDomainEvent,
+    activePromptMessageAlias: ActivePromptMessageAlias | null,
+): Readonly<Record<string, string>> {
+    if (!activePromptMessageAlias && event.kind !== "message-completed") {
+        return session.activePromptMessageAliases;
+    }
+
+    const aliases = { ...session.activePromptMessageAliases };
+    if (activePromptMessageAlias) {
+        aliases[activePromptMessageAlias.remoteMessageId] =
+            activePromptMessageAlias.optimisticMessageId;
+    }
+
+    if (event.kind === "message-completed") {
+        delete aliases[event.messageId];
+    }
+
+    return aliases;
+}
+
+function isActivePromptEchoMessage(
+    message: AiMessage,
+    activeQueuedPrompt: QueuedPrompt,
+    promptContent: string,
+): boolean {
+    return (
+        message.kind === "user" &&
+        isTimestampAtOrAfter(message.createdAt, activeQueuedPrompt.createdAt) &&
+        (message.content === "" || message.content === promptContent)
+    );
+}
+
+function isActivePromptEchoContent(
+    event: Extract<AiSessionDomainEvent, { kind: "message-delta" }>,
+    promptContent: string,
+): boolean {
+    return event.content === promptContent || event.delta === promptContent;
+}
+
+function isTimestampAtOrAfter(candidate: string, baseline: string): boolean {
+    const candidateMs = Date.parse(candidate);
+    const baselineMs = Date.parse(baseline);
+    if (Number.isFinite(candidateMs) && Number.isFinite(baselineMs)) {
+        return candidateMs >= baselineMs;
+    }
+
+    return candidate >= baseline;
 }
 
 function preserveCurrentReviewTrackedFiles(
@@ -3272,7 +3568,8 @@ async function drainQueueIfNeeded(
                 title: session.meta.title,
                 worktreeId: session.meta.worktreeId,
             },
-            activeQueuedPrompt.queuedPrompt.id,
+            activeQueuedPrompt.queuedPrompt.optimisticMessageId ??
+                activeQueuedPrompt.queuedPrompt.id,
             activeQueuedPrompt.queuedPrompt.prompt,
             activeQueuedPrompt.queuedPrompt.attachments,
             set,
@@ -3340,6 +3637,7 @@ function createQueuedPrompt(input: {
             input.fileContextsSnapshot,
         ),
         id: input.existing?.id ?? crypto.randomUUID(),
+        optimisticMessageId: input.existing?.optimisticMessageId,
         prompt: input.prompt,
         status: "queued",
     };
@@ -3386,7 +3684,7 @@ function applyLocalPromptAcceptanceToSession(
         pendingPermission: null,
         pendingUserInput: null,
         status: "starting",
-        updatedAt: baseSnapshot.updatedAt,
+        updatedAt: acceptedAt,
     };
     const nextTranscript = mergeAiSessionTranscriptSources(
         getSessionTranscript(session, snapshot),
@@ -3684,6 +3982,8 @@ function activateQueuedPromptForDrain(
             ),
             queuedPrompt: {
                 ...queuedPrompt,
+                optimisticMessageId:
+                    queuedPrompt.optimisticMessageId ?? queuedPrompt.id,
                 status: "sending",
             },
         };
@@ -3696,7 +3996,7 @@ function activateQueuedPromptForDrain(
                     (candidate) => candidate.id !== promptId,
                 ),
             },
-            queuedPrompt,
+            activeQueuedPrompt.queuedPrompt,
         );
 
         return {

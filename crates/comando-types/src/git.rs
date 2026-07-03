@@ -376,6 +376,7 @@ pub struct NativeGitPathInput {
 pub struct NativeGitHistoryInput {
     pub scope: NativeGitRepositoryScope,
     pub case_sensitive: Option<bool>,
+    pub include_all_refs: Option<bool>,
     pub limit: Option<u32>,
     pub query: Option<String>,
 }

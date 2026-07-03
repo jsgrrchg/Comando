@@ -277,6 +277,17 @@ describe("NativeGitGateway", () => {
         });
 
         expect(requestMock).toHaveBeenCalledWith(
+            "git_get_history",
+            expect.objectContaining({
+                includeAllRefs: null,
+                scope: {
+                    projectId: "native_git",
+                    rootPath: "/tmp/comando-project",
+                    worktreeId: null,
+                },
+            }),
+        );
+        expect(requestMock).toHaveBeenCalledWith(
             "git_commit",
             expect.objectContaining({
                 message: "Native commit",

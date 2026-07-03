@@ -175,6 +175,55 @@ describe("NativeBackendClient", () => {
         await expect(second).resolves.toEqual({ protocolVersion: 1 });
     });
 
+    it("parses stdout JSONL with unicode line separators inside strings", async () => {
+        const { child, client } = createClient();
+        const linePromise = readStdinLine(child);
+
+        const requestPromise = client.request("backend_ping");
+        const request = parseRequestLine(await linePromise);
+        child.stdout.write(
+            `${JSON.stringify({
+                type: "response",
+                id: request.id,
+                ok: true,
+                result: {
+                    message: "first line\u2028second line",
+                },
+            })}\n`,
+        );
+
+        await expect(requestPromise).resolves.toEqual({
+            message: "first line\u2028second line",
+        });
+    });
+
+    it("preserves UTF-8 characters split across stdout chunks", async () => {
+        const { child, client } = createClient();
+        const linePromise = readStdinLine(child);
+
+        const requestPromise = client.request("backend_ping");
+        const request = parseRequestLine(await linePromise);
+        const response = Buffer.from(
+            `${JSON.stringify({
+                type: "response",
+                id: request.id,
+                ok: true,
+                result: {
+                    message: "branch/café",
+                },
+            })}\n`,
+            "utf8",
+        );
+        const splitIndex = response.indexOf(Buffer.from("é", "utf8")) + 1;
+
+        child.stdout.write(response.subarray(0, splitIndex));
+        child.stdout.write(response.subarray(splitIndex));
+
+        await expect(requestPromise).resolves.toEqual({
+            message: "branch/café",
+        });
+    });
+
     it("delivers native backend events", async () => {
         const { child, client } = createClient();
         const listener = vi.fn();

@@ -250,6 +250,7 @@ export interface GitCommitDetail extends GitHistoryCommitSummary {
 
 export interface GitListHistoryOptions {
     readonly caseSensitive?: boolean;
+    readonly includeAllRefs?: boolean;
     readonly limit?: number;
     readonly query?: string;
 }

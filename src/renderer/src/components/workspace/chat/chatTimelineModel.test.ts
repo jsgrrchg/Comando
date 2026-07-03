@@ -189,17 +189,168 @@ describe("chatTimelineModel", () => {
         });
 
         expect(model.orderedRowIds).toEqual([
-            "tool:codex-acp:status:turn:turn-1",
             "tool:codex-acp:status:item:compact-1",
             "message:compact-message",
         ]);
-        expect(model.historyRowIds).toEqual([
-            "tool:codex-acp:status:turn:turn-1",
-            "message:compact-message",
-        ]);
+        expect(model.historyRowIds).toEqual(["message:compact-message"]);
         expect(model.liveTailRowId).toBe(
             "tool:codex-acp:status:item:compact-1",
         );
+    });
+
+    it("does not show the active turn divider for the first local user message", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    content: "Implement the fix",
+                    createdAt: "2026-04-14T00:00:03.000Z",
+                    id: "local-prompt-1",
+                    kind: "user",
+                }),
+            ],
+            activeTurnStartedAt: "2026-04-14T00:00:03.000Z",
+            status: "starting",
+            toolActivity: [],
+            trackedFiles: [],
+        });
+
+        expect(model.orderedRowIds).toEqual(["message:local-prompt-1"]);
+    });
+
+    it("does not show the first turn divider after the runtime echo completes", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    content: "What do you want to try?",
+                    createdAt: "2026-04-14T00:00:02.000Z",
+                    id: "assistant-greeting",
+                    kind: "assistant",
+                }),
+                createMessage({
+                    content: "Implement the fix",
+                    createdAt: "2026-04-14T00:00:03.000Z",
+                    id: "local-prompt-1",
+                    kind: "user",
+                }),
+                createMessage({
+                    content: "Done",
+                    createdAt: "2026-04-14T00:00:04.000Z",
+                    id: "assistant-1",
+                    kind: "assistant",
+                }),
+            ],
+            activeTurnStartedAt: null,
+            status: "idle",
+            toolActivity: [
+                createActivity({
+                    createdAt: "2026-04-14T00:00:03.000Z",
+                    id: "codex-acp:status:turn:first-turn",
+                    kind: "status",
+                    title: "New turn",
+                    updatedAt: "2026-04-14T00:00:03.000Z",
+                }),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(model.orderedRowIds).toEqual([
+            "message:assistant-greeting",
+            "message:local-prompt-1",
+            "message:assistant-1",
+        ]);
+    });
+
+    it("shows the active turn divider above a later local user message", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    content: "First prompt",
+                    createdAt: "2026-04-14T00:00:01.000Z",
+                    id: "first-prompt",
+                    kind: "user",
+                }),
+                createMessage({
+                    content: "Previous answer",
+                    createdAt: "2026-04-14T00:00:02.000Z",
+                    id: "assistant-1",
+                    kind: "assistant",
+                }),
+                createMessage({
+                    content: "Implement the fix",
+                    createdAt: "2026-04-14T00:00:03.000Z",
+                    id: "local-prompt-1",
+                    kind: "user",
+                }),
+            ],
+            activeTurnStartedAt: "2026-04-14T00:00:03.000Z",
+            status: "starting",
+            toolActivity: [],
+            trackedFiles: [],
+        });
+
+        expect(model.orderedRowIds).toEqual([
+            "message:first-prompt",
+            "message:assistant-1",
+            "tool:comando:status:turn:local:2026-04-14T00:00:03.000Z",
+            "message:local-prompt-1",
+        ]);
+        expect(
+            model.orderedRows[2]?.kind === "tool"
+                ? model.orderedRows[2].reviewEntry.activity.title
+                : null,
+        ).toBe("New turn");
+    });
+
+    it("deduplicates runtime turn dividers while keeping the local turn anchor", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    content: "First prompt",
+                    createdAt: "2026-04-14T00:00:01.000Z",
+                    id: "first-prompt",
+                    kind: "user",
+                }),
+                createMessage({
+                    content: "Previous answer",
+                    createdAt: "2026-04-14T00:00:02.000Z",
+                    id: "assistant-1",
+                    kind: "assistant",
+                }),
+                createMessage({
+                    content: "Implement the fix",
+                    createdAt: "2026-04-14T00:00:03.000Z",
+                    id: "local-prompt-1",
+                    kind: "user",
+                }),
+            ],
+            activeTurnStartedAt: "2026-04-14T00:00:03.000Z",
+            status: "streaming",
+            toolActivity: [
+                createActivity({
+                    createdAt: "2026-04-14T00:00:04.000Z",
+                    id: "codex-acp:status:turn:runtime-turn-1",
+                    kind: "status",
+                    title: "New turn",
+                    updatedAt: "2026-04-14T00:00:04.000Z",
+                }),
+                createActivity({
+                    createdAt: "2026-04-14T00:00:05.000Z",
+                    id: "tool-1",
+                    kind: "shell",
+                    title: "Run tests",
+                    updatedAt: "2026-04-14T00:00:05.000Z",
+                }),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(model.orderedRowIds).toEqual([
+            "message:first-prompt",
+            "message:assistant-1",
+            "tool:comando:status:turn:local:2026-04-14T00:00:03.000Z",
+            "message:local-prompt-1",
+            "tool:tool-1",
+        ]);
     });
 
     it("does not revive completed context compaction as the live tail for a later prompt", () => {

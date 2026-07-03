@@ -83,6 +83,16 @@ const GIT_SCOPE_MENU_MIN_HEIGHT = 260;
 const GIT_SCOPE_MENU_DEFAULT_MAX_HEIGHT = 420;
 const GIT_SCOPE_MENU_MAX_HEIGHT = 720;
 
+export function compareGitScopeBranchNames(left: string, right: string): number {
+    const leftIsMain = left === "main";
+    const rightIsMain = right === "main";
+    if (leftIsMain === rightIsMain) {
+        return 0;
+    }
+
+    return leftIsMain ? -1 : 1;
+}
+
 function getStorage(): Storage | null {
     try {
         return globalThis.localStorage ?? null;
@@ -520,7 +530,15 @@ export function SidebarGitScopePicker({
     }, [branchRows, normalizedQuery]);
 
     const localBranchRows = useMemo(
-        () => filteredBranchRows.filter((row) => !row.branch.isRemote),
+        () =>
+            filteredBranchRows
+                .filter((row) => !row.branch.isRemote)
+                .toSorted((left, right) =>
+                    compareGitScopeBranchNames(
+                        left.branch.name,
+                        right.branch.name,
+                    ),
+                ),
         [filteredBranchRows],
     );
     const remoteBranchRows = useMemo(
@@ -2041,9 +2059,36 @@ export function SidebarGitScopePicker({
                                       onClick={() => setActiveTab("worktrees")}
                                   />
                               </div>
-                              {activeTab === "branches" && !canInitializeGit ? (
-                                  <div className="sidebar-git-scope-menu__actions">
+                              <div className="sidebar-git-scope-menu__search-row">
+                                  <div className="sidebar-git-scope-menu__search">
+                                      <SearchIcon />
+                                      <input
+                                          autoCapitalize="off"
+                                          autoCorrect="off"
+                                          className="ide-input app-no-drag w-full text-xs"
+                                          onChange={(event) =>
+                                              setQuery(event.target.value)
+                                          }
+                                          onKeyDown={(event) => {
+                                              if (
+                                                  event.key === "ArrowDown" ||
+                                                  event.key === "ArrowUp" ||
+                                                  event.key === "Enter"
+                                              ) {
+                                                  return;
+                                              }
+                                              event.stopPropagation();
+                                          }}
+                                          placeholder={searchPlaceholder}
+                                          ref={searchRef}
+                                          spellCheck={false}
+                                          value={query}
+                                      />
+                                  </div>
+                                  {activeTab === "branches" &&
+                                  !canInitializeGit ? (
                                       <button
+                                          aria-label="Create branch"
                                           className="sidebar-git-scope-menu__new-branch-button"
                                           disabled={
                                               isBusy || !canOpenBranchCreation
@@ -2062,34 +2107,8 @@ export function SidebarGitScopePicker({
                                           type="button"
                                       >
                                           <PlusIcon />
-                                          <span>New Branch</span>
                                       </button>
-                                  </div>
-                              ) : null}
-                              <div className="sidebar-git-scope-menu__search">
-                                  <SearchIcon />
-                                  <input
-                                      autoCapitalize="off"
-                                      autoCorrect="off"
-                                      className="ide-input app-no-drag w-full text-xs"
-                                      onChange={(event) =>
-                                          setQuery(event.target.value)
-                                      }
-                                      onKeyDown={(event) => {
-                                          if (
-                                              event.key === "ArrowDown" ||
-                                              event.key === "ArrowUp" ||
-                                              event.key === "Enter"
-                                          ) {
-                                              return;
-                                          }
-                                          event.stopPropagation();
-                                      }}
-                                      placeholder={searchPlaceholder}
-                                      ref={searchRef}
-                                      spellCheck={false}
-                                      value={query}
-                                  />
+                                  ) : null}
                               </div>
                           </div>
 

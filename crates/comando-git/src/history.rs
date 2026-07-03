@@ -19,19 +19,17 @@ pub fn list_history(
     query: Option<&str>,
     case_sensitive: bool,
     limit: Option<u32>,
+    include_all_refs: bool,
 ) -> GitResult<NativeGitHistoryListResult> {
     let limit = normalize_limit(limit);
     let format = history_format();
     let query = query.map(str::trim).filter(|query| !query.is_empty());
 
     if let Some(query) = query {
+        let args = history_args(&format, None, include_all_refs);
         let output = match runner.run(
             root_path,
-            &[
-                "log",
-                "--date-order",
-                format!("--pretty=format:{format}").as_str(),
-            ],
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
             GitRunOptions::read_only(),
         ) {
             Ok(output) => output,
@@ -51,21 +49,17 @@ pub fn list_history(
         });
     }
 
+    let args = history_args(&format, Some(limit), include_all_refs);
     let output = match runner.run(
         root_path.as_ref(),
-        &[
-            "log",
-            "--date-order",
-            format!("--max-count={limit}").as_str(),
-            format!("--pretty=format:{format}").as_str(),
-        ],
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
         GitRunOptions::read_only(),
     ) {
         Ok(output) => output,
         Err(error) if is_expected_empty_history_error(&error) => return Ok(empty_history()),
         Err(error) => return Err(error),
     };
-    let total_count = count_commits(runner, root_path)?;
+    let total_count = count_commits(runner, root_path, include_all_refs)?;
 
     Ok(NativeGitHistoryListResult {
         commits: parse_history(&output.stdout),
@@ -95,8 +89,13 @@ pub fn get_commit_detail(
         .next()
         .ok_or(GitError::NotRepository)?;
     let diff_args = commit_diff_args(&summary);
-    let diff_output = runner.run(root_path, &diff_args, GitRunOptions::read_only())?;
-    let files = parse_commit_diff_files(&diff_output.stdout);
+    let files = match runner.run(root_path.as_ref(), &diff_args, GitRunOptions::read_only()) {
+        Ok(diff_output) => parse_commit_diff_files(&diff_output.stdout),
+        Err(GitError::OutputTooLarge { .. }) => {
+            get_commit_diff_summary_files(runner, root_path.as_ref(), &summary)?
+        }
+        Err(error) => return Err(error),
+    };
     let insertions = files.iter().map(|file| file.additions.unwrap_or(0)).sum();
     let deletions = files.iter().map(|file| file.deletions.unwrap_or(0)).sum();
 
@@ -225,12 +224,30 @@ fn matches_query(commit: &NativeGitCommitSummary, query: &str, case_sensitive: b
     }
 }
 
-fn count_commits(runner: &GitRunner, root_path: impl AsRef<Path>) -> GitResult<u32> {
-    match runner.run(
-        root_path,
-        &["rev-list", "--count", "HEAD"],
-        GitRunOptions::read_only(),
-    ) {
+fn history_args(format: &str, limit: Option<u32>, include_all_refs: bool) -> Vec<String> {
+    let mut args = vec!["log".to_string()];
+    if include_all_refs {
+        args.push("--all".to_string());
+    }
+    args.push("--date-order".to_string());
+    if let Some(limit) = limit {
+        args.push(format!("--max-count={limit}"));
+    }
+    args.push(format!("--pretty=format:{format}"));
+    args
+}
+
+fn count_commits(
+    runner: &GitRunner,
+    root_path: impl AsRef<Path>,
+    include_all_refs: bool,
+) -> GitResult<u32> {
+    let args = if include_all_refs {
+        vec!["rev-list", "--all", "--count"]
+    } else {
+        vec!["rev-list", "--count", "HEAD"]
+    };
+    match runner.run(root_path, &args, GitRunOptions::read_only()) {
         Ok(output) => Ok(output.stdout.trim().parse::<u32>().unwrap_or(0)),
         Err(error) if is_expected_empty_history_error(&error) => Ok(0),
         Err(error) => Err(error),
@@ -260,6 +277,167 @@ fn commit_diff_args(commit: &NativeGitCommitSummary) -> Vec<String> {
         "--unified=3".to_string(),
         commit.sha.clone(),
     ]
+}
+
+fn commit_numstat_args(commit: &NativeGitCommitSummary) -> Vec<String> {
+    commit_summary_diff_args(commit, "--numstat")
+}
+
+fn commit_name_status_args(commit: &NativeGitCommitSummary) -> Vec<String> {
+    commit_summary_diff_args(commit, "--name-status")
+}
+
+fn commit_summary_diff_args(commit: &NativeGitCommitSummary, output_flag: &str) -> Vec<String> {
+    if let Some(parent) = commit.parent_shas.first() {
+        return vec![
+            "diff".to_string(),
+            "--find-renames".to_string(),
+            "--find-copies".to_string(),
+            output_flag.to_string(),
+            parent.clone(),
+            commit.sha.clone(),
+        ];
+    }
+
+    vec![
+        "show".to_string(),
+        "--root".to_string(),
+        "--format=".to_string(),
+        "--find-renames".to_string(),
+        "--find-copies".to_string(),
+        output_flag.to_string(),
+        commit.sha.clone(),
+    ]
+}
+
+fn get_commit_diff_summary_files(
+    runner: &GitRunner,
+    root_path: &Path,
+    commit: &NativeGitCommitSummary,
+) -> GitResult<Vec<NativeGitCommitDiffFile>> {
+    let numstat_output = runner.run(
+        root_path,
+        &commit_numstat_args(commit),
+        GitRunOptions::read_only(),
+    )?;
+    let name_status_output = runner.run(
+        root_path,
+        &commit_name_status_args(commit),
+        GitRunOptions::read_only(),
+    )?;
+
+    Ok(parse_commit_diff_summary_files(
+        &numstat_output.stdout,
+        &name_status_output.stdout,
+    ))
+}
+
+fn parse_commit_diff_summary_files(
+    numstat_raw: &str,
+    name_status_raw: &str,
+) -> Vec<NativeGitCommitDiffFile> {
+    let stats = parse_numstat(numstat_raw);
+
+    name_status_raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| parse_name_status_line(line, &stats))
+        .collect()
+}
+
+fn parse_numstat(raw: &str) -> std::collections::HashMap<String, (Option<i64>, Option<i64>)> {
+    raw.lines()
+        .filter_map(|line| {
+            let fields = line.split('\t').collect::<Vec<_>>();
+            let [additions, deletions, path] = fields.as_slice() else {
+                return None;
+            };
+
+            Some((
+                normalize_diff_stat_path(path),
+                (
+                    parse_numstat_value(additions),
+                    parse_numstat_value(deletions),
+                ),
+            ))
+        })
+        .collect()
+}
+
+fn parse_numstat_value(value: &str) -> Option<i64> {
+    if value == "-" {
+        None
+    } else {
+        value.parse::<i64>().ok()
+    }
+}
+
+fn parse_name_status_line(
+    line: &str,
+    stats: &std::collections::HashMap<String, (Option<i64>, Option<i64>)>,
+) -> Option<NativeGitCommitDiffFile> {
+    let fields = line.split('\t').collect::<Vec<_>>();
+    let [status, rest @ ..] = fields.as_slice() else {
+        return None;
+    };
+    let status_code = status.chars().next().unwrap_or('M');
+    let (kind, path, previous_path) = match status_code {
+        'A' => ("create", rest.first()?.to_string(), None),
+        'D' => ("delete", rest.first()?.to_string(), None),
+        'R' | 'C' => {
+            let [previous, current, ..] = rest else {
+                return None;
+            };
+            (
+                "move",
+                (*current).to_string(),
+                Some((*previous).to_string()),
+            )
+        }
+        _ => ("update", rest.first()?.to_string(), None),
+    };
+    let (additions, deletions) = stats.get(&path).copied().unwrap_or((None, None));
+
+    Some(NativeGitCommitDiffFile {
+        additions,
+        deletions,
+        hunks: Vec::new(),
+        is_text: additions.is_some() || deletions.is_some(),
+        kind: kind.to_string(),
+        new_text: None,
+        old_text: None,
+        path,
+        previous_path,
+        reversible: false,
+        status_label: Some(
+            match kind {
+                "create" => "added",
+                "delete" => "deleted",
+                "move" => "renamed",
+                _ => "modified",
+            }
+            .to_string(),
+        ),
+    })
+}
+
+fn normalize_diff_stat_path(path: &str) -> String {
+    if let Some((_, current)) = path.rsplit_once(" => ") {
+        let arrow_index = path.find(" => ").unwrap_or(0);
+        if let Some(open_brace_index) = path[..arrow_index].rfind('{')
+            && let Some(close_brace_index) = current.find('}')
+        {
+            let prefix = &path[..open_brace_index];
+            let replacement = current[..close_brace_index].trim();
+            let suffix = &current[close_brace_index + 1..];
+            return format!("{prefix}{replacement}{suffix}");
+        }
+
+        current.trim_end_matches('}').to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 fn parse_commit_diff_file(lines: Vec<&str>, index: usize) -> NativeGitCommitDiffFile {
@@ -385,8 +563,8 @@ mod tests {
         let temp = TempDir::new().expect("temp");
         run_git_fixture(temp.path(), &["init", "-b", "main"]);
 
-        let history =
-            list_history(&GitRunner::new(), temp.path(), None, false, None).expect("history");
+        let history = list_history(&GitRunner::new(), temp.path(), None, false, None, false)
+            .expect("history");
 
         assert!(history.commits.is_empty());
         assert_eq!(history.total_count, 0);
@@ -396,11 +574,17 @@ mod tests {
     fn returns_empty_history_for_plain_directory() {
         let temp = TempDir::new().expect("temp");
 
-        let history =
-            list_history(&GitRunner::new(), temp.path(), None, false, None).expect("history");
-        let filtered_history =
-            list_history(&GitRunner::new(), temp.path(), Some("init"), false, None)
-                .expect("filtered history");
+        let history = list_history(&GitRunner::new(), temp.path(), None, false, None, false)
+            .expect("history");
+        let filtered_history = list_history(
+            &GitRunner::new(),
+            temp.path(),
+            Some("init"),
+            false,
+            None,
+            false,
+        )
+        .expect("filtered history");
 
         assert!(history.commits.is_empty());
         assert_eq!(history.matched_count, 0);
@@ -423,6 +607,7 @@ mod tests {
             Some("second"),
             false,
             Some(10),
+            false,
         )
         .expect("history");
 
@@ -435,8 +620,8 @@ mod tests {
     fn reads_root_commit_detail() {
         let temp = TempDir::new().expect("temp");
         init_repo(&temp);
-        let history =
-            list_history(&GitRunner::new(), temp.path(), None, false, Some(1)).expect("history");
+        let history = list_history(&GitRunner::new(), temp.path(), None, false, Some(1), false)
+            .expect("history");
 
         let detail = get_commit_detail(&GitRunner::new(), temp.path(), &history.commits[0].sha)
             .expect("detail");
@@ -444,6 +629,83 @@ mod tests {
         assert_eq!(detail.changed_file_count, 1);
         assert_eq!(detail.files[0].kind, "create");
         assert_eq!(detail.insertions, 1);
+    }
+
+    #[test]
+    fn lists_current_branch_history_by_default() {
+        let temp = TempDir::new().expect("temp");
+        init_repo(&temp);
+        run_git_fixture(temp.path(), &["checkout", "-b", "topic"]);
+        fs::write(temp.path().join("tracked.txt"), "topic\n").expect("topic");
+        run_git_fixture(temp.path(), &["commit", "-am", "Topic only"]);
+        run_git_fixture(temp.path(), &["checkout", "main"]);
+
+        let history = list_history(&GitRunner::new(), temp.path(), None, false, None, false)
+            .expect("history");
+        let all_history = list_history(&GitRunner::new(), temp.path(), None, false, None, true)
+            .expect("all history");
+
+        assert!(
+            history
+                .commits
+                .iter()
+                .all(|commit| commit.subject != "Topic only")
+        );
+        assert!(
+            all_history
+                .commits
+                .iter()
+                .any(|commit| commit.subject == "Topic only")
+        );
+        assert_eq!(history.total_count, 1);
+        assert_eq!(all_history.total_count, 2);
+    }
+
+    #[test]
+    fn parses_commit_diff_summary_files_without_hunks() {
+        let files = super::parse_commit_diff_summary_files(
+            "12\t3\tsrc/main.rs\n-\t-\tassets/logo.png\n5\t0\tsrc/new.rs\n",
+            "M\tsrc/main.rs\nD\tassets/logo.png\nA\tsrc/new.rs\n",
+        );
+
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].path, "src/main.rs");
+        assert_eq!(files[0].kind, "update");
+        assert_eq!(files[0].additions, Some(12));
+        assert_eq!(files[0].deletions, Some(3));
+        assert!(files[0].hunks.is_empty());
+        assert_eq!(files[1].kind, "delete");
+        assert_eq!(files[1].additions, None);
+        assert_eq!(files[1].deletions, None);
+        assert_eq!(files[2].kind, "create");
+    }
+
+    #[test]
+    fn parses_commit_diff_summary_renames() {
+        let files = super::parse_commit_diff_summary_files(
+            "2\t1\tsrc/old.rs => src/new.rs\n",
+            "R087\tsrc/old.rs\tsrc/new.rs\n",
+        );
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].kind, "move");
+        assert_eq!(files[0].previous_path.as_deref(), Some("src/old.rs"));
+        assert_eq!(files[0].path, "src/new.rs");
+        assert_eq!(files[0].additions, Some(2));
+        assert_eq!(files[0].deletions, Some(1));
+    }
+
+    #[test]
+    fn parses_commit_diff_summary_compact_rename_paths() {
+        let files = super::parse_commit_diff_summary_files(
+            "2\t1\tsrc/{old.rs => new.rs}\n",
+            "R087\tsrc/old.rs\tsrc/new.rs\n",
+        );
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/new.rs");
+        assert_eq!(files[0].additions, Some(2));
+        assert_eq!(files[0].deletions, Some(1));
     }
 
     fn init_repo(temp: &TempDir) {

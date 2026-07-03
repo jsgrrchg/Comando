@@ -12,8 +12,8 @@ import type { AiAvailableCommand } from "@shared/ipc";
 
 import {
     CHAT_COMPOSER_PICKER_MAX_HEIGHT,
-    CHAT_COMPOSER_PICKER_MAX_WIDTH,
     CHAT_COMPOSER_PICKER_MIN_WIDTH,
+    getComposerAnchoredPickerWidth,
     getViewportSafeMenuPosition,
 } from "@renderer/app/utils/menu-position";
 
@@ -31,6 +31,7 @@ interface AIChatCommandPickerProps {
 
 interface PickerPosition {
     readonly maxHeight: number;
+    readonly width: number;
     readonly x: number;
     readonly y: number;
 }
@@ -69,12 +70,11 @@ export function AIChatCommandPicker({
 
         const anchorRect = anchor.getBoundingClientRect();
         const menuRect = listRef.current?.getBoundingClientRect();
-        const width = Math.min(
-            CHAT_COMPOSER_PICKER_MAX_WIDTH,
-            Math.max(
+        const width = getComposerAnchoredPickerWidth(
+            anchorRect.width ||
+                menuRect?.width ||
                 CHAT_COMPOSER_PICKER_MIN_WIDTH,
-                Math.ceil(menuRect?.width ?? CHAT_COMPOSER_PICKER_MIN_WIDTH),
-            ),
+            window.innerWidth,
         );
         const availableHeightAbove = Math.max(0, anchorRect.top - y - 8);
         const availableHeightBelow = Math.max(
@@ -103,6 +103,7 @@ export function AIChatCommandPicker({
 
         setPosition({
             maxHeight,
+            width,
             x: safePosition.x,
             y: openAbove
                 ? Math.max(8, anchorRect.top - height - y)
@@ -169,10 +170,9 @@ export function AIChatCommandPicker({
                 left: position?.x ?? 8,
                 maxHeight:
                     position?.maxHeight ?? CHAT_COMPOSER_PICKER_MAX_HEIGHT,
-                maxWidth: CHAT_COMPOSER_PICKER_MAX_WIDTH,
-                minWidth: CHAT_COMPOSER_PICKER_MIN_WIDTH,
                 position: "fixed",
                 top: position?.y ?? 8,
+                width: position?.width ?? CHAT_COMPOSER_PICKER_MIN_WIDTH,
                 zIndex: 10010,
             }}
         >
