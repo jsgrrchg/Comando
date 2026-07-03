@@ -754,12 +754,11 @@ describe("AiService prepareSession", () => {
         const service = createPrepareService({
             nativeAi: createNativeAi({
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(() =>
-                    Promise.resolve(createSnapshot({ runtimeId: "claude" })),
+                    Promise.resolve(createSnapshot({ runtimeId: "codex" })),
                 ),
                 renameSession: vi.fn<NativeAiGateway["renameSession"]>(() =>
                     Promise.resolve(),
                 ),
-                shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "claude"),
             }),
             onSessionSnapshot,
         });
@@ -767,9 +766,9 @@ describe("AiService prepareSession", () => {
         await service.prepareSession(
             {
                 projectId: null,
-                runtimeId: "claude",
+                runtimeId: "codex",
                 sessionId: "session-1",
-                title: "Claude 1",
+                title: "Codex 1",
                 worktreeId: null,
             },
             "window-1",
@@ -785,10 +784,10 @@ describe("AiService prepareSession", () => {
             origin: "live",
             parentSessionId: null,
             projectId: null,
-            runtimeId: "claude",
+            runtimeId: "codex",
             runtimeSessionId: null,
             sessionId: "session-1",
-            title: "Late Claude title",
+            title: "Late runtime title",
             updatedAt: "2026-04-15T22:24:00.000Z",
             worktreeId: null,
         });
@@ -803,7 +802,7 @@ describe("AiService prepareSession", () => {
             | undefined;
         expect(update?.kind).toBe("patch");
         expect(update?.kind === "patch" ? update.patch.changes.title : null).not.toBe(
-            "Late Claude title",
+            "Late runtime title",
         );
     });
 
@@ -811,21 +810,20 @@ describe("AiService prepareSession", () => {
         const service = createPrepareService({
             nativeAi: createNativeAi({
                 prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(() =>
-                    Promise.resolve(createSnapshot({ runtimeId: "claude" })),
+                    Promise.resolve(createSnapshot({ runtimeId: "codex" })),
                 ),
                 renameSession: vi.fn<NativeAiGateway["renameSession"]>(() =>
                     Promise.resolve(),
                 ),
-                shouldHandleRuntime: vi.fn((runtimeId) => runtimeId === "claude"),
             }),
         });
 
         await service.prepareSession(
             {
                 projectId: null,
-                runtimeId: "claude",
+                runtimeId: "codex",
                 sessionId: "session-1",
-                title: "Claude 1",
+                title: "Codex 1",
                 worktreeId: null,
             },
             "window-1",
@@ -838,9 +836,9 @@ describe("AiService prepareSession", () => {
         service.handleNativeSessionSnapshot("window-1", {
             kind: "snapshot",
             snapshot: createSnapshot({
-                runtimeId: "claude",
+                runtimeId: "codex",
                 sessionId: "session-1",
-                title: "Late Claude title",
+                title: "Late runtime title",
                 updatedAt: "2026-04-15T22:25:00.000Z",
             }),
         });
