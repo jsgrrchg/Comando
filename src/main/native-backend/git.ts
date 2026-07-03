@@ -191,6 +191,7 @@ export class NativeGitGateway implements ClosableGitGateway {
             parseNativeHistoryList(
                 await this.#client.request("git_get_history", {
                     caseSensitive: options.caseSensitive ?? null,
+                    includeAllRefs: options.includeAllRefs ?? null,
                     limit: options.limit ?? null,
                     query: options.query ?? null,
                     scope: nativeGitScope(inputPath),

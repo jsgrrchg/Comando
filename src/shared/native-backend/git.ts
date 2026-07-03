@@ -307,6 +307,7 @@ export type NativeGitPathInput = {
 export type NativeGitHistoryInput = {
     readonly scope: NativeGitRepositoryScope;
     readonly caseSensitive: boolean | null;
+    readonly includeAllRefs: boolean | null;
     readonly limit: number | null;
     readonly query: string | null;
 };

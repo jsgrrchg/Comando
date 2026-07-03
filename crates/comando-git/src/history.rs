@@ -19,20 +19,17 @@ pub fn list_history(
     query: Option<&str>,
     case_sensitive: bool,
     limit: Option<u32>,
+    include_all_refs: bool,
 ) -> GitResult<NativeGitHistoryListResult> {
     let limit = normalize_limit(limit);
     let format = history_format();
     let query = query.map(str::trim).filter(|query| !query.is_empty());
 
     if let Some(query) = query {
+        let args = history_args(&format, None, include_all_refs);
         let output = match runner.run(
             root_path,
-            &[
-                "log",
-                "--all",
-                "--date-order",
-                format!("--pretty=format:{format}").as_str(),
-            ],
+            &args.iter().map(String::as_str).collect::<Vec<_>>(),
             GitRunOptions::read_only(),
         ) {
             Ok(output) => output,
@@ -52,22 +49,17 @@ pub fn list_history(
         });
     }
 
+    let args = history_args(&format, Some(limit), include_all_refs);
     let output = match runner.run(
         root_path.as_ref(),
-        &[
-            "log",
-            "--all",
-            "--date-order",
-            format!("--max-count={limit}").as_str(),
-            format!("--pretty=format:{format}").as_str(),
-        ],
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
         GitRunOptions::read_only(),
     ) {
         Ok(output) => output,
         Err(error) if is_expected_empty_history_error(&error) => return Ok(empty_history()),
         Err(error) => return Err(error),
     };
-    let total_count = count_commits(runner, root_path)?;
+    let total_count = count_commits(runner, root_path, include_all_refs)?;
 
     Ok(NativeGitHistoryListResult {
         commits: parse_history(&output.stdout),
@@ -232,12 +224,30 @@ fn matches_query(commit: &NativeGitCommitSummary, query: &str, case_sensitive: b
     }
 }
 
-fn count_commits(runner: &GitRunner, root_path: impl AsRef<Path>) -> GitResult<u32> {
-    match runner.run(
-        root_path,
-        &["rev-list", "--all", "--count"],
-        GitRunOptions::read_only(),
-    ) {
+fn history_args(format: &str, limit: Option<u32>, include_all_refs: bool) -> Vec<String> {
+    let mut args = vec!["log".to_string()];
+    if include_all_refs {
+        args.push("--all".to_string());
+    }
+    args.push("--date-order".to_string());
+    if let Some(limit) = limit {
+        args.push(format!("--max-count={limit}"));
+    }
+    args.push(format!("--pretty=format:{format}"));
+    args
+}
+
+fn count_commits(
+    runner: &GitRunner,
+    root_path: impl AsRef<Path>,
+    include_all_refs: bool,
+) -> GitResult<u32> {
+    let args = if include_all_refs {
+        vec!["rev-list", "--all", "--count"]
+    } else {
+        vec!["rev-list", "--count", "HEAD"]
+    };
+    match runner.run(root_path, &args, GitRunOptions::read_only()) {
         Ok(output) => Ok(output.stdout.trim().parse::<u32>().unwrap_or(0)),
         Err(error) if is_expected_empty_history_error(&error) => Ok(0),
         Err(error) => Err(error),
@@ -553,8 +563,8 @@ mod tests {
         let temp = TempDir::new().expect("temp");
         run_git_fixture(temp.path(), &["init", "-b", "main"]);
 
-        let history =
-            list_history(&GitRunner::new(), temp.path(), None, false, None).expect("history");
+        let history = list_history(&GitRunner::new(), temp.path(), None, false, None, false)
+            .expect("history");
 
         assert!(history.commits.is_empty());
         assert_eq!(history.total_count, 0);
@@ -564,11 +574,17 @@ mod tests {
     fn returns_empty_history_for_plain_directory() {
         let temp = TempDir::new().expect("temp");
 
-        let history =
-            list_history(&GitRunner::new(), temp.path(), None, false, None).expect("history");
-        let filtered_history =
-            list_history(&GitRunner::new(), temp.path(), Some("init"), false, None)
-                .expect("filtered history");
+        let history = list_history(&GitRunner::new(), temp.path(), None, false, None, false)
+            .expect("history");
+        let filtered_history = list_history(
+            &GitRunner::new(),
+            temp.path(),
+            Some("init"),
+            false,
+            None,
+            false,
+        )
+        .expect("filtered history");
 
         assert!(history.commits.is_empty());
         assert_eq!(history.matched_count, 0);
@@ -591,6 +607,7 @@ mod tests {
             Some("second"),
             false,
             Some(10),
+            false,
         )
         .expect("history");
 
@@ -603,8 +620,8 @@ mod tests {
     fn reads_root_commit_detail() {
         let temp = TempDir::new().expect("temp");
         init_repo(&temp);
-        let history =
-            list_history(&GitRunner::new(), temp.path(), None, false, Some(1)).expect("history");
+        let history = list_history(&GitRunner::new(), temp.path(), None, false, Some(1), false)
+            .expect("history");
 
         let detail = get_commit_detail(&GitRunner::new(), temp.path(), &history.commits[0].sha)
             .expect("detail");
@@ -612,6 +629,36 @@ mod tests {
         assert_eq!(detail.changed_file_count, 1);
         assert_eq!(detail.files[0].kind, "create");
         assert_eq!(detail.insertions, 1);
+    }
+
+    #[test]
+    fn lists_current_branch_history_by_default() {
+        let temp = TempDir::new().expect("temp");
+        init_repo(&temp);
+        run_git_fixture(temp.path(), &["checkout", "-b", "topic"]);
+        fs::write(temp.path().join("tracked.txt"), "topic\n").expect("topic");
+        run_git_fixture(temp.path(), &["commit", "-am", "Topic only"]);
+        run_git_fixture(temp.path(), &["checkout", "main"]);
+
+        let history = list_history(&GitRunner::new(), temp.path(), None, false, None, false)
+            .expect("history");
+        let all_history = list_history(&GitRunner::new(), temp.path(), None, false, None, true)
+            .expect("all history");
+
+        assert!(
+            history
+                .commits
+                .iter()
+                .all(|commit| commit.subject != "Topic only")
+        );
+        assert!(
+            all_history
+                .commits
+                .iter()
+                .any(|commit| commit.subject == "Topic only")
+        );
+        assert_eq!(history.total_count, 1);
+        assert_eq!(all_history.total_count, 2);
     }
 
     #[test]
