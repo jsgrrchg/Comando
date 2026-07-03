@@ -337,6 +337,18 @@ fn invalidate_claude_auth_on_error(store: &RuntimeSetupStore, message: &str) -> 
                     "ANTHROPIC_CUSTOM_HEADERS",
                 ],
             )?;
+            if auth.method.as_deref() == Some("gateway-bedrock") {
+                store
+                    .update_runtime("claude", |state| {
+                        state.auth_method = None;
+                        state.bedrock_gateway_base_url = None;
+                    })
+                    .map_err(|error| {
+                        AiError::Internal(format!(
+                            "Native Claude auth invalidation failed: {error}"
+                        ))
+                    })?;
+            }
             Ok(true)
         }
         NativeAiCredentialSource::ExternalRuntime => {
@@ -2187,6 +2199,39 @@ mod tests {
                 .expect("secret"),
             None
         );
+    }
+
+    #[test]
+    fn claude_auth_error_clears_stored_bedrock_gateway() {
+        let temp = tempdir().expect("temp");
+        let store = RuntimeSetupStore::in_memory_for_tests(temp.path().join("runtime-setup.json"));
+        store
+            .update_runtime("claude", |state| {
+                state.auth_method = Some("gateway-bedrock".to_string());
+                state.auth_invalidated_at_ms = Some(u64::MAX);
+                state.bedrock_gateway_base_url = Some("https://bedrock.example.com".to_string());
+            })
+            .expect("setup");
+        let definition = crate::runtime::RuntimeRegistry::default()
+            .get("claude")
+            .unwrap();
+        let ready = runtime_status(&store, definition).expect("ready status");
+        assert!(ready.auth_ready);
+
+        let invalidated = invalidate_runtime_auth_on_error(
+            &store,
+            "claude",
+            "request failed with 401 unauthorized",
+        )
+        .expect("invalidate");
+        let status = runtime_status(&store, definition).expect("status");
+        let setup = store.load_runtime("claude").expect("setup");
+
+        assert!(invalidated);
+        assert!(!status.auth_ready);
+        assert_eq!(status.auth_method, None);
+        assert_eq!(setup.auth_method, None);
+        assert_eq!(setup.bedrock_gateway_base_url, None);
     }
 
     #[test]
