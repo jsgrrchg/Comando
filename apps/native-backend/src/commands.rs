@@ -2191,6 +2191,7 @@ impl NativeBackend {
                     Ok(input) => input,
                     Err(error) => return error_only(request.id, error),
                 };
+                let runtime_id = input.runtime_id.0.clone();
                 match self.ai_engine.prepare_session(input) {
                     Ok(summary) => CommandResult {
                         outputs: vec![
@@ -2212,7 +2213,14 @@ impl NativeBackend {
                         ],
                         should_shutdown: false,
                     },
-                    Err(error) => error_only(request.id, error.to_native_error()),
+                    Err(error) => ai_prepare_session_error_result(
+                        request.id,
+                        &self.runtime_setup_store_shared,
+                        &self.ai_engine,
+                        &runtime_id,
+                        error.to_native_error(),
+                        &error.to_string(),
+                    ),
                 }
             }
             "ai_send_prompt" => {
@@ -3711,6 +3719,27 @@ fn error_only(id: RequestId, error: NativeError) -> CommandResult {
     }
 }
 
+fn ai_prepare_session_error_result(
+    request_id: RequestId,
+    runtime_setup_store: &Arc<Mutex<Option<RuntimeSetupStore>>>,
+    ai_engine: &AiEngine,
+    runtime_id: &str,
+    error: NativeError,
+    message: &str,
+) -> CommandResult {
+    let mut outputs = vec![error_response(Some(request_id), error)];
+    outputs.extend(ai_auth_error_status_outputs(
+        runtime_setup_store,
+        ai_engine,
+        runtime_id,
+        message,
+    ));
+    CommandResult {
+        outputs,
+        should_shutdown: false,
+    }
+}
+
 fn backend_not_ready(id: RequestId) -> CommandResult {
     error_only(
         id,
@@ -4072,30 +4101,18 @@ fn runtime_status_event(ai_engine: &AiEngine, runtime_id: &str) -> Option<RpcOut
     ))
 }
 
-fn ai_error_runtime_outputs(
+fn ai_auth_error_status_outputs(
     runtime_setup_store: &Arc<Mutex<Option<RuntimeSetupStore>>>,
     ai_engine: &AiEngine,
-    ai_event: &AiRuntimeEvent,
+    runtime_id: &str,
+    message: &str,
 ) -> Vec<RpcOutput> {
-    if ai_event.event_name != AI_ERROR_EVENT {
-        return Vec::new();
-    }
-    let runtime_id = ai_event
-        .payload
-        .get("runtimeId")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
     if !matches!(
         runtime_id,
         "codex" | "claude" | "grok" | "kilo" | "opencode"
     ) {
         return Vec::new();
     }
-    let message = ai_event
-        .payload
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
     let Some(store) = runtime_setup_store
         .lock()
         .ok()
@@ -4109,6 +4126,27 @@ fn ai_error_runtime_outputs(
             .collect(),
         Ok(false) | Err(_) => Vec::new(),
     }
+}
+
+fn ai_error_runtime_outputs(
+    runtime_setup_store: &Arc<Mutex<Option<RuntimeSetupStore>>>,
+    ai_engine: &AiEngine,
+    ai_event: &AiRuntimeEvent,
+) -> Vec<RpcOutput> {
+    if ai_event.event_name != AI_ERROR_EVENT {
+        return Vec::new();
+    }
+    let runtime_id = ai_event
+        .payload
+        .get("runtimeId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let message = ai_event
+        .payload
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    ai_auth_error_status_outputs(runtime_setup_store, ai_engine, runtime_id, message)
 }
 
 fn ai_runtime_event_output(event_payload: AiRuntimeEvent) -> RpcOutput {
@@ -4867,6 +4905,44 @@ mod tests {
                 )
             }));
         }
+    }
+
+    #[test]
+    fn ai_prepare_session_auth_error_returns_error_and_runtime_status() {
+        let (_temp_dir, backend) = backend_with_memory_runtime_setup();
+        let store = backend.runtime_setup_store.clone().expect("runtime setup");
+        store
+            .update_runtime("claude", |state| {
+                state.auth_method = Some("gateway-bedrock".to_string());
+                state.bedrock_gateway_base_url = Some("https://bedrock.example.com".to_string());
+            })
+            .expect("claude setup");
+
+        let result = ai_prepare_session_error_result(
+            RequestId::Number(1),
+            &backend.runtime_setup_store_shared,
+            &backend.ai_engine,
+            "claude",
+            NativeError::new(
+                NativeErrorCode::AiRuntimeExited,
+                "Native runtime exited: request failed with 401 unauthorized",
+            ),
+            "request failed with 401 unauthorized",
+        );
+
+        let response = only_response(&result);
+        assert!(!response.ok);
+        assert!(result.outputs.iter().any(|output| {
+            matches!(
+                output,
+                RpcOutput::Event(event)
+                    if event.event_name == AI_RUNTIME_STATUS_EVENT
+                        && event.payload["runtimeId"] == "claude"
+            )
+        }));
+        let setup = store.load_runtime("claude").expect("claude setup");
+        assert_eq!(setup.auth_method, None);
+        assert_eq!(setup.bedrock_gateway_base_url, None);
     }
 
     #[test]

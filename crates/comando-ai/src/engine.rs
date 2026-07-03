@@ -37,9 +37,8 @@ use crate::history::{
 };
 use crate::runtime::RuntimeRegistry;
 use crate::runtime_setup::{
-    RuntimeAuthTerminalLaunch, invalidate_runtime_auth_on_error, prepare_auth_terminal_launch,
-    prepare_auth_terminal_logout, prepare_runtime_auth_connection, prepare_runtime_launch,
-    runtime_status,
+    RuntimeAuthTerminalLaunch, prepare_auth_terminal_launch, prepare_auth_terminal_logout,
+    prepare_runtime_auth_connection, prepare_runtime_launch, runtime_status,
 };
 use crate::scope::SessionScope;
 use crate::session::{NativeAiSession, SessionRegistry, resolve_session_title_on_prompt};
@@ -266,7 +265,6 @@ impl AiEngine {
             });
 
         let launch = resolved_launch;
-        let runtime_id_for_invalidation = input.runtime_id.0.clone();
         let session = NativeAiSession::from_prepare_input(input)?;
         let mut sessions = self.lock_sessions()?;
         if let Ok(existing) = sessions.get_mut(&session.session_id) {
@@ -291,13 +289,7 @@ impl AiEngine {
             event_sender,
         ) {
             Ok(result) => result,
-            Err(error) => {
-                self.invalidate_runtime_auth_on_error(
-                    &runtime_id_for_invalidation,
-                    &error.to_string(),
-                );
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         };
         let mut sessions = self.lock_sessions()?;
         let summary = sessions.insert_with_acp_controller(session, controller)?;
@@ -742,13 +734,6 @@ impl AiEngine {
                 AiError::Internal(format!("AI runtime setup store lock failed: {error}"))
             })?
             .clone())
-    }
-
-    fn invalidate_runtime_auth_on_error(&self, runtime_id: &str, message: &str) {
-        let Ok(Some(store)) = self.runtime_setup_store() else {
-            return;
-        };
-        let _ = invalidate_runtime_auth_on_error(&store, runtime_id, message);
     }
 
     fn initialize_history_session(
