@@ -299,22 +299,30 @@ fn invalidate_codex_auth_on_error(store: &RuntimeSetupStore, message: &str) -> A
 
     let setup = load_runtime_setup(store, "codex")?;
     let auth = codex_auth_state(store, &setup);
+    invalidate_codex_auth_state(store, &auth)
+}
+
+fn invalidate_codex_auth_state(
+    store: &RuntimeSetupStore,
+    auth: &RuntimeAuthState,
+) -> AiResult<bool> {
     match auth.credential_source {
         NativeAiCredentialSource::Environment => Ok(false),
         NativeAiCredentialSource::ComandoSecret => {
             clear_runtime_secrets(store, "codex", &["CODEX_API_KEY", "OPENAI_API_KEY"])?;
             Ok(true)
         }
-        _ => {
+        NativeAiCredentialSource::ExternalRuntime => {
             store
                 .update_runtime("codex", |state| {
-                    state.auth_method = None;
+                    state.auth_invalidated_at_ms = Some(now_ms());
                 })
                 .map_err(|error| {
                     AiError::Internal(format!("Native Codex auth invalidation failed: {error}"))
                 })?;
             Ok(true)
         }
+        NativeAiCredentialSource::None => Ok(false),
     }
 }
 
@@ -2170,6 +2178,38 @@ mod tests {
                 .expect("secret"),
             None
         );
+    }
+
+    #[test]
+    fn codex_auth_error_invalidates_chatgpt_login() {
+        let temp = tempdir().expect("temp");
+        let store = RuntimeSetupStore::in_memory_for_tests(temp.path().join("runtime-setup.json"));
+        store
+            .update_runtime("codex", |state| {
+                state.auth_method = Some("chatgpt".to_string());
+                state.auth_invalidated_at_ms = None;
+            })
+            .expect("setup");
+
+        let invalidated = invalidate_codex_auth_state(
+            &store,
+            &RuntimeAuthState {
+                method: Some("chatgpt".to_string()),
+                credential_source: NativeAiCredentialSource::ExternalRuntime,
+                ready: true,
+                message: None,
+                has_gateway_config: false,
+                has_gateway_url: false,
+                can_disconnect: true,
+                can_logout: true,
+            },
+        )
+        .expect("invalidate");
+        let setup = store.load_runtime("codex").expect("setup");
+
+        assert!(invalidated);
+        assert_eq!(setup.auth_method.as_deref(), Some("chatgpt"));
+        assert!(setup.auth_invalidated_at_ms.is_some());
     }
 
     #[test]
