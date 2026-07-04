@@ -1,5 +1,7 @@
 # Comando
 
+<img width="3337" height="1532" alt="Captura de pantalla 2026-07-04 a las 9 44 25" src="https://github.com/user-attachments/assets/1ff5563c-814a-46ff-8dbc-cc3eb5746a84" />
+
 Comando is a local-first desktop workspace for coding with multiple AI agents. It is a lightweight agentic code editor, built to keep chats, files, terminals, Git, GitHub, and change review visible in one multipane surface without trying to become a full IDE. Many tools are moving toward chat-centric workflows, making it difficult for users to read and write code; Comando takes the opposite stance, allowing seamless collaboration with agents without compromising proximity to the code. 
 
 Today the repository combines:
