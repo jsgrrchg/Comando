@@ -6,6 +6,7 @@ import { builtinModules, createRequire } from "node:module";
 
 import {
     ensurePackagedMacUpdaterConfig,
+    verifyMacReleaseArtifacts,
     verifyPackagedMacUpdaterConfig,
 } from "./mac-release-metadata.mjs";
 import {
@@ -734,6 +735,9 @@ function writeStandaloneProjectPackageJson(copiedPackages) {
         version: rootPackageJson.version,
         private: true,
         description: rootPackageJson.description,
+        repository: rootPackageJson.repository,
+        bugs: rootPackageJson.bugs,
+        homepage: rootPackageJson.homepage,
         type: rootPackageJson.type,
         packageManager: "npm@10.0.0",
         main: rootPackageJson.main,
@@ -747,6 +751,15 @@ function writeStandaloneProjectPackageJson(copiedPackages) {
             directories: {
                 buildResources: "resources",
                 output: "dist",
+            },
+            mac: {
+                ...(rootPackageJson.build?.mac ?? {}),
+                publish: [
+                    {
+                        provider: "github",
+                        channel: "latest",
+                    },
+                ],
             },
             extraResources: [
                 {
@@ -857,16 +870,12 @@ function verifyPackagedApplication(packagedAppPath) {
 }
 
 function verifyReleaseArtifacts() {
-    for (const artifactPath of [
-        standaloneDmgArtifactPath,
-        standaloneZipArtifactPath,
-    ]) {
-        if (!isFile(artifactPath)) {
-            throw new Error(
-                `Expected release artifact at ${relativeToRepo(artifactPath)}, but it was not generated.`,
-            );
-        }
-    }
+    verifyMacReleaseArtifacts({
+        distDir: standaloneDistDir,
+        productName,
+        relativePath: relativeToRepo,
+        version: rootPackageJson.version,
+    });
 }
 
 function verifyPackagedUpdaterConfig(packagedAppPath) {

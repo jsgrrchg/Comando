@@ -107,6 +107,14 @@ jobs:
             - name: Package unsigned macOS app
               run: pnpm run package:mac
 
+            - name: Validate macOS updater metadata
+              run: |
+                  version="$(node -p "require('./package.json').version")"
+                  product_name="$(node -p "require('./package.json').build.productName")"
+                  metadata_path="build/macos-package/project/dist/latest-mac.yml"
+                  test -f "$metadata_path"
+                  grep -F "${product_name}-${version}-universal.zip" "$metadata_path"
+
             - name: Upload macOS package artifacts
               if: failure()
               uses: actions/upload-artifact@v4
