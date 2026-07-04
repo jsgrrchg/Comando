@@ -1071,7 +1071,6 @@ function createLaunch(): AiSessionLaunchInput {
             ],
             modeId: "build",
             modelId: "gpt-5",
-            preferredConfigOptions: {},
         },
         input: {
             additionalRoots: ["/workspace/other"],
