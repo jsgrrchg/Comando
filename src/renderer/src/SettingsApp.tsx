@@ -62,8 +62,10 @@ import {
 import { useResolvedAppearance } from "./app/hooks/use-resolved-appearance";
 import { useSettingsStore } from "./app/store/settings-store";
 import { shortcutDefinitions, formatShortcut } from "./app/shortcuts/registry";
+import { openExternalUrl } from "./app/utils/external-url";
 
 const AI_PROVIDER_RUNTIME_IDS = AI_PROVIDER_IDS;
+const RELEASE_NOTES_URL = "https://github.com/jsgrrchg/Comando/releases/latest";
 
 export function SettingsApp() {
     const runtimeProjectId = useMemo(() => {
@@ -1117,6 +1119,9 @@ export function SettingsApp() {
                     }
 
                     void window.comando.installAppUpdateAndRestart();
+                },
+                onOpenReleaseNotes: () => {
+                    openExternalUrl(RELEASE_NOTES_URL);
                 },
                 state: appUpdateState,
             }}

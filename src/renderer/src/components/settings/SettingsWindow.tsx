@@ -288,6 +288,7 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Current version",
         "Last checked",
         "Check for updates",
+        "Release notes",
         "Restart and install",
         "Automatic updates",
         "Update status",
@@ -487,6 +488,7 @@ function getDynamicCategorySearchValues(
                 context.updates.state.currentVersion,
                 context.updates.state.availableVersion,
                 context.updates.state.lastCheckedAt,
+                context.updates.onOpenReleaseNotes ? "release notes" : null,
             ];
     }
 }
@@ -2837,6 +2839,7 @@ function ShortcutsContent({
 function UpdatesContent({
     onCheckForUpdates,
     onInstallUpdate,
+    onOpenReleaseNotes,
     searchQuery,
     state,
 }: SettingsUpdatesState & { readonly searchQuery: SettingsSearchQuery }) {
@@ -2859,6 +2862,8 @@ function UpdatesContent({
             "Current version",
             `You're on ${currentVersionLabel}. Last checked ${lastCheckedLabel}.`,
             primaryAction.label,
+            "release notes",
+            "github",
             state.currentVersion,
             state.availableVersion,
         ],
@@ -2890,6 +2895,8 @@ function UpdatesContent({
                 description={`You're on ${currentVersionLabel}. Last checked ${lastCheckedLabel}.`}
                 keywords={[
                     primaryAction.label,
+                    "release notes",
+                    "github",
                     state.currentVersion,
                     state.availableVersion,
                 ]}
@@ -2898,7 +2905,9 @@ function UpdatesContent({
                         style={{
                             alignItems: "center",
                             display: "flex",
+                            flexWrap: "wrap",
                             gap: 8,
+                            justifyContent: "flex-end",
                         }}
                     >
                         <span
@@ -2917,6 +2926,14 @@ function UpdatesContent({
                         >
                             {currentVersionLabel}
                         </span>
+                        <IdeActionButton
+                            active={false}
+                            disabled={!onOpenReleaseNotes}
+                            onClick={onOpenReleaseNotes ?? (() => {})}
+                            title="Open GitHub release notes"
+                        >
+                            release notes
+                        </IdeActionButton>
                         <IdeActionButton
                             active={state.canInstallUpdate}
                             disabled={primaryAction.disabled}

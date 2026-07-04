@@ -193,4 +193,5 @@ export interface SettingsUpdatesState {
     readonly state: AppUpdateState;
     readonly onCheckForUpdates?: () => void;
     readonly onInstallUpdate?: () => void;
+    readonly onOpenReleaseNotes?: () => void;
 }
