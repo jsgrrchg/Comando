@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
     hasPackagedUpdateConfig,
@@ -14,6 +15,98 @@ import {
 
 const temporaryDirectories = new Set<string>();
 
+type MockAutoUpdater = EventEmitter & {
+    allowPrerelease: boolean;
+    autoDownload: boolean;
+    autoInstallOnAppQuit: boolean;
+    checkForUpdates: ReturnType<typeof vi.fn>;
+    quitAndInstall: ReturnType<typeof vi.fn>;
+};
+
+function createMockAutoUpdater(): MockAutoUpdater {
+    const autoUpdater = new EventEmitter() as MockAutoUpdater;
+    autoUpdater.allowPrerelease = true;
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = false;
+    autoUpdater.checkForUpdates = vi.fn().mockResolvedValue(undefined);
+    autoUpdater.quitAndInstall = vi.fn();
+    return autoUpdater;
+}
+
+function createPackagedResourcesPath(): string {
+    const resourcesPath = fs.mkdtempSync(
+        path.join(os.tmpdir(), "comando-updater-runtime-test-"),
+    );
+    temporaryDirectories.add(resourcesPath);
+    fs.writeFileSync(
+        resolvePackagedUpdateConfigPath(resourcesPath),
+        "provider: github\n",
+        "utf8",
+    );
+    return resourcesPath;
+}
+
+async function importUpdaterWithMocks(options?: {
+    readonly autoUpdater?: MockAutoUpdater;
+}) {
+    vi.resetModules();
+
+    const autoUpdater = options?.autoUpdater ?? createMockAutoUpdater();
+    const sendToWindow = vi.fn();
+    const showMessageBox = vi.fn().mockResolvedValue({ response: 1 });
+    const getFocusedMainWindow = vi.fn().mockReturnValue(null);
+    const getMostRecentMainWindow = vi.fn().mockReturnValue(null);
+
+    vi.doMock("electron", () => ({
+        app: {
+            getVersion: vi.fn(() => "1.2.3"),
+        },
+        BrowserWindow: {
+            getFocusedWindow: vi.fn(() => null),
+        },
+        dialog: {
+            showMessageBox,
+        },
+    }));
+    vi.doMock("electron-updater", () => ({
+        default: {
+            autoUpdater,
+        },
+    }));
+    vi.doMock("./window", () => ({
+        forEachLiveWindow: vi.fn(
+            (
+                callback: (window: {
+                    webContents: { send: typeof sendToWindow };
+                }) => void,
+            ) => {
+                callback({ webContents: { send: sendToWindow } });
+            },
+        ),
+    }));
+    vi.doMock("./windows/registry", () => ({
+        windowRegistry: {
+            getFocusedMainWindow,
+            getMostRecentMainWindow,
+        },
+    }));
+
+    const updater = await import("./updater");
+
+    return {
+        autoUpdater,
+        getFocusedMainWindow,
+        getMostRecentMainWindow,
+        sendToWindow,
+        showMessageBox,
+        updater,
+    };
+}
+
+beforeEach(() => {
+    vi.restoreAllMocks();
+});
+
 afterEach(() => {
     for (const directoryPath of temporaryDirectories) {
         fs.rmSync(directoryPath, {
@@ -22,6 +115,8 @@ afterEach(() => {
         });
     }
     temporaryDirectories.clear();
+    vi.resetModules();
+    vi.clearAllMocks();
 });
 
 describe("shouldEnableAutoUpdates", () => {
@@ -177,6 +272,73 @@ describe("resolveAutoUpdateSupportState", () => {
             enabled: true,
             message:
                 "Automatic updates are enabled for this packaged release build.",
+        });
+    });
+});
+
+describe("initializeAutoUpdates", () => {
+    it("configures the updater and starts checking in supported builds", async () => {
+        const { autoUpdater, updater } = await importUpdaterWithMocks();
+        const resourcesPath = createPackagedResourcesPath();
+
+        updater.initializeAutoUpdates({
+            appChannel: "release",
+            isLinuxAppImage: true,
+            isPackaged: true,
+            platform: "linux",
+            resourcesPath,
+        });
+
+        expect(autoUpdater.autoDownload).toBe(true);
+        expect(autoUpdater.autoInstallOnAppQuit).toBe(true);
+        expect(autoUpdater.allowPrerelease).toBe(false);
+        expect(autoUpdater.listenerCount("error")).toBe(1);
+        expect(autoUpdater.listenerCount("update-available")).toBe(1);
+        expect(autoUpdater.listenerCount("download-progress")).toBe(1);
+        expect(autoUpdater.listenerCount("update-not-available")).toBe(1);
+        expect(autoUpdater.listenerCount("update-downloaded")).toBe(1);
+        expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+        expect(updater.getAppUpdateState()).toMatchObject({
+            autoUpdatesEnabled: true,
+            canCheckForUpdates: false,
+            canInstallUpdate: false,
+            currentVersion: "1.2.3",
+            status: "checking",
+        });
+
+        updater.initializeAutoUpdates({
+            appChannel: "release",
+            isLinuxAppImage: true,
+            isPackaged: true,
+            platform: "linux",
+            resourcesPath,
+        });
+
+        expect(autoUpdater.listenerCount("error")).toBe(1);
+        expect(autoUpdater.listenerCount("update-available")).toBe(1);
+    });
+
+    it("leaves unsupported builds disabled without registering updater handlers", async () => {
+        const { autoUpdater, updater } = await importUpdaterWithMocks();
+
+        updater.initializeAutoUpdates({
+            appChannel: "dev",
+            isPackaged: false,
+            platform: "darwin",
+            resourcesPath: "/tmp/comando",
+        });
+
+        expect(autoUpdater.checkForUpdates).not.toHaveBeenCalled();
+        expect(autoUpdater.eventNames()).toEqual([]);
+        expect(updater.getAppUpdateState()).toMatchObject({
+            autoUpdatesEnabled: false,
+            availableVersion: null,
+            canCheckForUpdates: false,
+            canInstallUpdate: false,
+            downloadedVersion: null,
+            lastCheckedAt: null,
+            progressPercent: null,
+            status: "unsupported",
         });
     });
 });
