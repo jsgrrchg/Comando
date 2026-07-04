@@ -146,7 +146,7 @@ function packageWindowsApp(
             unpackedAppDir,
         ],
         {
-        env: process.env,
+            env: process.env,
         },
     );
 
@@ -168,10 +168,23 @@ function prepareWorkspace() {
 }
 
 function resolveElectronBuilderArgs(rawArgs) {
-    const hasArchFlag = rawArgs.some((arg) =>
+    const normalizedArgs = rawArgs.filter(
+        (arg) => !["--", "--win"].includes(arg),
+    );
+    const hasArchFlag = normalizedArgs.some((arg) =>
         ["--x64", "--arm64", "--ia32", "--universal"].includes(arg),
     );
-    const args = ["--win", ...rawArgs.filter((arg) => arg !== "--win")];
+    const hasPublishFlag = normalizedArgs.some(
+        (arg) =>
+            ["--publish", "-p"].includes(arg) ||
+            arg.startsWith("--publish=") ||
+            arg.startsWith("-p="),
+    );
+    const args = ["--win", ...normalizedArgs];
+
+    if (!hasPublishFlag) {
+        args.push("--publish", "never");
+    }
 
     if (hasArchFlag) {
         return args;
