@@ -5,6 +5,8 @@ import { EventEmitter } from "node:events";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { IPC_EVENTS, type AppUpdateState } from "@shared/ipc";
+
 import {
     hasPackagedUpdateConfig,
     isLinuxAppImageEnvironment,
@@ -53,7 +55,9 @@ async function importUpdaterWithMocks(options?: {
     vi.resetModules();
 
     const autoUpdater = options?.autoUpdater ?? createMockAutoUpdater();
-    const sendToWindow = vi.fn();
+    const sendToWindow = vi.fn<
+        (eventName: string, payload: AppUpdateState) => void
+    >();
     const showMessageBox = vi
         .fn()
         .mockResolvedValue({ response: options?.showMessageBoxResponse ?? 1 });
@@ -481,5 +485,78 @@ describe("auto updater install and failure paths", () => {
             message: "You're already on the latest version.",
             status: "not-available",
         });
+    });
+});
+
+describe("auto updater state broadcasting", () => {
+    it("broadcasts relevant state transitions with the current app version", async () => {
+        const { autoUpdater, sendToWindow, updater } =
+            await importUpdaterWithMocks();
+        initializeSupportedAutoUpdates(updater);
+
+        autoUpdater.emit("update-available", { version: "2.0.0" });
+        autoUpdater.emit("download-progress", { percent: 42 });
+        autoUpdater.emit("update-downloaded", { version: "2.0.0" });
+
+        const broadcasts = sendToWindow.mock.calls.map(([eventName, payload]) => ({
+            eventName,
+            payload,
+        }));
+
+        expect(broadcasts.map(({ eventName }) => eventName)).toEqual(
+            expect.arrayContaining([
+                IPC_EVENTS.appUpdateState,
+                IPC_EVENTS.appUpdateState,
+                IPC_EVENTS.appUpdateState,
+                IPC_EVENTS.appUpdateState,
+                IPC_EVENTS.appUpdateState,
+            ]),
+        );
+        expect(broadcasts.map(({ payload }) => payload.status)).toEqual(
+            expect.arrayContaining([
+                "idle",
+                "checking",
+                "available",
+                "downloading",
+                "downloaded",
+            ]),
+        );
+        for (const { payload } of broadcasts) {
+            expect(payload.currentVersion).toBe("1.2.3");
+        }
+    });
+
+    it("reuses the active update check instead of starting concurrent checks", async () => {
+        const autoUpdater = createMockAutoUpdater();
+        let resolveCheck!: () => void;
+        autoUpdater.checkForUpdates.mockReturnValue(
+            new Promise<void>((resolve) => {
+                resolveCheck = resolve;
+            }),
+        );
+        const { updater } = await importUpdaterWithMocks({ autoUpdater });
+        initializeSupportedAutoUpdates(updater);
+
+        const firstCheck = updater.checkForAppUpdates();
+        const secondCheck = updater.checkForAppUpdates();
+
+        expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1);
+        await expect(secondCheck).resolves.toMatchObject({
+            status: "checking",
+        });
+
+        resolveCheck();
+        await firstCheck;
+    });
+
+    it("shows the downloaded update prompt only once", async () => {
+        const { autoUpdater, showMessageBox, updater } =
+            await importUpdaterWithMocks();
+        initializeSupportedAutoUpdates(updater);
+
+        autoUpdater.emit("update-downloaded", { version: "2.0.0" });
+        autoUpdater.emit("update-downloaded", { version: "2.0.0" });
+
+        expect(showMessageBox).toHaveBeenCalledTimes(1);
     });
 });
