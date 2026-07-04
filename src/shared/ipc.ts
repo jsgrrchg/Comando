@@ -651,7 +651,20 @@ export interface ProjectSettingsUpdatedEvent {
     readonly projectId: string;
 }
 
+export type SettingsWindowCategory =
+    | "appearance"
+    | "editor"
+    | "terminal"
+    | "projects"
+    | "github"
+    | "ai"
+    | "privacy"
+    | "shortcuts"
+    | "runtimes"
+    | "updates";
+
 export interface OpenSettingsWindowInput {
+    readonly initialCategory?: SettingsWindowCategory;
     readonly projectId: string | null;
 }
 

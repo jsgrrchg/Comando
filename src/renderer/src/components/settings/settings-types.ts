@@ -6,6 +6,7 @@ import type {
     AppTerminalSettings,
     AppUpdateState,
     GitHubAuthStatus,
+    SettingsWindowCategory,
 } from "@shared/ipc";
 
 import type { AIProvidersSettingsProps } from "./AIProvidersSettings";
@@ -136,6 +137,7 @@ export interface SettingsAiChatState {
 }
 
 export interface SettingsWindowProps {
+    readonly initialCategory?: SettingsWindowCategory;
     readonly appAppearance: SettingsThemeControlState;
     readonly appEditor: SettingsEditorControlState;
     readonly terminal: SettingsTerminalState;

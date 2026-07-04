@@ -74,17 +74,9 @@ import type {
     ShortcutEntryOption,
 } from "./settings-types";
 
-type Category =
-    | "appearance"
-    | "editor"
-    | "terminal"
-    | "projects"
-    | "github"
-    | "ai"
-    | "privacy"
-    | "shortcuts"
-    | "runtimes"
-    | "updates";
+type Category = SettingsWindowProps["initialCategory"] extends infer T
+    ? NonNullable<T>
+    : never;
 
 const CATEGORIES: { id: Category; label: string }[] = [
     { id: "appearance", label: "Appearance" },
@@ -517,8 +509,9 @@ export function SettingsWindow({
     aiProviders,
     shortcuts = [],
     updates,
+    initialCategory = "appearance",
 }: SettingsWindowProps) {
-    const [active, setActive] = useState<Category>("appearance");
+    const [active, setActive] = useState<Category>(initialCategory);
     const [search, setSearch] = useState("");
     const searchQuery = createSettingsSearchQuery(search);
     const searchContext: SettingsSearchContext = {

@@ -28,6 +28,7 @@ export function openSettingsWindow(
 
     const settingsWindow = createSettingsBrowserWindow(
         input.projectId,
+        input.initialCategory ?? null,
         transparencyEnabled,
     );
     applyAppZoomToWindow(settingsWindow, zoomFactor);

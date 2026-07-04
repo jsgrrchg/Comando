@@ -36,6 +36,7 @@ import {
     type AiProviderId,
     type AiProviderRuntimeStatus,
     type AiProviderRuntimeSettingsInput,
+    type SettingsWindowProps,
 } from "./components/settings";
 import {
     saveAiChatSettings,
@@ -69,6 +70,11 @@ export function SettingsApp() {
     const runtimeProjectId = useMemo(() => {
         const params = new URLSearchParams(window.location.search);
         return params.get("projectId");
+    }, []);
+    const initialCategory = useMemo(() => {
+        const params = new URLSearchParams(window.location.search);
+        const value = params.get("category");
+        return isSettingsWindowCategory(value) ? value : undefined;
     }, []);
     const [appAppearance, setAppAppearance] = useState<AppAppearanceSettings>(
         getDefaultAppAppearance(),
@@ -806,6 +812,7 @@ export function SettingsApp() {
 
     return (
         <SettingsWindow
+            initialCategory={initialCategory}
             aiChat={{
                 chatFontFamily: aiChat.chatFontFamily,
                 chatFontFamilies: chatFontFamilies,
@@ -1107,6 +1114,23 @@ export function SettingsApp() {
                 state: appUpdateState,
             }}
         />
+    );
+}
+
+function isSettingsWindowCategory(
+    value: string | null,
+): value is NonNullable<SettingsWindowProps["initialCategory"]> {
+    return (
+        value === "appearance" ||
+        value === "editor" ||
+        value === "terminal" ||
+        value === "projects" ||
+        value === "github" ||
+        value === "ai" ||
+        value === "privacy" ||
+        value === "shortcuts" ||
+        value === "runtimes" ||
+        value === "updates"
     );
 }
 
