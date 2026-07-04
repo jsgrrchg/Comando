@@ -6,7 +6,6 @@ import { deliverAiSessionStreamMessage } from "./ai-session-stream";
 import {
     IPC_CHANNELS,
     IPC_EVENTS,
-    type AppChangelogRelease,
     type ProjectAddResult,
     type AppPrivacyAccessState,
     type AppUpdateState,
@@ -457,11 +456,6 @@ const comandoApi: ComandoApi = {
         assertIpcObject<AppUpdateState>(
             IPC_CHANNELS.getAppUpdateState,
             await ipcRenderer.invoke(IPC_CHANNELS.getAppUpdateState),
-        ),
-    getAppChangelog: async () =>
-        assertIpcArray<AppChangelogRelease>(
-            IPC_CHANNELS.getAppChangelog,
-            await ipcRenderer.invoke(IPC_CHANNELS.getAppChangelog),
         ),
     getAppPrivacyAccessState: async () =>
         assertIpcObject<AppPrivacyAccessState>(

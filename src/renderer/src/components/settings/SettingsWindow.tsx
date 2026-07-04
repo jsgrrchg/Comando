@@ -101,7 +101,7 @@ const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     privacy: "Protected folders and macOS permission guidance",
     shortcuts: "Keyboard shortcuts reference",
     runtimes: "AI runtime authentication and wiring",
-    updates: "App version and changelog",
+    updates: "App version and updates",
 };
 
 type SearchValue = string | number | null | undefined;
@@ -291,8 +291,6 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Restart and install",
         "Automatic updates",
         "Update status",
-        "Changelog",
-        "Latest",
         "Available",
         "Downloading",
         "Ready",
@@ -489,11 +487,6 @@ function getDynamicCategorySearchValues(
                 context.updates.state.currentVersion,
                 context.updates.state.availableVersion,
                 context.updates.state.lastCheckedAt,
-                ...context.updates.changelog.flatMap((entry) => [
-                    entry.version,
-                    entry.date,
-                    ...entry.highlights,
-                ]),
             ];
     }
 }
@@ -868,7 +861,6 @@ export function SettingsWindow({
                             {filteredCategories.length > 0 &&
                                 activeCategory === "updates" && (
                                     <UpdatesContent
-                                        changelog={updates.changelog}
                                         onCheckForUpdates={
                                             updates.onCheckForUpdates
                                         }
@@ -2843,7 +2835,6 @@ function ShortcutsContent({
 }
 
 function UpdatesContent({
-    changelog,
     onCheckForUpdates,
     onInstallUpdate,
     searchQuery,
@@ -2863,16 +2854,6 @@ function UpdatesContent({
                   label: getCheckForUpdatesLabel(state),
                   onClick: onCheckForUpdates ?? (() => {}),
               };
-    const filteredChangelog = changelog.filter((entry) =>
-        matchesSearch(
-            searchQuery,
-            "Changelog",
-            entry.version,
-            entry.date,
-            entry.version === state.currentVersion ? "Latest" : undefined,
-            ...entry.highlights,
-        ),
-    );
     const showVersion = sectionHasMatches(searchQuery, "Version", [
         [
             "Current version",
@@ -2895,16 +2876,7 @@ function UpdatesContent({
             state.progressPercent,
         ],
     ]);
-    const showChangelog =
-        filteredChangelog.length > 0 ||
-        (changelog.length === 0 &&
-            matchesSearch(
-                searchQuery,
-                "Changelog",
-                "No changelog entries found in CHANGELOG.md.",
-            ));
-
-    if (!showVersion && !showChangelog) {
+    if (!showVersion) {
         return <EmptyPanelSearchResult />;
     }
 
@@ -3019,35 +2991,6 @@ function UpdatesContent({
                 }
             />
 
-            {showChangelog ? (
-                <>
-                    <SectionLabel>Changelog</SectionLabel>
-                    <div style={{ paddingTop: 4 }}>
-                        {changelog.length > 0 ? (
-                            filteredChangelog.map((entry) => (
-                                <ChangelogItem
-                                    entry={entry}
-                                    isLatest={
-                                        entry.version === state.currentVersion
-                                    }
-                                    key={entry.version}
-                                />
-                            ))
-                        ) : (
-                            <div
-                                style={{
-                                    color: "var(--color-text-secondary)",
-                                    fontFamily: "var(--font-mono)",
-                                    fontSize: 11,
-                                    padding: "8px 0",
-                                }}
-                            >
-                                No changelog entries found in CHANGELOG.md.
-                            </div>
-                        )}
-                    </div>
-                </>
-            ) : null}
         </div>
     );
 }
@@ -3128,92 +3071,6 @@ function GitHubStatusBadge({
         >
             {label}
         </span>
-    );
-}
-
-function ChangelogItem({
-    entry,
-    isLatest,
-}: {
-    entry: {
-        readonly date: string | null;
-        readonly highlights: readonly string[];
-        readonly version: string;
-    };
-    isLatest: boolean;
-}) {
-    return (
-        <div
-            style={{
-                borderBottom:
-                    "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                padding: "14px 0",
-            }}
-        >
-            <div
-                style={{
-                    alignItems: "center",
-                    display: "flex",
-                    gap: 8,
-                    marginBottom: 6,
-                }}
-            >
-                <span
-                    style={{
-                        color: "var(--color-text-primary)",
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 12,
-                        fontWeight: 600,
-                    }}
-                >
-                    {`v${entry.version}`}
-                </span>
-                {isLatest && (
-                    <span
-                        style={{
-                            backgroundColor:
-                                "color-mix(in srgb, var(--color-accent) 14%, transparent)",
-                            borderRadius: 4,
-                            color: "var(--color-accent)",
-                            fontFamily: "var(--font-mono)",
-                            fontSize: 10,
-                            fontWeight: 600,
-                            letterSpacing: "0.06em",
-                            padding: "2px 6px",
-                            textTransform: "uppercase",
-                        }}
-                    >
-                        Latest
-                    </span>
-                )}
-                <span
-                    style={{
-                        color: "var(--color-text-secondary)",
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 10,
-                        marginLeft: "auto",
-                    }}
-                >
-                    {entry.date ?? "No date"}
-                </span>
-            </div>
-            <ul
-                style={{
-                    color: "var(--color-text-secondary)",
-                    fontSize: 12,
-                    lineHeight: 1.5,
-                    listStyle: "disc",
-                    margin: 0,
-                    paddingLeft: 18,
-                }}
-            >
-                {entry.highlights.map((item) => (
-                    <li key={item} style={{ marginBottom: 2 }}>
-                        {item}
-                    </li>
-                ))}
-            </ul>
-        </div>
     );
 }
 

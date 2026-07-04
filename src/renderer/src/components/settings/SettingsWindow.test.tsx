@@ -103,7 +103,6 @@ function createSettingsWindowProps(
         },
         terminal: createTerminalState(),
         updates: {
-            changelog: [],
             state: {
                 autoUpdatesEnabled: false,
                 availableVersion: null,
