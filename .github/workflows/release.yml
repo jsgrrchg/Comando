@@ -439,6 +439,7 @@ jobs:
                   printf '%s' "$LINUX_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
                   gpg --batch --list-secret-keys "$LINUX_REPO_GPG_KEY_ID" >/dev/null
                   gpg --batch --armor --export "$LINUX_REPO_GPG_KEY_ID" > "$RUNNER_TEMP/comando-rpm-signing-key.asc"
+                  rpm --import "$RUNNER_TEMP/comando-rpm-signing-key.asc"
                   sudo rpm --import "$RUNNER_TEMP/comando-rpm-signing-key.asc"
 
                   node scripts/sign-rpm-packages.mjs \
