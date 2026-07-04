@@ -103,6 +103,18 @@ async function importUpdaterWithMocks(options?: {
     };
 }
 
+function initializeSupportedAutoUpdates(
+    updater: Awaited<ReturnType<typeof importUpdaterWithMocks>>["updater"],
+) {
+    updater.initializeAutoUpdates({
+        appChannel: "release",
+        isLinuxAppImage: true,
+        isPackaged: true,
+        platform: "linux",
+        resourcesPath: createPackagedResourcesPath(),
+    });
+}
+
 beforeEach(() => {
     vi.restoreAllMocks();
 });
@@ -279,15 +291,7 @@ describe("resolveAutoUpdateSupportState", () => {
 describe("initializeAutoUpdates", () => {
     it("configures the updater and starts checking in supported builds", async () => {
         const { autoUpdater, updater } = await importUpdaterWithMocks();
-        const resourcesPath = createPackagedResourcesPath();
-
-        updater.initializeAutoUpdates({
-            appChannel: "release",
-            isLinuxAppImage: true,
-            isPackaged: true,
-            platform: "linux",
-            resourcesPath,
-        });
+        initializeSupportedAutoUpdates(updater);
 
         expect(autoUpdater.autoDownload).toBe(true);
         expect(autoUpdater.autoInstallOnAppQuit).toBe(true);
@@ -306,13 +310,7 @@ describe("initializeAutoUpdates", () => {
             status: "checking",
         });
 
-        updater.initializeAutoUpdates({
-            appChannel: "release",
-            isLinuxAppImage: true,
-            isPackaged: true,
-            platform: "linux",
-            resourcesPath,
-        });
+        initializeSupportedAutoUpdates(updater);
 
         expect(autoUpdater.listenerCount("error")).toBe(1);
         expect(autoUpdater.listenerCount("update-available")).toBe(1);
@@ -340,5 +338,60 @@ describe("initializeAutoUpdates", () => {
             progressPercent: null,
             status: "unsupported",
         });
+    });
+});
+
+describe("auto updater download events", () => {
+    it("marks a discovered update as available and starts progress at zero", async () => {
+        const { autoUpdater, updater } = await importUpdaterWithMocks();
+        initializeSupportedAutoUpdates(updater);
+
+        autoUpdater.emit("update-available", { version: "2.0.0" });
+
+        expect(updater.getAppUpdateState()).toMatchObject({
+            availableVersion: "2.0.0",
+            canInstallUpdate: false,
+            progressPercent: 0,
+            status: "available",
+        });
+    });
+
+    it("clamps download progress and includes the available version in messages", async () => {
+        const { autoUpdater, updater } = await importUpdaterWithMocks();
+        initializeSupportedAutoUpdates(updater);
+
+        autoUpdater.emit("update-available", { version: "2.0.0" });
+        autoUpdater.emit("download-progress", { percent: -12 });
+
+        expect(updater.getAppUpdateState()).toMatchObject({
+            message: "Downloading version 2.0.0 (0%).",
+            progressPercent: 0,
+            status: "downloading",
+        });
+
+        autoUpdater.emit("download-progress", { percent: 175.4 });
+
+        expect(updater.getAppUpdateState()).toMatchObject({
+            message: "Downloading version 2.0.0 (100%).",
+            progressPercent: 100,
+            status: "downloading",
+        });
+    });
+
+    it("marks downloaded updates installable and prompts for restart", async () => {
+        const { autoUpdater, showMessageBox, updater } =
+            await importUpdaterWithMocks();
+        initializeSupportedAutoUpdates(updater);
+
+        autoUpdater.emit("update-downloaded", { version: "2.0.0" });
+
+        expect(updater.getAppUpdateState()).toMatchObject({
+            availableVersion: "2.0.0",
+            canInstallUpdate: true,
+            downloadedVersion: "2.0.0",
+            progressPercent: 100,
+            status: "downloaded",
+        });
+        expect(showMessageBox).toHaveBeenCalledTimes(1);
     });
 });
