@@ -5,7 +5,6 @@ import type {
     AiRuntimeId,
     AiRuntimeStatus,
     AiSettingsSnapshot,
-    AppChangelogRelease,
     AppAiChatSettings,
     AppAppearanceSettings,
     AppPrivacyAccessState,
@@ -63,8 +62,10 @@ import {
 import { useResolvedAppearance } from "./app/hooks/use-resolved-appearance";
 import { useSettingsStore } from "./app/store/settings-store";
 import { shortcutDefinitions, formatShortcut } from "./app/shortcuts/registry";
+import { openExternalUrl } from "./app/utils/external-url";
 
 const AI_PROVIDER_RUNTIME_IDS = AI_PROVIDER_IDS;
+const RELEASE_NOTES_URL = "https://github.com/jsgrrchg/Comando/releases/latest";
 
 export function SettingsApp() {
     const runtimeProjectId = useMemo(() => {
@@ -131,9 +132,6 @@ export function SettingsApp() {
         progressPercent: null,
         status: "unsupported",
     });
-    const [appChangelog, setAppChangelog] = useState<
-        readonly AppChangelogRelease[]
-    >([]);
     const [appPrivacyAccessState, setAppPrivacyAccessState] =
         useState<AppPrivacyAccessState>({
             canOpenFullDiskAccessSettings: false,
@@ -256,15 +254,6 @@ export function SettingsApp() {
         setAppUpdateState(nextState);
     }, []);
 
-    const loadAppChangelog = useCallback(async () => {
-        if (!window.comando) {
-            return;
-        }
-
-        const releases = await window.comando.getAppChangelog();
-        setAppChangelog(releases);
-    }, []);
-
     const loadAppPrivacyAccessState = useCallback(async () => {
         if (!window.comando) {
             return;
@@ -325,7 +314,6 @@ export function SettingsApp() {
                 loadRuntimeStatuses(),
                 loadEnvironmentDiagnostics(),
                 loadAppUpdateState(),
-                loadAppChangelog(),
                 loadAppPrivacyAccessState(),
                 loadGitHubAuthStatus(),
                 loadProjects(),
@@ -337,7 +325,6 @@ export function SettingsApp() {
         };
     }, [
         hydrateSettings,
-        loadAppChangelog,
         loadEnvironmentDiagnostics,
         loadAppPrivacyAccessState,
         loadAppUpdateState,
@@ -1119,7 +1106,6 @@ export function SettingsApp() {
             }}
             shortcuts={shortcuts}
             updates={{
-                changelog: appChangelog,
                 onCheckForUpdates: () => {
                     if (!window.comando) {
                         return;
@@ -1133,6 +1119,9 @@ export function SettingsApp() {
                     }
 
                     void window.comando.installAppUpdateAndRestart();
+                },
+                onOpenReleaseNotes: () => {
+                    openExternalUrl(RELEASE_NOTES_URL);
                 },
                 state: appUpdateState,
             }}

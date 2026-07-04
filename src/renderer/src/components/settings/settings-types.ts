@@ -1,5 +1,4 @@
 import type {
-    AppChangelogRelease,
     AiToolCardExpansionMode,
     ProjectAppDataSummary,
     AppPrivacyAccessState,
@@ -191,8 +190,8 @@ export interface SettingsGitHubState {
 }
 
 export interface SettingsUpdatesState {
-    readonly changelog: readonly AppChangelogRelease[];
     readonly state: AppUpdateState;
     readonly onCheckForUpdates?: () => void;
     readonly onInstallUpdate?: () => void;
+    readonly onOpenReleaseNotes?: () => void;
 }

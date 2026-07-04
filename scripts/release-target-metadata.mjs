@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { resolveLinuxReleaseArtifacts } from "./linux-release-metadata.mjs";
+import { resolveMacReleaseArtifacts } from "./mac-release-metadata.mjs";
 import { resolveWindowsReleaseArtifacts } from "./windows-release-metadata.mjs";
 
 export const RELEASE_TARGETS = Object.freeze([
@@ -55,19 +56,22 @@ export function resolveReleaseTargetArtifacts({
     const normalizedVersion = normalizeReleaseVersion(version);
 
     if (target.platform === "darwin") {
-        const dmgFileName = `${productName}-${normalizedVersion}-universal.dmg`;
-        const zipFileName = `${productName}-${normalizedVersion}-universal.zip`;
+        const artifacts = resolveMacReleaseArtifacts({
+            distDir,
+            productName,
+            version: normalizedVersion,
+        });
 
         return {
             artifactName: target.artifactName,
             files: [
-                path.join(distDir, dmgFileName),
-                path.join(distDir, zipFileName),
-                path.join(distDir, "latest-mac.yml"),
+                artifacts.dmgPath,
+                artifacts.zipPath,
+                artifacts.metadataPath,
             ],
             id: target.id,
-            metadataPath: path.join(distDir, "latest-mac.yml"),
-            primaryArtifactName: zipFileName,
+            metadataPath: artifacts.metadataPath,
+            primaryArtifactName: artifacts.zipFileName,
         };
     }
 

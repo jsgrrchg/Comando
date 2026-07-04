@@ -129,7 +129,6 @@
             "output": "dist"
         },
         "files": [
-            "CHANGELOG.md",
             "out/**/*",
             "package.json",
             "node_modules/**/*"

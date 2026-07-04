@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { DNF_PUBLIC_KEY_FILE_NAME } from "./dnf-repo-lib.mjs";
+import { resolveLinuxRepoGpgPassphrase } from "./linux-repo-signing-env.mjs";
 
 function parseArgs(argv) {
     const args = {
@@ -82,7 +83,7 @@ function main() {
         "repomd.xml.asc",
     );
     const publicKeyPath = path.join(args.dnfDir, DNF_PUBLIC_KEY_FILE_NAME);
-    const passphrase = process.env.APT_REPO_GPG_PASSPHRASE ?? "";
+    const passphrase = resolveLinuxRepoGpgPassphrase();
 
     if (!fs.existsSync(repomdPath)) {
         throw new Error(`Cannot sign missing DNF repomd.xml file: ${repomdPath}`);

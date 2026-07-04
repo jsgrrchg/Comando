@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
     ensurePackagedMacUpdaterConfig,
+    resolveMacReleaseArtifacts,
     resolvePackagedMacUpdaterConfig,
+    verifyMacReleaseArtifacts,
     verifyPackagedMacUpdaterConfig,
 } from "./mac-release-metadata.mjs";
 
@@ -23,6 +25,22 @@ afterEach(() => {
 });
 
 describe("macOS updater metadata", () => {
+    it("resolves universal release artifact names", () => {
+        expect(
+            resolveMacReleaseArtifacts({
+                distDir: "dist",
+                productName: "Comando",
+                version: "v1.2.3",
+            }),
+        ).toEqual({
+            dmgFileName: "Comando-1.2.3-universal.dmg",
+            dmgPath: path.join("dist", "Comando-1.2.3-universal.dmg"),
+            metadataPath: path.join("dist", "latest-mac.yml"),
+            zipFileName: "Comando-1.2.3-universal.zip",
+            zipPath: path.join("dist", "Comando-1.2.3-universal.zip"),
+        });
+    });
+
     it("resolves packaged updater config from package metadata", () => {
         expect(
             resolvePackagedMacUpdaterConfig({
@@ -145,6 +163,78 @@ describe("macOS updater metadata", () => {
                 },
             }),
         ).toThrow(/owner: jsgrrchg/u);
+    });
+
+    it("verifies final macOS release artifacts", () => {
+        const distDir = createTempDir();
+        const artifacts = resolveMacReleaseArtifacts({
+            distDir,
+            productName: "Comando",
+            version: "1.2.3",
+        });
+        fs.writeFileSync(artifacts.dmgPath, "", "utf8");
+        fs.writeFileSync(artifacts.zipPath, "", "utf8");
+        fs.writeFileSync(
+            artifacts.metadataPath,
+            [
+                "version: 1.2.3",
+                "files:",
+                "  - url: Comando-1.2.3-universal.zip",
+                "path: Comando-1.2.3-universal.zip",
+            ].join("\n"),
+            "utf8",
+        );
+
+        expect(() =>
+            verifyMacReleaseArtifacts({
+                distDir,
+                productName: "Comando",
+                version: "v1.2.3",
+            }),
+        ).not.toThrow();
+    });
+
+    it("requires latest-mac.yml for final macOS release artifacts", () => {
+        const distDir = createTempDir();
+        const artifacts = resolveMacReleaseArtifacts({
+            distDir,
+            productName: "Comando",
+            version: "1.2.3",
+        });
+        fs.writeFileSync(artifacts.dmgPath, "", "utf8");
+        fs.writeFileSync(artifacts.zipPath, "", "utf8");
+
+        expect(() =>
+            verifyMacReleaseArtifacts({
+                distDir,
+                productName: "Comando",
+                version: "1.2.3",
+            }),
+        ).toThrow(/latest-mac\.yml/u);
+    });
+
+    it("rejects macOS updater metadata that does not reference the zip", () => {
+        const distDir = createTempDir();
+        const artifacts = resolveMacReleaseArtifacts({
+            distDir,
+            productName: "Comando",
+            version: "1.2.3",
+        });
+        fs.writeFileSync(artifacts.dmgPath, "", "utf8");
+        fs.writeFileSync(artifacts.zipPath, "", "utf8");
+        fs.writeFileSync(
+            artifacts.metadataPath,
+            "path: Comando-1.2.3-universal.dmg\n",
+            "utf8",
+        );
+
+        expect(() =>
+            verifyMacReleaseArtifacts({
+                distDir,
+                productName: "Comando",
+                version: "1.2.3",
+            }),
+        ).toThrow(/does not reference Comando-1\.2\.3-universal\.zip/u);
     });
 });
 

@@ -126,58 +126,58 @@ jobs:
         needs: prepare
         runs-on: ubuntu-latest
         env:
-            APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
-            APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
-            APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+            LINUX_REPO_GPG_PRIVATE_KEY: ${{ secrets.LINUX_REPO_GPG_PRIVATE_KEY || secrets.APT_REPO_GPG_PRIVATE_KEY }}
+            LINUX_REPO_GPG_PASSPHRASE: ${{ secrets.LINUX_REPO_GPG_PASSPHRASE || secrets.APT_REPO_GPG_PASSPHRASE }}
+            LINUX_REPO_GPG_KEY_ID: ${{ secrets.LINUX_REPO_GPG_KEY_ID || secrets.APT_REPO_GPG_KEY_ID }}
         steps:
             - name: Validate APT signing configuration
               run: |
                   missing=()
-                  for name in APT_REPO_GPG_PRIVATE_KEY APT_REPO_GPG_PASSPHRASE APT_REPO_GPG_KEY_ID; do
+                  for name in LINUX_REPO_GPG_PRIVATE_KEY LINUX_REPO_GPG_PASSPHRASE LINUX_REPO_GPG_KEY_ID; do
                     if [[ -z "${!name:-}" ]]; then
                       missing+=("$name")
                     fi
                   done
 
                   if (( ${#missing[@]} > 0 )); then
-                    printf 'Missing required APT repository secrets: %s\n' "${missing[*]}" >&2
+                    printf 'Missing required Linux repository secrets for APT: %s\n' "${missing[*]}" >&2
                     exit 1
                   fi
 
                   export GNUPGHOME
                   GNUPGHOME="$(mktemp -d)"
                   chmod 700 "$GNUPGHOME"
-                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
-                  gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
+                  printf '%s' "$LINUX_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  gpg --batch --list-secret-keys "$LINUX_REPO_GPG_KEY_ID" >/dev/null
 
     dnf-repository-preflight:
         name: DNF repository preflight
         needs: prepare
         runs-on: ubuntu-latest
         env:
-            APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
-            APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
-            APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+            LINUX_REPO_GPG_PRIVATE_KEY: ${{ secrets.LINUX_REPO_GPG_PRIVATE_KEY || secrets.APT_REPO_GPG_PRIVATE_KEY }}
+            LINUX_REPO_GPG_PASSPHRASE: ${{ secrets.LINUX_REPO_GPG_PASSPHRASE || secrets.APT_REPO_GPG_PASSPHRASE }}
+            LINUX_REPO_GPG_KEY_ID: ${{ secrets.LINUX_REPO_GPG_KEY_ID || secrets.APT_REPO_GPG_KEY_ID }}
         steps:
             - name: Validate DNF signing configuration
               run: |
                   missing=()
-                  for name in APT_REPO_GPG_PRIVATE_KEY APT_REPO_GPG_PASSPHRASE APT_REPO_GPG_KEY_ID; do
+                  for name in LINUX_REPO_GPG_PRIVATE_KEY LINUX_REPO_GPG_PASSPHRASE LINUX_REPO_GPG_KEY_ID; do
                     if [[ -z "${!name:-}" ]]; then
                       missing+=("$name")
                     fi
                   done
 
                   if (( ${#missing[@]} > 0 )); then
-                    printf 'Missing required DNF repository secrets: %s\n' "${missing[*]}" >&2
+                    printf 'Missing required Linux repository secrets for DNF: %s\n' "${missing[*]}" >&2
                     exit 1
                   fi
 
                   export GNUPGHOME
                   GNUPGHOME="$(mktemp -d)"
                   chmod 700 "$GNUPGHOME"
-                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
-                  gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
+                  printf '%s' "$LINUX_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  gpg --batch --list-secret-keys "$LINUX_REPO_GPG_KEY_ID" >/dev/null
 
     build-macos:
         name: macOS universal
@@ -392,9 +392,9 @@ jobs:
                     - arch: arm64
                       runner: ubuntu-24.04-arm
         env:
-            APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
-            APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
-            APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+            LINUX_REPO_GPG_PRIVATE_KEY: ${{ secrets.LINUX_REPO_GPG_PRIVATE_KEY || secrets.APT_REPO_GPG_PRIVATE_KEY }}
+            LINUX_REPO_GPG_PASSPHRASE: ${{ secrets.LINUX_REPO_GPG_PASSPHRASE || secrets.APT_REPO_GPG_PASSPHRASE }}
+            LINUX_REPO_GPG_KEY_ID: ${{ secrets.LINUX_REPO_GPG_KEY_ID || secrets.APT_REPO_GPG_KEY_ID }}
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
             - uses: actions/checkout@v4
@@ -436,14 +436,14 @@ jobs:
                   GNUPGHOME="$(mktemp -d)"
                   trap 'rm -rf "$GNUPGHOME"' EXIT
                   chmod 700 "$GNUPGHOME"
-                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
-                  gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
-                  gpg --batch --armor --export "$APT_REPO_GPG_KEY_ID" > "$RUNNER_TEMP/comando-rpm-signing-key.asc"
+                  printf '%s' "$LINUX_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  gpg --batch --list-secret-keys "$LINUX_REPO_GPG_KEY_ID" >/dev/null
+                  gpg --batch --armor --export "$LINUX_REPO_GPG_KEY_ID" > "$RUNNER_TEMP/comando-rpm-signing-key.asc"
                   sudo rpm --import "$RUNNER_TEMP/comando-rpm-signing-key.asc"
 
                   node scripts/sign-rpm-packages.mjs \
                     --rpm-dir dist \
-                    --key-id "$APT_REPO_GPG_KEY_ID"
+                    --key-id "$LINUX_REPO_GPG_KEY_ID"
 
             - name: Validate Linux RPM package
               run: |
@@ -464,6 +464,19 @@ jobs:
                       dist/*.rpm
                       dist/latest*-linux*.yml
                   if-no-files-found: error
+
+            - name: Upload Linux package artifacts on failure
+              if: failure()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: release-linux-${{ matrix.arch }}-failure-dist
+                  path: |
+                      dist/*.AppImage
+                      dist/*.AppImage.blockmap
+                      dist/*.deb
+                      dist/*.rpm
+                      dist/latest*-linux*.yml
+                  if-no-files-found: ignore
 
     validate-release-assets:
         name: Validate release assets
@@ -560,9 +573,9 @@ jobs:
         permissions:
             contents: write
         env:
-            APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
-            APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
-            APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+            LINUX_REPO_GPG_PRIVATE_KEY: ${{ secrets.LINUX_REPO_GPG_PRIVATE_KEY || secrets.APT_REPO_GPG_PRIVATE_KEY }}
+            LINUX_REPO_GPG_PASSPHRASE: ${{ secrets.LINUX_REPO_GPG_PASSPHRASE || secrets.APT_REPO_GPG_PASSPHRASE }}
+            LINUX_REPO_GPG_KEY_ID: ${{ secrets.LINUX_REPO_GPG_KEY_ID || secrets.APT_REPO_GPG_KEY_ID }}
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         steps:
             - uses: actions/checkout@v4
@@ -606,13 +619,13 @@ jobs:
                   export GNUPGHOME
                   GNUPGHOME="$(mktemp -d)"
                   chmod 700 "$GNUPGHOME"
-                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
-                  gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
+                  printf '%s' "$LINUX_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  gpg --batch --list-secret-keys "$LINUX_REPO_GPG_KEY_ID" >/dev/null
 
                   node scripts/sign-apt-repository.mjs \
                     --layout flat-release \
                     --apt-dir "$APT_RELEASE_DIR" \
-                    --key-id "$APT_REPO_GPG_KEY_ID" \
+                    --key-id "$LINUX_REPO_GPG_KEY_ID" \
                     --suite stable
 
             - name: Validate APT repository metadata
@@ -777,9 +790,9 @@ jobs:
         permissions:
             contents: write
         env:
-            APT_REPO_GPG_PRIVATE_KEY: ${{ secrets.APT_REPO_GPG_PRIVATE_KEY }}
-            APT_REPO_GPG_PASSPHRASE: ${{ secrets.APT_REPO_GPG_PASSPHRASE }}
-            APT_REPO_GPG_KEY_ID: ${{ secrets.APT_REPO_GPG_KEY_ID }}
+            LINUX_REPO_GPG_PRIVATE_KEY: ${{ secrets.LINUX_REPO_GPG_PRIVATE_KEY || secrets.APT_REPO_GPG_PRIVATE_KEY }}
+            LINUX_REPO_GPG_PASSPHRASE: ${{ secrets.LINUX_REPO_GPG_PASSPHRASE || secrets.APT_REPO_GPG_PASSPHRASE }}
+            LINUX_REPO_GPG_KEY_ID: ${{ secrets.LINUX_REPO_GPG_KEY_ID || secrets.APT_REPO_GPG_KEY_ID }}
         steps:
             - uses: actions/checkout@v4
               with:
@@ -839,12 +852,12 @@ jobs:
                   export GNUPGHOME
                   GNUPGHOME="$(mktemp -d)"
                   chmod 700 "$GNUPGHOME"
-                  printf '%s' "$APT_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
-                  gpg --batch --list-secret-keys "$APT_REPO_GPG_KEY_ID" >/dev/null
+                  printf '%s' "$LINUX_REPO_GPG_PRIVATE_KEY" | gpg --batch --import
+                  gpg --batch --list-secret-keys "$LINUX_REPO_GPG_KEY_ID" >/dev/null
 
                   node scripts/sign-dnf-repository.mjs \
                     --dnf-dir "$PAGES_DIR/dnf" \
-                    --key-id "$APT_REPO_GPG_KEY_ID"
+                    --key-id "$LINUX_REPO_GPG_KEY_ID"
 
             - name: Validate DNF repository metadata
               env:

@@ -4,7 +4,6 @@ import fs from "node:fs";
 import {
     IPC_CHANNELS,
     IPC_EVENTS,
-    type AppChangelogRelease,
     type AppPrivacyAccessState,
     type AppUpdateState,
     type AppBootstrapSnapshot,
@@ -200,7 +199,6 @@ import {
     resolveTsconfigForPath,
 } from "@main/tsconfig/resolve";
 import { readClaudeCodeTranscript } from "@main/ipc/claude-code-transcript";
-import { loadAppChangelog } from "@main/changelog";
 import {
     getAppPrivacyAccessState,
     openMacOsFullDiskAccessSettings,
@@ -224,7 +222,6 @@ interface RegisterIpcHandlersOptions {
 export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getBootstrapSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getAppUpdateState);
-    ipcMain.removeHandler(IPC_CHANNELS.getAppChangelog);
     ipcMain.removeHandler(IPC_CHANNELS.getAppPrivacyAccessState);
     ipcMain.removeHandler(IPC_CHANNELS.openMacOsFullDiskAccessSettings);
     ipcMain.removeHandler(IPC_CHANNELS.checkForAppUpdates);
@@ -377,10 +374,6 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.getAppUpdateState,
         (): AppUpdateState => getAppUpdateState(),
-    );
-    ipcMain.handle(
-        IPC_CHANNELS.getAppChangelog,
-        (): readonly AppChangelogRelease[] => loadAppChangelog(),
     );
     ipcMain.handle(
         IPC_CHANNELS.getAppPrivacyAccessState,

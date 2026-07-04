@@ -103,7 +103,6 @@ function createSettingsWindowProps(
         },
         terminal: createTerminalState(),
         updates: {
-            changelog: [],
             state: {
                 autoUpdatesEnabled: false,
                 availableVersion: null,
@@ -140,6 +139,23 @@ describe("SettingsWindow terminal settings", () => {
         );
 
         expect(markup).toContain("Terminal");
+    });
+
+    it("renders a release notes action in the Updates category", () => {
+        const markup = renderToStaticMarkup(
+            <SettingsWindow
+                {...createSettingsWindowProps({
+                    initialCategory: "updates",
+                    updates: {
+                        ...createSettingsWindowProps().updates,
+                        onOpenReleaseNotes: vi.fn(),
+                    },
+                })}
+            />,
+        );
+
+        expect(markup).toContain("release notes");
+        expect(markup).toContain("check for updates");
     });
 
     it("renders terminal controls and the Claude Code CLI notice", () => {

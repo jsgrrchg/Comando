@@ -107,6 +107,14 @@ jobs:
             - name: Package unsigned macOS app
               run: pnpm run package:mac
 
+            - name: Validate macOS updater metadata
+              run: |
+                  version="$(node -p "require('./package.json').version")"
+                  product_name="$(node -p "require('./package.json').build.productName")"
+                  metadata_path="build/macos-package/project/dist/latest-mac.yml"
+                  test -f "$metadata_path"
+                  grep -F "${product_name}-${version}-universal.zip" "$metadata_path"
+
             - name: Upload macOS package artifacts
               if: failure()
               uses: actions/upload-artifact@v4
@@ -161,6 +169,55 @@ jobs:
               uses: actions/upload-artifact@v4
               with:
                   name: windows-x64-smoke-dist
+                  path: dist/*
+
+    windows-arm64:
+        name: Windows arm64
+        runs-on: windows-11-arm
+        timeout-minutes: 120
+        env:
+            CSC_IDENTITY_AUTO_DISCOVERY: "false"
+            NODE_OPTIONS: --max-old-space-size=8192
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+
+            - name: Setup pnpm
+              uses: pnpm/action-setup@v6
+              with:
+                  version: 10.33.0
+
+            - name: Setup Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 22
+                  cache: pnpm
+
+            - name: Setup Rust toolchain
+              uses: ./.github/actions/setup-rust
+
+            - name: Cache Rust build outputs
+              uses: Swatinem/rust-cache@v2
+
+            - name: Install dependencies
+              run: pnpm install --frozen-lockfile
+
+            - name: Build Windows arm64 ACP payload
+              run: pnpm run build:windows-acp:arm64
+
+            - name: Package unsigned Windows arm64 app
+              shell: pwsh
+              run: |
+                  $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
+                  $env:COMANDO_WINDOWS_ACP_PAYLOAD_DIR = "$env:GITHUB_WORKSPACE\build\windows-acp\win-arm64\ai"
+                  pnpm run package:win:arm64
+
+            - name: Upload Windows arm64 package artifacts
+              if: failure()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: windows-arm64-smoke-dist
                   path: dist/*
 
     linux:

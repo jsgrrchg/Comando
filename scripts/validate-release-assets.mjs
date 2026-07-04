@@ -7,6 +7,7 @@ import {
     resolveReleaseTargetArtifacts,
 } from "./release-target-metadata.mjs";
 import { verifyLinuxReleaseArtifacts } from "./linux-release-metadata.mjs";
+import { verifyMacReleaseArtifacts } from "./mac-release-metadata.mjs";
 import { verifyWindowsReleaseArtifacts } from "./windows-release-metadata.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -76,10 +77,11 @@ export function validateReleaseAssets({
         }
 
         if (target.platform === "darwin") {
-            verifyMacReleaseMetadata({
-                metadataPath: targetArtifacts.metadataPath,
-                primaryArtifactName: targetArtifacts.primaryArtifactName,
+            verifyMacReleaseArtifacts({
+                distDir,
+                productName,
                 relativePath: (filePath) => path.relative(rootDir, filePath),
+                version: stripTagPrefix(version),
             });
         } else if (target.platform === "win32") {
             verifyWindowsReleaseArtifacts({
@@ -105,19 +107,6 @@ export function validateReleaseAssets({
     return {
         targets: validatedTargets,
     };
-}
-
-function verifyMacReleaseMetadata({
-    metadataPath,
-    primaryArtifactName,
-    relativePath,
-}) {
-    const metadata = fs.readFileSync(metadataPath, "utf8");
-    if (!metadata.includes(primaryArtifactName)) {
-        throw new Error(
-            `macOS updater metadata ${relativePath(metadataPath)} does not reference ${primaryArtifactName}.`,
-        );
-    }
 }
 
 function assertNoDuplicateAssetNames(rootDir) {
