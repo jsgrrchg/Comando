@@ -3,7 +3,7 @@ import type { BrowserWindow } from "electron";
 import { applyAppZoomToWindow } from "@main/settings/window-zoom";
 import { createSettingsWindow as createSettingsBrowserWindow } from "@main/window";
 import { windowRegistry } from "@main/windows/registry";
-import type { OpenSettingsWindowInput } from "@shared/ipc";
+import { IPC_EVENTS, type OpenSettingsWindowInput } from "@shared/ipc";
 
 const SETTINGS_WINDOW_KEY_PREFIX = "settings";
 
@@ -23,6 +23,12 @@ export function openSettingsWindow(
         }
         existingWindow.show();
         existingWindow.focus();
+        if (input.initialCategory) {
+            existingWindow.webContents.send(
+                IPC_EVENTS.settingsCategoryRequested,
+                input.initialCategory,
+            );
+        }
         return;
     }
 

@@ -510,6 +510,7 @@ export function SettingsWindow({
     shortcuts = [],
     updates,
     initialCategory = "appearance",
+    initialCategoryRequestId = 0,
 }: SettingsWindowProps) {
     const [active, setActive] = useState<Category>(initialCategory);
     const [search, setSearch] = useState("");
@@ -542,6 +543,11 @@ export function SettingsWindow({
         ? EMPTY_SEARCH_QUERY
         : searchQuery;
     const hasSearch = searchQuery.terms.length > 0;
+
+    useEffect(() => {
+        setActive(initialCategory);
+        setSearch("");
+    }, [initialCategory, initialCategoryRequestId]);
 
     useEffect(() => {
         if (activeCategory !== active) {

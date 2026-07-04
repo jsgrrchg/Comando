@@ -164,6 +164,7 @@ export const IPC_CHANNELS = {
 export const IPC_EVENTS = {
     appUpdateState: "app:update-state",
     appPrivacyAccessState: "app:privacy-access-state",
+    settingsCategoryRequested: "settings:category-requested",
     projectAppDataCleared: "projects:app-data-cleared",
     projectsUpdated: "projects:updated",
     projectTreeInvalidated: "projects:tree-invalidated",
@@ -3136,6 +3137,9 @@ export interface ComandoApi {
         listener: (payload: ProjectTreeInvalidation) => void,
     ) => () => void;
     onAppUpdateState: (listener: (payload: AppUpdateState) => void) => () => void;
+    onSettingsCategoryRequested: (
+        listener: (category: SettingsWindowCategory) => void,
+    ) => () => void;
     onAppPrivacyAccessState: (
         listener: (payload: AppPrivacyAccessState) => void,
     ) => () => void;
