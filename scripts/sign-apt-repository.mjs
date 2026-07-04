@@ -9,6 +9,7 @@ import {
     normalizeAptLayout,
     normalizeAptSuite,
 } from "./apt-repo-lib.mjs";
+import { resolveLinuxRepoGpgPassphrase } from "./linux-repo-signing-env.mjs";
 
 function parseArgs(argv) {
     const args = {
@@ -102,7 +103,7 @@ function main() {
     const inReleasePath = path.join(args.aptDir, "InRelease");
     const detachedSignaturePath = path.join(args.aptDir, "Release.gpg");
     const publicKeyPath = path.join(args.aptDir, APT_PUBLIC_KEY_FILE_NAME);
-    const passphrase = process.env.APT_REPO_GPG_PASSPHRASE ?? "";
+    const passphrase = resolveLinuxRepoGpgPassphrase();
 
     if (!fs.existsSync(releasePath)) {
         throw new Error(`Cannot sign missing APT Release file: ${releasePath}`);

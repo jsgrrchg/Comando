@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { listFilesRecursively } from "./apt-repo-lib.mjs";
+import { resolveLinuxRepoGpgPassphrase } from "./linux-repo-signing-env.mjs";
 
 function parseArgs(argv) {
     const args = {
@@ -71,7 +72,7 @@ function listRpmFiles(rootDir) {
 }
 
 function writePassphraseFile(tempDir) {
-    const passphrase = process.env.APT_REPO_GPG_PASSPHRASE ?? "";
+    const passphrase = resolveLinuxRepoGpgPassphrase();
     if (!passphrase) {
         return null;
     }
