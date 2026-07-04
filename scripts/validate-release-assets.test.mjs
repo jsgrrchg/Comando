@@ -213,7 +213,6 @@ function writeLinuxAssets(distDir, targetArch) {
     });
 
     fs.writeFileSync(artifacts.appImagePath, "", "utf8");
-    fs.writeFileSync(artifacts.appImageBlockmapPath, "", "utf8");
     fs.writeFileSync(artifacts.debPath, "", "utf8");
     fs.writeFileSync(artifacts.rpmPath, "", "utf8");
     fs.writeFileSync(

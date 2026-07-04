@@ -134,7 +134,6 @@ export function verifyLinuxReleaseArtifacts({
         version,
     });
 
-    assertFile(artifacts.appImageBlockmapPath, relativePath);
     assertFile(artifacts.metadataPath, relativePath);
 
     if (fs.existsSync(artifacts.forbiddenSharedMetadataPath)) {

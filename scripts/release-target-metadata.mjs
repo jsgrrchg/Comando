@@ -108,7 +108,6 @@ export function resolveReleaseTargetArtifacts({
             artifactName: target.artifactName,
             files: [
                 artifacts.appImagePath,
-                artifacts.appImageBlockmapPath,
                 artifacts.debPath,
                 artifacts.rpmPath,
                 artifacts.metadataPath,
