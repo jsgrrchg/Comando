@@ -1,9 +1,0 @@
-{
-  "name": "origin",
-  "fetchUrl": "https://example.invalid/comando.git",
-  "pushUrl": "https://example.invalid/comando.git",
-  "isDefault": true,
-  "refName": "origin/main",
-  "aheadBy": 1,
-  "behindBy": 0
-}

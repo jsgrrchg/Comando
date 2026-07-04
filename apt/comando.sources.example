@@ -1,0 +1,5 @@
+Types: deb
+URIs: https://github.com/jsgrrchg/Comando/releases/latest/download
+Suites: ./
+Architectures: amd64 arm64
+Signed-By: /etc/apt/keyrings/comando.asc
