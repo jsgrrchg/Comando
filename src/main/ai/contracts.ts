@@ -191,7 +191,6 @@ export interface AiDesiredSelections {
     readonly configOptions: readonly AiSessionConfigOption[];
     readonly modeId: string | null;
     readonly modelId: string | null;
-    readonly preferredConfigOptions: Record<string, boolean | string>;
 }
 
 export interface AiRuntimeSessionMapping {

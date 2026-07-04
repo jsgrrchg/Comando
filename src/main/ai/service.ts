@@ -442,9 +442,9 @@ export class AiService {
             readonly order: number;
         }
     >();
-    readonly #runtimeDefaultPreferencesBySessionId = new Map<
+    readonly #capturedRuntimeDefaultsBySessionId = new Map<
         string,
-        RuntimeSelectionPreferences
+        CapturedRuntimeDefaults
     >();
     #nativeAi: NativeAiGateway | null;
     readonly #nativeAuthMigratedRuntimeIds = new Set<AiRuntimeId>();
@@ -781,7 +781,7 @@ export class AiService {
             updatedAt,
             { emitUpdate: true },
         );
-        this.#scheduleLiveSelectionPreferenceReconciliation(
+        this.#scheduleCapturedRuntimeDefaultsApplication(
             ownerWindowId,
             sessionId,
         );
@@ -1258,7 +1258,7 @@ export class AiService {
                 ownerWindowId,
             );
             const reconciledSnapshot =
-                await this.#reconcileLiveSelectionPreferences(
+                await this.#applyCapturedRuntimeDefaults(
                     acceptedSnapshot.sessionId,
                     ownerWindowId,
                 );
@@ -1356,7 +1356,7 @@ export class AiService {
                             snapshot,
                             ownerWindowId,
                         );
-                        await this.#reconcileLiveSelectionPreferences(
+                        await this.#applyCapturedRuntimeDefaults(
                             snapshot.sessionId,
                             ownerWindowId,
                         );
@@ -1434,12 +1434,12 @@ export class AiService {
     }
 
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
-        await this.#setSessionMode(input, { rememberPreference: true });
+        await this.#setSessionMode(input, { rememberRuntimePreference: true });
     }
 
     async #setSessionMode(
         input: AiSessionModeMutationInput,
-        options: { readonly rememberPreference: boolean },
+        options: { readonly rememberRuntimePreference: boolean },
     ): Promise<void> {
         if (!this.#liveSessionContexts.has(input.sessionId)) {
             const snapshot = await this.#updateSessionSnapshot(
@@ -1447,7 +1447,7 @@ export class AiService {
                 (currentSnapshot) =>
                     setModeOnSnapshot(currentSnapshot, input.modeId),
             );
-            if (options.rememberPreference) {
+            if (options.rememberRuntimePreference) {
                 this.#rememberRuntimeModePreference(snapshot, input.modeId);
             }
             return;
@@ -1459,18 +1459,18 @@ export class AiService {
             (currentSnapshot) =>
                 setModeOnSnapshot(currentSnapshot, input.modeId),
         );
-        if (options.rememberPreference) {
+        if (options.rememberRuntimePreference) {
             this.#rememberRuntimeModePreference(snapshot, input.modeId);
         }
     }
 
     async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
-        await this.#setSessionModel(input, { rememberPreference: true });
+        await this.#setSessionModel(input, { rememberRuntimePreference: true });
     }
 
     async #setSessionModel(
         input: AiSessionModelMutationInput,
-        options: { readonly rememberPreference: boolean },
+        options: { readonly rememberRuntimePreference: boolean },
     ): Promise<void> {
         if (!this.#liveSessionContexts.has(input.sessionId)) {
             const snapshot = await this.#updateSessionSnapshot(
@@ -1478,7 +1478,7 @@ export class AiService {
                 (currentSnapshot) =>
                     setModelOnSnapshot(currentSnapshot, input.modelId),
             );
-            if (options.rememberPreference) {
+            if (options.rememberRuntimePreference) {
                 this.#rememberRuntimeModelPreference(snapshot, input.modelId);
             }
             return;
@@ -1490,7 +1490,7 @@ export class AiService {
             (currentSnapshot) =>
                 setModelOnSnapshot(currentSnapshot, input.modelId),
         );
-        if (options.rememberPreference) {
+        if (options.rememberRuntimePreference) {
             this.#rememberRuntimeModelPreference(snapshot, input.modelId);
         }
     }
@@ -1499,13 +1499,13 @@ export class AiService {
         input: AiSessionConfigOptionMutationInput,
     ): Promise<void> {
         await this.#setSessionConfigOption(input, {
-            rememberPreference: true,
+            rememberRuntimePreference: true,
         });
     }
 
     async #setSessionConfigOption(
         input: AiSessionConfigOptionMutationInput,
-        options: { readonly rememberPreference: boolean },
+        options: { readonly rememberRuntimePreference: boolean },
     ): Promise<void> {
         if (!this.#liveSessionContexts.has(input.sessionId)) {
             const snapshot = await this.#updateSessionSnapshot(
@@ -1517,7 +1517,7 @@ export class AiService {
                         input.value,
                     ),
             );
-            if (options.rememberPreference) {
+            if (options.rememberRuntimePreference) {
                 this.#rememberRuntimeConfigPreference(
                     snapshot,
                     input.optionId,
@@ -1537,7 +1537,7 @@ export class AiService {
                     input.value,
                 ),
         );
-        if (options.rememberPreference) {
+        if (options.rememberRuntimePreference) {
             this.#rememberRuntimeConfigPreference(
                 snapshot,
                 input.optionId,
@@ -2533,7 +2533,7 @@ export class AiService {
         return cachedSnapshot;
     }
 
-    async #reconcileLiveSelectionPreferences(
+    async #applyCapturedRuntimeDefaults(
         sessionId: string,
         ownerWindowId: string,
     ): Promise<AiSessionSnapshot | null> {
@@ -2543,25 +2543,25 @@ export class AiService {
             return snapshot;
         }
 
-        const preferences =
-            this.#runtimeDefaultPreferencesBySessionId.get(sessionId) ??
-            EMPTY_RUNTIME_SELECTION_PREFERENCES;
-        const allowRuntimeDefaults =
-            this.#runtimeDefaultPreferencesBySessionId.has(sessionId);
+        const capturedDefaults =
+            this.#capturedRuntimeDefaultsBySessionId.get(sessionId) ??
+            EMPTY_CAPTURED_RUNTIME_DEFAULTS;
+        const canApplyCapturedDefaults =
+            this.#capturedRuntimeDefaultsBySessionId.has(sessionId);
         const modelConfig = getModelConfigOption(snapshot.configOptions);
         if (
             !modelConfig &&
-            allowRuntimeDefaults &&
-            preferences.modelId &&
-            preferences.modelId !== snapshot.modelId &&
-            snapshot.models.some((model) => model.id === preferences.modelId)
+            canApplyCapturedDefaults &&
+            capturedDefaults.modelId &&
+            capturedDefaults.modelId !== snapshot.modelId &&
+            snapshot.models.some((model) => model.id === capturedDefaults.modelId)
         ) {
             await this.#setSessionModel(
                 {
-                    modelId: preferences.modelId,
+                    modelId: capturedDefaults.modelId,
                     sessionId,
                 },
-                { rememberPreference: false },
+                { rememberRuntimePreference: false },
             );
             snapshot = this.#liveSnapshots.get(sessionId) ?? snapshot;
         }
@@ -2569,26 +2569,26 @@ export class AiService {
         const modeConfig = getModeConfigOption(snapshot.configOptions);
         if (
             !modeConfig &&
-            allowRuntimeDefaults &&
-            preferences.modeId &&
-            preferences.modeId !== snapshot.modeId &&
-            snapshot.modes.some((mode) => mode.id === preferences.modeId)
+            canApplyCapturedDefaults &&
+            capturedDefaults.modeId &&
+            capturedDefaults.modeId !== snapshot.modeId &&
+            snapshot.modes.some((mode) => mode.id === capturedDefaults.modeId)
         ) {
             await this.#setSessionMode(
                 {
-                    modeId: preferences.modeId,
+                    modeId: capturedDefaults.modeId,
                     sessionId,
                 },
-                { rememberPreference: false },
+                { rememberRuntimePreference: false },
             );
             snapshot = this.#liveSnapshots.get(sessionId) ?? snapshot;
         }
 
-        const mutations = getPreferredConfigOptionMutations(
+        const mutations = getCapturedRuntimeDefaultMutations(
             snapshot,
-            preferences,
+            capturedDefaults,
             {
-                applyRuntimeDefaults: allowRuntimeDefaults,
+                applyCapturedDefaults: canApplyCapturedDefaults,
             },
         );
         for (const mutation of mutations) {
@@ -2598,30 +2598,30 @@ export class AiService {
                     sessionId,
                     value: mutation.value,
                 },
-                { rememberPreference: false },
+                { rememberRuntimePreference: false },
             );
             snapshot = this.#liveSnapshots.get(sessionId) ?? snapshot;
         }
 
         if (
-            allowRuntimeDefaults &&
+            canApplyCapturedDefaults &&
             snapshotHasEffectiveSelections(snapshot)
         ) {
-            this.#runtimeDefaultPreferencesBySessionId.delete(sessionId);
+            this.#capturedRuntimeDefaultsBySessionId.delete(sessionId);
         }
 
         return snapshot;
     }
 
-    #scheduleLiveSelectionPreferenceReconciliation(
+    #scheduleCapturedRuntimeDefaultsApplication(
         ownerWindowId: string,
         sessionId: string,
     ): void {
-        void this.#reconcileLiveSelectionPreferences(
+        void this.#applyCapturedRuntimeDefaults(
             sessionId,
             ownerWindowId,
         ).catch((error: unknown) => {
-            debugBenignError("ai.service.selectionPreferenceReconcile", error);
+            debugBenignError("ai.service.capturedRuntimeDefaults", error);
         });
     }
 
@@ -3483,26 +3483,26 @@ export class AiService {
             });
         const persistedSnapshot =
             this.#hydrateSnapshotRuntimeCatalog(sourceSnapshot);
-        const shouldUseRuntimeDefaults =
+        const shouldCaptureRuntimeDefaults =
             !snapshotOverride &&
             !liveSnapshot &&
             !storedSnapshot &&
             !sourceSnapshot.parentSessionId &&
             !hasAnySessionSelectionValue(sourceSnapshot);
-        const runtimeDefaultPreferences = shouldUseRuntimeDefaults
-            ? cloneRuntimeSelectionPreferences(
+        const capturedRuntimeDefaults = shouldCaptureRuntimeDefaults
+            ? cloneCapturedRuntimeDefaults(
                   this.#persistence.loadRuntimeSelectionPreferences(
                       input.runtimeId,
                   ),
               )
-            : EMPTY_RUNTIME_SELECTION_PREFERENCES;
-        if (shouldUseRuntimeDefaults) {
-            this.#runtimeDefaultPreferencesBySessionId.set(
+            : EMPTY_CAPTURED_RUNTIME_DEFAULTS;
+        if (shouldCaptureRuntimeDefaults) {
+            this.#capturedRuntimeDefaultsBySessionId.set(
                 input.sessionId,
-                runtimeDefaultPreferences,
+                capturedRuntimeDefaults,
             );
         } else {
-            this.#runtimeDefaultPreferencesBySessionId.delete(input.sessionId);
+            this.#capturedRuntimeDefaultsBySessionId.delete(input.sessionId);
         }
         const persistedSubagentSessionMappings =
             await this.#listPersistedRuntimeMappingsForParent(
@@ -3515,7 +3515,7 @@ export class AiService {
             desiredSelections: this.#resolveDesiredSelections(
                 persistedSnapshot,
                 sourceSnapshot,
-                { runtimePreferences: runtimeDefaultPreferences },
+                { capturedDefaults: capturedRuntimeDefaults },
             ),
             input: {
                 ...input,
@@ -4449,40 +4449,37 @@ export class AiService {
             | "parentSessionId"
             | "reasoningEffort"
         >,
-        options: { readonly runtimePreferences: RuntimeSelectionPreferences },
-    ): Pick<AiSessionSnapshot, "configOptions" | "modeId" | "modelId"> & {
-        readonly preferredConfigOptions: Record<string, boolean | string>;
-    } {
-        const preferences = options.runtimePreferences;
+        options: { readonly capturedDefaults: CapturedRuntimeDefaults },
+    ): Pick<AiSessionSnapshot, "configOptions" | "modeId" | "modelId"> {
+        const capturedDefaults = options.capturedDefaults;
         const sessionSelections = getSessionSelectionValues(sourceSnapshot);
         const preferredModeId =
             sessionSelections.modeId ??
-            preferences.modeId ??
+            capturedDefaults.modeId ??
             getPreferredConfigSelectionId(
-                preferences.configOptions,
+                capturedDefaults.configOptions,
                 persistedSnapshot.configOptions,
                 isModeConfigOption,
             );
         const preferredModelId =
             sessionSelections.modelId ??
-            preferences.modelId ??
+            capturedDefaults.modelId ??
             getPreferredConfigSelectionId(
-                preferences.configOptions,
+                capturedDefaults.configOptions,
                 persistedSnapshot.configOptions,
                 isModelConfigOption,
             );
 
         return {
-            configOptions: applyRuntimeSelectionPreferencesToConfigOptions(
+            configOptions: applyCapturedRuntimeDefaultsToConfigOptions(
                 persistedSnapshot.configOptions,
-                preferences.configOptions,
+                capturedDefaults.configOptions,
                 preferredModeId,
                 preferredModelId,
                 sessionSelections,
             ),
             modeId: preferredModeId ?? persistedSnapshot.modeId,
             modelId: preferredModelId ?? persistedSnapshot.modelId,
-            preferredConfigOptions: preferences.configOptions,
         };
     }
 
@@ -5201,9 +5198,9 @@ function trimRetentionRecords<T>(records: T[]): void {
     }
 }
 
-function applyRuntimeSelectionPreferencesToConfigOptions(
+function applyCapturedRuntimeDefaultsToConfigOptions(
     configOptions: readonly AiSessionConfigOption[],
-    preferences: Record<string, boolean | string>,
+    capturedDefaults: Record<string, boolean | string>,
     preferredModeId: string | null,
     preferredModelId: string | null,
     sessionSelections: SessionSelectionValues = EMPTY_SESSION_SELECTION_VALUES,
@@ -5215,7 +5212,7 @@ function applyRuntimeSelectionPreferencesToConfigOptions(
         );
         const savedValue =
             sessionValue ??
-            getRuntimeSelectionPreferenceValue(preferences, option.id);
+            getRuntimeSelectionPreferenceValue(capturedDefaults, option.id);
         const preferredValue =
             savedValue ??
             getTopLevelSelectionPreference(
@@ -5283,7 +5280,7 @@ interface SessionSelectionValues {
     readonly reasoningEffort: string | null;
 }
 
-interface RuntimeSelectionPreferences {
+interface CapturedRuntimeDefaults {
     readonly configOptions: Record<string, boolean | string>;
     readonly modeId: string | null;
     readonly modelId: string | null;
@@ -5296,15 +5293,15 @@ const EMPTY_SESSION_SELECTION_VALUES: SessionSelectionValues = {
     reasoningEffort: null,
 };
 
-const EMPTY_RUNTIME_SELECTION_PREFERENCES: RuntimeSelectionPreferences = {
+const EMPTY_CAPTURED_RUNTIME_DEFAULTS: CapturedRuntimeDefaults = {
     configOptions: {},
     modeId: null,
     modelId: null,
 };
 
-function cloneRuntimeSelectionPreferences(
-    preferences: RuntimeSelectionPreferences,
-): RuntimeSelectionPreferences {
+function cloneCapturedRuntimeDefaults(
+    preferences: CapturedRuntimeDefaults,
+): CapturedRuntimeDefaults {
     return {
         configOptions: { ...preferences.configOptions },
         modeId: preferences.modeId,
@@ -5312,15 +5309,15 @@ function cloneRuntimeSelectionPreferences(
     };
 }
 
-function getPreferredConfigOptionMutations(
+function getCapturedRuntimeDefaultMutations(
     snapshot: Pick<
         AiSessionSnapshot,
         "configOptions" | "modeId" | "modelId" | "reasoningEffort"
     >,
-    preferences: RuntimeSelectionPreferences,
-    options: { readonly applyRuntimeDefaults?: boolean } = {},
+    capturedDefaults: CapturedRuntimeDefaults,
+    options: { readonly applyCapturedDefaults?: boolean } = {},
 ): readonly PreferredConfigOptionMutation[] {
-    const sessionSelections = options.applyRuntimeDefaults
+    const sessionSelections = options.applyCapturedDefaults
         ? EMPTY_SESSION_SELECTION_VALUES
         : getSessionSelectionValues(snapshot);
 
@@ -5331,13 +5328,13 @@ function getPreferredConfigOptionMutations(
             }
 
             const savedValue = getRuntimeSelectionPreferenceValue(
-                preferences.configOptions,
+                capturedDefaults.configOptions,
                 option.id,
             );
             const preferredValue = savedValue ?? getTopLevelSelectionPreference(
                 option,
-                preferences.modeId,
-                preferences.modelId,
+                capturedDefaults.modeId,
+                capturedDefaults.modelId,
             );
             if (
                 preferredValue === undefined ||
