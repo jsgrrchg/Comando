@@ -36,6 +36,7 @@ import {
     type AiProviderId,
     type AiProviderRuntimeStatus,
     type AiProviderRuntimeSettingsInput,
+    type SettingsWindowProps,
 } from "./components/settings";
 import {
     saveAiChatSettings,
@@ -70,6 +71,18 @@ export function SettingsApp() {
         const params = new URLSearchParams(window.location.search);
         return params.get("projectId");
     }, []);
+    const initialCategory = useMemo(() => {
+        const params = new URLSearchParams(window.location.search);
+        const value = params.get("category");
+        return isSettingsWindowCategory(value) ? value : undefined;
+    }, []);
+    const [requestedCategory, setRequestedCategory] = useState<{
+        readonly category: SettingsWindowProps["initialCategory"];
+        readonly requestId: number;
+    }>({
+        category: initialCategory,
+        requestId: 0,
+    });
     const [appAppearance, setAppAppearance] = useState<AppAppearanceSettings>(
         getDefaultAppAppearance(),
     );
@@ -332,6 +345,21 @@ export function SettingsApp() {
         loadRuntimeStatuses,
         loadProjects,
     ]);
+
+    useEffect(() => {
+        if (!window.comando) {
+            return undefined;
+        }
+
+        return window.comando.onSettingsCategoryRequested((category) => {
+            if (isSettingsWindowCategory(category)) {
+                setRequestedCategory((current) => ({
+                    category,
+                    requestId: current.requestId + 1,
+                }));
+            }
+        });
+    }, []);
 
     useEffect(() => {
         if (!window.comando) {
@@ -806,6 +834,8 @@ export function SettingsApp() {
 
     return (
         <SettingsWindow
+            initialCategory={requestedCategory.category}
+            initialCategoryRequestId={requestedCategory.requestId}
             aiChat={{
                 chatFontFamily: aiChat.chatFontFamily,
                 chatFontFamilies: chatFontFamilies,
@@ -1107,6 +1137,23 @@ export function SettingsApp() {
                 state: appUpdateState,
             }}
         />
+    );
+}
+
+function isSettingsWindowCategory(
+    value: string | null,
+): value is NonNullable<SettingsWindowProps["initialCategory"]> {
+    return (
+        value === "appearance" ||
+        value === "editor" ||
+        value === "terminal" ||
+        value === "projects" ||
+        value === "github" ||
+        value === "ai" ||
+        value === "privacy" ||
+        value === "shortcuts" ||
+        value === "runtimes" ||
+        value === "updates"
     );
 }
 

@@ -55,6 +55,7 @@ import {
     type OpenProjectEntryExternallyInput,
     type OpenProjectFileInput,
     type OpenSettingsWindowInput,
+    type SettingsWindowCategory,
     type AiSessionSnapshot,
     type PersistenceSnapshot,
     type PrepareAiSessionInput,
@@ -635,6 +636,23 @@ const comandoApi: ComandoApi = {
 
         return () => {
             ipcRenderer.removeListener(IPC_EVENTS.appUpdateState, handleEvent);
+        };
+    },
+    onSettingsCategoryRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            category: SettingsWindowCategory,
+        ) => {
+            listener(category);
+        };
+
+        ipcRenderer.on(IPC_EVENTS.settingsCategoryRequested, handleEvent);
+
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.settingsCategoryRequested,
+                handleEvent,
+            );
         };
     },
     onAppPrivacyAccessState: (listener) => {

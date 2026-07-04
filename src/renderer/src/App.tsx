@@ -8,14 +8,17 @@ import {
     type KeyboardEvent as ReactKeyboardEvent,
     type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
+    type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 
 import type {
+    AppUpdateState,
     ComandoApi,
     PersistenceSnapshot,
     ProjectTreeNode,
     ProjectSummary,
+    SettingsWindowCategory,
     SettingsSnapshot,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
@@ -3215,12 +3218,39 @@ export function App() {
         ],
     );
 
-    const openSettingsWindow = useCallback(() => {
+    const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>(() =>
+        createInitialAppUpdateState(),
+    );
+
+    useEffect(() => {
+        if (!window.comando) {
+            return;
+        }
+
+        let cancelled = false;
+        void window.comando.getAppUpdateState().then((state) => {
+            if (!cancelled) {
+                setAppUpdateState(state);
+            }
+        });
+
+        const unsubscribe = window.comando.onAppUpdateState((state) => {
+            setAppUpdateState(state);
+        });
+
+        return () => {
+            cancelled = true;
+            unsubscribe();
+        };
+    }, []);
+
+    const openSettingsWindow = useCallback((initialCategory?: SettingsWindowCategory) => {
         if (!window.comando) {
             return;
         }
 
         void window.comando.openSettingsWindow({
+            initialCategory,
             projectId: activeProjectId,
         });
     }, [activeProjectId]);
@@ -4124,6 +4154,7 @@ export function App() {
             <div className="border-t border-border/50 px-2 py-2">
                 <ProjectSwitcher
                     activeProject={activeProject}
+                    appUpdateState={appUpdateState}
                     onCloneRepository={(repositoryUrl) =>
                         cloneRepository(repositoryUrl)
                     }
@@ -4600,8 +4631,42 @@ function FileTreeMoveDestinationPicker({
     );
 }
 
+function createInitialAppUpdateState(): AppUpdateState {
+    return {
+        autoUpdatesEnabled: false,
+        availableVersion: null,
+        canCheckForUpdates: false,
+        canInstallUpdate: false,
+        currentVersion: "",
+        downloadedVersion: null,
+        lastCheckedAt: null,
+        message: "Auto-updates are initializing.",
+        progressPercent: null,
+        status: "unsupported",
+    };
+}
+
+function getProjectSwitcherUpdateMenuLabel(
+    state: AppUpdateState,
+): string | null {
+    if (state.canInstallUpdate || state.status === "downloaded") {
+        return "Settings · Update ready";
+    }
+
+    if (state.status === "downloading" || state.status === "available") {
+        return "Settings · Downloading update";
+    }
+
+    if (state.availableVersion || state.downloadedVersion) {
+        return "Settings · Update available";
+    }
+
+    return null;
+}
+
 function ProjectSwitcher({
     activeProject,
+    appUpdateState,
     onCloneRepository,
     onOpenProjects,
     onOpenSettings,
@@ -4609,9 +4674,10 @@ function ProjectSwitcher({
     projects,
 }: {
     readonly activeProject: ProjectSummary | null;
+    readonly appUpdateState: AppUpdateState;
     readonly onCloneRepository: (repositoryUrl: string) => Promise<boolean>;
     readonly onOpenProjects: () => void;
-    readonly onOpenSettings: () => void;
+    readonly onOpenSettings: (initialCategory?: SettingsWindowCategory) => void;
     readonly onSelectProject: (projectId: string) => void;
     readonly projects: readonly ProjectSummary[];
 }) {
@@ -4632,6 +4698,8 @@ function ProjectSwitcher({
             project.rootPath.toLowerCase().includes(normalizedSearch)
         );
     });
+    const updateMenuLabel = getProjectSwitcherUpdateMenuLabel(appUpdateState);
+    const hasUpdateNotice = updateMenuLabel !== null;
 
     const resetMenuState = () => {
         setOpen(false);
@@ -4709,6 +4777,7 @@ function ProjectSwitcher({
         action: () => void,
         checked = false,
         muted = false,
+        trailing?: ReactNode,
     ) => (
         <button
             className="project-switcher-menu-item"
@@ -4727,6 +4796,7 @@ function ProjectSwitcher({
             >
                 {label}
             </span>
+            {trailing}
         </button>
     );
 
@@ -4886,10 +4956,21 @@ function ProjectSwitcher({
                                 </span>
                             </button>
                             {menuItem(
-                                "Settings",
-                                onOpenSettings,
+                                updateMenuLabel ?? "Settings",
+                                () =>
+                                    onOpenSettings(
+                                        hasUpdateNotice
+                                            ? "updates"
+                                            : undefined,
+                                    ),
                                 false,
                                 true,
+                                hasUpdateNotice ? (
+                                    <span
+                                        aria-hidden="true"
+                                        className="project-switcher-update-dot"
+                                    />
+                                ) : undefined,
                             )}
                         </>
                     )}

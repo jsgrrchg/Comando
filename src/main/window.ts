@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { BrowserWindow, nativeTheme, screen, shell } from "electron";
 
-import type { PersistedWindowState } from "@shared/ipc";
+import type { PersistedWindowState, SettingsWindowCategory } from "@shared/ipc";
 
 import { appIdentity } from "./app-runtime";
 import { debugBenignError } from "./observability/logging";
@@ -224,6 +224,7 @@ export function createMainWindow(
 
 export function createSettingsWindow(
     projectId: string | null = null,
+    initialCategory: SettingsWindowCategory | null = null,
     transparencyEnabled = true,
 ): BrowserWindow {
     const searchParams = new URLSearchParams({
@@ -232,6 +233,10 @@ export function createSettingsWindow(
 
     if (projectId) {
         searchParams.set("projectId", projectId);
+    }
+
+    if (initialCategory) {
+        searchParams.set("category", initialCategory);
     }
 
     return createBaseWindow({
