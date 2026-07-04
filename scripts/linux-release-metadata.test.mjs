@@ -247,7 +247,7 @@ describe("Linux updater metadata", () => {
                 targetArch: "x64",
                 version: "1.2.3",
             }),
-        ).toThrow(/AppImage\.blockmap/u);
+        ).toThrow(/latest-x64-linux\.yml/u);
     });
 
     it("rejects shared Linux updater metadata", () => {
@@ -309,8 +309,6 @@ function writeReleaseArtifactSet(
     ]) {
         fs.writeFileSync(filePath, "", "utf8");
     }
-
-    fs.writeFileSync(artifacts.appImageBlockmapPath, "", "utf8");
 
     const appImageName = metadataAppImageName ?? path.basename(artifacts.appImagePath);
     fs.writeFileSync(
