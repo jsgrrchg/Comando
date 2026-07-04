@@ -48,12 +48,15 @@ function createPackagedResourcesPath(): string {
 
 async function importUpdaterWithMocks(options?: {
     readonly autoUpdater?: MockAutoUpdater;
+    readonly showMessageBoxResponse?: number;
 }) {
     vi.resetModules();
 
     const autoUpdater = options?.autoUpdater ?? createMockAutoUpdater();
     const sendToWindow = vi.fn();
-    const showMessageBox = vi.fn().mockResolvedValue({ response: 1 });
+    const showMessageBox = vi
+        .fn()
+        .mockResolvedValue({ response: options?.showMessageBoxResponse ?? 1 });
     const getFocusedMainWindow = vi.fn().mockReturnValue(null);
     const getMostRecentMainWindow = vi.fn().mockReturnValue(null);
 
@@ -393,5 +396,90 @@ describe("auto updater download events", () => {
             status: "downloaded",
         });
         expect(showMessageBox).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("auto updater install and failure paths", () => {
+    it("does not install before an update has downloaded", async () => {
+        const { autoUpdater, updater } = await importUpdaterWithMocks();
+        initializeSupportedAutoUpdates(updater);
+
+        updater.installAppUpdateAndRestart();
+
+        expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    });
+
+    it("installs after an update has downloaded", async () => {
+        const { autoUpdater, updater } = await importUpdaterWithMocks();
+        initializeSupportedAutoUpdates(updater);
+
+        autoUpdater.emit("update-downloaded", { version: "2.0.0" });
+        updater.installAppUpdateAndRestart();
+
+        expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+    });
+
+    it("installs when the restart prompt is accepted", async () => {
+        const { autoUpdater, updater } = await importUpdaterWithMocks({
+            showMessageBoxResponse: 0,
+        });
+        initializeSupportedAutoUpdates(updater);
+
+        autoUpdater.emit("update-downloaded", { version: "2.0.0" });
+        await vi.waitFor(() => {
+            expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    it("keeps the downloaded update pending when the restart prompt is dismissed", async () => {
+        const { autoUpdater, showMessageBox, updater } =
+            await importUpdaterWithMocks({
+                showMessageBoxResponse: 1,
+            });
+        initializeSupportedAutoUpdates(updater);
+
+        autoUpdater.emit("update-downloaded", { version: "2.0.0" });
+        await vi.waitFor(() => {
+            expect(showMessageBox).toHaveBeenCalledTimes(1);
+        });
+
+        expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled();
+    });
+
+    it("stores a recoverable error when update checks fail", async () => {
+        const autoUpdater = createMockAutoUpdater();
+        autoUpdater.checkForUpdates.mockRejectedValue(
+            new Error("GitHub update metadata is unavailable"),
+        );
+        const { updater } = await importUpdaterWithMocks({ autoUpdater });
+
+        initializeSupportedAutoUpdates(updater);
+        await vi.waitFor(() => {
+            expect(updater.getAppUpdateState().status).toBe("error");
+        });
+
+        expect(updater.getAppUpdateState()).toMatchObject({
+            canCheckForUpdates: true,
+            message: "GitHub update metadata is unavailable",
+            status: "error",
+        });
+        expect(updater.getAppUpdateState().lastCheckedAt).toEqual(
+            expect.any(String),
+        );
+    });
+
+    it("marks the app current when no update is available", async () => {
+        const { autoUpdater, updater } = await importUpdaterWithMocks();
+        initializeSupportedAutoUpdates(updater);
+
+        autoUpdater.emit("update-available", { version: "2.0.0" });
+        autoUpdater.emit("update-not-available");
+
+        expect(updater.getAppUpdateState()).toMatchObject({
+            availableVersion: null,
+            canCheckForUpdates: true,
+            message: "You're already on the latest version.",
+            status: "not-available",
+        });
     });
 });
