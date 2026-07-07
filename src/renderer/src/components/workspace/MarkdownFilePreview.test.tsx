@@ -108,6 +108,24 @@ function mountInteractiveMarkdownFilePreview(
     };
 }
 
+async function waitForPreviewToken(
+    container: HTMLElement,
+    selector: string,
+): Promise<Element> {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+        const token = container.querySelector(selector);
+        if (token) {
+            return token;
+        }
+
+        await act(async () => {
+            await new Promise((resolve) => window.setTimeout(resolve, 0));
+        });
+    }
+
+    throw new Error(`Expected preview token "${selector}" to render.`);
+}
+
 describe("MarkdownFilePreview", () => {
     it("restores visible list markers inside the preview surface", () => {
         const styles = readMarkdownPreviewStyles();
@@ -234,6 +252,23 @@ describe("MarkdownFilePreview", () => {
         expect(markup).toContain("markdown-file-preview__code-block");
         expect(markup).toContain("cm-static-code");
         expect(markup).toContain("const value = 1;");
+    });
+
+    it("highlights bash fenced commands after loading language support", async () => {
+        const container = renderInteractiveMarkdownFilePreview({
+            content: [
+                "```bash",
+                "pnpm add react-markdown remark-gfm rehype-sanitize",
+                "```",
+            ].join("\n"),
+        });
+
+        const token = await waitForPreviewToken(
+            container,
+            ".cm-static-token-function",
+        );
+
+        expect(token.textContent).toBe("pnpm");
     });
 
     it("renders fenced code blocks without a language as plain code", () => {

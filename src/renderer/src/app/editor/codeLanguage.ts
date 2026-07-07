@@ -685,6 +685,89 @@ async function loadNushellLanguage(): Promise<LanguageSupport | Language> {
     );
 }
 
+async function loadShellLanguage(): Promise<LanguageSupport | Language> {
+    const { simpleMode } =
+        await import("@codemirror/legacy-modes/mode/simple-mode");
+
+    const commonRules = [
+        { regex: /\n/, token: null, next: "start" },
+        { regex: /#.*/, token: "comment" },
+        { regex: /"(?:[^"\\]|\\.)*"/, token: "string" },
+        { regex: /'(?:[^'\\]|\\.)*'/, token: "string" },
+        {
+            regex: /\$\{?[A-Za-z_][\w]*\}?|\$[0-9@#?$!*]/,
+            token: "variable",
+        },
+        { regex: /\b\d+(?:\.\d+)?\b/, token: "number" },
+    ] as const;
+    const flagRule = {
+        regex: /-{1,2}[A-Za-z0-9][\w-]*(?:=[^\s#;&|]+)?/,
+        token: "attribute",
+        next: "args",
+    } as const;
+    const commonCommandRule = {
+        regex: /\b(?:bun|cargo|cat|cd|chmod|chown|cp|curl|docker|echo|git|grep|ls|mkdir|mv|node|npm|npx|pnpm|rm|sed|tsc|tsx|vite|yarn)\b/,
+        token: "builtin",
+        next: "argStart",
+    } as const;
+    const plainArgumentRule = {
+        regex: /[^\s#;&|()<>]+/,
+        token: null,
+        next: "args",
+    } as const;
+
+    return StreamLanguage.define(
+        simpleMode({
+            start: [
+                ...commonRules,
+                {
+                    regex: /\b(?:case|do|done|elif|else|esac|fi|for|function|if|in|select|then|until|while)\b/,
+                    token: "keyword",
+                    next: "argStart",
+                },
+                commonCommandRule,
+                {
+                    regex: /[A-Za-z0-9_@/+.-]+(?=\s|$)/,
+                    token: "builtin",
+                    next: "argStart",
+                },
+                { regex: /&&|\|\||[|;()<>]/, token: "operator" },
+                { regex: /\s+/, token: null },
+            ],
+            argStart: [
+                ...commonRules,
+                flagRule,
+                {
+                    regex: /\b(?:case|do|done|elif|else|esac|fi|for|function|if|in|select|then|until|while)\b/,
+                    token: "keyword",
+                    next: "args",
+                },
+                commonCommandRule,
+                { regex: /&&|\|\||[|;]/, token: "operator", next: "start" },
+                { regex: /[()<>]/, token: "operator", next: "args" },
+                { regex: /\s+/, token: null },
+                plainArgumentRule,
+            ],
+            args: [
+                ...commonRules,
+                {
+                    regex: /\b(?:case|do|done|elif|else|esac|fi|for|function|if|in|select|then|until|while)\b/,
+                    token: "keyword",
+                },
+                commonCommandRule,
+                {
+                    regex: /&&|\|\||[|;]/,
+                    token: "operator",
+                    next: "start",
+                },
+                { regex: /[()<>]/, token: "operator" },
+                { regex: /\s+/, token: null, next: "argStart" },
+                plainArgumentRule,
+            ],
+        }),
+    );
+}
+
 async function loadSolidityLanguage(): Promise<LanguageSupport | Language> {
     const { simpleMode } =
         await import("@codemirror/legacy-modes/mode/simple-mode");
@@ -886,9 +969,7 @@ async function loadLanguageByKey(
                 ({ swift }) => StreamLanguage.define(swift),
             );
         case "shell":
-            return import("@codemirror/legacy-modes/mode/shell").then(
-                ({ shell }) => StreamLanguage.define(shell),
-            );
+            return loadShellLanguage();
         case "solidity":
             return loadSolidityLanguage();
         case "zig":
