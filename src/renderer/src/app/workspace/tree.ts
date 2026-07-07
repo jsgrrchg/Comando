@@ -21,6 +21,7 @@ import type {
     WorkspaceTab,
     WorkspaceTerminalTab,
 } from "@shared/ipc";
+import { resolveEditorLanguage } from "@shared/editor-language";
 
 export type SplitDirection = "down" | "left" | "right" | "up";
 export type MoveDirection = "next" | "previous";
@@ -35,6 +36,8 @@ export interface RuntimeWorkspaceFileOpenLocation {
     readonly startLine: number;
 }
 
+export type MarkdownFileViewMode = "edit" | "preview";
+
 export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
     readonly document: ProjectFileDocument | null;
     readonly draftContent: string;
@@ -44,11 +47,22 @@ export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
     readonly isLoading: boolean;
     readonly isSaving: boolean;
     readonly loadError: string | null;
+    readonly markdownViewMode?: MarkdownFileViewMode;
     readonly pendingOpenLocation?: RuntimeWorkspaceFileOpenLocation | null;
     readonly reviewContext: RuntimeWorkspaceFileReviewContext | null;
     readonly saveError: string | null;
     readonly savedContent: string;
     readonly viewState?: MonacoEditor.ICodeEditorViewState | null;
+}
+
+export function isMarkdownFilePath(filePath: string): boolean {
+    return resolveEditorLanguage({ filePath }).id === "markdown";
+}
+
+export function getDefaultMarkdownFileViewMode(
+    filePath: string,
+): MarkdownFileViewMode | undefined {
+    return isMarkdownFilePath(filePath) ? "edit" : undefined;
 }
 
 export type RuntimeWorkspaceChatTab = WorkspaceChatTab;
@@ -993,6 +1007,41 @@ export function setFileTabPendingOpenLocation(
             [tabId]: {
                 ...tab,
                 pendingOpenLocation,
+            },
+        },
+    };
+}
+
+export function setFileTabMarkdownViewMode(
+    state: WorkspaceTreeState,
+    tabId: string,
+    markdownViewMode: MarkdownFileViewMode,
+): WorkspaceTreeState {
+    const tab = state.tabsById[tabId];
+    if (!tab || tab.kind !== "file") {
+        return state;
+    }
+
+    if (!isMarkdownFilePath(tab.relativePath)) {
+        const { markdownViewMode: _markdownViewMode, ...nextTab } = tab;
+        void _markdownViewMode;
+
+        return {
+            ...state,
+            tabsById: {
+                ...state.tabsById,
+                [tabId]: nextTab,
+            },
+        };
+    }
+
+    return {
+        ...state,
+        tabsById: {
+            ...state.tabsById,
+            [tabId]: {
+                ...tab,
+                markdownViewMode,
             },
         },
     };

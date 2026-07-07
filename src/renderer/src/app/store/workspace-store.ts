@@ -33,6 +33,7 @@ import {
     completeFileSave,
     createDefaultWorkspaceState,
     findPaneById,
+    getDefaultMarkdownFileViewMode,
     moveActiveTabBetweenPanes,
     moveTabToPaneAtIndex,
     moveTabToSplit,
@@ -50,6 +51,7 @@ import {
     selectPaneTab,
     setFileTabLoading,
     setFileTabLoadError,
+    setFileTabMarkdownViewMode,
     setFileTabSaving,
     splitPaneInDirection,
     unpinTabInPane,
@@ -69,6 +71,7 @@ import {
     type RuntimeWorkspaceFileOpenLocation,
     type RuntimeWorkspaceFileReviewContext,
     type RuntimeWorkspaceFileTab,
+    type MarkdownFileViewMode,
     type RuntimeWorkspaceReviewTab,
     type RuntimeWorkspaceTab,
     type RuntimeWorkspaceTerminalTab,
@@ -322,6 +325,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
     updateFilePendingOpenLocation: (
         tabId: string,
         pendingOpenLocation: RuntimeWorkspaceFileOpenLocation | null,
+    ) => void;
+    updateFileMarkdownViewMode: (
+        tabId: string,
+        markdownViewMode: MarkdownFileViewMode,
     ) => void;
     updateFileViewState: (
         tabId: string,
@@ -1246,6 +1253,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     ...sourceTab,
                     createdAt: new Date().toISOString(),
                     id: crypto.randomUUID(),
+                    ...(getDefaultMarkdownFileViewMode(relativePath)
+                        ? {
+                              markdownViewMode:
+                                  getDefaultMarkdownFileViewMode(relativePath),
+                          }
+                        : {}),
                     pendingOpenLocation,
                     reviewContext: nextReviewContext,
                     viewState: sourceTab.viewState ?? null,
@@ -1286,6 +1299,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 isSaving: false,
                 kind: "file",
                 loadError: null,
+                ...(getDefaultMarkdownFileViewMode(relativePath)
+                    ? {
+                          markdownViewMode:
+                              getDefaultMarkdownFileViewMode(relativePath),
+                      }
+                    : {}),
                 pendingOpenLocation,
                 reviewContext: resolveFileTabReviewContext({
                     relativePath,
@@ -1884,6 +1903,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 tabId,
                 pendingOpenLocation,
             ),
+        }));
+    },
+
+    updateFileMarkdownViewMode: (tabId, markdownViewMode) => {
+        set((state) => ({
+            ...setFileTabMarkdownViewMode(state, tabId, markdownViewMode),
         }));
     },
 
