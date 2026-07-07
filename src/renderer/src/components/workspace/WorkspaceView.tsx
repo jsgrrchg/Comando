@@ -109,6 +109,7 @@ import {
     type RuntimeWorkspaceFileOpenLocation,
     type RuntimeWorkspaceFileReviewContext,
     type RuntimeWorkspaceFileTab,
+    type MarkdownFileViewMode,
     type RuntimeWorkspaceReviewTab,
     type RuntimeWorkspaceTab,
 } from "@renderer/app/workspace/tree";
@@ -130,6 +131,7 @@ import { GitTabView } from "@renderer/components/workspace/GitTabView";
 import { ProviderIcon } from "@renderer/components/workspace/ProviderIcon";
 import { ReviewTabView } from "@renderer/components/workspace/ReviewTabView";
 import { WorkspacePaneEmptyState } from "@renderer/components/workspace/WorkspacePaneEmptyState";
+import { MarkdownFilePreview } from "@renderer/components/workspace/MarkdownFilePreview";
 import { persistChatDraftForTab } from "@renderer/components/workspace/chatDraftPersistence";
 import {
     GIT_GUTTER_LINE_DECORATIONS_WIDTH,
@@ -3737,6 +3739,46 @@ function buildProjectScopedFilePath(input: {
     return `${input.projectName}/${normalizedRelativePath}`;
 }
 
+function MarkdownViewModeSwitch({
+    mode,
+    onChange,
+}: {
+    readonly mode: MarkdownFileViewMode;
+    readonly onChange: (mode: MarkdownFileViewMode) => void;
+}) {
+    const modes: readonly MarkdownFileViewMode[] = ["edit", "preview"];
+
+    return (
+        <div
+            aria-label="Markdown view mode"
+            className="flex h-5 w-[7.75rem] items-center rounded-md border border-border bg-bg-primary/70 p-0.5"
+            role="group"
+        >
+            {modes.map((entry) => {
+                const isActive = mode === entry;
+                const label = entry === "edit" ? "Edit" : "Preview";
+
+                return (
+                    <button
+                        aria-pressed={isActive}
+                        className={[
+                            "h-4 flex-1 rounded-[4px] px-1 text-center text-[10px] font-semibold leading-4 transition-colors",
+                            isActive
+                                ? "bg-bg-tertiary text-text-primary shadow-[0_0_0_1px_color-mix(in_srgb,var(--color-border)_70%,transparent)]"
+                                : "text-text-secondary hover:text-text-primary",
+                        ].join(" ")}
+                        key={entry}
+                        onClick={() => onChange(entry)}
+                        type="button"
+                    >
+                        {label}
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
 function FileTabView({
     isActivePane,
     isVisible,
@@ -3830,6 +3872,9 @@ function FileTabView({
     const updateFilePendingOpenLocation = useWorkspaceStore(
         (state) => state.updateFilePendingOpenLocation,
     );
+    const updateFileMarkdownViewMode = useWorkspaceStore(
+        (state) => state.updateFileMarkdownViewMode,
+    );
     const diffEditorRef = useRef<MonacoEditor.IStandaloneDiffEditor | null>(
         null,
     );
@@ -3913,6 +3958,7 @@ function FileTabView({
         } | null>(null);
     const documentKind = document?.kind ?? null;
     const documentLanguageId = document?.languageId ?? "plaintext";
+    const isMarkdownFile = documentLanguageId === "markdown";
     const gitSnapshot = useGitStore((state) => {
         const contextKey = getWorkspaceGitContextKey(
             tab.projectId,
@@ -5823,6 +5869,41 @@ function FileTabView({
             editorSettings.minimapEnabled,
         ],
     );
+    const markdownViewMode: MarkdownFileViewMode =
+        isMarkdownFile && tab.markdownViewMode === "preview"
+            ? "preview"
+            : "edit";
+    const isMarkdownPreviewVisible =
+        isMarkdownFile &&
+        markdownViewMode === "preview" &&
+        !inlineReviewTrackedFile;
+    const handleMarkdownViewModeChange = useCallback(
+        (nextMode: MarkdownFileViewMode) => {
+            if (!isMarkdownFile) {
+                return;
+            }
+
+            if (nextMode === "preview") {
+                const currentEditorContent =
+                    editorRef.current?.getModel()?.getValue() ?? null;
+                if (
+                    currentEditorContent !== null &&
+                    currentEditorContent !== tab.draftContent
+                ) {
+                    onDraftChange(tab.id, currentEditorContent);
+                }
+            }
+
+            updateFileMarkdownViewMode(tab.id, nextMode);
+        },
+        [
+            isMarkdownFile,
+            onDraftChange,
+            tab.draftContent,
+            tab.id,
+            updateFileMarkdownViewMode,
+        ],
+    );
 
     if (!document) {
         return (
@@ -5936,11 +6017,24 @@ function FileTabView({
                 </button>
             </>
         ) : null;
+    const markdownPreviewActions = isMarkdownFile ? (
+        <MarkdownViewModeSwitch
+            mode={markdownViewMode}
+            onChange={handleMarkdownViewModeChange}
+        />
+    ) : null;
+    const filePathBarActions =
+        markdownPreviewActions || inlineReviewFileActions ? (
+            <>
+                {markdownPreviewActions}
+                {inlineReviewFileActions}
+            </>
+        ) : null;
 
     return (
         <div className="flex h-full min-h-0 flex-col">
             <FilePathBar
-                actions={inlineReviewFileActions}
+                actions={filePathBarActions}
                 path={documentDisplayPath ?? document.relativePath}
                 statusLabel={
                     tab.isSaving
@@ -5998,7 +6092,7 @@ function FileTabView({
                     {tab.saveError}
                 </FileSyncNotice>
             ) : null}
-            <div className="min-h-0 flex-1">
+            <div className="relative min-h-0 flex-1">
                 {inlineReviewTrackedFile ? (
                     <div
                         className="inline-review-diff relative h-full"
@@ -6217,9 +6311,22 @@ function FileTabView({
                         ) : null}
                     </div>
                 ) : null}
+                {isMarkdownPreviewVisible ? (
+                    <div className="absolute inset-0 overflow-auto">
+                        <MarkdownFilePreview
+                            content={tab.draftContent}
+                            filePath={document.relativePath}
+                            fontFamily={editorFontFamily}
+                            fontSize={editorSettings.fontSize}
+                        />
+                    </div>
+                ) : null}
                 <div
+                    aria-hidden={isMarkdownPreviewVisible}
                     className={
-                        inlineReviewTrackedFile ? "hidden" : "relative h-full"
+                        inlineReviewTrackedFile || isMarkdownPreviewVisible
+                            ? "hidden"
+                            : "relative h-full"
                     }
                 >
                     <EditorComponent

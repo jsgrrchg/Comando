@@ -25,6 +25,7 @@ import type { RuntimeWorkspaceFileTab } from "@renderer/app/workspace/tree";
 
 const mockWorkspaceStoreState = vi.hoisted(() => ({
     current: {
+        updateFileMarkdownViewMode: vi.fn(),
         updateFilePendingOpenLocation: vi.fn(),
         updateFileViewState: vi.fn(),
     },
@@ -808,6 +809,9 @@ function createDocument(
     relativePath: string,
     content: string,
 ): ProjectFileDocument {
+    const isMarkdown =
+        relativePath.endsWith(".md") || relativePath.endsWith(".markdown");
+
     return {
         absolutePath: `/workspace/comando/${relativePath}`,
         content,
@@ -815,9 +819,9 @@ function createDocument(
         isBinary: false,
         isTooLarge: false,
         kind: "text",
-        languageId: "typescript",
-        languageLabel: "TypeScript",
-        mimeType: "text/typescript",
+        languageId: isMarkdown ? "markdown" : "typescript",
+        languageLabel: isMarkdown ? "Markdown" : "TypeScript",
+        mimeType: isMarkdown ? "text/markdown" : "text/typescript",
         modifiedAtMs: 1,
         name: relativePath.split("/").at(-1) ?? relativePath,
         projectId: "project-1",
@@ -991,10 +995,12 @@ function createGitSnapshot(
 function renderHost({
     activeFileTab,
     fileTabs,
+    onDraftChange = vi.fn(),
     recentActiveTabIds = [],
 }: {
     readonly activeFileTab: RuntimeWorkspaceFileTab | null;
     readonly fileTabs: readonly RuntimeWorkspaceFileTab[];
+    readonly onDraftChange?: (tabId: string, draft: string) => void;
     readonly recentActiveTabIds?: readonly string[];
 }): ReactNode {
     return (
@@ -1003,7 +1009,7 @@ function renderHost({
             fileTabs={fileTabs}
             isActivePane={true}
             onAttachLineFragment={vi.fn()}
-            onDraftChange={vi.fn()}
+            onDraftChange={onDraftChange}
             onReload={vi.fn(() => Promise.resolve())}
             onSave={vi.fn(() => Promise.resolve())}
             recentActiveTabIds={recentActiveTabIds}
@@ -1054,6 +1060,17 @@ async function waitForGitGutterLiveDiff() {
     });
 }
 
+function findButtonByText(container: HTMLElement, label: string): HTMLButtonElement {
+    const button = Array.from(container.querySelectorAll("button")).find(
+        (entry): entry is HTMLButtonElement =>
+            entry.textContent?.trim() === label,
+    );
+    if (!button) {
+        throw new Error(`Expected button "${label}" to be rendered.`);
+    }
+    return button;
+}
+
 describe("WorkspaceFileEditorHost", () => {
     let container: HTMLDivElement;
     let root: Root;
@@ -1077,6 +1094,7 @@ describe("WorkspaceFileEditorHost", () => {
         mockEditorRuntime.applyProjectTypeScriptConfigForPath.mockClear();
         mockEditorRuntime.ensureMonacoTextMateForLanguage.mockClear();
         mockEditorRuntime.installMonacoTokenDebugAction.mockClear();
+        mockWorkspaceStoreState.current.updateFileMarkdownViewMode.mockClear();
         mockWorkspaceStoreState.current.updateFilePendingOpenLocation.mockClear();
         mockWorkspaceStoreState.current.updateFileViewState.mockClear();
         mockAiStoreState.current.keepTrackedFile.mockClear();
@@ -1157,6 +1175,179 @@ describe("WorkspaceFileEditorHost", () => {
         expect(monacoHarness.codeEditors).toHaveLength(1);
         expect(monacoHarness.codeEditors[0]?.disposed).toBe(false);
         expect(container.querySelector("[aria-hidden='true']")).not.toBeNull();
+    });
+
+    it("renders the Markdown view switch for .md and .markdown file tabs", async () => {
+        const markdownTab = createFileTab("file-1", "README.md", "# Readme\n");
+        const longMarkdownTab = createFileTab(
+            "file-2",
+            "notes/project.markdown",
+            "# Notes\n",
+        );
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: markdownTab,
+                    fileTabs: [markdownTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(
+            container.querySelector('[aria-label="Markdown view mode"]'),
+        ).not.toBeNull();
+        expect(findButtonByText(container, "Edit").getAttribute("aria-pressed"))
+            .toBe("true");
+        expect(
+            findButtonByText(container, "Preview").getAttribute("aria-pressed"),
+        ).toBe("false");
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: longMarkdownTab,
+                    fileTabs: [longMarkdownTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(
+            container.querySelector('[aria-label="Markdown view mode"]'),
+        ).not.toBeNull();
+    });
+
+    it("does not render the Markdown view switch for non-Markdown file tabs", async () => {
+        const tab = createFileTab("file-1", "src/app.ts");
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tab,
+                    fileTabs: [tab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(
+            container.querySelector('[aria-label="Markdown view mode"]'),
+        ).toBeNull();
+    });
+
+    it("renders Markdown preview from the current editor model content", async () => {
+        const onDraftChange = vi.fn();
+        const tab = createFileTab("file-1", "README.md", "# Saved\n");
+        const currentContent = "# Current\n\n- From editor\n";
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tab,
+                    fileTabs: [tab],
+                    onDraftChange,
+                }),
+            );
+        });
+        await flushEffects();
+
+        const editor = monacoHarness.codeEditors[0];
+        if (!editor?.model) {
+            throw new Error("Expected Monaco editor to mount.");
+        }
+        editor.model.setValue(currentContent);
+
+        act(() => {
+            findButtonByText(container, "Preview").click();
+        });
+
+        expect(onDraftChange).toHaveBeenCalledWith("file-1", currentContent);
+        expect(
+            mockWorkspaceStoreState.current.updateFileMarkdownViewMode,
+        ).toHaveBeenCalledWith("file-1", "preview");
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: {
+                        ...tab,
+                        draftContent: currentContent,
+                        markdownViewMode: "preview",
+                    },
+                    fileTabs: [
+                        {
+                            ...tab,
+                            draftContent: currentContent,
+                            markdownViewMode: "preview",
+                        },
+                    ],
+                    onDraftChange,
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(container.querySelector(".markdown-file-preview")).not.toBeNull();
+        expect(container.innerHTML).toContain("<h1>Current</h1>");
+        expect(container.innerHTML).toContain("<li>From editor</li>");
+        expect(monacoHarness.codeEditors).toHaveLength(1);
+        expect(monacoHarness.codeEditors[0]?.disposed).toBe(false);
+    });
+
+    it("returns from Markdown preview without remounting the Monaco editor", async () => {
+        const previewTab = {
+            ...createFileTab("file-1", "README.md", "# Preview\n"),
+            markdownViewMode: "preview" as const,
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: previewTab,
+                    fileTabs: [previewTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const editor = monacoHarness.codeEditors[0];
+        if (!editor) {
+            throw new Error("Expected Monaco editor to mount.");
+        }
+        editor.setPosition({ column: 3, lineNumber: 1 });
+
+        act(() => {
+            findButtonByText(container, "Edit").click();
+        });
+
+        expect(
+            mockWorkspaceStoreState.current.updateFileMarkdownViewMode,
+        ).toHaveBeenCalledWith("file-1", "edit");
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: {
+                        ...previewTab,
+                        markdownViewMode: "edit",
+                    },
+                    fileTabs: [
+                        {
+                            ...previewTab,
+                            markdownViewMode: "edit",
+                        },
+                    ],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(monacoHarness.codeEditors).toHaveLength(1);
+        expect(monacoHarness.codeEditors[0]).toBe(editor);
+        expect(editor.disposed).toBe(false);
+        expect(editor.getPosition()).toEqual({ column: 3, lineNumber: 1 });
     });
 
     it("keeps the git gutter decoration collection stable while typing", async () => {
