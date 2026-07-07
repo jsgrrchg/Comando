@@ -25,6 +25,7 @@ import type { RuntimeWorkspaceFileTab } from "@renderer/app/workspace/tree";
 
 const mockWorkspaceStoreState = vi.hoisted(() => ({
     current: {
+        updateFileMarkdownPreviewScrollTop: vi.fn(),
         updateFileMarkdownViewMode: vi.fn(),
         updateFilePendingOpenLocation: vi.fn(),
         updateFileViewState: vi.fn(),
@@ -1052,6 +1053,14 @@ async function flushEffects() {
     });
 }
 
+async function flushAnimationFrame() {
+    await act(async () => {
+        await new Promise((resolve) => {
+            window.requestAnimationFrame(resolve);
+        });
+    });
+}
+
 async function waitForGitGutterLiveDiff() {
     await act(async () => {
         await new Promise((resolve) => {
@@ -1094,6 +1103,7 @@ describe("WorkspaceFileEditorHost", () => {
         mockEditorRuntime.applyProjectTypeScriptConfigForPath.mockClear();
         mockEditorRuntime.ensureMonacoTextMateForLanguage.mockClear();
         mockEditorRuntime.installMonacoTokenDebugAction.mockClear();
+        mockWorkspaceStoreState.current.updateFileMarkdownPreviewScrollTop.mockReset();
         mockWorkspaceStoreState.current.updateFileMarkdownViewMode.mockClear();
         mockWorkspaceStoreState.current.updateFilePendingOpenLocation.mockClear();
         mockWorkspaceStoreState.current.updateFileViewState.mockClear();
@@ -1348,6 +1358,486 @@ describe("WorkspaceFileEditorHost", () => {
         expect(monacoHarness.codeEditors[0]).toBe(editor);
         expect(editor.disposed).toBe(false);
         expect(editor.getPosition()).toEqual({ column: 3, lineNumber: 1 });
+    });
+
+    it("keeps Markdown preview scroll when switching to a Monaco file and back", async () => {
+        const previewTab = {
+            ...createFileTab(
+                "file-1",
+                "README.md",
+                Array.from({ length: 80 }, (_, index) => `Line ${index + 1}`).join(
+                    "\n\n",
+                ),
+            ),
+            markdownViewMode: "preview" as const,
+        };
+        const monacoTab = createFileTab("file-2", "src/app.ts");
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: previewTab,
+                    fileTabs: [previewTab, monacoTab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushAnimationFrame();
+
+        const scrollContainer = container.querySelector<HTMLDivElement>(
+            ".markdown-file-preview-scroll",
+        );
+        if (!scrollContainer) {
+            throw new Error("Expected Markdown preview scroll container.");
+        }
+
+        act(() => {
+            scrollContainer.scrollTop = 420;
+            scrollContainer.dispatchEvent(
+                new Event("scroll", { bubbles: true }),
+            );
+        });
+        await flushAnimationFrame();
+
+        expect(
+            mockWorkspaceStoreState.current.updateFileMarkdownPreviewScrollTop,
+        ).toHaveBeenCalledWith("file-1", 420);
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: monacoTab,
+                    fileTabs: [previewTab, monacoTab],
+                    recentActiveTabIds: ["file-1"],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const restoredPreviewTab = {
+            ...previewTab,
+            markdownPreviewScrollTop: 420,
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: restoredPreviewTab,
+                    fileTabs: [restoredPreviewTab, monacoTab],
+                    recentActiveTabIds: ["file-2"],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushAnimationFrame();
+
+        expect(
+            container.querySelector<HTMLDivElement>(
+                ".markdown-file-preview-scroll",
+            )?.scrollTop,
+        ).toBe(420);
+    });
+
+    it("round-trips Markdown preview scroll through runtime tab state", async () => {
+        const previewTab = {
+            ...createFileTab(
+                "file-1",
+                "README.md",
+                Array.from({ length: 80 }, (_, index) => `Line ${index + 1}`).join(
+                    "\n\n",
+                ),
+            ),
+            markdownViewMode: "preview" as const,
+        };
+        const monacoTab = createFileTab("file-2", "src/app.ts");
+        const tabsById: Record<string, RuntimeWorkspaceFileTab> = {
+            [previewTab.id]: previewTab,
+            [monacoTab.id]: monacoTab,
+        };
+        mockWorkspaceStoreState.current.updateFileMarkdownPreviewScrollTop.mockImplementation(
+            (tabId: string, markdownPreviewScrollTop: number) => {
+                const tab = tabsById[tabId];
+                if (!tab) {
+                    return;
+                }
+
+                tabsById[tabId] = {
+                    ...tab,
+                    markdownPreviewScrollTop,
+                };
+            },
+        );
+        const renderActiveTab = (
+            activeTabId: string,
+            recentActiveTabIds: readonly string[] = [],
+        ) => {
+            root.render(
+                renderHost({
+                    activeFileTab: tabsById[activeTabId] ?? null,
+                    fileTabs: Object.values(tabsById),
+                    recentActiveTabIds,
+                }),
+            );
+        };
+
+        act(() => {
+            renderActiveTab("file-1");
+        });
+        await flushEffects();
+
+        const scrollContainer = container.querySelector<HTMLDivElement>(
+            ".markdown-file-preview-scroll",
+        );
+        if (!scrollContainer) {
+            throw new Error("Expected Markdown preview scroll container.");
+        }
+
+        act(() => {
+            scrollContainer.scrollTop = 360;
+            scrollContainer.dispatchEvent(
+                new Event("scroll", { bubbles: true }),
+            );
+        });
+        await flushAnimationFrame();
+
+        expect(tabsById["file-1"]?.markdownPreviewScrollTop).toBe(360);
+
+        act(() => {
+            renderActiveTab("file-2", ["file-1"]);
+        });
+        await flushEffects();
+
+        act(() => {
+            renderActiveTab("file-1", ["file-2"]);
+        });
+        await flushEffects();
+
+        expect(
+            container.querySelector<HTMLDivElement>(
+                ".markdown-file-preview-scroll",
+            )?.scrollTop,
+        ).toBe(360);
+    });
+
+    it("keeps separate Markdown preview scroll positions for multiple files", async () => {
+        const firstTab = {
+            ...createFileTab(
+                "file-1",
+                "README.md",
+                Array.from({ length: 80 }, (_, index) => `Readme ${index + 1}`).join(
+                    "\n\n",
+                ),
+            ),
+            markdownPreviewScrollTop: 180,
+            markdownViewMode: "preview" as const,
+        };
+        const secondTab = {
+            ...createFileTab(
+                "file-2",
+                "CHANGELOG.md",
+                Array.from(
+                    { length: 80 },
+                    (_, index) => `Changelog ${index + 1}`,
+                ).join("\n\n"),
+            ),
+            markdownPreviewScrollTop: 520,
+            markdownViewMode: "preview" as const,
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: firstTab,
+                    fileTabs: [firstTab, secondTab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushAnimationFrame();
+
+        expect(
+            container.querySelector<HTMLDivElement>(
+                ".markdown-file-preview-scroll",
+            )?.scrollTop,
+        ).toBe(180);
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: secondTab,
+                    fileTabs: [firstTab, secondTab],
+                    recentActiveTabIds: ["file-1"],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushAnimationFrame();
+
+        expect(
+            container.querySelector<HTMLDivElement>(
+                ".markdown-file-preview-scroll",
+            )?.scrollTop,
+        ).toBe(520);
+    });
+
+    it("keeps separate Markdown preview scroll positions for duplicate file tabs", async () => {
+        const firstTab = {
+            ...createFileTab(
+                "file-1",
+                "README.md",
+                Array.from({ length: 80 }, (_, index) => `First ${index + 1}`).join(
+                    "\n\n",
+                ),
+            ),
+            markdownPreviewScrollTop: 160,
+            markdownViewMode: "preview" as const,
+        };
+        const secondTab = {
+            ...createFileTab(
+                "file-2",
+                "README.md",
+                Array.from({ length: 80 }, (_, index) => `Second ${index + 1}`).join(
+                    "\n\n",
+                ),
+            ),
+            markdownPreviewScrollTop: 640,
+            markdownViewMode: "preview" as const,
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: firstTab,
+                    fileTabs: [firstTab, secondTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: secondTab,
+                    fileTabs: [firstTab, secondTab],
+                    recentActiveTabIds: ["file-1"],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushAnimationFrame();
+
+        expect(
+            container.querySelector<HTMLDivElement>(
+                ".markdown-file-preview-scroll",
+            )?.scrollTop,
+        ).toBe(640);
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: firstTab,
+                    fileTabs: [firstTab, secondTab],
+                    recentActiveTabIds: ["file-2"],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushAnimationFrame();
+
+        expect(
+            container.querySelector<HTMLDivElement>(
+                ".markdown-file-preview-scroll",
+            )?.scrollTop,
+        ).toBe(160);
+    });
+
+    it("keeps Markdown preview scroll across edit and preview mode toggles", async () => {
+        const previewTab = {
+            ...createFileTab(
+                "file-1",
+                "README.md",
+                Array.from({ length: 80 }, (_, index) => `Line ${index + 1}`).join(
+                    "\n\n",
+                ),
+            ),
+            markdownPreviewScrollTop: 300,
+            markdownViewMode: "preview" as const,
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: previewTab,
+                    fileTabs: [previewTab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushAnimationFrame();
+
+        expect(
+            container.querySelector<HTMLDivElement>(
+                ".markdown-file-preview-scroll",
+            )?.scrollTop,
+        ).toBe(300);
+
+        act(() => {
+            findButtonByText(container, "Edit").click();
+        });
+        expect(
+            mockWorkspaceStoreState.current.updateFileMarkdownViewMode,
+        ).toHaveBeenLastCalledWith("file-1", "edit");
+
+        const editTab = {
+            ...previewTab,
+            markdownViewMode: "edit" as const,
+        };
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: editTab,
+                    fileTabs: [editTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const restoredPreviewTab = {
+            ...previewTab,
+            markdownPreviewScrollTop: 300,
+        };
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: restoredPreviewTab,
+                    fileTabs: [restoredPreviewTab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushAnimationFrame();
+
+        expect(
+            container.querySelector<HTMLDivElement>(
+                ".markdown-file-preview-scroll",
+            )?.scrollTop,
+        ).toBe(300);
+    });
+
+    it("saves a Markdown preview scroll position of zero", async () => {
+        const previewTab = {
+            ...createFileTab(
+                "file-1",
+                "README.md",
+                Array.from({ length: 80 }, (_, index) => `Line ${index + 1}`).join(
+                    "\n\n",
+                ),
+            ),
+            markdownPreviewScrollTop: 420,
+            markdownViewMode: "preview" as const,
+        };
+        const monacoTab = createFileTab("file-2", "src/app.ts");
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: previewTab,
+                    fileTabs: [previewTab, monacoTab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushAnimationFrame();
+
+        const scrollContainer = container.querySelector<HTMLDivElement>(
+            ".markdown-file-preview-scroll",
+        );
+        if (!scrollContainer) {
+            throw new Error("Expected Markdown preview scroll container.");
+        }
+
+        act(() => {
+            scrollContainer.scrollTop = 0;
+            scrollContainer.dispatchEvent(
+                new Event("scroll", { bubbles: true }),
+            );
+        });
+        await flushAnimationFrame();
+
+        expect(
+            mockWorkspaceStoreState.current.updateFileMarkdownPreviewScrollTop,
+        ).toHaveBeenCalledWith("file-1", 0);
+    });
+
+    it("flushes Markdown preview scroll when inline review replaces the preview", async () => {
+        const trackedFile = {
+            ...createTrackedFile(),
+            identityKey: "tracked:README.md",
+            newText: "# Updated\n",
+            oldText: "# Saved\n",
+            path: "README.md",
+        };
+        const previewTab = {
+            ...createFileTab(
+                "file-1",
+                "README.md",
+                Array.from({ length: 80 }, (_, index) => `Line ${index + 1}`).join(
+                    "\n\n",
+                ),
+            ),
+            markdownViewMode: "preview" as const,
+        };
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: previewTab,
+                    fileTabs: [previewTab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushAnimationFrame();
+
+        const scrollContainer = container.querySelector<HTMLDivElement>(
+            ".markdown-file-preview-scroll",
+        );
+        if (!scrollContainer) {
+            throw new Error("Expected Markdown preview scroll container.");
+        }
+
+        act(() => {
+            scrollContainer.scrollTop = 260;
+            scrollContainer.dispatchEvent(
+                new Event("scroll", { bubbles: true }),
+            );
+        });
+        await flushAnimationFrame();
+
+        mockAiStoreState.current.sessions = {
+            "session-1": {
+                snapshot: {
+                    trackedFiles: [trackedFile],
+                },
+            },
+        };
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: previewTab,
+                    fileTabs: [previewTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(
+            mockWorkspaceStoreState.current.updateFileMarkdownPreviewScrollTop,
+        ).toHaveBeenCalledWith("file-1", 260);
+        expect(container.querySelector(".inline-review-diff")).not.toBeNull();
+        expect(
+            container.querySelector(".markdown-file-preview-scroll"),
+        ).toBeNull();
     });
 
     it("preserves the latest Markdown draft across quick edit and preview toggles", async () => {

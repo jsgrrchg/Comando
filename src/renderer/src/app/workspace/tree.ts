@@ -47,6 +47,7 @@ export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
     readonly isLoading: boolean;
     readonly isSaving: boolean;
     readonly loadError: string | null;
+    readonly markdownPreviewScrollTop?: number;
     readonly markdownViewMode?: MarkdownFileViewMode;
     readonly pendingOpenLocation?: RuntimeWorkspaceFileOpenLocation | null;
     readonly reviewContext: RuntimeWorkspaceFileReviewContext | null;
@@ -1042,6 +1043,33 @@ export function setFileTabMarkdownViewMode(
             [tabId]: {
                 ...tab,
                 markdownViewMode,
+            },
+        },
+    };
+}
+
+export function setFileTabMarkdownPreviewScrollTop(
+    state: WorkspaceTreeState,
+    tabId: string,
+    markdownPreviewScrollTop: number,
+): WorkspaceTreeState {
+    const tab = state.tabsById[tabId];
+    if (!tab || tab.kind !== "file" || !isMarkdownFilePath(tab.relativePath)) {
+        return state;
+    }
+
+    const nextScrollTop = Math.max(0, Math.round(markdownPreviewScrollTop));
+    if ((tab.markdownPreviewScrollTop ?? 0) === nextScrollTop) {
+        return state;
+    }
+
+    return {
+        ...state,
+        tabsById: {
+            ...state.tabsById,
+            [tabId]: {
+                ...tab,
+                markdownPreviewScrollTop: nextScrollTop,
             },
         },
     };

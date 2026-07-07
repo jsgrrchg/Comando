@@ -45,6 +45,7 @@ import {
     resizeSplit,
     selectAdjacentPaneTab,
     setFileTabExternalChange,
+    setFileTabMarkdownPreviewScrollTop,
     setFileTabPendingOpenLocation,
     setFileTabViewState,
     setFileTabReviewContext,
@@ -329,6 +330,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
     updateFileMarkdownViewMode: (
         tabId: string,
         markdownViewMode: MarkdownFileViewMode,
+    ) => void;
+    updateFileMarkdownPreviewScrollTop: (
+        tabId: string,
+        markdownPreviewScrollTop: number,
     ) => void;
     updateFileViewState: (
         tabId: string,
@@ -1249,8 +1254,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     requestedReviewContext: reviewContext,
                     trackedFiles,
                 });
+                const {
+                    markdownPreviewScrollTop: _markdownPreviewScrollTop,
+                    ...sourceTabWithoutPreviewScroll
+                } = sourceTab;
+                void _markdownPreviewScrollTop;
                 const duplicatedTab: RuntimeWorkspaceFileTab = {
-                    ...sourceTab,
+                    ...sourceTabWithoutPreviewScroll,
                     createdAt: new Date().toISOString(),
                     id: crypto.randomUUID(),
                     ...(getDefaultMarkdownFileViewMode(relativePath)
@@ -1430,8 +1440,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
         const sourceTab = existingTabs[0] ?? null;
         if (sourceTab) {
+            const {
+                markdownPreviewScrollTop: _markdownPreviewScrollTop,
+                ...sourceTabWithoutPreviewScroll
+            } = sourceTab;
+            void _markdownPreviewScrollTop;
             const duplicatedTab: RuntimeWorkspaceFileTab = {
-                ...sourceTab,
+                ...sourceTabWithoutPreviewScroll,
                 ...chatImageTab,
                 createdAt: new Date().toISOString(),
                 id: crypto.randomUUID(),
@@ -1911,6 +1926,19 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ...setFileTabMarkdownViewMode(state, tabId, markdownViewMode),
         }));
         void persistWorkspaceState(get);
+    },
+
+    updateFileMarkdownPreviewScrollTop: (
+        tabId,
+        markdownPreviewScrollTop,
+    ) => {
+        set((state) =>
+            setFileTabMarkdownPreviewScrollTop(
+                state,
+                tabId,
+                markdownPreviewScrollTop,
+            ),
+        );
     },
 
     updateSessionTabTitles: async (sessionId, title) => {

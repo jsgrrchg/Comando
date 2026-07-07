@@ -18,6 +18,7 @@ import {
     replaceFileDocument,
     selectAdjacentPaneTab,
     setFileTabExternalChange,
+    setFileTabMarkdownPreviewScrollTop,
     setFileTabSaving,
     setFileTabViewState,
     splitPaneInDirection,
@@ -483,6 +484,37 @@ describe("workspace tree helpers", () => {
             draftContent: "",
             relativePath: "src/app.ts",
             viewState: nextSecondViewState,
+        });
+    });
+
+    it("updates Markdown preview scroll only for the target duplicate file tab", () => {
+        const baseState = {
+            ...createDefaultWorkspaceState(),
+            tabsById: {
+                "file-1": {
+                    ...makeFileTab("file-1", "README.md"),
+                    markdownPreviewScrollTop: 120,
+                    markdownViewMode: "preview" as const,
+                },
+                "file-2": {
+                    ...makeFileTab("file-2", "README.md"),
+                    markdownPreviewScrollTop: 360,
+                    markdownViewMode: "preview" as const,
+                },
+            },
+        };
+
+        const nextState = setFileTabMarkdownPreviewScrollTop(
+            baseState,
+            "file-2",
+            720,
+        );
+
+        expect(nextState.tabsById["file-1"]).toMatchObject({
+            markdownPreviewScrollTop: 120,
+        });
+        expect(nextState.tabsById["file-2"]).toMatchObject({
+            markdownPreviewScrollTop: 720,
         });
     });
 
@@ -1174,5 +1206,33 @@ describe("workspace tree helpers", () => {
 
         expect(snapshotTab?.kind).toBe("file");
         expect("viewState" in (snapshotTab ?? {})).toBe(false);
+    });
+
+    it("keeps Markdown preview scroll position in runtime tabs without persisting it", () => {
+        const state = attachTabToPane(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            makeFileTab("file-1", "notes/today.md"),
+        );
+
+        const nextState = setFileTabMarkdownPreviewScrollTop(
+            state,
+            "file-1",
+            420.4,
+        );
+        const tab = nextState.tabsById["file-1"];
+
+        expect(tab?.kind).toBe("file");
+        if (!tab || tab.kind !== "file") {
+            return;
+        }
+
+        expect(tab.markdownPreviewScrollTop).toBe(420);
+
+        const snapshot = workspaceStateToSnapshot(nextState);
+        const snapshotTab = snapshot.tabs[0];
+
+        expect(snapshotTab?.kind).toBe("file");
+        expect("markdownPreviewScrollTop" in (snapshotTab ?? {})).toBe(false);
     });
 });

@@ -531,6 +531,47 @@ describe("workspace file opening", () => {
         );
     });
 
+    it("updates Markdown preview scroll only at runtime without persisting", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            rootNode: {
+                activeTabId: "file-tab-1",
+                id: "pane-root",
+                tabIds: ["file-tab-1", "file-tab-2"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-tab-1": {
+                    ...createWorkspaceFileTab("file-tab-1", "README.md"),
+                    markdownPreviewScrollTop: 100,
+                    markdownViewMode: "preview",
+                },
+                "file-tab-2": {
+                    ...createWorkspaceFileTab("file-tab-2", "README.md"),
+                    markdownPreviewScrollTop: 300,
+                    markdownViewMode: "preview",
+                },
+            },
+        }));
+
+        useWorkspaceStore
+            .getState()
+            .updateFileMarkdownPreviewScrollTop("file-tab-1", 421.6);
+
+        const state = useWorkspaceStore.getState();
+        expect(state.tabsById["file-tab-1"]).toMatchObject({
+            kind: "file",
+            markdownPreviewScrollTop: 422,
+        });
+        expect(state.tabsById["file-tab-2"]).toMatchObject({
+            kind: "file",
+            markdownPreviewScrollTop: 300,
+        });
+
+        await flushWorkspacePersistenceForTests();
+        expect(saveWorkspaceSnapshotMock).not.toHaveBeenCalled();
+    });
+
     it("does not keep Markdown preview mode on non-Markdown file tabs", () => {
         useWorkspaceStore.setState((state) => ({
             ...state,
@@ -978,6 +1019,7 @@ describe("workspace file opening", () => {
                     isSaving: false,
                     kind: "file",
                     loadError: null,
+                    markdownPreviewScrollTop: 888,
                     projectId: "project-1",
                     relativePath: "src/app.ts",
                     reviewContext: null,
@@ -1058,6 +1100,9 @@ describe("workspace file opening", () => {
             savedContent: "export const value = 1;\n",
             worktreeId: "worktree-1",
         });
+        expect(
+            duplicatedTabId ? state.tabsById[duplicatedTabId] : null,
+        ).not.toHaveProperty("markdownPreviewScrollTop");
     });
 
     it("opens chat images in a transient file tab and omits them from persisted snapshots", async () => {

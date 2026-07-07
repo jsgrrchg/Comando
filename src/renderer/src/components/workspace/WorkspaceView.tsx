@@ -3779,6 +3779,110 @@ function MarkdownViewModeSwitch({
     );
 }
 
+function MarkdownPreviewScrollSurface({
+    children,
+    onScrollTopChange,
+    scrollTop,
+    tabId,
+}: {
+    readonly children: ReactNode;
+    readonly onScrollTopChange: (tabId: string, scrollTop: number) => void;
+    readonly scrollTop: number;
+    readonly tabId: string;
+}) {
+    const nodeRef = useRef<HTMLDivElement | null>(null);
+    const mountedTabIdRef = useRef(tabId);
+    const restoredTabIdRef = useRef<string | null>(null);
+    const scrollPersistFrameRef = useRef<number | null>(null);
+
+    const cancelPendingScrollPersist = useCallback(() => {
+        if (scrollPersistFrameRef.current === null) {
+            return;
+        }
+
+        window.cancelAnimationFrame(scrollPersistFrameRef.current);
+        scrollPersistFrameRef.current = null;
+    }, []);
+
+    const flushNodeScrollTop = useCallback(
+        (node: HTMLDivElement, flushedTabId: string) => {
+            onScrollTopChange(flushedTabId, node.scrollTop);
+        },
+        [onScrollTopChange],
+    );
+
+    const attachScrollNode = useCallback(
+        (node: HTMLDivElement | null) => {
+            const previousNode = nodeRef.current;
+            if (previousNode && previousNode !== node) {
+                cancelPendingScrollPersist();
+                flushNodeScrollTop(previousNode, mountedTabIdRef.current);
+            }
+
+            nodeRef.current = node;
+            if (!node) {
+                return;
+            }
+        },
+        [cancelPendingScrollPersist, flushNodeScrollTop],
+    );
+
+    const handleScroll = useCallback(() => {
+        const node = nodeRef.current;
+        if (!node || scrollPersistFrameRef.current !== null) {
+            return;
+        }
+
+        const flushedTabId = mountedTabIdRef.current;
+        scrollPersistFrameRef.current = window.requestAnimationFrame(() => {
+            scrollPersistFrameRef.current = null;
+            if (
+                nodeRef.current === node &&
+                mountedTabIdRef.current === flushedTabId
+            ) {
+                flushNodeScrollTop(node, flushedTabId);
+            }
+        });
+    }, [flushNodeScrollTop]);
+
+    useLayoutEffect(() => {
+        const node = nodeRef.current;
+        if (!node) {
+            return;
+        }
+
+        mountedTabIdRef.current = tabId;
+        cancelPendingScrollPersist();
+
+        const shouldRestore = restoredTabIdRef.current !== tabId;
+        const nextScrollTop = scrollTop;
+        if (shouldRestore) {
+            node.scrollTop = nextScrollTop;
+            restoredTabIdRef.current = tabId;
+        }
+
+        return () => {
+            cancelPendingScrollPersist();
+            flushNodeScrollTop(node, tabId);
+        };
+    }, [
+        cancelPendingScrollPersist,
+        flushNodeScrollTop,
+        scrollTop,
+        tabId,
+    ]);
+
+    return (
+        <div
+            className="markdown-file-preview-scroll absolute inset-0 overflow-auto"
+            onScroll={handleScroll}
+            ref={attachScrollNode}
+        >
+            {children}
+        </div>
+    );
+}
+
 function FileTabView({
     isActivePane,
     isVisible,
@@ -3874,6 +3978,9 @@ function FileTabView({
     );
     const updateFileMarkdownViewMode = useWorkspaceStore(
         (state) => state.updateFileMarkdownViewMode,
+    );
+    const updateFileMarkdownPreviewScrollTop = useWorkspaceStore(
+        (state) => state.updateFileMarkdownPreviewScrollTop,
     );
     const diffEditorRef = useRef<MonacoEditor.IStandaloneDiffEditor | null>(
         null,
@@ -6312,14 +6419,18 @@ function FileTabView({
                     </div>
                 ) : null}
                 {isMarkdownPreviewVisible ? (
-                    <div className="absolute inset-0 overflow-auto">
+                    <MarkdownPreviewScrollSurface
+                        onScrollTopChange={updateFileMarkdownPreviewScrollTop}
+                        scrollTop={tab.markdownPreviewScrollTop ?? 0}
+                        tabId={tab.id}
+                    >
                         <MarkdownFilePreview
                             content={tab.draftContent}
                             filePath={document.relativePath}
                             fontFamily={editorFontFamily}
                             fontSize={editorSettings.fontSize}
                         />
-                    </div>
+                    </MarkdownPreviewScrollSurface>
                 ) : null}
                 <div
                     aria-hidden={isMarkdownPreviewVisible}
