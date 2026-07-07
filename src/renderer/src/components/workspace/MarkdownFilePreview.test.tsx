@@ -249,9 +249,21 @@ describe("MarkdownFilePreview", () => {
         });
 
         expect(markup).toContain('data-language="ts"');
+        expect(markup).toContain("markdown-file-preview__code-frame");
+        expect(markup).toContain("markdown-file-preview__code-header");
+        expect(markup).toContain(">TypeScript</div>");
         expect(markup).toContain("markdown-file-preview__code-block");
         expect(markup).toContain("cm-static-code");
         expect(markup).toContain("const value = 1;");
+    });
+
+    it("renders readable language labels for bash code fences", () => {
+        const markup = renderStaticMarkdownFilePreview({
+            content: "```bash\npnpm run lint\n```",
+        });
+
+        expect(markup).toContain('data-language="bash"');
+        expect(markup).toContain(">Bash</div>");
     });
 
     it("highlights bash fenced commands after loading language support", async () => {
@@ -277,6 +289,7 @@ describe("MarkdownFilePreview", () => {
         });
 
         expect(markup).toContain("markdown-file-preview__code-block");
+        expect(markup).not.toContain("markdown-file-preview__code-header");
         expect(markup).not.toContain("data-language=");
         expect(markup).not.toContain("cm-static-code");
         expect(markup).toContain("plain code");

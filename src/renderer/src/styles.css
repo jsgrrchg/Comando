@@ -473,6 +473,7 @@ body {
 .markdown-file-preview ul,
 .markdown-file-preview ol,
 .markdown-file-preview blockquote,
+.markdown-file-preview .markdown-file-preview__code-frame,
 .markdown-file-preview pre,
 .markdown-file-preview .markdown-file-preview__table-wrap {
     margin: 0 0 1em;
@@ -582,6 +583,33 @@ body {
     display: block;
     min-width: max-content;
     font-family: inherit;
+}
+
+.markdown-file-preview__code-frame {
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-bg-tertiary) 68%, transparent);
+}
+
+.markdown-file-preview__code-header {
+    display: flex;
+    min-height: 2.45em;
+    align-items: center;
+    color: var(--color-text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    font-weight: 600;
+    letter-spacing: 0;
+    padding: 0.18em 1em 0;
+}
+
+.markdown-file-preview__code-frame > .markdown-file-preview__code-block {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding-top: 0.3em;
 }
 
 .markdown-file-preview__table-wrap {

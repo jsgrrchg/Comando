@@ -2,8 +2,11 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import {
+    Children,
+    isValidElement,
     memo,
     type AnchorHTMLAttributes,
+    type HTMLAttributes,
     type ImgHTMLAttributes,
     type InputHTMLAttributes,
     type ReactNode,
@@ -55,6 +58,98 @@ function extractMarkdownCodeLanguage(
         .find((entry) => entry.startsWith("language-"));
     const language = languageClass?.slice("language-".length).trim();
     return language || null;
+}
+
+const markdownCodeLanguageLabels: Record<string, string> = {
+    bash: "Bash",
+    c: "C",
+    "c++": "C++",
+    cpp: "C++",
+    cs: "C#",
+    csharp: "C#",
+    css: "CSS",
+    diff: "Diff",
+    docker: "Dockerfile",
+    dockerfile: "Dockerfile",
+    gql: "GraphQL",
+    graphql: "GraphQL",
+    html: "HTML",
+    java: "Java",
+    javascript: "JavaScript",
+    js: "JavaScript",
+    json: "JSON",
+    jsonc: "JSONC",
+    jsx: "JSX",
+    make: "Makefile",
+    makefile: "Makefile",
+    markdown: "Markdown",
+    md: "Markdown",
+    mdx: "MDX",
+    php: "PHP",
+    powershell: "PowerShell",
+    ps1: "PowerShell",
+    pwsh: "PowerShell",
+    py: "Python",
+    python: "Python",
+    rb: "Ruby",
+    rs: "Rust",
+    ruby: "Ruby",
+    rust: "Rust",
+    scss: "SCSS",
+    sh: "Shell",
+    shell: "Shell",
+    sql: "SQL",
+    ts: "TypeScript",
+    tsx: "TSX",
+    typescript: "TypeScript",
+    xml: "XML",
+    yaml: "YAML",
+    yml: "YAML",
+    zsh: "Zsh",
+};
+
+function formatMarkdownCodeLanguageLabel(language: string): string {
+    const normalizedLanguage = language.trim().toLowerCase();
+    const mappedLabel = markdownCodeLanguageLabels[normalizedLanguage];
+    if (mappedLabel) {
+        return mappedLabel;
+    }
+
+    return normalizedLanguage
+        .split(/[-_]+/)
+        .filter(Boolean)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join(" ");
+}
+
+function getMarkdownCodeLanguageFromNode(node: ReactNode): string | null {
+    if (Array.isArray(node)) {
+        for (const child of Children.toArray(node)) {
+            const language = getMarkdownCodeLanguageFromNode(child);
+            if (language) {
+                return language;
+            }
+        }
+        return null;
+    }
+
+    if (!isValidElement(node)) {
+        return null;
+    }
+
+    const props = node.props as {
+        readonly className?: unknown;
+        readonly "data-language"?: unknown;
+    };
+
+    if (typeof props["data-language"] === "string") {
+        return props["data-language"];
+    }
+    if (typeof props.className === "string") {
+        return extractMarkdownCodeLanguage(props.className);
+    }
+
+    return null;
 }
 
 function reactNodeToText(node: ReactNode): string {
@@ -263,18 +358,36 @@ function MarkdownPreviewInput({
 
 function MarkdownPreviewPre({
     children,
+    className,
     node: _node,
     ...props
-}: {
-    readonly children?: ReactNode;
-    readonly node?: unknown;
-}) {
+}: HTMLAttributes<HTMLPreElement> & { readonly node?: unknown }) {
     void _node;
 
-    return (
-        <pre className="markdown-file-preview__code-block" {...props}>
+    const codeBlockClassName = [
+        "markdown-file-preview__code-block",
+        className,
+    ]
+        .filter(Boolean)
+        .join(" ");
+    const language = getMarkdownCodeLanguageFromNode(children);
+    const codeBlock = (
+        <pre className={codeBlockClassName} {...props}>
             {children}
         </pre>
+    );
+
+    if (!language) {
+        return codeBlock;
+    }
+
+    return (
+        <div className="markdown-file-preview__code-frame">
+            <div className="markdown-file-preview__code-header">
+                {formatMarkdownCodeLanguageLabel(language)}
+            </div>
+            {codeBlock}
+        </div>
     );
 }
 
