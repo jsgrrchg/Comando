@@ -11,14 +11,13 @@ use agent_client_protocol::schema::v1::{
     ElicitationContentValue, ElicitationFormCapabilities, ElicitationMode,
     ElicitationPropertySchema, ImageContent, InitializeRequest, InitializeResponse,
     LoadSessionRequest, LogoutRequest, Meta, MultiSelectItems, NewSessionRequest, PermissionOption,
-    PromptCapabilities, PromptRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
-    SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
-    SessionConfigOptionValue, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall, ToolCallContent,
-    ToolCallStatus, ToolCallUpdate, ToolKind,
+    PromptCapabilities, PromptRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionConfigKind,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
+    SessionConfigSelectOptions, SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    StopReason, TextContent, ToolCall, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolKind,
 };
-use agent_client_protocol::{schema::ProtocolVersion, Agent, ByteStreams, Client, ConnectionTo};
+use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, schema::ProtocolVersion};
 use comando_types::ai::{
     NativeAiAvailableCommandPayload, NativeAiErrorPayload, NativeAiGeneratedImage,
     NativeAiImageAttachment, NativeAiImageGenerationPayload, NativeAiImageMessage,
@@ -6054,8 +6053,11 @@ mod tests {
         );
 
         let diff = ToolCallContent::Diff(
-            agent_client_protocol::schema::v1::Diff::new("/tmp/src/main.rs", "cursor: \"default\",")
-                .old_text("cursor: \"text\","),
+            agent_client_protocol::schema::v1::Diff::new(
+                "/tmp/src/main.rs",
+                "cursor: \"default\",",
+            )
+            .old_text("cursor: \"text\","),
         );
         context.handle(
             SessionNotification::new(
@@ -6270,8 +6272,11 @@ mod tests {
 
         let diffs = tool_call_content_diffs(
             &[ToolCallContent::Diff(
-                agent_client_protocol::schema::v1::Diff::new("/tmp/src/main.rs", "anchor\ninserted\n")
-                    .old_text("anchor\n"),
+                agent_client_protocol::schema::v1::Diff::new(
+                    "/tmp/src/main.rs",
+                    "anchor\ninserted\n",
+                )
+                .old_text("anchor\n"),
             )],
             &Meta::new(),
             Some(&raw_output),
@@ -6421,8 +6426,11 @@ mod tests {
                     .kind(ToolKind::Edit)
                     .status(ToolCallStatus::InProgress)
                     .content(vec![ToolCallContent::Diff(
-                        agent_client_protocol::schema::v1::Diff::new("src/main.rs", "fn main() {}\n")
-                            .old_text(""),
+                        agent_client_protocol::schema::v1::Diff::new(
+                            "src/main.rs",
+                            "fn main() {}\n",
+                        )
+                        .old_text(""),
                     )]),
             ),
         ));
@@ -6531,8 +6539,9 @@ mod tests {
             NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
-        let diff = agent_client_protocol::schema::v1::Diff::new("cuento.md", "line one\nline two\n")
-            .old_text("line one\n");
+        let diff =
+            agent_client_protocol::schema::v1::Diff::new("cuento.md", "line one\nline two\n")
+                .old_text("line one\n");
         context.handle(SessionNotification::new(
             "runtime-parent",
             SessionUpdate::ToolCall(
@@ -7000,12 +7009,15 @@ mod tests {
         context.handle(
             SessionNotification::new(
                 "runtime-child-known",
-                SessionUpdate::ToolCall(ToolCall::new("tool-child-1", "Edit file").content(
-                    vec![ToolCallContent::Diff(
-                        agent_client_protocol::schema::v1::Diff::new("src/main.rs", "fn main() {}\n")
+                SessionUpdate::ToolCall(ToolCall::new("tool-child-1", "Edit file").content(vec![
+                        ToolCallContent::Diff(
+                            agent_client_protocol::schema::v1::Diff::new(
+                                "src/main.rs",
+                                "fn main() {}\n",
+                            )
                             .old_text(""),
-                    )],
-                )),
+                        ),
+                    ])),
             )
             .meta(created_meta),
         );
@@ -7122,16 +7134,17 @@ mod tests {
         let options = string_property_options(&schema);
 
         assert_eq!(options[0].label, "safe");
-        assert_eq!(options[0].description.as_deref(), Some("Keep changes narrow"));
+        assert_eq!(
+            options[0].description.as_deref(),
+            Some("Keep changes narrow")
+        );
     }
 
     #[test]
     fn acp_string_elicitation_keeps_title_description_fallback() {
-        let schema = agent_client_protocol::schema::v1::StringPropertySchema::new()
-            .one_of(vec![agent_client_protocol::schema::v1::EnumOption::new(
-                "cards",
-                "Cards in columns",
-            )]);
+        let schema = agent_client_protocol::schema::v1::StringPropertySchema::new().one_of(vec![
+            agent_client_protocol::schema::v1::EnumOption::new("cards", "Cards in columns"),
+        ]);
 
         let options = string_property_options(&schema);
 
@@ -7149,7 +7162,10 @@ mod tests {
         let options = string_property_options(&schema);
 
         assert_eq!(options[0].label, "wide");
-        assert_eq!(options[0].description.as_deref(), Some("Allow broader edits"));
+        assert_eq!(
+            options[0].description.as_deref(),
+            Some("Allow broader edits")
+        );
     }
 
     #[test]
