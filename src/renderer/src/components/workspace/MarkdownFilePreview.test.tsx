@@ -1,4 +1,7 @@
 /** @vitest-environment jsdom */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { act, createElement, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -52,6 +55,13 @@ function renderStaticMarkdownFilePreview(
     );
 }
 
+function readMarkdownPreviewStyles(): string {
+    return readFileSync(
+        join(process.cwd(), "src/renderer/src/styles.css"),
+        "utf8",
+    );
+}
+
 function renderInteractiveMarkdownFilePreview(
     overrides: Partial<ComponentProps<typeof MarkdownFilePreview>>,
 ): HTMLElement {
@@ -99,6 +109,18 @@ function mountInteractiveMarkdownFilePreview(
 }
 
 describe("MarkdownFilePreview", () => {
+    it("restores visible list markers inside the preview surface", () => {
+        const styles = readMarkdownPreviewStyles();
+
+        expect(styles).toContain(".markdown-file-preview ul");
+        expect(styles).toContain("list-style-type: disc");
+        expect(styles).toContain(".markdown-file-preview ol");
+        expect(styles).toContain("list-style-type: decimal");
+        expect(styles).toContain(
+            ".markdown-file-preview li:has(> .markdown-file-preview__checkbox)",
+        );
+    });
+
     it("renders an empty Markdown file as a stable empty preview surface", () => {
         const markup = renderStaticMarkdownFilePreview({
             content: "",
