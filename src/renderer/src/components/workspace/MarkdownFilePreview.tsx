@@ -226,66 +226,6 @@ interface MarkdownAstNode {
     type?: string;
 }
 
-const rawHtmlTagPattern =
-    /<\/?(?:a|abbr|address|article|aside|audio|b|blockquote|br|button|canvas|caption|cite|code|col|colgroup|data|details|dialog|div|dl|dt|dd|em|embed|fieldset|figcaption|figure|footer|form|h[1-6]|head|header|hr|html|i|iframe|img|input|label|li|link|main|mark|menu|meta|nav|object|ol|option|p|picture|pre|progress|q|script|section|select|small|source|span|strong|style|sub|summary|sup|svg|table|tbody|td|template|textarea|tfoot|th|thead|time|title|tr|u|ul|video)\b[^>]*>/gi;
-
-function stripRawHtmlFromMarkdownSource(source: string): string {
-    let isInsideFence = false;
-    let fenceMarker: "`" | "~" | null = null;
-    let isInsideRawHtmlBlock: "script" | "style" | null = null;
-
-    return source
-        .split("\n")
-        .map((line) => {
-            const fenceMatch = line.match(/^(?: {0,3})(`{3,}|~{3,})/);
-            if (fenceMatch) {
-                const marker = fenceMatch[1]?.[0];
-                if (!isInsideFence && (marker === "`" || marker === "~")) {
-                    isInsideFence = true;
-                    fenceMarker = marker;
-                } else if (isInsideFence && marker === fenceMarker) {
-                    isInsideFence = false;
-                    fenceMarker = null;
-                }
-                return line;
-            }
-
-            if (isInsideFence) {
-                return line;
-            }
-
-            let nextLine = line;
-            if (isInsideRawHtmlBlock) {
-                const closingPattern = new RegExp(
-                    `.*?<\\/${isInsideRawHtmlBlock}>`,
-                    "i",
-                );
-                if (!closingPattern.test(nextLine)) {
-                    return "";
-                }
-                nextLine = nextLine.replace(closingPattern, "");
-                isInsideRawHtmlBlock = null;
-            }
-
-            nextLine = nextLine.replace(
-                /<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi,
-                "",
-            );
-
-            const rawBlockStart = nextLine.match(/<(script|style)\b[^>]*>/i);
-            if (rawBlockStart) {
-                isInsideRawHtmlBlock =
-                    rawBlockStart[1]?.toLowerCase() === "style"
-                        ? "style"
-                        : "script";
-                nextLine = nextLine.slice(0, rawBlockStart.index);
-            }
-
-            return nextLine.replace(rawHtmlTagPattern, "");
-        })
-        .join("\n");
-}
-
 function removeRawHtmlNodes(node: MarkdownAstNode): void {
     if (!node.children) {
         return;
@@ -585,10 +525,6 @@ export const MarkdownFilePreview = memo(function MarkdownFilePreview({
             getFallbackCopyText: () => content,
             labels: markdownPreviewTextContextMenuLabels,
         });
-    const sanitizedContent = useMemo(
-        () => stripRawHtmlFromMarkdownSource(content),
-        [content],
-    );
     const renderedMarkdown = useMemo(
         () => (
             <ReactMarkdown
@@ -597,10 +533,10 @@ export const MarkdownFilePreview = memo(function MarkdownFilePreview({
                 remarkPlugins={markdownRemarkPlugins}
                 skipHtml
             >
-                {sanitizedContent}
+                {content}
             </ReactMarkdown>
         ),
-        [sanitizedContent],
+        [content],
     );
 
     return (

@@ -445,15 +445,36 @@ describe("MarkdownFilePreview", () => {
         const markup = renderStaticMarkdownFilePreview({
             content: [
                 "<script>alert('xss')</script>",
-                "<img src=x onerror=alert('xss')>",
-                "Safe text",
+                '<img src="x" onerror="alert(\'xss\')">',
             ].join("\n"),
         });
 
         expect(markup).not.toContain("<script");
         expect(markup).not.toContain("<img");
         expect(markup).not.toContain("alert");
+    });
+
+    it("continues to render ordinary Markdown after skipping raw HTML", () => {
+        const markup = renderStaticMarkdownFilePreview({
+            content: ["<script>alert('xss')</script>", "", "Safe text"].join(
+                "\n",
+            ),
+        });
+
+        expect(markup).not.toContain("<script");
+        expect(markup).not.toContain("alert");
         expect(markup).toContain("Safe text");
+    });
+
+    it("escapes invalid raw HTML instead of creating executable elements", () => {
+        const markup = renderStaticMarkdownFilePreview({
+            content: "<img src=x onerror=alert('xss')>",
+        });
+
+        expect(markup).not.toContain("<img");
+        expect(markup).toContain("&lt;img");
+        expect(markup).toContain("onerror=");
+        expect(markup).toContain("alert");
     });
 
     it("does not execute multiline raw HTML script blocks", () => {
