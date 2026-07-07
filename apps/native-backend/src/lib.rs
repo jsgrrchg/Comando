@@ -75,7 +75,7 @@ where
                     error.error.message
                 ));
                 commands::CommandResult {
-                    outputs: vec![error_response(error.id, error.error)],
+                    outputs: vec![error_response(error.id, *error.error)],
                     should_shutdown: false,
                 }
             }
