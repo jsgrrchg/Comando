@@ -55,6 +55,17 @@ function renderStaticMarkdownFilePreview(
 function renderInteractiveMarkdownFilePreview(
     overrides: Partial<ComponentProps<typeof MarkdownFilePreview>>,
 ): HTMLElement {
+    return mountInteractiveMarkdownFilePreview(overrides).container;
+}
+
+function mountInteractiveMarkdownFilePreview(
+    overrides: Partial<ComponentProps<typeof MarkdownFilePreview>>,
+): {
+    readonly container: HTMLElement;
+    readonly rerender: (
+        nextOverrides: Partial<ComponentProps<typeof MarkdownFilePreview>>,
+    ) => void;
+} {
     const container = document.createElement("div");
     document.body.appendChild(container);
 
@@ -62,16 +73,42 @@ function renderInteractiveMarkdownFilePreview(
     mountedRoots.push(root);
     mountedContainers.push(container);
 
-    act(() => {
+    const renderPreview = (
+        nextOverrides: Partial<ComponentProps<typeof MarkdownFilePreview>>,
+    ) => {
         root.render(
-            createElement(MarkdownFilePreview, createPreviewProps(overrides)),
+            createElement(
+                MarkdownFilePreview,
+                createPreviewProps(nextOverrides),
+            ),
         );
+    };
+
+    act(() => {
+        renderPreview(overrides);
     });
 
-    return container;
+    return {
+        container,
+        rerender: (nextOverrides) => {
+            act(() => {
+                renderPreview(nextOverrides);
+            });
+        },
+    };
 }
 
 describe("MarkdownFilePreview", () => {
+    it("renders an empty Markdown file as a stable empty preview surface", () => {
+        const markup = renderStaticMarkdownFilePreview({
+            content: "",
+        });
+
+        expect(markup).toContain('class="markdown-file-preview"');
+        expect(markup).not.toContain("<p>");
+        expect(markup).not.toContain("<h1>");
+    });
+
     it("renders headings, paragraphs and lists", () => {
         const markup = renderStaticMarkdownFilePreview({
             content: [
@@ -148,6 +185,24 @@ describe("MarkdownFilePreview", () => {
         expect(mockOpenExternalUrl).not.toHaveBeenCalled();
     });
 
+    it("does not open invalid external URLs", () => {
+        const container = renderInteractiveMarkdownFilePreview({
+            content: "[Broken](https://)",
+        });
+        const link = container.querySelector<HTMLAnchorElement>("a");
+
+        expect(link).not.toBeNull();
+        expect(link?.hasAttribute("href")).toBe(false);
+
+        act(() => {
+            link?.dispatchEvent(
+                new MouseEvent("click", { bubbles: true, cancelable: true }),
+            );
+        });
+
+        expect(mockOpenExternalUrl).not.toHaveBeenCalled();
+    });
+
     it("renders fenced code blocks with the static code wrapper", () => {
         const markup = renderStaticMarkdownFilePreview({
             content: "```ts\nconst value = 1;\n```",
@@ -157,6 +212,17 @@ describe("MarkdownFilePreview", () => {
         expect(markup).toContain("markdown-file-preview__code-block");
         expect(markup).toContain("cm-static-code");
         expect(markup).toContain("const value = 1;");
+    });
+
+    it("renders fenced code blocks without a language as plain code", () => {
+        const markup = renderStaticMarkdownFilePreview({
+            content: "```\nplain code\n```",
+        });
+
+        expect(markup).toContain("markdown-file-preview__code-block");
+        expect(markup).not.toContain("data-language=");
+        expect(markup).not.toContain("cm-static-code");
+        expect(markup).toContain("plain code");
     });
 
     it("skips raw HTML instead of rendering dangerous nodes", () => {
@@ -174,6 +240,28 @@ describe("MarkdownFilePreview", () => {
         expect(markup).toContain("Safe text");
     });
 
+    it("does not execute multiline raw HTML script blocks", () => {
+        const alertSpy = vi.spyOn(window, "alert").mockImplementation(() => {});
+
+        const container = renderInteractiveMarkdownFilePreview({
+            content: [
+                "Before",
+                "<script>",
+                "alert('xss')",
+                "</script>",
+                "After",
+            ].join("\n"),
+        });
+
+        expect(alertSpy).not.toHaveBeenCalled();
+        expect(container.innerHTML).not.toContain("<script");
+        expect(container.innerHTML).not.toContain("alert");
+        expect(container.innerHTML).toContain("Before");
+        expect(container.innerHTML).toContain("After");
+
+        alertSpy.mockRestore();
+    });
+
     it("blocks Markdown images until the preview has an asset policy", () => {
         const markup = renderStaticMarkdownFilePreview({
             content: "![Diagram](https://example.com/diagram.png)",
@@ -182,5 +270,44 @@ describe("MarkdownFilePreview", () => {
         expect(markup).not.toContain("<img");
         expect(markup).toContain("markdown-file-preview__blocked-image");
         expect(markup).toContain('aria-label="Diagram"');
+    });
+
+    it("wraps large tables in the horizontal overflow container", () => {
+        const columns = Array.from({ length: 12 }, (_, index) => `Col ${index}`);
+        const content = [
+            `| ${columns.join(" | ")} |`,
+            `| ${columns.map(() => "---").join(" | ")} |`,
+            `| ${columns.map((column) => `${column} value`).join(" | ")} |`,
+        ].join("\n");
+
+        const markup = renderStaticMarkdownFilePreview({ content });
+
+        expect(markup).toContain("markdown-file-preview__table-wrap");
+        expect(markup).toContain("<table>");
+        expect(markup).toContain("Col 11 value");
+    });
+
+    it("keeps rendered Markdown stable when large content rerenders with unchanged content", () => {
+        const largeContent = Array.from(
+            { length: 300 },
+            (_, index) => `- Item ${index}`,
+        ).join("\n");
+        const { container, rerender } = mountInteractiveMarkdownFilePreview({
+            content: largeContent,
+            fontSize: 14,
+        });
+        const preview = container.querySelector(".markdown-file-preview");
+        const initialMarkup = preview?.innerHTML;
+
+        rerender({
+            content: largeContent,
+            fontSize: 16,
+        });
+
+        const nextPreview = container.querySelector<HTMLElement>(
+            ".markdown-file-preview",
+        );
+        expect(nextPreview?.innerHTML).toBe(initialMarkup);
+        expect(nextPreview?.style.fontSize).toBe("16px");
     });
 });

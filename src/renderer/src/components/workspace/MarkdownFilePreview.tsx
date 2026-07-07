@@ -30,7 +30,17 @@ function getSafeExternalHref(href: string | null | undefined): string | null {
         return null;
     }
 
-    if (/^https?:\/\//i.test(normalizedHref)) {
+    let parsedHref: URL;
+    try {
+        parsedHref = new URL(normalizedHref);
+    } catch {
+        return null;
+    }
+
+    if (
+        (parsedHref.protocol === "http:" || parsedHref.protocol === "https:") &&
+        parsedHref.hostname
+    ) {
         return normalizedHref;
     }
 
@@ -151,6 +161,9 @@ const markdownPreviewComponents: Components = {
     td: MarkdownPreviewTableCell,
     th: MarkdownPreviewTableHeader,
 };
+
+const markdownRemarkPlugins = [remarkGfm, remarkStripRawHtml];
+const markdownRehypePlugins = [rehypeSanitize];
 
 function MarkdownPreviewLink({
     children,
@@ -309,6 +322,19 @@ export const MarkdownFilePreview = memo(function MarkdownFilePreview({
         () => stripRawHtmlFromMarkdownSource(content),
         [content],
     );
+    const renderedMarkdown = useMemo(
+        () => (
+            <ReactMarkdown
+                components={markdownPreviewComponents}
+                rehypePlugins={markdownRehypePlugins}
+                remarkPlugins={markdownRemarkPlugins}
+                skipHtml
+            >
+                {sanitizedContent}
+            </ReactMarkdown>
+        ),
+        [sanitizedContent],
+    );
 
     return (
         <div
@@ -316,14 +342,7 @@ export const MarkdownFilePreview = memo(function MarkdownFilePreview({
             data-file-path={filePath}
             style={{ fontFamily, fontSize }}
         >
-            <ReactMarkdown
-                components={markdownPreviewComponents}
-                rehypePlugins={[rehypeSanitize]}
-                remarkPlugins={[remarkGfm, remarkStripRawHtml]}
-                skipHtml
-            >
-                {sanitizedContent}
-            </ReactMarkdown>
+            {renderedMarkdown}
         </div>
     );
 });

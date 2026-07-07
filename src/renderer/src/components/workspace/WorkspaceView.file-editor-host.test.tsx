@@ -1350,6 +1350,92 @@ describe("WorkspaceFileEditorHost", () => {
         expect(editor.getPosition()).toEqual({ column: 3, lineNumber: 1 });
     });
 
+    it("preserves the latest Markdown draft across quick edit and preview toggles", async () => {
+        const onDraftChange = vi.fn();
+        const tab = createFileTab("file-1", "README.md", "# Saved\n");
+        const firstDraft = "# First draft\n\nBody A\n";
+        const secondDraft = "# Second draft\n\nBody B\n";
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tab,
+                    fileTabs: [tab],
+                    onDraftChange,
+                }),
+            );
+        });
+        await flushEffects();
+
+        const editor = monacoHarness.codeEditors[0];
+        if (!editor?.model) {
+            throw new Error("Expected Monaco editor to mount.");
+        }
+        editor.model.setValue(firstDraft);
+
+        act(() => {
+            findButtonByText(container, "Preview").click();
+        });
+
+        expect(onDraftChange).toHaveBeenLastCalledWith("file-1", firstDraft);
+        expect(
+            mockWorkspaceStoreState.current.updateFileMarkdownViewMode,
+        ).toHaveBeenLastCalledWith("file-1", "preview");
+
+        const previewTab = {
+            ...tab,
+            draftContent: firstDraft,
+            markdownViewMode: "preview" as const,
+        };
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: previewTab,
+                    fileTabs: [previewTab],
+                    onDraftChange,
+                }),
+            );
+        });
+        await flushEffects();
+
+        act(() => {
+            findButtonByText(container, "Edit").click();
+        });
+
+        expect(
+            mockWorkspaceStoreState.current.updateFileMarkdownViewMode,
+        ).toHaveBeenLastCalledWith("file-1", "edit");
+
+        const editTab = {
+            ...previewTab,
+            markdownViewMode: "edit" as const,
+        };
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: editTab,
+                    fileTabs: [editTab],
+                    onDraftChange,
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(monacoHarness.codeEditors[0]).toBe(editor);
+        expect(editor.disposed).toBe(false);
+
+        editor.model.setValue(secondDraft);
+
+        act(() => {
+            findButtonByText(container, "Preview").click();
+        });
+
+        expect(onDraftChange).toHaveBeenLastCalledWith("file-1", secondDraft);
+        expect(
+            mockWorkspaceStoreState.current.updateFileMarkdownViewMode,
+        ).toHaveBeenLastCalledWith("file-1", "preview");
+    });
+
     it("keeps the git gutter decoration collection stable while typing", async () => {
         const tab = createFileTab("file-1");
         const getGitDiff = vi.fn(() => Promise.resolve(createGitDiff()));
