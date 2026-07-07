@@ -23,6 +23,7 @@ import {
 import { HighlightedCodeText } from "@renderer/app/editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "@renderer/app/editor/useCodeLanguageSupport";
 import { openExternalUrl } from "@renderer/app/utils/external-url";
+import { useTextContextMenu } from "@renderer/components/context-menu/useTextContextMenu";
 
 interface MarkdownFilePreviewProps {
     readonly content: string;
@@ -313,6 +314,10 @@ const markdownPreviewComponents: Components = {
     th: MarkdownPreviewTableHeader,
 };
 
+const markdownPreviewTextContextMenuLabels = {
+    copyFallback: "Copy Markdown",
+} as const;
+
 const markdownRemarkPlugins = [remarkGfm, remarkStripRawHtml];
 const markdownRehypePlugins = [rehypeSanitize];
 
@@ -573,6 +578,13 @@ export const MarkdownFilePreview = memo(function MarkdownFilePreview({
     fontFamily,
     fontSize,
 }: MarkdownFilePreviewProps) {
+    const previewRef = useRef<HTMLDivElement | null>(null);
+    const { contextMenu, handleContextMenu } =
+        useTextContextMenu<HTMLDivElement>({
+            containerRef: previewRef,
+            getFallbackCopyText: () => content,
+            labels: markdownPreviewTextContextMenuLabels,
+        });
     const sanitizedContent = useMemo(
         () => stripRawHtmlFromMarkdownSource(content),
         [content],
@@ -595,9 +607,12 @@ export const MarkdownFilePreview = memo(function MarkdownFilePreview({
         <div
             className="markdown-file-preview"
             data-file-path={filePath}
+            onContextMenu={handleContextMenu}
+            ref={previewRef}
             style={{ fontFamily, fontSize }}
         >
             {renderedMarkdown}
+            {contextMenu}
         </div>
     );
 });

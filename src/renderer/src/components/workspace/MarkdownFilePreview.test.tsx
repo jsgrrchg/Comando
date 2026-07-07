@@ -23,6 +23,8 @@ const mountedContainers: HTMLDivElement[] = [];
 
 afterEach(() => {
     mockOpenExternalUrl.mockReset();
+    window.getSelection()?.removeAllRanges();
+    vi.unstubAllGlobals();
 
     for (const root of mountedRoots.splice(0)) {
         act(() => {
@@ -34,6 +36,64 @@ afterEach(() => {
         container.remove();
     }
 });
+
+function findTextNodeContaining(root: Node, text: string): Text {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+
+    let node = walker.nextNode();
+    while (node) {
+        if (node.textContent?.includes(text)) {
+            return node as Text;
+        }
+        node = walker.nextNode();
+    }
+
+    throw new Error(`Could not find text node containing "${text}".`);
+}
+
+function selectPreviewText(preview: HTMLElement, text: string): void {
+    const textNode = findTextNodeContaining(preview, text);
+    const startOffset = textNode.data.indexOf(text);
+    if (startOffset < 0) {
+        throw new Error(`Could not select text "${text}".`);
+    }
+
+    const range = document.createRange();
+    range.setStart(textNode, startOffset);
+    range.setEnd(textNode, startOffset + text.length);
+
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+}
+
+function openPreviewContextMenu(container: HTMLElement): HTMLElement {
+    const preview = container.querySelector<HTMLElement>(".markdown-file-preview");
+    if (!preview) {
+        throw new Error("Could not find Markdown preview root.");
+    }
+
+    act(() => {
+        preview.dispatchEvent(
+            new MouseEvent("contextmenu", {
+                bubbles: true,
+                cancelable: true,
+                clientX: 24,
+                clientY: 32,
+            }),
+        );
+    });
+
+    return preview;
+}
+
+function queryContextMenuButton(label: string): HTMLButtonElement | null {
+    return (
+        Array.from(document.body.querySelectorAll<HTMLButtonElement>("button")).find(
+            (button) => button.textContent === label,
+        ) ?? null
+    );
+}
 
 function createPreviewProps(
     overrides: Partial<ComponentProps<typeof MarkdownFilePreview>> = {},
@@ -304,8 +364,52 @@ describe("MarkdownFilePreview", () => {
             "pnpm add react-markdown remark-gfm rehype-sanitize",
         );
         expect(copyButton?.getAttribute("title")).toBe("Copied");
+    });
 
-        vi.unstubAllGlobals();
+    it("shows a read-only context menu that can copy the full Markdown source", async () => {
+        const writeClipboardText = vi.fn(() => Promise.resolve());
+        vi.stubGlobal("comando", { writeClipboardText });
+        const content = ["# Project Notes", "", "Copy this paragraph."].join("\n");
+        const container = renderInteractiveMarkdownFilePreview({ content });
+
+        openPreviewContextMenu(container);
+
+        const copyMarkdownButton = queryContextMenuButton("Copy Markdown");
+        expect(copyMarkdownButton).not.toBeNull();
+        expect(queryContextMenuButton("Paste")).toBeNull();
+        expect(queryContextMenuButton("Select all")).not.toBeNull();
+
+        await act(async () => {
+            copyMarkdownButton?.click();
+            await Promise.resolve();
+        });
+
+        expect(writeClipboardText).toHaveBeenCalledWith(content);
+    });
+
+    it("copies selected Markdown preview text from the context menu", async () => {
+        const writeClipboardText = vi.fn(() => Promise.resolve());
+        vi.stubGlobal("comando", { writeClipboardText });
+        const container = renderInteractiveMarkdownFilePreview({
+            content: ["# Project Notes", "", "Copy this paragraph."].join("\n"),
+        });
+        const preview = container.querySelector<HTMLElement>(
+            ".markdown-file-preview",
+        );
+
+        expect(preview).not.toBeNull();
+        selectPreviewText(preview as HTMLElement, "Copy this paragraph.");
+        openPreviewContextMenu(container);
+
+        const copySelectionButton = queryContextMenuButton("Copy selection");
+        expect(copySelectionButton).not.toBeNull();
+
+        await act(async () => {
+            copySelectionButton?.click();
+            await Promise.resolve();
+        });
+
+        expect(writeClipboardText).toHaveBeenCalledWith("Copy this paragraph.");
     });
 
     it("highlights bash fenced commands after loading language support", async () => {
