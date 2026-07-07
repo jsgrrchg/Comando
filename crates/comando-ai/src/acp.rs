@@ -6942,6 +6942,74 @@ mod tests {
     }
 
     #[test]
+    fn acp_string_elicitation_preserves_structured_option_description() {
+        let schema = agent_client_protocol::schema::v1::StringPropertySchema::new().one_of(vec![
+            agent_client_protocol::schema::v1::EnumOption::new("safe", "Safe")
+                .description("Keep changes narrow"),
+        ]);
+
+        let options = string_property_options(&schema);
+
+        assert_eq!(options[0].label, "safe");
+        assert_eq!(options[0].description.as_deref(), Some("Keep changes narrow"));
+    }
+
+    #[test]
+    fn acp_string_elicitation_keeps_title_description_fallback() {
+        let schema = agent_client_protocol::schema::v1::StringPropertySchema::new()
+            .one_of(vec![agent_client_protocol::schema::v1::EnumOption::new(
+                "cards",
+                "Cards in columns",
+            )]);
+
+        let options = string_property_options(&schema);
+
+        assert_eq!(options[0].label, "cards");
+        assert_eq!(options[0].description.as_deref(), Some("Cards in columns"));
+    }
+
+    #[test]
+    fn acp_string_elicitation_prefers_structured_description_over_title() {
+        let schema = agent_client_protocol::schema::v1::StringPropertySchema::new().one_of(vec![
+            agent_client_protocol::schema::v1::EnumOption::new("wide", "Wide")
+                .description("Allow broader edits"),
+        ]);
+
+        let options = string_property_options(&schema);
+
+        assert_eq!(options[0].label, "wide");
+        assert_eq!(options[0].description.as_deref(), Some("Allow broader edits"));
+    }
+
+    #[test]
+    fn acp_multiselect_elicitation_preserves_structured_option_descriptions() {
+        let schema = agent_client_protocol::schema::v1::MultiSelectPropertySchema::titled(vec![
+            agent_client_protocol::schema::v1::EnumOption::new("tests", "Tests")
+                .description("Update coverage"),
+            agent_client_protocol::schema::v1::EnumOption::new("docs", "Docs")
+                .description("Update docs"),
+        ]);
+
+        let options = multi_select_options(&schema.items);
+
+        assert_eq!(options[0].label, "tests");
+        assert_eq!(options[0].description.as_deref(), Some("Update coverage"));
+        assert_eq!(options[1].label, "docs");
+        assert_eq!(options[1].description.as_deref(), Some("Update docs"));
+    }
+
+    #[test]
+    fn acp_string_enum_elicitation_leaves_plain_values_without_description() {
+        let schema = agent_client_protocol::schema::v1::StringPropertySchema::new()
+            .enum_values(vec!["safe".to_string()]);
+
+        let options = string_property_options(&schema);
+
+        assert_eq!(options[0].label, "safe");
+        assert_eq!(options[0].description, None);
+    }
+
+    #[test]
     fn maps_user_input_answers_to_elicitation_accept_content() {
         let schema = BTreeMap::from([
             ("branch".to_string(), ElicitationAnswerKind::String),
