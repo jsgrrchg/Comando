@@ -25,7 +25,7 @@ edition = "2024"
 comando-types = { path = "crates/comando-types" }
 comando-diff = { path = "crates/comando-diff" }
 comando-settings = { path = "crates/comando-settings" }
-agent-client-protocol = { version = "=0.14.0", features = ["unstable"] }
+agent-client-protocol = { version = "=1.2.0", features = ["unstable"] }
 base64 = "0.22.1"
 imara-diff = "0.2"
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-async-persistent", "async-io", "crypto-rust"] }

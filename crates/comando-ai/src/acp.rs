@@ -4,21 +4,21 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
 
-use agent_client_protocol::schema::{
+use agent_client_protocol::schema::v1::{
     AuthenticateRequest, AvailableCommand, AvailableCommandsUpdate, CancelNotification,
     ClientCapabilities, ConfigOptionUpdate, ContentBlock, ContentChunk, CreateElicitationRequest,
     CreateElicitationResponse, ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities,
     ElicitationContentValue, ElicitationFormCapabilities, ElicitationMode,
     ElicitationPropertySchema, ImageContent, InitializeRequest, InitializeResponse,
     LoadSessionRequest, LogoutRequest, Meta, MultiSelectItems, NewSessionRequest, PermissionOption,
-    PromptCapabilities, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
+    PromptCapabilities, PromptRequest, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
     SelectedPermissionOutcome, SessionConfigKind, SessionConfigOption, SessionConfigOptionCategory,
     SessionConfigOptionValue, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
     SetSessionConfigOptionRequest, StopReason, TextContent, ToolCall, ToolCallContent,
     ToolCallStatus, ToolCallUpdate, ToolKind,
 };
-use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
+use agent_client_protocol::{schema::ProtocolVersion, Agent, ByteStreams, Client, ConnectionTo};
 use comando_types::ai::{
     NativeAiAvailableCommandPayload, NativeAiErrorPayload, NativeAiGeneratedImage,
     NativeAiImageAttachment, NativeAiImageGenerationPayload, NativeAiImageMessage,
@@ -331,7 +331,7 @@ async fn run_acp_auth_handshake(
 #[derive(Debug)]
 struct AcpAuthHandshakeRequest {
     method_id: String,
-    meta: Option<agent_client_protocol::schema::Meta>,
+    meta: Option<agent_client_protocol::schema::v1::Meta>,
 }
 
 fn acp_auth_handshake_request(
@@ -373,7 +373,7 @@ fn acp_auth_handshake_request(
             .meta
             .clone()
             .into_iter()
-            .collect::<agent_client_protocol::schema::Meta>()
+            .collect::<agent_client_protocol::schema::v1::Meta>()
     });
     Ok(Some(AcpAuthHandshakeRequest { method_id, meta }))
 }
@@ -872,7 +872,7 @@ async fn run_acp_session(
                     let config_options = match persisted_session_start_method(&spec) {
                         PersistedSessionStartMethod::Resume => {
                             let resume_session = ResumeSessionRequest::new(
-                                agent_client_protocol::schema::SessionId::from(
+                                agent_client_protocol::schema::v1::SessionId::from(
                                     runtime_session_id.0.clone(),
                                 ),
                                 PathBuf::from(&session.scope.cwd),
@@ -886,7 +886,7 @@ async fn run_acp_session(
                         }
                         PersistedSessionStartMethod::Load => {
                             let load_session = LoadSessionRequest::new(
-                                agent_client_protocol::schema::SessionId::from(
+                                agent_client_protocol::schema::v1::SessionId::from(
                                     runtime_session_id.0.clone(),
                                 ),
                                 PathBuf::from(&session.scope.cwd),
@@ -964,7 +964,7 @@ async fn run_acp_session(
                         }
                         AcpSessionCommand::Cancel { runtime_session_id } => {
                             connection.send_notification(CancelNotification::new(
-                                agent_client_protocol::schema::SessionId::from(
+                                agent_client_protocol::schema::v1::SessionId::from(
                                     runtime_session_id.0.clone(),
                                 ),
                             ))?;
@@ -976,7 +976,7 @@ async fn run_acp_session(
                             value,
                         } => {
                             let request = SetSessionConfigOptionRequest::new(
-                                agent_client_protocol::schema::SessionId::from(
+                                agent_client_protocol::schema::v1::SessionId::from(
                                     runtime_session_id.0,
                                 ),
                                 config_id,
@@ -1041,7 +1041,7 @@ async fn run_prompt(request: RunPromptRequest, context: RunPromptContext<'_>) {
     } = context;
 
     let runtime_session =
-        agent_client_protocol::schema::SessionId::from(runtime_session_id.0.clone());
+        agent_client_protocol::schema::v1::SessionId::from(runtime_session_id.0.clone());
     let prompt_request =
         PromptRequest::new(runtime_session, prompt_content_blocks(prompt, attachments));
 
@@ -1522,7 +1522,7 @@ fn runtime_session_id_from_elicitation(
     request: &CreateElicitationRequest,
 ) -> Option<RuntimeSessionId> {
     match request.mode.scope() {
-        agent_client_protocol::schema::ElicitationScope::Session(scope) => {
+        agent_client_protocol::schema::v1::ElicitationScope::Session(scope) => {
             Some(RuntimeSessionId(scope.session_id.to_string()))
         }
         _ => None,
@@ -1530,7 +1530,7 @@ fn runtime_session_id_from_elicitation(
 }
 
 fn elicitation_questions(
-    form: &agent_client_protocol::schema::ElicitationFormMode,
+    form: &agent_client_protocol::schema::v1::ElicitationFormMode,
 ) -> Vec<NativeAiUserInputQuestionPayload> {
     let questions = form
         .requested_schema
@@ -1562,7 +1562,7 @@ fn elicitation_questions(
 }
 
 fn elicitation_answer_schema(
-    form: &agent_client_protocol::schema::ElicitationFormMode,
+    form: &agent_client_protocol::schema::v1::ElicitationFormMode,
 ) -> BTreeMap<String, ElicitationAnswerKind> {
     form.requested_schema
         .properties
@@ -1680,14 +1680,17 @@ fn elicitation_property_metadata(
 }
 
 fn string_property_options(
-    schema: &agent_client_protocol::schema::StringPropertySchema,
+    schema: &agent_client_protocol::schema::v1::StringPropertySchema,
 ) -> Vec<NativeAiUserInputQuestionOptionPayload> {
     if let Some(options) = &schema.one_of {
         return options
             .iter()
             .map(|option| NativeAiUserInputQuestionOptionPayload {
                 label: option.value.clone(),
-                description: Some(option.title.clone()),
+                description: elicitation_option_description(
+                    option.description.as_ref(),
+                    Some(&option.title),
+                ),
             })
             .collect();
     }
@@ -1709,7 +1712,7 @@ fn string_property_options(
 
 fn multi_select_options(items: &MultiSelectItems) -> Vec<NativeAiUserInputQuestionOptionPayload> {
     match items {
-        MultiSelectItems::Untitled(items) => items
+        MultiSelectItems::String(items) => items
             .values
             .iter()
             .map(|value| NativeAiUserInputQuestionOptionPayload {
@@ -1722,11 +1725,24 @@ fn multi_select_options(items: &MultiSelectItems) -> Vec<NativeAiUserInputQuesti
             .iter()
             .map(|option| NativeAiUserInputQuestionOptionPayload {
                 label: option.value.clone(),
-                description: Some(option.title.clone()),
+                description: elicitation_option_description(
+                    option.description.as_ref(),
+                    Some(&option.title),
+                ),
             })
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn elicitation_option_description(
+    description: Option<&String>,
+    fallback_title: Option<&String>,
+) -> Option<String> {
+    description
+        .filter(|value| !value.trim().is_empty())
+        .or(fallback_title.filter(|value| !value.trim().is_empty()))
+        .cloned()
 }
 
 fn create_elicitation_response_from_input(
@@ -2617,7 +2633,7 @@ impl NotificationContextInner {
     fn handle_session_info_update(
         &mut self,
         runtime_session_id: &RuntimeSessionId,
-        info: agent_client_protocol::schema::SessionInfoUpdate,
+        info: agent_client_protocol::schema::v1::SessionInfoUpdate,
         meta: &Meta,
     ) {
         let title = info
@@ -3528,6 +3544,7 @@ fn config_option_category_label(category: &SessionConfigOptionCategory) -> Strin
     match category {
         SessionConfigOptionCategory::Mode => "mode".to_string(),
         SessionConfigOptionCategory::Model => "model".to_string(),
+        SessionConfigOptionCategory::ModelConfig => "model_config".to_string(),
         SessionConfigOptionCategory::ThoughtLevel => "thought_level".to_string(),
         SessionConfigOptionCategory::Other(value) => value.clone(),
         _ => "other".to_string(),
@@ -4118,7 +4135,7 @@ impl ProjectedToolDiff {
 }
 
 fn project_tool_diff(
-    diff: &agent_client_protocol::schema::Diff,
+    diff: &agent_client_protocol::schema::v1::Diff,
     old_text: &str,
     path: &str,
     cwd: &str,
@@ -4149,7 +4166,7 @@ fn project_tool_diff(
 }
 
 fn codex_meta_hunks(
-    diff: &agent_client_protocol::schema::Diff,
+    diff: &agent_client_protocol::schema::v1::Diff,
     seed: &str,
 ) -> Option<Vec<comando_diff::AiDiffHunk>> {
     let meta = diff.meta.as_ref()?;
@@ -4302,7 +4319,7 @@ fn opencode_filediff_candidates(
 
 fn take_matching_anchored_candidate(
     candidates: &mut [Option<AnchoredDiffCandidate>],
-    diff: &agent_client_protocol::schema::Diff,
+    diff: &agent_client_protocol::schema::v1::Diff,
     old_text: &str,
     path: &str,
     cwd: &str,
@@ -4318,7 +4335,7 @@ fn take_matching_anchored_candidate(
 
 fn anchored_candidate_matches_diff(
     candidate: &AnchoredDiffCandidate,
-    diff: &agent_client_protocol::schema::Diff,
+    diff: &agent_client_protocol::schema::v1::Diff,
     old_text: &str,
     path: &str,
     cwd: &str,
@@ -4655,7 +4672,7 @@ impl<T> MaybeUndefinedExt<T> for agent_client_protocol::schema::MaybeUndefined<T
 mod tests {
     use super::*;
     use crate::runtime::RuntimeRegistry;
-    use agent_client_protocol::schema::{ToolCallStatus, ToolCallUpdateFields, ToolKind};
+    use agent_client_protocol::schema::v1::{ToolCallStatus, ToolCallUpdateFields, ToolKind};
     use comando_types::ai::{
         NativeAiAuthHandshakeSpec, NativeAiDesiredSelections, NativeAiImageAttachment,
         NativeAiPrepareSessionInput, NativeAiRuntimeStatus, NativeAiUserInputAnswer,
@@ -4663,8 +4680,8 @@ mod tests {
 
     fn initialize_response_with_auth(method_id: &str) -> InitializeResponse {
         InitializeResponse::new(ProtocolVersion::V1).auth_methods(vec![
-            agent_client_protocol::schema::AuthMethod::Agent(
-                agent_client_protocol::schema::AuthMethodAgent::new(
+            agent_client_protocol::schema::v1::AuthMethod::Agent(
+                agent_client_protocol::schema::v1::AuthMethodAgent::new(
                     method_id.to_string(),
                     method_id.to_string(),
                 ),
@@ -4879,7 +4896,7 @@ mod tests {
                     "Model",
                     "gpt-5",
                     vec![
-                        agent_client_protocol::schema::SessionConfigSelectOption::new(
+                        agent_client_protocol::schema::v1::SessionConfigSelectOption::new(
                             "gpt-5", "GPT-5",
                         ),
                     ],
@@ -4924,7 +4941,7 @@ mod tests {
                     "Model",
                     "gpt-5",
                     vec![
-                        agent_client_protocol::schema::SessionConfigSelectOption::new(
+                        agent_client_protocol::schema::v1::SessionConfigSelectOption::new(
                             "gpt-5", "GPT-5",
                         )
                         .description("Fast model"),
@@ -5152,7 +5169,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-1",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .title("Fallback".to_string())
                         .meta(created_meta.clone()),
                 ),
@@ -5224,7 +5241,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-1",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .meta(created_meta.clone()),
                 ),
             )
@@ -5291,7 +5308,7 @@ mod tests {
                 SessionNotification::new(
                     child,
                     SessionUpdate::SessionInfoUpdate(
-                        agent_client_protocol::schema::SessionInfoUpdate::new()
+                        agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                             .meta(created_meta.clone()),
                     ),
                 )
@@ -5381,7 +5398,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-1",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .meta(created_meta.clone()),
                 ),
             )
@@ -5407,7 +5424,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-1",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .meta(turn_started_meta.clone()),
                 ),
             )
@@ -5470,7 +5487,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-1",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .meta(created_meta.clone()),
                 ),
             )
@@ -5535,7 +5552,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-1",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .meta(created_meta.clone()),
                 ),
             )
@@ -5600,7 +5617,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-1",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .meta(created_meta.clone()),
                 ),
             )
@@ -5665,7 +5682,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-1",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .meta(created_meta.clone()),
                 ),
             )
@@ -5692,7 +5709,7 @@ mod tests {
                 SessionNotification::new(
                     "runtime-child-1",
                     SessionUpdate::SessionInfoUpdate(
-                        agent_client_protocol::schema::SessionInfoUpdate::new()
+                        agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                             .meta(turn_started_meta.clone()),
                     ),
                 )
@@ -5720,7 +5737,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-1",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .meta(stale_complete_meta.clone()),
                 ),
             )
@@ -5743,7 +5760,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-1",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .meta(current_complete_meta.clone()),
                 ),
             )
@@ -5777,7 +5794,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-early",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .meta(turn_started_meta.clone()),
                 ),
             )
@@ -5797,7 +5814,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-early",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .meta(created_meta.clone()),
                 ),
             )
@@ -5827,7 +5844,7 @@ mod tests {
         context.handle(SessionNotification::new(
             "runtime-parent",
             SessionUpdate::SessionInfoUpdate(
-                agent_client_protocol::schema::SessionInfoUpdate::new()
+                agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                     .title("Subagent".to_string()),
             ),
         ));
@@ -5850,7 +5867,7 @@ mod tests {
             "runtime-parent",
             SessionUpdate::ToolCall(ToolCall::new("tool-1", "Edit file").content(
                 vec![ToolCallContent::Diff(
-                    agent_client_protocol::schema::Diff::new("src/main.rs", "fn main() {}\n")
+                    agent_client_protocol::schema::v1::Diff::new("src/main.rs", "fn main() {}\n")
                         .old_text(""),
                 )],
             )),
@@ -5907,7 +5924,7 @@ mod tests {
                         .kind(ToolKind::Edit)
                         .status(ToolCallStatus::Completed)
                         .content(vec![ToolCallContent::Diff(
-                            agent_client_protocol::schema::Diff::new(
+                            agent_client_protocol::schema::v1::Diff::new(
                                 "/tmp/src/main.rs",
                                 "const text = match[1].trim()\nif (selectionEditsRange(start, end)) {\n return false\n}",
                             )
@@ -5962,7 +5979,7 @@ mod tests {
         );
 
         let diff = ToolCallContent::Diff(
-            agent_client_protocol::schema::Diff::new("/tmp/src/main.rs", "cursor: \"default\",")
+            agent_client_protocol::schema::v1::Diff::new("/tmp/src/main.rs", "cursor: \"default\",")
                 .old_text("cursor: \"text\","),
         );
         context.handle(
@@ -6034,7 +6051,7 @@ mod tests {
         );
 
         let diff = ToolCallContent::Diff(
-            agent_client_protocol::schema::Diff::new("/tmp/src/main.rs", "disabled")
+            agent_client_protocol::schema::v1::Diff::new("/tmp/src/main.rs", "disabled")
                 .old_text("enabled"),
         );
         let diffs = tool_call_content_diffs(&[diff.clone(), diff], &meta, None, "/tmp");
@@ -6067,7 +6084,7 @@ mod tests {
 
         let diffs = tool_call_content_diffs(
             &[ToolCallContent::Diff(
-                agent_client_protocol::schema::Diff::new("src/new.rs", "let value = 2;")
+                agent_client_protocol::schema::v1::Diff::new("src/new.rs", "let value = 2;")
                     .old_text("let value = 1;")
                     .meta(diff_meta),
             )],
@@ -6093,7 +6110,7 @@ mod tests {
 
         let diffs = tool_call_content_diffs(
             &[ToolCallContent::Diff(
-                agent_client_protocol::schema::Diff::new("src/main.rs", "b\n")
+                agent_client_protocol::schema::v1::Diff::new("src/main.rs", "b\n")
                     .old_text("a\n")
                     .meta(diff_meta),
             )],
@@ -6134,7 +6151,7 @@ mod tests {
 
         let diffs = tool_call_content_diffs(
             &[ToolCallContent::Diff(
-                agent_client_protocol::schema::Diff::new(
+                agent_client_protocol::schema::v1::Diff::new(
                     "/tmp/src/main.rs",
                     "syntaxTree(state).iterate({\n  enter(node) {\n    return true;\n  }\n}",
                 )
@@ -6178,7 +6195,7 @@ mod tests {
 
         let diffs = tool_call_content_diffs(
             &[ToolCallContent::Diff(
-                agent_client_protocol::schema::Diff::new("/tmp/src/main.rs", "anchor\ninserted\n")
+                agent_client_protocol::schema::v1::Diff::new("/tmp/src/main.rs", "anchor\ninserted\n")
                     .old_text("anchor\n"),
             )],
             &Meta::new(),
@@ -6221,7 +6238,7 @@ mod tests {
 
         let diffs = tool_call_content_diffs(
             &[ToolCallContent::Diff(
-                agent_client_protocol::schema::Diff::new("/tmp/src/main.rs", "")
+                agent_client_protocol::schema::v1::Diff::new("/tmp/src/main.rs", "")
                     .old_text("remove me\n"),
             )],
             &Meta::new(),
@@ -6260,7 +6277,7 @@ mod tests {
 
         let diffs = tool_call_content_diffs(
             &[ToolCallContent::Diff(
-                agent_client_protocol::schema::Diff::new(
+                agent_client_protocol::schema::v1::Diff::new(
                     "/tmp/src/main.rs",
                     "before\nkeep context\n",
                 )
@@ -6302,7 +6319,7 @@ mod tests {
 
         let diffs = tool_call_content_diffs(
             &[ToolCallContent::Diff(
-                agent_client_protocol::schema::Diff::new("/tmp/src/main.rs", "beta")
+                agent_client_protocol::schema::v1::Diff::new("/tmp/src/main.rs", "beta")
                     .old_text("beta\n"),
             )],
             &Meta::new(),
@@ -6329,7 +6346,7 @@ mod tests {
                     .kind(ToolKind::Edit)
                     .status(ToolCallStatus::InProgress)
                     .content(vec![ToolCallContent::Diff(
-                        agent_client_protocol::schema::Diff::new("src/main.rs", "fn main() {}\n")
+                        agent_client_protocol::schema::v1::Diff::new("src/main.rs", "fn main() {}\n")
                             .old_text(""),
                     )]),
             ),
@@ -6401,7 +6418,7 @@ mod tests {
             NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
         context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
 
-        let diff = agent_client_protocol::schema::Diff::new("cuento.md", "line one\nline two\n")
+        let diff = agent_client_protocol::schema::v1::Diff::new("cuento.md", "line one\nline two\n")
             .old_text("line one\n");
         context.handle(SessionNotification::new(
             "runtime-parent",
@@ -6514,7 +6531,7 @@ mod tests {
                 SessionUpdate::ToolCallUpdate(
                     ToolCallUpdate::new(
                         "status-1",
-                        agent_client_protocol::schema::ToolCallUpdateFields::new()
+                        agent_client_protocol::schema::v1::ToolCallUpdateFields::new()
                             .title("Preparing input".to_string()),
                     )
                     .meta(status_meta.clone()),
@@ -6581,7 +6598,7 @@ mod tests {
         context.handle(SessionNotification::new(
             "runtime-parent",
             SessionUpdate::ToolCallUpdate(
-                agent_client_protocol::schema::ToolCallUpdate::new(
+                agent_client_protocol::schema::v1::ToolCallUpdate::new(
                     "tool-1",
                     ToolCallUpdateFields::new().status(ToolCallStatus::InProgress),
                 )
@@ -6612,7 +6629,7 @@ mod tests {
         context.handle(SessionNotification::new(
             "runtime-parent",
             SessionUpdate::ToolCallUpdate(
-                agent_client_protocol::schema::ToolCallUpdate::new(
+                agent_client_protocol::schema::v1::ToolCallUpdate::new(
                     "tool-1",
                     ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
                 )
@@ -6636,7 +6653,7 @@ mod tests {
         context.handle(SessionNotification::new(
             "runtime-parent",
             SessionUpdate::CurrentModeUpdate(
-                agent_client_protocol::schema::CurrentModeUpdate::new("build"),
+                agent_client_protocol::schema::v1::CurrentModeUpdate::new("build"),
             ),
         ));
 
@@ -6670,7 +6687,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-late",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .meta(created_meta.clone()),
                 ),
             )
@@ -6742,7 +6759,7 @@ mod tests {
             "runtime-child-without-meta",
             SessionUpdate::ToolCall(ToolCall::new("tool-child-1", "Edit file").content(vec![
                 ToolCallContent::Diff(
-                    agent_client_protocol::schema::Diff::new("src/main.rs", "fn main() {}\n")
+                    agent_client_protocol::schema::v1::Diff::new("src/main.rs", "fn main() {}\n")
                         .old_text(""),
                 ),
             ])),
@@ -6770,7 +6787,7 @@ mod tests {
             SessionNotification::new(
                 "runtime-child-without-meta",
                 SessionUpdate::SessionInfoUpdate(
-                    agent_client_protocol::schema::SessionInfoUpdate::new()
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
                         .meta(created_meta.clone()),
                 ),
             )
@@ -6814,7 +6831,7 @@ mod tests {
                 "runtime-child-known",
                 SessionUpdate::ToolCall(ToolCall::new("tool-child-1", "Edit file").content(
                     vec![ToolCallContent::Diff(
-                        agent_client_protocol::schema::Diff::new("src/main.rs", "fn main() {}\n")
+                        agent_client_protocol::schema::v1::Diff::new("src/main.rs", "fn main() {}\n")
                             .old_text(""),
                     )],
                 )),
