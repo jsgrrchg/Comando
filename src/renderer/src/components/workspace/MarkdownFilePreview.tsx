@@ -5,7 +5,11 @@ import {
     memo,
     type AnchorHTMLAttributes,
     type ImgHTMLAttributes,
+    type InputHTMLAttributes,
     type ReactNode,
+    type TableHTMLAttributes,
+    type TdHTMLAttributes,
+    type ThHTMLAttributes,
     useMemo,
 } from "react";
 
@@ -141,7 +145,11 @@ const markdownPreviewComponents: Components = {
     a: MarkdownPreviewLink,
     code: MarkdownPreviewCode,
     img: BlockedMarkdownPreviewImage,
+    input: MarkdownPreviewInput,
     pre: MarkdownPreviewPre,
+    table: MarkdownPreviewTable,
+    td: MarkdownPreviewTableCell,
+    th: MarkdownPreviewTableHeader,
 };
 
 function MarkdownPreviewLink({
@@ -222,6 +230,24 @@ function BlockedMarkdownPreviewImage({
     );
 }
 
+function MarkdownPreviewInput({
+    className,
+    node: _node,
+    ...props
+}: InputHTMLAttributes<HTMLInputElement> & { readonly node?: unknown }) {
+    void _node;
+
+    return (
+        <input
+            {...props}
+            className={["markdown-file-preview__checkbox", className]
+                .filter(Boolean)
+                .join(" ")}
+            readOnly
+        />
+    );
+}
+
 function MarkdownPreviewPre({
     children,
     node: _node,
@@ -237,6 +263,40 @@ function MarkdownPreviewPre({
             {children}
         </pre>
     );
+}
+
+function MarkdownPreviewTable({
+    children,
+    node: _node,
+    ...props
+}: TableHTMLAttributes<HTMLTableElement> & { readonly node?: unknown }) {
+    void _node;
+
+    return (
+        <div className="markdown-file-preview__table-wrap">
+            <table {...props}>{children}</table>
+        </div>
+    );
+}
+
+function MarkdownPreviewTableHeader({
+    children,
+    node: _node,
+    ...props
+}: ThHTMLAttributes<HTMLTableCellElement> & { readonly node?: unknown }) {
+    void _node;
+
+    return <th {...props}>{children}</th>;
+}
+
+function MarkdownPreviewTableCell({
+    children,
+    node: _node,
+    ...props
+}: TdHTMLAttributes<HTMLTableCellElement> & { readonly node?: unknown }) {
+    void _node;
+
+    return <td {...props}>{children}</td>;
 }
 
 export const MarkdownFilePreview = memo(function MarkdownFilePreview({
