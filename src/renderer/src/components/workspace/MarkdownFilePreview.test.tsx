@@ -167,6 +167,17 @@ describe("MarkdownFilePreview", () => {
         expect(markup).toContain("<li>Second item</li>");
     });
 
+    it("colors Markdown headings with the code theme token palette", () => {
+        const styles = readMarkdownPreviewStyles();
+        const headingRule =
+            styles.match(
+                /\.markdown-file-preview h1,[\s\S]*?\.markdown-file-preview h6\s*\{[^}]*\}/,
+            )?.[0] ?? "";
+
+        expect(headingRule).toContain("--code-color-markup");
+        expect(headingRule).not.toContain("--color-text-primary");
+    });
+
     it("renders GFM tables and task lists", () => {
         const markup = renderStaticMarkdownFilePreview({
             content: [

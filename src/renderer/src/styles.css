@@ -441,7 +441,7 @@ body {
 .markdown-file-preview h5,
 .markdown-file-preview h6 {
     margin: 1.6em 0 0.7em;
-    color: var(--color-text-primary);
+    color: var(--code-color-markup);
     font-weight: 700;
     letter-spacing: 0;
     line-height: 1.22;
