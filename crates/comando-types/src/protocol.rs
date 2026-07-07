@@ -121,7 +121,16 @@ pub enum NativeRpcOutput {
 #[derive(Debug, Clone)]
 pub struct RequestParseError {
     pub id: Option<RequestId>,
-    pub error: NativeError,
+    pub error: Box<NativeError>,
+}
+
+impl RequestParseError {
+    fn new(id: Option<RequestId>, error: NativeError) -> Self {
+        Self {
+            id,
+            error: Box::new(error),
+        }
+    }
 }
 
 pub struct JsonlWriter<W> {
@@ -144,39 +153,47 @@ where
 }
 
 pub fn parse_request_line(line: &str) -> Result<NativeRpcRequest, RequestParseError> {
-    let value = serde_json::from_str::<Value>(line).map_err(|error| RequestParseError {
-        id: extract_id_from_malformed_json(line),
-        error: NativeError::new(
-            NativeErrorCode::InvalidJson,
-            format!("Invalid JSON request: {error}"),
-        ),
+    let value = serde_json::from_str::<Value>(line).map_err(|error| {
+        RequestParseError::new(
+            extract_id_from_malformed_json(line),
+            NativeError::new(
+                NativeErrorCode::InvalidJson,
+                format!("Invalid JSON request: {error}"),
+            ),
+        )
     })?;
 
     parse_request_value(value)
 }
 
 pub fn parse_request_value(value: Value) -> Result<NativeRpcRequest, RequestParseError> {
-    let object = value.as_object().ok_or_else(|| RequestParseError {
-        id: None,
-        error: NativeError::new(
-            NativeErrorCode::InvalidRequest,
-            "Request must be a JSON object.",
-        ),
+    let object = value.as_object().ok_or_else(|| {
+        RequestParseError::new(
+            None,
+            NativeError::new(
+                NativeErrorCode::InvalidRequest,
+                "Request must be a JSON object.",
+            ),
+        )
     })?;
-    let id_value = object.get("id").cloned().ok_or_else(|| RequestParseError {
-        id: None,
-        error: NativeError::new(NativeErrorCode::InvalidRequest, "Request id is required."),
+    let id_value = object.get("id").cloned().ok_or_else(|| {
+        RequestParseError::new(
+            None,
+            NativeError::new(NativeErrorCode::InvalidRequest, "Request id is required."),
+        )
     })?;
-    let id = parse_request_id(id_value).map_err(|error| RequestParseError { id: None, error })?;
+    let id = parse_request_id(id_value).map_err(|error| RequestParseError::new(None, error))?;
     let command = object
         .get("command")
         .and_then(Value::as_str)
-        .ok_or_else(|| RequestParseError {
-            id: Some(id.clone()),
-            error: NativeError::new(
-                NativeErrorCode::InvalidRequest,
-                "Request command is required.",
-            ),
+        .ok_or_else(|| {
+            RequestParseError::new(
+                Some(id.clone()),
+                NativeError::new(
+                    NativeErrorCode::InvalidRequest,
+                    "Request command is required.",
+                ),
+            )
         })?;
     let args = object
         .get("args")
@@ -184,13 +201,13 @@ pub fn parse_request_value(value: Value) -> Result<NativeRpcRequest, RequestPars
         .unwrap_or_else(|| Value::Object(Map::new()));
 
     if !args.is_object() {
-        return Err(RequestParseError {
-            id: Some(id),
-            error: NativeError::new(
+        return Err(RequestParseError::new(
+            Some(id),
+            NativeError::new(
                 NativeErrorCode::InvalidRequest,
                 "Request args must be an object.",
             ),
-        });
+        ));
     }
 
     let meta = object
@@ -198,12 +215,14 @@ pub fn parse_request_value(value: Value) -> Result<NativeRpcRequest, RequestPars
         .cloned()
         .map(serde_json::from_value)
         .transpose()
-        .map_err(|error| RequestParseError {
-            id: Some(id.clone()),
-            error: NativeError::new(
-                NativeErrorCode::InvalidRequest,
-                format!("Request meta is invalid: {error}"),
-            ),
+        .map_err(|error| {
+            RequestParseError::new(
+                Some(id.clone()),
+                NativeError::new(
+                    NativeErrorCode::InvalidRequest,
+                    format!("Request meta is invalid: {error}"),
+                ),
+            )
         })?;
 
     Ok(NativeRpcRequest {

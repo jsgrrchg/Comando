@@ -578,6 +578,9 @@ export function isLocalCommandMetadata(content: unknown): boolean {
 const PERMISSION_MODE_ALIASES: Record<string, PermissionMode> = {
   auto: "auto",
   default: "default",
+  // Claude Code 2.1.200 renamed the "default" mode to "Manual" and accepts
+  // `"defaultMode": "manual"` in settings.json; honor the same alias here.
+  manual: "default",
   acceptedits: "acceptEdits",
   dontask: "dontAsk",
   plan: "plan",
@@ -4047,8 +4050,10 @@ function buildAvailableModes(modelInfo: ModelInfo | undefined): SessionModeState
 
   modes.push(
     {
+      // Claude Code 2.1.200 renamed this mode to "Manual" across its surfaces;
+      // the wire id stays "default" ("manual" is only an accepted input alias).
       id: "default",
-      name: "Default",
+      name: "Manual",
       description: "Standard behavior, prompts for dangerous operations",
     },
     {
@@ -4852,6 +4857,9 @@ export function toAcpNotifications(
   const registerHooks = options?.registerHooks !== false;
   const supportsTerminalOutput = options?.clientCapabilities?._meta?.["terminal_output"] === true;
   if (typeof content === "string") {
+    if (content.length === 0) {
+      return [];
+    }
     const update: SessionNotification["update"] = {
       sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
       content: {
@@ -4881,13 +4889,15 @@ export function toAcpNotifications(
     switch (chunk.type) {
       case "text":
       case "text_delta":
-        update = {
-          sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
-          content: {
-            type: "text",
-            text: chunk.text,
-          },
-        };
+        if (chunk.text.length > 0) {
+          update = {
+            sessionUpdate: role === "assistant" ? "agent_message_chunk" : "user_message_chunk",
+            content: {
+              type: "text",
+              text: chunk.text,
+            },
+          };
+        }
         break;
       case "image":
         update = {
