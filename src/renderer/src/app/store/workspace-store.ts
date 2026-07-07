@@ -34,6 +34,7 @@ import {
     createDefaultWorkspaceState,
     findPaneById,
     getDefaultMarkdownFileViewMode,
+    isMarkdownFilePath,
     moveActiveTabBetweenPanes,
     moveTabToPaneAtIndex,
     moveTabToSplit,
@@ -1155,6 +1156,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     ) => {
         try {
             const pendingOpenLocation = openLocation ?? null;
+            const shouldRevealOpenLocationInEditor =
+                pendingOpenLocation !== null && isMarkdownFilePath(relativePath);
             const trackedFiles = collectPendingTrackedFilesFromSessions(
                 useAiStore.getState().sessions,
             );
@@ -1196,30 +1199,37 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
                 set((state) => ({
                     ...setFileTabPendingOpenLocation(
-                        setFileTabReviewContext(
-                            paneId === resolvedPaneId
-                                ? selectPaneTab(
-                                      state,
-                                      paneId,
-                                      existingTabInResolvedPane.id,
-                                  )
-                                : restoreSourcePaneActiveTabAfterMove(
-                                      moveTabToPaneAtIndex(
-                                          state,
-                                          existingTabInResolvedPane.id,
-                                          paneId,
-                                          resolvedPaneId,
-                                          Number.POSITIVE_INFINITY,
-                                      ),
-                                      paneId,
-                                      getSourcePaneFallbackTabIdAfterMove(
+                        setFileTabMarkdownViewMode(
+                            setFileTabReviewContext(
+                                paneId === resolvedPaneId
+                                    ? selectPaneTab(
                                           state,
                                           paneId,
                                           existingTabInResolvedPane.id,
+                                      )
+                                    : restoreSourcePaneActiveTabAfterMove(
+                                          moveTabToPaneAtIndex(
+                                              state,
+                                              existingTabInResolvedPane.id,
+                                              paneId,
+                                              resolvedPaneId,
+                                              Number.POSITIVE_INFINITY,
+                                          ),
+                                          paneId,
+                                          getSourcePaneFallbackTabIdAfterMove(
+                                              state,
+                                              paneId,
+                                              existingTabInResolvedPane.id,
+                                          ),
                                       ),
-                                  ),
+                                existingTabInResolvedPane.id,
+                                nextReviewContext,
+                            ),
                             existingTabInResolvedPane.id,
-                            nextReviewContext,
+                            shouldRevealOpenLocationInEditor
+                                ? "edit"
+                                : (existingTabInResolvedPane.markdownViewMode ??
+                                      "edit"),
                         ),
                         existingTabInResolvedPane.id,
                         pendingOpenLocation,
@@ -1259,15 +1269,16 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     ...sourceTabWithoutPreviewScroll
                 } = sourceTab;
                 void _markdownPreviewScrollTop;
+                const markdownViewModeForDuplicatedTab =
+                    shouldRevealOpenLocationInEditor
+                        ? "edit"
+                        : getDefaultMarkdownFileViewMode(relativePath);
                 const duplicatedTab: RuntimeWorkspaceFileTab = {
                     ...sourceTabWithoutPreviewScroll,
                     createdAt: new Date().toISOString(),
                     id: crypto.randomUUID(),
-                    ...(getDefaultMarkdownFileViewMode(relativePath)
-                        ? {
-                              markdownViewMode:
-                                  getDefaultMarkdownFileViewMode(relativePath),
-                          }
+                    ...(markdownViewModeForDuplicatedTab
+                        ? { markdownViewMode: markdownViewModeForDuplicatedTab }
                         : {}),
                     pendingOpenLocation,
                     reviewContext: nextReviewContext,

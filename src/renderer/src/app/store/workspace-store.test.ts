@@ -639,6 +639,117 @@ describe("workspace file opening", () => {
         });
     });
 
+    it("switches an existing Markdown preview tab to edit when opening a line", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            rootNode: {
+                activeTabId: "helper-tab",
+                id: "pane-root",
+                tabIds: ["file-tab-1", "helper-tab"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-tab-1": {
+                    ...createWorkspaceFileTab("file-tab-1", "README.md"),
+                    markdownViewMode: "preview",
+                },
+                "helper-tab": createWorkspaceChatTab(
+                    "helper-tab",
+                    "session-helper",
+                    "codex",
+                ),
+            },
+        }));
+
+        await useWorkspaceStore
+            .getState()
+            .openFileTab("project-1", "README.md", null, null, null, undefined, {
+                endLine: null,
+                startLine: 12,
+            });
+
+        const state = useWorkspaceStore.getState();
+        const tab = state.tabsById["file-tab-1"];
+        const pane = state.rootNode.type === "pane" ? state.rootNode : null;
+
+        expect(pane?.activeTabId).toBe("file-tab-1");
+        expect(tab).toMatchObject({
+            kind: "file",
+            markdownViewMode: "edit",
+            pendingOpenLocation: {
+                endLine: null,
+                startLine: 12,
+            },
+            relativePath: "README.md",
+        });
+    });
+
+    it("opens duplicate Markdown tabs in edit mode when targeting a line", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-right",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: "file-tab-1",
+                        id: "pane-left",
+                        tabIds: ["file-tab-1"],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: null,
+                        id: "pane-right",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                "file-tab-1": {
+                    ...createWorkspaceFileTab("file-tab-1", "README.md"),
+                    markdownViewMode: "preview",
+                },
+            },
+        }));
+
+        await useWorkspaceStore
+            .getState()
+            .openFileTab(
+                "project-1",
+                "README.md",
+                null,
+                null,
+                "pane-right",
+                undefined,
+                {
+                    endLine: 8,
+                    startLine: 4,
+                },
+            );
+
+        const state = useWorkspaceStore.getState();
+        const rightPane = findWorkspacePane(state.rootNode, "pane-right");
+        const duplicateTabId = rightPane?.activeTabId;
+        const duplicateTab = duplicateTabId
+            ? state.tabsById[duplicateTabId]
+            : null;
+
+        expect(duplicateTabId).not.toBe("file-tab-1");
+        expect(duplicateTab).toMatchObject({
+            kind: "file",
+            markdownViewMode: "edit",
+            pendingOpenLocation: {
+                endLine: 8,
+                startLine: 4,
+            },
+            relativePath: "README.md",
+        });
+    });
+
     it("opens a singleton project diff tab per project and worktree", async () => {
         await useWorkspaceStore
             .getState()
