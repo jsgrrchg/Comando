@@ -5001,6 +5001,43 @@ mod tests {
     }
 
     #[test]
+    fn notification_context_ignores_empty_agent_message_chunks() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new("".into())),
+        ));
+
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn notification_context_empty_agent_chunk_before_tool_does_not_create_message() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new("".into())),
+        ));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(ToolCall::new("tool-1", "Read file")),
+        ));
+
+        let event = receiver.recv().unwrap();
+        assert_eq!(event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(event.payload["toolCallId"], "tool-1");
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
     fn notification_context_suppresses_replayed_load_session_activity() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
         let context =
@@ -5661,6 +5698,44 @@ mod tests {
             completed_event.payload["sessionId"],
             "session-1:subagent:runtime-child-1"
         );
+    }
+
+    #[test]
+    fn notification_context_ignores_empty_subagent_user_message_chunks() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        let created_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-1"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-1",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
+                        .meta(created_meta.clone()),
+                ),
+            )
+            .meta(created_meta),
+        );
+        assert_eq!(
+            receiver.recv().unwrap().event_name,
+            AI_SUBAGENT_CREATED_EVENT
+        );
+
+        context.handle(SessionNotification::new(
+            "runtime-child-1",
+            SessionUpdate::UserMessageChunk(ContentChunk::new("".into())),
+        ));
+
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
@@ -6371,6 +6446,44 @@ mod tests {
     }
 
     #[test]
+    fn notification_context_empty_chunk_after_tool_update_does_not_change_activity() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool-1", "Edit file")
+                    .kind(ToolKind::Edit)
+                    .status(ToolCallStatus::InProgress),
+            ),
+        ));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+            )),
+        ));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new("".into())),
+        ));
+
+        let initial_event = receiver.recv().unwrap();
+        assert_eq!(initial_event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(initial_event.payload["status"], "in_progress");
+
+        let update_event = receiver.recv().unwrap();
+        assert_eq!(update_event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(update_event.payload["status"], "completed");
+        assert_eq!(update_event.payload["toolCallId"], "tool-1");
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
     fn notification_context_canonicalizes_tool_update_with_new_id() {
         let (sender, receiver) = std_mpsc::sync_channel(8);
         let context =
@@ -6806,6 +6919,64 @@ mod tests {
         assert_eq!(
             child_tool_event.payload["runtimeSessionId"],
             "runtime-child-without-meta"
+        );
+        assert_eq!(child_tool_event.payload["diffs"][0]["path"], "src/main.rs");
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn notification_context_empty_chunk_preserves_buffered_unknown_child_diffs() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-child-without-meta",
+            SessionUpdate::ToolCall(ToolCall::new("tool-child-1", "Edit file").content(vec![
+                ToolCallContent::Diff(
+                    agent_client_protocol::schema::v1::Diff::new("src/main.rs", "fn main() {}\n")
+                        .old_text(""),
+                ),
+            ])),
+        ));
+        let root_tool_event = receiver.recv().unwrap();
+        assert_eq!(root_tool_event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert!(root_tool_event.payload.get("diffs").is_none());
+
+        context.handle(SessionNotification::new(
+            "runtime-child-without-meta",
+            SessionUpdate::AgentMessageChunk(ContentChunk::new("".into())),
+        ));
+        assert!(receiver.try_recv().is_err());
+
+        let created_meta = test_meta(&[
+            (
+                CODEX_ACP_STATUS_EVENT_TYPE_KEY,
+                CODEX_ACP_SUBAGENT_SESSION_CREATED_EVENT_TYPE,
+            ),
+            (CODEX_ACP_PARENT_SESSION_ID_KEY, "runtime-parent"),
+            (CODEX_ACP_CHILD_SESSION_ID_KEY, "runtime-child-without-meta"),
+        ]);
+        context.handle(
+            SessionNotification::new(
+                "runtime-child-without-meta",
+                SessionUpdate::SessionInfoUpdate(
+                    agent_client_protocol::schema::v1::SessionInfoUpdate::new()
+                        .meta(created_meta.clone()),
+                ),
+            )
+            .meta(created_meta),
+        );
+
+        let created_event = receiver.recv().unwrap();
+        assert_eq!(created_event.event_name, AI_SUBAGENT_CREATED_EVENT);
+
+        let child_tool_event = receiver.recv().unwrap();
+        assert_eq!(child_tool_event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(
+            child_tool_event.payload["sessionId"],
+            "session-1:subagent:runtime-child-without-meta"
         );
         assert_eq!(child_tool_event.payload["diffs"][0]["path"], "src/main.rs");
         assert!(receiver.try_recv().is_err());
