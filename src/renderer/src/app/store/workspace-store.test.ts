@@ -472,7 +472,7 @@ describe("workspace file opening", () => {
         });
     });
 
-    it("updates Markdown preview mode only for the requested file tab", () => {
+    it("updates Markdown preview mode only for the requested file tab", async () => {
         const firstTab = createWorkspaceFileTab("file-tab-1", "README.md");
         const secondTab = createWorkspaceFileTab("file-tab-2", "CHANGELOG.md");
 
@@ -511,6 +511,24 @@ describe("workspace file opening", () => {
             markdownViewMode: "edit",
             relativePath: "CHANGELOG.md",
         });
+
+        await flushWorkspacePersistenceForTests();
+        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+        const snapshot = saveWorkspaceSnapshotMock.mock.calls.at(-1)?.[0];
+        expect(snapshot?.tabs).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    kind: "file",
+                    markdownViewMode: "preview",
+                    relativePath: "README.md",
+                }),
+                expect.objectContaining({
+                    kind: "file",
+                    markdownViewMode: "edit",
+                    relativePath: "CHANGELOG.md",
+                }),
+            ]),
+        );
     });
 
     it("does not keep Markdown preview mode on non-Markdown file tabs", () => {

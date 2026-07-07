@@ -1929,6 +1929,7 @@ export interface WorkspaceFileTab {
     readonly projectId: string;
     readonly relativePath: string;
     readonly createdAt: string;
+    readonly markdownViewMode?: "edit" | "preview";
     readonly worktreeId?: string | null;
 }
 

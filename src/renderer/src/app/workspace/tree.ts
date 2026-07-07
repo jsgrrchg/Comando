@@ -129,7 +129,7 @@ export function workspaceStateFromSnapshot(
     return {
         activePaneId: snapshot.activePaneId,
         rootNode: normalizeWorkspaceNodeTabs(snapshot.rootNode),
-        tabsById,
+        tabsById: normalizeRuntimeTabsForWorkspace(tabsById),
     };
 }
 
@@ -1384,10 +1384,18 @@ function updateMatchingFileTabs(
 
 function stripRuntimeTab(tab: RuntimeWorkspaceTab): WorkspaceTab {
     if (tab.kind === "file") {
+        const markdownViewMode =
+            isMarkdownFilePath(tab.relativePath) &&
+            (tab.markdownViewMode === "preview" ||
+                tab.markdownViewMode === "edit")
+                ? tab.markdownViewMode
+                : undefined;
+
         return {
             createdAt: tab.createdAt,
             id: tab.id,
             kind: tab.kind,
+            ...(markdownViewMode ? { markdownViewMode } : {}),
             projectId: tab.projectId,
             relativePath: tab.relativePath,
             title: tab.title,
@@ -1425,6 +1433,33 @@ function stripRuntimeTab(tab: RuntimeWorkspaceTab): WorkspaceTab {
     }
 
     return tab;
+}
+
+function normalizeRuntimeTabsForWorkspace(
+    tabsById: Record<string, RuntimeWorkspaceTab>,
+): Record<string, RuntimeWorkspaceTab> {
+    return Object.fromEntries(
+        Object.entries(tabsById).map(([tabId, tab]) => {
+            if (tab.kind !== "file") {
+                return [tabId, tab];
+            }
+
+            if (!isMarkdownFilePath(tab.relativePath)) {
+                const { markdownViewMode: _markdownViewMode, ...nextTab } = tab;
+                void _markdownViewMode;
+                return [tabId, nextTab];
+            }
+
+            return [
+                tabId,
+                {
+                    ...tab,
+                    markdownViewMode:
+                        tab.markdownViewMode === "preview" ? "preview" : "edit",
+                },
+            ];
+        }),
+    ) as Record<string, RuntimeWorkspaceTab>;
 }
 
 function sanitizeNodeForSnapshot(

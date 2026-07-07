@@ -1910,6 +1910,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         set((state) => ({
             ...setFileTabMarkdownViewMode(state, tabId, markdownViewMode),
         }));
+        void persistWorkspaceState(get);
     },
 
     updateSessionTabTitles: async (sessionId, title) => {
