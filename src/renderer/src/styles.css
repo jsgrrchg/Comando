@@ -596,12 +596,42 @@ body {
     display: flex;
     min-height: 2.45em;
     align-items: center;
+    justify-content: space-between;
+    gap: 0.75em;
     color: var(--color-text-secondary);
     font-family: var(--font-mono);
     font-size: 0.9em;
     font-weight: 600;
     letter-spacing: 0;
-    padding: 0.18em 1em 0;
+    padding: 0.18em 0.55em 0 1em;
+}
+
+.markdown-file-preview__copy-button {
+    display: inline-flex;
+    width: 20px;
+    height: 20px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    opacity: 0.72;
+    padding: 0;
+    transition:
+        color 100ms ease,
+        opacity 100ms ease;
+}
+
+.markdown-file-preview__copy-button:hover {
+    color: var(--color-text-primary);
+    opacity: 1;
+}
+
+.markdown-file-preview__copy-button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 42%, transparent);
+    outline-offset: 2px;
 }
 
 .markdown-file-preview__code-frame > .markdown-file-preview__code-block {

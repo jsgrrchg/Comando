@@ -251,7 +251,7 @@ describe("MarkdownFilePreview", () => {
         expect(markup).toContain('data-language="ts"');
         expect(markup).toContain("markdown-file-preview__code-frame");
         expect(markup).toContain("markdown-file-preview__code-header");
-        expect(markup).toContain(">TypeScript</div>");
+        expect(markup).toContain(">TypeScript</span>");
         expect(markup).toContain("markdown-file-preview__code-block");
         expect(markup).toContain("cm-static-code");
         expect(markup).toContain("const value = 1;");
@@ -263,7 +263,38 @@ describe("MarkdownFilePreview", () => {
         });
 
         expect(markup).toContain('data-language="bash"');
-        expect(markup).toContain(">Bash</div>");
+        expect(markup).toContain(">Bash</span>");
+        expect(markup).toContain('aria-label="Copy code block"');
+        expect(markup).toContain('title="Copy"');
+    });
+
+    it("copies fenced code block text through the app clipboard bridge", async () => {
+        const writeClipboardText = vi.fn(() => Promise.resolve());
+        vi.stubGlobal("comando", { writeClipboardText });
+        const container = renderInteractiveMarkdownFilePreview({
+            content: [
+                "```bash",
+                "pnpm add react-markdown remark-gfm rehype-sanitize",
+                "```",
+            ].join("\n"),
+        });
+        const copyButton = container.querySelector<HTMLButtonElement>(
+            '[aria-label="Copy code block"]',
+        );
+
+        expect(copyButton).not.toBeNull();
+
+        await act(async () => {
+            copyButton?.click();
+            await Promise.resolve();
+        });
+
+        expect(writeClipboardText).toHaveBeenCalledWith(
+            "pnpm add react-markdown remark-gfm rehype-sanitize",
+        );
+        expect(copyButton?.getAttribute("title")).toBe("Copied");
+
+        vi.unstubAllGlobals();
     });
 
     it("highlights bash fenced commands after loading language support", async () => {

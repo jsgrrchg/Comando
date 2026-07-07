@@ -13,7 +13,11 @@ import {
     type TableHTMLAttributes,
     type TdHTMLAttributes,
     type ThHTMLAttributes,
+    useCallback,
+    useEffect,
     useMemo,
+    useRef,
+    useState,
 } from "react";
 
 import { HighlightedCodeText } from "@renderer/app/editor/staticCodeHighlight";
@@ -48,6 +52,25 @@ function getSafeExternalHref(href: string | null | undefined): string | null {
     }
 
     return null;
+}
+
+async function writeMarkdownPreviewClipboardText(text: string): Promise<void> {
+    if (window.comando?.writeClipboardText) {
+        try {
+            await window.comando.writeClipboardText(text);
+            return;
+        } catch {
+            // Fall through to the Web Clipboard API when the native bridge is unavailable.
+        }
+    }
+
+    if (navigator.clipboard?.writeText) {
+        try {
+            await navigator.clipboard.writeText(text);
+        } catch {
+            // Copy actions should stay quiet if clipboard access is denied.
+        }
+    }
 }
 
 function extractMarkdownCodeLanguage(
@@ -150,6 +173,39 @@ function getMarkdownCodeLanguageFromNode(node: ReactNode): string | null {
     }
 
     return null;
+}
+
+function getMarkdownCodeTextFromNode(node: ReactNode): string {
+    if (typeof node === "string" || typeof node === "number") {
+        return String(node);
+    }
+
+    if (Array.isArray(node)) {
+        const children = Children.toArray(node);
+        const codeChild = children.find(
+            (child) => isValidElement(child) && child.type === "code",
+        );
+        if (codeChild) {
+            return getMarkdownCodeTextFromNode(codeChild);
+        }
+
+        return children.map(getMarkdownCodeTextFromNode).join("");
+    }
+
+    if (!isValidElement(node)) {
+        return "";
+    }
+
+    const props = node.props as {
+        readonly children?: ReactNode;
+        readonly text?: unknown;
+    };
+
+    if (typeof props.text === "string") {
+        return props.text;
+    }
+
+    return getMarkdownCodeTextFromNode(props.children);
 }
 
 function reactNodeToText(node: ReactNode): string {
@@ -356,6 +412,90 @@ function MarkdownPreviewInput({
     );
 }
 
+function MarkdownPreviewCopyIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="12"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.6"
+            viewBox="0 0 14 14"
+            width="12"
+        >
+            <rect x="5" y="3" width="6" height="8" rx="1.2" />
+            <path d="M3.5 9.5H3A1 1 0 0 1 2 8.5v-5A1.5 1.5 0 0 1 3.5 2H8" />
+        </svg>
+    );
+}
+
+function MarkdownPreviewCheckIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="12"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.7"
+            viewBox="0 0 14 14"
+            width="12"
+        >
+            <path d="M3 7l2.2 2.2L11 3.8" />
+        </svg>
+    );
+}
+
+function MarkdownPreviewCodeCopyButton({
+    codeText,
+}: {
+    readonly codeText: string;
+}) {
+    const [copied, setCopied] = useState(false);
+    const resetTimeoutRef = useRef<number | null>(null);
+
+    useEffect(
+        () => () => {
+            if (resetTimeoutRef.current) {
+                window.clearTimeout(resetTimeoutRef.current);
+            }
+        },
+        [],
+    );
+
+    const handleCopy = useCallback(() => {
+        void writeMarkdownPreviewClipboardText(codeText).then(() => {
+            setCopied(true);
+            if (resetTimeoutRef.current) {
+                window.clearTimeout(resetTimeoutRef.current);
+            }
+            resetTimeoutRef.current = window.setTimeout(() => {
+                setCopied(false);
+                resetTimeoutRef.current = null;
+            }, 1200);
+        });
+    }, [codeText]);
+
+    return (
+        <button
+            aria-label="Copy code block"
+            className="markdown-file-preview__copy-button"
+            onClick={handleCopy}
+            title={copied ? "Copied" : "Copy"}
+            type="button"
+        >
+            {copied ? (
+                <MarkdownPreviewCheckIcon />
+            ) : (
+                <MarkdownPreviewCopyIcon />
+            )}
+        </button>
+    );
+}
+
 function MarkdownPreviewPre({
     children,
     className,
@@ -371,6 +511,7 @@ function MarkdownPreviewPre({
         .filter(Boolean)
         .join(" ");
     const language = getMarkdownCodeLanguageFromNode(children);
+    const codeText = getMarkdownCodeTextFromNode(children).replace(/\n\s*$/, "");
     const codeBlock = (
         <pre className={codeBlockClassName} {...props}>
             {children}
@@ -384,7 +525,8 @@ function MarkdownPreviewPre({
     return (
         <div className="markdown-file-preview__code-frame">
             <div className="markdown-file-preview__code-header">
-                {formatMarkdownCodeLanguageLabel(language)}
+                <span>{formatMarkdownCodeLanguageLabel(language)}</span>
+                <MarkdownPreviewCodeCopyButton codeText={codeText} />
             </div>
             {codeBlock}
         </div>
