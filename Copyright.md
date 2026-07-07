@@ -169,10 +169,10 @@ was checked with `cargo metadata --format-version=1 --locked`.
 | Vendored path | `vendor/Claude-agent-acp-upstream` |
 | Staged path | `resources/ai/embedded/claude-agent-acp` |
 | Upstream package | `@agentclientprotocol/claude-agent-acp` |
-| Upstream baseline | `0.37.0`, commit `36822c2b75b6e1cd5406a5ab40fe603fc380ee10` |
+| Upstream baseline | `0.57.0`, commit `2bf865eb42bbe744c476d38a005444eab8f4b624` |
 | Package license | Apache-2.0 |
-| ACP SDK dependency | `@agentclientprotocol/sdk` `0.24.0`, Apache-2.0, vendored inside the Claude runtime only |
-| Claude Agent SDK dependency | `@anthropic-ai/claude-agent-sdk` `0.3.165`, Anthropic legal terms |
+| ACP SDK dependency | `@agentclientprotocol/sdk` `1.2.0`, Apache-2.0, vendored inside the Claude runtime only |
+| Claude Agent SDK dependency | `@anthropic-ai/claude-agent-sdk` `0.3.202`, Anthropic legal terms |
 
 The Claude ACP adapter itself is Apache-2.0. Its runtime dependency
 `@anthropic-ai/claude-agent-sdk` and the platform-specific
@@ -233,16 +233,11 @@ The currently tracked local delta includes:
 ### `vendor/Claude-agent-acp-upstream` - Agent Client Protocol Claude ACP
 
 The vendored Claude ACP runtime is based on upstream
-`@agentclientprotocol/claude-agent-acp` `0.37.0`. The Claude vendor source does
+`@agentclientprotocol/claude-agent-acp` `0.57.0`. The Claude vendor source does
 not carry Comando-specific review metadata. Claude PostToolUse structured patch
 responses are translated inside Comando's internal review adapter so review
 snippets can retain real line anchors while keeping the vendored runtime aligned
 with upstream source.
-
-| File | Nature of changes |
-| ---- | ----------------- |
-| `package.json`, `package-lock.json` | Updated `@anthropic-ai/claude-agent-sdk` to `0.3.154` to embed Claude Code `2.1.154` |
-| `src/acp-agent.ts` | Added no-op handling for the SDK `thinking_tokens` system event introduced by the newer runtime |
 
 This vendor directory should be reviewed intentionally whenever syncing against
 upstream.
@@ -270,4 +265,4 @@ upstream.
 
 ---
 
-*This file is maintained from project dependency metadata. Last updated: 2026-05-14.*
+*This file is maintained from project dependency metadata. Last updated: 2026-07-07.*
