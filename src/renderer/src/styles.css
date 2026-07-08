@@ -716,9 +716,9 @@ body {
 }
 
 .markdown-file-preview__mermaid-svg {
-    display: grid;
-    min-width: 0;
-    justify-items: center;
+    display: flex;
+    min-width: max-content;
+    justify-content: center;
 }
 
 .markdown-file-preview__mermaid-svg svg {
