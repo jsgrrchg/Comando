@@ -32,12 +32,12 @@ jobs:
         env:
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
 
@@ -83,16 +83,16 @@ jobs:
         env:
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: pnpm/action-setup@v4
+            - uses: pnpm/action-setup@v6
               with:
                   version: 10.33.0
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
                   cache: pnpm
@@ -191,16 +191,16 @@ jobs:
             CSC_LINK: ${{ secrets.CSC_LINK }}
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: pnpm/action-setup@v4
+            - uses: pnpm/action-setup@v6
               with:
                   version: 10.33.0
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
                   cache: pnpm
@@ -299,16 +299,16 @@ jobs:
             CSC_IDENTITY_AUTO_DISCOVERY: "false"
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: pnpm/action-setup@v4
+            - uses: pnpm/action-setup@v6
               with:
                   version: 10.33.0
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
                   cache: pnpm
@@ -342,16 +342,16 @@ jobs:
             CSC_IDENTITY_AUTO_DISCOVERY: "false"
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: pnpm/action-setup@v4
+            - uses: pnpm/action-setup@v6
               with:
                   version: 10.33.0
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
                   cache: pnpm
@@ -397,16 +397,16 @@ jobs:
             LINUX_REPO_GPG_KEY_ID: ${{ secrets.LINUX_REPO_GPG_KEY_ID || secrets.APT_REPO_GPG_KEY_ID }}
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: pnpm/action-setup@v4
+            - uses: pnpm/action-setup@v6
               with:
                   version: 10.33.0
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
                   cache: pnpm
@@ -488,12 +488,12 @@ jobs:
             - build-linux
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
 
@@ -525,7 +525,7 @@ jobs:
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
@@ -579,12 +579,12 @@ jobs:
             LINUX_REPO_GPG_KEY_ID: ${{ secrets.LINUX_REPO_GPG_KEY_ID || secrets.APT_REPO_GPG_KEY_ID }}
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
 
@@ -795,12 +795,12 @@ jobs:
             LINUX_REPO_GPG_PASSPHRASE: ${{ secrets.LINUX_REPO_GPG_PASSPHRASE || secrets.APT_REPO_GPG_PASSPHRASE }}
             LINUX_REPO_GPG_KEY_ID: ${{ secrets.LINUX_REPO_GPG_KEY_ID || secrets.APT_REPO_GPG_KEY_ID }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
 
