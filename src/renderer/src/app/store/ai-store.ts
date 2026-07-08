@@ -2679,6 +2679,7 @@ function upsertToolActivity(
     const nextActivities = [...activity];
     nextActivities[index] = {
         ...nextActivity,
+        createdAt: existing.createdAt,
         exitCode: nextActivity.exitCode ?? existing.exitCode,
         terminalOutput: nextActivity.terminalOutput ?? existing.terminalOutput,
     };
@@ -2795,16 +2796,20 @@ function resolveIncomingSessionSnapshot(
               currentSnapshot,
           )
         : normalizedIncomingSnapshot;
+    const anchoredIncomingSnapshot = preserveCurrentToolActivityAnchors(
+        effectiveIncomingSnapshot,
+        currentSnapshot,
+    );
     const incomingTranscript =
-        buildAiSessionTranscriptModelFromSnapshot(effectiveIncomingSnapshot);
+        buildAiSessionTranscriptModelFromSnapshot(anchoredIncomingSnapshot);
     if (
         !session ||
         !currentSnapshot ||
-        currentSnapshot.sessionId !== effectiveIncomingSnapshot.sessionId
+        currentSnapshot.sessionId !== anchoredIncomingSnapshot.sessionId
     ) {
         return {
             snapshot: writeAiSessionTranscriptToSnapshot(
-                effectiveIncomingSnapshot,
+                anchoredIncomingSnapshot,
                 incomingTranscript,
             ),
             transcript: incomingTranscript,
@@ -2833,7 +2838,7 @@ function resolveIncomingSessionSnapshot(
             snapshot: writeAiSessionTranscriptToSnapshot(
                 mergeHydrationMetadataIntoCurrent(
                     currentSnapshot,
-                    effectiveIncomingSnapshot,
+                    anchoredIncomingSnapshot,
                 ),
                 currentTranscript,
             ),
@@ -2848,7 +2853,7 @@ function resolveIncomingSessionSnapshot(
     if (!shouldPreserveCurrent) {
         return {
             snapshot: writeAiSessionTranscriptToSnapshot(
-                effectiveIncomingSnapshot,
+                anchoredIncomingSnapshot,
                 incomingTranscript,
             ),
             transcript: incomingTranscript,
@@ -2863,7 +2868,7 @@ function resolveIncomingSessionSnapshot(
         );
         return {
             snapshot: writeAiSessionTranscriptToSnapshot(
-                effectiveIncomingSnapshot,
+                anchoredIncomingSnapshot,
                 nextTranscript,
             ),
             transcript: nextTranscript,
@@ -2874,12 +2879,48 @@ function resolveIncomingSessionSnapshot(
         snapshot: writeAiSessionTranscriptToSnapshot(
             mergeHydrationMetadataIntoCurrent(
                 currentSnapshot,
-                effectiveIncomingSnapshot,
+                anchoredIncomingSnapshot,
             ),
             currentTranscript,
         ),
         transcript: currentTranscript,
     };
+}
+
+function preserveCurrentToolActivityAnchors(
+    incomingSnapshot: AiSessionSnapshot,
+    currentSnapshot: AiSessionSnapshot | null,
+): AiSessionSnapshot {
+    if (!currentSnapshot || incomingSnapshot.toolActivity.length === 0) {
+        return incomingSnapshot;
+    }
+
+    const currentCreatedAtByToolId = new Map(
+        currentSnapshot.toolActivity.map((activity) => [
+            activity.id,
+            activity.createdAt,
+        ]),
+    );
+    let changed = false;
+    const toolActivity = incomingSnapshot.toolActivity.map((activity) => {
+        const currentCreatedAt = currentCreatedAtByToolId.get(activity.id);
+        if (!currentCreatedAt || currentCreatedAt === activity.createdAt) {
+            return activity;
+        }
+
+        changed = true;
+        return {
+            ...activity,
+            createdAt: currentCreatedAt,
+        };
+    });
+
+    return changed
+        ? {
+              ...incomingSnapshot,
+              toolActivity,
+          }
+        : incomingSnapshot;
 }
 
 function normalizeIncomingActivePromptEcho(
