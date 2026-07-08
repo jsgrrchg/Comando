@@ -474,6 +474,7 @@ body {
 .markdown-file-preview ol,
 .markdown-file-preview blockquote,
 .markdown-file-preview .markdown-file-preview__code-frame,
+.markdown-file-preview .markdown-file-preview__mermaid-frame,
 .markdown-file-preview pre,
 .markdown-file-preview .markdown-file-preview__table-wrap {
     margin: 0 0 1em;
@@ -640,6 +641,90 @@ body {
     border-radius: 0;
     background: transparent;
     padding-top: 0.3em;
+}
+
+.markdown-file-preview__mermaid-frame {
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-bg-tertiary) 68%, transparent);
+}
+
+.markdown-file-preview__mermaid-header {
+    display: flex;
+    min-height: 2.45em;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75em;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 58%, transparent);
+    color: var(--color-text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    font-weight: 600;
+    letter-spacing: 0;
+    padding: 0.18em 0.55em 0 1em;
+}
+
+.markdown-file-preview__mermaid-copy-button {
+    display: inline-flex;
+    min-width: 0;
+    height: 24px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.92em;
+    letter-spacing: 0;
+    padding: 0 0.35em;
+    transition:
+        color 100ms ease,
+        opacity 100ms ease;
+}
+
+.markdown-file-preview__mermaid-copy-button:hover {
+    color: var(--color-text-primary);
+}
+
+.markdown-file-preview__mermaid-copy-button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 42%, transparent);
+    outline-offset: 2px;
+}
+
+.markdown-file-preview__mermaid-body {
+    min-height: 180px;
+    overflow-x: auto;
+    padding: 1em;
+}
+
+.markdown-file-preview__mermaid-status,
+.markdown-file-preview__mermaid-error {
+    display: flex;
+    min-height: 148px;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-secondary);
+    font-size: 0.92em;
+    text-align: center;
+}
+
+.markdown-file-preview__mermaid-error {
+    color: var(--color-danger, #f87171);
+}
+
+.markdown-file-preview__mermaid-svg {
+    display: flex;
+    min-width: max-content;
+    justify-content: center;
+}
+
+.markdown-file-preview__mermaid-svg svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
 }
 
 .markdown-file-preview__table-wrap {

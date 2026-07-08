@@ -15,6 +15,15 @@ import {
 
 const mountedRoots: Root[] = [];
 const mountedContainers: HTMLDivElement[] = [];
+const mermaidThemeTestVariables = [
+    "--color-bg-primary",
+    "--color-bg-secondary",
+    "--color-bg-tertiary",
+    "--color-border",
+    "--color-danger",
+    "--color-text-primary",
+    "--color-text-secondary",
+] as const;
 
 interface DeferredRender {
     readonly promise: Promise<{ readonly svg: string }>;
@@ -25,6 +34,9 @@ interface DeferredRender {
 
 afterEach(() => {
     vi.unstubAllGlobals();
+    for (const variableName of mermaidThemeTestVariables) {
+        document.documentElement.style.removeProperty(variableName);
+    }
 
     for (const root of mountedRoots.splice(0)) {
         act(() => {
@@ -145,6 +157,16 @@ function createDeferredRender(source: string): DeferredRender {
 
 describe("MarkdownMermaidDiagram", () => {
     it("renders a valid diagram with sanitized SVG output", async () => {
+        document.documentElement.style.setProperty("--color-bg-primary", "#101820");
+        document.documentElement.style.setProperty("--color-bg-secondary", "#152030");
+        document.documentElement.style.setProperty("--color-bg-tertiary", "#1b2838");
+        document.documentElement.style.setProperty("--color-border", "#3b4c61");
+        document.documentElement.style.setProperty("--color-danger", "#ff6677");
+        document.documentElement.style.setProperty("--color-text-primary", "#f6f8fb");
+        document.documentElement.style.setProperty(
+            "--color-text-secondary",
+            "#aeb7c5",
+        );
         const mermaid = createMermaidRenderer(
             vi.fn(() =>
                 Promise.resolve({
@@ -165,7 +187,31 @@ describe("MarkdownMermaidDiagram", () => {
         );
 
         expect(loadMermaid).toHaveBeenCalledTimes(1);
-        expect(mermaid.initialize).toHaveBeenCalledTimes(1);
+        expect(mermaid.initialize).toHaveBeenCalledWith(
+            {
+                deterministicIds: true,
+                logLevel: "error",
+                maxTextSize: MERMAID_SOURCE_MAX_LENGTH,
+                secure: ["secure", "securityLevel", "startOnLoad", "maxTextSize"],
+                securityLevel: "strict",
+                startOnLoad: false,
+                theme: "base",
+                themeVariables: {
+                    background: "transparent",
+                    errorBkgColor: "#3b1d24",
+                    errorTextColor: "#ff6677",
+                    lineColor: "#aeb7c5",
+                    mainBkg: "#1b2838",
+                    nodeBorder: "#3b4c61",
+                    primaryBorderColor: "#3b4c61",
+                    primaryColor: "#1b2838",
+                    primaryTextColor: "#f6f8fb",
+                    secondaryBorderColor: "#3b4c61",
+                    secondaryColor: "#152030",
+                    tertiaryColor: "#101820",
+                },
+            },
+        );
         expect(mermaid.render).toHaveBeenCalledWith(
             expect.stringMatching(/^markdown-mermaid-/),
             "flowchart TD\nA --> B",

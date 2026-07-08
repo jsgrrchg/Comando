@@ -216,6 +216,27 @@ describe("MarkdownFilePreview", () => {
         );
     });
 
+    it("styles Mermaid diagrams as stable scrollable preview frames", () => {
+        const styles = readMarkdownPreviewStyles();
+        const mermaidBodyRule =
+            styles.match(
+                /\.markdown-file-preview__mermaid-body\s*\{[^}]*\}/,
+            )?.[0] ?? "";
+        const mermaidSvgRule =
+            styles.match(
+                /\.markdown-file-preview__mermaid-svg svg\s*\{[^}]*\}/,
+            )?.[0] ?? "";
+
+        expect(styles).toContain(".markdown-file-preview__mermaid-frame");
+        expect(styles).toContain(".markdown-file-preview__mermaid-header");
+        expect(styles).toContain(".markdown-file-preview__mermaid-copy-button");
+        expect(styles).toContain(".markdown-file-preview__mermaid-status");
+        expect(styles).toContain(".markdown-file-preview__mermaid-error");
+        expect(mermaidBodyRule).toContain("min-height: 180px");
+        expect(mermaidBodyRule).toContain("overflow-x: auto");
+        expect(mermaidSvgRule).toContain("max-width: 100%");
+    });
+
     it("renders an empty Markdown file as a stable empty preview surface", () => {
         const markup = renderStaticMarkdownFilePreview({
             content: "",

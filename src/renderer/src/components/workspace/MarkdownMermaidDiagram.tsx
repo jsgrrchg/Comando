@@ -26,6 +26,20 @@ interface MermaidInitializeConfig {
     readonly securityLevel: "strict";
     readonly startOnLoad: boolean;
     readonly theme: "base";
+    readonly themeVariables: {
+        readonly background: string;
+        readonly errorBkgColor: string;
+        readonly errorTextColor: string;
+        readonly lineColor: string;
+        readonly mainBkg: string;
+        readonly nodeBorder: string;
+        readonly primaryBorderColor: string;
+        readonly primaryColor: string;
+        readonly primaryTextColor: string;
+        readonly secondaryBorderColor: string;
+        readonly secondaryColor: string;
+        readonly tertiaryColor: string;
+    };
 }
 
 export interface MermaidRenderer {
@@ -53,19 +67,96 @@ const initialRenderState: MermaidRenderState = {
     svg: null,
 };
 
-const mermaidInitializeConfig: MermaidInitializeConfig = {
-    deterministicIds: true,
-    logLevel: "error",
-    maxTextSize: MERMAID_SOURCE_MAX_LENGTH,
-    secure: ["secure", "securityLevel", "startOnLoad", "maxTextSize"],
-    securityLevel: "strict",
-    startOnLoad: false,
-    theme: "base",
+const fallbackMermaidThemeVariables: MermaidInitializeConfig["themeVariables"] = {
+    background: "transparent",
+    errorBkgColor: "#3b1d24",
+    errorTextColor: "#f8d7da",
+    lineColor: "#8a93a5",
+    mainBkg: "#1f2430",
+    nodeBorder: "#515a6e",
+    primaryBorderColor: "#515a6e",
+    primaryColor: "#252b38",
+    primaryTextColor: "#f4f6fb",
+    secondaryBorderColor: "#515a6e",
+    secondaryColor: "#202633",
+    tertiaryColor: "#171b24",
 };
 
 function createMermaidElementId(reactId: string): string {
     const safeId = reactId.replace(/[^A-Za-z0-9_-]/g, "");
     return `markdown-mermaid-${safeId || "diagram"}`;
+}
+
+function readCssColorVariable(variableName: string, fallback: string): string {
+    if (typeof window === "undefined") {
+        return fallback;
+    }
+
+    const value = window
+        .getComputedStyle(document.documentElement)
+        .getPropertyValue(variableName)
+        .trim();
+
+    return value || fallback;
+}
+
+function createMermaidInitializeConfig(): MermaidInitializeConfig {
+    const background = readCssColorVariable(
+        "--color-bg-tertiary",
+        fallbackMermaidThemeVariables.primaryColor,
+    );
+    const borderColor = readCssColorVariable(
+        "--color-border",
+        fallbackMermaidThemeVariables.primaryBorderColor,
+    );
+    const textColor = readCssColorVariable(
+        "--color-text-primary",
+        fallbackMermaidThemeVariables.primaryTextColor,
+    );
+    const secondaryBackground = readCssColorVariable(
+        "--color-bg-secondary",
+        fallbackMermaidThemeVariables.secondaryColor,
+    );
+    const tertiaryBackground = readCssColorVariable(
+        "--color-bg-primary",
+        fallbackMermaidThemeVariables.tertiaryColor,
+    );
+    const lineColor = readCssColorVariable(
+        "--color-text-secondary",
+        fallbackMermaidThemeVariables.lineColor,
+    );
+    const errorBackground = readCssColorVariable(
+        "--color-danger-bg",
+        fallbackMermaidThemeVariables.errorBkgColor,
+    );
+    const errorTextColor = readCssColorVariable(
+        "--color-danger",
+        fallbackMermaidThemeVariables.errorTextColor,
+    );
+
+    return {
+        deterministicIds: true,
+        logLevel: "error",
+        maxTextSize: MERMAID_SOURCE_MAX_LENGTH,
+        secure: ["secure", "securityLevel", "startOnLoad", "maxTextSize"],
+        securityLevel: "strict",
+        startOnLoad: false,
+        theme: "base",
+        themeVariables: {
+            background: "transparent",
+            errorBkgColor: errorBackground,
+            errorTextColor,
+            lineColor,
+            mainBkg: background,
+            nodeBorder: borderColor,
+            primaryBorderColor: borderColor,
+            primaryColor: background,
+            primaryTextColor: textColor,
+            secondaryBorderColor: borderColor,
+            secondaryColor: secondaryBackground,
+            tertiaryColor: tertiaryBackground,
+        },
+    };
 }
 
 async function loadMermaidRenderer(): Promise<MermaidRenderer> {
@@ -78,7 +169,7 @@ function initializeMermaidRenderer(mermaid: MermaidRenderer): void {
         return;
     }
 
-    mermaid.initialize(mermaidInitializeConfig);
+    mermaid.initialize(createMermaidInitializeConfig());
     initializedMermaidRenderers.add(mermaid);
 }
 
