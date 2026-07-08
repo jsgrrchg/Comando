@@ -789,6 +789,7 @@ describe("ai-store queue", () => {
             updatedAt: "2026-04-14T00:00:01.000Z",
         });
         const updatedTool = createToolActivity({
+            createdAt: "2026-04-14T00:00:20.000Z",
             id: "tool-1",
             status: "completed",
             summary: "Tests passed",
@@ -826,7 +827,12 @@ describe("ai-store queue", () => {
             useAiStore.getState().sessions[TAB.sessionId]?.snapshot ?? null;
         expect(resyncAiSession).toHaveBeenCalledWith(TAB.sessionId);
         expect(snapshot?.status).toBe("idle");
-        expect(snapshot?.toolActivity).toEqual([updatedTool]);
+        expect(snapshot?.toolActivity).toEqual([
+            {
+                ...updatedTool,
+                createdAt: "2026-04-14T00:00:00.000Z",
+            },
+        ]);
     });
 
     it("applies a prepared runtime session snapshot from the backend", async () => {
