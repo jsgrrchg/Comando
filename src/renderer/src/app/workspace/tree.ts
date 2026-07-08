@@ -21,6 +21,7 @@ import type {
     WorkspaceTab,
     WorkspaceTerminalTab,
 } from "@shared/ipc";
+import { resolveEditorLanguage } from "@shared/editor-language";
 
 export type SplitDirection = "down" | "left" | "right" | "up";
 export type MoveDirection = "next" | "previous";
@@ -35,6 +36,8 @@ export interface RuntimeWorkspaceFileOpenLocation {
     readonly startLine: number;
 }
 
+export type MarkdownFileViewMode = "edit" | "preview";
+
 export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
     readonly document: ProjectFileDocument | null;
     readonly draftContent: string;
@@ -44,11 +47,23 @@ export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
     readonly isLoading: boolean;
     readonly isSaving: boolean;
     readonly loadError: string | null;
+    readonly markdownPreviewScrollTop?: number;
+    readonly markdownViewMode?: MarkdownFileViewMode;
     readonly pendingOpenLocation?: RuntimeWorkspaceFileOpenLocation | null;
     readonly reviewContext: RuntimeWorkspaceFileReviewContext | null;
     readonly saveError: string | null;
     readonly savedContent: string;
     readonly viewState?: MonacoEditor.ICodeEditorViewState | null;
+}
+
+export function isMarkdownFilePath(filePath: string): boolean {
+    return resolveEditorLanguage({ filePath }).id === "markdown";
+}
+
+export function getDefaultMarkdownFileViewMode(
+    filePath: string,
+): MarkdownFileViewMode | undefined {
+    return isMarkdownFilePath(filePath) ? "edit" : undefined;
 }
 
 export type RuntimeWorkspaceChatTab = WorkspaceChatTab;
@@ -115,7 +130,7 @@ export function workspaceStateFromSnapshot(
     return {
         activePaneId: snapshot.activePaneId,
         rootNode: normalizeWorkspaceNodeTabs(snapshot.rootNode),
-        tabsById,
+        tabsById: normalizeRuntimeTabsForWorkspace(tabsById),
     };
 }
 
@@ -998,6 +1013,68 @@ export function setFileTabPendingOpenLocation(
     };
 }
 
+export function setFileTabMarkdownViewMode(
+    state: WorkspaceTreeState,
+    tabId: string,
+    markdownViewMode: MarkdownFileViewMode,
+): WorkspaceTreeState {
+    const tab = state.tabsById[tabId];
+    if (!tab || tab.kind !== "file") {
+        return state;
+    }
+
+    if (!isMarkdownFilePath(tab.relativePath)) {
+        const { markdownViewMode: _markdownViewMode, ...nextTab } = tab;
+        void _markdownViewMode;
+
+        return {
+            ...state,
+            tabsById: {
+                ...state.tabsById,
+                [tabId]: nextTab,
+            },
+        };
+    }
+
+    return {
+        ...state,
+        tabsById: {
+            ...state.tabsById,
+            [tabId]: {
+                ...tab,
+                markdownViewMode,
+            },
+        },
+    };
+}
+
+export function setFileTabMarkdownPreviewScrollTop(
+    state: WorkspaceTreeState,
+    tabId: string,
+    markdownPreviewScrollTop: number,
+): WorkspaceTreeState {
+    const tab = state.tabsById[tabId];
+    if (!tab || tab.kind !== "file" || !isMarkdownFilePath(tab.relativePath)) {
+        return state;
+    }
+
+    const nextScrollTop = Math.max(0, Math.round(markdownPreviewScrollTop));
+    if ((tab.markdownPreviewScrollTop ?? 0) === nextScrollTop) {
+        return state;
+    }
+
+    return {
+        ...state,
+        tabsById: {
+            ...state.tabsById,
+            [tabId]: {
+                ...tab,
+                markdownPreviewScrollTop: nextScrollTop,
+            },
+        },
+    };
+}
+
 export function setFileTabViewState(
     state: WorkspaceTreeState,
     tabId: string,
@@ -1335,10 +1412,18 @@ function updateMatchingFileTabs(
 
 function stripRuntimeTab(tab: RuntimeWorkspaceTab): WorkspaceTab {
     if (tab.kind === "file") {
+        const markdownViewMode =
+            isMarkdownFilePath(tab.relativePath) &&
+            (tab.markdownViewMode === "preview" ||
+                tab.markdownViewMode === "edit")
+                ? tab.markdownViewMode
+                : undefined;
+
         return {
             createdAt: tab.createdAt,
             id: tab.id,
             kind: tab.kind,
+            ...(markdownViewMode ? { markdownViewMode } : {}),
             projectId: tab.projectId,
             relativePath: tab.relativePath,
             title: tab.title,
@@ -1376,6 +1461,33 @@ function stripRuntimeTab(tab: RuntimeWorkspaceTab): WorkspaceTab {
     }
 
     return tab;
+}
+
+function normalizeRuntimeTabsForWorkspace(
+    tabsById: Record<string, RuntimeWorkspaceTab>,
+): Record<string, RuntimeWorkspaceTab> {
+    return Object.fromEntries(
+        Object.entries(tabsById).map(([tabId, tab]) => {
+            if (tab.kind !== "file") {
+                return [tabId, tab];
+            }
+
+            if (!isMarkdownFilePath(tab.relativePath)) {
+                const { markdownViewMode: _markdownViewMode, ...nextTab } = tab;
+                void _markdownViewMode;
+                return [tabId, nextTab];
+            }
+
+            return [
+                tabId,
+                {
+                    ...tab,
+                    markdownViewMode:
+                        tab.markdownViewMode === "preview" ? "preview" : "edit",
+                },
+            ];
+        }),
+    ) as Record<string, RuntimeWorkspaceTab>;
 }
 
 function sanitizeNodeForSnapshot(

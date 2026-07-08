@@ -19,10 +19,20 @@ interface TextContextMenuPayload {
     readonly selectedText: string;
 }
 
+interface TextContextMenuLabels {
+    readonly copyDraft?: string;
+    readonly copyFallback?: string;
+    readonly copySelection?: string;
+    readonly cutSelection?: string;
+    readonly paste?: string;
+    readonly selectAll?: string;
+}
+
 interface UseTextContextMenuOptions {
     readonly containerRef: RefObject<HTMLElement | null>;
     readonly editable?: boolean;
     readonly getFallbackCopyText?: () => string;
+    readonly labels?: TextContextMenuLabels;
     readonly onContentChanged?: () => void;
     readonly onPasteText?: (text: string) => void | Promise<void>;
 }
@@ -172,6 +182,7 @@ export function useTextContextMenu<T extends HTMLElement>({
     containerRef,
     editable = false,
     getFallbackCopyText,
+    labels,
     onContentChanged,
     onPasteText,
 }: UseTextContextMenuOptions): UseTextContextMenuResult<T> {
@@ -294,15 +305,15 @@ export function useTextContextMenu<T extends HTMLElement>({
         const copyText = selectedText || fallbackCopyText;
         const copyLabel =
             selectedText.length > 0
-                ? "Copy selection"
+                ? (labels?.copySelection ?? "Copy selection")
                 : editable
-                  ? "Copy draft"
-                  : "Copy message";
+                  ? (labels?.copyDraft ?? "Copy draft")
+                  : (labels?.copyFallback ?? "Copy message");
         const entries: ContextMenuEntry[] = [];
 
         if (editable) {
             entries.push({
-                label: "Cut selection",
+                label: labels?.cutSelection ?? "Cut selection",
                 action: handleCutSelection,
                 disabled: selectedText.length === 0,
             });
@@ -316,7 +327,7 @@ export function useTextContextMenu<T extends HTMLElement>({
 
         if (editable) {
             entries.push({
-                label: "Paste",
+                label: labels?.paste ?? "Paste",
                 action: handlePasteFromClipboard,
                 disabled: !onPasteText,
             });
@@ -324,7 +335,7 @@ export function useTextContextMenu<T extends HTMLElement>({
 
         entries.push({ type: "separator" });
         entries.push({
-            label: "Select all",
+            label: labels?.selectAll ?? "Select all",
             action: handleSelectAll,
         });
 
@@ -336,6 +347,7 @@ export function useTextContextMenu<T extends HTMLElement>({
         handleCutSelection,
         handlePasteFromClipboard,
         handleSelectAll,
+        labels,
         menu,
         onPasteText,
     ]);

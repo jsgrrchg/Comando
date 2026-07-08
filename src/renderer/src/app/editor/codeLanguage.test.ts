@@ -1,13 +1,43 @@
+import { highlightTree, tagHighlighter, tags } from "@lezer/highlight";
 import { describe, expect, it } from "vitest";
 
 import {
     extractFenceLanguageToken,
     loadCodeLanguageSupportByPath,
     loadCodeLanguageSupportForPath,
+    loadMarkdownCodeLanguageSupport,
     resolveCodeLanguageKey,
     resolveCodeLanguageKeyFromPath,
     resolveMarkdownCodeLanguageKey,
 } from "./codeLanguage";
+
+const shellTestHighlighter = tagHighlighter([
+    {
+        tag: [
+            tags.keyword,
+            tags.function(tags.variableName),
+            tags.standard(tags.variableName),
+            tags.attributeName,
+            tags.comment,
+        ],
+        class: "highlighted",
+    },
+]);
+
+function collectHighlightedShellTokens(text: string) {
+    return loadMarkdownCodeLanguageSupport("bash").then((support) => {
+        if (!support) {
+            throw new Error("Expected bash fence language support to load.");
+        }
+
+        const tokens: string[] = [];
+        const tree = support.language.parser.parse(text);
+        highlightTree(tree, shellTestHighlighter, (from, to) => {
+            tokens.push(text.slice(from, to));
+        });
+        return tokens;
+    });
+}
 
 describe("extractFenceLanguageToken", () => {
     it("extracts simple fenced language tokens", () => {
@@ -162,6 +192,20 @@ describe("resolveCodeLanguageKey", () => {
 });
 
 describe("loadCodeLanguageSupportForPath", () => {
+    it("highlights common bash commands in markdown fences", async () => {
+        const tokens = await collectHighlightedShellTokens(
+            [
+                "pnpm add react-markdown remark-gfm rehype-sanitize",
+                "git status --short | grep README # inspect changes",
+            ].join("\n"),
+        );
+
+        expect(tokens).toContain("pnpm");
+        expect(tokens).toContain("git");
+        expect(tokens).toContain("--short");
+        expect(tokens).toContain("# inspect changes");
+    });
+
     it("reuses the shared cache for repeated path loads", async () => {
         const first = await loadCodeLanguageSupportForPath(
             "/workspace/src/example.ts",

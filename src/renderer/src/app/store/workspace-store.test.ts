@@ -455,6 +455,301 @@ describe("workspace file opening", () => {
         expect(openProjectFileMock).not.toHaveBeenCalled();
     });
 
+    it("opens Markdown file tabs in edit mode by default", async () => {
+        await useWorkspaceStore
+            .getState()
+            .openFileTab("project-1", "README.md", null);
+
+        const state = useWorkspaceStore.getState();
+        const openedTab = Object.values(state.tabsById).find(
+            (tab) => tab.kind === "file" && tab.relativePath === "README.md",
+        );
+
+        expect(openedTab).toMatchObject({
+            kind: "file",
+            markdownViewMode: "edit",
+            relativePath: "README.md",
+        });
+    });
+
+    it("updates Markdown preview mode only for the requested file tab", async () => {
+        const firstTab = createWorkspaceFileTab("file-tab-1", "README.md");
+        const secondTab = createWorkspaceFileTab("file-tab-2", "CHANGELOG.md");
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            rootNode: {
+                activeTabId: "file-tab-1",
+                id: "pane-root",
+                tabIds: ["file-tab-1", "file-tab-2"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-tab-1": {
+                    ...firstTab,
+                    markdownViewMode: "edit",
+                },
+                "file-tab-2": {
+                    ...secondTab,
+                    markdownViewMode: "edit",
+                },
+            },
+        }));
+
+        useWorkspaceStore
+            .getState()
+            .updateFileMarkdownViewMode("file-tab-1", "preview");
+
+        const state = useWorkspaceStore.getState();
+        expect(state.tabsById["file-tab-1"]).toMatchObject({
+            kind: "file",
+            markdownViewMode: "preview",
+            relativePath: "README.md",
+        });
+        expect(state.tabsById["file-tab-2"]).toMatchObject({
+            kind: "file",
+            markdownViewMode: "edit",
+            relativePath: "CHANGELOG.md",
+        });
+
+        await flushWorkspacePersistenceForTests();
+        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+        const snapshot = saveWorkspaceSnapshotMock.mock.calls.at(-1)?.[0];
+        expect(snapshot?.tabs).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    kind: "file",
+                    markdownViewMode: "preview",
+                    relativePath: "README.md",
+                }),
+                expect.objectContaining({
+                    kind: "file",
+                    markdownViewMode: "edit",
+                    relativePath: "CHANGELOG.md",
+                }),
+            ]),
+        );
+    });
+
+    it("updates Markdown preview scroll only at runtime without persisting", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            rootNode: {
+                activeTabId: "file-tab-1",
+                id: "pane-root",
+                tabIds: ["file-tab-1", "file-tab-2"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-tab-1": {
+                    ...createWorkspaceFileTab("file-tab-1", "README.md"),
+                    markdownPreviewScrollTop: 100,
+                    markdownViewMode: "preview",
+                },
+                "file-tab-2": {
+                    ...createWorkspaceFileTab("file-tab-2", "README.md"),
+                    markdownPreviewScrollTop: 300,
+                    markdownViewMode: "preview",
+                },
+            },
+        }));
+
+        useWorkspaceStore
+            .getState()
+            .updateFileMarkdownPreviewScrollTop("file-tab-1", 421.6);
+
+        const state = useWorkspaceStore.getState();
+        expect(state.tabsById["file-tab-1"]).toMatchObject({
+            kind: "file",
+            markdownPreviewScrollTop: 422,
+        });
+        expect(state.tabsById["file-tab-2"]).toMatchObject({
+            kind: "file",
+            markdownPreviewScrollTop: 300,
+        });
+
+        await flushWorkspacePersistenceForTests();
+        expect(saveWorkspaceSnapshotMock).not.toHaveBeenCalled();
+    });
+
+    it("does not keep Markdown preview mode on non-Markdown file tabs", () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            rootNode: {
+                activeTabId: "file-tab-1",
+                id: "pane-root",
+                tabIds: ["file-tab-1"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-tab-1": {
+                    ...createWorkspaceFileTab("file-tab-1", "src/app.ts"),
+                    markdownViewMode: "preview",
+                },
+            },
+        }));
+
+        useWorkspaceStore
+            .getState()
+            .updateFileMarkdownViewMode("file-tab-1", "preview");
+
+        const tab = useWorkspaceStore.getState().tabsById["file-tab-1"];
+        expect(tab).toMatchObject({
+            kind: "file",
+            relativePath: "src/app.ts",
+        });
+        expect(tab).not.toHaveProperty("markdownViewMode");
+    });
+
+    it("keeps Markdown preview mode when reselecting an existing tab", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            rootNode: {
+                activeTabId: "helper-tab",
+                id: "pane-root",
+                tabIds: ["file-tab-1", "helper-tab"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-tab-1": {
+                    ...createWorkspaceFileTab("file-tab-1", "README.md"),
+                    markdownViewMode: "preview",
+                },
+                "helper-tab": createWorkspaceChatTab(
+                    "helper-tab",
+                    "session-helper",
+                    "codex",
+                ),
+            },
+        }));
+
+        await useWorkspaceStore
+            .getState()
+            .openFileTab("project-1", "README.md", null);
+
+        const state = useWorkspaceStore.getState();
+        const tab = state.tabsById["file-tab-1"];
+        const pane = state.rootNode.type === "pane" ? state.rootNode : null;
+
+        expect(pane?.activeTabId).toBe("file-tab-1");
+        expect(tab).toMatchObject({
+            kind: "file",
+            markdownViewMode: "preview",
+            relativePath: "README.md",
+        });
+    });
+
+    it("switches an existing Markdown preview tab to edit when opening a line", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            rootNode: {
+                activeTabId: "helper-tab",
+                id: "pane-root",
+                tabIds: ["file-tab-1", "helper-tab"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-tab-1": {
+                    ...createWorkspaceFileTab("file-tab-1", "README.md"),
+                    markdownViewMode: "preview",
+                },
+                "helper-tab": createWorkspaceChatTab(
+                    "helper-tab",
+                    "session-helper",
+                    "codex",
+                ),
+            },
+        }));
+
+        await useWorkspaceStore
+            .getState()
+            .openFileTab("project-1", "README.md", null, null, null, undefined, {
+                endLine: null,
+                startLine: 12,
+            });
+
+        const state = useWorkspaceStore.getState();
+        const tab = state.tabsById["file-tab-1"];
+        const pane = state.rootNode.type === "pane" ? state.rootNode : null;
+
+        expect(pane?.activeTabId).toBe("file-tab-1");
+        expect(tab).toMatchObject({
+            kind: "file",
+            markdownViewMode: "edit",
+            pendingOpenLocation: {
+                endLine: null,
+                startLine: 12,
+            },
+            relativePath: "README.md",
+        });
+    });
+
+    it("opens duplicate Markdown tabs in edit mode when targeting a line", async () => {
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-right",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: "file-tab-1",
+                        id: "pane-left",
+                        tabIds: ["file-tab-1"],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: null,
+                        id: "pane-right",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                "file-tab-1": {
+                    ...createWorkspaceFileTab("file-tab-1", "README.md"),
+                    markdownViewMode: "preview",
+                },
+            },
+        }));
+
+        await useWorkspaceStore
+            .getState()
+            .openFileTab(
+                "project-1",
+                "README.md",
+                null,
+                null,
+                "pane-right",
+                undefined,
+                {
+                    endLine: 8,
+                    startLine: 4,
+                },
+            );
+
+        const state = useWorkspaceStore.getState();
+        const rightPane = findWorkspacePane(state.rootNode, "pane-right");
+        const duplicateTabId = rightPane?.activeTabId;
+        const duplicateTab = duplicateTabId
+            ? state.tabsById[duplicateTabId]
+            : null;
+
+        expect(duplicateTabId).not.toBe("file-tab-1");
+        expect(duplicateTab).toMatchObject({
+            kind: "file",
+            markdownViewMode: "edit",
+            pendingOpenLocation: {
+                endLine: 8,
+                startLine: 4,
+            },
+            relativePath: "README.md",
+        });
+    });
+
     it("opens a singleton project diff tab per project and worktree", async () => {
         await useWorkspaceStore
             .getState()
@@ -835,6 +1130,7 @@ describe("workspace file opening", () => {
                     isSaving: false,
                     kind: "file",
                     loadError: null,
+                    markdownPreviewScrollTop: 888,
                     projectId: "project-1",
                     relativePath: "src/app.ts",
                     reviewContext: null,
@@ -915,6 +1211,9 @@ describe("workspace file opening", () => {
             savedContent: "export const value = 1;\n",
             worktreeId: "worktree-1",
         });
+        expect(
+            duplicatedTabId ? state.tabsById[duplicatedTabId] : null,
+        ).not.toHaveProperty("markdownPreviewScrollTop");
     });
 
     it("opens chat images in a transient file tab and omits them from persisted snapshots", async () => {

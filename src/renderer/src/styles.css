@@ -416,6 +416,294 @@ body {
     color: inherit;
 }
 
+.markdown-file-preview {
+    width: min(100%, 900px);
+    min-height: 100%;
+    margin: 0 auto;
+    padding: clamp(18px, 4vw, 42px);
+    color: var(--color-text-primary);
+    line-height: 1.62;
+    overflow-wrap: anywhere;
+}
+
+.markdown-file-preview > *:first-child {
+    margin-top: 0;
+}
+
+.markdown-file-preview > *:last-child {
+    margin-bottom: 0;
+}
+
+.markdown-file-preview h1,
+.markdown-file-preview h2,
+.markdown-file-preview h3,
+.markdown-file-preview h4,
+.markdown-file-preview h5,
+.markdown-file-preview h6 {
+    margin: 1.6em 0 0.7em;
+    color: var(--code-color-markup);
+    font-weight: 700;
+    letter-spacing: 0;
+    line-height: 1.22;
+}
+
+.markdown-file-preview h1 {
+    padding-bottom: 0.36em;
+    border-bottom: 1px solid var(--color-border);
+    font-size: 1.78em;
+}
+
+.markdown-file-preview h2 {
+    padding-bottom: 0.32em;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+    font-size: 1.42em;
+}
+
+.markdown-file-preview h3 {
+    font-size: 1.17em;
+}
+
+.markdown-file-preview h4,
+.markdown-file-preview h5,
+.markdown-file-preview h6 {
+    font-size: 1em;
+}
+
+.markdown-file-preview p,
+.markdown-file-preview ul,
+.markdown-file-preview ol,
+.markdown-file-preview blockquote,
+.markdown-file-preview .markdown-file-preview__code-frame,
+.markdown-file-preview pre,
+.markdown-file-preview .markdown-file-preview__table-wrap {
+    margin: 0 0 1em;
+}
+
+.markdown-file-preview ul,
+.markdown-file-preview ol {
+    padding-left: 1.55em;
+}
+
+.markdown-file-preview ul {
+    list-style-type: disc;
+}
+
+.markdown-file-preview ol {
+    list-style-type: decimal;
+}
+
+.markdown-file-preview ul ul {
+    list-style-type: circle;
+}
+
+.markdown-file-preview ul ul ul {
+    list-style-type: square;
+}
+
+.markdown-file-preview ol ol {
+    list-style-type: lower-alpha;
+}
+
+.markdown-file-preview ol ol ol {
+    list-style-type: lower-roman;
+}
+
+.markdown-file-preview li {
+    margin: 0.28em 0;
+    padding-left: 0.15em;
+}
+
+.markdown-file-preview li:has(> .markdown-file-preview__checkbox) {
+    list-style-type: none;
+}
+
+.markdown-file-preview li > ul,
+.markdown-file-preview li > ol {
+    margin: 0.35em 0;
+}
+
+.markdown-file-preview a {
+    color: var(--color-accent);
+    text-decoration: none;
+    text-underline-offset: 0.18em;
+}
+
+.markdown-file-preview a:hover {
+    text-decoration: underline;
+}
+
+.markdown-file-preview a:focus-visible {
+    border-radius: 4px;
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 42%, transparent);
+    outline-offset: 2px;
+}
+
+.markdown-file-preview blockquote {
+    padding: 0.1em 0 0.1em 1em;
+    border-left: 3px solid color-mix(in srgb, var(--color-accent) 70%, transparent);
+    color: var(--color-text-secondary);
+}
+
+.markdown-file-preview blockquote > :last-child {
+    margin-bottom: 0;
+}
+
+.markdown-file-preview hr {
+    height: 1px;
+    margin: 1.6em 0;
+    border: 0;
+    background: var(--color-border);
+}
+
+.markdown-file-preview :not(pre) > code {
+    border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--color-bg-tertiary) 74%, transparent);
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    padding: 0.08em 0.34em;
+    white-space: break-spaces;
+}
+
+.markdown-file-preview__code-block {
+    max-width: 100%;
+    overflow: auto;
+    border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-bg-tertiary) 68%, transparent);
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    line-height: 1.55;
+    padding: 0.85em 1em;
+}
+
+.markdown-file-preview__code-block code {
+    display: block;
+    min-width: max-content;
+    font-family: inherit;
+}
+
+.markdown-file-preview__code-frame {
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-bg-tertiary) 68%, transparent);
+}
+
+.markdown-file-preview__code-header {
+    display: flex;
+    min-height: 2.45em;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75em;
+    color: var(--color-text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    font-weight: 600;
+    letter-spacing: 0;
+    padding: 0.18em 0.55em 0 1em;
+}
+
+.markdown-file-preview__copy-button {
+    display: inline-flex;
+    width: 20px;
+    height: 20px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    opacity: 0.72;
+    padding: 0;
+    transition:
+        color 100ms ease,
+        opacity 100ms ease;
+}
+
+.markdown-file-preview__copy-button:hover {
+    color: var(--color-text-primary);
+    opacity: 1;
+}
+
+.markdown-file-preview__copy-button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 42%, transparent);
+    outline-offset: 2px;
+}
+
+.markdown-file-preview__code-frame > .markdown-file-preview__code-block {
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    padding-top: 0.3em;
+}
+
+.markdown-file-preview__table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+    border-radius: 6px;
+}
+
+.markdown-file-preview table {
+    width: 100%;
+    min-width: max-content;
+    border-collapse: collapse;
+    font-size: 0.94em;
+}
+
+.markdown-file-preview th,
+.markdown-file-preview td {
+    padding: 0.55em 0.75em;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+    text-align: left;
+    vertical-align: top;
+}
+
+.markdown-file-preview th {
+    background: color-mix(in srgb, var(--color-bg-tertiary) 78%, transparent);
+    color: var(--color-text-primary);
+    font-weight: 700;
+}
+
+.markdown-file-preview tr:last-child td {
+    border-bottom: 0;
+}
+
+.markdown-file-preview__checkbox {
+    width: 0.95em;
+    height: 0.95em;
+    margin: 0 0.42em 0.12em -1.2em;
+    accent-color: var(--color-accent);
+    vertical-align: middle;
+}
+
+.markdown-file-preview__blocked-image {
+    display: inline-flex;
+    max-width: 100%;
+    align-items: center;
+    border: 1px dashed color-mix(in srgb, var(--color-border-strong) 76%, transparent);
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--color-bg-tertiary) 56%, transparent);
+    color: var(--color-text-secondary);
+    font-size: 0.88em;
+    padding: 0.45em 0.65em;
+}
+
+.markdown-file-preview__blocked-image::before {
+    content: "Image blocked";
+}
+
+@media (max-width: 720px) {
+    .markdown-file-preview {
+        padding: 18px;
+    }
+}
+
 .cm-static-token-comment {
     color: var(--code-color-comment);
     font-style: italic;

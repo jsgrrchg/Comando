@@ -33,6 +33,8 @@ import {
     completeFileSave,
     createDefaultWorkspaceState,
     findPaneById,
+    getDefaultMarkdownFileViewMode,
+    isMarkdownFilePath,
     moveActiveTabBetweenPanes,
     moveTabToPaneAtIndex,
     moveTabToSplit,
@@ -44,12 +46,14 @@ import {
     resizeSplit,
     selectAdjacentPaneTab,
     setFileTabExternalChange,
+    setFileTabMarkdownPreviewScrollTop,
     setFileTabPendingOpenLocation,
     setFileTabViewState,
     setFileTabReviewContext,
     selectPaneTab,
     setFileTabLoading,
     setFileTabLoadError,
+    setFileTabMarkdownViewMode,
     setFileTabSaving,
     splitPaneInDirection,
     unpinTabInPane,
@@ -69,6 +73,7 @@ import {
     type RuntimeWorkspaceFileOpenLocation,
     type RuntimeWorkspaceFileReviewContext,
     type RuntimeWorkspaceFileTab,
+    type MarkdownFileViewMode,
     type RuntimeWorkspaceReviewTab,
     type RuntimeWorkspaceTab,
     type RuntimeWorkspaceTerminalTab,
@@ -322,6 +327,14 @@ interface WorkspaceStore extends WorkspaceTreeState {
     updateFilePendingOpenLocation: (
         tabId: string,
         pendingOpenLocation: RuntimeWorkspaceFileOpenLocation | null,
+    ) => void;
+    updateFileMarkdownViewMode: (
+        tabId: string,
+        markdownViewMode: MarkdownFileViewMode,
+    ) => void;
+    updateFileMarkdownPreviewScrollTop: (
+        tabId: string,
+        markdownPreviewScrollTop: number,
     ) => void;
     updateFileViewState: (
         tabId: string,
@@ -1143,6 +1156,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     ) => {
         try {
             const pendingOpenLocation = openLocation ?? null;
+            const shouldRevealOpenLocationInEditor =
+                pendingOpenLocation !== null && isMarkdownFilePath(relativePath);
             const trackedFiles = collectPendingTrackedFilesFromSessions(
                 useAiStore.getState().sessions,
             );
@@ -1184,30 +1199,37 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
                 set((state) => ({
                     ...setFileTabPendingOpenLocation(
-                        setFileTabReviewContext(
-                            paneId === resolvedPaneId
-                                ? selectPaneTab(
-                                      state,
-                                      paneId,
-                                      existingTabInResolvedPane.id,
-                                  )
-                                : restoreSourcePaneActiveTabAfterMove(
-                                      moveTabToPaneAtIndex(
-                                          state,
-                                          existingTabInResolvedPane.id,
-                                          paneId,
-                                          resolvedPaneId,
-                                          Number.POSITIVE_INFINITY,
-                                      ),
-                                      paneId,
-                                      getSourcePaneFallbackTabIdAfterMove(
+                        setFileTabMarkdownViewMode(
+                            setFileTabReviewContext(
+                                paneId === resolvedPaneId
+                                    ? selectPaneTab(
                                           state,
                                           paneId,
                                           existingTabInResolvedPane.id,
+                                      )
+                                    : restoreSourcePaneActiveTabAfterMove(
+                                          moveTabToPaneAtIndex(
+                                              state,
+                                              existingTabInResolvedPane.id,
+                                              paneId,
+                                              resolvedPaneId,
+                                              Number.POSITIVE_INFINITY,
+                                          ),
+                                          paneId,
+                                          getSourcePaneFallbackTabIdAfterMove(
+                                              state,
+                                              paneId,
+                                              existingTabInResolvedPane.id,
+                                          ),
                                       ),
-                                  ),
+                                existingTabInResolvedPane.id,
+                                nextReviewContext,
+                            ),
                             existingTabInResolvedPane.id,
-                            nextReviewContext,
+                            shouldRevealOpenLocationInEditor
+                                ? "edit"
+                                : (existingTabInResolvedPane.markdownViewMode ??
+                                      "edit"),
                         ),
                         existingTabInResolvedPane.id,
                         pendingOpenLocation,
@@ -1242,10 +1264,22 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     requestedReviewContext: reviewContext,
                     trackedFiles,
                 });
+                const {
+                    markdownPreviewScrollTop: _markdownPreviewScrollTop,
+                    ...sourceTabWithoutPreviewScroll
+                } = sourceTab;
+                void _markdownPreviewScrollTop;
+                const markdownViewModeForDuplicatedTab =
+                    shouldRevealOpenLocationInEditor
+                        ? "edit"
+                        : getDefaultMarkdownFileViewMode(relativePath);
                 const duplicatedTab: RuntimeWorkspaceFileTab = {
-                    ...sourceTab,
+                    ...sourceTabWithoutPreviewScroll,
                     createdAt: new Date().toISOString(),
                     id: crypto.randomUUID(),
+                    ...(markdownViewModeForDuplicatedTab
+                        ? { markdownViewMode: markdownViewModeForDuplicatedTab }
+                        : {}),
                     pendingOpenLocation,
                     reviewContext: nextReviewContext,
                     viewState: sourceTab.viewState ?? null,
@@ -1286,6 +1320,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 isSaving: false,
                 kind: "file",
                 loadError: null,
+                ...(getDefaultMarkdownFileViewMode(relativePath)
+                    ? {
+                          markdownViewMode:
+                              getDefaultMarkdownFileViewMode(relativePath),
+                      }
+                    : {}),
                 pendingOpenLocation,
                 reviewContext: resolveFileTabReviewContext({
                     relativePath,
@@ -1411,8 +1451,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
         const sourceTab = existingTabs[0] ?? null;
         if (sourceTab) {
+            const {
+                markdownPreviewScrollTop: _markdownPreviewScrollTop,
+                ...sourceTabWithoutPreviewScroll
+            } = sourceTab;
+            void _markdownPreviewScrollTop;
             const duplicatedTab: RuntimeWorkspaceFileTab = {
-                ...sourceTab,
+                ...sourceTabWithoutPreviewScroll,
                 ...chatImageTab,
                 createdAt: new Date().toISOString(),
                 id: crypto.randomUUID(),
@@ -1885,6 +1930,26 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 pendingOpenLocation,
             ),
         }));
+    },
+
+    updateFileMarkdownViewMode: (tabId, markdownViewMode) => {
+        set((state) => ({
+            ...setFileTabMarkdownViewMode(state, tabId, markdownViewMode),
+        }));
+        void persistWorkspaceState(get);
+    },
+
+    updateFileMarkdownPreviewScrollTop: (
+        tabId,
+        markdownPreviewScrollTop,
+    ) => {
+        set((state) =>
+            setFileTabMarkdownPreviewScrollTop(
+                state,
+                tabId,
+                markdownPreviewScrollTop,
+            ),
+        );
     },
 
     updateSessionTabTitles: async (sessionId, title) => {

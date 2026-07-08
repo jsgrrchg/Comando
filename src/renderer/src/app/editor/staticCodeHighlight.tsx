@@ -47,6 +47,7 @@ const staticTokenHighlighter = tagHighlighter([
             tags.function(tags.propertyName),
             tags.function(tags.className),
             tags.function(tags.labelName),
+            tags.standard(tags.variableName),
         ],
         class: "cm-static-token-function",
     },
