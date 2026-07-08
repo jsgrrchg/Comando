@@ -117,7 +117,7 @@ jobs:
 
             - name: Upload macOS package artifacts
               if: failure()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: macos-universal-smoke-dist
                   path: build/macos-package/project/dist/*
@@ -166,7 +166,7 @@ jobs:
 
             - name: Upload Windows package artifacts
               if: failure()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: windows-x64-smoke-dist
                   path: dist/*
@@ -215,7 +215,7 @@ jobs:
 
             - name: Upload Windows arm64 package artifacts
               if: failure()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: windows-arm64-smoke-dist
                   path: dist/*
@@ -281,7 +281,7 @@ jobs:
 
             - name: Upload Linux package artifacts
               if: failure()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: linux-${{ matrix.arch }}-smoke-dist
                   path: |
