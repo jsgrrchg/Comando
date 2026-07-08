@@ -24,6 +24,7 @@ import { HighlightedCodeText } from "@renderer/app/editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "@renderer/app/editor/useCodeLanguageSupport";
 import { openExternalUrl } from "@renderer/app/utils/external-url";
 import { useTextContextMenu } from "@renderer/components/context-menu/useTextContextMenu";
+import { MarkdownMermaidDiagram } from "./MarkdownMermaidDiagram";
 
 interface MarkdownFilePreviewProps {
     readonly content: string;
@@ -465,6 +466,10 @@ function MarkdownPreviewPre({
 
     if (!language) {
         return codeBlock;
+    }
+
+    if (language.toLowerCase() === "mermaid") {
+        return <MarkdownMermaidDiagram source={codeText} />;
     }
 
     return (
