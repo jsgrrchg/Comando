@@ -32,12 +32,12 @@ jobs:
         env:
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
 
@@ -70,7 +70,7 @@ jobs:
                   test -s release-body.md
 
             - name: Upload release body
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: release-body-${{ env.RELEASE_TAG }}
                   path: release-body.md
@@ -83,16 +83,16 @@ jobs:
         env:
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: pnpm/action-setup@v4
+            - uses: pnpm/action-setup@v6
               with:
                   version: 10.33.0
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
                   cache: pnpm
@@ -191,16 +191,16 @@ jobs:
             CSC_LINK: ${{ secrets.CSC_LINK }}
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: pnpm/action-setup@v4
+            - uses: pnpm/action-setup@v6
               with:
                   version: 10.33.0
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
                   cache: pnpm
@@ -281,7 +281,7 @@ jobs:
               run: pnpm run package:mac -- --config.forceCodeSigning=true
 
             - name: Stage macOS release assets
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: release-assets-macos-universal
                   path: |
@@ -299,16 +299,16 @@ jobs:
             CSC_IDENTITY_AUTO_DISCOVERY: "false"
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: pnpm/action-setup@v4
+            - uses: pnpm/action-setup@v6
               with:
                   version: 10.33.0
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
                   cache: pnpm
@@ -325,7 +325,7 @@ jobs:
               run: pnpm run package:win:x64 -- --publish never
 
             - name: Stage Windows x64 release assets
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: release-assets-windows-x64
                   path: |
@@ -342,16 +342,16 @@ jobs:
             CSC_IDENTITY_AUTO_DISCOVERY: "false"
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: pnpm/action-setup@v4
+            - uses: pnpm/action-setup@v6
               with:
                   version: 10.33.0
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
                   cache: pnpm
@@ -368,7 +368,7 @@ jobs:
               run: pnpm run package:win:arm64 -- --publish never
 
             - name: Stage Windows arm64 release assets
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: release-assets-windows-arm64
                   path: |
@@ -397,16 +397,16 @@ jobs:
             LINUX_REPO_GPG_KEY_ID: ${{ secrets.LINUX_REPO_GPG_KEY_ID || secrets.APT_REPO_GPG_KEY_ID }}
             NODE_OPTIONS: --max-old-space-size=8192
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: pnpm/action-setup@v4
+            - uses: pnpm/action-setup@v6
               with:
                   version: 10.33.0
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
                   cache: pnpm
@@ -455,7 +455,7 @@ jobs:
                     --require-signature
 
             - name: Stage Linux release assets
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: release-assets-linux-${{ matrix.arch }}
                   path: |
@@ -468,7 +468,7 @@ jobs:
 
             - name: Upload Linux package artifacts on failure
               if: failure()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: release-linux-${{ matrix.arch }}-failure-dist
                   path: |
@@ -488,17 +488,17 @@ jobs:
             - build-linux
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
 
             - name: Download staged release assets
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v7
               with:
                   pattern: release-assets-*
                   path: .artifacts/release-assets
@@ -525,19 +525,19 @@ jobs:
         env:
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
             - name: Download release body
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v7
               with:
                   name: release-body-${{ needs.prepare.outputs.tag }}
                   path: .release
 
             - name: Download staged release assets
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v7
               with:
                   pattern: release-assets-*
                   path: .artifacts/release-assets
@@ -579,12 +579,12 @@ jobs:
             LINUX_REPO_GPG_KEY_ID: ${{ secrets.LINUX_REPO_GPG_KEY_ID || secrets.APT_REPO_GPG_KEY_ID }}
             GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
 
@@ -594,7 +594,7 @@ jobs:
                   sudo apt-get install -y ca-certificates dpkg gnupg gzip
 
             - name: Download staged Linux release assets
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v7
               with:
                   pattern: release-assets-linux-*
                   path: .artifacts/linux
@@ -795,12 +795,12 @@ jobs:
             LINUX_REPO_GPG_PASSPHRASE: ${{ secrets.LINUX_REPO_GPG_PASSPHRASE || secrets.APT_REPO_GPG_PASSPHRASE }}
             LINUX_REPO_GPG_KEY_ID: ${{ secrets.LINUX_REPO_GPG_KEY_ID || secrets.APT_REPO_GPG_KEY_ID }}
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v6
               with:
                   fetch-depth: 0
                   ref: ${{ env.RELEASE_TAG }}
 
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v6
               with:
                   node-version: 22
 
@@ -810,7 +810,7 @@ jobs:
                   sudo apt-get install -y createrepo-c gnupg gzip rpm
 
             - name: Download staged Linux release assets
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v7
               with:
                   pattern: release-assets-linux-*
                   path: .artifacts/linux

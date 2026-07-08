@@ -305,6 +305,8 @@ pnpm release:win:arm64
 pnpm release:linux
 ```
 
+GitHub-hosted release and package smoke workflows use JavaScript actions that require runners compatible with the GitHub Actions Node 24 runtime.
+
 ## Versioning
 
 Comando follows Semantic Versioning. During the `0.x` phase, minor bumps may include breaking changes.
