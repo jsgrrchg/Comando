@@ -20,10 +20,24 @@ const mermaidThemeTestVariables = [
     "--color-bg-secondary",
     "--color-bg-tertiary",
     "--color-border",
+    "--color-danger-bg",
     "--color-danger",
     "--color-text-primary",
     "--color-text-secondary",
 ] as const;
+
+type MockCallTracker = {
+    readonly mock: {
+        readonly calls: readonly (readonly unknown[])[];
+    };
+};
+
+interface MermaidRendererInitializeConfig {
+    readonly themeVariables: {
+        readonly mainBkg: string;
+        readonly primaryColor: string;
+    };
+}
 
 interface DeferredRender {
     readonly promise: Promise<{ readonly svg: string }>;
@@ -135,6 +149,23 @@ async function waitForText(
     throw new Error(`Expected text "${text}" to render.`);
 }
 
+async function waitForMockCallCount(
+    mockFn: MockCallTracker,
+    callCount: number,
+): Promise<void> {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (mockFn.mock.calls.length >= callCount) {
+            return;
+        }
+
+        await act(async () => {
+            await new Promise((resolve) => window.setTimeout(resolve, 0));
+        });
+    }
+
+    throw new Error(`Expected mock to be called ${callCount} times.`);
+}
+
 function createDeferredRender(source: string): DeferredRender {
     let resolveRender: DeferredRender["resolve"] | null = null;
     let rejectRender: DeferredRender["reject"] | null = null;
@@ -221,6 +252,43 @@ describe("MarkdownMermaidDiagram", () => {
         );
         expect(renderedSvg.innerHTML).toContain("<text>Safe</text>");
         expect(renderedSvg.innerHTML).not.toContain("<script");
+    });
+
+    it("reinitializes Mermaid and rerenders diagrams when theme variables change", async () => {
+        document.documentElement.style.setProperty("--color-bg-tertiary", "#101820");
+        document.documentElement.style.setProperty("--color-border", "#3b4c61");
+        document.documentElement.style.setProperty("--color-text-primary", "#f6f8fb");
+        const renderDiagram = vi.fn(() =>
+            Promise.resolve({ svg: "<svg><text>Themed diagram</text></svg>" }),
+        );
+        const mermaid = createMermaidRenderer(renderDiagram);
+        const { container } = renderMarkdownMermaidDiagram({
+            loadMermaid: () => Promise.resolve(mermaid),
+        });
+
+        await waitForElement(container, ".markdown-file-preview__mermaid-svg");
+
+        expect(mermaid.initialize).toHaveBeenCalledTimes(1);
+        expect(renderDiagram).toHaveBeenCalledTimes(1);
+
+        act(() => {
+            document.documentElement.style.setProperty(
+                "--color-bg-tertiary",
+                "#223344",
+            );
+        });
+
+        await waitForMockCallCount(renderDiagram, 2);
+
+        expect(mermaid.initialize).toHaveBeenCalledTimes(2);
+        const initializeCalls = (mermaid.initialize as unknown as MockCallTracker)
+            .mock.calls;
+        const lastInitializeConfig = initializeCalls.at(-1)?.[0] as
+            | MermaidRendererInitializeConfig
+            | undefined;
+
+        expect(lastInitializeConfig?.themeVariables.mainBkg).toBe("#223344");
+        expect(lastInitializeConfig?.themeVariables.primaryColor).toBe("#223344");
     });
 
     it("shows a stable error state when Mermaid rejects invalid syntax", async () => {

@@ -14,6 +14,7 @@ type MermaidRenderStatus = "error" | "loading" | "ready" | "too-large";
 
 interface MermaidRenderState {
     readonly errorMessage: string | null;
+    readonly renderKey: string | null;
     readonly status: MermaidRenderStatus;
     readonly svg: string | null;
 }
@@ -59,10 +60,19 @@ interface MarkdownMermaidDiagramProps {
     readonly source: string;
 }
 
-const initializedMermaidRenderers = new WeakSet<MermaidRenderer>();
+interface MermaidThemeSnapshot {
+    readonly initializeConfig: MermaidInitializeConfig;
+    readonly signature: string;
+}
+
+const initializedMermaidRendererThemeSignatures = new WeakMap<
+    MermaidRenderer,
+    string
+>();
 
 const initialRenderState: MermaidRenderState = {
     errorMessage: null,
+    renderKey: null,
     status: "loading",
     svg: null,
 };
@@ -100,7 +110,7 @@ function readCssColorVariable(variableName: string, fallback: string): string {
     return value || fallback;
 }
 
-function createMermaidInitializeConfig(): MermaidInitializeConfig {
+function createMermaidThemeSnapshot(): MermaidThemeSnapshot {
     const background = readCssColorVariable(
         "--color-bg-tertiary",
         fallbackMermaidThemeVariables.primaryColor,
@@ -133,29 +143,33 @@ function createMermaidInitializeConfig(): MermaidInitializeConfig {
         "--color-danger",
         fallbackMermaidThemeVariables.errorTextColor,
     );
+    const themeVariables = {
+        background: "transparent",
+        errorBkgColor: errorBackground,
+        errorTextColor,
+        lineColor,
+        mainBkg: background,
+        nodeBorder: borderColor,
+        primaryBorderColor: borderColor,
+        primaryColor: background,
+        primaryTextColor: textColor,
+        secondaryBorderColor: borderColor,
+        secondaryColor: secondaryBackground,
+        tertiaryColor: tertiaryBackground,
+    };
 
     return {
-        deterministicIds: true,
-        logLevel: "error",
-        maxTextSize: MERMAID_SOURCE_MAX_LENGTH,
-        secure: ["secure", "securityLevel", "startOnLoad", "maxTextSize"],
-        securityLevel: "strict",
-        startOnLoad: false,
-        theme: "base",
-        themeVariables: {
-            background: "transparent",
-            errorBkgColor: errorBackground,
-            errorTextColor,
-            lineColor,
-            mainBkg: background,
-            nodeBorder: borderColor,
-            primaryBorderColor: borderColor,
-            primaryColor: background,
-            primaryTextColor: textColor,
-            secondaryBorderColor: borderColor,
-            secondaryColor: secondaryBackground,
-            tertiaryColor: tertiaryBackground,
+        initializeConfig: {
+            deterministicIds: true,
+            logLevel: "error",
+            maxTextSize: MERMAID_SOURCE_MAX_LENGTH,
+            secure: ["secure", "securityLevel", "startOnLoad", "maxTextSize"],
+            securityLevel: "strict",
+            startOnLoad: false,
+            theme: "base",
+            themeVariables,
         },
+        signature: JSON.stringify(themeVariables),
     };
 }
 
@@ -164,13 +178,22 @@ async function loadMermaidRenderer(): Promise<MermaidRenderer> {
     return mermaidModule.default;
 }
 
-function initializeMermaidRenderer(mermaid: MermaidRenderer): void {
-    if (initializedMermaidRenderers.has(mermaid)) {
+function initializeMermaidRenderer(
+    mermaid: MermaidRenderer,
+    themeSnapshot: MermaidThemeSnapshot,
+): void {
+    if (
+        initializedMermaidRendererThemeSignatures.get(mermaid) ===
+        themeSnapshot.signature
+    ) {
         return;
     }
 
-    mermaid.initialize(createMermaidInitializeConfig());
-    initializedMermaidRenderers.add(mermaid);
+    mermaid.initialize(themeSnapshot.initializeConfig);
+    initializedMermaidRendererThemeSignatures.set(
+        mermaid,
+        themeSnapshot.signature,
+    );
 }
 
 export function sanitizeMermaidSvg(svg: string): string {
@@ -201,6 +224,64 @@ async function writeMermaidSourceClipboardText(text: string): Promise<void> {
     }
 }
 
+function useMermaidThemeSnapshot(): MermaidThemeSnapshot {
+    const [themeSnapshot, setThemeSnapshot] = useState<MermaidThemeSnapshot>(
+        createMermaidThemeSnapshot,
+    );
+
+    useEffect(() => {
+        if (typeof window === "undefined" || typeof MutationObserver === "undefined") {
+            return undefined;
+        }
+
+        let frameHandle = 0;
+
+        const updateThemeSnapshot = () => {
+            frameHandle = 0;
+            const nextThemeSnapshot = createMermaidThemeSnapshot();
+            setThemeSnapshot((currentThemeSnapshot) =>
+                currentThemeSnapshot.signature === nextThemeSnapshot.signature
+                    ? currentThemeSnapshot
+                    : nextThemeSnapshot,
+            );
+        };
+
+        const scheduleThemeSnapshotUpdate = () => {
+            if (frameHandle !== 0) {
+                return;
+            }
+
+            if (window.requestAnimationFrame) {
+                frameHandle = window.requestAnimationFrame(updateThemeSnapshot);
+                return;
+            }
+
+            frameHandle = window.setTimeout(updateThemeSnapshot, 0);
+        };
+
+        scheduleThemeSnapshotUpdate();
+
+        const observer = new MutationObserver(scheduleThemeSnapshotUpdate);
+        observer.observe(document.documentElement, {
+            attributeFilter: ["class", "style"],
+            attributes: true,
+        });
+
+        return () => {
+            observer.disconnect();
+            if (frameHandle !== 0) {
+                if (window.cancelAnimationFrame) {
+                    window.cancelAnimationFrame(frameHandle);
+                } else {
+                    window.clearTimeout(frameHandle);
+                }
+            }
+        };
+    }, []);
+
+    return themeSnapshot;
+}
+
 export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
     loadMermaid = loadMermaidRenderer,
     sanitizeSvg = sanitizeMermaidSvg,
@@ -208,30 +289,36 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
 }: MarkdownMermaidDiagramProps) {
     const reactId = useId();
     const elementIdRef = useRef(createMermaidElementId(reactId));
+    const themeSnapshot = useMermaidThemeSnapshot();
+    const trimmedSource = source.trim();
+    const currentRenderKey = `${themeSnapshot.signature}\n${trimmedSource}`;
     const [renderState, setRenderState] =
         useState<MermaidRenderState>(initialRenderState);
+    const visibleRenderState =
+        trimmedSource.length > MERMAID_SOURCE_MAX_LENGTH
+            ? {
+                  errorMessage: null,
+                  renderKey: currentRenderKey,
+                  status: "too-large" as const,
+                  svg: null,
+              }
+            : renderState.renderKey === currentRenderKey
+              ? renderState
+              : initialRenderState;
 
     useEffect(() => {
-        const trimmedSource = source.trim();
         let cancelled = false;
 
         if (trimmedSource.length > MERMAID_SOURCE_MAX_LENGTH) {
-            setRenderState({
-                errorMessage: null,
-                status: "too-large",
-                svg: null,
-            });
             return () => {
                 cancelled = true;
             };
         }
 
-        setRenderState(initialRenderState);
-
         const renderDiagram = async () => {
             try {
                 const mermaid = await loadMermaid();
-                initializeMermaidRenderer(mermaid);
+                initializeMermaidRenderer(mermaid, themeSnapshot);
                 const result = await mermaid.render(
                     elementIdRef.current,
                     trimmedSource,
@@ -241,6 +328,7 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
                 if (!cancelled) {
                     setRenderState({
                         errorMessage: null,
+                        renderKey: currentRenderKey,
                         status: "ready",
                         svg: sanitizedSvg,
                     });
@@ -249,6 +337,7 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
                 if (!cancelled) {
                     setRenderState({
                         errorMessage: "Could not render Mermaid diagram",
+                        renderKey: currentRenderKey,
                         status: "error",
                         svg: null,
                     });
@@ -261,7 +350,13 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
         return () => {
             cancelled = true;
         };
-    }, [loadMermaid, sanitizeSvg, source]);
+    }, [
+        currentRenderKey,
+        loadMermaid,
+        sanitizeSvg,
+        themeSnapshot,
+        trimmedSource,
+    ]);
 
     const handleCopySource = useCallback(() => {
         void writeMermaidSourceClipboardText(source);
@@ -283,7 +378,7 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
                 aria-label="Mermaid diagram"
                 className="markdown-file-preview__mermaid-body"
             >
-                {renderState.status === "loading" ? (
+                {visibleRenderState.status === "loading" ? (
                     <div
                         className="markdown-file-preview__mermaid-status"
                         role="status"
@@ -291,7 +386,7 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
                         Rendering diagram...
                     </div>
                 ) : null}
-                {renderState.status === "too-large" ? (
+                {visibleRenderState.status === "too-large" ? (
                     <div
                         className="markdown-file-preview__mermaid-status"
                         role="status"
@@ -299,19 +394,19 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
                         Diagram source is too large to preview
                     </div>
                 ) : null}
-                {renderState.status === "error" ? (
+                {visibleRenderState.status === "error" ? (
                     <div
                         className="markdown-file-preview__mermaid-error"
                         role="alert"
                     >
-                        {renderState.errorMessage}
+                        {visibleRenderState.errorMessage}
                     </div>
                 ) : null}
-                {renderState.status === "ready" && renderState.svg ? (
+                {visibleRenderState.status === "ready" && visibleRenderState.svg ? (
                     <div
                         className="markdown-file-preview__mermaid-svg"
                         // Mermaid only returns SVG strings; sanitize before inserting.
-                        dangerouslySetInnerHTML={{ __html: renderState.svg }}
+                        dangerouslySetInnerHTML={{ __html: visibleRenderState.svg }}
                     />
                 ) : null}
             </div>
