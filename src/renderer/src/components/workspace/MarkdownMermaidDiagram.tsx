@@ -11,6 +11,8 @@ import {
 export const MERMAID_SOURCE_MAX_LENGTH = 50000;
 
 type MermaidRenderStatus = "error" | "loading" | "ready" | "too-large";
+type MermaidThemeVariableValue = boolean | string;
+type MermaidThemeVariables = Record<string, MermaidThemeVariableValue>;
 
 interface MermaidRenderState {
     readonly errorMessage: string | null;
@@ -21,26 +23,18 @@ interface MermaidRenderState {
 
 interface MermaidInitializeConfig {
     readonly deterministicIds: boolean;
+    readonly flowchart: {
+        readonly htmlLabels: boolean;
+        readonly useMaxWidth: boolean;
+    };
+    readonly htmlLabels: boolean;
     readonly logLevel: "error";
     readonly maxTextSize: number;
     readonly secure: string[];
     readonly securityLevel: "strict";
     readonly startOnLoad: boolean;
     readonly theme: "base";
-    readonly themeVariables: {
-        readonly background: string;
-        readonly errorBkgColor: string;
-        readonly errorTextColor: string;
-        readonly lineColor: string;
-        readonly mainBkg: string;
-        readonly nodeBorder: string;
-        readonly primaryBorderColor: string;
-        readonly primaryColor: string;
-        readonly primaryTextColor: string;
-        readonly secondaryBorderColor: string;
-        readonly secondaryColor: string;
-        readonly tertiaryColor: string;
-    };
+    readonly themeVariables: MermaidThemeVariables;
 }
 
 export interface MermaidRenderer {
@@ -77,27 +71,15 @@ const initialRenderState: MermaidRenderState = {
     svg: null,
 };
 
-const fallbackMermaidThemeVariables: MermaidInitializeConfig["themeVariables"] = {
-    background: "transparent",
-    errorBkgColor: "#3b1d24",
-    errorTextColor: "#f8d7da",
-    lineColor: "#8a93a5",
-    mainBkg: "#1f2430",
-    nodeBorder: "#515a6e",
-    primaryBorderColor: "#515a6e",
-    primaryColor: "#252b38",
-    primaryTextColor: "#f4f6fb",
-    secondaryBorderColor: "#515a6e",
-    secondaryColor: "#202633",
-    tertiaryColor: "#171b24",
-};
+const MERMAID_FONT_FAMILY_FALLBACK =
+    '"SF Pro Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
 
 function createMermaidElementId(reactId: string): string {
     const safeId = reactId.replace(/[^A-Za-z0-9_-]/g, "");
     return `markdown-mermaid-${safeId || "diagram"}`;
 }
 
-function readCssColorVariable(variableName: string, fallback: string): string {
+function readCssVariable(variableName: string, fallback: string): string {
     if (typeof window === "undefined") {
         return fallback;
     }
@@ -111,59 +93,199 @@ function readCssColorVariable(variableName: string, fallback: string): string {
 }
 
 function createMermaidThemeSnapshot(): MermaidThemeSnapshot {
-    const background = readCssColorVariable(
-        "--color-bg-tertiary",
-        fallbackMermaidThemeVariables.primaryColor,
-    );
-    const borderColor = readCssColorVariable(
-        "--color-border",
-        fallbackMermaidThemeVariables.primaryBorderColor,
-    );
-    const textColor = readCssColorVariable(
-        "--color-text-primary",
-        fallbackMermaidThemeVariables.primaryTextColor,
-    );
-    const secondaryBackground = readCssColorVariable(
-        "--color-bg-secondary",
-        fallbackMermaidThemeVariables.secondaryColor,
-    );
-    const tertiaryBackground = readCssColorVariable(
+    const isDark =
+        typeof document !== "undefined" &&
+        document.documentElement.classList.contains("dark");
+    const appBackground = readCssVariable(
         "--color-bg-primary",
-        fallbackMermaidThemeVariables.tertiaryColor,
+        "#1f2430",
     );
-    const lineColor = readCssColorVariable(
+    const elevatedBackground = readCssVariable(
+        "--color-bg-elevated",
+        "#252b38",
+    );
+    const secondaryBackground = readCssVariable(
+        "--color-bg-secondary",
+        "#202633",
+    );
+    const tertiaryBackground = readCssVariable(
+        "--color-bg-tertiary",
+        "#171b24",
+    );
+    const borderColor = readCssVariable(
+        "--color-border",
+        "#515a6e",
+    );
+    const strongBorderColor = readCssVariable(
+        "--color-border-strong",
+        borderColor,
+    );
+    const textColor = readCssVariable(
+        "--color-text-primary",
+        "#f4f6fb",
+    );
+    const mutedTextColor = readCssVariable(
         "--color-text-secondary",
-        fallbackMermaidThemeVariables.lineColor,
+        "#8a93a5",
     );
-    const errorBackground = readCssColorVariable(
+    const accentColor = readCssVariable(
+        "--color-accent",
+        "#818cf8",
+    );
+    const strongAccentColor = readCssVariable(
+        "--color-accent-strong",
+        accentColor,
+    );
+    const successColor = readCssVariable("--diff-add", "#4ade80");
+    const dangerColor = readCssVariable("--diff-remove", "#f87171");
+    const warningColor = readCssVariable("--diff-warn", "#fbbf24");
+    const infoColor = readCssVariable("--diff-update", "#60a5fa");
+    const errorBackground = readCssVariable(
         "--color-danger-bg",
-        fallbackMermaidThemeVariables.errorBkgColor,
+        isDark ? "#3b1d24" : "#fee2e2",
     );
-    const errorTextColor = readCssColorVariable(
+    const errorTextColor = readCssVariable(
         "--color-danger",
-        fallbackMermaidThemeVariables.errorTextColor,
+        dangerColor,
     );
+    const fontFamily = readCssVariable(
+        "--font-sans",
+        MERMAID_FONT_FAMILY_FALLBACK,
+    );
+    const labelBackground = appBackground;
+    const nodeBackground = elevatedBackground;
+    const nodeBackgroundAlt = secondaryBackground;
+    const mutedBackground = tertiaryBackground;
+    const lineColor = mutedTextColor;
     const themeVariables = {
+        actorBkg: nodeBackground,
+        actorBorder: strongBorderColor,
+        actorLineColor: lineColor,
+        actorTextColor: textColor,
+        altBackground: mutedBackground,
+        altSectionBkgColor: mutedBackground,
+        arrowheadColor: lineColor,
         background: "transparent",
+        branchLabelColor: textColor,
+        classText: textColor,
+        clusterBkg: secondaryBackground,
+        clusterBorder: borderColor,
+        clusterTextColor: textColor,
+        cScale0: nodeBackground,
+        cScale1: nodeBackgroundAlt,
+        cScale10: warningColor,
+        cScale11: infoColor,
+        cScale2: mutedBackground,
+        cScale3: accentColor,
+        cScale4: strongAccentColor,
+        cScale5: successColor,
+        cScale6: warningColor,
+        cScale7: dangerColor,
+        cScale8: infoColor,
+        cScale9: secondaryBackground,
+        cScaleLabel0: textColor,
+        cScaleLabel1: textColor,
+        cScaleLabel10: textColor,
+        cScaleLabel11: textColor,
+        cScaleLabel2: textColor,
+        cScaleLabel3: textColor,
+        cScaleLabel4: textColor,
+        cScaleLabel5: isDark ? appBackground : "#ffffff",
+        cScaleLabel6: isDark ? appBackground : "#111827",
+        cScaleLabel7: isDark ? appBackground : "#ffffff",
+        cScaleLabel8: isDark ? appBackground : "#ffffff",
+        cScaleLabel9: textColor,
+        darkMode: isDark,
+        defaultLinkColor: lineColor,
+        edgeLabelBackground: labelBackground,
         errorBkgColor: errorBackground,
         errorTextColor,
+        fillType0: nodeBackground,
+        fillType1: nodeBackgroundAlt,
+        fillType2: mutedBackground,
+        fillType3: accentColor,
+        fillType4: successColor,
+        fillType5: warningColor,
+        fillType6: dangerColor,
+        fillType7: infoColor,
+        fontFamily,
+        git0: nodeBackground,
+        git1: nodeBackgroundAlt,
+        git2: mutedBackground,
+        git3: accentColor,
+        git4: successColor,
+        git5: warningColor,
+        git6: dangerColor,
+        git7: infoColor,
+        gitBranchLabel0: textColor,
+        gitBranchLabel1: textColor,
+        gitBranchLabel2: textColor,
+        gitBranchLabel3: textColor,
+        gitBranchLabel4: isDark ? appBackground : "#ffffff",
+        gitBranchLabel5: isDark ? appBackground : "#111827",
+        gitBranchLabel6: isDark ? appBackground : "#ffffff",
+        gitBranchLabel7: isDark ? appBackground : "#ffffff",
+        gitInv0: textColor,
+        gitInv1: textColor,
+        gitInv2: textColor,
+        gitInv3: textColor,
+        gitInv4: isDark ? appBackground : "#ffffff",
+        gitInv5: isDark ? appBackground : "#111827",
+        gitInv6: isDark ? appBackground : "#ffffff",
+        gitInv7: isDark ? appBackground : "#ffffff",
+        labelBackgroundColor: labelBackground,
+        labelBoxBkgColor: nodeBackground,
+        labelBoxBorderColor: strongBorderColor,
+        labelTextColor: textColor,
         lineColor,
-        mainBkg: background,
+        loopTextColor: textColor,
+        mainBkg: nodeBackground,
         nodeBorder: borderColor,
+        nodeBkg: nodeBackground,
+        nodeTextColor: textColor,
+        noteBkgColor: mutedBackground,
+        noteBorderColor: borderColor,
+        noteTextColor: textColor,
         primaryBorderColor: borderColor,
-        primaryColor: background,
+        primaryColor: nodeBackground,
         primaryTextColor: textColor,
+        rectBkgColor: nodeBackgroundAlt,
+        relationLabelBackground: labelBackground,
         secondaryBorderColor: borderColor,
-        secondaryColor: secondaryBackground,
+        secondaryColor: nodeBackgroundAlt,
+        secondaryTextColor: textColor,
+        signalColor: lineColor,
+        signalTextColor: textColor,
+        stateBkg: nodeBackground,
+        stateLabelColor: textColor,
         tertiaryColor: tertiaryBackground,
+        tertiaryTextColor: textColor,
+        textColor,
+        titleColor: textColor,
+        transitionColor: lineColor,
+        transitionLabelColor: textColor,
     };
 
     return {
         initializeConfig: {
             deterministicIds: true,
+            flowchart: {
+                htmlLabels: false,
+                useMaxWidth: true,
+            },
+            htmlLabels: false,
             logLevel: "error",
             maxTextSize: MERMAID_SOURCE_MAX_LENGTH,
-            secure: ["secure", "securityLevel", "startOnLoad", "maxTextSize"],
+            secure: [
+                "flowchart",
+                "htmlLabels",
+                "maxTextSize",
+                "secure",
+                "securityLevel",
+                "startOnLoad",
+                "theme",
+                "themeVariables",
+            ],
             securityLevel: "strict",
             startOnLoad: false,
             theme: "base",

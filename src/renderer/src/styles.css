@@ -696,7 +696,7 @@ body {
 
 .markdown-file-preview__mermaid-body {
     min-height: 180px;
-    overflow-x: auto;
+    overflow: auto;
     padding: 1em;
 }
 
@@ -716,15 +716,16 @@ body {
 }
 
 .markdown-file-preview__mermaid-svg {
-    display: flex;
-    min-width: max-content;
-    justify-content: center;
+    display: grid;
+    min-width: 0;
+    justify-items: center;
 }
 
 .markdown-file-preview__mermaid-svg svg {
     display: block;
     max-width: 100%;
     height: auto;
+    color: var(--color-text-primary);
 }
 
 .markdown-file-preview__table-wrap {

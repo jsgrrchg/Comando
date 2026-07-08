@@ -233,8 +233,9 @@ describe("MarkdownFilePreview", () => {
         expect(styles).toContain(".markdown-file-preview__mermaid-status");
         expect(styles).toContain(".markdown-file-preview__mermaid-error");
         expect(mermaidBodyRule).toContain("min-height: 180px");
-        expect(mermaidBodyRule).toContain("overflow-x: auto");
+        expect(mermaidBodyRule).toContain("overflow: auto");
         expect(mermaidSvgRule).toContain("max-width: 100%");
+        expect(mermaidSvgRule).toContain("color: var(--color-text-primary)");
     });
 
     it("renders an empty Markdown file as a stable empty preview surface", () => {

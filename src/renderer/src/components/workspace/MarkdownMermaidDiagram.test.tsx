@@ -19,11 +19,19 @@ const mermaidThemeTestVariables = [
     "--color-bg-primary",
     "--color-bg-secondary",
     "--color-bg-tertiary",
+    "--color-bg-elevated",
     "--color-border",
+    "--color-border-strong",
+    "--color-accent",
+    "--color-accent-strong",
     "--color-danger-bg",
     "--color-danger",
     "--color-text-primary",
     "--color-text-secondary",
+    "--diff-add",
+    "--diff-remove",
+    "--diff-update",
+    "--diff-warn",
 ] as const;
 
 type MockCallTracker = {
@@ -33,9 +41,22 @@ type MockCallTracker = {
 };
 
 interface MermaidRendererInitializeConfig {
+    readonly deterministicIds: boolean;
+    readonly flowchart: {
+        readonly htmlLabels: boolean;
+        readonly useMaxWidth: boolean;
+    };
+    readonly htmlLabels: boolean;
+    readonly logLevel: "error";
+    readonly maxTextSize: number;
+    readonly secure: readonly string[];
+    readonly securityLevel: "strict";
+    readonly startOnLoad: boolean;
+    readonly theme: "base";
     readonly themeVariables: {
         readonly mainBkg: string;
         readonly primaryColor: string;
+        readonly [key: string]: unknown;
     };
 }
 
@@ -191,7 +212,11 @@ describe("MarkdownMermaidDiagram", () => {
         document.documentElement.style.setProperty("--color-bg-primary", "#101820");
         document.documentElement.style.setProperty("--color-bg-secondary", "#152030");
         document.documentElement.style.setProperty("--color-bg-tertiary", "#1b2838");
+        document.documentElement.style.setProperty("--color-bg-elevated", "#243244");
         document.documentElement.style.setProperty("--color-border", "#3b4c61");
+        document.documentElement.style.setProperty("--color-border-strong", "#4d617a");
+        document.documentElement.style.setProperty("--color-accent", "#8aa4ff");
+        document.documentElement.style.setProperty("--color-accent-strong", "#a9bcff");
         document.documentElement.style.setProperty("--color-danger", "#ff6677");
         document.documentElement.style.setProperty("--color-text-primary", "#f6f8fb");
         document.documentElement.style.setProperty(
@@ -218,31 +243,55 @@ describe("MarkdownMermaidDiagram", () => {
         );
 
         expect(loadMermaid).toHaveBeenCalledTimes(1);
-        expect(mermaid.initialize).toHaveBeenCalledWith(
-            {
-                deterministicIds: true,
-                logLevel: "error",
-                maxTextSize: MERMAID_SOURCE_MAX_LENGTH,
-                secure: ["secure", "securityLevel", "startOnLoad", "maxTextSize"],
-                securityLevel: "strict",
-                startOnLoad: false,
-                theme: "base",
-                themeVariables: {
-                    background: "transparent",
-                    errorBkgColor: "#3b1d24",
-                    errorTextColor: "#ff6677",
-                    lineColor: "#aeb7c5",
-                    mainBkg: "#1b2838",
-                    nodeBorder: "#3b4c61",
-                    primaryBorderColor: "#3b4c61",
-                    primaryColor: "#1b2838",
-                    primaryTextColor: "#f6f8fb",
-                    secondaryBorderColor: "#3b4c61",
-                    secondaryColor: "#152030",
-                    tertiaryColor: "#101820",
-                },
+        const initializeCalls = (mermaid.initialize as unknown as MockCallTracker)
+            .mock.calls;
+        const initializeConfig = initializeCalls[0]?.[0] as
+            | MermaidRendererInitializeConfig
+            | undefined;
+
+        expect(initializeConfig).toMatchObject({
+            deterministicIds: true,
+            flowchart: {
+                htmlLabels: false,
+                useMaxWidth: true,
             },
-        );
+            htmlLabels: false,
+            logLevel: "error",
+            maxTextSize: MERMAID_SOURCE_MAX_LENGTH,
+            secure: [
+                "flowchart",
+                "htmlLabels",
+                "maxTextSize",
+                "secure",
+                "securityLevel",
+                "startOnLoad",
+                "theme",
+                "themeVariables",
+            ],
+            securityLevel: "strict",
+            startOnLoad: false,
+            theme: "base",
+        });
+        expect(initializeConfig?.themeVariables).toMatchObject({
+            actorBkg: "#243244",
+            actorTextColor: "#f6f8fb",
+            background: "transparent",
+            classText: "#f6f8fb",
+            errorBkgColor: "#fee2e2",
+            errorTextColor: "#ff6677",
+            lineColor: "#aeb7c5",
+            mainBkg: "#243244",
+            nodeBorder: "#3b4c61",
+            nodeBkg: "#243244",
+            nodeTextColor: "#f6f8fb",
+            primaryBorderColor: "#3b4c61",
+            primaryColor: "#243244",
+            primaryTextColor: "#f6f8fb",
+            secondaryBorderColor: "#3b4c61",
+            secondaryColor: "#152030",
+            tertiaryColor: "#1b2838",
+            textColor: "#f6f8fb",
+        });
         expect(mermaid.render).toHaveBeenCalledWith(
             expect.stringMatching(/^markdown-mermaid-/),
             "flowchart TD\nA --> B",
@@ -255,7 +304,7 @@ describe("MarkdownMermaidDiagram", () => {
     });
 
     it("reinitializes Mermaid and rerenders diagrams when theme variables change", async () => {
-        document.documentElement.style.setProperty("--color-bg-tertiary", "#101820");
+        document.documentElement.style.setProperty("--color-bg-elevated", "#101820");
         document.documentElement.style.setProperty("--color-border", "#3b4c61");
         document.documentElement.style.setProperty("--color-text-primary", "#f6f8fb");
         const renderDiagram = vi.fn(() =>
@@ -273,7 +322,7 @@ describe("MarkdownMermaidDiagram", () => {
 
         act(() => {
             document.documentElement.style.setProperty(
-                "--color-bg-tertiary",
+                "--color-bg-elevated",
                 "#223344",
             );
         });
@@ -383,5 +432,22 @@ describe("MarkdownMermaidDiagram", () => {
         expect(sanitizedSvg).not.toContain("<script");
         expect(sanitizedSvg).not.toContain("javascript:");
         expect(sanitizedSvg).not.toContain("onclick");
+    });
+
+    it("removes foreignObject labels from sanitized SVG output", () => {
+        const sanitizedSvg = sanitizeMermaidSvg(
+            [
+                "<svg>",
+                "<foreignObject>",
+                "<div>HTML label</div>",
+                "</foreignObject>",
+                "<text>SVG label</text>",
+                "</svg>",
+            ].join(""),
+        );
+
+        expect(sanitizedSvg).toContain("SVG label");
+        expect(sanitizedSvg).not.toContain("foreignObject");
+        expect(sanitizedSvg).not.toContain("HTML label");
     });
 });
