@@ -70,7 +70,7 @@ jobs:
                   test -s release-body.md
 
             - name: Upload release body
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: release-body-${{ env.RELEASE_TAG }}
                   path: release-body.md
@@ -281,7 +281,7 @@ jobs:
               run: pnpm run package:mac -- --config.forceCodeSigning=true
 
             - name: Stage macOS release assets
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: release-assets-macos-universal
                   path: |
@@ -325,7 +325,7 @@ jobs:
               run: pnpm run package:win:x64 -- --publish never
 
             - name: Stage Windows x64 release assets
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: release-assets-windows-x64
                   path: |
@@ -368,7 +368,7 @@ jobs:
               run: pnpm run package:win:arm64 -- --publish never
 
             - name: Stage Windows arm64 release assets
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: release-assets-windows-arm64
                   path: |
@@ -455,7 +455,7 @@ jobs:
                     --require-signature
 
             - name: Stage Linux release assets
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: release-assets-linux-${{ matrix.arch }}
                   path: |
@@ -468,7 +468,7 @@ jobs:
 
             - name: Upload Linux package artifacts on failure
               if: failure()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v6
               with:
                   name: release-linux-${{ matrix.arch }}-failure-dist
                   path: |
@@ -498,7 +498,7 @@ jobs:
                   node-version: 22
 
             - name: Download staged release assets
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v7
               with:
                   pattern: release-assets-*
                   path: .artifacts/release-assets
@@ -531,13 +531,13 @@ jobs:
                   ref: ${{ env.RELEASE_TAG }}
 
             - name: Download release body
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v7
               with:
                   name: release-body-${{ needs.prepare.outputs.tag }}
                   path: .release
 
             - name: Download staged release assets
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v7
               with:
                   pattern: release-assets-*
                   path: .artifacts/release-assets
@@ -594,7 +594,7 @@ jobs:
                   sudo apt-get install -y ca-certificates dpkg gnupg gzip
 
             - name: Download staged Linux release assets
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v7
               with:
                   pattern: release-assets-linux-*
                   path: .artifacts/linux
@@ -810,7 +810,7 @@ jobs:
                   sudo apt-get install -y createrepo-c gnupg gzip rpm
 
             - name: Download staged Linux release assets
-              uses: actions/download-artifact@v4
+              uses: actions/download-artifact@v7
               with:
                   pattern: release-assets-linux-*
                   path: .artifacts/linux
