@@ -9,6 +9,7 @@ import {
 } from "react";
 
 export const MERMAID_SOURCE_MAX_LENGTH = 50000;
+const MERMAID_MAX_EDGES = 500;
 
 type MermaidRenderStatus = "error" | "loading" | "ready" | "too-large";
 type MermaidThemeVariableValue = boolean | string;
@@ -29,10 +30,12 @@ interface MermaidInitializeConfig {
     };
     readonly htmlLabels: boolean;
     readonly logLevel: "error";
+    readonly maxEdges: number;
     readonly maxTextSize: number;
     readonly secure: string[];
     readonly securityLevel: "strict";
     readonly startOnLoad: boolean;
+    readonly suppressErrorRendering: boolean;
     readonly theme: "base";
     readonly themeVariables: MermaidThemeVariables;
 }
@@ -275,19 +278,24 @@ function createMermaidThemeSnapshot(): MermaidThemeSnapshot {
             },
             htmlLabels: false,
             logLevel: "error",
+            maxEdges: MERMAID_MAX_EDGES,
             maxTextSize: MERMAID_SOURCE_MAX_LENGTH,
             secure: [
                 "flowchart",
                 "htmlLabels",
+                "maxEdges",
                 "maxTextSize",
                 "secure",
                 "securityLevel",
                 "startOnLoad",
+                "suppressErrorRendering",
                 "theme",
+                "themeCSS",
                 "themeVariables",
             ],
             securityLevel: "strict",
             startOnLoad: false,
+            suppressErrorRendering: false,
             theme: "base",
             themeVariables,
         },

@@ -48,10 +48,12 @@ interface MermaidRendererInitializeConfig {
     };
     readonly htmlLabels: boolean;
     readonly logLevel: "error";
+    readonly maxEdges: number;
     readonly maxTextSize: number;
     readonly secure: readonly string[];
     readonly securityLevel: "strict";
     readonly startOnLoad: boolean;
+    readonly suppressErrorRendering: boolean;
     readonly theme: "base";
     readonly themeVariables: {
         readonly mainBkg: string;
@@ -257,19 +259,24 @@ describe("MarkdownMermaidDiagram", () => {
             },
             htmlLabels: false,
             logLevel: "error",
+            maxEdges: 500,
             maxTextSize: MERMAID_SOURCE_MAX_LENGTH,
             secure: [
                 "flowchart",
                 "htmlLabels",
+                "maxEdges",
                 "maxTextSize",
                 "secure",
                 "securityLevel",
                 "startOnLoad",
+                "suppressErrorRendering",
                 "theme",
+                "themeCSS",
                 "themeVariables",
             ],
             securityLevel: "strict",
             startOnLoad: false,
+            suppressErrorRendering: false,
             theme: "base",
         });
         expect(initializeConfig?.themeVariables).toMatchObject({
