@@ -715,10 +715,18 @@ body {
     color: var(--color-danger, #f87171);
 }
 
+.markdown-file-preview__mermaid-viewport {
+    display: grid;
+    min-height: 148px;
+    overflow: hidden;
+    place-items: center;
+}
+
 .markdown-file-preview__mermaid-svg {
     display: flex;
-    min-width: max-content;
+    min-width: 0;
     justify-content: center;
+    transform-origin: center;
 }
 
 .markdown-file-preview__mermaid-svg svg {

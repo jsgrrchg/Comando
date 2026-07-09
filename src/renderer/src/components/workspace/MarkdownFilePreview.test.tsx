@@ -230,6 +230,10 @@ describe("MarkdownFilePreview", () => {
             styles.match(
                 /\.markdown-file-preview__mermaid-svg\s*\{[^}]*\}/,
             )?.[0] ?? "";
+        const mermaidViewportRule =
+            styles.match(
+                /\.markdown-file-preview__mermaid-viewport\s*\{[^}]*\}/,
+            )?.[0] ?? "";
 
         expect(styles).toContain(".markdown-file-preview__mermaid-frame");
         expect(styles).toContain(".markdown-file-preview__mermaid-header");
@@ -238,7 +242,9 @@ describe("MarkdownFilePreview", () => {
         expect(styles).toContain(".markdown-file-preview__mermaid-error");
         expect(mermaidBodyRule).toContain("min-height: 180px");
         expect(mermaidBodyRule).toContain("overflow: auto");
-        expect(mermaidSvgWrapRule).toContain("min-width: max-content");
+        expect(mermaidViewportRule).toContain("overflow: hidden");
+        expect(mermaidSvgWrapRule).toContain("min-width: 0");
+        expect(mermaidSvgWrapRule).toContain("transform-origin: center");
         expect(mermaidSvgRule).toContain("max-width: 100%");
         expect(mermaidSvgRule).toContain("color: var(--color-text-primary)");
     });

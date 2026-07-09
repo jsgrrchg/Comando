@@ -4,8 +4,13 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+    calculateMermaidFitScale,
+    clampMermaidZoom,
+    createMermaidFitViewportState,
     MarkdownMermaidDiagram,
     MERMAID_SOURCE_MAX_LENGTH,
+    MERMAID_VIEWPORT_MAX_ZOOM,
+    MERMAID_VIEWPORT_MIN_ZOOM,
     sanitizeMermaidSvg,
     type MermaidRenderer,
 } from "./MarkdownMermaidDiagram";
@@ -155,6 +160,27 @@ async function waitForElement(
     throw new Error(`Expected selector "${selector}" to render.`);
 }
 
+async function waitForElementStyle(
+    container: HTMLElement,
+    selector: string,
+    expectedStyleText: string,
+): Promise<HTMLElement> {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        const element = container.querySelector<HTMLElement>(selector);
+        if (element?.getAttribute("style")?.includes(expectedStyleText)) {
+            return element;
+        }
+
+        await act(async () => {
+            await new Promise((resolve) => window.setTimeout(resolve, 0));
+        });
+    }
+
+    throw new Error(
+        `Expected selector "${selector}" to include style "${expectedStyleText}".`,
+    );
+}
+
 async function waitForText(
     container: HTMLElement,
     text: string,
@@ -210,6 +236,43 @@ function createDeferredRender(source: string): DeferredRender {
 }
 
 describe("MarkdownMermaidDiagram", () => {
+    it("clamps Mermaid viewport zoom to the supported range", () => {
+        expect(clampMermaidZoom(0)).toBe(MERMAID_VIEWPORT_MIN_ZOOM);
+        expect(clampMermaidZoom(0.5)).toBe(0.5);
+        expect(clampMermaidZoom(Number.NaN)).toBe(1);
+        expect(clampMermaidZoom(9)).toBe(MERMAID_VIEWPORT_MAX_ZOOM);
+    });
+
+    it("calculates a fit scale without enlarging small diagrams", () => {
+        expect(
+            calculateMermaidFitScale({
+                diagram: { height: 600, width: 1200 },
+                viewport: { height: 300, width: 600 },
+            }),
+        ).toBe(0.5);
+        expect(
+            calculateMermaidFitScale({
+                diagram: { height: 120, width: 220 },
+                viewport: { height: 300, width: 600 },
+            }),
+        ).toBe(1);
+    });
+
+    it("creates a fitted viewport state with a reset offset", () => {
+        expect(
+            createMermaidFitViewportState({
+                diagram: { height: 600, width: 1200 },
+                viewport: { height: 300, width: 600 },
+            }),
+        ).toEqual({
+            fitScale: 0.5,
+            isDragging: false,
+            offsetX: 0,
+            offsetY: 0,
+            scale: 0.5,
+        });
+    });
+
     it("renders a valid diagram with sanitized SVG output", async () => {
         document.documentElement.style.setProperty("--color-bg-primary", "#101820");
         document.documentElement.style.setProperty("--color-bg-secondary", "#152030");
@@ -345,6 +408,75 @@ describe("MarkdownMermaidDiagram", () => {
 
         expect(lastInitializeConfig?.themeVariables.mainBkg).toBe("#223344");
         expect(lastInitializeConfig?.themeVariables.primaryColor).toBe("#223344");
+    });
+
+    it("fits rendered SVGs to the viewport and resets fit after source changes", async () => {
+        const getBoundingClientRect = vi
+            .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockImplementation(function getMockBounds(this: HTMLElement) {
+                if (
+                    this.classList.contains(
+                        "markdown-file-preview__mermaid-viewport",
+                    )
+                ) {
+                    return {
+                        bottom: 250,
+                        height: 250,
+                        left: 0,
+                        right: 500,
+                        toJSON: () => ({}),
+                        top: 0,
+                        width: 500,
+                        x: 0,
+                        y: 0,
+                    };
+                }
+
+                return {
+                    bottom: 0,
+                    height: 0,
+                    left: 0,
+                    right: 0,
+                    toJSON: () => ({}),
+                    top: 0,
+                    width: 0,
+                    x: 0,
+                    y: 0,
+                };
+            });
+        const renderDiagram: MermaidRenderer["render"] = vi.fn(
+            (_id: string, source: string) =>
+                Promise.resolve({
+                    svg: source.includes("B --> C")
+                        ? '<svg viewBox="0 0 200 100"><text>Small diagram</text></svg>'
+                        : '<svg viewBox="0 0 1000 400"><text>Large diagram</text></svg>',
+                }),
+        );
+        const mermaid = createMermaidRenderer(renderDiagram);
+        const { container, rerender } = renderMarkdownMermaidDiagram({
+            loadMermaid: () => Promise.resolve(mermaid),
+            source: "flowchart TD\nA --> B",
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.5)",
+        );
+
+        rerender({
+            loadMermaid: () => Promise.resolve(mermaid),
+            source: "flowchart TD\nB --> C",
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(1)",
+        );
+
+        expect(renderDiagram).toHaveBeenCalledTimes(2);
+        getBoundingClientRect.mockRestore();
     });
 
     it("shows a stable error state when Mermaid rejects invalid syntax", async () => {

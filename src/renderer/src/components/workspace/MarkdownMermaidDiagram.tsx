@@ -4,11 +4,14 @@ import {
     useCallback,
     useEffect,
     useId,
+    useLayoutEffect,
     useRef,
     useState,
 } from "react";
 
 export const MERMAID_SOURCE_MAX_LENGTH = 50000;
+export const MERMAID_VIEWPORT_MAX_ZOOM = 3;
+export const MERMAID_VIEWPORT_MIN_ZOOM = 0.25;
 const MERMAID_MAX_EDGES = 500;
 
 type MermaidRenderStatus = "error" | "loading" | "ready" | "too-large";
@@ -20,6 +23,19 @@ interface MermaidRenderState {
     readonly renderKey: string | null;
     readonly status: MermaidRenderStatus;
     readonly svg: string | null;
+}
+
+interface MermaidViewportState {
+    readonly fitScale: number;
+    readonly isDragging: boolean;
+    readonly offsetX: number;
+    readonly offsetY: number;
+    readonly scale: number;
+}
+
+interface MermaidViewportSize {
+    readonly height: number;
+    readonly width: number;
 }
 
 interface MermaidInitializeConfig {
@@ -74,12 +90,113 @@ const initialRenderState: MermaidRenderState = {
     svg: null,
 };
 
+const initialViewportState: MermaidViewportState = {
+    fitScale: 1,
+    isDragging: false,
+    offsetX: 0,
+    offsetY: 0,
+    scale: 1,
+};
+
 const MERMAID_FONT_FAMILY_FALLBACK =
     '"SF Pro Text", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
 
 function createMermaidElementId(reactId: string): string {
     const safeId = reactId.replace(/[^A-Za-z0-9_-]/g, "");
     return `markdown-mermaid-${safeId || "diagram"}`;
+}
+
+function parseSvgLength(value: string | null): number | null {
+    if (!value) {
+        return null;
+    }
+
+    const parsedValue = Number.parseFloat(value);
+    return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : null;
+}
+
+function readSvgIntrinsicSize(svgElement: SVGSVGElement): MermaidViewportSize {
+    const viewBox = svgElement.getAttribute("viewBox")?.trim();
+
+    if (viewBox) {
+        const viewBoxParts = viewBox
+            .split(/[\s,]+/)
+            .map((part) => Number.parseFloat(part));
+        const [, , viewBoxWidth, viewBoxHeight] = viewBoxParts;
+
+        if (
+            Number.isFinite(viewBoxWidth) &&
+            Number.isFinite(viewBoxHeight) &&
+            viewBoxWidth > 0 &&
+            viewBoxHeight > 0
+        ) {
+            return {
+                height: viewBoxHeight,
+                width: viewBoxWidth,
+            };
+        }
+    }
+
+    const width = parseSvgLength(svgElement.getAttribute("width"));
+    const height = parseSvgLength(svgElement.getAttribute("height"));
+
+    if (width && height) {
+        return { height, width };
+    }
+
+    const bounds = svgElement.getBoundingClientRect();
+    return {
+        height: bounds.height,
+        width: bounds.width,
+    };
+}
+
+export function clampMermaidZoom(zoom: number): number {
+    if (!Number.isFinite(zoom)) {
+        return 1;
+    }
+
+    return Math.min(
+        MERMAID_VIEWPORT_MAX_ZOOM,
+        Math.max(MERMAID_VIEWPORT_MIN_ZOOM, zoom),
+    );
+}
+
+export function calculateMermaidFitScale({
+    diagram,
+    viewport,
+}: {
+    readonly diagram: MermaidViewportSize;
+    readonly viewport: MermaidViewportSize;
+}): number {
+    const widthScale =
+        diagram.width > 0 && viewport.width > 0
+            ? viewport.width / diagram.width
+            : 1;
+    const heightScale =
+        diagram.height > 0 && viewport.height > 0
+            ? viewport.height / diagram.height
+            : 1;
+
+    return clampMermaidZoom(Math.min(1, widthScale, heightScale));
+}
+
+export function createMermaidFitViewportState({
+    diagram,
+    viewport,
+}: {
+    readonly diagram: MermaidViewportSize;
+    readonly viewport: MermaidViewportSize;
+}): MermaidViewportState {
+    const fitScale = calculateMermaidFitScale({ diagram, viewport });
+
+    return {
+        fitScale,
+        isDragging: false,
+        offsetX: 0,
+        offsetY: 0,
+        scale: fitScale,
+    };
 }
 
 function readCssVariable(variableName: string, fallback: string): string {
@@ -419,11 +536,15 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
 }: MarkdownMermaidDiagramProps) {
     const reactId = useId();
     const elementIdRef = useRef(createMermaidElementId(reactId));
+    const mermaidSvgRef = useRef<HTMLDivElement>(null);
+    const mermaidViewportRef = useRef<HTMLDivElement>(null);
     const themeSnapshot = useMermaidThemeSnapshot();
     const trimmedSource = source.trim();
     const currentRenderKey = `${themeSnapshot.signature}\n${trimmedSource}`;
     const [renderState, setRenderState] =
         useState<MermaidRenderState>(initialRenderState);
+    const [viewportState, setViewportState] =
+        useState<MermaidViewportState>(initialViewportState);
     const visibleRenderState =
         trimmedSource.length > MERMAID_SOURCE_MAX_LENGTH
             ? {
@@ -492,6 +613,58 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
         void writeMermaidSourceClipboardText(source);
     }, [source]);
 
+    useLayoutEffect(() => {
+        if (
+            visibleRenderState.status !== "ready" ||
+            !visibleRenderState.svg
+        ) {
+            return undefined;
+        }
+
+        const updateViewportFit = () => {
+            const viewportElement = mermaidViewportRef.current;
+            const svgElement =
+                mermaidSvgRef.current?.querySelector<SVGSVGElement>("svg");
+
+            if (!viewportElement || !svgElement) {
+                return;
+            }
+
+            const viewportBounds = viewportElement.getBoundingClientRect();
+            const diagramSize = readSvgIntrinsicSize(svgElement);
+            const nextViewportState = createMermaidFitViewportState({
+                diagram: diagramSize,
+                viewport: {
+                    height: viewportBounds.height,
+                    width: viewportBounds.width,
+                },
+            });
+
+            setViewportState(nextViewportState);
+        };
+
+        updateViewportFit();
+
+        if (typeof ResizeObserver !== "undefined" && mermaidViewportRef.current) {
+            const resizeObserver = new ResizeObserver(updateViewportFit);
+            resizeObserver.observe(mermaidViewportRef.current);
+
+            return () => {
+                resizeObserver.disconnect();
+            };
+        }
+
+        window.addEventListener("resize", updateViewportFit);
+
+        return () => {
+            window.removeEventListener("resize", updateViewportFit);
+        };
+    }, [
+        visibleRenderState.renderKey,
+        visibleRenderState.status,
+        visibleRenderState.svg,
+    ]);
+
     return (
         <div className="markdown-file-preview__mermaid-frame">
             <div className="markdown-file-preview__mermaid-header">
@@ -534,10 +707,21 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
                 ) : null}
                 {visibleRenderState.status === "ready" && visibleRenderState.svg ? (
                     <div
-                        className="markdown-file-preview__mermaid-svg"
-                        // Mermaid only returns SVG strings; sanitize before inserting.
-                        dangerouslySetInnerHTML={{ __html: visibleRenderState.svg }}
-                    />
+                        className="markdown-file-preview__mermaid-viewport"
+                        ref={mermaidViewportRef}
+                    >
+                        <div
+                            className="markdown-file-preview__mermaid-svg"
+                            ref={mermaidSvgRef}
+                            style={{
+                                transform: `translate(${viewportState.offsetX}px, ${viewportState.offsetY}px) scale(${viewportState.scale})`,
+                            }}
+                            // Mermaid only returns SVG strings; sanitize before inserting.
+                            dangerouslySetInnerHTML={{
+                                __html: visibleRenderState.svg,
+                            }}
+                        />
+                    </div>
                 ) : null}
             </div>
         </div>
