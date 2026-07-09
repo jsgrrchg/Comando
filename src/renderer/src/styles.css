@@ -785,7 +785,7 @@ body {
 
 .markdown-file-preview__mermaid-viewport {
     display: grid;
-    min-height: 148px;
+    min-height: clamp(220px, 38vh, 520px);
     cursor: grab;
     overflow: hidden;
     place-items: center;

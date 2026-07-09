@@ -254,6 +254,9 @@ describe("MarkdownFilePreview", () => {
         );
         expect(mermaidBodyRule).toContain("min-height: 180px");
         expect(mermaidBodyRule).toContain("overflow: auto");
+        expect(mermaidViewportRule).toContain(
+            "min-height: clamp(220px, 38vh, 520px)",
+        );
         expect(mermaidViewportRule).toContain("overflow: hidden");
         expect(mermaidViewportRule).toContain("cursor: grab");
         expect(mermaidViewportRule).toContain("user-select: none");

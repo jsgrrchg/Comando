@@ -11,7 +11,8 @@ import {
 } from "react";
 
 export const MERMAID_SOURCE_MAX_LENGTH = 50000;
-export const MERMAID_VIEWPORT_MAX_ZOOM = 3;
+export const MERMAID_VIEWPORT_FIT_MAX_ZOOM = 2;
+export const MERMAID_VIEWPORT_MAX_ZOOM = 8;
 export const MERMAID_VIEWPORT_MIN_ZOOM = 0.25;
 const MERMAID_MAX_EDGES = 500;
 const MERMAID_VIEWPORT_ZOOM_STEP = 0.2;
@@ -147,6 +148,15 @@ function parseSvgLength(value: string | null): number | null {
 }
 
 function readSvgIntrinsicSize(svgElement: SVGSVGElement): MermaidViewportSize {
+    const bounds = svgElement.getBoundingClientRect();
+
+    if (bounds.width > 0 && bounds.height > 0) {
+        return {
+            height: bounds.height,
+            width: bounds.width,
+        };
+    }
+
     const viewBox = svgElement.getAttribute("viewBox")?.trim();
 
     if (viewBox) {
@@ -175,7 +185,6 @@ function readSvgIntrinsicSize(svgElement: SVGSVGElement): MermaidViewportSize {
         return { height, width };
     }
 
-    const bounds = svgElement.getBoundingClientRect();
     return {
         height: bounds.height,
         width: bounds.width,
@@ -222,7 +231,11 @@ export function calculateMermaidFitScale({
             ? viewport.height / diagram.height
             : 1;
 
-    return clampMermaidZoom(Math.min(1, widthScale, heightScale));
+    // Fit both dimensions (never overflow either axis), but still allow small
+    // diagrams to scale up so they don't render tiny inside a large viewport.
+    const containScale = Math.min(widthScale, heightScale);
+
+    return clampMermaidZoom(Math.min(MERMAID_VIEWPORT_FIT_MAX_ZOOM, containScale));
 }
 
 export function createMermaidFitViewportState({
@@ -632,6 +645,7 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
     const reactId = useId();
     const dragStateRef = useRef<MermaidDragState | null>(null);
     const elementIdRef = useRef(createMermaidElementId(reactId));
+    const hasCustomViewportRef = useRef(false);
     const mermaidSvgRef = useRef<HTMLDivElement>(null);
     const mermaidViewportMetricsRef =
         useRef<MermaidViewportMetrics>(initialViewportMetrics);
@@ -712,6 +726,7 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
     }, [source]);
 
     const handleZoomOut = useCallback(() => {
+        hasCustomViewportRef.current = true;
         setViewportState((currentViewportState) => {
             const scale = calculateNextMermaidZoom({
                 direction: -1,
@@ -736,6 +751,7 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
     }, []);
 
     const handleZoomIn = useCallback(() => {
+        hasCustomViewportRef.current = true;
         setViewportState((currentViewportState) => {
             const scale = calculateNextMermaidZoom({
                 direction: 1,
@@ -760,6 +776,7 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
     }, []);
 
     const handleFitDiagram = useCallback(() => {
+        hasCustomViewportRef.current = false;
         dragStateRef.current = null;
         setViewportState((currentViewportState) => ({
             ...currentViewportState,
@@ -778,6 +795,9 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
             return undefined;
         }
 
+        // A new diagram always starts at its computed fit scale.
+        hasCustomViewportRef.current = false;
+
         const updateViewportFit = () => {
             const viewportElement = mermaidViewportRef.current;
             const svgElement =
@@ -793,16 +813,40 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
                 height: viewportBounds.height,
                 width: viewportBounds.width,
             };
-            const nextViewportState = createMermaidFitViewportState({
-                diagram: diagramSize,
-                viewport: viewportSize,
-            });
-
-            mermaidViewportMetricsRef.current = {
+            const metrics: MermaidViewportMetrics = {
                 diagram: diagramSize,
                 viewport: viewportSize,
             };
-            setViewportState(nextViewportState);
+
+            mermaidViewportMetricsRef.current = metrics;
+
+            if (!hasCustomViewportRef.current) {
+                setViewportState(createMermaidFitViewportState(metrics));
+                return;
+            }
+
+            // The user already zoomed or panned this diagram. Re-measuring
+            // happens on every resize, including a hidden tab regaining a
+            // real layout size, so only refresh the fit reference and clamp
+            // the pan offset instead of discarding their adjustment.
+            const fitScale = calculateMermaidFitScale(metrics);
+            setViewportState((currentViewportState) => {
+                const offset = clampMermaidPanOffset({
+                    metrics,
+                    offset: {
+                        x: currentViewportState.offsetX,
+                        y: currentViewportState.offsetY,
+                    },
+                    scale: currentViewportState.scale,
+                });
+
+                return {
+                    ...currentViewportState,
+                    fitScale,
+                    offsetX: offset.x,
+                    offsetY: offset.y,
+                };
+            });
         };
 
         updateViewportFit();
@@ -859,6 +903,7 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
             }
 
             event.preventDefault();
+            hasCustomViewportRef.current = true;
             const offset = clampMermaidPanOffset({
                 metrics: mermaidViewportMetricsRef.current,
                 offset: {

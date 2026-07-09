@@ -12,6 +12,7 @@ import {
     createMermaidFitViewportState,
     MarkdownMermaidDiagram,
     MERMAID_SOURCE_MAX_LENGTH,
+    MERMAID_VIEWPORT_FIT_MAX_ZOOM,
     MERMAID_VIEWPORT_MAX_ZOOM,
     MERMAID_VIEWPORT_MIN_ZOOM,
     sanitizeMermaidSvg,
@@ -283,12 +284,12 @@ describe("MarkdownMermaidDiagram", () => {
         expect(calculateNextMermaidZoom({ direction: -1, scale: 0.3 })).toBe(
             MERMAID_VIEWPORT_MIN_ZOOM,
         );
-        expect(calculateNextMermaidZoom({ direction: 1, scale: 2.9 })).toBe(
+        expect(calculateNextMermaidZoom({ direction: 1, scale: 7.9 })).toBe(
             MERMAID_VIEWPORT_MAX_ZOOM,
         );
     });
 
-    it("calculates a fit scale without enlarging small diagrams", () => {
+    it("calculates a contain-based fit scale with a capped upscale", () => {
         expect(
             calculateMermaidFitScale({
                 diagram: { height: 600, width: 1200 },
@@ -300,7 +301,13 @@ describe("MarkdownMermaidDiagram", () => {
                 diagram: { height: 120, width: 220 },
                 viewport: { height: 300, width: 600 },
             }),
-        ).toBe(1);
+        ).toBe(MERMAID_VIEWPORT_FIT_MAX_ZOOM);
+        expect(
+            calculateMermaidFitScale({
+                diagram: { height: 3000, width: 220 },
+                viewport: { height: 300, width: 600 },
+            }),
+        ).toBe(MERMAID_VIEWPORT_MIN_ZOOM);
     });
 
     it("creates a fitted viewport state with a reset offset", () => {
@@ -539,11 +546,78 @@ describe("MarkdownMermaidDiagram", () => {
         await waitForElementStyle(
             container,
             ".markdown-file-preview__mermaid-svg",
-            "scale(1)",
+            "scale(2)",
         );
 
         expect(renderDiagram).toHaveBeenCalledTimes(2);
         getBoundingClientRect.mockRestore();
+    });
+
+    it("keeps fitted SVGs at full size when CSS already fits the width", async () => {
+        const getHtmlBounds = vi
+            .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockImplementation(function getMockBounds(this: HTMLElement) {
+                if (
+                    this.classList.contains(
+                        "markdown-file-preview__mermaid-viewport",
+                    )
+                ) {
+                    return {
+                        bottom: 400,
+                        height: 400,
+                        left: 0,
+                        right: 800,
+                        toJSON: () => ({}),
+                        top: 0,
+                        width: 800,
+                        x: 0,
+                        y: 0,
+                    };
+                }
+
+                return {
+                    bottom: 0,
+                    height: 0,
+                    left: 0,
+                    right: 0,
+                    toJSON: () => ({}),
+                    top: 0,
+                    width: 0,
+                    x: 0,
+                    y: 0,
+                };
+            });
+        const getSvgBounds = vi
+            .spyOn(SVGElement.prototype, "getBoundingClientRect")
+            .mockImplementation(() => ({
+                bottom: 360,
+                height: 360,
+                left: 0,
+                right: 800,
+                toJSON: () => ({}),
+                top: 0,
+                width: 800,
+                x: 0,
+                y: 0,
+            }));
+        const mermaid = createMermaidRenderer(() =>
+            Promise.resolve({
+                svg: '<svg viewBox="0 0 4000 1800"><text>Fitted diagram</text></svg>',
+            }),
+        );
+        const { container } = renderMarkdownMermaidDiagram({
+            loadMermaid: () => Promise.resolve(mermaid),
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(1)",
+        );
+
+        expect(container.textContent).toContain("100%");
+        getSvgBounds.mockRestore();
+        getHtmlBounds.mockRestore();
     });
 
     it("shows zoom controls only after rendering a diagram", async () => {
@@ -693,6 +767,84 @@ describe("MarkdownMermaidDiagram", () => {
             "scale(0.5)",
         );
         expect(container.textContent).toContain("50%");
+        getBoundingClientRect.mockRestore();
+    });
+
+    it("keeps a manual zoom after the viewport is remeasured, e.g. a hidden tab becoming visible again", async () => {
+        const getBoundingClientRect = vi
+            .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockImplementation(function getMockBounds(this: HTMLElement) {
+                if (
+                    this.classList.contains(
+                        "markdown-file-preview__mermaid-viewport",
+                    )
+                ) {
+                    return {
+                        bottom: 250,
+                        height: 250,
+                        left: 0,
+                        right: 500,
+                        toJSON: () => ({}),
+                        top: 0,
+                        width: 500,
+                        x: 0,
+                        y: 0,
+                    };
+                }
+
+                return {
+                    bottom: 0,
+                    height: 0,
+                    left: 0,
+                    right: 0,
+                    toJSON: () => ({}),
+                    top: 0,
+                    width: 0,
+                    x: 0,
+                    y: 0,
+                };
+            });
+        const mermaid = createMermaidRenderer(() =>
+            Promise.resolve({
+                svg: '<svg viewBox="0 0 1000 400"><text>Large diagram</text></svg>',
+            }),
+        );
+        const { container } = renderMarkdownMermaidDiagram({
+            loadMermaid: () => Promise.resolve(mermaid),
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.5)",
+        );
+
+        const zoomInButton = container.querySelector<HTMLButtonElement>(
+            '[aria-label="Zoom in"]',
+        );
+
+        act(() => {
+            zoomInButton?.click();
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.7)",
+        );
+
+        // Hidden tabs report a 0x0 layout box; becoming visible again fires
+        // the same resize path used here, which must not discard the zoom.
+        act(() => {
+            window.dispatchEvent(new Event("resize"));
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.7)",
+        );
+        expect(container.textContent).toContain("70%");
         getBoundingClientRect.mockRestore();
     });
 
