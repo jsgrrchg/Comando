@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     calculateMermaidFitScale,
     calculateNextMermaidZoom,
+    calculateMermaidPanBounds,
     clampMermaidZoom,
+    clampMermaidPanOffset,
     createMermaidFitViewportState,
     MarkdownMermaidDiagram,
     MERMAID_SOURCE_MAX_LENGTH,
@@ -236,6 +238,37 @@ function createDeferredRender(source: string): DeferredRender {
     };
 }
 
+function dispatchMermaidPointerEvent(
+    element: Element,
+    type: string,
+    options: {
+        readonly button?: number;
+        readonly clientX: number;
+        readonly clientY: number;
+        readonly isPrimary?: boolean;
+        readonly pointerId?: number;
+    },
+): void {
+    const event = new MouseEvent(type, {
+        bubbles: true,
+        button: options.button ?? 0,
+        cancelable: true,
+        clientX: options.clientX,
+        clientY: options.clientY,
+    });
+
+    Object.defineProperties(event, {
+        isPrimary: {
+            value: options.isPrimary ?? true,
+        },
+        pointerId: {
+            value: options.pointerId ?? 1,
+        },
+    });
+
+    element.dispatchEvent(event);
+}
+
 describe("MarkdownMermaidDiagram", () => {
     it("clamps Mermaid viewport zoom to the supported range", () => {
         expect(clampMermaidZoom(0)).toBe(MERMAID_VIEWPORT_MIN_ZOOM);
@@ -282,6 +315,28 @@ describe("MarkdownMermaidDiagram", () => {
             offsetX: 0,
             offsetY: 0,
             scale: 0.5,
+        });
+    });
+
+    it("calculates and clamps Mermaid pan offsets", () => {
+        const metrics = {
+            diagram: { height: 400, width: 1000 },
+            viewport: { height: 250, width: 500 },
+        };
+
+        expect(calculateMermaidPanBounds({ ...metrics, scale: 0.5 })).toEqual({
+            x: 404,
+            y: 129,
+        });
+        expect(
+            clampMermaidPanOffset({
+                metrics,
+                offset: { x: 800, y: -800 },
+                scale: 0.5,
+            }),
+        ).toEqual({
+            x: 404,
+            y: -129,
         });
     });
 
@@ -639,6 +694,131 @@ describe("MarkdownMermaidDiagram", () => {
         );
         expect(container.textContent).toContain("50%");
         getBoundingClientRect.mockRestore();
+    });
+
+    it("pans Mermaid diagrams with pointer drag and stops on pointer up", async () => {
+        const getBoundingClientRect = vi
+            .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockImplementation(function getMockBounds(this: HTMLElement) {
+                if (
+                    this.classList.contains(
+                        "markdown-file-preview__mermaid-viewport",
+                    )
+                ) {
+                    return {
+                        bottom: 250,
+                        height: 250,
+                        left: 0,
+                        right: 500,
+                        toJSON: () => ({}),
+                        top: 0,
+                        width: 500,
+                        x: 0,
+                        y: 0,
+                    };
+                }
+
+                return {
+                    bottom: 0,
+                    height: 0,
+                    left: 0,
+                    right: 0,
+                    toJSON: () => ({}),
+                    top: 0,
+                    width: 0,
+                    x: 0,
+                    y: 0,
+                };
+            });
+        const mermaid = createMermaidRenderer(() =>
+            Promise.resolve({
+                svg: '<svg viewBox="0 0 1000 400"><text>Large diagram</text></svg>',
+            }),
+        );
+        const { container } = renderMarkdownMermaidDiagram({
+            loadMermaid: () => Promise.resolve(mermaid),
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.5)",
+        );
+
+        const viewport = container.querySelector<HTMLElement>(
+            ".markdown-file-preview__mermaid-viewport",
+        );
+        expect(viewport).not.toBeNull();
+
+        act(() => {
+            dispatchMermaidPointerEvent(viewport!, "pointerdown", {
+                clientX: 10,
+                clientY: 10,
+            });
+        });
+
+        expect(viewport?.className).toContain(
+            "markdown-file-preview__mermaid-viewport--dragging",
+        );
+
+        act(() => {
+            dispatchMermaidPointerEvent(viewport!, "pointermove", {
+                clientX: 210,
+                clientY: 150,
+            });
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "translate(200px, 129px) scale(0.5)",
+        );
+
+        act(() => {
+            dispatchMermaidPointerEvent(viewport!, "pointerup", {
+                clientX: 210,
+                clientY: 150,
+            });
+        });
+
+        expect(viewport?.className).not.toContain(
+            "markdown-file-preview__mermaid-viewport--dragging",
+        );
+        getBoundingClientRect.mockRestore();
+    });
+
+    it("does not start Mermaid drag from header controls", async () => {
+        const mermaid = createMermaidRenderer(() =>
+            Promise.resolve({
+                svg: '<svg viewBox="0 0 200 100"><text>Small diagram</text></svg>',
+            }),
+        );
+        const { container } = renderMarkdownMermaidDiagram({
+            loadMermaid: () => Promise.resolve(mermaid),
+        });
+
+        await waitForElement(container, ".markdown-file-preview__mermaid-svg");
+
+        const zoomInButton = container.querySelector<HTMLButtonElement>(
+            '[aria-label="Zoom in"]',
+        );
+        const viewport = container.querySelector<HTMLElement>(
+            ".markdown-file-preview__mermaid-viewport",
+        );
+
+        expect(zoomInButton).not.toBeNull();
+        expect(viewport).not.toBeNull();
+
+        act(() => {
+            dispatchMermaidPointerEvent(zoomInButton!, "pointerdown", {
+                clientX: 10,
+                clientY: 10,
+            });
+        });
+
+        expect(viewport?.className).not.toContain(
+            "markdown-file-preview__mermaid-viewport--dragging",
+        );
     });
 
     it("shows a stable error state when Mermaid rejects invalid syntax", async () => {

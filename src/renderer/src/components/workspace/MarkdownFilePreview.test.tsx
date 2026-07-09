@@ -249,9 +249,14 @@ describe("MarkdownFilePreview", () => {
         expect(styles).toContain(
             ".markdown-file-preview__mermaid-tool-button:disabled",
         );
+        expect(styles).toContain(
+            ".markdown-file-preview__mermaid-viewport--dragging",
+        );
         expect(mermaidBodyRule).toContain("min-height: 180px");
         expect(mermaidBodyRule).toContain("overflow: auto");
         expect(mermaidViewportRule).toContain("overflow: hidden");
+        expect(mermaidViewportRule).toContain("cursor: grab");
+        expect(mermaidViewportRule).toContain("user-select: none");
         expect(mermaidSvgWrapRule).toContain("min-width: 0");
         expect(mermaidSvgWrapRule).toContain("transform-origin: center");
         expect(mermaidSvgRule).toContain("max-width: 100%");

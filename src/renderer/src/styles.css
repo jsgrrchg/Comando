@@ -786,8 +786,15 @@ body {
 .markdown-file-preview__mermaid-viewport {
     display: grid;
     min-height: 148px;
+    cursor: grab;
     overflow: hidden;
     place-items: center;
+    touch-action: none;
+    user-select: none;
+}
+
+.markdown-file-preview__mermaid-viewport--dragging {
+    cursor: grabbing;
 }
 
 .markdown-file-preview__mermaid-svg {

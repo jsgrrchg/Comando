@@ -1,6 +1,7 @@
 import DOMPurify from "dompurify";
 import {
     memo,
+    type PointerEvent as ReactPointerEvent,
     useCallback,
     useEffect,
     useId,
@@ -37,6 +38,24 @@ interface MermaidViewportState {
 interface MermaidViewportSize {
     readonly height: number;
     readonly width: number;
+}
+
+interface MermaidViewportMetrics {
+    readonly diagram: MermaidViewportSize;
+    readonly viewport: MermaidViewportSize;
+}
+
+interface MermaidPanOffset {
+    readonly x: number;
+    readonly y: number;
+}
+
+interface MermaidDragState {
+    readonly offsetX: number;
+    readonly offsetY: number;
+    readonly pointerId: number;
+    readonly startX: number;
+    readonly startY: number;
 }
 
 interface MermaidInitializeConfig {
@@ -97,6 +116,17 @@ const initialViewportState: MermaidViewportState = {
     offsetX: 0,
     offsetY: 0,
     scale: 1,
+};
+
+const initialViewportMetrics: MermaidViewportMetrics = {
+    diagram: {
+        height: 0,
+        width: 0,
+    },
+    viewport: {
+        height: 0,
+        width: 0,
+    },
 };
 
 const MERMAID_FONT_FAMILY_FALLBACK =
@@ -210,6 +240,53 @@ export function createMermaidFitViewportState({
         offsetX: 0,
         offsetY: 0,
         scale: fitScale,
+    };
+}
+
+export function calculateMermaidPanBounds({
+    diagram,
+    scale,
+    viewport,
+}: MermaidViewportMetrics & {
+    readonly scale: number;
+}): MermaidPanOffset {
+    const scaledWidth = diagram.width * scale;
+    const scaledHeight = diagram.height * scale;
+    const minVisibleWidth = Math.min(96, viewport.width / 2, scaledWidth / 2);
+    const minVisibleHeight = Math.min(96, viewport.height / 2, scaledHeight / 2);
+
+    if (
+        scaledWidth <= 0 ||
+        scaledHeight <= 0 ||
+        viewport.width <= 0 ||
+        viewport.height <= 0
+    ) {
+        return { x: 0, y: 0 };
+    }
+
+    return {
+        x: Math.max(0, (scaledWidth + viewport.width) / 2 - minVisibleWidth),
+        y: Math.max(0, (scaledHeight + viewport.height) / 2 - minVisibleHeight),
+    };
+}
+
+export function clampMermaidPanOffset({
+    metrics,
+    offset,
+    scale,
+}: {
+    readonly metrics: MermaidViewportMetrics;
+    readonly offset: MermaidPanOffset;
+    readonly scale: number;
+}): MermaidPanOffset {
+    const bounds = calculateMermaidPanBounds({
+        ...metrics,
+        scale,
+    });
+
+    return {
+        x: Math.min(bounds.x, Math.max(-bounds.x, offset.x)),
+        y: Math.min(bounds.y, Math.max(-bounds.y, offset.y)),
     };
 }
 
@@ -553,8 +630,11 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
     source,
 }: MarkdownMermaidDiagramProps) {
     const reactId = useId();
+    const dragStateRef = useRef<MermaidDragState | null>(null);
     const elementIdRef = useRef(createMermaidElementId(reactId));
     const mermaidSvgRef = useRef<HTMLDivElement>(null);
+    const mermaidViewportMetricsRef =
+        useRef<MermaidViewportMetrics>(initialViewportMetrics);
     const mermaidViewportRef = useRef<HTMLDivElement>(null);
     const themeSnapshot = useMermaidThemeSnapshot();
     const trimmedSource = source.trim();
@@ -632,26 +712,55 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
     }, [source]);
 
     const handleZoomOut = useCallback(() => {
-        setViewportState((currentViewportState) => ({
-            ...currentViewportState,
-            scale: calculateNextMermaidZoom({
+        setViewportState((currentViewportState) => {
+            const scale = calculateNextMermaidZoom({
                 direction: -1,
                 scale: currentViewportState.scale,
-            }),
-        }));
+            });
+            const offset = clampMermaidPanOffset({
+                metrics: mermaidViewportMetricsRef.current,
+                offset: {
+                    x: currentViewportState.offsetX,
+                    y: currentViewportState.offsetY,
+                },
+                scale,
+            });
+
+            return {
+                ...currentViewportState,
+                offsetX: offset.x,
+                offsetY: offset.y,
+                scale,
+            };
+        });
     }, []);
 
     const handleZoomIn = useCallback(() => {
-        setViewportState((currentViewportState) => ({
-            ...currentViewportState,
-            scale: calculateNextMermaidZoom({
+        setViewportState((currentViewportState) => {
+            const scale = calculateNextMermaidZoom({
                 direction: 1,
                 scale: currentViewportState.scale,
-            }),
-        }));
+            });
+            const offset = clampMermaidPanOffset({
+                metrics: mermaidViewportMetricsRef.current,
+                offset: {
+                    x: currentViewportState.offsetX,
+                    y: currentViewportState.offsetY,
+                },
+                scale,
+            });
+
+            return {
+                ...currentViewportState,
+                offsetX: offset.x,
+                offsetY: offset.y,
+                scale,
+            };
+        });
     }, []);
 
     const handleFitDiagram = useCallback(() => {
+        dragStateRef.current = null;
         setViewportState((currentViewportState) => ({
             ...currentViewportState,
             isDragging: false,
@@ -680,14 +789,19 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
 
             const viewportBounds = viewportElement.getBoundingClientRect();
             const diagramSize = readSvgIntrinsicSize(svgElement);
+            const viewportSize = {
+                height: viewportBounds.height,
+                width: viewportBounds.width,
+            };
             const nextViewportState = createMermaidFitViewportState({
                 diagram: diagramSize,
-                viewport: {
-                    height: viewportBounds.height,
-                    width: viewportBounds.width,
-                },
+                viewport: viewportSize,
             });
 
+            mermaidViewportMetricsRef.current = {
+                diagram: diagramSize,
+                viewport: viewportSize,
+            };
             setViewportState(nextViewportState);
         };
 
@@ -713,6 +827,74 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
         visibleRenderState.svg,
     ]);
 
+    const handleViewportPointerDown = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            if (!event.isPrimary || event.button !== 0) {
+                return;
+            }
+
+            event.preventDefault();
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+            dragStateRef.current = {
+                offsetX: viewportState.offsetX,
+                offsetY: viewportState.offsetY,
+                pointerId: event.pointerId,
+                startX: event.clientX,
+                startY: event.clientY,
+            };
+            setViewportState((currentViewportState) => ({
+                ...currentViewportState,
+                isDragging: true,
+            }));
+        },
+        [viewportState.offsetX, viewportState.offsetY],
+    );
+
+    const handleViewportPointerMove = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            const dragState = dragStateRef.current;
+
+            if (!dragState || dragState.pointerId !== event.pointerId) {
+                return;
+            }
+
+            event.preventDefault();
+            const offset = clampMermaidPanOffset({
+                metrics: mermaidViewportMetricsRef.current,
+                offset: {
+                    x: dragState.offsetX + event.clientX - dragState.startX,
+                    y: dragState.offsetY + event.clientY - dragState.startY,
+                },
+                scale: viewportState.scale,
+            });
+
+            setViewportState((currentViewportState) => ({
+                ...currentViewportState,
+                offsetX: offset.x,
+                offsetY: offset.y,
+            }));
+        },
+        [viewportState.scale],
+    );
+
+    const stopViewportDrag = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            const dragState = dragStateRef.current;
+
+            if (!dragState || dragState.pointerId !== event.pointerId) {
+                return;
+            }
+
+            event.currentTarget.releasePointerCapture?.(event.pointerId);
+            dragStateRef.current = null;
+            setViewportState((currentViewportState) => ({
+                ...currentViewportState,
+                isDragging: false,
+            }));
+        },
+        [],
+    );
+
     const isDiagramReady =
         visibleRenderState.status === "ready" && Boolean(visibleRenderState.svg);
     const isZoomOutDisabled =
@@ -720,6 +902,9 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
     const isZoomInDisabled =
         viewportState.scale >= MERMAID_VIEWPORT_MAX_ZOOM;
     const zoomLevel = formatMermaidZoomLevel(viewportState.scale);
+    const viewportClassName = viewportState.isDragging
+        ? "markdown-file-preview__mermaid-viewport markdown-file-preview__mermaid-viewport--dragging"
+        : "markdown-file-preview__mermaid-viewport";
 
     return (
         <div className="markdown-file-preview__mermaid-frame">
@@ -808,7 +993,11 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
                 ) : null}
                 {visibleRenderState.status === "ready" && visibleRenderState.svg ? (
                     <div
-                        className="markdown-file-preview__mermaid-viewport"
+                        className={viewportClassName}
+                        onPointerCancel={stopViewportDrag}
+                        onPointerDown={handleViewportPointerDown}
+                        onPointerMove={handleViewportPointerMove}
+                        onPointerUp={stopViewportDrag}
                         ref={mermaidViewportRef}
                     >
                         <div
