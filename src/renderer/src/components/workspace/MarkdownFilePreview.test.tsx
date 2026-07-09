@@ -237,9 +237,18 @@ describe("MarkdownFilePreview", () => {
 
         expect(styles).toContain(".markdown-file-preview__mermaid-frame");
         expect(styles).toContain(".markdown-file-preview__mermaid-header");
+        expect(styles).toContain(".markdown-file-preview__mermaid-actions");
+        expect(styles).toContain(
+            ".markdown-file-preview__mermaid-zoom-controls",
+        );
+        expect(styles).toContain(".markdown-file-preview__mermaid-tool-button");
+        expect(styles).toContain(".markdown-file-preview__mermaid-zoom-level");
         expect(styles).toContain(".markdown-file-preview__mermaid-copy-button");
         expect(styles).toContain(".markdown-file-preview__mermaid-status");
         expect(styles).toContain(".markdown-file-preview__mermaid-error");
+        expect(styles).toContain(
+            ".markdown-file-preview__mermaid-tool-button:disabled",
+        );
         expect(mermaidBodyRule).toContain("min-height: 180px");
         expect(mermaidBodyRule).toContain("overflow: auto");
         expect(mermaidViewportRule).toContain("overflow: hidden");

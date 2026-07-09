@@ -665,6 +665,22 @@ body {
     padding: 0.18em 0.55em 0 1em;
 }
 
+.markdown-file-preview__mermaid-actions,
+.markdown-file-preview__mermaid-zoom-controls {
+    display: inline-flex;
+    min-width: 0;
+    flex: 0 0 auto;
+    align-items: center;
+}
+
+.markdown-file-preview__mermaid-actions {
+    gap: 0.5em;
+}
+
+.markdown-file-preview__mermaid-zoom-controls {
+    gap: 0.2em;
+}
+
 .markdown-file-preview__mermaid-copy-button {
     display: inline-flex;
     min-width: 0;
@@ -685,11 +701,63 @@ body {
         opacity 100ms ease;
 }
 
+.markdown-file-preview__mermaid-tool-button {
+    display: inline-flex;
+    min-width: 24px;
+    height: 24px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--color-bg-secondary) 72%, transparent);
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.9em;
+    letter-spacing: 0;
+    line-height: 1;
+    padding: 0 0.35em;
+    transition:
+        border-color 100ms ease,
+        color 100ms ease,
+        opacity 100ms ease;
+}
+
+.markdown-file-preview__mermaid-fit-button {
+    min-width: 32px;
+}
+
+.markdown-file-preview__mermaid-zoom-level {
+    display: inline-flex;
+    min-width: 4ch;
+    height: 24px;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-secondary);
+    font-size: 0.9em;
+    font-variant-numeric: tabular-nums;
+}
+
 .markdown-file-preview__mermaid-copy-button:hover {
     color: var(--color-text-primary);
 }
 
+.markdown-file-preview__mermaid-tool-button:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--color-accent) 58%, var(--color-border));
+    color: var(--color-text-primary);
+}
+
+.markdown-file-preview__mermaid-tool-button:disabled {
+    cursor: default;
+    opacity: 0.42;
+}
+
 .markdown-file-preview__mermaid-copy-button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 42%, transparent);
+    outline-offset: 2px;
+}
+
+.markdown-file-preview__mermaid-tool-button:focus-visible {
     outline: 2px solid color-mix(in srgb, var(--color-accent) 42%, transparent);
     outline-offset: 2px;
 }

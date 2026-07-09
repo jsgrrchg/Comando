@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
     calculateMermaidFitScale,
+    calculateNextMermaidZoom,
     clampMermaidZoom,
     createMermaidFitViewportState,
     MarkdownMermaidDiagram,
@@ -243,6 +244,17 @@ describe("MarkdownMermaidDiagram", () => {
         expect(clampMermaidZoom(9)).toBe(MERMAID_VIEWPORT_MAX_ZOOM);
     });
 
+    it("calculates the next Mermaid viewport zoom step", () => {
+        expect(calculateNextMermaidZoom({ direction: 1, scale: 0.5 })).toBe(0.7);
+        expect(calculateNextMermaidZoom({ direction: -1, scale: 0.7 })).toBe(0.5);
+        expect(calculateNextMermaidZoom({ direction: -1, scale: 0.3 })).toBe(
+            MERMAID_VIEWPORT_MIN_ZOOM,
+        );
+        expect(calculateNextMermaidZoom({ direction: 1, scale: 2.9 })).toBe(
+            MERMAID_VIEWPORT_MAX_ZOOM,
+        );
+    });
+
     it("calculates a fit scale without enlarging small diagrams", () => {
         expect(
             calculateMermaidFitScale({
@@ -476,6 +488,156 @@ describe("MarkdownMermaidDiagram", () => {
         );
 
         expect(renderDiagram).toHaveBeenCalledTimes(2);
+        getBoundingClientRect.mockRestore();
+    });
+
+    it("shows zoom controls only after rendering a diagram", async () => {
+        const deferredRender = createDeferredRender("flowchart TD\nA --> B");
+        const mermaid = createMermaidRenderer(() => deferredRender.promise);
+        const { container } = renderMarkdownMermaidDiagram({
+            loadMermaid: () => Promise.resolve(mermaid),
+        });
+
+        await waitForText(container, "Rendering diagram...");
+
+        expect(
+            container.querySelector('[aria-label="Mermaid zoom controls"]'),
+        ).toBeNull();
+        expect(container.querySelector('[aria-label="Zoom in"]')).toBeNull();
+
+        await act(async () => {
+            deferredRender.resolve({
+                svg: "<svg><text>Rendered diagram</text></svg>",
+            });
+            await deferredRender.promise;
+        });
+
+        await waitForElement(container, ".markdown-file-preview__mermaid-svg");
+
+        expect(
+            container.querySelector('[aria-label="Mermaid zoom controls"]'),
+        ).not.toBeNull();
+        expect(
+            container.querySelector<HTMLButtonElement>('[aria-label="Zoom out"]')
+                ?.title,
+        ).toBe("Zoom out");
+        expect(
+            container.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')
+                ?.title,
+        ).toBe("Zoom in");
+        expect(
+            container.querySelector<HTMLButtonElement>(
+                '[aria-label="Fit diagram"]',
+            )?.title,
+        ).toBe("Fit diagram");
+        expect(container.textContent).toContain("100%");
+    });
+
+    it("updates Mermaid viewport scale from zoom controls", async () => {
+        const getBoundingClientRect = vi
+            .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockImplementation(function getMockBounds(this: HTMLElement) {
+                if (
+                    this.classList.contains(
+                        "markdown-file-preview__mermaid-viewport",
+                    )
+                ) {
+                    return {
+                        bottom: 250,
+                        height: 250,
+                        left: 0,
+                        right: 500,
+                        toJSON: () => ({}),
+                        top: 0,
+                        width: 500,
+                        x: 0,
+                        y: 0,
+                    };
+                }
+
+                return {
+                    bottom: 0,
+                    height: 0,
+                    left: 0,
+                    right: 0,
+                    toJSON: () => ({}),
+                    top: 0,
+                    width: 0,
+                    x: 0,
+                    y: 0,
+                };
+            });
+        const mermaid = createMermaidRenderer(() =>
+            Promise.resolve({
+                svg: '<svg viewBox="0 0 1000 400"><text>Large diagram</text></svg>',
+            }),
+        );
+        const { container } = renderMarkdownMermaidDiagram({
+            loadMermaid: () => Promise.resolve(mermaid),
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.5)",
+        );
+
+        const zoomInButton = container.querySelector<HTMLButtonElement>(
+            '[aria-label="Zoom in"]',
+        );
+        const zoomOutButton = container.querySelector<HTMLButtonElement>(
+            '[aria-label="Zoom out"]',
+        );
+        const fitButton = container.querySelector<HTMLButtonElement>(
+            '[aria-label="Fit diagram"]',
+        );
+
+        expect(zoomInButton).not.toBeNull();
+        expect(zoomOutButton).not.toBeNull();
+        expect(fitButton).not.toBeNull();
+        expect(container.textContent).toContain("50%");
+
+        act(() => {
+            zoomInButton?.click();
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.7)",
+        );
+        expect(container.textContent).toContain("70%");
+
+        act(() => {
+            zoomOutButton?.click();
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.5)",
+        );
+        expect(container.textContent).toContain("50%");
+
+        act(() => {
+            zoomInButton?.click();
+        });
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.7)",
+        );
+
+        act(() => {
+            fitButton?.click();
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.5)",
+        );
+        expect(container.textContent).toContain("50%");
         getBoundingClientRect.mockRestore();
     });
 

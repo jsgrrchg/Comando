@@ -13,6 +13,7 @@ export const MERMAID_SOURCE_MAX_LENGTH = 50000;
 export const MERMAID_VIEWPORT_MAX_ZOOM = 3;
 export const MERMAID_VIEWPORT_MIN_ZOOM = 0.25;
 const MERMAID_MAX_EDGES = 500;
+const MERMAID_VIEWPORT_ZOOM_STEP = 0.2;
 
 type MermaidRenderStatus = "error" | "loading" | "ready" | "too-large";
 type MermaidThemeVariableValue = boolean | string;
@@ -162,6 +163,19 @@ export function clampMermaidZoom(zoom: number): number {
     );
 }
 
+export function calculateNextMermaidZoom({
+    direction,
+    scale,
+}: {
+    readonly direction: -1 | 1;
+    readonly scale: number;
+}): number {
+    const nextScale = scale + MERMAID_VIEWPORT_ZOOM_STEP * direction;
+    const roundedScale = Math.round(nextScale * 100) / 100;
+
+    return clampMermaidZoom(roundedScale);
+}
+
 export function calculateMermaidFitScale({
     diagram,
     viewport,
@@ -197,6 +211,10 @@ export function createMermaidFitViewportState({
         offsetY: 0,
         scale: fitScale,
     };
+}
+
+function formatMermaidZoomLevel(scale: number): string {
+    return `${Math.round(scale * 100)}%`;
 }
 
 function readCssVariable(variableName: string, fallback: string): string {
@@ -613,6 +631,36 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
         void writeMermaidSourceClipboardText(source);
     }, [source]);
 
+    const handleZoomOut = useCallback(() => {
+        setViewportState((currentViewportState) => ({
+            ...currentViewportState,
+            scale: calculateNextMermaidZoom({
+                direction: -1,
+                scale: currentViewportState.scale,
+            }),
+        }));
+    }, []);
+
+    const handleZoomIn = useCallback(() => {
+        setViewportState((currentViewportState) => ({
+            ...currentViewportState,
+            scale: calculateNextMermaidZoom({
+                direction: 1,
+                scale: currentViewportState.scale,
+            }),
+        }));
+    }, []);
+
+    const handleFitDiagram = useCallback(() => {
+        setViewportState((currentViewportState) => ({
+            ...currentViewportState,
+            isDragging: false,
+            offsetX: 0,
+            offsetY: 0,
+            scale: currentViewportState.fitScale,
+        }));
+    }, []);
+
     useLayoutEffect(() => {
         if (
             visibleRenderState.status !== "ready" ||
@@ -665,17 +713,70 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
         visibleRenderState.svg,
     ]);
 
+    const isDiagramReady =
+        visibleRenderState.status === "ready" && Boolean(visibleRenderState.svg);
+    const isZoomOutDisabled =
+        viewportState.scale <= MERMAID_VIEWPORT_MIN_ZOOM;
+    const isZoomInDisabled =
+        viewportState.scale >= MERMAID_VIEWPORT_MAX_ZOOM;
+    const zoomLevel = formatMermaidZoomLevel(viewportState.scale);
+
     return (
         <div className="markdown-file-preview__mermaid-frame">
             <div className="markdown-file-preview__mermaid-header">
                 <span>Mermaid</span>
-                <button
-                    className="markdown-file-preview__mermaid-copy-button"
-                    onClick={handleCopySource}
-                    type="button"
-                >
-                    Copy source
-                </button>
+                <div className="markdown-file-preview__mermaid-actions">
+                    {isDiagramReady ? (
+                        <div
+                            aria-label="Mermaid zoom controls"
+                            className="markdown-file-preview__mermaid-zoom-controls"
+                            role="group"
+                        >
+                            <button
+                                aria-label="Zoom out"
+                                className="markdown-file-preview__mermaid-tool-button"
+                                disabled={isZoomOutDisabled}
+                                onClick={handleZoomOut}
+                                title="Zoom out"
+                                type="button"
+                            >
+                                -
+                            </button>
+                            <span
+                                aria-label="Zoom level"
+                                className="markdown-file-preview__mermaid-zoom-level"
+                            >
+                                {zoomLevel}
+                            </span>
+                            <button
+                                aria-label="Zoom in"
+                                className="markdown-file-preview__mermaid-tool-button"
+                                disabled={isZoomInDisabled}
+                                onClick={handleZoomIn}
+                                title="Zoom in"
+                                type="button"
+                            >
+                                +
+                            </button>
+                            <button
+                                aria-label="Fit diagram"
+                                className="markdown-file-preview__mermaid-tool-button markdown-file-preview__mermaid-fit-button"
+                                onClick={handleFitDiagram}
+                                title="Fit diagram"
+                                type="button"
+                            >
+                                Fit
+                            </button>
+                        </div>
+                    ) : null}
+                    <button
+                        className="markdown-file-preview__mermaid-copy-button"
+                        onClick={handleCopySource}
+                        type="button"
+                    >
+                        Copy source
+                    </button>
+                </div>
             </div>
             <div
                 aria-label="Mermaid diagram"
