@@ -452,6 +452,7 @@ export class AiService {
         string,
         CapturedRuntimeDefaults
     >();
+    readonly #selectionMutationChains = new Map<string, Promise<void>>();
     #nativeAi: NativeAiGateway | null;
     readonly #nativeAuthMigratedRuntimeIds = new Set<AiRuntimeId>();
     readonly #nativeChildParentSessionIds = new Map<string, string>();
@@ -1531,7 +1532,9 @@ export class AiService {
 
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
         this.#cancelCapturedRuntimeDefaults(input.sessionId);
-        await this.#setSessionMode(input, { rememberRuntimePreference: true });
+        await this.#enqueueSelectionMutation(input.sessionId, () =>
+            this.#setSessionMode(input, { rememberRuntimePreference: true }),
+        );
     }
 
     async #setSessionMode(
@@ -1563,7 +1566,9 @@ export class AiService {
 
     async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
         this.#cancelCapturedRuntimeDefaults(input.sessionId);
-        await this.#setSessionModel(input, { rememberRuntimePreference: true });
+        await this.#enqueueSelectionMutation(input.sessionId, () =>
+            this.#setSessionModel(input, { rememberRuntimePreference: true }),
+        );
     }
 
     async #setSessionModel(
@@ -1597,13 +1602,37 @@ export class AiService {
         input: AiSessionConfigOptionMutationInput,
     ): Promise<void> {
         this.#cancelCapturedRuntimeDefaults(input.sessionId);
-        await this.#setSessionConfigOption(input, {
-            rememberRuntimePreference: true,
-        });
+        await this.#enqueueSelectionMutation(input.sessionId, () =>
+            this.#setSessionConfigOption(input, {
+                rememberRuntimePreference: true,
+            }),
+        );
     }
 
     #cancelCapturedRuntimeDefaults(sessionId: string): void {
         this.#capturedRuntimeDefaultsBySessionId.delete(sessionId);
+    }
+
+    async #enqueueSelectionMutation<T>(
+        sessionId: string,
+        mutation: () => Promise<T>,
+    ): Promise<T> {
+        const previous =
+            this.#selectionMutationChains.get(sessionId) ?? Promise.resolve();
+        const current = previous.catch(() => undefined).then(mutation);
+        const tail = current.then(
+            () => undefined,
+            () => undefined,
+        );
+        this.#selectionMutationChains.set(sessionId, tail);
+
+        try {
+            return await current;
+        } finally {
+            if (this.#selectionMutationChains.get(sessionId) === tail) {
+                this.#selectionMutationChains.delete(sessionId);
+            }
+        }
     }
 
     async #setSessionConfigOption(
@@ -2707,38 +2736,50 @@ export class AiService {
         const canApplyCapturedDefaults =
             this.#capturedRuntimeDefaultsBySessionId.has(sessionId);
         const modelConfig = getModelConfigOption(snapshot.configOptions);
+        const capturedModelId = capturedDefaults.modelId;
         if (
             !modelConfig &&
             this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults) &&
-            capturedDefaults.modelId &&
-            capturedDefaults.modelId !== snapshot.modelId &&
-            snapshot.models.some((model) => model.id === capturedDefaults.modelId)
+            capturedModelId &&
+            capturedModelId !== snapshot.modelId &&
+            snapshot.models.some((model) => model.id === capturedModelId)
         ) {
-            await this.#setSessionModel(
-                {
-                    modelId: capturedDefaults.modelId,
-                    sessionId,
-                },
-                { rememberRuntimePreference: false },
-            );
+            await this.#enqueueSelectionMutation(sessionId, async () => {
+                if (!this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults)) {
+                    return;
+                }
+                await this.#setSessionModel(
+                    {
+                        modelId: capturedModelId,
+                        sessionId,
+                    },
+                    { rememberRuntimePreference: false },
+                );
+            });
             snapshot = this.#liveSnapshots.get(sessionId) ?? snapshot;
         }
 
         const modeConfig = getModeConfigOption(snapshot.configOptions);
+        const capturedModeId = capturedDefaults.modeId;
         if (
             !modeConfig &&
             this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults) &&
-            capturedDefaults.modeId &&
-            capturedDefaults.modeId !== snapshot.modeId &&
-            snapshot.modes.some((mode) => mode.id === capturedDefaults.modeId)
+            capturedModeId &&
+            capturedModeId !== snapshot.modeId &&
+            snapshot.modes.some((mode) => mode.id === capturedModeId)
         ) {
-            await this.#setSessionMode(
-                {
-                    modeId: capturedDefaults.modeId,
-                    sessionId,
-                },
-                { rememberRuntimePreference: false },
-            );
+            await this.#enqueueSelectionMutation(sessionId, async () => {
+                if (!this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults)) {
+                    return;
+                }
+                await this.#setSessionMode(
+                    {
+                        modeId: capturedModeId,
+                        sessionId,
+                    },
+                    { rememberRuntimePreference: false },
+                );
+            });
             snapshot = this.#liveSnapshots.get(sessionId) ?? snapshot;
         }
 
@@ -2753,14 +2794,19 @@ export class AiService {
             if (!this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults)) {
                 break;
             }
-            await this.#setSessionConfigOption(
-                {
-                    optionId: mutation.optionId,
-                    sessionId,
-                    value: mutation.value,
-                },
-                { rememberRuntimePreference: false },
-            );
+            await this.#enqueueSelectionMutation(sessionId, async () => {
+                if (!this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults)) {
+                    return;
+                }
+                await this.#setSessionConfigOption(
+                    {
+                        optionId: mutation.optionId,
+                        sessionId,
+                        value: mutation.value,
+                    },
+                    { rememberRuntimePreference: false },
+                );
+            });
             snapshot = this.#liveSnapshots.get(sessionId) ?? snapshot;
         }
 

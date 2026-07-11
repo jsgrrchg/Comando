@@ -1420,13 +1420,13 @@ describe("AiService prepareSession", () => {
             });
         });
 
-        await service.setSessionConfigOption({
-            optionId: "reasoning_effort",
+        const manualModelMutation = service.setSessionConfigOption({
+            optionId: "model",
             sessionId: "session-1",
-            value: "high",
+            value: "gpt-5.4-mini",
         });
         resolveModelMutation();
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await manualModelMutation;
 
         expect(setSessionConfigOption).not.toHaveBeenCalledWith({
             optionId: "reasoning_effort",
@@ -1434,10 +1434,15 @@ describe("AiService prepareSession", () => {
             value: "low",
         });
         expect(setSessionConfigOption).toHaveBeenCalledWith({
-            optionId: "reasoning_effort",
+            optionId: "model",
             sessionId: "session-1",
-            value: "high",
+            value: "gpt-5.4-mini",
         });
+        const updatedSnapshot = await service.getSessionSnapshot("session-1");
+        expect(
+            updatedSnapshot?.configOptions.find((option) => option.id === "model")
+                ?.value,
+        ).toBe("gpt-5.4-mini");
     });
 
     it("does not apply runtime preferences to restored sessions without their own selections", async () => {
