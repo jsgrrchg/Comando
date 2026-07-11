@@ -21,38 +21,59 @@ export function getStopAgentConfirmationMessage({
     readonly sessions: Record<string, LifecycleSessionEntry | undefined>;
     readonly title: string;
 }): string | null {
-    const activeChildren = Object.values(sessions).filter(
-        (entry): entry is LifecycleSessionEntry => {
-            if (!entry) {
-                return false;
-            }
-
-            const snapshot = entry.snapshot ?? null;
-            return (
-                snapshot !== null &&
-                snapshot.sessionId !== sessionId &&
-                snapshot.parentSessionId === sessionId &&
-                isBusyAiSessionSnapshot(snapshot)
-            );
-        },
+    const entries = Object.values(sessions).filter(
+        (entry): entry is LifecycleSessionEntry => Boolean(entry?.snapshot),
     );
+    const childrenByParentSessionId = new Map<string, LifecycleSessionEntry[]>();
+    for (const entry of entries) {
+        const parentSessionId = entry.snapshot?.parentSessionId ?? null;
+        if (!parentSessionId || entry.snapshot?.sessionId === parentSessionId) {
+            continue;
+        }
+        const children = childrenByParentSessionId.get(parentSessionId) ?? [];
+        children.push(entry);
+        childrenByParentSessionId.set(parentSessionId, children);
+    }
 
-    if (activeChildren.length === 0) {
+    const activeDescendants: LifecycleSessionEntry[] = [];
+    const pendingSessionIds = [sessionId];
+    const visitedSessionIds = new Set([sessionId]);
+    while (pendingSessionIds.length > 0) {
+        const parentSessionId = pendingSessionIds.shift();
+        if (!parentSessionId) {
+            continue;
+        }
+        for (const entry of childrenByParentSessionId.get(parentSessionId) ?? []) {
+            const snapshot = entry.snapshot;
+            if (!snapshot || visitedSessionIds.has(snapshot.sessionId)) {
+                continue;
+            }
+            visitedSessionIds.add(snapshot.sessionId);
+            pendingSessionIds.push(snapshot.sessionId);
+            if (isBusyAiSessionSnapshot(snapshot)) {
+                activeDescendants.push(entry);
+            }
+        }
+    }
+
+    if (activeDescendants.length === 0) {
         return null;
     }
 
-    const childNames = activeChildren
+    const descendantNames = activeDescendants
         .map((entry) => entry.snapshot?.title ?? entry.meta?.title ?? null)
         .filter((name): name is string => Boolean(name?.trim()))
         .slice(0, 3);
-    const childSummary =
-        childNames.length > 0
-            ? ` (${childNames.join(", ")}${activeChildren.length > childNames.length ? ", ..." : ""})`
+    const descendantSummary =
+        descendantNames.length > 0
+            ? ` (${descendantNames.join(", ")}${activeDescendants.length > descendantNames.length ? ", ..." : ""})`
             : "";
-    const childLabel =
-        activeChildren.length === 1 ? "child agent" : "child agents";
+    const descendantLabel =
+        activeDescendants.length === 1
+            ? "descendant agent"
+            : "descendant agents";
 
-    return `Stop "${title}"? ${activeChildren.length} active ${childLabel}${childSummary} will keep running. This only stops the selected thread.`;
+    return `Stop "${title}"? ${activeDescendants.length} active ${descendantLabel}${descendantSummary} will keep running. This only stops the selected thread.`;
 }
 
 export function requestStopAgentSession({

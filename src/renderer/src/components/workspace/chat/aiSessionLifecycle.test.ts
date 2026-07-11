@@ -59,7 +59,36 @@ describe("getStopAgentConfirmationMessage", () => {
         });
 
         expect(message).toBe(
-            'Stop "Parent"? 1 active child agent (Galileo) will keep running. This only stops the selected thread.',
+            'Stop "Parent"? 1 active descendant agent (Galileo) will keep running. This only stops the selected thread.',
+        );
+    });
+
+    it("includes active nested descendants through idle intermediates", () => {
+        const message = getStopAgentConfirmationMessage({
+            sessionId: "parent",
+            sessions: {
+                child: {
+                    snapshot: createSnapshot({
+                        parentSessionId: "parent",
+                        sessionId: "child",
+                        status: "idle",
+                        title: "Galileo",
+                    }),
+                },
+                grandchild: {
+                    snapshot: createSnapshot({
+                        parentSessionId: "child",
+                        sessionId: "grandchild",
+                        status: "streaming",
+                        title: "Ada",
+                    }),
+                },
+            },
+            title: "Parent",
+        });
+
+        expect(message).toBe(
+            'Stop "Parent"? 1 active descendant agent (Ada) will keep running. This only stops the selected thread.',
         );
     });
 

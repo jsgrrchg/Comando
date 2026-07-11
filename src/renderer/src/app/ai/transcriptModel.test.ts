@@ -117,7 +117,7 @@ describe("transcriptModel", () => {
         expect(transcript.messageOrder).toEqual([
             "message:user-1",
             "message:thinking-1",
-            "tool:tool-1",
+            "tool:session-1:tool-1",
             "message:assistant-1",
             "plan:active",
             "status:active-turn",
@@ -244,7 +244,7 @@ describe("transcriptModel", () => {
             }),
         );
 
-        expect(transcript.messageOrder).toEqual(["tool:tool-1"]);
+        expect(transcript.messageOrder).toEqual(["tool:session-1:tool-1"]);
         expect(getAiSessionTranscriptToolActivity(transcript)).toEqual([
             expect.objectContaining({
                 createdAt: "2026-04-14T00:00:01.000Z",

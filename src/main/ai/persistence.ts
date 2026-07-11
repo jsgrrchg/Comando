@@ -1,5 +1,6 @@
 import type {
     AiHistorySessionSummary,
+    AiPromptQueueSnapshot,
     AiSessionSnapshot,
     AiSessionTranscriptPage,
     GetAiSessionTranscriptPageInput,
@@ -43,6 +44,7 @@ export interface AiPersistenceGateway {
     loadLatestRuntimeCatalog(
         runtimeId: AiSessionSnapshot["runtimeId"],
     ): PersistedRuntimeCatalogSnapshot | null;
+    loadPromptQueueSnapshots?(): readonly AiPromptQueueSnapshot[];
     loadRuntimeSelectionPreferences(
         runtimeId: AiSessionSnapshot["runtimeId"],
     ): PersistedRuntimeSelectionPreferences;
@@ -72,6 +74,9 @@ export interface AiPersistenceGateway {
     saveRuntimeCatalogPatch?(
         runtimeId: AiSessionSnapshot["runtimeId"],
         patch: Partial<PersistedRuntimeCatalogSnapshot>,
+    ): void;
+    savePromptQueueSnapshots?(
+        snapshots: readonly AiPromptQueueSnapshot[],
     ): void;
     setSessionPinned(sessionId: string, pinned: boolean): Awaitable<void>;
     saveSessionSnapshot(snapshot: AiSessionSnapshot, draft?: string): void;

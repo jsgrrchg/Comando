@@ -75,6 +75,7 @@ import {
     isActiveChatTurnStatus,
     isChatStreamingStatus,
 } from "./chat/chatTurnStatus";
+import { getChatSessionPreparationKey } from "./chat/chatSessionPreparation";
 import {
     isScrollViewportNearBottom,
     resolveChatScrollPersistenceState,
@@ -100,10 +101,8 @@ import {
     serializePromptWithContexts,
 } from "./chat/promptContextReferences";
 import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
-import {
-    isEditedFileToolActivity,
-    ToolActivityItem,
-} from "./chat/ToolActivityItem";
+import { ToolActivityItem } from "./chat/ToolActivityItem";
+import { isEditedFileToolActivity } from "./chat/toolActivityKinds";
 import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
@@ -404,6 +403,8 @@ export const ChatTabView = memo(function ChatTabView({
             tab.worktreeId,
         ],
     );
+    const sessionPreparationKey = getChatSessionPreparationKey(sessionTab);
+    const latestSessionTabRef = useRef(sessionTab);
     const liveSessionTab = useMemo(
         () => ({
             ...sessionTab,
@@ -443,8 +444,12 @@ export const ChatTabView = memo(function ChatTabView({
     );
 
     useEffect(() => {
-        void ensureSession(sessionTab);
-    }, [ensureSession, sessionTab]);
+        latestSessionTabRef.current = sessionTab;
+    }, [sessionTab]);
+
+    useEffect(() => {
+        void ensureSession(latestSessionTabRef.current);
+    }, [ensureSession, sessionPreparationKey]);
 
     const snapshot =
         sessionState?.snapshot ?? createEmptySnapshot(tab, runtimeCatalog);
@@ -787,6 +792,16 @@ export const ChatTabView = memo(function ChatTabView({
     }, [activeTurnKey, activeTurnStartedAt]);
 
     /* eslint-disable react-hooks/refs -- The timeline reconciler needs the last committed model to preserve row identity during render. */
+    const attentionToolCallIds = useMemo(() => {
+        const toolCallIds = new Set<string>();
+        if (pendingPermission?.toolCallId) {
+            toolCallIds.add(pendingPermission.toolCallId);
+        }
+        if (pendingUserInput?.toolCallId) {
+            toolCallIds.add(pendingUserInput.toolCallId);
+        }
+        return toolCallIds;
+    }, [pendingPermission?.toolCallId, pendingUserInput?.toolCallId]);
     const timelineModel = useMemo(() => {
         const previousTimelineState = stableTimelineRef.current;
         const previousTimelineModel =
@@ -795,12 +810,14 @@ export const ChatTabView = memo(function ChatTabView({
                 : null;
         return reconcileChatTimelineModelFromTranscript(previousTimelineModel, {
             activeTurnStartedAt,
+            attentionToolCallIds,
             status: snapshot.status,
             trackedFiles: canonicalTrackedFiles,
             transcript,
         });
     }, [
         activeTurnStartedAt,
+        attentionToolCallIds,
         canonicalTrackedFiles,
         snapshot.status,
         tab.sessionId,
@@ -831,7 +848,7 @@ export const ChatTabView = memo(function ChatTabView({
         pendingReviewCount,
         queuedPrompts: queuedPrompts.length,
         sessionId: tab.sessionId,
-        timelineRows: timelineModel.orderedRows.length,
+        timelineRows: timelineModel.orderedAtomicRows.length,
     });
 
     const isNearBottom = useCallback((el: HTMLDivElement) => {
@@ -1819,9 +1836,9 @@ export const ChatTabView = memo(function ChatTabView({
                     chatFontSize={aiChatSettings.chatFontSize}
                     elapsed={elapsed}
                     covered={composerExpanded}
-                    historyRows={timelineModel.historyRows}
+                    historyRows={timelineModel.atomicHistoryRows}
                     isStreaming={isStreaming}
-                    liveTailRow={timelineModel.liveTailRow}
+                    liveTailRow={timelineModel.atomicLiveTailRow}
                     toolCardExpansionMode={aiChatSettings.toolCardExpansionMode}
                     onAddFileReferenceToChat={
                         handleAddResolvedFileReferenceToChat
@@ -2848,6 +2865,10 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
                 />
             </div>
         );
+    }
+
+    if (row.kind === "activity-segment") {
+        return null;
     }
 
     return (

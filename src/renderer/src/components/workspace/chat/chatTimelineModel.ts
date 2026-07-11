@@ -8,33 +8,88 @@ import {
     getAiSessionTranscriptToolActivity,
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
+import { areTrackedFilePathReferencesEquivalent } from "@renderer/app/ai/trackedFilePath";
 
 import {
     deriveToolActivityReviewEntries,
     type ToolActivityReviewEntry,
 } from "./toolActivityReviewModel";
+import { getToolActivityDescriptor } from "./toolActivityDescriptor";
+import {
+    getToolActivityPresentationPolicy,
+    type ToolActivityPresentationContext,
+    type ToolActivityPresentationPolicy,
+} from "./toolActivityPresentation";
 import { isTurnStartedActivity } from "./toolActivityKinds";
 
-export type ChatTimelineRow =
-    | {
-          readonly id: string;
-          readonly kind: "message";
-          readonly message: AiSessionSnapshot["messages"][number];
-      }
-    | {
-          readonly id: string;
-          readonly kind: "tool";
-          readonly reviewEntry: ToolActivityReviewEntry;
-      };
+export interface ChatTimelineMessageRow {
+    readonly id: string;
+    readonly kind: "message";
+    readonly message: AiSessionSnapshot["messages"][number];
+}
+
+export interface ChatTimelineToolRow {
+    readonly id: string;
+    readonly kind: "tool";
+    readonly reviewEntry: ToolActivityReviewEntry;
+}
+
+export type ChatTimelineAtomicRow =
+    | ChatTimelineMessageRow
+    | ChatTimelineToolRow;
+
+export interface ToolActivitySegmentEntry {
+    readonly policy: Exclude<ToolActivityPresentationPolicy, "structural">;
+    readonly reviewEntry: ToolActivityReviewEntry;
+}
+
+export interface ToolActivitySegmentSummary {
+    readonly actionCount: number;
+    readonly changeCount: number;
+    readonly changedFileCount: number;
+    readonly commandCount: number;
+    readonly failureCount: number;
+    readonly fileCount: number;
+    readonly hiddenActivityCount: number;
+    readonly isInProgress: boolean;
+    readonly latestActivityId: string;
+    readonly latestTitle: string;
+    readonly searchCount: number;
+    readonly startedAt: string;
+    readonly updatedAt: string;
+}
+
+export interface ChatTimelineActivitySegmentRow {
+    readonly entries: readonly ToolActivitySegmentEntry[];
+    readonly id: string;
+    readonly kind: "activity-segment";
+    readonly summary: ToolActivitySegmentSummary;
+}
+
+export type ChatTimelinePresentationRow =
+    | ChatTimelineAtomicRow
+    | ChatTimelineActivitySegmentRow;
+
+export type ChatTimelineRow = ChatTimelinePresentationRow;
 
 export interface ChatTimelineModel {
-    readonly historyRows: readonly ChatTimelineRow[];
+    readonly atomicHistoryRowIds: readonly string[];
+    readonly atomicHistoryRows: readonly ChatTimelineAtomicRow[];
+    readonly atomicLiveTailRow: ChatTimelineAtomicRow | null;
+    readonly atomicLiveTailRowId: string | null;
+    readonly atomicRowById: ReadonlyMap<string, ChatTimelineAtomicRow>;
+    readonly historyRows: readonly ChatTimelinePresentationRow[];
     readonly historyRowIds: readonly string[];
-    readonly liveTailRow: ChatTimelineRow | null;
+    readonly liveTailRow: ChatTimelinePresentationRow | null;
     readonly liveTailRowId: string | null;
     readonly orderedRowIds: readonly string[];
-    readonly orderedRows: readonly ChatTimelineRow[];
-    readonly rowById: ReadonlyMap<string, ChatTimelineRow>;
+    readonly orderedAtomicRowIds: readonly string[];
+    readonly orderedAtomicRows: readonly ChatTimelineAtomicRow[];
+    readonly orderedRows: readonly ChatTimelinePresentationRow[];
+    readonly presentationRowById: ReadonlyMap<
+        string,
+        ChatTimelinePresentationRow
+    >;
 }
 
 export function areImageAttachmentsEquivalent(
@@ -108,7 +163,9 @@ export function areToolActivitiesEquivalent(
         previous.id === next.id &&
         previous.updatedAt === next.updatedAt &&
         previous.status === next.status &&
+        previous.exitCode === next.exitCode &&
         previous.kind === next.kind &&
+        previous.sessionId === next.sessionId &&
         previous.title === next.title &&
         previous.summary === next.summary &&
         previous.rawInputJson === next.rawInputJson &&
@@ -218,7 +275,7 @@ function getMessageRowId(
 }
 
 function getToolRowId(entry: ToolActivityReviewEntry): string {
-    return `tool:${entry.activity.id}`;
+    return `tool:${entry.activity.sessionId}:${entry.activity.id}`;
 }
 
 const LOCAL_TURN_STARTED_ACTIVITY_ID_PREFIX = "comando:status:turn:local:";
@@ -319,13 +376,13 @@ function prepareTimelineToolActivity(
     ];
 }
 
-function getRowCreatedAt(row: ChatTimelineRow): string {
+function getRowCreatedAt(row: ChatTimelineAtomicRow): string {
     return row.kind === "message"
         ? row.message.createdAt
         : row.reviewEntry.activity.createdAt;
 }
 
-function getRowSortPriority(row: ChatTimelineRow): number {
+function getRowSortPriority(row: ChatTimelineAtomicRow): number {
     if (
         row.kind === "tool" &&
         isTurnStartedActivity(row.reviewEntry.activity)
@@ -341,7 +398,7 @@ function getRowSortPriority(row: ChatTimelineRow): number {
 }
 
 function isContextCompactionActivity(
-    row: ChatTimelineRow,
+    row: ChatTimelineAtomicRow,
     activeTurnStartedAt: string | null | undefined,
 ): boolean {
     if (row.kind !== "tool") {
@@ -361,7 +418,10 @@ function isContextCompactionActivity(
     );
 }
 
-function compareRows(left: ChatTimelineRow, right: ChatTimelineRow): number {
+function compareRows(
+    left: ChatTimelineAtomicRow,
+    right: ChatTimelineAtomicRow,
+): number {
     const createdAtComparison = getRowCreatedAt(left).localeCompare(
         getRowCreatedAt(right),
     );
@@ -383,12 +443,12 @@ function createRowById(
     previous: ChatTimelineModel | null,
     messages: readonly AiSessionSnapshot["messages"][number][],
     toolEntries: readonly ToolActivityReviewEntry[],
-): Map<string, ChatTimelineRow> {
-    const nextRowById = new Map<string, ChatTimelineRow>();
+): Map<string, ChatTimelineAtomicRow> {
+    const nextRowById = new Map<string, ChatTimelineAtomicRow>();
 
     for (const message of messages) {
         const rowId = getMessageRowId(message);
-        const previousRow = previous?.rowById.get(rowId) ?? null;
+        const previousRow = previous?.atomicRowById.get(rowId) ?? null;
 
         if (
             previousRow?.kind === "message" &&
@@ -407,7 +467,7 @@ function createRowById(
 
     for (const reviewEntry of toolEntries) {
         const rowId = getToolRowId(reviewEntry);
-        const previousRow = previous?.rowById.get(rowId) ?? null;
+        const previousRow = previous?.atomicRowById.get(rowId) ?? null;
 
         if (
             previousRow?.kind === "tool" &&
@@ -431,14 +491,261 @@ function createRowById(
 }
 
 function buildOrderedRows(
-    rowById: ReadonlyMap<string, ChatTimelineRow>,
-): ChatTimelineRow[] {
+    rowById: ReadonlyMap<string, ChatTimelineAtomicRow>,
+): ChatTimelineAtomicRow[] {
     return [...rowById.values()].sort(compareRows);
 }
 
-function reuseRowIds(
+function addPath(paths: string[], path: string | null | undefined): void {
+    const normalizedPath = path?.trim();
+    if (
+        normalizedPath &&
+        !paths.some((existingPath) =>
+            areTrackedFilePathReferencesEquivalent(
+                existingPath,
+                normalizedPath,
+            ),
+        )
+    ) {
+        paths.push(normalizedPath);
+    }
+}
+
+function buildToolActivitySegmentSummary(
+    entries: readonly ToolActivitySegmentEntry[],
+): ToolActivitySegmentSummary {
+    const latestEntry = entries.at(-1);
+    if (!latestEntry) {
+        throw new Error("Tool activity segments require at least one entry.");
+    }
+
+    const fileTargets: string[] = [];
+    const changedFileTargets: string[] = [];
+    let changeCount = 0;
+    let commandCount = 0;
+    let failureCount = 0;
+    let hiddenActivityCount = 0;
+    let searchCount = 0;
+    let updatedAt =
+        entries[0]?.reviewEntry.activity.updatedAt ??
+        latestEntry.reviewEntry.activity.updatedAt;
+
+    for (const entry of entries) {
+        const { activity, trackedFiles } = entry.reviewEntry;
+        const descriptor = getToolActivityDescriptor(activity);
+        if (descriptor.category === "command") {
+            commandCount += 1;
+        } else if (descriptor.category === "search") {
+            searchCount += 1;
+        } else if (descriptor.category === "file" && descriptor.target) {
+            addPath(fileTargets, descriptor.target);
+        }
+
+        for (const location of activity.locations) {
+            addPath(fileTargets, location.path);
+        }
+        for (const diff of activity.diffs) {
+            addPath(fileTargets, diff.path);
+            addPath(fileTargets, diff.previousPath);
+            if (entry.policy === "standalone-change") {
+                addPath(changedFileTargets, diff.path);
+            }
+        }
+        for (const trackedFile of trackedFiles) {
+            addPath(fileTargets, trackedFile.path);
+            addPath(fileTargets, trackedFile.previousPath);
+            if (entry.policy === "standalone-change") {
+                addPath(changedFileTargets, trackedFile.path);
+            }
+        }
+
+        if (entry.policy === "standalone-change") {
+            changeCount += 1;
+        }
+        if (entry.policy === "groupable") {
+            hiddenActivityCount += 1;
+        }
+        if (
+            activity.status === "failed" ||
+            (activity.exitCode !== null && activity.exitCode !== 0)
+        ) {
+            failureCount += 1;
+        }
+
+        if (activity.updatedAt > updatedAt) {
+            updatedAt = activity.updatedAt;
+        }
+    }
+
+    return {
+        actionCount: entries.length,
+        changeCount,
+        changedFileCount: changedFileTargets.length,
+        commandCount,
+        failureCount,
+        fileCount: fileTargets.length,
+        hiddenActivityCount,
+        isInProgress: entries.some(
+            (entry) =>
+                entry.reviewEntry.activity.status === "pending" ||
+                entry.reviewEntry.activity.status === "in_progress",
+        ),
+        latestActivityId: latestEntry.reviewEntry.activity.id,
+        latestTitle: latestEntry.reviewEntry.activity.title,
+        searchCount,
+        startedAt:
+            entries[0]?.reviewEntry.activity.createdAt ??
+            latestEntry.reviewEntry.activity.createdAt,
+        updatedAt,
+    };
+}
+
+function areToolActivitySegmentSummariesEquivalent(
+    previous: ToolActivitySegmentSummary,
+    next: ToolActivitySegmentSummary,
+): boolean {
+    return (
+        previous.actionCount === next.actionCount &&
+        previous.changeCount === next.changeCount &&
+        previous.changedFileCount === next.changedFileCount &&
+        previous.commandCount === next.commandCount &&
+        previous.failureCount === next.failureCount &&
+        previous.fileCount === next.fileCount &&
+        previous.hiddenActivityCount === next.hiddenActivityCount &&
+        previous.isInProgress === next.isInProgress &&
+        previous.latestActivityId === next.latestActivityId &&
+        previous.latestTitle === next.latestTitle &&
+        previous.searchCount === next.searchCount &&
+        previous.startedAt === next.startedAt &&
+        previous.updatedAt === next.updatedAt
+    );
+}
+
+function reuseToolActivitySegmentRow(
+    previousRowById: ReadonlyMap<string, ChatTimelinePresentationRow> | null,
+    id: string,
+    entries: readonly ToolActivitySegmentEntry[],
+): ChatTimelineActivitySegmentRow {
+    const summary = buildToolActivitySegmentSummary(entries);
+    const previousRow = previousRowById?.get(id);
+
+    if (
+        previousRow?.kind === "activity-segment" &&
+        previousRow.entries.length === entries.length &&
+        previousRow.entries.every(
+            (entry, index) =>
+                entry.policy === entries[index]?.policy &&
+                entry.reviewEntry === entries[index]?.reviewEntry,
+        ) &&
+        areToolActivitySegmentSummariesEquivalent(previousRow.summary, summary)
+    ) {
+        return previousRow;
+    }
+
+    return {
+        entries,
+        id,
+        kind: "activity-segment",
+        summary,
+    };
+}
+
+export function buildChatTimelinePresentationRows(
+    atomicRows: readonly ChatTimelineAtomicRow[],
+    context: ToolActivityPresentationContext,
+    previousRowById: ReadonlyMap<string, ChatTimelinePresentationRow> | null = null,
+): ChatTimelinePresentationRow[] {
+    const presentationRows: ChatTimelinePresentationRow[] = [];
+    let segmentEntries: ToolActivitySegmentEntry[] = [];
+    let segmentSessionId: string | null = null;
+
+    const flushSegment = () => {
+        const firstEntry = segmentEntries[0];
+        if (!firstEntry || segmentSessionId === null) {
+            segmentEntries = [];
+            segmentSessionId = null;
+            return;
+        }
+
+        const id = `activity-segment:${segmentSessionId}:${firstEntry.reviewEntry.activity.id}`;
+        presentationRows.push(
+            reuseToolActivitySegmentRow(previousRowById, id, segmentEntries),
+        );
+        segmentEntries = [];
+        segmentSessionId = null;
+    };
+
+    for (const row of atomicRows) {
+        if (row.kind === "message") {
+            flushSegment();
+            presentationRows.push(row);
+            continue;
+        }
+
+        const policy = getToolActivityPresentationPolicy(
+            row.reviewEntry,
+            context,
+        );
+        if (policy === "structural") {
+            flushSegment();
+            // Turn markers remain internal boundaries and should not appear in chat.
+            if (!isTurnStartedActivity(row.reviewEntry.activity)) {
+                presentationRows.push(row);
+            }
+            continue;
+        }
+
+        const sessionId = row.reviewEntry.activity.sessionId;
+        if (segmentSessionId !== null && segmentSessionId !== sessionId) {
+            flushSegment();
+        }
+        segmentSessionId = sessionId;
+        segmentEntries.push({ policy, reviewEntry: row.reviewEntry });
+    }
+
+    flushSegment();
+    return presentationRows;
+}
+
+function createPresentationRowById(
+    rows: readonly ChatTimelinePresentationRow[],
+): Map<string, ChatTimelinePresentationRow> {
+    return new Map(rows.map((row) => [row.id, row]));
+}
+
+export function findPresentationRowContaining(
+    presentationRows: readonly ChatTimelinePresentationRow[],
+    atomicRow: ChatTimelineAtomicRow | null,
+): ChatTimelinePresentationRow | null {
+    if (!atomicRow) {
+        return null;
+    }
+
+    for (const row of presentationRows) {
+        if (row.id === atomicRow.id) {
+            return row;
+        }
+        if (
+            row.kind === "activity-segment" &&
+            atomicRow.kind === "tool" &&
+            row.entries.some(
+                (entry) =>
+                    entry.reviewEntry.activity.sessionId ===
+                        atomicRow.reviewEntry.activity.sessionId &&
+                    entry.reviewEntry.activity.id ===
+                        atomicRow.reviewEntry.activity.id,
+            )
+        ) {
+            return row;
+        }
+    }
+
+    return null;
+}
+
+function reuseRowIds<Row extends { readonly id: string }>(
     previousRowIds: readonly string[] | null | undefined,
-    nextRows: readonly ChatTimelineRow[],
+    nextRows: readonly Row[],
 ): readonly string[] {
     const nextRowIds = nextRows.map((row) => row.id);
 
@@ -453,10 +760,10 @@ function reuseRowIds(
     return nextRowIds;
 }
 
-function reuseRows(
-    previousRows: readonly ChatTimelineRow[] | null | undefined,
-    nextRows: readonly ChatTimelineRow[],
-): readonly ChatTimelineRow[] {
+function reuseRows<Row>(
+    previousRows: readonly Row[] | null | undefined,
+    nextRows: readonly Row[],
+): readonly Row[] {
     if (
         previousRows &&
         previousRows.length === nextRows.length &&
@@ -472,11 +779,13 @@ function isStreamingStatus(status: AiSessionSnapshot["status"]): boolean {
     return status === "starting" || status === "streaming";
 }
 
+const EMPTY_ATTENTION_TOOL_CALL_IDS: ReadonlySet<string> = new Set();
+
 function getStreamingLiveTailRow(
     status: AiSessionSnapshot["status"],
-    orderedRows: readonly ChatTimelineRow[],
+    orderedRows: readonly ChatTimelineAtomicRow[],
     activeTurnStartedAt: string | null | undefined,
-): ChatTimelineRow | null {
+): ChatTimelineAtomicRow | null {
     if (!isStreamingStatus(status) || orderedRows.length === 0) {
         return null;
     }
@@ -496,6 +805,10 @@ function getStreamingLiveTailRow(
                 return row;
             }
         }
+
+        // User messages must stay in history so they keep the same React owner
+        // when the first assistant or tool row arrives for the turn.
+        return null;
     }
 
     return tailCandidate;
@@ -508,22 +821,59 @@ export function reconcileChatTimelineModel(
         "messages" | "status" | "toolActivity" | "trackedFiles"
     > & {
         readonly activeTurnStartedAt?: string | null;
+        readonly attentionToolCallIds?: ReadonlySet<string>;
     },
 ): ChatTimelineModel {
     const toolEntries = deriveToolActivityReviewEntries(
         prepareTimelineToolActivity(snapshot),
         snapshot.trackedFiles,
     );
-    const nextRowById = createRowById(previous, snapshot.messages, toolEntries);
-    const orderedRows = reuseRows(
-        previous?.orderedRows,
-        buildOrderedRows(nextRowById),
+    const atomicRowById = createRowById(
+        previous,
+        snapshot.messages,
+        toolEntries,
     );
-    const orderedRowIds = reuseRowIds(previous?.orderedRowIds, orderedRows);
-    const liveTailRow = getStreamingLiveTailRow(
+    const orderedAtomicRows = reuseRows(
+        previous?.orderedAtomicRows,
+        buildOrderedRows(atomicRowById),
+    );
+    const orderedAtomicRowIds = reuseRowIds(
+        previous?.orderedAtomicRowIds,
+        orderedAtomicRows,
+    );
+    const atomicLiveTailRow = getStreamingLiveTailRow(
         snapshot.status,
-        orderedRows,
+        orderedAtomicRows,
         snapshot.activeTurnStartedAt,
+    );
+    const atomicLiveTailRowId = atomicLiveTailRow?.id ?? null;
+    const nextAtomicHistoryRows =
+        atomicLiveTailRow == null
+            ? [...orderedAtomicRows]
+            : orderedAtomicRows.filter((row) => row !== atomicLiveTailRow);
+    const atomicHistoryRows = reuseRows(
+        previous?.atomicHistoryRows,
+        nextAtomicHistoryRows,
+    );
+    const atomicHistoryRowIds = reuseRowIds(
+        previous?.atomicHistoryRowIds,
+        atomicHistoryRows,
+    );
+
+    const nextOrderedRows = buildChatTimelinePresentationRows(
+        orderedAtomicRows,
+        {
+            attentionToolCallIds:
+                snapshot.attentionToolCallIds ??
+                EMPTY_ATTENTION_TOOL_CALL_IDS,
+        },
+        previous?.presentationRowById ?? null,
+    );
+    const orderedRows = reuseRows(previous?.orderedRows, nextOrderedRows);
+    const orderedRowIds = reuseRowIds(previous?.orderedRowIds, orderedRows);
+    const liveTailRow = findPresentationRowContaining(
+        orderedRows,
+        atomicLiveTailRow,
     );
     const liveTailRowId = liveTailRow?.id ?? null;
     const nextHistoryRows =
@@ -534,13 +884,20 @@ export function reconcileChatTimelineModel(
     const historyRowIds = reuseRowIds(previous?.historyRowIds, historyRows);
 
     return {
+        atomicHistoryRowIds,
+        atomicHistoryRows,
+        atomicLiveTailRow,
+        atomicLiveTailRowId,
+        atomicRowById,
         historyRowIds,
         historyRows,
         liveTailRow,
         liveTailRowId,
+        orderedAtomicRowIds,
+        orderedAtomicRows,
         orderedRowIds,
         orderedRows,
-        rowById: nextRowById,
+        presentationRowById: createPresentationRowById(orderedRows),
     };
 }
 
@@ -548,6 +905,7 @@ export function reconcileChatTimelineModelFromTranscript(
     previous: ChatTimelineModel | null,
     input: {
         readonly activeTurnStartedAt?: string | null;
+        readonly attentionToolCallIds?: ReadonlySet<string>;
         readonly status: AiSessionSnapshot["status"];
         readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
         readonly transcript: AiSessionTranscriptModel;
@@ -556,6 +914,7 @@ export function reconcileChatTimelineModelFromTranscript(
     return reconcileChatTimelineModel(previous, {
         messages: getAiSessionTranscriptMessages(input.transcript),
         activeTurnStartedAt: input.activeTurnStartedAt,
+        attentionToolCallIds: input.attentionToolCallIds,
         status: input.status,
         toolActivity: getAiSessionTranscriptToolActivity(input.transcript),
         trackedFiles: input.trackedFiles,

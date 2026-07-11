@@ -762,6 +762,7 @@ impl AiEngine {
         current.worktree_id = metadata.worktree_id;
         current.title = metadata.title;
         current.status = metadata.status;
+        current.closed_at = None;
         current.model_id = metadata.model_id;
         current.mode_id = metadata.mode_id;
         current.reasoning_effort = metadata.reasoning_effort;

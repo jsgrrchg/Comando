@@ -65,6 +65,22 @@ function createTrackedFile(
     };
 }
 
+function createReadActivity(
+    id: string,
+    createdAt: string,
+    overrides: Partial<AiToolActivity> = {},
+): AiToolActivity {
+    return createActivity({
+        createdAt,
+        id,
+        kind: "read",
+        rawInputJson: JSON.stringify({ file_path: `src/${id}.ts` }),
+        title: `Read src/${id}.ts`,
+        updatedAt: createdAt,
+        ...overrides,
+    });
+}
+
 describe("chatTimelineModel", () => {
     it("keeps history rows stable while the streaming tail mutates", () => {
         const initialModel = reconcileChatTimelineModel(null, {
@@ -156,6 +172,45 @@ describe("chatTimelineModel", () => {
         expect(completedModel.historyRows[1]?.id).toBe("message:message-2");
     });
 
+    it("keeps the latest user message in history when agent activity starts", () => {
+        const userOnlyModel = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    content: "Inspect the timeline",
+                    id: "message-1",
+                    kind: "user",
+                }),
+            ],
+            status: "starting",
+            toolActivity: [],
+            trackedFiles: [],
+        });
+
+        const activityModel = reconcileChatTimelineModel(userOnlyModel, {
+            messages: [
+                createMessage({
+                    content: "Inspect the timeline",
+                    id: "message-1",
+                    kind: "user",
+                }),
+            ],
+            status: "streaming",
+            toolActivity: [
+                createReadActivity("read-1", "2026-04-14T00:00:01.000Z", {
+                    status: "in_progress",
+                }),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(userOnlyModel.liveTailRow).toBeNull();
+        expect(userOnlyModel.historyRowIds).toEqual(["message:message-1"]);
+        expect(activityModel.historyRows[0]).toBe(userOnlyModel.historyRows[0]);
+        expect(activityModel.liveTailRowId).toBe(
+            "activity-segment:session-1:read-1",
+        );
+    });
+
     it("renders context compaction below the latest user message", () => {
         const model = reconcileChatTimelineModel(null, {
             messages: [
@@ -189,12 +244,12 @@ describe("chatTimelineModel", () => {
         });
 
         expect(model.orderedRowIds).toEqual([
-            "tool:codex-acp:status:item:compact-1",
+            "tool:session-1:codex-acp:status:item:compact-1",
             "message:compact-message",
         ]);
         expect(model.historyRowIds).toEqual(["message:compact-message"]);
         expect(model.liveTailRowId).toBe(
-            "tool:codex-acp:status:item:compact-1",
+            "tool:session-1:codex-acp:status:item:compact-1",
         );
     });
 
@@ -260,7 +315,7 @@ describe("chatTimelineModel", () => {
         ]);
     });
 
-    it("shows the active turn divider above a later local user message", () => {
+    it("keeps the active turn boundary internal for later user messages", () => {
         const model = reconcileChatTimelineModel(null, {
             messages: [
                 createMessage({
@@ -291,14 +346,13 @@ describe("chatTimelineModel", () => {
         expect(model.orderedRowIds).toEqual([
             "message:first-prompt",
             "message:assistant-1",
-            "tool:comando:status:turn:local:2026-04-14T00:00:03.000Z",
             "message:local-prompt-1",
         ]);
         expect(
-            model.orderedRows[2]?.kind === "tool"
-                ? model.orderedRows[2].reviewEntry.activity.title
-                : null,
-        ).toBe("New turn");
+            model.orderedAtomicRowIds,
+        ).toContain(
+            "tool:local-prompt-1:comando:status:turn:local:2026-04-14T00:00:03.000Z",
+        );
     });
 
     it("deduplicates runtime turn dividers while keeping the local turn anchor", () => {
@@ -347,9 +401,8 @@ describe("chatTimelineModel", () => {
         expect(model.orderedRowIds).toEqual([
             "message:first-prompt",
             "message:assistant-1",
-            "tool:comando:status:turn:local:2026-04-14T00:00:03.000Z",
             "message:local-prompt-1",
-            "tool:tool-1",
+            "activity-segment:session-1:tool-1",
         ]);
     });
 
@@ -385,7 +438,11 @@ describe("chatTimelineModel", () => {
             trackedFiles: [],
         });
 
-        expect(model.liveTailRowId).toBe("message:message-after-compact");
+        expect(model.liveTailRowId).toBeNull();
+        expect(model.historyRowIds).toEqual([
+            "tool:session-1:codex-acp:status:item:compact-1",
+            "message:message-after-compact",
+        ]);
     });
 
     it("does not revive stale in-progress context compaction from an earlier turn", () => {
@@ -413,7 +470,11 @@ describe("chatTimelineModel", () => {
             trackedFiles: [],
         });
 
-        expect(model.liveTailRowId).toBe("message:message-after-stale-compact");
+        expect(model.liveTailRowId).toBeNull();
+        expect(model.historyRowIds).toEqual([
+            "tool:session-1:codex-acp:status:item:compact-1",
+            "message:message-after-stale-compact",
+        ]);
     });
 
     it("reuses unchanged tool rows when only the latest tool activity changes", () => {
@@ -476,8 +537,12 @@ describe("chatTimelineModel", () => {
             ],
         });
 
-        expect(nextModel.orderedRows[0]).toBe(initialModel.orderedRows[0]);
-        expect(nextModel.orderedRows[1]).not.toBe(initialModel.orderedRows[1]);
+        expect(nextModel.atomicRowById.get("tool:session-1:tool-1")).toBe(
+            initialModel.atomicRowById.get("tool:session-1:tool-1"),
+        );
+        expect(nextModel.atomicRowById.get("tool:session-1:tool-2")).not.toBe(
+            initialModel.atomicRowById.get("tool:session-1:tool-2"),
+        );
     });
 
     it("does not attach a pending tracked file to older edits with the same path", () => {
@@ -529,8 +594,12 @@ describe("chatTimelineModel", () => {
             ],
         });
 
-        const oldRow = model.rowById.get("tool:tool-old");
-        const currentRow = model.rowById.get("tool:tool-current");
+        const oldRow = model.atomicRowById.get(
+            "tool:session-1:tool-old",
+        );
+        const currentRow = model.atomicRowById.get(
+            "tool:session-1:tool-current",
+        );
 
         expect(oldRow?.kind).toBe("tool");
         expect(currentRow?.kind).toBe("tool");
@@ -572,19 +641,719 @@ describe("chatTimelineModel", () => {
 
         expect(model.orderedRowIds).toEqual([
             "message:message-transcript",
-            "tool:tool-transcript",
+            "activity-segment:session-1:tool-transcript",
         ]);
-        const messageRow = model.rowById.get("message:message-transcript");
+        const messageRow = model.presentationRowById.get(
+            "message:message-transcript",
+        );
         expect(messageRow?.kind).toBe("message");
         if (messageRow?.kind !== "message") {
             throw new Error("Expected transcript message row.");
         }
         expect(messageRow.message.content).toBe("hello from transcript");
-        const toolRow = model.rowById.get("tool:tool-transcript");
+        const toolRow = model.atomicRowById.get(
+            "tool:session-1:tool-transcript",
+        );
         expect(toolRow?.kind).toBe("tool");
         if (toolRow?.kind !== "tool") {
             throw new Error("Expected transcript tool row.");
         }
         expect(toolRow.reviewEntry.pendingTrackedFiles).toHaveLength(1);
+    });
+});
+
+describe("chatTimelineModel activity segments", () => {
+    it("compacts a burst of fifty observations into one presentation row", () => {
+        const activities = Array.from({ length: 50 }, (_, index) =>
+            createReadActivity(
+                `read-${index + 1}`,
+                `2026-04-14T00:00:${String(index + 1).padStart(2, "0")}.000Z`,
+            ),
+        );
+        const model = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: activities,
+            trackedFiles: [],
+        });
+
+        expect(model.orderedAtomicRows).toHaveLength(50);
+        expect(model.orderedRows).toHaveLength(1);
+        expect(model.historyRows).toHaveLength(1);
+        const segment = model.orderedRows[0];
+        expect(segment?.kind).toBe("activity-segment");
+        if (segment?.kind === "activity-segment") {
+            expect(segment.entries).toHaveLength(50);
+            expect(segment.summary.actionCount).toBe(50);
+            expect(segment.summary.hiddenActivityCount).toBe(50);
+        }
+    });
+
+    it("creates a stable single-member segment with a semantic summary", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: [
+                createReadActivity("read-1", "2026-04-14T00:00:01.000Z"),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(model.orderedAtomicRowIds).toEqual([
+            "tool:session-1:read-1",
+        ]);
+        expect(model.orderedRowIds).toEqual([
+            "activity-segment:session-1:read-1",
+        ]);
+        const segment = model.orderedRows[0];
+        expect(segment?.kind).toBe("activity-segment");
+        if (segment?.kind !== "activity-segment") {
+            throw new Error("Expected an activity segment row.");
+        }
+        expect(
+            segment.entries.map((entry) => entry.reviewEntry.activity.id),
+        ).toEqual(["read-1"]);
+        expect(segment.summary).toMatchObject({
+            actionCount: 1,
+            commandCount: 0,
+            fileCount: 1,
+            latestActivityId: "read-1",
+            searchCount: 0,
+        });
+    });
+
+    it("keeps the segment id stable while appending members", () => {
+        const first = createReadActivity(
+            "read-1",
+            "2026-04-14T00:00:01.000Z",
+        );
+        const initialModel = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "streaming",
+            toolActivity: [first],
+            trackedFiles: [],
+        });
+        const nextModel = reconcileChatTimelineModel(initialModel, {
+            messages: [],
+            status: "streaming",
+            toolActivity: [
+                first,
+                createReadActivity(
+                    "read-2",
+                    "2026-04-14T00:00:02.000Z",
+                ),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(nextModel.orderedRowIds).toEqual(
+            initialModel.orderedRowIds,
+        );
+        expect(nextModel.orderedRows[0]).not.toBe(initialModel.orderedRows[0]);
+        expect(nextModel.orderedRows[0]?.kind).toBe("activity-segment");
+        if (nextModel.orderedRows[0]?.kind === "activity-segment") {
+            expect(nextModel.orderedRows[0].summary.actionCount).toBe(2);
+        }
+    });
+
+    it("cuts segments at messages, structural rows, and session changes", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    createdAt: "2026-04-14T00:00:02.000Z",
+                    id: "assistant-boundary",
+                }),
+            ],
+            status: "idle",
+            toolActivity: [
+                createReadActivity("read-1", "2026-04-14T00:00:01.000Z"),
+                createReadActivity("read-2", "2026-04-14T00:00:03.000Z"),
+                createActivity({
+                    createdAt: "2026-04-14T00:00:04.000Z",
+                    id: "status-1",
+                    kind: "status",
+                    title: "Status",
+                    updatedAt: "2026-04-14T00:00:04.000Z",
+                }),
+                createReadActivity("read-3", "2026-04-14T00:00:05.000Z"),
+                createActivity({
+                    createdAt: "2026-04-14T00:00:06.000Z",
+                    id: "edit-1",
+                    kind: "edit",
+                    updatedAt: "2026-04-14T00:00:06.000Z",
+                }),
+                createReadActivity("read-4", "2026-04-14T00:00:07.000Z"),
+                createReadActivity("failed-1", "2026-04-14T00:00:08.000Z", {
+                    status: "failed",
+                }),
+                createReadActivity("read-5", "2026-04-14T00:00:09.000Z"),
+                createActivity({
+                    createdAt: "2026-04-14T00:00:10.000Z",
+                    id: "unknown-1",
+                    kind: "other",
+                    updatedAt: "2026-04-14T00:00:10.000Z",
+                }),
+                createReadActivity("read-6", "2026-04-14T00:00:11.000Z", {
+                    sessionId: "session-2",
+                }),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(model.orderedRowIds).toEqual([
+            "activity-segment:session-1:read-1",
+            "message:assistant-boundary",
+            "activity-segment:session-1:read-2",
+            "tool:session-1:status-1",
+            "activity-segment:session-1:read-3",
+            "activity-segment:session-2:read-6",
+        ]);
+        const mixedSegment = model.orderedRows[4];
+        expect(mixedSegment?.kind).toBe("activity-segment");
+        if (mixedSegment?.kind === "activity-segment") {
+            expect(mixedSegment.entries.map((entry) => entry.policy)).toEqual([
+                "groupable",
+                "standalone-change",
+                "groupable",
+                "standalone-attention",
+                "groupable",
+                "standalone-unknown",
+            ]);
+        }
+    });
+
+    it("separates consecutive groupable activity from different sessions", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: [
+                createReadActivity("read-1", "2026-04-14T00:00:01.000Z"),
+                createReadActivity("read-2", "2026-04-14T00:00:02.000Z", {
+                    sessionId: "session-2",
+                }),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(model.orderedRowIds).toEqual([
+            "activity-segment:session-1:read-1",
+            "activity-segment:session-2:read-2",
+        ]);
+    });
+
+    it("keeps repeated tool ids distinct across sessions", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "streaming",
+            toolActivity: [
+                createReadActivity("shared-id", "2026-04-14T00:00:01.000Z"),
+                createReadActivity(
+                    "shared-id",
+                    "2026-04-14T00:00:02.000Z",
+                    { sessionId: "session-2", status: "in_progress" },
+                ),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(model.orderedAtomicRowIds).toEqual([
+            "tool:session-1:shared-id",
+            "tool:session-2:shared-id",
+        ]);
+        expect(model.orderedRowIds).toEqual([
+            "activity-segment:session-1:shared-id",
+            "activity-segment:session-2:shared-id",
+        ]);
+        expect(model.liveTailRowId).toBe(
+            "activity-segment:session-2:shared-id",
+        );
+    });
+
+    it("preserves repeated cross-session tool ids through the transcript", () => {
+        const transcript = buildAiSessionTranscriptModel({
+            messages: [],
+            toolActivity: [
+                createReadActivity("shared-id", "2026-04-14T00:00:01.000Z"),
+                createReadActivity(
+                    "shared-id",
+                    "2026-04-14T00:00:02.000Z",
+                    { sessionId: "session-2", status: "in_progress" },
+                ),
+            ],
+        });
+        const model = reconcileChatTimelineModelFromTranscript(null, {
+            status: "streaming",
+            trackedFiles: [],
+            transcript,
+        });
+
+        expect(model.orderedAtomicRowIds).toEqual([
+            "tool:session-1:shared-id",
+            "tool:session-2:shared-id",
+        ]);
+        expect(model.orderedRowIds).toEqual([
+            "activity-segment:session-1:shared-id",
+            "activity-segment:session-2:shared-id",
+        ]);
+        expect(model.liveTailRowId).toBe(
+            "activity-segment:session-2:shared-id",
+        );
+    });
+
+    it("keeps a late diff visible inside its original segment", () => {
+        const activities = [
+            createReadActivity("read-1", "2026-04-14T00:00:01.000Z"),
+            createReadActivity("read-2", "2026-04-14T00:00:02.000Z"),
+            createReadActivity("read-3", "2026-04-14T00:00:03.000Z"),
+        ];
+        const initialModel = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: activities,
+            trackedFiles: [],
+        });
+        const updatedMiddle = createReadActivity(
+            "read-2",
+            "2026-04-14T00:00:02.000Z",
+            {
+                diffs: [
+                    {
+                        hunks: [],
+                        isText: true,
+                        kind: "update",
+                        newText: "next",
+                        oldText: "previous",
+                        path: "src/read-2.ts",
+                        previousPath: null,
+                        reversible: true,
+                    },
+                ],
+                updatedAt: "2026-04-14T00:00:04.000Z",
+            },
+        );
+        const nextModel = reconcileChatTimelineModel(initialModel, {
+            messages: [],
+            status: "idle",
+            toolActivity: [activities[0], updatedMiddle, activities[2]],
+            trackedFiles: [],
+        });
+
+        expect(nextModel.orderedRowIds).toEqual([
+            "activity-segment:session-1:read-1",
+        ]);
+        expect(
+            nextModel.orderedRows.flatMap((row) =>
+                row.kind === "activity-segment"
+                    ? row.entries.map(
+                          (entry) => entry.reviewEntry.activity.id,
+                      )
+                    : row.kind === "tool"
+                      ? [row.reviewEntry.activity.id]
+                      : [],
+            ),
+        ).toEqual(["read-1", "read-2", "read-3"]);
+        const segment = nextModel.orderedRows[0];
+        if (segment?.kind === "activity-segment") {
+            expect(segment.entries[1]?.policy).toBe("standalone-change");
+        }
+    });
+
+    it("keeps a change visible inside exploration and verification activity", () => {
+        const diffActivity = createActivity({
+            createdAt: "2026-04-14T00:00:03.000Z",
+            diffs: [
+                {
+                    hunks: [],
+                    isText: true,
+                    kind: "update",
+                    newText: "next",
+                    oldText: "previous",
+                    path: "src/app.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            id: "edit-1",
+            kind: "edit",
+            title: "Edit src/app.ts",
+            updatedAt: "2026-04-14T00:00:03.000Z",
+        });
+        const model = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: [
+                createReadActivity("read-1", "2026-04-14T00:00:01.000Z"),
+                createReadActivity("read-2", "2026-04-14T00:00:02.000Z"),
+                diffActivity,
+                createActivity({
+                    createdAt: "2026-04-14T00:00:04.000Z",
+                    exitCode: 0,
+                    id: "test-1",
+                    kind: "execute",
+                    status: "completed",
+                    title: "Run tests",
+                    updatedAt: "2026-04-14T00:00:04.000Z",
+                }),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(model.orderedRowIds).toEqual([
+            "activity-segment:session-1:read-1",
+        ]);
+        const segment = model.orderedRows[0];
+        if (segment?.kind === "activity-segment") {
+            expect(segment.entries[2]?.policy).toBe("standalone-change");
+            expect(segment.summary.changedFileCount).toBe(1);
+        }
+    });
+
+    it("counts equivalent absolute and relative change paths once", () => {
+        const createChangeActivity = (
+            id: string,
+            path: string,
+            second: number,
+        ) =>
+            createActivity({
+                createdAt: `2026-04-14T00:00:0${second}.000Z`,
+                diffs: [
+                    {
+                        hunks: [],
+                        isText: true,
+                        kind: "update",
+                        newText: "next",
+                        oldText: "previous",
+                        path,
+                        previousPath: null,
+                        reversible: true,
+                    },
+                ],
+                id,
+                title: `Edit ${path}`,
+                updatedAt: `2026-04-14T00:00:0${second}.000Z`,
+            });
+        const model = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: [
+                createChangeActivity("edit-1", "src/app.ts", 1),
+                createChangeActivity("edit-2", "./src/app.ts", 2),
+                createChangeActivity(
+                    "edit-3",
+                    "/workspace/comando/src/app.ts",
+                    3,
+                ),
+            ],
+            trackedFiles: [],
+        });
+        const segment = model.orderedRows[0];
+
+        expect(segment?.kind).toBe("activity-segment");
+        if (segment?.kind === "activity-segment") {
+            expect(segment.summary.actionCount).toBe(3);
+            expect(segment.summary.changeCount).toBe(3);
+            expect(segment.summary.changedFileCount).toBe(1);
+            expect(segment.summary.fileCount).toBe(1);
+        }
+    });
+
+    it("keeps its id when the first member becomes a change", () => {
+        const first = createReadActivity(
+            "read-1",
+            "2026-04-14T00:00:01.000Z",
+        );
+        const second = createReadActivity(
+            "read-2",
+            "2026-04-14T00:00:02.000Z",
+        );
+        const initialModel = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: [first, second],
+            trackedFiles: [],
+        });
+        const nextModel = reconcileChatTimelineModel(initialModel, {
+            messages: [],
+            status: "idle",
+            toolActivity: [first, second],
+            trackedFiles: [
+                createTrackedFile({
+                    identityKey: "tracked-read-1",
+                    path: "src/read-1.ts",
+                    toolCallId: "read-1",
+                }),
+            ],
+        });
+
+        expect(nextModel.orderedRowIds).toEqual([
+            "activity-segment:session-1:read-1",
+        ]);
+        const segment = nextModel.orderedRows[0];
+        if (segment?.kind === "activity-segment") {
+            expect(segment.entries[0]?.policy).toBe("standalone-change");
+            expect(segment.entries[1]?.policy).toBe("groupable");
+        }
+    });
+
+    it("keeps native raw-input tracked-file matches visible in a segment", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: [
+                createReadActivity("read-1", "2026-04-14T00:00:01.000Z", {
+                    locations: [],
+                    rawInputJson: JSON.stringify({ file_path: "src/app.ts" }),
+                }),
+            ],
+            trackedFiles: [createTrackedFile({ toolCallId: null })],
+        });
+
+        expect(model.orderedRowIds).toEqual([
+            "activity-segment:session-1:read-1",
+        ]);
+        const segment = model.orderedRows[0];
+        if (segment?.kind === "activity-segment") {
+            expect(segment.entries[0]?.policy).toBe("standalone-change");
+        }
+    });
+
+    it("reclassifies completed terminals when exit evidence changes", () => {
+        const successful = createActivity({
+            exitCode: 0,
+            id: "command-1",
+            kind: "execute",
+            status: "completed",
+            title: "Run tests",
+        });
+        const initialModel = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: [successful],
+            trackedFiles: [],
+        });
+        expect(initialModel.orderedRowIds).toEqual([
+            "activity-segment:session-1:command-1",
+        ]);
+
+        const unknownModel = reconcileChatTimelineModel(initialModel, {
+            messages: [],
+            status: "idle",
+            toolActivity: [{ ...successful, exitCode: null }],
+            trackedFiles: [],
+        });
+        expect(unknownModel.orderedRowIds).toEqual([
+            "activity-segment:session-1:command-1",
+        ]);
+
+        const failedModel = reconcileChatTimelineModel(unknownModel, {
+            messages: [],
+            status: "idle",
+            toolActivity: [{ ...successful, exitCode: 1 }],
+            trackedFiles: [],
+        });
+        expect(failedModel.orderedRowIds).toEqual([
+            "activity-segment:session-1:command-1",
+        ]);
+        expect(
+            failedModel.atomicRowById.get("tool:session-1:command-1"),
+        ).not.toBe(
+            unknownModel.atomicRowById.get("tool:session-1:command-1"),
+        );
+    });
+
+    it("keeps an actively requested tool call visible in its segment", () => {
+        const activity = createReadActivity(
+            "read-1",
+            "2026-04-14T00:00:01.000Z",
+        );
+        const activeModel = reconcileChatTimelineModel(null, {
+            attentionToolCallIds: new Set(["read-1"]),
+            messages: [],
+            status: "streaming",
+            toolActivity: [activity],
+            trackedFiles: [],
+        });
+        expect(activeModel.orderedRowIds).toEqual([
+            "activity-segment:session-1:read-1",
+        ]);
+        const activeSegment = activeModel.orderedRows[0];
+        if (activeSegment?.kind === "activity-segment") {
+            expect(activeSegment.entries[0]?.policy).toBe(
+                "standalone-attention",
+            );
+        }
+
+        const resolvedModel = reconcileChatTimelineModel(activeModel, {
+            attentionToolCallIds: new Set(),
+            messages: [],
+            status: "streaming",
+            toolActivity: [activity],
+            trackedFiles: [],
+        });
+        expect(resolvedModel.orderedRowIds).toEqual([
+            "activity-segment:session-1:read-1",
+        ]);
+    });
+
+    it("forwards attention ids through transcript reconciliation", () => {
+        const transcript = buildAiSessionTranscriptModel({
+            messages: [],
+            toolActivity: [
+                createReadActivity("read-1", "2026-04-14T00:00:01.000Z"),
+            ],
+        });
+        const model = reconcileChatTimelineModelFromTranscript(null, {
+            attentionToolCallIds: new Set(["read-1"]),
+            status: "streaming",
+            trackedFiles: [],
+            transcript,
+        });
+
+        expect(model.orderedRowIds).toEqual([
+            "activity-segment:session-1:read-1",
+        ]);
+        const segment = model.orderedRows[0];
+        if (segment?.kind === "activity-segment") {
+            expect(segment.entries[0]?.policy).toBe(
+                "standalone-attention",
+            );
+        }
+    });
+
+    it("maps an atomic streaming tail into its activity segment", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    content: "Inspect the code",
+                    id: "prompt-1",
+                    kind: "user",
+                }),
+            ],
+            status: "streaming",
+            toolActivity: [
+                createReadActivity("read-1", "2026-04-14T00:00:01.000Z"),
+                createReadActivity("read-2", "2026-04-14T00:00:02.000Z", {
+                    status: "in_progress",
+                }),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(model.atomicLiveTailRowId).toBe("tool:session-1:read-2");
+        expect(model.liveTailRowId).toBe(
+            "activity-segment:session-1:read-1",
+        );
+        expect(model.historyRowIds).toEqual(["message:prompt-1"]);
+    });
+
+    it("reuses unaffected historical segments when the live segment changes", () => {
+        const first = createReadActivity(
+            "read-1",
+            "2026-04-14T00:00:01.000Z",
+        );
+        const second = createReadActivity(
+            "read-2",
+            "2026-04-14T00:00:03.000Z",
+        );
+        const boundary = createMessage({
+            createdAt: "2026-04-14T00:00:02.000Z",
+            id: "assistant-boundary",
+        });
+        const initialModel = reconcileChatTimelineModel(null, {
+            messages: [boundary],
+            status: "streaming",
+            toolActivity: [first, second],
+            trackedFiles: [],
+        });
+        const nextModel = reconcileChatTimelineModel(initialModel, {
+            messages: [boundary],
+            status: "streaming",
+            toolActivity: [
+                first,
+                second,
+                createReadActivity(
+                    "read-3",
+                    "2026-04-14T00:00:04.000Z",
+                    { status: "in_progress" },
+                ),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(nextModel.orderedRows[0]).toBe(initialModel.orderedRows[0]);
+        expect(nextModel.orderedRows[2]).not.toBe(initialModel.orderedRows[2]);
+    });
+
+    it("preserves atomic createdAt anchors across an equivalent resync", () => {
+        const first = createReadActivity(
+            "read-1",
+            "2026-04-14T00:00:01.000Z",
+        );
+        const second = createReadActivity(
+            "read-2",
+            "2026-04-14T00:00:02.000Z",
+        );
+        const initialModel = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: [first, second],
+            trackedFiles: [],
+        });
+        const nextModel = reconcileChatTimelineModel(initialModel, {
+            messages: [],
+            status: "idle",
+            toolActivity: [
+                { ...first, createdAt: "2026-04-14T00:00:20.000Z" },
+                { ...second, createdAt: "2026-04-14T00:00:10.000Z" },
+            ],
+            trackedFiles: [],
+        });
+
+        expect(nextModel.orderedAtomicRows).toBe(
+            initialModel.orderedAtomicRows,
+        );
+        const segment = nextModel.orderedRows[0];
+        expect(segment?.kind).toBe("activity-segment");
+        if (segment?.kind === "activity-segment") {
+            expect(
+                segment.entries.map(
+                    (entry) => entry.reviewEntry.activity.id,
+                ),
+            ).toEqual(["read-1", "read-2"]);
+        }
+    });
+
+    it("produces the same segments from persisted data in live and history models", () => {
+        const activities = [
+            createReadActivity("read-1", "2026-04-14T00:00:01.000Z"),
+            createReadActivity("read-2", "2026-04-14T00:00:02.000Z"),
+        ];
+        const liveModel = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "streaming",
+            toolActivity: activities,
+            trackedFiles: [],
+        });
+        const historyModel = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: activities,
+            trackedFiles: [],
+        });
+
+        expect(liveModel.orderedRowIds).toEqual(historyModel.orderedRowIds);
+        expect(
+            liveModel.orderedRows[0]?.kind === "activity-segment"
+                ? liveModel.orderedRows[0].entries.map(
+                      (entry) => entry.reviewEntry.activity.id,
+                  )
+                : [],
+        ).toEqual(
+            historyModel.orderedRows[0]?.kind === "activity-segment"
+                ? historyModel.orderedRows[0].entries.map(
+                      (entry) => entry.reviewEntry.activity.id,
+                  )
+                : [],
+        );
     });
 });

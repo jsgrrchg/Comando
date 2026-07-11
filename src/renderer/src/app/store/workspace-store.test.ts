@@ -224,6 +224,135 @@ describe("workspace file opening", () => {
         vi.unstubAllGlobals();
     });
 
+    it("hydrates and prewarms each active restored chat session", async () => {
+        const snapshot: WorkspaceSnapshot = {
+            activePaneId: "pane-left",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: "chat-left",
+                        id: "pane-left",
+                        tabIds: ["chat-left", "chat-inactive"],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: "chat-right",
+                        id: "pane-right",
+                        tabIds: ["chat-right"],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabs: [
+                createWorkspaceChatTab("chat-left", "session-left", "codex"),
+                createWorkspaceChatTab(
+                    "chat-inactive",
+                    "session-inactive",
+                    "claude",
+                ),
+                createWorkspaceChatTab("chat-right", "session-right", "grok"),
+            ],
+        };
+        Object.assign(window.comando, {
+            getWorkspaceSnapshot: vi.fn().mockResolvedValue(snapshot),
+        });
+
+        await useWorkspaceStore.getState().hydrate();
+
+        expect(ensureSessionMock).toHaveBeenCalledTimes(4);
+        expect(ensureSessionMock).toHaveBeenCalledWith(
+            expect.objectContaining({ sessionId: "session-left" }),
+        );
+        expect(ensureSessionMock).toHaveBeenCalledWith(
+            expect.objectContaining({ sessionId: "session-right" }),
+        );
+        expect(ensureSessionMock).not.toHaveBeenCalledWith(
+            expect.objectContaining({ sessionId: "session-inactive" }),
+        );
+        expect(ensureSessionMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                sessionId: "session-left",
+                sessionOpenMode: "live",
+            }),
+            { force: true },
+        );
+        expect(ensureSessionMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                sessionId: "session-right",
+                sessionOpenMode: "live",
+            }),
+            { force: true },
+        );
+    });
+
+    it("hydrates legacy restored chat tabs in history mode", async () => {
+        const legacyTab = createWorkspaceChatTab(
+            "legacy-chat",
+            "legacy-session",
+            "codex",
+        );
+        const snapshot = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: legacyTab.id,
+                id: "pane-root",
+                tabIds: [legacyTab.id],
+                type: "pane" as const,
+            },
+            tabs: [legacyTab],
+        };
+        Object.assign(window.comando, {
+            getWorkspaceSnapshot: vi.fn().mockResolvedValue(snapshot),
+        });
+
+        await useWorkspaceStore.getState().hydrate();
+
+        expect(
+            useWorkspaceStore.getState().tabsById[legacyTab.id],
+        ).toMatchObject({ sessionOpenMode: "history" });
+        expect(ensureSessionMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                sessionId: legacyTab.sessionId,
+                sessionOpenMode: "history",
+            }),
+        );
+    });
+
+    it("silently prewarms historical chat tabs after they gain focus", async () => {
+        const tab = {
+            ...createWorkspaceChatTab(
+                "chat-history",
+                "session-history",
+                "codex",
+            ),
+            sessionOpenMode: "history" as const,
+        };
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: tab.id,
+                id: "pane-root",
+                tabIds: [tab.id],
+                type: "pane",
+            },
+            tabsById: { [tab.id]: tab },
+        }));
+
+        await useWorkspaceStore.getState().selectTab("pane-root", tab.id);
+
+        expect(ensureSessionMock).toHaveBeenCalledTimes(2);
+        expect(ensureSessionMock.mock.calls[0]).toEqual([tab]);
+        expect(ensureSessionMock.mock.calls[1]).toEqual([
+            { ...tab, sessionOpenMode: "live" },
+            { force: true },
+        ]);
+    });
+
     it("creates OpenCode chat tabs with OpenCode titles", async () => {
         await useWorkspaceStore
             .getState()

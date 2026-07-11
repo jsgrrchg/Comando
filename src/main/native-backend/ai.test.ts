@@ -60,6 +60,65 @@ describe("NativeAiGateway", () => {
         expect(payload.launch).toBeNull();
     });
 
+    it("preserves the active turn start when a streaming session is prepared again", async () => {
+        const client = createClient();
+        client.request.mockResolvedValueOnce({
+            projectId: "project-1",
+            runtimeId: "opencode",
+            runtimeSessionId: "runtime-session-1",
+            sessionId: "session-1",
+            status: "streaming",
+            title: "Renamed session",
+            updatedAt: "2026-07-09T20:05:00.000Z",
+            worktreeId: "worktree-1",
+        });
+        const gateway = createGateway(client);
+        const launch = createLaunch();
+        const activeTurnStartedAt = "2026-07-09T20:00:00.000Z";
+        const streamingLaunch = {
+            ...launch,
+            persistedSnapshot: {
+                ...launch.persistedSnapshot,
+                activeTurnStartedAt,
+                status: "streaming" as const,
+                updatedAt: "2026-07-09T20:04:00.000Z",
+            },
+        };
+
+        await expect(
+            gateway.prepareSession({
+                input: createPrepareInput(),
+                launch: streamingLaunch,
+            }),
+        ).resolves.toMatchObject({
+            activeTurnStartedAt,
+            status: "streaming",
+            updatedAt: "2026-07-09T20:05:00.000Z",
+        });
+    });
+
+    it("clears a historical closed marker when preparing a live session", async () => {
+        const client = createClient();
+        const gateway = createGateway(client);
+        const launch = {
+            ...createLaunch(),
+            persistedSnapshot: {
+                ...createLaunch().persistedSnapshot,
+                closedAt: "2026-07-09T20:00:00.000Z",
+            },
+        };
+
+        await expect(
+            gateway.prepareSession({
+                input: createPrepareInput(),
+                launch,
+            }),
+        ).resolves.toMatchObject({
+            closedAt: null,
+            status: "idle",
+        });
+    });
+
     it("passes persisted history links when Rust owns runtime launch resolution", async () => {
         const client = createClient();
         const gateway = createGateway(client);
@@ -356,7 +415,11 @@ describe("NativeAiGateway", () => {
 
         client.request.mockClear();
         await gateway.closeSession("session-1:subagent:runtime-child-1");
-        expect(client.request).not.toHaveBeenCalled();
+        expect(client.request).toHaveBeenCalledWith("ai_cancel_session", {
+            runtimeSessionId: "runtime-child-1",
+            sessionId: "session-1",
+            targetSessionId: "session-1:subagent:runtime-child-1",
+        });
         expect(onSessionEvent).toHaveBeenCalledWith(
             "window-1",
             expect.objectContaining({
@@ -464,6 +527,86 @@ describe("NativeAiGateway", () => {
             sessionId: "session-1",
             targetSessionId: childSessionId,
         });
+    });
+
+    it("routes nested descendants through the root backend session", async () => {
+        const client = createClient();
+        const onSessionEvent = vi.fn<NativeAiGatewayOptions["onSessionEvent"]>();
+        const gateway = createGateway(client, { onSessionEvent });
+        const childSessionId = "session-child";
+        const grandchildSessionId = "session-grandchild";
+        const launch = {
+            ...createLaunch(),
+            persistedSubagentSessionMappings: [
+                {
+                    appSessionId: childSessionId,
+                    parentAppSessionId: "session-1",
+                    parentRuntimeSessionId: "runtime-session-1",
+                    runtimeSessionId: "runtime-child",
+                },
+                {
+                    appSessionId: grandchildSessionId,
+                    parentAppSessionId: childSessionId,
+                    parentRuntimeSessionId: "runtime-child",
+                    runtimeSessionId: "runtime-grandchild",
+                },
+            ],
+        };
+
+        await gateway.prepareSession({
+            input: createPrepareInput(),
+            launch,
+        });
+
+        client.request.mockClear();
+        await gateway.sendPrompt({
+            input: {
+                ...createPromptInput(),
+                messageId: "user-message-grandchild",
+                sessionId: grandchildSessionId,
+            },
+            launch,
+        });
+        expect(client.request).toHaveBeenCalledWith("ai_send_prompt", {
+            messageId: "user-message-grandchild",
+            prompt: {
+                attachments: [],
+                displayText: "Implement the feature.",
+                text: "Implement the feature.",
+            },
+            runtimeSessionId: "runtime-grandchild",
+            sessionId: "session-1",
+            targetSessionId: grandchildSessionId,
+        });
+
+        client.request.mockClear();
+        await gateway.closeSession(childSessionId);
+        expect(client.request.mock.calls).toEqual([
+            [
+                "ai_cancel_session",
+                {
+                    runtimeSessionId: "runtime-grandchild",
+                    sessionId: "session-1",
+                    targetSessionId: grandchildSessionId,
+                },
+            ],
+            [
+                "ai_cancel_session",
+                {
+                    runtimeSessionId: "runtime-child",
+                    sessionId: "session-1",
+                    targetSessionId: childSessionId,
+                },
+            ],
+        ]);
+        const closedSessionIds = onSessionEvent.mock.calls
+            .map(([, event]) => event)
+            .filter((event) => event.kind === "session-closed")
+            .map((event) => event.sessionId);
+        expect(closedSessionIds).toEqual([
+            grandchildSessionId,
+            childSessionId,
+        ]);
     });
 
     it("requests and adapts native history payloads when history is enabled", async () => {

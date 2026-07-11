@@ -11,6 +11,8 @@ import {
     type AppUpdateState,
     type AppBootstrapSnapshot,
     type AiHistorySessionSummary,
+    type AiPromptQueueSnapshot,
+    type AiQueuedPromptMutationInput,
     type AiSessionDomainEvent,
     type AiSessionStreamAckMessage,
     type AiSessionUpdate,
@@ -47,6 +49,7 @@ import {
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
     type FileBufferNotificationInput,
+    type EnqueueAiPromptInput,
     type GetAiSessionTranscriptPageInput,
     type ListAiSessionHistoryInput,
     type ListProjectTreeInput,
@@ -159,7 +162,7 @@ import {
     type ResizeTerminalSessionInput,
     type SearchProjectEntriesInput,
     type SaveProjectFileInput,
-    type SendAiPromptInput,
+    type UpdateAiQueuedPromptInput,
     type SettingsSnapshot,
     type SettingsUpdatedEvent,
     type SystemTheme,
@@ -281,6 +284,9 @@ function assertClaudeCodeTranscriptResult(
 
 const aiSessionSnapshotListeners = new Set<(update: AiSessionUpdate) => void>();
 const aiSessionEventListeners = new Set<(event: AiSessionDomainEvent) => void>();
+const aiPromptQueueListeners = new Set<
+    (snapshot: AiPromptQueueSnapshot) => void
+>();
 let aiSessionSnapshotPort: MessagePort | null = null;
 
 // Narrow runtime guard for the IPC envelope. Does not validate the full
@@ -1305,8 +1311,46 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.getAiSessionTranscriptPage,
             input,
         ) as Promise<AiSessionTranscriptPage>,
-    sendAiPrompt: (input: SendAiPromptInput) =>
-        ipcRenderer.invoke(IPC_CHANNELS.sendAiPrompt, input),
+    getAiPromptQueue: (sessionId: string) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.getAiPromptQueue,
+            sessionId,
+        ) as Promise<AiPromptQueueSnapshot>,
+    enqueueAiPrompt: (input: EnqueueAiPromptInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.enqueueAiPrompt,
+            input,
+        ) as Promise<AiPromptQueueSnapshot>,
+    removeAiQueuedPrompt: (input: AiQueuedPromptMutationInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.removeAiQueuedPrompt,
+            input,
+        ) as Promise<AiPromptQueueSnapshot>,
+    clearAiPromptQueue: (sessionId: string) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.clearAiPromptQueue,
+            sessionId,
+        ) as Promise<AiPromptQueueSnapshot>,
+    beginEditAiQueuedPrompt: (input: AiQueuedPromptMutationInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.beginEditAiQueuedPrompt,
+            input,
+        ) as Promise<AiPromptQueueSnapshot>,
+    cancelEditAiQueuedPrompt: (sessionId: string) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.cancelEditAiQueuedPrompt,
+            sessionId,
+        ) as Promise<AiPromptQueueSnapshot>,
+    updateAiQueuedPrompt: (input: UpdateAiQueuedPromptInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.updateAiQueuedPrompt,
+            input,
+        ) as Promise<AiPromptQueueSnapshot>,
+    steerAiQueuedPrompt: (input: AiQueuedPromptMutationInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.steerAiQueuedPrompt,
+            input,
+        ) as Promise<AiPromptQueueSnapshot>,
     setAiSessionMode: (input: AiSessionModeMutationInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.setAiSessionMode, input),
     setAiSessionModel: (input: AiSessionModelMutationInput) =>
@@ -1420,6 +1464,20 @@ const comandoApi: ComandoApi = {
                     handleAiSessionEventFallback,
                 );
             }
+        };
+    },
+    onAiPromptQueue: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            snapshot: AiPromptQueueSnapshot,
+        ) => {
+            listener(snapshot);
+        };
+        aiPromptQueueListeners.add(listener);
+        ipcRenderer.on(IPC_EVENTS.aiPromptQueue, handleEvent);
+        return () => {
+            aiPromptQueueListeners.delete(listener);
+            ipcRenderer.removeListener(IPC_EVENTS.aiPromptQueue, handleEvent);
         };
     },
 };

@@ -8,6 +8,8 @@ import type {
     AiRuntimeAuthLaunchInput,
     AiRuntimeAuthLogoutInput,
     AiPermissionResponseInput,
+    AiPromptQueueSnapshot,
+    AiQueuedPrompt,
     AiRuntimeId,
     AiRuntimeStatus,
     AiSessionConfigOption,
@@ -48,7 +50,6 @@ import {
     type AiReviewActionLogTarget,
 } from "@shared/ai-review-action-log";
 import { resolveTrackedFileHunks } from "@shared/ai-tracked-file";
-import { isSessionBusyErrorMessage } from "@shared/ai-errors";
 import {
     applyModelIdToConfigOptions,
     applyReasoningEffortToConfigOptions,
@@ -81,7 +82,6 @@ import {
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
 import { matchesTrackedFilePath } from "@renderer/app/ai/trackedFilePath";
-import { collectExternalComposerRoots } from "@renderer/components/workspace/chat/composerParts";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceReviewTab,
@@ -90,6 +90,8 @@ import { useWorkspaceStore } from "./workspace-store";
 
 type RuntimeAiSessionTab = RuntimeWorkspaceChatTab | RuntimeWorkspaceReviewTab;
 type AiSessionRuntimeState = "history" | "live";
+
+const ensureSessionInFlight = new Map<string, Promise<void>>();
 
 interface RegisteredSessionMeta {
     readonly projectId: string | null;
@@ -146,12 +148,9 @@ interface AiSessionClientState {
     readonly localError: string | null;
     readonly meta: RegisteredSessionMeta | null;
     readonly queue: readonly QueuedPrompt[];
-    // True after the user cancels an inference while there are still queued
-    // prompts. While paused, drainQueueIfNeeded is a no-op even when the
-    // agent becomes idle. Pause is released the next time the user manually
-    // sends a prompt (either through the composer or an explicit Send Now on
-    // a queued item), at which point that prompt dispatches and the rest of
-    // the queue resumes draining when its turn completes.
+    readonly queueRevision: number;
+    // Projected from the main-owned queue. A paused queue will not dispatch
+    // again until the user explicitly resumes or steers it.
     readonly queuePaused: boolean;
     readonly runtimeState: AiSessionRuntimeState;
     readonly snapshot: AiSessionSnapshot | null;
@@ -200,6 +199,7 @@ interface AiStore {
     applySessionEvent: (event: AiSessionDomainEvent) => void;
     applySessionUpdate: (update: AiSessionUpdate) => void;
     applySessionSnapshot: (snapshot: AiSessionSnapshot) => void;
+    applyPromptQueueSnapshot: (snapshot: AiPromptQueueSnapshot) => void;
     cancelSession: (sessionId: string) => Promise<void>;
     cancelQueuedPromptEdit: (
         sessionId: string,
@@ -581,9 +581,6 @@ async function requestAiSessionResyncAfterSilence(
     }
 }
 
-const activeQueueDrainSessionIds = new Set<string>();
-const pendingQueueDrainSessionIds = new Set<string>();
-
 export function resetAiStoreRuntimeBuffersForTests(): void {
     resetBufferedSessionDeltas();
     resetAiSessionResyncWatchdogs();
@@ -683,6 +680,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
             };
         });
 
+        void getComandoApi()
+            .cancelEditAiQueuedPrompt(sessionId)
+            .then((snapshot) => get().applyPromptQueueSnapshot(snapshot));
+
         return restoredComposerParts;
     },
 
@@ -753,7 +754,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     ...state.sessions,
                     [sessionId]: {
                         ...session,
-                        activeQueuedPrompt: null,
                         editingQueuedPromptState: null,
                         editingQueuedPrompt: null,
                         queue: [],
@@ -762,6 +762,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 },
             };
         });
+        void getComandoApi()
+            .clearAiPromptQueue(sessionId)
+            .then((snapshot) => get().applyPromptQueueSnapshot(snapshot));
     },
 
     applyRuntimeStatus: (status) => {
@@ -779,6 +782,63 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 [status.runtimeId]: status,
             },
         }));
+    },
+
+    applyPromptQueueSnapshot: (queueSnapshot) => {
+        set((state) => {
+            const session =
+                state.sessions[queueSnapshot.sessionId] ?? createSessionState();
+            if (queueSnapshot.revision < session.queueRevision) {
+                return state;
+            }
+
+            const activeQueuedPrompt = queueSnapshot.activeItem
+                ? toRendererQueuedPrompt(queueSnapshot.activeItem)
+                : null;
+            const currentActiveId =
+                session.activeQueuedPrompt?.queuedPrompt.id ?? null;
+            const nextActiveState = activeQueuedPrompt
+                ? {
+                      activatedAfterIncomingSnapshotVersion:
+                          session.incomingSnapshotVersion,
+                      position: {
+                          nextPromptId: null,
+                          previousPromptId: null,
+                          queueIndex: 0,
+                      },
+                      queuedPrompt: activeQueuedPrompt,
+                  }
+                : null;
+            const nextSession = {
+                ...session,
+                activeDispatchToken: null,
+                activeQueuedPrompt: nextActiveState,
+                editingQueuedPrompt: queueSnapshot.editingItem
+                    ? toRendererQueuedPrompt(queueSnapshot.editingItem)
+                    : null,
+                editingQueuedPromptState: queueSnapshot.editingItem
+                    ? session.editingQueuedPromptState
+                    : null,
+                isDispatching: queueSnapshot.activeItem?.status === "sending",
+                queue: queueSnapshot.items.map(toRendererQueuedPrompt),
+                queuePaused: queueSnapshot.paused,
+                queueRevision: queueSnapshot.revision,
+            };
+            const acceptedSession =
+                activeQueuedPrompt && currentActiveId !== activeQueuedPrompt.id
+                    ? applyLocalPromptAcceptanceToSession(
+                          nextSession,
+                          activeQueuedPrompt,
+                      )
+                    : nextSession;
+
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [queueSnapshot.sessionId]: acceptedSession,
+                },
+            };
+        });
     },
 
     applySessionEvent: (event) => {
@@ -840,10 +900,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                                 event,
                                 activePromptMessageAlias,
                             ),
-                        ...reconcileDispatchStateForIncomingSnapshot(
-                            session,
-                            nextSnapshot,
-                        ),
                         ...resolveIncomingSnapshotProgress(
                             session,
                             nextSnapshot.updatedAt,
@@ -864,7 +920,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 .updateSessionTabTitles(normalizedEvent.sessionId, syncedTitle);
         }
 
-        void drainQueueIfNeeded(normalizedEvent.sessionId, get, set);
         scheduleAiSessionResyncWatchdog(normalizedEvent.sessionId, get);
     },
 
@@ -946,10 +1001,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             ...state.sessions,
                             [update.patch.sessionId]: {
                                 ...session,
-                                ...reconcileDispatchStateForIncomingSnapshot(
-                                    session,
-                                    nextSnapshot,
-                                ),
                                 ...resolveIncomingSnapshotProgress(
                                     session,
                                     incomingSnapshot.updatedAt,
@@ -1020,10 +1071,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     ...state.sessions,
                     [update.patch.sessionId]: {
                         ...session,
-                        ...reconcileDispatchStateForIncomingSnapshot(
-                            session,
-                            incomingSnapshot,
-                        ),
                         ...resolveIncomingSnapshotProgress(
                             session,
                             incomingSnapshot.updatedAt,
@@ -1044,7 +1091,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 .updateSessionTabTitles(update.patch.sessionId, syncedTitle);
         }
 
-        void drainQueueIfNeeded(update.patch.sessionId, get, set);
         scheduleAiSessionResyncWatchdog(update.patch.sessionId, get);
     },
 
@@ -1093,10 +1139,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     ...state.sessions,
                     [snapshot.sessionId]: {
                         ...session,
-                        ...reconcileDispatchStateForIncomingSnapshot(
-                            session,
-                            nextSnapshot,
-                        ),
                         ...resolveIncomingSnapshotProgress(
                             session,
                             nextSnapshot.updatedAt,
@@ -1117,7 +1159,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 .updateSessionTabTitles(snapshot.sessionId, syncedTitle);
         }
 
-        void drainQueueIfNeeded(snapshot.sessionId, get, set);
         scheduleAiSessionResyncWatchdog(snapshot.sessionId, get);
     },
 
@@ -1151,16 +1192,29 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     ensureSession: async (tab, options) => {
         const currentSession = get().sessions[tab.sessionId] ?? null;
-        if (
+        const shouldHydratePassively =
             !options?.force &&
             getSessionRuntimeStateForTab(tab) === "history" &&
-            currentSession?.runtimeState !== "live"
-        ) {
-            await executePassiveSessionHydration(tab, get, set);
+            currentSession?.runtimeState !== "live";
+        const requestKey = `${tab.sessionId}:${shouldHydratePassively ? "history" : "live"}`;
+        const existingRequest = ensureSessionInFlight.get(requestKey);
+        if (existingRequest) {
+            await existingRequest;
             return;
         }
 
-        await executeSessionPrepare(tab, get, set);
+        const request = shouldHydratePassively
+            ? executePassiveSessionHydration(tab, get, set)
+            : executeSessionPrepare(tab, get, set);
+        ensureSessionInFlight.set(requestKey, request);
+
+        try {
+            await request;
+        } finally {
+            if (ensureSessionInFlight.get(requestKey) === request) {
+                ensureSessionInFlight.delete(requestKey);
+            }
+        }
     },
 
     hydrateSettings: (settings) => {
@@ -1304,6 +1358,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 },
             };
         });
+        void getComandoApi()
+            .removeAiQueuedPrompt({ promptId, sessionId })
+            .then((snapshot) => get().applyPromptQueueSnapshot(snapshot));
     },
 
     editQueuedPrompt: (sessionId, promptId, currentComposerParts = []) => {
@@ -1368,6 +1425,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 },
             };
         });
+
+        void getComandoApi()
+            .beginEditAiQueuedPrompt({ promptId, sessionId })
+            .then((snapshot) => get().applyPromptQueueSnapshot(snapshot));
 
         return restoredComposerParts;
     },
@@ -1720,73 +1781,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     sendQueuedPromptNow: async (sessionId, promptId) => {
-        const session = get().sessions[sessionId];
-        const queuedPrompt = session?.queue.find(
-            (candidate) => candidate.id === promptId,
-        );
-        if (!session || !queuedPrompt || queuedPrompt.status === "sending") {
-            return;
-        }
-
-        enqueuePrompt(
+        const snapshot = await getComandoApi().steerAiQueuedPrompt({
+            promptId,
             sessionId,
-            {
-                ...queuedPrompt,
-                status: "queued",
-            },
-            "head",
-            set,
-        );
-
-        const latestSession = get().sessions[sessionId];
-        if (!latestSession?.meta || !latestSession.snapshot) {
-            return;
-        }
-
-        if (
-            hasActiveLocalDispatch(latestSession) ||
-            isBusySession(latestSession.snapshot)
-        ) {
-            try {
-                await getComandoApi().cancelAiSession(sessionId);
-            } catch (error) {
-                set((state) => {
-                    const session = state.sessions[sessionId];
-                    if (!session) {
-                        return state;
-                    }
-
-                    return {
-                        sessions: {
-                            ...state.sessions,
-                            [sessionId]: {
-                                ...session,
-                                localError:
-                                    error instanceof Error
-                                        ? error.message
-                                        : "Could not cancel the current response before steering.",
-                            },
-                        },
-                    };
-                });
-                return;
-            }
-            // The cancel succeeded, so the steer action becomes the new
-            // intentional queue owner. Resume before draining the selected head.
-            resumeQueue(sessionId, set);
-            await drainQueueIfNeeded(sessionId, get, set, {
-                lockDrain: false,
-            });
-            return;
-        }
-
-        // Clicking Send Now on a queued prompt is an explicit resume: the
-        // user is taking over what to dispatch next. Lift any pause so the
-        // remainder of the queue drains after this turn ends.
-        resumeQueue(sessionId, set);
-        await drainQueueIfNeeded(sessionId, get, set, {
-            lockDrain: false,
         });
+        get().applyPromptQueueSnapshot(snapshot);
     },
 
     verifyCodexBinaryPath: async (binaryPath) => {
@@ -1809,77 +1808,44 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return;
         }
 
+        if (getSessionRuntimeStateForTab(tab) === "history") {
+            await get().ensureSession(
+                { ...tab, sessionOpenMode: "live" },
+                { force: true },
+            );
+        }
+
         get().registerSessionTab(tab);
         const session = get().sessions[tab.sessionId] ?? createSessionState();
         const editingQueuedPrompt = session.editingQueuedPrompt;
-        const queuedPrompt = createQueuedPrompt({
+        const messageId =
+            editingQueuedPrompt?.optimisticMessageId ??
+            editingQueuedPrompt?.id ??
+            crypto.randomUUID();
+        const input = {
             additionalRoots: options.additionalRoots,
             attachments,
-            composerPartsSnapshot: options.composerPartsSnapshot ?? [
-                { text: trimmedPrompt, type: "text" },
-            ],
-            existing: editingQueuedPrompt,
+            composerParts:
+                options.composerPartsSnapshot ?? [
+                    { text: trimmedPrompt, type: "text" as const },
+                ],
             fileContextsSnapshot: options.fileContextsSnapshot ?? [],
+            messageId,
+            projectId: tab.projectId,
             prompt: trimmedPrompt,
-        });
-        if (
-            hasActiveLocalDispatch(session) ||
-            (session.snapshot ? isBusySession(session.snapshot) : false)
-        ) {
-            if (editingQueuedPrompt) {
-                commitQueuedPromptEdit(
-                    tab.sessionId,
-                    queuedPrompt,
-                    set,
-                    buildSessionMeta(tab),
-                );
-            } else {
-                enqueuePrompt(
-                    tab.sessionId,
-                    queuedPrompt,
-                    "tail",
-                    set,
-                    buildSessionMeta(tab),
-                );
-            }
-            clearEditingQueuedPromptState(tab.sessionId, set);
-            return;
-        }
-
-        // The user is manually sending a prompt with the agent idle. If the
-        // queue was paused after a cancel, this is the explicit resume: the
-        // rest of the queued prompts will drain when this turn completes.
-        resumeQueue(tab.sessionId, set);
-
-        if (editingQueuedPrompt) {
-            commitQueuedPromptEdit(
-                tab.sessionId,
-                queuedPrompt,
-                set,
-                buildSessionMeta(tab),
-            );
-            clearEditingQueuedPromptState(tab.sessionId, set);
-            await drainQueueIfNeeded(tab.sessionId, get, set, {
-                lockDrain: false,
-            });
-            return;
-        }
-
-        enqueuePrompt(
-            tab.sessionId,
-            {
-                ...queuedPrompt,
-                status: "pending_dispatch",
-            },
-            "head",
-            set,
-            buildSessionMeta(tab),
-        );
+            runtimeId: tab.runtimeId,
+            sessionId: tab.sessionId,
+            title: tab.title,
+            worktreeId: tab.worktreeId ?? null,
+        };
+        const queueSnapshot = editingQueuedPrompt
+            ? await getComandoApi().updateAiQueuedPrompt({
+                  ...input,
+                  promptId: editingQueuedPrompt.id,
+              })
+            : await getComandoApi().enqueueAiPrompt(input);
+        get().applyPromptQueueSnapshot(queueSnapshot);
         clearEditingQueuedPromptState(tab.sessionId, set);
-
-        await drainQueueIfNeeded(tab.sessionId, get, set, {
-            lockDrain: false,
-        });
     },
 }));
 
@@ -1904,6 +1870,7 @@ function createSessionState(
         localError: null,
         meta: null,
         queue: [],
+        queueRevision: 0,
         queuePaused: false,
         runtimeState,
         snapshot: null,
@@ -2019,7 +1986,12 @@ async function executeSessionPrepare(
                 },
             };
         });
-        void drainQueueIfNeeded(tab.sessionId, get, set);
+        const api = getComandoApi();
+        if (api.getAiPromptQueue) {
+            get().applyPromptQueueSnapshot(
+                await api.getAiPromptQueue(tab.sessionId),
+            );
+        }
     } catch (error) {
         set((state) => ({
             runtimeCatalogById: {
@@ -2141,6 +2113,12 @@ async function executePassiveSessionHydration(
                 },
             };
         });
+        const api = getComandoApi();
+        if (api.getAiPromptQueue) {
+            get().applyPromptQueueSnapshot(
+                await api.getAiPromptQueue(tab.sessionId),
+            );
+        }
     } catch (error) {
         set((state) => {
             const currentSession = state.sessions[tab.sessionId] ?? null;
@@ -3409,290 +3387,22 @@ function isActiveToolActivityStatus(
     return status === "pending" || status === "in_progress";
 }
 
-async function dispatchPrompt(
-    meta: {
-        readonly additionalRoots?: readonly string[];
-        readonly composerParts?: readonly AiComposerDraftPart[];
-        readonly projectId: string | null;
-        readonly runtimeId: AiRuntimeId;
-        readonly sessionId: string;
-        readonly title: string;
-        readonly worktreeId: string | null;
-    },
-    messageId: string,
-    prompt: string,
-    attachments: readonly AiImageAttachment[],
-    set: SetAiState,
-): Promise<"deferred" | "sent"> {
-    const dispatchToken = crypto.randomUUID();
-
-    set((state) => {
-        const session = state.sessions[meta.sessionId] ?? createSessionState();
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [meta.sessionId]: {
-                    ...session,
-                    activeDispatchToken: dispatchToken,
-                    isDispatching: true,
-                    localError: null,
-                    runtimeState: "live",
-                },
-            },
-        };
-    });
-
-    let result: "deferred" | "sent" = "sent";
-
-    try {
-        await getComandoApi().sendAiPrompt({
-            additionalRoots: meta.additionalRoots,
-            attachments,
-            composerParts: meta.composerParts,
-            messageId,
-            projectId: meta.projectId,
-            prompt,
-            runtimeId: meta.runtimeId,
-            sessionId: meta.sessionId,
-            title: meta.title,
-            worktreeId: meta.worktreeId,
-        });
-    } catch (error) {
-        if (isSessionBusyError(error)) {
-            set((state) => {
-                const session =
-                    state.sessions[meta.sessionId] ?? createSessionState();
-                if (session.activeDispatchToken !== dispatchToken) {
-                    return state;
-                }
-
-                return {
-                    sessions: {
-                        ...state.sessions,
-                        [meta.sessionId]: {
-                            ...session,
-                            localError: null,
-                            snapshot: session.snapshot
-                                ? {
-                                      ...session.snapshot,
-                                      status: "starting",
-                                      updatedAt: session.snapshot.updatedAt,
-                                  }
-                                : session.snapshot,
-                        },
-                    },
-                };
-            });
-            result = "deferred";
-            return result;
-        }
-
-        set((state) => {
-            const session =
-                state.sessions[meta.sessionId] ?? createSessionState();
-            if (session.activeDispatchToken !== dispatchToken) {
-                return state;
-            }
-            const message =
-                error instanceof Error
-                    ? error.message
-                    : `Could not send the prompt to ${getRuntimeDisplayName(meta.runtimeId)}.`;
-
-            return {
-                sessions: {
-                    ...state.sessions,
-                    [meta.sessionId]: {
-                        ...session,
-                        activeDispatchToken: null,
-                        isDispatching: false,
-                        localError: message,
-                        snapshot: session.snapshot
-                            ? {
-                                  ...session.snapshot,
-                                  activeTurnStartedAt: null,
-                                  lastError: message,
-                                  status: "error",
-                                  updatedAt: session.snapshot.updatedAt,
-                              }
-                            : session.snapshot,
-                    },
-                },
-            };
-        });
-        throw error;
-    } finally {
-        set((state) => {
-            const session =
-                state.sessions[meta.sessionId] ?? createSessionState();
-            if (session.activeDispatchToken !== dispatchToken) {
-                return state;
-            }
-
-            return {
-                sessions: {
-                    ...state.sessions,
-                    [meta.sessionId]: {
-                        ...session,
-                        activeDispatchToken: null,
-                        isDispatching: false,
-                    },
-                },
-            };
-        });
-    }
-
-    return result;
-}
-
-async function drainQueueIfNeeded(
-    sessionId: string,
-    get: GetAiState,
-    set: SetAiState,
-    options: {
-        readonly lockDrain?: boolean;
-    } = {},
-): Promise<void> {
-    const lockDrain = options.lockDrain ?? true;
-    if (lockDrain && activeQueueDrainSessionIds.has(sessionId)) {
-        pendingQueueDrainSessionIds.add(sessionId);
-        return;
-    }
-
-    const session = get().sessions[sessionId];
-    if (
-        !session ||
-        hasActiveLocalDispatch(session) ||
-        !session.meta ||
-        !session.snapshot ||
-        session.queue.length === 0 ||
-        session.queuePaused ||
-        isBusySession(session.snapshot) ||
-        isClosedSubagentSession(session.snapshot)
-    ) {
-        return;
-    }
-
-    const nextQueuedPromptIndex = session.queue.findIndex((queuedPrompt) =>
-        isDispatchableQueuedPrompt(queuedPrompt),
-    );
-    const nextQueuedPrompt =
-        nextQueuedPromptIndex >= 0
-            ? session.queue[nextQueuedPromptIndex]
-            : null;
-    if (!nextQueuedPrompt || nextQueuedPromptIndex < 0) {
-        return;
-    }
-
-    const activeQueuedPrompt = activateQueuedPromptForDrain(
-        sessionId,
-        nextQueuedPrompt.id,
-        set,
-    );
-    if (!activeQueuedPrompt) {
-        return;
-    }
-
-    if (lockDrain) {
-        activeQueueDrainSessionIds.add(sessionId);
-    }
-    let shouldDrainAfterUnlock = false;
-    try {
-        const result = await dispatchPrompt(
-            {
-                additionalRoots:
-                    activeQueuedPrompt.queuedPrompt.additionalRoots ??
-                    collectExternalComposerRoots(
-                        activeQueuedPrompt.queuedPrompt.composerPartsSnapshot,
-                    ),
-                composerParts:
-                    activeQueuedPrompt.queuedPrompt.composerPartsSnapshot,
-                projectId: session.meta.projectId,
-                runtimeId: session.meta.runtimeId,
-                sessionId,
-                title: session.meta.title,
-                worktreeId: session.meta.worktreeId,
-            },
-            activeQueuedPrompt.queuedPrompt.optimisticMessageId ??
-                activeQueuedPrompt.queuedPrompt.id,
-            activeQueuedPrompt.queuedPrompt.prompt,
-            activeQueuedPrompt.queuedPrompt.attachments,
-            set,
-        );
-
-        if (result === "sent") {
-            // The backend is now busy handling this prompt. Don't drain the
-            // next queued item here — it would race the "starting" patch and
-            // get rejected as busy. The patch pipeline (applySessionPatch /
-            // applySessionSnapshot) calls drainQueueIfNeeded whenever the
-            // session transitions back to idle. If that idle snapshot already
-            // arrived while IPC was still resolving, reconcile it after this
-            // drain lock is released.
-            shouldDrainAfterUnlock =
-                completeActiveQueuedPromptAfterSuccessfulDispatch(
-                    sessionId,
-                    activeQueuedPrompt,
-                    get,
-                    set,
-                );
-            return;
-        }
-
-        restoreActiveQueuedPrompt(
-            sessionId,
-            activeQueuedPrompt,
-            "pending_dispatch",
-            set,
-        );
-    } catch {
-        restoreActiveQueuedPrompt(
-            sessionId,
-            activeQueuedPrompt,
-            "failed",
-            set,
-        );
-    } finally {
-        if (lockDrain) {
-            activeQueueDrainSessionIds.delete(sessionId);
-        }
-        const hasPendingDrain =
-            lockDrain && pendingQueueDrainSessionIds.delete(sessionId);
-        if (shouldDrainAfterUnlock || hasPendingDrain) {
-            await drainQueueIfNeeded(sessionId, get, set);
-        }
-    }
-}
-
-function createQueuedPrompt(input: {
-    readonly additionalRoots?: readonly string[];
-    readonly attachments: readonly AiImageAttachment[];
-    readonly composerPartsSnapshot: readonly AiComposerDraftPart[];
-    readonly existing?: QueuedPrompt | null;
-    readonly fileContextsSnapshot: readonly AiFileContextAttachment[];
-    readonly prompt: string;
-}): QueuedPrompt {
+function toRendererQueuedPrompt(item: AiQueuedPrompt): QueuedPrompt {
     return {
-        additionalRoots: input.additionalRoots,
-        attachments: cloneDraftAttachments(input.attachments),
+        additionalRoots: item.additionalRoots,
+        attachments: cloneDraftAttachments(item.attachments),
         composerPartsSnapshot: cloneComposerDraftParts(
-            input.composerPartsSnapshot,
+            item.composerPartsSnapshot,
         ),
-        createdAt: input.existing?.createdAt ?? new Date().toISOString(),
+        createdAt: item.createdAt,
         fileContextsSnapshot: cloneDraftFileContexts(
-            input.fileContextsSnapshot,
+            item.fileContextsSnapshot,
         ),
-        id: input.existing?.id ?? crypto.randomUUID(),
-        optimisticMessageId: input.existing?.optimisticMessageId,
-        prompt: input.prompt,
-        status: "queued",
+        id: item.id,
+        optimisticMessageId: item.optimisticMessageId ?? item.messageId,
+        prompt: item.prompt,
+        status: item.status,
     };
-}
-
-function isDispatchableQueuedPrompt(queuedPrompt: QueuedPrompt): boolean {
-    return (
-        queuedPrompt.status === "pending_dispatch" ||
-        queuedPrompt.status === "queued"
-    );
 }
 
 function applyLocalPromptAcceptanceToSession(
@@ -3897,62 +3607,6 @@ function insertQueuedPromptAtPosition(
     ];
 }
 
-function commitQueuedPromptEdit(
-    sessionId: string,
-    queuedPrompt: QueuedPrompt,
-    set: SetAiState,
-    meta?: RegisteredSessionMeta,
-): void {
-    set((state) => {
-        const session = state.sessions[sessionId] ?? createSessionState();
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                    ...session,
-                    meta: meta ?? session.meta,
-                    queue: insertQueuedPromptAtEditPosition(
-                        session.queue,
-                        queuedPrompt,
-                        session.editingQueuedPromptState,
-                    ),
-                },
-            },
-        };
-    });
-}
-
-function enqueuePrompt(
-    sessionId: string,
-    queuedPrompt: QueuedPrompt,
-    position: "head" | "tail",
-    set: SetAiState,
-    meta?: RegisteredSessionMeta,
-): void {
-    set((state) => {
-        const session = state.sessions[sessionId] ?? createSessionState();
-        const remainingQueue = session.queue.filter(
-            (candidate) => candidate.id !== queuedPrompt.id,
-        );
-        const queue =
-            position === "head"
-                ? [queuedPrompt, ...remainingQueue]
-                : [...remainingQueue, queuedPrompt];
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                    ...session,
-                    meta: meta ?? session.meta,
-                    queue,
-                },
-            },
-        };
-    });
-}
-
 function setQueuedPromptStatusInState(
     sessionId: string,
     promptId: string,
@@ -3997,147 +3651,6 @@ function setQueuedPromptStatusInState(
     });
 }
 
-function activateQueuedPromptForDrain(
-    sessionId: string,
-    promptId: string,
-    set: SetAiState,
-): ActiveQueuedPromptState | null {
-    let activeQueuedPrompt: ActiveQueuedPromptState | null = null;
-
-    set((state) => {
-        const session = state.sessions[sessionId];
-        if (!session || session.activeQueuedPrompt) {
-            return state;
-        }
-
-        const queueIndex = session.queue.findIndex(
-            (candidate) => candidate.id === promptId,
-        );
-        const queuedPrompt = session.queue[queueIndex];
-        if (!queuedPrompt || !isDispatchableQueuedPrompt(queuedPrompt)) {
-            return state;
-        }
-
-        activeQueuedPrompt = {
-            activatedAfterIncomingSnapshotVersion:
-                session.incomingSnapshotVersion,
-            position: createQueuedPromptPositionState(
-                session.queue,
-                queueIndex,
-            ),
-            queuedPrompt: {
-                ...queuedPrompt,
-                optimisticMessageId:
-                    queuedPrompt.optimisticMessageId ?? queuedPrompt.id,
-                status: "sending",
-            },
-        };
-
-        const nextSession = applyLocalPromptAcceptanceToSession(
-            {
-                ...session,
-                activeQueuedPrompt,
-                queue: session.queue.filter(
-                    (candidate) => candidate.id !== promptId,
-                ),
-            },
-            activeQueuedPrompt.queuedPrompt,
-        );
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: nextSession,
-            },
-        };
-    });
-
-    return activeQueuedPrompt;
-}
-
-function restoreActiveQueuedPrompt(
-    sessionId: string,
-    activeQueuedPrompt: ActiveQueuedPromptState,
-    status: QueuedPrompt["status"],
-    set: SetAiState,
-): void {
-    set((state) => {
-        const session = state.sessions[sessionId];
-        if (
-            !session ||
-            session.activeQueuedPrompt?.queuedPrompt.id !==
-                activeQueuedPrompt.queuedPrompt.id
-        ) {
-            return state;
-        }
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                    ...session,
-                    activeQueuedPrompt: null,
-                    queue: insertQueuedPromptAtPosition(
-                        session.queue,
-                        {
-                            ...activeQueuedPrompt.queuedPrompt,
-                            status,
-                        },
-                        activeQueuedPrompt.position,
-                    ),
-                },
-            },
-        };
-    });
-}
-
-function completeActiveQueuedPromptAfterSuccessfulDispatch(
-    sessionId: string,
-    activeQueuedPrompt: ActiveQueuedPromptState,
-    get: GetAiState,
-    set: SetAiState,
-): boolean {
-    let shouldDrainAfterUnlock = false;
-
-    set((state) => {
-        const session = state.sessions[sessionId];
-        if (
-            !session ||
-            session.activeQueuedPrompt?.queuedPrompt.id !==
-                activeQueuedPrompt.queuedPrompt.id ||
-            !session.snapshot
-        ) {
-            return state;
-        }
-
-        const nextSession = {
-            ...session,
-            activeQueuedPrompt: null,
-        };
-
-        shouldDrainAfterUnlock =
-            hasIncomingSnapshotVersionAdvancedPastActiveQueuedPrompt(
-                session,
-                activeQueuedPrompt,
-            ) &&
-            nextSession.queue.some((queuedPrompt) =>
-                isDispatchableQueuedPrompt(queuedPrompt),
-            ) &&
-            !nextSession.queuePaused &&
-            !isBusySession(session.snapshot) &&
-            !isClosedSubagentSession(session.snapshot);
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: nextSession,
-            },
-        };
-    });
-
-    return shouldDrainAfterUnlock && Boolean(get().sessions[sessionId]);
-}
-
 function clearEditingQueuedPromptState(
     sessionId: string,
     set: SetAiState,
@@ -4174,25 +3687,6 @@ function pauseQueue(sessionId: string, set: SetAiState): void {
                 [sessionId]: {
                     ...session,
                     queuePaused: true,
-                },
-            },
-        };
-    });
-}
-
-function resumeQueue(sessionId: string, set: SetAiState): void {
-    set((state) => {
-        const session = state.sessions[sessionId];
-        if (!session || !session.queuePaused) {
-            return state;
-        }
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                    ...session,
-                    queuePaused: false,
                 },
             },
         };
@@ -4540,88 +4034,6 @@ function isTrackedFileMutationTargetCurrent(
         Number.isInteger(input.expectedVersion) &&
         input.expectedVersion === (trackedFile.version ?? 1)
     );
-}
-
-function isBusySession(snapshot: AiSessionSnapshot): boolean {
-    return (
-        snapshot.status === "starting" ||
-        snapshot.status === "streaming" ||
-        snapshot.status === "waiting_permission" ||
-        snapshot.status === "waiting_user_input"
-    );
-}
-
-function hasActiveLocalDispatch(session: AiSessionClientState): boolean {
-    return Boolean(session.isDispatching || session.activeQueuedPrompt);
-}
-
-function reconcileDispatchStateForIncomingSnapshot(
-    session: AiSessionClientState,
-    snapshot: AiSessionSnapshot,
-): Pick<
-    AiSessionClientState,
-    "activeDispatchToken" | "activeQueuedPrompt" | "isDispatching"
-> {
-    if (!session.activeQueuedPrompt) {
-        return {
-            activeDispatchToken: null,
-            activeQueuedPrompt: null,
-            isDispatching: false,
-        };
-    }
-
-    if (
-        doesIncomingSnapshotAdvancePastActiveQueuedPrompt(
-            session,
-            snapshot,
-            session.activeQueuedPrompt,
-        )
-    ) {
-        return {
-            activeDispatchToken: null,
-            activeQueuedPrompt: null,
-            isDispatching: false,
-        };
-    }
-
-    return {
-        activeDispatchToken: session.activeDispatchToken,
-        activeQueuedPrompt: session.activeQueuedPrompt,
-        isDispatching: session.isDispatching,
-    };
-}
-
-function doesIncomingSnapshotAdvancePastActiveQueuedPrompt(
-    session: AiSessionClientState,
-    snapshot: AiSessionSnapshot,
-    activeQueuedPrompt: ActiveQueuedPromptState,
-): boolean {
-    return (
-        resolveIncomingSnapshotProgress(session, snapshot.updatedAt)
-            .incomingSnapshotVersion >
-        activeQueuedPrompt.activatedAfterIncomingSnapshotVersion
-    );
-}
-
-function hasIncomingSnapshotVersionAdvancedPastActiveQueuedPrompt(
-    session: AiSessionClientState,
-    activeQueuedPrompt: ActiveQueuedPromptState,
-): boolean {
-    return (
-        session.incomingSnapshotVersion >
-        activeQueuedPrompt.activatedAfterIncomingSnapshotVersion
-    );
-}
-
-function isClosedSubagentSession(snapshot: AiSessionSnapshot): boolean {
-    return Boolean(snapshot.parentSessionId && snapshot.closedAt);
-}
-
-function isSessionBusyError(error: unknown): boolean {
-    // Match by a sentinel embedded in the error message so detection survives
-    // Electron's IPC wrapping, which prefixes the original message and drops
-    // custom Error subclasses and extra properties.
-    return error instanceof Error && isSessionBusyErrorMessage(error.message);
 }
 
 function getComandoApi() {

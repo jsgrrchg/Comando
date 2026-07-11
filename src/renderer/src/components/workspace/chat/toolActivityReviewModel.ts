@@ -2,6 +2,7 @@ import type { AiFileDiff, AiToolActivity, AiTrackedFile } from "@shared/ipc";
 import { isAiTrackedFileUnresolved } from "@shared/ai-tracked-file";
 
 import {
+    areTrackedFilePathReferencesEquivalent,
     areTrackedFilePathsEquivalent,
     matchesTrackedFilePath,
 } from "@renderer/app/ai/trackedFilePath";
@@ -21,6 +22,7 @@ import {
     createDiffFromTrackedFile,
     getFileNameFromPath,
 } from "../review/reviewDiff";
+import { getStructuredToolTarget } from "./toolActivityDescriptor";
 
 export interface ToolActivityReviewEntry {
     readonly activity: AiToolActivity;
@@ -76,7 +78,10 @@ export function deriveTrackedFilesForToolActivity(
     activity: AiToolActivity,
     trackedFiles: readonly AiTrackedFile[],
 ): AiTrackedFile[] {
-    const explicitMatches = trackedFiles.filter(
+    const sessionTrackedFiles = trackedFiles.filter(
+        (trackedFile) => trackedFile.sessionId === activity.sessionId,
+    );
+    const explicitMatches = sessionTrackedFiles.filter(
         (trackedFile) => trackedFile.toolCallId === activity.id,
     );
 
@@ -91,7 +96,7 @@ export function deriveTrackedFilesForToolActivity(
 
     const matchedByPath = new Map<string, AiTrackedFile>();
     for (const candidatePath of candidatePaths) {
-        const pathMatches = trackedFiles.filter(
+        const pathMatches = sessionTrackedFiles.filter(
             (trackedFile) =>
                 trackedFile.toolCallId === null &&
                 matchesTrackedFilePathReference(trackedFile, candidatePath),
@@ -166,6 +171,11 @@ export function deriveChangeReviewSummary(
 
 function collectActivityPaths(activity: AiToolActivity): Set<string> {
     const candidatePaths = new Set<string>();
+
+    const structuredTarget = getStructuredToolTarget(activity);
+    if (structuredTarget?.trim()) {
+        candidatePaths.add(structuredTarget);
+    }
 
     for (const location of activity.locations) {
         if (location.path.trim()) {
@@ -346,49 +356,6 @@ function matchesTrackedFilePathReference(
             areTrackedFilePathReferencesEquivalent(path, candidatePath),
         )
     );
-}
-
-function areTrackedFilePathReferencesEquivalent(
-    leftPath: string | null | undefined,
-    rightPath: string | null | undefined,
-): boolean {
-    if (!leftPath || !rightPath) {
-        return false;
-    }
-
-    return (
-        areTrackedFilePathsEquivalent(leftPath, rightPath) ||
-        isScopedPathSuffix(leftPath, rightPath) ||
-        isScopedPathSuffix(rightPath, leftPath)
-    );
-}
-
-function isScopedPathSuffix(
-    candidatePath: string,
-    scopedPath: string,
-): boolean {
-    if (!looksAbsolutePath(candidatePath) || looksAbsolutePath(scopedPath)) {
-        return false;
-    }
-
-    const usesWindowsPath =
-        candidatePath.includes("\\") || scopedPath.includes("\\");
-    const candidate = normalizePathForSuffix(candidatePath, usesWindowsPath);
-    const scoped = normalizePathForSuffix(scopedPath, usesWindowsPath);
-    return candidate.endsWith(`/${scoped}`);
-}
-
-function looksAbsolutePath(candidatePath: string): boolean {
-    return (
-        candidatePath.startsWith("/") ||
-        /^[a-zA-Z]:[\\/]/.test(candidatePath) ||
-        /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(candidatePath)
-    );
-}
-
-function normalizePathForSuffix(path: string, caseInsensitive: boolean): string {
-    const normalized = path.replace(/\\/g, "/").replace(/\/+/g, "/");
-    return caseInsensitive ? normalized.toLowerCase() : normalized;
 }
 
 function areOptionalTrackedFilePathsEquivalent(

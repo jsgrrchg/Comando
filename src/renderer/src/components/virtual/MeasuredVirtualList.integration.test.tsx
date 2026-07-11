@@ -107,10 +107,12 @@ function createItems(count: number): Item[] {
 interface MountConfig {
     readonly items: readonly Item[];
     readonly overscan: number;
+    readonly preserveScrollAnchorOnItemsChange?: boolean;
     readonly preserveScrollAnchorOnMeasure: boolean;
     readonly getItemMeasurementKey?: (item: Item, index: number) => string;
     readonly getItemIdentityKey?: (item: Item, index: number) => string;
     readonly shouldPreserveScrollAnchorOnMeasure?: () => boolean;
+    readonly shouldPreserveScrollAnchorOnItemsChange?: () => boolean;
 }
 
 interface MountedList {
@@ -150,7 +152,13 @@ function mountList(config: MountConfig): MountedList {
             getItemMeasurementKey={currentMeasurementKey}
             items={currentItems}
             overscan={config.overscan}
+            preserveScrollAnchorOnItemsChange={
+                config.preserveScrollAnchorOnItemsChange
+            }
             preserveScrollAnchorOnMeasure={config.preserveScrollAnchorOnMeasure}
+            shouldPreserveScrollAnchorOnItemsChange={
+                config.shouldPreserveScrollAnchorOnItemsChange
+            }
             shouldPreserveScrollAnchorOnMeasure={
                 config.shouldPreserveScrollAnchorOnMeasure
             }
@@ -262,6 +270,55 @@ afterEach(() => {
 });
 
 describe("MeasuredVirtualList scroll anchoring (integration)", () => {
+    it("preserves a keyed viewport anchor when rows split above it", () => {
+        const initialItems = createItems(60);
+        const list = mountList({
+            items: initialItems,
+            overscan: 10,
+            preserveScrollAnchorOnItemsChange: true,
+            preserveScrollAnchorOnMeasure: true,
+        });
+
+        scrollTo(list, 300);
+        list.rerender({
+            items: [
+                { id: "group-before" },
+                { id: "late-diff" },
+                { id: "group-after" },
+                ...initialItems.slice(1),
+            ],
+        });
+
+        expect(list.scrollContainer.scrollTop).toBe(340);
+
+        list.root.unmount();
+    });
+
+    it("leaves structural item changes to auto-follow when preservation is disabled", () => {
+        const initialItems = createItems(60);
+        const list = mountList({
+            items: initialItems,
+            overscan: 10,
+            preserveScrollAnchorOnItemsChange: true,
+            preserveScrollAnchorOnMeasure: true,
+            shouldPreserveScrollAnchorOnItemsChange: () => false,
+        });
+
+        scrollTo(list, 300);
+        list.rerender({
+            items: [
+                { id: "group-before" },
+                { id: "late-diff" },
+                { id: "group-after" },
+                ...initialItems.slice(1),
+            ],
+        });
+
+        expect(list.scrollContainer.scrollTop).toBe(300);
+
+        list.root.unmount();
+    });
+
     it("nudges scrollTop when a row above the viewport grows", () => {
         const list = mountList({
             items: createItems(60),
@@ -306,6 +363,29 @@ describe("MeasuredVirtualList scroll anchoring (integration)", () => {
 
         // 20 → 8 is -12, so scrollTop drops from 300 to 288.
         expect(list.scrollContainer.scrollTop).toBe(300 + (8 - ITEM_HEIGHT));
+
+        list.root.unmount();
+    });
+
+    it("preserves the viewport through an expand-collapse cycle above it", () => {
+        const list = mountList({
+            items: createItems(60),
+            overscan: 10,
+            preserveScrollAnchorOnMeasure: true,
+        });
+
+        scrollTo(list, 300);
+        const aboveIndex = renderedIndexes(list.mountNode)[0];
+
+        act(() => {
+            fireRowResize(rowWrapper(list.mountNode, aboveIndex), 80);
+        });
+        expect(list.scrollContainer.scrollTop).toBe(360);
+
+        act(() => {
+            fireRowResize(rowWrapper(list.mountNode, aboveIndex), ITEM_HEIGHT);
+        });
+        expect(list.scrollContainer.scrollTop).toBe(300);
 
         list.root.unmount();
     });

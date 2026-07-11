@@ -58,7 +58,9 @@ export interface MeasuredVirtualListProps<T> {
     readonly getItemIdentityKey?: (item: T, index: number) => string;
     readonly onRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onReady?: (handle: MeasuredVirtualListHandle | null) => void;
+    readonly preserveScrollAnchorOnItemsChange?: boolean;
     readonly preserveScrollAnchorOnMeasure?: boolean;
+    readonly shouldPreserveScrollAnchorOnItemsChange?: () => boolean;
     readonly shouldPreserveScrollAnchorOnMeasure?: () => boolean;
     readonly renderItem: (params: {
         readonly index: number;
@@ -135,6 +137,17 @@ function areRangesEqual(
         left.endIndex === right.endIndex &&
         left.visibleStartIndex === right.visibleStartIndex &&
         left.visibleEndIndex === right.visibleEndIndex
+    );
+}
+
+function areItemKeysEqual(
+    previous: readonly string[] | null,
+    next: readonly string[],
+): boolean {
+    return (
+        previous !== null &&
+        previous.length === next.length &&
+        previous.every((key, index) => key === next[index])
     );
 }
 
@@ -394,7 +407,9 @@ export function MeasuredVirtualList<T>({
     getItemIdentityKey,
     onRangeChange,
     onReady,
+    preserveScrollAnchorOnItemsChange = false,
     preserveScrollAnchorOnMeasure = false,
+    shouldPreserveScrollAnchorOnItemsChange,
     shouldPreserveScrollAnchorOnMeasure,
     renderItem,
 }: MeasuredVirtualListProps<T>) {
@@ -418,14 +433,25 @@ export function MeasuredVirtualList<T>({
     const elementByListKeyRef = useRef(new Map<string, HTMLDivElement>());
     const listKeyByElementRef = useRef(new WeakMap<Element, string>());
     const layoutRangeRef = useRef<MeasuredVirtualRange | null>(null);
+    const captureViewportAnchorRef = useRef<
+        (() => MeasuredVirtualViewportAnchor | null) | null
+    >(null);
+    const pendingItemsChangeAnchorRef =
+        useRef<MeasuredVirtualViewportAnchor | null>(null);
     const pendingScrollAnchorAdjustmentRef = useRef(0);
+    const previousItemKeysRef = useRef<readonly string[] | null>(null);
     const resizeObserverRef = useRef<ResizeObserver | null>(null);
     const previousRangeRef = useRef<MeasuredVirtualRange | null>(null);
     const shouldPreserveScrollAnchorOnMeasureRef = useRef(
         shouldPreserveScrollAnchorOnMeasure,
     );
+    const shouldPreserveScrollAnchorOnItemsChangeRef = useRef(
+        shouldPreserveScrollAnchorOnItemsChange,
+    );
     shouldPreserveScrollAnchorOnMeasureRef.current =
         shouldPreserveScrollAnchorOnMeasure;
+    shouldPreserveScrollAnchorOnItemsChangeRef.current =
+        shouldPreserveScrollAnchorOnItemsChange;
     const itemKeys = useMemo(
         () => items.map((item, index) => getItemKey(item, index)),
         [getItemKey, items],
@@ -1043,6 +1069,29 @@ export function MeasuredVirtualList<T>({
         },
         [itemKeys, items.length, scrollToIndex],
     );
+
+    const previousItemKeys = previousItemKeysRef.current;
+    if (!areItemKeysEqual(previousItemKeys, itemKeys)) {
+        pendingItemsChangeAnchorRef.current =
+            previousItemKeys !== null &&
+            preserveScrollAnchorOnItemsChange &&
+            virtualizationEnabled &&
+            (shouldPreserveScrollAnchorOnItemsChangeRef.current?.() ?? true)
+                ? (captureViewportAnchorRef.current?.() ?? null)
+                : null;
+    }
+    previousItemKeysRef.current = itemKeys;
+    captureViewportAnchorRef.current = captureViewportAnchor;
+
+    useLayoutEffect(() => {
+        const anchor = pendingItemsChangeAnchorRef.current;
+        pendingItemsChangeAnchorRef.current = null;
+        if (!anchor) {
+            return;
+        }
+
+        scrollToViewportAnchor(anchor);
+    }, [itemKeys, scrollToViewportAnchor]);
 
     useEffect(() => {
         onReady?.({

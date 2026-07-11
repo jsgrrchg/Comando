@@ -10,6 +10,7 @@ import { APP_ZOOM_FACTOR_DEFAULT, stepAppZoomFactor } from "@shared/app-zoom";
 import {
     IPC_EVENTS,
     type AiRuntimeStatus,
+    type AiPromptQueueSnapshot,
     type AiSessionDomainEvent,
     type AiSessionStreamMessage,
     type AiSessionStreamPayload,
@@ -253,6 +254,7 @@ if (!hasSingleInstanceLock) {
                     },
                 }),
                 onRuntimeStatus: broadcastAiRuntimeStatus,
+                onPromptQueueSnapshot: broadcastAiPromptQueueSnapshot,
                 onSessionEvent: broadcastAiSessionEvent,
                 onSessionSnapshot: broadcastAiSessionSnapshot,
                 persistence: nativeAppDataClient.aiPersistence,
@@ -1081,6 +1083,16 @@ function broadcastAiRuntimeStatus(payload: AiRuntimeStatus): void {
     forEachLiveWindow((window) => {
         window.webContents.send(IPC_EVENTS.aiRuntimeStatus, payload);
     });
+}
+
+function broadcastAiPromptQueueSnapshot(
+    ownerWindowId: string,
+    payload: AiPromptQueueSnapshot,
+): void {
+    const targetWindow = windowRegistry.getWindowByStableId(ownerWindowId);
+    if (targetWindow) {
+        targetWindow.webContents.send(IPC_EVENTS.aiPromptQueue, payload);
+    }
 }
 
 function broadcastAiSessionSnapshot(

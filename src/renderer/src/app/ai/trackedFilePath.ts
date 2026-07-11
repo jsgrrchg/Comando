@@ -40,6 +40,21 @@ export function areTrackedFilePathsEquivalent(
     );
 }
 
+export function areTrackedFilePathReferencesEquivalent(
+    leftPath: string | null | undefined,
+    rightPath: string | null | undefined,
+): boolean {
+    if (!leftPath || !rightPath) {
+        return false;
+    }
+
+    return (
+        areTrackedFilePathsEquivalent(leftPath, rightPath) ||
+        isScopedPathSuffix(leftPath, rightPath) ||
+        isScopedPathSuffix(rightPath, leftPath)
+    );
+}
+
 export function getTrackedFilePathAliases(
     trackedFile: AiTrackedFile,
 ): readonly string[] {
@@ -80,4 +95,26 @@ function resolveTrackedFilePathPlatform(
     return useAppStore.getState().bootstrap?.platform === "win32"
         ? "win32"
         : "posix";
+}
+
+function isScopedPathSuffix(
+    candidatePath: string,
+    scopedPath: string,
+): boolean {
+    if (!looksAbsolutePath(candidatePath) || looksAbsolutePath(scopedPath)) {
+        return false;
+    }
+
+    const platform = inferTrackedFilePathPlatform(candidatePath, scopedPath);
+    const candidate = normalizePathKey(candidatePath, { platform });
+    const scoped = normalizePathKey(scopedPath, { platform });
+    return candidate.endsWith(`/${scoped}`);
+}
+
+function looksAbsolutePath(candidatePath: string): boolean {
+    return (
+        candidatePath.startsWith("/") ||
+        /^[a-zA-Z]:[\\/]/.test(candidatePath) ||
+        /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(candidatePath)
+    );
 }

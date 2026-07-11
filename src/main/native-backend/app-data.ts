@@ -22,6 +22,7 @@ import {
 } from "@shared/typography";
 import type {
     AiToolCardExpansionMode,
+    AiPromptQueueSnapshot,
     AiHistorySessionSummary,
     AiRuntimeId,
     AiSessionSnapshot,
@@ -76,6 +77,7 @@ const PROJECT_SETTINGS_KEY = "settings.projects";
 const PERSISTENCE_KEY = "persistence.windows";
 const AI_CATALOGS_KEY = "ai.runtimeCatalogs";
 const AI_PREFERENCES_KEY = "ai.runtimePreferences";
+const AI_PROMPT_QUEUES_KEY = "ai.promptQueues";
 const WORKSPACE_KEY_PREFIX = "workspace.";
 const AI_RUNTIME_IDS = [
     "claude",
@@ -749,13 +751,16 @@ class NativeAiPersistenceClient implements AiPersistenceGateway {
         PersistedRuntimeSelectionPreferences
     >();
     readonly #catalogs = new Map<AiRuntimeId, PersistedRuntimeCatalogSnapshot>();
+    readonly #promptQueueSnapshots: readonly AiPromptQueueSnapshot[];
 
     constructor(
         store: NativeJsonStore,
         preferences: Readonly<Record<string, PersistedRuntimeSelectionPreferences>>,
         catalogs: Readonly<Record<string, PersistedRuntimeCatalogSnapshot>>,
+        promptQueueSnapshots: readonly AiPromptQueueSnapshot[],
     ) {
         this.#store = store;
+        this.#promptQueueSnapshots = promptQueueSnapshots;
         for (const [runtimeId, value] of Object.entries(preferences)) {
             this.#preferences.set(runtimeId as AiRuntimeId, value);
         }
@@ -803,6 +808,10 @@ class NativeAiPersistenceClient implements AiPersistenceGateway {
         runtimeId: AiRuntimeId,
     ): PersistedRuntimeCatalogSnapshot | null {
         return this.#catalogs.get(runtimeId) ?? null;
+    }
+
+    loadPromptQueueSnapshots(): readonly AiPromptQueueSnapshot[] {
+        return this.#promptQueueSnapshots;
     }
 
     loadRuntimeSelectionPreferences(
@@ -901,6 +910,12 @@ class NativeAiPersistenceClient implements AiPersistenceGateway {
             this.#catalogs.delete(runtimeId);
         }
         this.#store.save(AI_CATALOGS_KEY, Object.fromEntries(this.#catalogs));
+    }
+
+    savePromptQueueSnapshots(
+        snapshots: readonly AiPromptQueueSnapshot[],
+    ): void {
+        this.#store.save(AI_PROMPT_QUEUES_KEY, snapshots);
     }
 }
 
@@ -1689,6 +1704,7 @@ export async function createNativeAppDataClient(
         store,
         await store.load(AI_PREFERENCES_KEY, {}),
         await store.load(AI_CATALOGS_KEY, {}),
+        await store.load(AI_PROMPT_QUEUES_KEY, []),
     );
 
     return {

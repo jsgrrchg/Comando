@@ -464,7 +464,11 @@ export const ChatTimelineHistoryRows = memo(
                     onRangeChange={onVirtualRangeChange}
                     onReady={handleVirtualListReady}
                     overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}
+                    preserveScrollAnchorOnItemsChange
                     preserveScrollAnchorOnMeasure
+                    shouldPreserveScrollAnchorOnItemsChange={
+                        shouldPreserveVirtualResizeAnchor
+                    }
                     shouldPreserveScrollAnchorOnMeasure={
                         shouldPreserveVirtualMeasureAnchor
                     }

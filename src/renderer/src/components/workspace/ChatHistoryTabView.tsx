@@ -1913,7 +1913,7 @@ function HistoryTranscriptTimeline({
             toolActivity: snapshot?.toolActivity ?? [],
             trackedFiles: snapshot?.trackedFiles ?? [],
         });
-        return model.orderedRows;
+        return model.orderedAtomicRows;
     }, [
         snapshot?.toolActivity,
         snapshot?.trackedFiles,
@@ -1990,6 +1990,10 @@ function HistoryTimelineRow({
                 resolveFileReference={handlers.resolveFileReference}
             />
         );
+    }
+
+    if (row.kind === "activity-segment") {
+        return null;
     }
 
     return (

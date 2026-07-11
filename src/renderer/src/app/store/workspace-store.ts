@@ -631,7 +631,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     existingTab.id,
                 ),
             }));
-            void useAiStore.getState().ensureSession(nextTab);
+            prewarmFocusedAiSession(nextTab);
             await persistWorkspaceState(get);
             return;
         }
@@ -677,7 +677,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 tab.id,
             ),
         }));
-        void useAiStore.getState().ensureSession(tab);
+        prewarmFocusedAiSession(tab);
         await persistWorkspaceState(get);
     },
 
@@ -1020,6 +1020,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     getPaneChatTabId(hydratedState, snapshot.activePaneId),
                 ),
             });
+            ensureActiveHydratedSessions(hydratedState);
             void hydrateRuntimeTabs(snapshot, get, set);
         } catch (error) {
             set({
@@ -1751,9 +1752,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         const activeTabId = getPaneActiveTabId(get(), paneId);
         const activeTab = activeTabId ? get().tabsById[activeTabId] : null;
         if (activeTab?.kind === "chat" || activeTab?.kind === "review") {
-            void useAiStore.getState().ensureSession(activeTab, {
-                force: true,
-            });
+            prewarmFocusedAiSession(activeTab);
         }
         await persistWorkspaceState(get);
     },
@@ -1786,9 +1785,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }));
         const tab = get().tabsById[tabId];
         if (tab?.kind === "chat" || tab?.kind === "review") {
-            void useAiStore.getState().ensureSession(tab, {
-                force: true,
-            });
+            prewarmFocusedAiSession(tab);
         }
         await persistWorkspaceState(get);
     },
@@ -1823,6 +1820,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 };
             })(),
         }));
+        const activeTabId = getPaneActiveTabId(get(), paneId);
+        const activeTab = activeTabId ? get().tabsById[activeTabId] : null;
+        if (activeTab?.kind === "chat" || activeTab?.kind === "review") {
+            prewarmFocusedAiSession(activeTab);
+        }
         await persistWorkspaceState(get);
     },
 
@@ -2677,7 +2679,16 @@ function createHydratedRuntimeTabs(
     return Object.fromEntries(
         snapshot.tabs.map((tab) => {
             if (tab.kind === "chat") {
-                return [tab.id, tab] as const;
+                return [
+                    tab.id,
+                    {
+                        ...tab,
+                        // Tabs persisted before passive history hydration did
+                        // not have this field. Restore them without starting
+                        // a runtime so their saved transcript is preserved.
+                        sessionOpenMode: tab.sessionOpenMode ?? "history",
+                    },
+                ] as const;
             }
 
             if (tab.kind === "git") {
@@ -2746,6 +2757,37 @@ function createHydratedRuntimeTabs(
             ] as const;
         }),
     ) as Record<string, RuntimeWorkspaceTab>;
+}
+
+function ensureActiveHydratedSessions(state: WorkspaceTreeState): void {
+    for (const pane of collectPaneNodes(state.rootNode)) {
+        const activeTab = pane.activeTabId
+            ? state.tabsById[pane.activeTabId]
+            : null;
+        if (activeTab?.kind === "chat" || activeTab?.kind === "review") {
+            prewarmFocusedAiSession(activeTab);
+        }
+    }
+}
+
+function prewarmFocusedAiSession(
+    tab: RuntimeWorkspaceTab,
+): void {
+    if (tab.kind !== "chat" && tab.kind !== "review") {
+        return;
+    }
+
+    void (async () => {
+        await useAiStore.getState().ensureSession(tab);
+        if (tab.kind !== "chat" || tab.sessionOpenMode !== "history") {
+            return;
+        }
+
+        await useAiStore.getState().ensureSession(
+            { ...tab, sessionOpenMode: "live" },
+            { force: true },
+        );
+    })();
 }
 
 async function hydrateRuntimeTabs(

@@ -34,6 +34,7 @@ import {
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
     type FileBufferNotificationInput,
+    type EnqueueAiPromptInput,
     type GitBranchListInput,
     type GitBranchSummary as SharedGitBranchSummary,
     type GitChangeEntry as SharedGitChangeEntry,
@@ -143,7 +144,8 @@ import {
     type ReadClaudeCodeTranscriptInput,
     type SearchProjectEntriesInput,
     type SaveProjectFileInput,
-    type SendAiPromptInput,
+    type AiQueuedPromptMutationInput,
+    type UpdateAiQueuedPromptInput,
     type SettingsSnapshot,
     type SystemTheme,
     type ThemeMode,
@@ -340,7 +342,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.resyncAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.listAiSessionHistory);
     ipcMain.removeHandler(IPC_CHANNELS.getAiSessionTranscriptPage);
-    ipcMain.removeHandler(IPC_CHANNELS.sendAiPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.getAiPromptQueue);
+    ipcMain.removeHandler(IPC_CHANNELS.enqueueAiPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.removeAiQueuedPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.clearAiPromptQueue);
+    ipcMain.removeHandler(IPC_CHANNELS.beginEditAiQueuedPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.cancelEditAiQueuedPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.updateAiQueuedPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.steerAiQueuedPrompt);
     ipcMain.removeHandler(IPC_CHANNELS.refreshAiProjectScopes);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionMode);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionModel);
@@ -1737,11 +1746,60 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (_event, input: GetAiSessionTranscriptPageInput) =>
             options.aiService.getSessionTranscriptPage(input),
     );
+    ipcMain.handle(IPC_CHANNELS.getAiPromptQueue, (event, sessionId: string) => {
+        const context = requireWindowContext(event.sender, "main");
+        return options.aiService.getPromptQueue(sessionId, context.windowId);
+    });
     ipcMain.handle(
-        IPC_CHANNELS.sendAiPrompt,
-        (event, input: SendAiPromptInput) => {
+        IPC_CHANNELS.enqueueAiPrompt,
+        (event, input: EnqueueAiPromptInput) => {
             const context = requireWindowContext(event.sender, "main");
-            return options.aiService.sendPrompt(input, context.windowId);
+            return options.aiService.enqueuePrompt(input, context.windowId);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.removeAiQueuedPrompt,
+        (event, input: AiQueuedPromptMutationInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            return options.aiService.removeQueuedPrompt(input, context.windowId);
+        },
+    );
+    ipcMain.handle(IPC_CHANNELS.clearAiPromptQueue, (event, sessionId: string) => {
+        const context = requireWindowContext(event.sender, "main");
+        return options.aiService.clearPromptQueue(sessionId, context.windowId);
+    });
+    ipcMain.handle(
+        IPC_CHANNELS.beginEditAiQueuedPrompt,
+        (event, input: AiQueuedPromptMutationInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            return options.aiService.beginEditQueuedPrompt(
+                input,
+                context.windowId,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.cancelEditAiQueuedPrompt,
+        (event, sessionId: string) => {
+            const context = requireWindowContext(event.sender, "main");
+            return options.aiService.cancelEditQueuedPrompt(
+                sessionId,
+                context.windowId,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.updateAiQueuedPrompt,
+        (event, input: UpdateAiQueuedPromptInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            return options.aiService.updateQueuedPrompt(input, context.windowId);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.steerAiQueuedPrompt,
+        (event, input: AiQueuedPromptMutationInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            return options.aiService.steerQueuedPrompt(input, context.windowId);
         },
     );
     ipcMain.handle(

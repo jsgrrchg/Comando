@@ -4,6 +4,7 @@ import { CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 import type { ChatTimelineRow } from "./chatTimelineModel";
 import {
     isFileToolActivity,
+    isStatusToolActivity,
     isTerminalToolActivity,
     isTurnStartedActivity,
 } from "./toolActivityKinds";
@@ -211,6 +212,10 @@ export function estimateChatTimelineRowHeight(
         );
     }
 
+    if (row.kind === "activity-segment") {
+        return gapPx;
+    }
+
     return Math.ceil(estimateToolRowHeight(row, context) + gapPx);
 }
 
@@ -282,6 +287,10 @@ function estimateToolRowHeight(
 
     if (isTurnStartedActivity(activity)) {
         return 48;
+    }
+
+    if (isStatusToolActivity(activity)) {
+        return 28;
     }
 
     if (isTerminalToolActivity(activity)) {

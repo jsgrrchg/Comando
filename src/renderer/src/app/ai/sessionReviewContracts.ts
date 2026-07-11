@@ -11,9 +11,11 @@ export const FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM = 1.25;
 export const AI_REVIEW_UNDO_ENABLED = false;
 
 export type AiQueuedPromptStatus =
+    | "editing"
     | "failed"
     | "pending_dispatch"
     | "queued"
+    | "running"
     | "sending";
 
 export type AiComposerDraftPart = AiComposerMessagePart;

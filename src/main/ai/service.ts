@@ -6,6 +6,8 @@ import type {
     AiMessage,
     AiPermissionResponseInput,
     AiPromptResult,
+    AiPromptQueueSnapshot,
+    AiQueuedPromptMutationInput,
     PrepareAiSessionInput,
     AiRuntimeAuthLaunchInput,
     AiRuntimeAuthDisconnectInput,
@@ -39,7 +41,9 @@ import type {
     ListAiSessionHistoryInput,
     OpenCodeRuntimeSettingsInput,
     SecretValuePatch,
+    EnqueueAiPromptInput,
     SendAiPromptInput,
+    UpdateAiQueuedPromptInput,
 } from "@shared/ipc";
 import {
     computeDiffHunks,
@@ -81,6 +85,7 @@ import {
     type PersistedRuntimeCatalogSnapshot,
 } from "./persistence";
 import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
+import { AiPromptQueue } from "./prompt-queue";
 import { listOpenFileBuffers } from "./openFileBuffers";
 import {
     type AiReviewMutationResult,
@@ -471,6 +476,7 @@ export class AiService {
         ownerWindowId: string,
         update: AiSessionUpdate,
     ) => void;
+    readonly #promptQueue: AiPromptQueue;
     readonly #persistence: AiPersistenceGateway;
     readonly #projectService: ProjectService;
     readonly #retentionConfig: AiSessionRetentionConfig;
@@ -499,6 +505,23 @@ export class AiService {
         this.#scheduler = new AiWorkScheduler(options.aiScheduler);
         this.#secretStore = options.secretStore;
         this.#settingsService = options.settingsService;
+        this.#promptQueue = new AiPromptQueue({
+            cancelSession: (sessionId) => this.#cancelNativeSession(sessionId),
+            dispatchPrompt: (input, ownerWindowId) =>
+                this.sendPrompt(
+                    input,
+                    this.#liveSessionContexts.get(input.sessionId)
+                        ?.ownerWindowId ?? ownerWindowId,
+                ),
+            getSessionSnapshot: (sessionId) =>
+                this.#liveSnapshots.get(sessionId) ?? null,
+            loadSnapshots: () =>
+                this.#persistence.loadPromptQueueSnapshots?.() ?? [],
+            onSnapshot: (ownerWindowId, snapshot) =>
+                options.onPromptQueueSnapshot?.(ownerWindowId, snapshot),
+            saveSnapshots: (snapshots) =>
+                this.#persistence.savePromptQueueSnapshots?.(snapshots),
+        });
     }
 
     setNativeAiGateway(nativeAi: NativeAiGateway | null): void {
@@ -635,6 +658,7 @@ export class AiService {
             ownerWindowId,
         );
         this.#persistence.saveSessionSnapshot(cachedSnapshot);
+        this.#promptQueue.handleSessionSnapshot(cachedSnapshot);
         this.#onSessionSnapshot(
             ownerWindowId,
             buildAiSessionUpdate(previousSnapshot, cachedSnapshot),
@@ -686,6 +710,10 @@ export class AiService {
         }
 
         if (event.kind === "subagent-created") {
+            this.#nativeChildParentSessionIds.set(
+                event.childSessionId,
+                event.parentSessionId,
+            );
             this.#inheritNativeReviewContext(
                 event.parentSessionId,
                 event.childSessionId,
@@ -736,10 +764,6 @@ export class AiService {
                     ownerWindowId,
                 );
                 this.#nativeSessionIds.add(event.childSessionId);
-                this.#nativeChildParentSessionIds.set(
-                    event.childSessionId,
-                    event.parentSessionId,
-                );
                 this.#onSessionSnapshot(ownerWindowId, {
                     kind: "snapshot",
                     snapshot: cachedChildSnapshot,
@@ -747,6 +771,7 @@ export class AiService {
             }
         }
 
+        this.#promptQueue.handleSessionEvent(event);
         this.#onSessionEvent(ownerWindowId, event);
     }
 
@@ -1280,6 +1305,74 @@ export class AiService {
         void projectId;
     }
 
+    getPromptQueue(
+        sessionId: string,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        return this.#promptQueue.getSnapshot(sessionId, ownerWindowId);
+    }
+
+    enqueuePrompt(
+        input: EnqueueAiPromptInput,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        return this.#promptQueue.enqueue(input, ownerWindowId);
+    }
+
+    removeQueuedPrompt(
+        input: AiQueuedPromptMutationInput,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        return this.#promptQueue.remove(
+            input.sessionId,
+            input.promptId,
+            ownerWindowId,
+        );
+    }
+
+    clearPromptQueue(
+        sessionId: string,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        return this.#promptQueue.clear(sessionId, ownerWindowId);
+    }
+
+    beginEditQueuedPrompt(
+        input: AiQueuedPromptMutationInput,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        return this.#promptQueue.beginEdit(
+            input.sessionId,
+            input.promptId,
+            ownerWindowId,
+        );
+    }
+
+    cancelEditQueuedPrompt(
+        sessionId: string,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        return this.#promptQueue.cancelEdit(sessionId, ownerWindowId);
+    }
+
+    updateQueuedPrompt(
+        input: UpdateAiQueuedPromptInput,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        return this.#promptQueue.update(input, ownerWindowId);
+    }
+
+    async steerQueuedPrompt(
+        input: AiQueuedPromptMutationInput,
+        ownerWindowId: string,
+    ): Promise<AiPromptQueueSnapshot> {
+        return await this.#promptQueue.steer(
+            input.sessionId,
+            input.promptId,
+            ownerWindowId,
+        );
+    }
+
     async sendPrompt(
         input: SendAiPromptInput,
         ownerWindowId: string,
@@ -1635,6 +1728,11 @@ export class AiService {
     }
 
     async cancelSession(sessionId: string): Promise<void> {
+        this.#promptQueue.pause(sessionId);
+        await this.#cancelNativeSession(sessionId);
+    }
+
+    async #cancelNativeSession(sessionId: string): Promise<void> {
         if (!this.#liveSessionContexts.has(sessionId)) {
             return;
         }
@@ -1666,6 +1764,7 @@ export class AiService {
             }
 
             this.#clearLiveSession(sessionId);
+            this.#promptQueue.deleteSession(sessionId);
             if (this.#nativeAi?.shouldHandleHistory()) {
                 await this.#nativeAi.deleteSession(sessionId);
                 return;
@@ -2240,22 +2339,35 @@ export class AiService {
     }
 
     #clearLiveSession(sessionId: string): void {
-        const childSessionIds = [...this.#nativeChildParentSessionIds.entries()]
-            .filter(([, parentSessionId]) => parentSessionId === sessionId)
-            .map(([childSessionId]) => childSessionId);
-        for (const childSessionId of childSessionIds) {
-            this.#clearLiveSession(childSessionId);
+        const pendingSessionIds = [sessionId];
+        const sessionIdsToClear: string[] = [];
+        const visitedSessionIds = new Set<string>();
+        while (pendingSessionIds.length > 0) {
+            const currentSessionId = pendingSessionIds.shift();
+            if (!currentSessionId || visitedSessionIds.has(currentSessionId)) {
+                continue;
+            }
+            visitedSessionIds.add(currentSessionId);
+            sessionIdsToClear.push(currentSessionId);
+            for (const [childSessionId, parentSessionId] of this
+                .#nativeChildParentSessionIds) {
+                if (parentSessionId === currentSessionId) {
+                    pendingSessionIds.push(childSessionId);
+                }
+            }
         }
-        this.#nativeChildParentSessionIds.delete(sessionId);
-        this.#liveSnapshots.delete(sessionId);
-        this.#liveSessionContexts.delete(sessionId);
-        this.#liveSessionTouches.delete(sessionId);
-        this.#freezingSessionIds.delete(sessionId);
-        this.#nativeReviewBaselines.delete(sessionId);
-        this.#recentNativeReviewContexts.delete(sessionId);
-        this.#resolvedReviewVersions.delete(sessionId);
-        this.#reviewMutationChains.delete(sessionId);
-        this.#nativeSessionIds.delete(sessionId);
+        for (const currentSessionId of sessionIdsToClear) {
+            this.#nativeChildParentSessionIds.delete(currentSessionId);
+            this.#liveSnapshots.delete(currentSessionId);
+            this.#liveSessionContexts.delete(currentSessionId);
+            this.#liveSessionTouches.delete(currentSessionId);
+            this.#freezingSessionIds.delete(currentSessionId);
+            this.#nativeReviewBaselines.delete(currentSessionId);
+            this.#recentNativeReviewContexts.delete(currentSessionId);
+            this.#resolvedReviewVersions.delete(currentSessionId);
+            this.#reviewMutationChains.delete(currentSessionId);
+            this.#nativeSessionIds.delete(currentSessionId);
+        }
         this.#scheduleSessionRetentionTimer();
     }
 
@@ -2535,6 +2647,7 @@ export class AiService {
         if (!this.#isNativeAiSession(cachedSnapshot.sessionId)) {
             this.#persistence.saveSessionSnapshot(cachedSnapshot);
         }
+        this.#promptQueue.handleSessionSnapshot(cachedSnapshot);
         return cachedSnapshot;
     }
 
@@ -2818,6 +2931,30 @@ export class AiService {
             };
         }
 
+        if (event.kind === "subagent-created") {
+            const baseChildSnapshot: AiSessionSnapshot = {
+                ...base,
+                parentSessionId: event.parentSessionId,
+                runtimeSessionId:
+                    event.childRuntimeSessionId ?? event.runtimeSessionId,
+                title: event.title,
+            };
+            const withModel = event.modelId
+                ? setModelOnSnapshot(
+                      baseChildSnapshot,
+                      event.modelId,
+                      event.updatedAt,
+                  )
+                : baseChildSnapshot;
+            return event.reasoningEffort
+                ? setReasoningEffortOnSnapshot(
+                      withModel,
+                      event.reasoningEffort,
+                      event.updatedAt,
+                  )
+                : withModel;
+        }
+
         if (event.kind === "tool-activity") {
             const nextSnapshot = {
                 ...base,
@@ -2869,24 +3006,26 @@ export class AiService {
             };
         }
 
-        if (event.kind === "subagent-breadcrumb") {
-            return {
-                ...base,
-                toolActivity: snapshot.toolActivity.map((activity) =>
-                    activity.id === event.toolCallId
-                        ? {
-                              ...activity,
-                              action: {
-                                  kind: "open_session",
-                                  sessionId: event.childSessionId,
-                              },
-                          }
-                        : activity,
-                ),
-            };
+        if (event.kind === "turn-status") {
+            // Turn completion controls the main-owned prompt queue. It does
+            // not independently mutate the transcript snapshot.
+            return base;
         }
 
-        return base;
+        return {
+            ...base,
+            toolActivity: snapshot.toolActivity.map((activity) =>
+                activity.id === event.toolCallId
+                    ? {
+                          ...activity,
+                          action: {
+                              kind: "open_session",
+                              sessionId: event.childSessionId,
+                          },
+                      }
+                    : activity,
+            ),
+        };
     }
 
     async #captureNativeReviewBaseline(
@@ -3382,35 +3521,46 @@ export class AiService {
         readonly input: SessionDescriptor;
         readonly launch: AiSessionLaunchInput;
     }> {
-        const parentSessionId = launch.persistedSnapshot.parentSessionId ?? null;
-        if (!parentSessionId) {
+        let rootSnapshot = launch.persistedSnapshot;
+        if (!rootSnapshot.parentSessionId) {
             return { input, launch };
         }
 
-        const parentSnapshot =
-            this.#liveSnapshots.get(parentSessionId) ??
-            (await this.#loadPersistedSessionSnapshot(parentSessionId));
-        if (!parentSnapshot) {
-            throw new Error(
-                "The parent session could not be loaded for this subagent.",
-            );
+        const visitedSessionIds = new Set([rootSnapshot.sessionId]);
+        while (rootSnapshot.parentSessionId) {
+            const parentSessionId = rootSnapshot.parentSessionId;
+            if (visitedSessionIds.has(parentSessionId)) {
+                throw new Error(
+                    "The subagent hierarchy contains a parent cycle.",
+                );
+            }
+            visitedSessionIds.add(parentSessionId);
+            const parentSnapshot =
+                this.#liveSnapshots.get(parentSessionId) ??
+                (await this.#loadPersistedSessionSnapshot(parentSessionId));
+            if (!parentSnapshot) {
+                throw new Error(
+                    "An ancestor session could not be loaded for this subagent.",
+                );
+            }
+            rootSnapshot = parentSnapshot;
         }
 
-        const parentInput: SessionDescriptor = {
+        const rootInput: SessionDescriptor = {
             additionalRoots: input.additionalRoots,
-            projectId: parentSnapshot.projectId,
-            runtimeId: parentSnapshot.runtimeId,
-            sessionId: parentSessionId,
-            title: parentSnapshot.title,
-            worktreeId: parentSnapshot.worktreeId ?? null,
+            projectId: rootSnapshot.projectId,
+            runtimeId: rootSnapshot.runtimeId,
+            sessionId: rootSnapshot.sessionId,
+            title: rootSnapshot.title,
+            worktreeId: rootSnapshot.worktreeId ?? null,
         };
 
         return {
-            input: parentInput,
+            input: rootInput,
             launch: await this.#buildNativeSessionLaunchInput(
-                parentInput,
+                rootInput,
                 ownerWindowId,
-                parentSnapshot,
+                rootSnapshot,
             ),
         };
     }
