@@ -1809,8 +1809,8 @@ function normalizeSettingsSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot
               readonly toolCardExpansionMode?: unknown;
           })
         | undefined;
-    const { toolCardExpansionMode: _legacyToolCardExpansionMode, ...aiChat } =
-        persistedAiChat ?? {};
+    const aiChat = { ...(persistedAiChat ?? {}) };
+    delete aiChat.toolCardExpansionMode;
     return {
         ai: snapshot.ai ?? defaults.ai,
         aiChat: {
