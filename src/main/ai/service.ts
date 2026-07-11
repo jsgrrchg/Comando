@@ -108,6 +108,7 @@ import {
     isPathInsideRoot,
     isSamePath,
     normalizeAdditionalRoots,
+    normalizeAiSessionHierarchy,
     normalizeRestoredAiSessionSnapshot,
     resolveSessionScopedPath,
     setConfigOptionOnSnapshot,
@@ -1290,6 +1291,8 @@ export class AiService {
         );
         if (
             launch.persistedSnapshot.parentSessionId &&
+            launch.persistedSnapshot.parentSessionId !==
+                launch.persistedSnapshot.sessionId &&
             launch.persistedSnapshot.closedAt
         ) {
             throw new Error(
@@ -2195,7 +2198,9 @@ export class AiService {
         snapshot: AiSessionSnapshot,
         ownerWindowId: string,
     ): AiSessionSnapshot {
-        const cachedSnapshot = normalizeLiveSnapshotReviewState(snapshot);
+        const cachedSnapshot = normalizeLiveSnapshotReviewState(
+            normalizeAiSessionHierarchy(snapshot),
+        );
         this.#liveSnapshots.set(cachedSnapshot.sessionId, cachedSnapshot);
         this.#touchLiveSession(cachedSnapshot.sessionId);
         const context = this.#liveSessionContexts.get(cachedSnapshot.sessionId);

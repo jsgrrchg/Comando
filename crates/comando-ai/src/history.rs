@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -32,6 +32,9 @@ const MAX_PAGE_LIMIT: usize = 200;
 const SESSION_PREVIEW_MAX_BYTES: usize = 280;
 const SESSION_PREVIEW_SUFFIX: &str = "...";
 const MB: u64 = 1024 * 1024;
+const CODEX_ITEM_STATUS_PREFIX: &str = "codex-acp:status:item:";
+const CODEX_SUBAGENT_PREFIX: &str = "codex-acp:subagent:";
+const CODEX_IMAGE_PREFIX: &str = "codex-acp:image:";
 
 #[derive(Debug, Clone)]
 pub struct AiHistoryStore {
@@ -144,6 +147,17 @@ impl AiHistorySessionMetadata {
             runtime_mappings: Vec::new(),
             config_values: input.config_values,
         }
+    }
+
+    pub fn display_title(&self) -> &str {
+        self.custom_title
+            .as_deref()
+            .or_else(|| {
+                self.subagent
+                    .as_ref()
+                    .and_then(|subagent| subagent.nickname.as_deref())
+            })
+            .unwrap_or(&self.title)
     }
 }
 
@@ -379,7 +393,11 @@ impl AiHistoryStore {
         if !path.exists() {
             return Ok(AiHistorySessionState::default());
         }
-        read_json_file(&path)
+        let mut state: AiHistorySessionState = read_json_file(&path)?;
+        if normalize_legacy_codex_tool_activities(&mut state.tool_activity) {
+            self.save_session_state(session_id, &state)?;
+        }
+        Ok(state)
     }
 
     pub fn save_session_state(
@@ -518,6 +536,7 @@ impl AiHistoryStore {
         let state = self.load_session_state(session_id)?;
         let index = self.load_or_repair_index(session_id)?;
         let messages = self.read_payloads_by_index(session_id, &index, 0, index.len())?;
+        let title = metadata.display_title().to_string();
 
         Ok(Some(NativeAiSessionSnapshot {
             session_id: metadata.session_id,
@@ -526,7 +545,7 @@ impl AiHistoryStore {
             runtime_session_id: metadata.runtime_session_id,
             project_id: metadata.project_id,
             worktree_id: metadata.worktree_id,
-            title: metadata.title,
+            title,
             status: metadata.status,
             updated_at: metadata.updated_at,
             active_turn_started_at: state.active_turn_started_at,
@@ -608,7 +627,7 @@ impl AiHistoryStore {
             .load_metadata(parent_session_id)
             .ok()
             .and_then(|metadata| metadata.runtime_session_id);
-        let mut mappings: Vec<(String, NativeAiRuntimeSessionMapping)> = Vec::new();
+        let mut candidates: Vec<(String, NativeAiRuntimeSessionMapping)> = Vec::new();
         for entry in fs::read_dir(&sessions_dir)
             .map_err(|error| history_io("read AI sessions dir", &sessions_dir, error))?
         {
@@ -635,19 +654,10 @@ impl AiHistoryStore {
             let parent_runtime_for_child = subagent
                 .as_ref()
                 .and_then(|subagent| subagent.parent_runtime_session_id.clone());
-            let matches_parent = parent_app_session_id.as_ref() == Some(parent_session_id)
-                || parent_runtime_session_id
-                    .as_ref()
-                    .is_some_and(|parent_runtime| {
-                        parent_runtime_for_child.as_ref() == Some(parent_runtime)
-                    });
-            if !matches_parent {
-                continue;
-            }
             let Some(runtime_session_id) = metadata.runtime_session_id else {
                 continue;
             };
-            mappings.push((
+            candidates.push((
                 metadata.updated_at,
                 NativeAiRuntimeSessionMapping {
                     app_session_id: metadata.session_id,
@@ -658,8 +668,14 @@ impl AiHistoryStore {
             ));
         }
 
-        mappings.sort_by(|left, right| left.0.cmp(&right.0));
-        Ok(mappings.into_iter().map(|(_, mapping)| mapping).collect())
+        candidates.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(collect_descendant_runtime_mappings(
+            parent_session_id,
+            parent_runtime_session_id
+                .as_ref()
+                .map(|runtime_id| runtime_id.0.as_str()),
+            candidates,
+        ))
     }
 
     pub fn set_session_pinned(&self, session_id: &SessionId, pinned: bool) -> AiResult<()> {
@@ -678,12 +694,65 @@ impl AiHistoryStore {
     }
 
     pub fn delete_session(&self, session_id: &SessionId) -> AiResult<()> {
-        let session_dir = self.session_dir(session_id);
-        if !session_dir.exists() {
-            return Ok(());
+        let subtree_session_ids = self.collect_session_subtree_ids(session_id)?;
+        for subtree_session_id in subtree_session_ids.into_iter().rev() {
+            let session_dir = self.session_dir(&subtree_session_id);
+            if !session_dir.exists() {
+                continue;
+            }
+            fs::remove_dir_all(&session_dir)
+                .map_err(|error| history_io("delete AI session dir", &session_dir, error))?;
         }
-        fs::remove_dir_all(&session_dir)
-            .map_err(|error| history_io("delete AI session dir", &session_dir, error))
+        Ok(())
+    }
+
+    fn collect_session_subtree_ids(&self, session_id: &SessionId) -> AiResult<Vec<SessionId>> {
+        let sessions_dir = self.sessions_dir();
+        if !sessions_dir.exists() {
+            return Ok(vec![session_id.clone()]);
+        }
+
+        let mut metadata_records = Vec::new();
+        for entry in fs::read_dir(&sessions_dir)
+            .map_err(|error| history_io("read AI sessions dir", &sessions_dir, error))?
+        {
+            let entry = entry
+                .map_err(|error| history_io("read AI sessions dir entry", &sessions_dir, error))?;
+            if !entry
+                .file_type()
+                .map_err(|error| history_io("read AI session file type", &entry.path(), error))?
+                .is_dir()
+            {
+                continue;
+            }
+            let metadata_path = entry.path().join(SESSION_META_FILE);
+            let Ok(metadata) = read_json_file::<AiHistorySessionMetadata>(&metadata_path) else {
+                continue;
+            };
+            metadata_records.push(metadata);
+        }
+
+        let mut pending_session_ids = vec![session_id.clone()];
+        let mut subtree_session_ids = Vec::new();
+        let mut visited_session_ids = HashSet::new();
+        while let Some(current_session_id) = pending_session_ids.pop() {
+            if !visited_session_ids.insert(current_session_id.clone()) {
+                continue;
+            }
+            subtree_session_ids.push(current_session_id.clone());
+            for metadata in &metadata_records {
+                let parent_session_id = metadata
+                    .subagent
+                    .as_ref()
+                    .map(|subagent| &subagent.parent_session_id)
+                    .or(metadata.parent_session_id.as_ref());
+                if parent_session_id == Some(&current_session_id) {
+                    pending_session_ids.push(metadata.session_id.clone());
+                }
+            }
+        }
+
+        Ok(subtree_session_ids)
     }
 
     pub fn storage_health(&self) -> AiResult<NativeAiHistoryStorageHealth> {
@@ -949,6 +1018,177 @@ impl AiHistoryStore {
     }
 }
 
+fn normalize_legacy_codex_tool_activities(activities: &mut Vec<Value>) -> bool {
+    let original = activities.clone();
+    let mut replacements = BTreeMap::<usize, Value>::new();
+    let mut removed = HashSet::<usize>::new();
+
+    for (alias_index, alias) in original.iter().enumerate() {
+        let Some(alias_id) = alias.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(logical_id) = alias_id.strip_prefix(CODEX_ITEM_STATUS_PREFIX) else {
+            continue;
+        };
+        let canonical_ids = [
+            logical_id.to_string(),
+            format!("{CODEX_SUBAGENT_PREFIX}{logical_id}"),
+            format!("{CODEX_IMAGE_PREFIX}{logical_id}"),
+        ];
+        let canonical_index = original.iter().position(|activity| {
+            activity
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| canonical_ids.iter().any(|candidate| candidate == id))
+        });
+
+        if let Some(canonical_index) = canonical_index {
+            let target_index = alias_index.min(canonical_index);
+            let discarded_index = alias_index.max(canonical_index);
+            replacements.insert(
+                target_index,
+                merge_canonical_tool_activity(&original[canonical_index], alias),
+            );
+            removed.insert(discarded_index);
+        } else if alias
+            .get("title")
+            .and_then(Value::as_str)
+            .is_some_and(is_internal_codex_item_title)
+        {
+            removed.insert(alias_index);
+        }
+    }
+
+    if replacements.is_empty() && removed.is_empty() {
+        return false;
+    }
+
+    *activities = original
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, activity)| {
+            if removed.contains(&index) {
+                None
+            } else {
+                Some(replacements.remove(&index).unwrap_or(activity))
+            }
+        })
+        .collect();
+    true
+}
+
+fn merge_canonical_tool_activity(canonical: &Value, alias: &Value) -> Value {
+    let mut merged = canonical.clone();
+    let (Some(merged_object), Some(alias_object)) = (merged.as_object_mut(), alias.as_object())
+    else {
+        return canonical.clone();
+    };
+
+    if let Some(created_at) = earliest_string_field(canonical, alias, "createdAt") {
+        merged_object.insert("createdAt".to_string(), Value::String(created_at));
+    }
+    if let Some(updated_at) = latest_string_field(canonical, alias, "updatedAt") {
+        merged_object.insert("updatedAt".to_string(), Value::String(updated_at));
+    }
+    for key in [
+        "action",
+        "diffs",
+        "exitCode",
+        "locations",
+        "rawInputJson",
+        "rawOutputJson",
+        "summary",
+        "terminalOutput",
+    ] {
+        let should_copy = merged_object.get(key).is_none_or(is_empty_activity_value);
+        if should_copy
+            && let Some(value) = alias_object.get(key)
+            && !is_empty_activity_value(value)
+        {
+            merged_object.insert(key.to_string(), value.clone());
+        }
+    }
+    Value::Object(merged_object.clone())
+}
+
+fn earliest_string_field(canonical: &Value, alias: &Value, key: &str) -> Option<String> {
+    [canonical, alias]
+        .into_iter()
+        .filter_map(|value| value.get(key).and_then(Value::as_str))
+        .min()
+        .map(str::to_string)
+}
+
+fn latest_string_field(canonical: &Value, alias: &Value, key: &str) -> Option<String> {
+    [canonical, alias]
+        .into_iter()
+        .filter_map(|value| value.get(key).and_then(Value::as_str))
+        .max()
+        .map(str::to_string)
+}
+
+fn is_empty_activity_value(value: &Value) -> bool {
+    value.is_null()
+        || value.as_str().is_some_and(str::is_empty)
+        || value.as_array().is_some_and(Vec::is_empty)
+}
+
+fn is_internal_codex_item_title(title: &str) -> bool {
+    ["Preparing input", "Drafting response", "Reasoning"]
+        .iter()
+        .any(|candidate| title.trim().eq_ignore_ascii_case(candidate))
+}
+
+fn collect_descendant_runtime_mappings(
+    parent_session_id: &SessionId,
+    parent_runtime_session_id: Option<&str>,
+    candidates: Vec<(String, NativeAiRuntimeSessionMapping)>,
+) -> Vec<NativeAiRuntimeSessionMapping> {
+    let mut known_app_session_ids = HashSet::from([parent_session_id.0.clone()]);
+    let mut known_runtime_session_ids = parent_runtime_session_id
+        .map(|runtime_id| HashSet::from([runtime_id.to_string()]))
+        .unwrap_or_default();
+    let mut included = HashSet::new();
+    let mut mappings = Vec::new();
+
+    loop {
+        let mut progressed = false;
+        for (_, mapping) in &candidates {
+            if included.contains(&mapping.app_session_id.0) {
+                continue;
+            }
+            let parent_is_known = mapping
+                .parent_app_session_id
+                .as_ref()
+                .is_some_and(|parent_id| known_app_session_ids.contains(&parent_id.0))
+                || mapping
+                    .parent_runtime_session_id
+                    .as_ref()
+                    .is_some_and(|parent_id| known_runtime_session_ids.contains(&parent_id.0));
+            if !parent_is_known
+                || mapping.app_session_id == *parent_session_id
+                || mapping
+                    .parent_app_session_id
+                    .as_ref()
+                    .is_some_and(|parent_id| parent_id == &mapping.app_session_id)
+            {
+                continue;
+            }
+
+            included.insert(mapping.app_session_id.0.clone());
+            known_app_session_ids.insert(mapping.app_session_id.0.clone());
+            known_runtime_session_ids.insert(mapping.runtime_session_id.0.clone());
+            mappings.push(mapping.clone());
+            progressed = true;
+        }
+        if !progressed {
+            break;
+        }
+    }
+
+    mappings
+}
+
 pub struct LegacyAiHistoryReader<'a> {
     connection: &'a Connection,
 }
@@ -1106,38 +1346,38 @@ impl<'a> LegacyAiHistoryReader<'a> {
                     runtime_session_id,
                     app_session_id,
                     parent_runtime_session_id,
-                    parent_app_session_id
+                    parent_app_session_id,
+                    updated_at
                 FROM chat_session_runtime_links
-                WHERE parent_app_session_id = ?1
-                   OR (
-                        ?2 IS NOT NULL
-                        AND parent_runtime_session_id = ?2
-                   )
                 ORDER BY updated_at ASC
                 ",
             )
             .map_err(|error| history_sql("prepare legacy runtime mapping query", error))?;
         let rows = statement
-            .query_map(
-                rusqlite::params![parent_session_id.0, parent_runtime_session_id],
-                |row| {
-                    Ok(NativeAiRuntimeSessionMapping {
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(4)?,
+                    NativeAiRuntimeSessionMapping {
                         runtime_session_id: RuntimeSessionId(row.get::<_, String>(0)?),
                         app_session_id: SessionId(row.get::<_, String>(1)?),
                         parent_runtime_session_id: row
                             .get::<_, Option<String>>(2)?
                             .map(RuntimeSessionId),
                         parent_app_session_id: row.get::<_, Option<String>>(3)?.map(SessionId),
-                    })
-                },
-            )
+                    },
+                ))
+            })
             .map_err(|error| history_sql("query legacy runtime mappings", error))?;
 
         let mut mappings = Vec::new();
         for row in rows {
             mappings.push(row.map_err(|error| history_sql("read legacy runtime mapping", error))?);
         }
-        Ok(mappings)
+        Ok(collect_descendant_runtime_mappings(
+            parent_session_id,
+            parent_runtime_session_id.as_deref(),
+            mappings,
+        ))
     }
 
     fn load_all_messages(&self, session_id: &SessionId) -> AiResult<Vec<Value>> {
@@ -1680,6 +1920,7 @@ impl AiTranscriptRecord {
 }
 
 fn summary_from_metadata(metadata: AiHistorySessionMetadata) -> NativeAiHistorySessionSummary {
+    let title = metadata.display_title().to_string();
     NativeAiHistorySessionSummary {
         session_id: metadata.session_id,
         parent_session_id: metadata.parent_session_id,
@@ -1687,7 +1928,7 @@ fn summary_from_metadata(metadata: AiHistorySessionMetadata) -> NativeAiHistoryS
         runtime_session_id: metadata.runtime_session_id,
         project_id: metadata.project_id,
         worktree_id: metadata.worktree_id,
-        title: metadata.title,
+        title,
         preview: metadata.preview,
         created_at: metadata.created_at,
         updated_at: metadata.updated_at,
@@ -2011,6 +2252,46 @@ fn redact_history_error(error: &AiError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_codex_tool_aliases_are_normalized_and_reasoning_is_removed() {
+        let mut activities = vec![
+            json!({
+                "id": "codex-acp:status:item:command-1",
+                "title": "Running command",
+                "createdAt": "2026-07-09T10:00:00.000Z",
+                "updatedAt": "2026-07-09T10:00:01.000Z",
+                "diffs": [],
+                "terminalOutput": "legacy output"
+            }),
+            json!({
+                "id": "command-1",
+                "title": "Read Cargo.toml",
+                "createdAt": "2026-07-09T10:00:02.000Z",
+                "updatedAt": "2026-07-09T10:00:03.000Z",
+                "diffs": [{ "path": "Cargo.toml" }],
+                "terminalOutput": null
+            }),
+            json!({
+                "id": "codex-acp:status:item:reasoning-1",
+                "title": "Reasoning"
+            }),
+            json!({
+                "id": "codex-acp:status:item:sleep-1",
+                "title": "Waiting"
+            }),
+        ];
+
+        assert!(normalize_legacy_codex_tool_activities(&mut activities));
+        assert_eq!(activities.len(), 2);
+        assert_eq!(activities[0]["id"], "command-1");
+        assert_eq!(activities[0]["createdAt"], "2026-07-09T10:00:00.000Z");
+        assert_eq!(activities[0]["updatedAt"], "2026-07-09T10:00:03.000Z");
+        assert_eq!(activities[0]["terminalOutput"], "legacy output");
+        assert_eq!(activities[0]["diffs"][0]["path"], "Cargo.toml");
+        assert_eq!(activities[1]["id"], "codex-acp:status:item:sleep-1");
+        assert!(!normalize_legacy_codex_tool_activities(&mut activities));
+    }
     use rusqlite::Connection;
 
     fn store() -> (tempfile::TempDir, AiHistoryStore) {
@@ -2337,6 +2618,44 @@ mod tests {
     }
 
     #[test]
+    fn subagent_nickname_is_used_as_the_display_title() {
+        let (_temp, store) = store();
+        let mut child = metadata("child");
+        child.parent_session_id = Some(SessionId("parent".to_string()));
+        child.title = "Parent prompt title".to_string();
+        child.subagent = Some(AiHistorySubagentMetadata {
+            parent_session_id: SessionId("parent".to_string()),
+            parent_runtime_session_id: Some(RuntimeSessionId("runtime_parent".to_string())),
+            nickname: Some("Kierkegaard".to_string()),
+        });
+        store.create_session(child.clone()).unwrap();
+
+        let snapshot = store
+            .load_session_snapshot(&child.session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.title, "Kierkegaard");
+
+        let history = store
+            .list_session_history(NativeAiListSessionHistoryInput {
+                project_id: child.project_id.clone(),
+                worktree_id: child.worktree_id.clone(),
+                limit: None,
+            })
+            .unwrap();
+        assert_eq!(history[0].title, "Kierkegaard");
+
+        store
+            .rename_session(&child.session_id, "Custom child title".to_string())
+            .unwrap();
+        let renamed_snapshot = store
+            .load_session_snapshot(&child.session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(renamed_snapshot.title, "Custom child title");
+    }
+
+    #[test]
     fn pin_rename_snapshot_and_delete_work() {
         let (_temp, store) = store();
         let metadata = metadata("session_1");
@@ -2367,6 +2686,41 @@ mod tests {
 
         store.delete_session(&metadata.session_id).unwrap();
         assert!(!store.has_session(&metadata.session_id));
+    }
+
+    #[test]
+    fn deleting_a_session_removes_its_persisted_subtree() {
+        let (_temp, store) = store();
+        let parent = metadata("parent");
+        store.create_session(parent.clone()).unwrap();
+
+        let mut child = metadata("child");
+        child.parent_session_id = Some(parent.session_id.clone());
+        child.subagent = Some(AiHistorySubagentMetadata {
+            parent_session_id: parent.session_id.clone(),
+            parent_runtime_session_id: parent.runtime_session_id.clone(),
+            nickname: Some("Child".to_string()),
+        });
+        store.create_session(child.clone()).unwrap();
+
+        let mut grandchild = metadata("grandchild");
+        grandchild.parent_session_id = Some(child.session_id.clone());
+        grandchild.subagent = Some(AiHistorySubagentMetadata {
+            parent_session_id: child.session_id.clone(),
+            parent_runtime_session_id: child.runtime_session_id.clone(),
+            nickname: Some("Grandchild".to_string()),
+        });
+        store.create_session(grandchild.clone()).unwrap();
+
+        let unrelated = metadata("unrelated");
+        store.create_session(unrelated.clone()).unwrap();
+
+        store.delete_session(&parent.session_id).unwrap();
+
+        assert!(!store.has_session(&parent.session_id));
+        assert!(!store.has_session(&child.session_id));
+        assert!(!store.has_session(&grandchild.session_id));
+        assert!(store.has_session(&unrelated.session_id));
     }
 
     #[test]
@@ -2433,7 +2787,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_mappings_include_native_subagent_children() {
+    fn runtime_mappings_include_all_native_subagent_descendants() {
         let (_temp, store) = store();
         let parent = metadata("parent");
         store.create_session(parent.clone()).unwrap();
@@ -2446,12 +2800,21 @@ mod tests {
             nickname: Some("Child".to_string()),
         });
         store.create_session(child.clone()).unwrap();
+        let mut grandchild = metadata("grandchild");
+        grandchild.parent_session_id = Some(child.session_id.clone());
+        grandchild.runtime_session_id = Some(RuntimeSessionId("runtime_grandchild".to_string()));
+        grandchild.subagent = Some(AiHistorySubagentMetadata {
+            parent_session_id: child.session_id.clone(),
+            parent_runtime_session_id: child.runtime_session_id.clone(),
+            nickname: Some("Grandchild".to_string()),
+        });
+        store.create_session(grandchild.clone()).unwrap();
 
         let mappings = store
             .list_runtime_mappings_for_parent(&parent.session_id)
             .unwrap();
 
-        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings.len(), 2);
         assert_eq!(mappings[0].app_session_id, child.session_id);
         assert_eq!(
             mappings[0].parent_app_session_id.as_ref(),
@@ -2460,6 +2823,15 @@ mod tests {
         assert_eq!(
             mappings[0].runtime_session_id,
             RuntimeSessionId("runtime_child".to_string())
+        );
+        assert_eq!(mappings[1].app_session_id, grandchild.session_id);
+        assert_eq!(
+            mappings[1].parent_app_session_id.as_ref(),
+            Some(&child.session_id)
+        );
+        assert_eq!(
+            mappings[1].parent_runtime_session_id.as_ref(),
+            child.runtime_session_id.as_ref()
         );
     }
 
@@ -2679,9 +3051,20 @@ mod tests {
             "child",
             vec![message("message_child", "child")],
         );
+        insert_legacy_session(
+            &connection,
+            "grandchild",
+            vec![message("message_grandchild", "grandchild")],
+        );
         connection
             .execute(
                 "UPDATE chat_sessions SET parent_session_id = 'parent' WHERE id = 'child'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE chat_sessions SET parent_session_id = 'child' WHERE id = 'grandchild'",
                 [],
             )
             .unwrap();
@@ -2696,13 +3079,24 @@ mod tests {
                 [],
             )
             .unwrap();
+        connection
+            .execute(
+                "
+                UPDATE chat_session_runtime_links
+                SET parent_app_session_id = 'child',
+                    parent_runtime_session_id = 'runtime_child'
+                WHERE app_session_id = 'grandchild'
+                ",
+                [],
+            )
+            .unwrap();
 
         let reader = LegacyAiHistoryReader::new(&connection);
         let mappings = reader
             .list_runtime_mappings_for_parent(&SessionId("parent".to_string()))
             .unwrap();
 
-        assert_eq!(mappings.len(), 1);
+        assert_eq!(mappings.len(), 2);
         assert_eq!(mappings[0].app_session_id, SessionId("child".to_string()));
         assert_eq!(
             mappings[0].runtime_session_id,
@@ -2711,6 +3105,14 @@ mod tests {
         assert_eq!(
             mappings[0].parent_runtime_session_id.as_ref(),
             Some(&RuntimeSessionId("runtime_parent".to_string()))
+        );
+        assert_eq!(
+            mappings[1].app_session_id,
+            SessionId("grandchild".to_string())
+        );
+        assert_eq!(
+            mappings[1].parent_app_session_id.as_ref(),
+            Some(&SessionId("child".to_string()))
         );
     }
 
