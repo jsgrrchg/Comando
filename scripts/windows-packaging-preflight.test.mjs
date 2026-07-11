@@ -84,7 +84,9 @@ describe("Windows packaging preflight", () => {
 
         writeFile(pnpmCliPath);
         writeExecutable(powerShellDir, "pwsh.exe");
-        writeFile(path.join(repoRoot, "node_modules", "electron-builder", "cli.js"));
+        writeFile(
+            path.join(repoRoot, "node_modules", "electron-builder", "cli.js"),
+        );
         writeFile(path.join(repoRoot, "resources", "icons", "windows.ico"));
         createDirectRceditDependency(repoRoot);
         createWindowsAcpPayload(repoRoot, "x64");
@@ -139,6 +141,46 @@ describe("Windows packaging preflight", () => {
             }),
         ).toThrow(/build:windows-acp:arm64/u);
     });
+
+    it("rejects a Windows ACP payload without the Code Mode host", () => {
+        const repoRoot = createTempDir();
+        const powerShellDir = path.join(repoRoot, "powershell");
+        const pnpmCliPath = path.join(repoRoot, "pnpm", "bin", "pnpm.cjs");
+
+        writeFile(pnpmCliPath);
+        writeExecutable(powerShellDir, "pwsh.exe");
+        writeFile(
+            path.join(repoRoot, "node_modules", "electron-builder", "cli.js"),
+        );
+        writeFile(path.join(repoRoot, "resources", "icons", "windows.ico"));
+        createDirectRceditDependency(repoRoot);
+        createWindowsAcpPayload(repoRoot, "x64");
+        fs.rmSync(
+            path.join(
+                repoRoot,
+                "build",
+                "windows-acp",
+                "win-x64",
+                "ai",
+                "binaries",
+                "codex-code-mode-host.exe",
+            ),
+        );
+
+        expect(() =>
+            resolveWindowsPackagingPreflight({
+                env: {
+                    npm_execpath: pnpmCliPath,
+                    PATH: powerShellDir,
+                    PATHEXT: ".EXE;.CMD",
+                },
+                nodeBinDir: path.join(repoRoot, "node-bin"),
+                platform: "win32",
+                repoRoot,
+                targetArch: "x64",
+            }),
+        ).toThrow(/codex-code-mode-host\.exe/u);
+    });
 });
 
 function createTempDir() {
@@ -165,6 +207,10 @@ function createWindowsAcpPayload(repoRoot, targetArch) {
         "ai",
     );
     writeExecutable(path.join(sourceRoot, "binaries"), "codex-acp.exe");
+    writeExecutable(
+        path.join(sourceRoot, "binaries"),
+        "codex-code-mode-host.exe",
+    );
     writeExecutable(path.join(sourceRoot, "embedded", "node", "bin"), "node.exe");
     writeFile(
         path.join(

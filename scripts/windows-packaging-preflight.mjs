@@ -188,6 +188,7 @@ function resolveRequiredWindowsAiPayload({
     );
     const requiredFiles = [
         path.join(sourceRoot, "binaries", "codex-acp.exe"),
+        path.join(sourceRoot, "binaries", "codex-code-mode-host.exe"),
         path.join(sourceRoot, "embedded", "node", "bin", "node.exe"),
         path.join(claudeRoot, "dist", "index.js"),
         path.join(claudeRoot, "package.json"),
@@ -211,7 +212,8 @@ function resolveRequiredWindowsAiPayload({
     return {
         claudeRoot,
         codexBinary: requiredFiles[0],
-        nodeBinary: requiredFiles[1],
+        codeModeHostBinary: requiredFiles[1],
+        nodeBinary: requiredFiles[2],
         sourceRoot,
     };
 }

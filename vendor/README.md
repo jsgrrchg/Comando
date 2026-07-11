@@ -14,16 +14,21 @@ Current scope in Comando:
 - `codex-acp/`
   - upstream baseline: `zed-industries/codex-acp` `0.15.0`
   - synced against upstream commit `863d433fc91855d0b5427372bf635c894bf68cb6`
-  - OpenAI Codex Rust crates: `rust-v0.133.0`
-  - vendor ACP SDK: `agent-client-protocol` `0.12.1`
-  - includes upstream's local `codex-utils-pty` patch under `vendor/codex-acp/vendor/codex-utils-pty`
+  - OpenAI Codex Rust crates: `rust-v0.144.0`
+  - resolved OpenAI Codex commit: `767822446c7a594caa19609ca435281a9ec67e0d`
+  - vendor ACP SDK: `agent-client-protocol` `0.14.0`
+  - known rollback baseline: `rust-v0.137.0` from Comando `main`
+  - includes a local `codex-utils-pty` patch aligned with the embedded Codex Rust runtime under `vendor/codex-acp/vendor/codex-utils-pty`
   - local Comando delta remains intentionally bounded and currently lives in:
     - `vendor/codex-acp/Cargo.toml`
+    - `vendor/codex-acp/Cargo.lock`
+    - `vendor/codex-acp/build.rs`
     - `vendor/codex-acp/src/lib.rs`
     - `vendor/codex-acp/src/codex_agent.rs`
     - `vendor/codex-acp/src/prompt_args.rs`
     - `vendor/codex-acp/src/subagents.rs`
     - `vendor/codex-acp/src/thread.rs`
+    - `vendor/codex-acp/vendor/codex-utils-pty`
 - `Claude-agent-acp-upstream/`
   - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.42.0`
   - synced against upstream commit `d877ee713383332267492a95425523eda65a9735`
@@ -46,9 +51,26 @@ The remaining Comando-specific delta exists to preserve desktop product behavior
 - generated-image bridge that emits live Codex image generation begin/end events and replayed image generation response items as ACP `image_generation` tool updates for inline chat rendering
 - session-config synchronization from Codex `SessionConfiguredEvent` back into the ACP session config
 - subagent session registration and breadcrumb notifications for spawned Codex child threads
-- state DB/thread-store/installation ID wiring required by the `rust-v0.133.0` Codex runtime API
+- state DB/thread-store/installation ID wiring required by the `rust-v0.144.0` Codex runtime API
+- compatibility shims for `rust-v0.144.0` auth, model discovery, MCP config, `PathUri`, and turn-event APIs
 - async auth reload/logout compatibility for ChatGPT and API-key auth flows
 - O(N²) exec-output fallback fix from upstream while preserving Comando's exec snapshot diff reconstruction
+- one canonical ACP projection per Codex turn item, including typed web/image extensions
+- multi-agent v2 `SubAgentActivity` breadcrumbs with late child metadata reconciliation
+- a build-time Codex tag marker embedded in `codex-code-mode-host` so packaging can reject mixed bundles
+
+### Codex patch ownership and coverage
+
+| Area | Local responsibility | Primary coverage |
+| --- | --- | --- |
+| Compile/runtime API | Keep the legacy ACP adapter compiling against the pinned Codex tag | `cargo check --manifest-path vendor/codex-acp/Cargo.toml` |
+| Code Mode bundle | Build, stage, and verify `codex-acp` plus `codex-code-mode-host` atomically | `scripts/ai/codex-runtime-version.test.mjs`, packaging preflights |
+| Catalog/config | Project runtime models and refresh config options after selection | `src/main/ai/service.codex.test.ts` |
+| Permissions | Preserve ACP approvals, elicitations, cancellation, and late-response cleanup | `vendor/codex-acp/src/thread.rs` tests |
+| Terminal/diffs/review | Preserve streaming output, stable IDs, hunks, and anchored diffs | vendor and `crates/comando-ai/src/acp.rs` tests |
+| Sessions/history | Resume without replay and normalize legacy duplicate activities idempotently | `crates/comando-ai/src/history.rs`, `src/main/ai/session-core.test.ts` |
+| Subagents | Project v1 collaboration and v2 activity into navigable child sessions | `vendor/codex-acp/src/subagents.rs`, `crates/comando-ai/src/acp.rs` tests |
+| Packaging | Reject incomplete, stale, or mixed Codex runtime bundles | staging and macOS/Windows/Linux package scripts |
 
 When updating Codex again, treat `863d433` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
 

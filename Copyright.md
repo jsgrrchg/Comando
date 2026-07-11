@@ -224,11 +224,13 @@ The currently tracked local delta includes:
 | File | Nature of changes |
 | ---- | ----------------- |
 | `Cargo.toml` | Pins and dependency alignment required by the embedded Codex runtime |
+| `Cargo.lock` | Resolved dependency graph for the embedded Codex runtime |
 | `src/lib.rs` | Library wiring required by Comando's build and runtime integration |
 | `src/codex_agent.rs` | ACP metadata, model, auth, session, image-generation, and runtime compatibility changes |
 | `src/prompt_args.rs` | Custom slash-prompt discovery and expansion support |
 | `src/subagents.rs` | Subagent session registration and breadcrumb projection |
 | `src/thread.rs` | Review-flow metadata, streamed tool diffs, user-input routing, and session synchronization |
+| `vendor/codex-utils-pty` | Local patched PTY helper aligned with the embedded OpenAI Codex Rust runtime |
 
 ### `vendor/Claude-agent-acp-upstream` - Agent Client Protocol Claude ACP
 

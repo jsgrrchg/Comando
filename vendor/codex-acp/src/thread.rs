@@ -16,24 +16,26 @@ use agent_client_protocol::{
         PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, PromptRequest,
         RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
         ResourceLink, SelectedPermissionOutcome, SessionConfigId, SessionConfigOption,
-        SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOption,
-        SessionConfigValueId, SessionId, SessionInfoUpdate, SessionMode, SessionModeId,
-        SessionModeState, SessionNotification, SessionUpdate, StopReason, Terminal, TextContent,
-        TextResourceContents, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation,
+        SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectGroup,
+        SessionConfigSelectOption, SessionConfigValueId, SessionId, SessionInfoUpdate, SessionMode,
+        SessionModeId, SessionModeState, SessionNotification, SessionUpdate, StopReason, Terminal,
+        TextContent, TextResourceContents, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation,
         ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
         UsageUpdate,
     },
 };
 use codex_apply_patch::parse_patch;
 use codex_core::{
-    CodexThread,
+    CodexThread, SteerInputError,
     config::{Config, set_project_trust_level},
-    review_format::format_review_findings_block,
     review_prompts::user_facing_hint,
 };
+use codex_extension_items::ExtensionItem;
 use codex_features::Feature;
+use codex_http_client::{HttpClientFactory, OutboundProxyPolicy};
 use codex_login::auth::AuthManager;
 use codex_models_manager::manager::{ModelsManager, RefreshStrategy};
+use codex_protocol::review_format::format_review_findings_block;
 use codex_protocol::{
     approvals::{
         ElicitationRequest, ElicitationRequestEvent, GuardianAssessmentAction,
@@ -43,11 +45,14 @@ use codex_protocol::{
     config_types::TrustLevel,
     dynamic_tools::{DynamicToolCallOutputContentItem, DynamicToolCallRequest},
     error::CodexErr,
-    items::TurnItem,
+    items::{
+        CollabAgentTool, CollabAgentToolCallStatus, CommandExecutionStatus, DynamicToolCallStatus,
+        McpToolCallStatus, TurnItem,
+    },
     mcp::CallToolResult,
     models::{
         ActivePermissionProfile, AdditionalPermissionProfile, PermissionProfile, ResponseItem,
-        WebSearchAction,
+        WebSearchAction, plaintext_agent_message_content,
     },
     openai_models::{ModelPreset, ReasoningEffort},
     parse_command::ParsedCommand,
@@ -141,9 +146,44 @@ const CODEX_ACP_DIFF_HUNKS_KEY: &str = "codexAcpHunks";
 const CODEX_ACP_STATUS_EVENT_ID_PREFIX: &str = "codex-acp:status:";
 const CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX: &str = "codex-acp:image:";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
+const GPT_5_6_MODEL_PREFIX: &str = "gpt-5.6-";
+const GPT_5_6_MODEL_GROUP_ID: &str = "gpt-5.6";
+const GPT_5_6_MODEL_GROUP_NAME: &str = "GPT 5.6";
+const OTHER_MODELS_GROUP_ID: &str = "other-models";
+const OTHER_MODELS_GROUP_NAME: &str = "Other models";
 
 fn debug_ai_worker_enabled() -> bool {
     matches!(std::env::var("COMANDO_DEBUG_AI_WORKER").as_deref(), Ok("1"))
+}
+
+fn gpt_5_6_variant_name(preset: &ModelPreset) -> Option<String> {
+    let variant = preset.model.strip_prefix(GPT_5_6_MODEL_PREFIX)?;
+    (!variant.is_empty()).then(|| variant.to_title_case())
+}
+
+fn model_picker_groups(
+    gpt_5_6_options: Vec<SessionConfigSelectOption>,
+    other_options: Vec<SessionConfigSelectOption>,
+) -> Vec<SessionConfigSelectGroup> {
+    let mut groups = Vec::with_capacity(2);
+
+    if !gpt_5_6_options.is_empty() {
+        groups.push(SessionConfigSelectGroup::new(
+            GPT_5_6_MODEL_GROUP_ID,
+            GPT_5_6_MODEL_GROUP_NAME,
+            gpt_5_6_options,
+        ));
+    }
+
+    if !other_options.is_empty() {
+        groups.push(SessionConfigSelectGroup::new(
+            OTHER_MODELS_GROUP_ID,
+            OTHER_MODELS_GROUP_NAME,
+            other_options,
+        ));
+    }
+
+    groups
 }
 
 fn session_mode_id_for_active_profile(profile_id: &str) -> Option<&'static str> {
@@ -162,6 +202,14 @@ fn active_profile_id_for_session_mode(mode_id: &str) -> Option<&'static str> {
         "full-access" => Some(CODEX_DANGER_NO_SANDBOX_PROFILE_ID),
         _ => None,
     }
+}
+
+fn plaintext_inter_agent_message_payload(item: &ResponseItem) -> Option<(Option<String>, String)> {
+    let ResponseItem::AgentMessage { id, content, .. } = item else {
+        return None;
+    };
+    let payload = plaintext_agent_message_content(content)?;
+    Some((id.clone(), payload))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -246,40 +294,114 @@ fn turn_item_id(item: &TurnItem) -> &str {
         TurnItem::AgentMessage(item) => &item.id,
         TurnItem::Plan(item) => &item.id,
         TurnItem::Reasoning(item) => &item.id,
+        TurnItem::CommandExecution(item) => &item.id,
+        TurnItem::DynamicToolCall(item) => &item.id,
+        TurnItem::CollabAgentToolCall(item) => &item.id,
+        TurnItem::SubAgentActivity(item) => &item.id,
         TurnItem::WebSearch(item) => &item.id,
         TurnItem::ImageView(item) => &item.id,
+        TurnItem::Sleep(item) => &item.id,
+        TurnItem::Extension(item) => item.id(),
         TurnItem::ImageGeneration(item) => &item.id,
+        TurnItem::EnteredReviewMode(item) => &item.id,
+        TurnItem::ExitedReviewMode(item) => &item.id,
         TurnItem::FileChange(item) => &item.id,
         TurnItem::McpToolCall(item) => &item.id,
         TurnItem::ContextCompaction(item) => &item.id,
     }
 }
 
-fn describe_turn_item(item: &TurnItem) -> (&'static str, Option<String>) {
+enum TurnItemPresentation {
+    Hidden,
+    Dedicated,
+    Status {
+        detail: Option<String>,
+        title: &'static str,
+    },
+    Tool {
+        detail: Option<String>,
+        kind: ToolKind,
+        title: String,
+        tool_call_id: String,
+    },
+}
+
+fn turn_item_presentation(item: &TurnItem) -> TurnItemPresentation {
     match item {
-        TurnItem::UserMessage(..) => ("Preparing input", None),
-        TurnItem::HookPrompt(..) => ("Awaiting hook guidance", None),
-        TurnItem::AgentMessage(..) => ("Drafting response", None),
-        TurnItem::Plan(item) => ("Updating plan", Some(item.text.clone())),
-        TurnItem::Reasoning(item) => (
-            "Reasoning",
-            item.summary_text
-                .first()
-                .cloned()
-                .or_else(|| item.raw_content.first().cloned()),
-        ),
-        TurnItem::WebSearch(item) => ("Web search", Some(item.query.clone())),
-        TurnItem::ImageView(item) => ("Viewing image", Some(item.path.display().to_string())),
-        TurnItem::ImageGeneration(item) => (
-            "Generating image",
-            item.saved_path
+        TurnItem::UserMessage(..) | TurnItem::AgentMessage(..) | TurnItem::Reasoning(..) => {
+            TurnItemPresentation::Hidden
+        }
+        TurnItem::Plan(..)
+        | TurnItem::Extension(..)
+        | TurnItem::ImageGeneration(..)
+        | TurnItem::EnteredReviewMode(..)
+        | TurnItem::ExitedReviewMode(..) => TurnItemPresentation::Dedicated,
+        TurnItem::HookPrompt(..) => TurnItemPresentation::Status {
+            detail: None,
+            title: "Awaiting hook guidance",
+        },
+        TurnItem::Sleep(item) => TurnItemPresentation::Status {
+            detail: Some(format!("{}ms", item.duration_ms)),
+            title: "Waiting",
+        },
+        TurnItem::ContextCompaction(..) => TurnItemPresentation::Status {
+            detail: None,
+            title: "Compacting context",
+        },
+        TurnItem::CommandExecution(item) => TurnItemPresentation::Tool {
+            detail: Some(item.command.iter().join(" ")),
+            kind: ToolKind::Execute,
+            title: "Running command".to_string(),
+            tool_call_id: item.id.clone(),
+        },
+        TurnItem::DynamicToolCall(item) => TurnItemPresentation::Tool {
+            detail: item
+                .namespace
                 .as_ref()
-                .map(|path| path.display().to_string())
-                .or_else(|| Some(item.result.clone())),
-        ),
-        TurnItem::FileChange(item) => ("Changing files", Some(format_file_changes(&item.changes))),
-        TurnItem::McpToolCall(item) => ("MCP tool", Some(format!("{}/{}", item.server, item.tool))),
-        TurnItem::ContextCompaction(..) => ("Compacting context", None),
+                .map(|namespace| format!("Namespace: {namespace}")),
+            kind: ToolKind::Other,
+            title: format!("Tool: {}", item.tool),
+            tool_call_id: item.id.clone(),
+        },
+        TurnItem::CollabAgentToolCall(item) if item.tool == CollabAgentTool::Wait => {
+            TurnItemPresentation::Dedicated
+        }
+        TurnItem::CollabAgentToolCall(item) => TurnItemPresentation::Tool {
+            detail: item.prompt.clone(),
+            kind: ToolKind::Other,
+            title: "Coordinating agents".to_string(),
+            tool_call_id: subagents::subagent_tool_call_id(&item.id),
+        },
+        TurnItem::SubAgentActivity(item) => TurnItemPresentation::Tool {
+            detail: Some(format!("Agent: {}", item.agent_path)),
+            kind: ToolKind::Other,
+            title: "Subagent activity".to_string(),
+            tool_call_id: subagents::subagent_tool_call_id(&item.id),
+        },
+        TurnItem::WebSearch(item) => TurnItemPresentation::Tool {
+            detail: Some(item.query.clone()),
+            kind: ToolKind::Fetch,
+            title: "Searching the Web".to_string(),
+            tool_call_id: item.id.clone(),
+        },
+        TurnItem::ImageView(item) => TurnItemPresentation::Tool {
+            detail: Some(item.path.inferred_native_path_string()),
+            kind: ToolKind::Read,
+            title: "Viewing image".to_string(),
+            tool_call_id: item.id.clone(),
+        },
+        TurnItem::FileChange(item) => TurnItemPresentation::Tool {
+            detail: Some(format_file_changes(&item.changes)),
+            kind: ToolKind::Edit,
+            title: "Updating files".to_string(),
+            tool_call_id: item.id.clone(),
+        },
+        TurnItem::McpToolCall(item) => TurnItemPresentation::Tool {
+            detail: Some(format!("MCP server: {}", item.server)),
+            kind: ToolKind::Other,
+            title: format!("Tool: {}/{}", item.server, item.tool),
+            tool_call_id: item.id.clone(),
+        },
     }
 }
 
@@ -288,6 +410,31 @@ fn format_file_changes(changes: &HashMap<PathBuf, FileChange>) -> String {
         .keys()
         .map(|path| path.display().to_string())
         .join("\n")
+}
+
+fn completed_turn_item_tool_status(item: &TurnItem) -> ToolCallStatus {
+    let failed = match item {
+        TurnItem::CommandExecution(item) => matches!(
+            item.status,
+            CommandExecutionStatus::Failed | CommandExecutionStatus::Declined
+        ),
+        TurnItem::DynamicToolCall(item) => {
+            item.status == DynamicToolCallStatus::Failed || item.success == Some(false)
+        }
+        TurnItem::CollabAgentToolCall(item) => item.status == CollabAgentToolCallStatus::Failed,
+        TurnItem::FileChange(item) => matches!(
+            item.status,
+            Some(PatchApplyStatus::Failed | PatchApplyStatus::Declined)
+        ),
+        TurnItem::McpToolCall(item) => item.status == McpToolCallStatus::Failed,
+        _ => false,
+    };
+
+    if failed {
+        ToolCallStatus::Failed
+    } else {
+        ToolCallStatus::Completed
+    }
 }
 
 fn approval_matches_current_config(preset: &ApprovalPreset, config: &Config) -> bool {
@@ -369,6 +516,22 @@ pub trait CodexThreadImpl: Send + Sync {
     fn submit(&self, op: Op)
     -> Pin<Box<dyn Future<Output = Result<String, CodexErr>> + Send + '_>>;
     fn next_event(&self) -> Pin<Box<dyn Future<Output = Result<Event, CodexErr>> + Send + '_>>;
+
+    fn submit_user_input(
+        &self,
+        op: Op,
+        _client_user_message_id: String,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CodexErr>> + Send + '_>> {
+        self.submit(op)
+    }
+
+    fn try_steer_input(
+        &self,
+        _input: Vec<UserInput>,
+        _client_user_message_id: String,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CodexErr>> + Send + '_>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 impl CodexThreadImpl for CodexThread {
@@ -381,6 +544,43 @@ impl CodexThreadImpl for CodexThread {
 
     fn next_event(&self) -> Pin<Box<dyn Future<Output = Result<Event, CodexErr>> + Send + '_>> {
         Box::pin(self.next_event())
+    }
+
+    fn submit_user_input(
+        &self,
+        op: Op,
+        client_user_message_id: String,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CodexErr>> + Send + '_>> {
+        Box::pin(self.submit_user_input_with_client_user_message_id(
+            op,
+            None,
+            Some(client_user_message_id),
+        ))
+    }
+
+    fn try_steer_input(
+        &self,
+        input: Vec<UserInput>,
+        client_user_message_id: String,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CodexErr>> + Send + '_>> {
+        Box::pin(async move {
+            match self
+                .steer_input(
+                    input,
+                    Default::default(),
+                    None,
+                    Some(client_user_message_id),
+                    None,
+                )
+                .await
+            {
+                Ok(active_turn_id) => Ok(Some(active_turn_id)),
+                Err(SteerInputError::NoActiveTurn(_)) => Ok(None),
+                Err(error) => Err(CodexErr::InvalidRequest(format!(
+                    "Unable to steer active turn: {error:?}"
+                ))),
+            }
+        })
     }
 }
 
@@ -399,14 +599,24 @@ impl ModelsManagerImpl for Arc<dyn ModelsManager> {
     ) -> Pin<Box<dyn Future<Output = String> + Send + '_>> {
         let model_id = model_id.clone();
         Box::pin(async move {
-            self.get_default_model(&model_id, RefreshStrategy::OnlineIfUncached)
-                .await
+            self.get_default_model(
+                &model_id,
+                true,
+                RefreshStrategy::OnlineIfUncached,
+                HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            )
+            .await
         })
     }
 
     fn list_models(&self) -> Pin<Box<dyn Future<Output = Vec<ModelPreset>> + Send + '_>> {
         Box::pin(async move {
-            ModelsManager::list_models(self.as_ref(), RefreshStrategy::OnlineIfUncached).await
+            ModelsManager::list_models(
+                self.as_ref(),
+                RefreshStrategy::OnlineIfUncached,
+                HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+            )
+            .await
         })
     }
 }
@@ -1198,6 +1408,11 @@ impl SubmissionState {
             drop(response_tx.send(Err(err)));
         }
     }
+
+    fn take_response_tx(&mut self) -> Option<oneshot::Sender<Result<StopReason, Error>>> {
+        let Self::Prompt(state) = self;
+        state.response_tx.take()
+    }
 }
 
 struct ActiveCommand {
@@ -1215,8 +1430,12 @@ struct PromptState {
     active_commands: HashMap<String, ActiveCommand>,
     active_web_search: Option<String>,
     active_image_generations: HashSet<String>,
+    completed_image_generations: HashSet<String>,
     active_guardian_assessments: HashSet<String>,
     active_plan_text: HashMap<String, String>,
+    canonical_tool_call_ids: HashSet<String>,
+    fallback_tool_call_ids: HashSet<String>,
+    subagent_projection_state: subagents::SubagentProjectionState,
     thread: Arc<dyn CodexThreadImpl>,
     resolution_tx: mpsc::UnboundedSender<ThreadMessage>,
     pending_permission_interactions: HashMap<String, PendingPermissionInteraction>,
@@ -1240,8 +1459,12 @@ impl PromptState {
             active_commands: HashMap::new(),
             active_web_search: None,
             active_image_generations: HashSet::new(),
+            completed_image_generations: HashSet::new(),
             active_guardian_assessments: HashSet::new(),
             active_plan_text: HashMap::new(),
+            canonical_tool_call_ids: HashSet::new(),
+            fallback_tool_call_ids: HashSet::new(),
+            subagent_projection_state: subagents::SubagentProjectionState::default(),
             thread,
             resolution_tx,
             pending_permission_interactions: HashMap::new(),
@@ -1264,8 +1487,12 @@ impl PromptState {
             active_commands: HashMap::new(),
             active_web_search: None,
             active_image_generations: HashSet::new(),
+            completed_image_generations: HashSet::new(),
             active_guardian_assessments: HashSet::new(),
             active_plan_text: HashMap::new(),
+            canonical_tool_call_ids: HashSet::new(),
+            fallback_tool_call_ids: HashSet::new(),
+            subagent_projection_state: subagents::SubagentProjectionState::default(),
             thread,
             resolution_tx,
             pending_permission_interactions: HashMap::new(),
@@ -1538,16 +1765,150 @@ impl PromptState {
         );
     }
 
+    fn mark_canonical_tool_call(&mut self, tool_call_id: impl Into<String>) {
+        self.canonical_tool_call_ids.insert(tool_call_id.into());
+    }
+
+    fn send_canonical_tool_call(
+        &self,
+        client: &SessionClient,
+        tool_call: ToolCall,
+        already_projected: bool,
+    ) {
+        if already_projected
+            || self
+                .fallback_tool_call_ids
+                .contains(&tool_call.tool_call_id.to_string())
+        {
+            client.send_tool_call_update(tool_call.into());
+        } else {
+            client.send_tool_call(tool_call);
+        }
+    }
+
+    fn start_turn_item(&mut self, client: &SessionClient, item: &TurnItem) {
+        match turn_item_presentation(item) {
+            TurnItemPresentation::Hidden | TurnItemPresentation::Dedicated => {}
+            TurnItemPresentation::Status { detail, title } => {
+                self.send_status_tool_call(
+                    client,
+                    format!(
+                        "{CODEX_ACP_STATUS_EVENT_ID_PREFIX}item:{}",
+                        turn_item_id(item)
+                    ),
+                    "item_activity",
+                    title,
+                    detail,
+                    "neutral",
+                    ToolCallStatus::InProgress,
+                );
+            }
+            TurnItemPresentation::Tool {
+                detail,
+                kind,
+                title,
+                tool_call_id,
+            } => {
+                if self.canonical_tool_call_ids.contains(&tool_call_id) {
+                    return;
+                }
+
+                let mut tool_call = ToolCall::new(tool_call_id.clone(), title)
+                    .kind(kind)
+                    .status(ToolCallStatus::InProgress)
+                    .raw_input(serde_json::to_value(item).ok());
+                if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
+                    tool_call =
+                        tool_call.content(vec![ToolCallContent::Content(Content::new(detail))]);
+                }
+                client.send_tool_call(tool_call);
+                self.fallback_tool_call_ids.insert(tool_call_id);
+            }
+        }
+    }
+
+    fn complete_turn_item(&mut self, client: &SessionClient, item: &TurnItem) {
+        if let TurnItem::ImageGeneration(image) = item {
+            let tool_call_id = image_generation_tool_call_id(&image.id);
+            if !self.canonical_tool_call_ids.contains(&tool_call_id) {
+                self.end_image_generation(
+                    client,
+                    ImageGenerationEndEvent {
+                        call_id: image.id.clone(),
+                        status: image.status.clone(),
+                        revised_prompt: image.revised_prompt.clone(),
+                        result: image.result.clone(),
+                        saved_path: image.saved_path.clone(),
+                    },
+                );
+            }
+            return;
+        }
+
+        match turn_item_presentation(item) {
+            TurnItemPresentation::Hidden | TurnItemPresentation::Dedicated => {}
+            TurnItemPresentation::Status { detail, title } => {
+                self.send_status_tool_call_update(
+                    client,
+                    format!(
+                        "{CODEX_ACP_STATUS_EVENT_ID_PREFIX}item:{}",
+                        turn_item_id(item)
+                    ),
+                    "item_activity",
+                    title,
+                    detail,
+                    "neutral",
+                    ToolCallStatus::Completed,
+                );
+            }
+            TurnItemPresentation::Tool {
+                detail,
+                kind,
+                title,
+                tool_call_id,
+            } => {
+                if self.canonical_tool_call_ids.contains(&tool_call_id) {
+                    return;
+                }
+
+                let mut tool_call = ToolCall::new(tool_call_id, title)
+                    .kind(kind)
+                    .status(completed_turn_item_tool_status(item))
+                    .raw_output(serde_json::to_value(item).ok());
+                if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
+                    tool_call =
+                        tool_call.content(vec![ToolCallContent::Content(Content::new(detail))]);
+                }
+                if self
+                    .fallback_tool_call_ids
+                    .contains(&tool_call.tool_call_id.to_string())
+                {
+                    client.send_tool_call_update(tool_call.into());
+                } else {
+                    self.fallback_tool_call_ids
+                        .insert(tool_call.tool_call_id.to_string());
+                    client.send_tool_call(tool_call);
+                }
+            }
+        }
+    }
+
     #[expect(clippy::too_many_lines)]
     async fn handle_event(&mut self, client: &SessionClient, event: EventMsg) {
         self.event_count += 1;
 
-        if let Some(projection) = subagents::projection_for_collab_event(&event) {
+        if let Some(mut projection) = subagents::projection_for_event(&event, &client.session_id) {
+            self.subagent_projection_state
+                .coalesce_wait_projection(&event, &mut projection);
             match projection {
                 SubagentProjection::ToolCall(tool_call) => {
-                    client.send_notification(SessionUpdate::ToolCall(tool_call));
+                    let tool_call_id = tool_call.tool_call_id.to_string();
+                    let already_projected = self.canonical_tool_call_ids.contains(&tool_call_id);
+                    self.mark_canonical_tool_call(tool_call_id);
+                    self.send_canonical_tool_call(client, tool_call, already_projected);
                 }
                 SubagentProjection::ToolCallUpdate(update) => {
+                    self.mark_canonical_tool_call(update.tool_call_id.to_string());
                     client.send_notification(SessionUpdate::ToolCallUpdate(update));
                 }
             }
@@ -1618,24 +1979,8 @@ impl PromptState {
             EventMsg::ItemStarted(ItemStartedEvent { thread_id, turn_id, item , started_at_ms: _}) => {
                 info!("Item started with thread_id: {thread_id}, turn_id: {turn_id}, item: {item:?}");
                 match item {
-                    // Codex also emits ImageGenerationBegin for this item; that event
-                    // carries the Comando-specific image tool metadata.
-                    TurnItem::ImageGeneration(..) => {}
-                    other_item => {
-                        let (title, detail) = describe_turn_item(&other_item);
-                        self.send_status_tool_call(
-                            client,
-                            format!(
-                                "{CODEX_ACP_STATUS_EVENT_ID_PREFIX}item:{}",
-                                turn_item_id(&other_item)
-                            ),
-                            "item_activity",
-                            title,
-                            detail,
-                            "neutral",
-                            ToolCallStatus::InProgress,
-                        );
-                    }
+                    TurnItem::Extension(item) => self.start_extension_item(client, item),
+                    other_item => self.start_turn_item(client, &other_item),
                 }
             }
             EventMsg::UserMessage(UserMessageEvent {
@@ -1728,6 +2073,7 @@ impl PromptState {
             }
             EventMsg::WebSearchBegin(WebSearchBeginEvent { call_id }) => {
                 info!("Web search started: call_id={}", call_id);
+                self.mark_canonical_tool_call(call_id.clone());
                 // Create a ToolCall notification for the search beginning
                 self.start_web_search(client, call_id);
             }
@@ -1737,6 +2083,7 @@ impl PromptState {
                 action,
             }) => {
                 info!("Web search query received: call_id={call_id}, query={query}");
+                self.mark_canonical_tool_call(call_id.clone());
                 // Send update that the search is in progress with the query
                 // (WebSearchEnd just means we have the query, not that results are ready)
                 self.update_web_search_query(client, call_id, query, action);
@@ -1745,6 +2092,7 @@ impl PromptState {
             }
             EventMsg::ImageGenerationBegin(event) => {
                 info!("Image generation started: call_id={}", event.call_id);
+                self.mark_canonical_tool_call(image_generation_tool_call_id(&event.call_id));
                 self.start_image_generation(client, event);
             }
             EventMsg::ImageGenerationEnd(event) => {
@@ -1752,6 +2100,7 @@ impl PromptState {
                     "Image generation ended: call_id={}, status={}",
                     event.call_id, event.status
                 );
+                self.mark_canonical_tool_call(image_generation_tool_call_id(&event.call_id));
                 self.end_image_generation(client, event);
             }
             EventMsg::ExecApprovalRequest(event) => {
@@ -1759,6 +2108,7 @@ impl PromptState {
                     "Command execution started: call_id={}, command={:?}",
                     event.call_id, event.command
                 );
+                self.mark_canonical_tool_call(event.call_id.clone());
                 if let Err(err) = self.exec_approval(client, event)
                     && let Some(response_tx) = self.response_tx.take()
                 {
@@ -1770,6 +2120,7 @@ impl PromptState {
                     "Command execution started: call_id={}, command={:?}",
                     event.call_id, event.command
                 );
+                self.mark_canonical_tool_call(event.call_id.clone());
                 self.exec_command_begin(client, event);
             }
             EventMsg::ExecCommandOutputDelta(delta_event) => {
@@ -1780,6 +2131,7 @@ impl PromptState {
                     "Command execution ended: call_id={}, exit_code={}",
                     end_event.call_id, end_event.exit_code
                 );
+                self.mark_canonical_tool_call(end_event.call_id.clone());
                 self.exec_command_end(client, end_event);
             }
             EventMsg::TerminalInteraction(event) => {
@@ -1791,6 +2143,7 @@ impl PromptState {
             }
             EventMsg::DynamicToolCallRequest(DynamicToolCallRequest { call_id, turn_id, namespace, tool, arguments, started_at_ms: _ }) => {
                 info!("Dynamic tool call request: call_id={call_id}, turn_id={turn_id}, namespace={namespace:?}, tool={tool}");
+                self.mark_canonical_tool_call(call_id.clone());
                 self.start_dynamic_tool_call(client, call_id, tool, arguments);
             }
             EventMsg::DynamicToolCallResponse(event) => {
@@ -1798,6 +2151,7 @@ impl PromptState {
                     "Dynamic tool call response: call_id={}, turn_id={}, tool={}",
                     event.call_id, event.turn_id, event.tool
                 );
+                self.mark_canonical_tool_call(event.call_id.clone());
                 self.end_dynamic_tool_call(client, event);
             }
             EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
@@ -1810,6 +2164,7 @@ impl PromptState {
                     "MCP tool call begin: call_id={call_id}, invocation={} {}",
                     invocation.server, invocation.tool
                 );
+                self.mark_canonical_tool_call(call_id.clone());
                 self.start_mcp_tool_call(client, call_id, invocation);
             }
             EventMsg::McpToolCallEnd(McpToolCallEndEvent {
@@ -1824,6 +2179,7 @@ impl PromptState {
                     "MCP tool call ended: call_id={call_id}, invocation={} {}, duration={duration:?}",
                     invocation.server, invocation.tool
                 );
+                self.mark_canonical_tool_call(call_id.clone());
                 self.end_mcp_tool_call(client, call_id, result);
             }
             EventMsg::ApplyPatchApprovalRequest(event) => {
@@ -1831,6 +2187,7 @@ impl PromptState {
                     "Apply patch approval request: call_id={}, reason={:?}",
                     event.call_id, event.reason
                 );
+                self.mark_canonical_tool_call(event.call_id.clone());
                 if let Err(err) = self.patch_approval(client, event)
                     && let Some(response_tx) = self.response_tx.take()
                 {
@@ -1842,6 +2199,7 @@ impl PromptState {
                     "Patch apply begin: call_id={}, auto_approved={}",
                     event.call_id, event.auto_approved
                 );
+                self.mark_canonical_tool_call(event.call_id.clone());
                 self.start_patch_apply(client, event);
             }
             EventMsg::PatchApplyUpdated(event) => {
@@ -1850,6 +2208,7 @@ impl PromptState {
                     event.call_id,
                     event.changes.len()
                 );
+                self.mark_canonical_tool_call(event.call_id.clone());
                 self.update_patch_apply(client, event);
             }
             EventMsg::PatchApplyEnd(event) => {
@@ -1857,6 +2216,7 @@ impl PromptState {
                     "Patch apply end: call_id={}, success={}",
                     event.call_id, event.success
                 );
+                self.mark_canonical_tool_call(event.call_id.clone());
                 self.end_patch_apply(client, event);
             }
             EventMsg::ItemCompleted(ItemCompletedEvent {
@@ -1876,28 +2236,8 @@ impl PromptState {
                     self.emit_plan_text_update(client, &final_text, false);
                 }
                 match item {
-                    // ImageGenerationEnd is the canonical live bridge for generated images.
-                    TurnItem::ImageGeneration(..) => {}
-                    other_item => {
-                        let (title, detail) = describe_turn_item(&other_item);
-                        self.send_status_tool_call_update(
-                            client,
-                            format!(
-                                "{CODEX_ACP_STATUS_EVENT_ID_PREFIX}item:{}",
-                                turn_item_id(&other_item)
-                            ),
-                            "item_activity",
-                            title,
-                            detail,
-                            "neutral",
-                            ToolCallStatus::Completed,
-                        );
-                        // Notify the client when context compaction completes so users see
-                        // a status message rather than silence during /compact.
-                        if matches!(other_item, TurnItem::ContextCompaction(..)) {
-                            client.send_agent_text("Context compacted".to_string());
-                        }
-                    }
+                    TurnItem::Extension(item) => self.complete_extension_item(client, item),
+                    other_item => self.complete_turn_item(client, &other_item),
                 }
             }
             EventMsg::TurnComplete(TurnCompleteEvent { last_agent_message, turn_id, completed_at: _, duration_ms: _, time_to_first_token_ms: _, }) => {
@@ -1967,15 +2307,22 @@ impl PromptState {
             }
             EventMsg::ViewImageToolCall(ViewImageToolCallEvent { call_id, path }) => {
                 info!("ViewImageToolCallEvent received");
-                let display_path = path.display().to_string();
-                client.send_notification(
-                    SessionUpdate::ToolCall(
-                        ToolCall::new(call_id, format!("View Image {display_path}"))
-                            .kind(ToolKind::Read).status(ToolCallStatus::Completed)
-                            .content(vec![ToolCallContent::Content(Content::new(ContentBlock::ResourceLink(ResourceLink::new(display_path.clone(), display_path.clone())
-                        )
-                    )
-                )]).locations(vec![ToolCallLocation::new(path)])));
+                self.mark_canonical_tool_call(call_id.clone());
+                let display_path = path.inferred_native_path_string();
+                self.send_canonical_tool_call(
+                    client,
+                    ToolCall::new(call_id, format!("View Image {display_path}"))
+                        .kind(ToolKind::Read)
+                        .status(ToolCallStatus::Completed)
+                        .content(vec![ToolCallContent::Content(Content::new(
+                            ContentBlock::ResourceLink(ResourceLink::new(
+                                display_path.clone(),
+                                display_path.clone(),
+                            )),
+                        ))])
+                        .locations(vec![ToolCallLocation::new(path.to_path_buf())]),
+                    false,
+                );
             }
             EventMsg::EnteredReviewMode(review_request) => {
                 info!("Review begin: request={review_request:?}");
@@ -2050,7 +2397,6 @@ impl PromptState {
 
             EventMsg::ContextCompacted(..) => {
                 info!("Context compacted");
-                client.send_agent_text("Context compacted\n".to_string());
             }
             EventMsg::RequestPermissions(event) => {
                 info!("Request permissions: {} {}", event.call_id, event.turn_id);
@@ -2067,6 +2413,13 @@ impl PromptState {
                 );
                 self.guardian_assessment(client, event);
             }
+            EventMsg::RawResponseItem(event) => {
+                if let Some((message_id, payload)) =
+                    plaintext_inter_agent_message_payload(&event.item)
+                {
+                    client.send_user_message_with_id(payload, message_id.as_deref());
+                }
+            }
 
             // Ignore these events
             EventMsg::AgentReasoningRawContent(..)
@@ -2077,7 +2430,6 @@ impl PromptState {
             | EventMsg::TurnDiff(..)
             | EventMsg::ThreadSettingsApplied(..)
             // Old events
-            | EventMsg::RawResponseItem(..)
             | EventMsg::SessionConfigured(..)
             // TODO: Subagent UI?
             | EventMsg::CollabAgentSpawnBegin(..)
@@ -2088,6 +2440,9 @@ impl PromptState {
             | EventMsg::RealtimeConversationRealtime(..)
             | EventMsg::RealtimeConversationClosed(..)
             | EventMsg::RealtimeConversationSdp(..)
+            | EventMsg::TurnModerationMetadata(..)
+            | EventMsg::SafetyBuffering(..)
+            | EventMsg::SubAgentActivity(..)
             | EventMsg::CollabWaitingBegin(..)
             | EventMsg::CollabWaitingEnd(..)
             | EventMsg::CollabResumeBegin(..)
@@ -2172,6 +2527,7 @@ impl PromptState {
         let request_kind = match &request {
             ElicitationRequest::Form { .. } => "form",
             ElicitationRequest::Url { .. } => "url",
+            ElicitationRequest::OpenAiForm { .. } => "openai_form",
         };
 
         info!(
@@ -2198,7 +2554,7 @@ impl PromptState {
         client: &SessionClient,
         event: ExitedReviewModeEvent,
     ) -> Result<(), Error> {
-        let ExitedReviewModeEvent { review_output } = event;
+        let ExitedReviewModeEvent { review_output, .. } = event;
         let Some(ReviewOutputEvent {
             findings,
             overall_correctness: _,
@@ -2286,13 +2642,15 @@ impl PromptState {
 
         let (title, locations, content) = extract_tool_call_content_from_changes(changes);
 
-        client.send_tool_call(
+        self.send_canonical_tool_call(
+            client,
             ToolCall::new(call_id, title)
                 .kind(ToolKind::Edit)
                 .status(ToolCallStatus::InProgress)
                 .locations(locations)
                 .content(content.collect())
                 .raw_input(raw_input),
+            false,
         );
     }
 
@@ -2361,10 +2719,12 @@ impl PromptState {
         tool: String,
         arguments: serde_json::Value,
     ) {
-        client.send_tool_call(
+        self.send_canonical_tool_call(
+            client,
             ToolCall::new(call_id, format!("Tool: {tool}"))
                 .status(ToolCallStatus::InProgress)
                 .raw_input(serde_json::json!(&arguments)),
+            false,
         );
     }
 
@@ -2375,10 +2735,12 @@ impl PromptState {
         invocation: McpInvocation,
     ) {
         let title = format!("Tool: {}/{}", invocation.server, invocation.tool);
-        client.send_tool_call(
+        self.send_canonical_tool_call(
+            client,
             ToolCall::new(call_id, title)
                 .status(ToolCallStatus::InProgress)
                 .raw_input(serde_json::json!(&invocation)),
+            false,
         );
     }
 
@@ -2611,10 +2973,10 @@ impl PromptState {
             locations,
             terminal_output,
             kind,
-        } = parse_command_tool_call(parsed_cmd, &cwd);
+        } = parse_command_tool_call(parsed_cmd, &cwd.to_path_buf());
 
         // Snapshot candidate files before the command modifies them.
-        let candidate_paths = extract_candidate_paths_from_command(&command, &cwd);
+        let candidate_paths = extract_candidate_paths_from_command(&command, &cwd.to_path_buf());
         let mut file_snapshots = HashMap::new();
         for path in candidate_paths {
             file_snapshots.insert(path.clone(), read_text_snapshot(&path));
@@ -2643,7 +3005,8 @@ impl PromptState {
 
         self.active_commands.insert(call_id.clone(), active_command);
 
-        client.send_tool_call(
+        self.send_canonical_tool_call(
+            client,
             ToolCall::new(tool_call_id, title)
                 .kind(kind)
                 .status(ToolCallStatus::InProgress)
@@ -2651,6 +3014,7 @@ impl PromptState {
                 .raw_input(raw_input)
                 .content(content)
                 .meta(meta),
+            false,
         );
     }
 
@@ -2811,12 +3175,72 @@ impl PromptState {
 
     fn start_web_search(&mut self, client: &SessionClient, call_id: String) {
         self.active_web_search = Some(call_id.clone());
-        client.send_tool_call(ToolCall::new(call_id, "Searching the Web").kind(ToolKind::Fetch));
+        self.send_canonical_tool_call(
+            client,
+            ToolCall::new(call_id, "Searching the Web")
+                .kind(ToolKind::Fetch)
+                .status(ToolCallStatus::InProgress),
+            false,
+        );
+    }
+
+    fn start_extension_item(&mut self, client: &SessionClient, item: ExtensionItem) {
+        match item {
+            ExtensionItem::WebSearch(item) => {
+                let title = extension_web_search_title(&item.query);
+                client.send_tool_call(
+                    ToolCall::new(item.id, title)
+                        .kind(ToolKind::Fetch)
+                        .status(ToolCallStatus::InProgress)
+                        .raw_input(json!({
+                            "query": item.query,
+                            "action": item.action,
+                        })),
+                );
+            }
+            ExtensionItem::ImageGeneration(item) => {
+                self.start_image_generation(client, ImageGenerationBeginEvent { call_id: item.id });
+            }
+        }
+    }
+
+    fn complete_extension_item(&mut self, client: &SessionClient, item: ExtensionItem) {
+        match item {
+            ExtensionItem::WebSearch(item) => {
+                let title = extension_web_search_title(&item.query);
+                client.send_tool_call_update(ToolCallUpdate::new(
+                    item.id,
+                    ToolCallUpdateFields::new()
+                        .title(title)
+                        .status(ToolCallStatus::Completed)
+                        .raw_input(json!({
+                            "query": item.query,
+                            "action": item.action,
+                        })),
+                ));
+            }
+            ExtensionItem::ImageGeneration(item) => {
+                self.end_image_generation(
+                    client,
+                    ImageGenerationEndEvent {
+                        call_id: item.id,
+                        status: item.status,
+                        revised_prompt: item.revised_prompt,
+                        result: item.result,
+                        saved_path: item.saved_path,
+                    },
+                );
+            }
+        }
     }
 
     fn start_image_generation(&mut self, client: &SessionClient, event: ImageGenerationBeginEvent) {
         let ImageGenerationBeginEvent { call_id } = event;
-        self.active_image_generations.insert(call_id.clone());
+        if self.completed_image_generations.contains(&call_id)
+            || !self.active_image_generations.insert(call_id.clone())
+        {
+            return;
+        }
         client.send_tool_call(
             ToolCall::new(image_generation_tool_call_id(&call_id), "Generating image")
                 .kind(ToolKind::Other)
@@ -2839,6 +3263,9 @@ impl PromptState {
             result,
             saved_path,
         } = event;
+        if !self.completed_image_generations.insert(call_id.clone()) {
+            return;
+        }
         let tool_status = image_generation_tool_status(&status);
         let saved_path = saved_path.map(|path| path.to_string_lossy().into_owned());
         let is_failure = tool_status == ToolCallStatus::Failed;
@@ -2850,11 +3277,12 @@ impl PromptState {
         let detail = saved_path.clone().or_else(|| Some(result.clone()));
         let mut raw_input = json!({
             "status": status,
-            "result": result.clone(),
         });
         if let Some(object) = raw_input.as_object_mut() {
             if let Some(saved_path) = saved_path {
                 object.insert("path".to_string(), json!(saved_path));
+            } else {
+                object.insert("result".to_string(), json!(result.clone()));
             }
             if let Some(revised_prompt) = revised_prompt {
                 object.insert("revised_prompt".to_string(), json!(revised_prompt));
@@ -3441,9 +3869,15 @@ impl SessionClient {
     }
 
     fn send_user_message(&self, text: impl Into<String>) {
-        self.send_notification(SessionUpdate::UserMessageChunk(ContentChunk::new(
-            text.into().into(),
-        )));
+        self.send_user_message_with_id(text, None);
+    }
+
+    fn send_user_message_with_id(&self, text: impl Into<String>, message_id: Option<&str>) {
+        let mut chunk = ContentChunk::new(text.into().into());
+        if let Some(message_id) = message_id {
+            chunk = chunk.message_id(message_id);
+        }
+        self.send_notification(SessionUpdate::UserMessageChunk(chunk));
     }
 
     fn send_agent_text(&self, text: impl Into<String>) {
@@ -3555,6 +3989,8 @@ struct ThreadActor<A> {
     submissions: HashMap<String, SubmissionState>,
     /// Drain-only projections for Codex turns created outside ACP prompt calls.
     event_projections: HashMap<String, PromptState>,
+    /// User-input submissions that may need rebinding if a concurrent external turn wins the race.
+    pending_prompt_client_ids_by_submission_id: HashMap<String, String>,
     /// A receiver for incoming thread messages.
     message_rx: mpsc::UnboundedReceiver<ThreadMessage>,
     /// A receiver for spawned interaction results.
@@ -3584,6 +4020,7 @@ impl<A: Auth> ThreadActor<A> {
             resolution_tx,
             submissions: HashMap::new(),
             event_projections: HashMap::new(),
+            pending_prompt_client_ids_by_submission_id: HashMap::new(),
             message_rx,
             resolution_rx,
             last_sent_config_options: None,
@@ -3613,6 +4050,8 @@ impl<A: Auth> ThreadActor<A> {
             // Litter collection of senders with no receivers
             self.submissions
                 .retain(|_, submission| submission.is_active());
+            self.pending_prompt_client_ids_by_submission_id
+                .retain(|submission_id, _| self.submissions.contains_key(submission_id));
 
             if !message_rx_open && self.submissions.is_empty() {
                 break;
@@ -3657,7 +4096,11 @@ impl<A: Auth> ThreadActor<A> {
                 response_tx,
             } => {
                 let result = self.handle_set_config_option(config_id, value).await;
+                let config_changed = result.is_ok();
                 drop(response_tx.send(result));
+                if config_changed {
+                    self.maybe_emit_config_options_update().await;
+                }
             }
             ThreadMessage::Cancel { response_tx } => {
                 let result = self.handle_cancel().await;
@@ -3812,30 +4255,42 @@ impl<A: Auth> ThreadActor<A> {
         let current_model = self.get_current_model().await;
         let current_preset = presets.iter().find(|p| p.model == current_model).cloned();
 
-        let mut model_select_options = Vec::new();
+        let mut gpt_5_6_model_select_options = Vec::new();
+        let mut other_model_select_options = Vec::new();
 
         if current_preset.is_none() {
             // If no preset found, return the current model string as-is
-            model_select_options.push(SessionConfigSelectOption::new(
+            other_model_select_options.push(SessionConfigSelectOption::new(
                 current_model.clone(),
                 current_model.clone(),
             ));
         };
 
-        model_select_options.extend(
-            presets
-                .into_iter()
-                .filter(|model| model.show_in_picker || model.model == current_model)
-                .map(|preset| {
+        for preset in presets
+            .into_iter()
+            .filter(|model| model.show_in_picker || model.model == current_model)
+        {
+            match gpt_5_6_variant_name(&preset) {
+                Some(variant_name) => gpt_5_6_model_select_options.push(
+                    SessionConfigSelectOption::new(preset.id, variant_name)
+                        .description(preset.description),
+                ),
+                None => other_model_select_options.push(
                     SessionConfigSelectOption::new(preset.id, preset.display_name)
-                        .description(preset.description)
-                }),
-        );
+                        .description(preset.description),
+                ),
+            }
+        }
 
         options.push(
-            SessionConfigOption::select("model", "Model", current_model, model_select_options)
-                .category(SessionConfigOptionCategory::Model)
-                .description("Choose which model Codex should use"),
+            SessionConfigOption::select(
+                "model",
+                "Model",
+                current_model,
+                model_picker_groups(gpt_5_6_model_select_options, other_model_select_options),
+            )
+            .category(SessionConfigOptionCategory::Model)
+            .description("Choose which model Codex should use"),
         );
 
         let current_service_tier = self.current_service_tier();
@@ -3880,12 +4335,13 @@ impl<A: Auth> ThreadActor<A> {
             let current_effort = self
                 .config
                 .model_reasoning_effort
+                .as_ref()
                 .and_then(|effort| {
                     supported
                         .iter()
-                        .find_map(|e| (e.effort == effort).then_some(effort))
+                        .find_map(|e| (e.effort == *effort).then_some(e.effort.clone()))
                 })
-                .unwrap_or(preset.default_reasoning_effort);
+                .unwrap_or_else(|| preset.default_reasoning_effort.clone());
 
             let effort_select_options = supported
                 .iter()
@@ -3964,27 +4420,27 @@ impl<A: Auth> ThreadActor<A> {
         }
 
         let effort_to_use = if let Some(preset) = preset {
-            if let Some(effort) = self.config.model_reasoning_effort
+            if let Some(effort) = self.config.model_reasoning_effort.as_ref()
                 && preset
                     .supported_reasoning_efforts
                     .iter()
-                    .any(|e| e.effort == effort)
+                    .any(|e| e.effort == *effort)
             {
-                Some(effort)
+                Some(effort.clone())
             } else {
-                Some(preset.default_reasoning_effort)
+                Some(preset.default_reasoning_effort.clone())
             }
         } else {
             // If the user selected a raw model string (not a known preset), don't invent a default.
             // Keep whatever was previously configured (or leave unset) so Codex can decide.
-            self.config.model_reasoning_effort
+            self.config.model_reasoning_effort.clone()
         };
 
         self.thread
             .submit(Op::ThreadSettings {
                 thread_settings: ThreadSettingsOverrides {
                     model: Some(model_to_use.clone()),
-                    effort: Some(effort_to_use),
+                    effort: Some(effort_to_use.clone()),
                     ..Default::default()
                 },
             })
@@ -4024,7 +4480,7 @@ impl<A: Auth> ThreadActor<A> {
         self.thread
             .submit(Op::ThreadSettings {
                 thread_settings: ThreadSettingsOverrides {
-                    effort: Some(Some(effort)),
+                    effort: Some(Some(effort.clone())),
                     ..Default::default()
                 },
             })
@@ -4098,7 +4554,6 @@ impl<A: Auth> ThreadActor<A> {
                             text_elements: vec![],
                         }],
                         final_output_json_schema: None,
-                        environments: None,
                         responsesapi_client_metadata: None,
                         additional_context: Default::default(),
                         thread_settings: Default::default(),
@@ -4152,7 +4607,6 @@ impl<A: Auth> ThreadActor<A> {
                     op = Op::UserInput {
                         items,
                         final_output_json_schema: None,
-                        environments: None,
                         responsesapi_client_metadata: None,
                         additional_context: Default::default(),
                         thread_settings: Default::default(),
@@ -4163,18 +4617,56 @@ impl<A: Auth> ThreadActor<A> {
             op = Op::UserInput {
                 items,
                 final_output_json_schema: None,
-                environments: None,
                 responsesapi_client_metadata: None,
                 additional_context: Default::default(),
                 thread_settings: Default::default(),
             }
         }
 
-        let submission_id = self
-            .thread
-            .submit(op.clone())
-            .await
-            .map_err(|e| Error::internal_error().data(e.to_string()))?;
+        let client_user_message_id = matches!(&op, Op::UserInput { .. })
+            .then(|| format!("codex-acp:prompt:{}", Uuid::new_v4()));
+        if client_user_message_id.is_some() {
+            let has_prompt_waiter = self.submissions.values().any(SubmissionState::is_active)
+                || self.event_projections.values().any(PromptState::is_active);
+            if has_prompt_waiter {
+                return Err(Error::invalid_params()
+                    .data("The active turn already has an ACP prompt awaiting completion."));
+            }
+        }
+
+        if let Op::UserInput { items, .. } = &op
+            && let Some(active_turn_id) = self
+                .thread
+                .try_steer_input(
+                    items.clone(),
+                    client_user_message_id
+                        .clone()
+                        .expect("user input has a client message ID"),
+                )
+                .await
+                .map_err(|error| Error::internal_error().data(error.to_string()))?
+        {
+            let thread = self.thread.clone();
+            let resolution_tx = self.resolution_tx.clone();
+            let projection = self
+                .event_projections
+                .entry(active_turn_id.clone())
+                .or_insert_with(|| {
+                    PromptState::projection(active_turn_id.clone(), thread, resolution_tx)
+                });
+            debug_assert!(projection.response_tx.is_none());
+            projection.response_tx = Some(response_tx);
+            return Ok(response_rx);
+        }
+
+        let submission_id = if let Some(client_user_message_id) = client_user_message_id.clone() {
+            self.thread
+                .submit_user_input(op.clone(), client_user_message_id)
+                .await
+        } else {
+            self.thread.submit(op.clone()).await
+        }
+        .map_err(|e| Error::internal_error().data(e.to_string()))?;
 
         info!("Submitted prompt with submission_id: {submission_id}");
         info!("Starting to wait for conversation events for submission_id: {submission_id}");
@@ -4186,6 +4678,10 @@ impl<A: Auth> ThreadActor<A> {
             response_tx,
         ));
 
+        if let Some(client_user_message_id) = client_user_message_id {
+            self.pending_prompt_client_ids_by_submission_id
+                .insert(submission_id.clone(), client_user_message_id);
+        }
         self.submissions.insert(submission_id, state);
 
         Ok(response_rx)
@@ -4479,9 +4975,15 @@ impl<A: Auth> ThreadActor<A> {
     }
 
     /// Convert and send a single ResponseItem as ACP notification(s) during replay.
-    /// Only handles tool calls - messages/reasoning are handled via EventMsg.
+    /// Inter-agent messages and tool calls are only durable as response items.
     fn replay_response_item(&self, item: &ResponseItem) {
         match item {
+            ResponseItem::AgentMessage { .. } => {
+                if let Some((message_id, payload)) = plaintext_inter_agent_message_payload(item) {
+                    self.client
+                        .send_user_message_with_id(payload, message_id.as_deref());
+                }
+            }
             // Skip Message and Reasoning - these are handled via EventMsg
             ResponseItem::Message { .. } | ResponseItem::Reasoning { .. } => {}
             ResponseItem::FunctionCall {
@@ -4513,7 +5015,9 @@ impl<A: Auth> ThreadActor<A> {
                     serde_json::from_str(arguments).ok(),
                 );
             }
-            ResponseItem::FunctionCallOutput { call_id, output } => {
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } => {
                 self.client
                     .send_tool_call_completed(call_id.clone(), serde_json::to_value(output).ok());
             }
@@ -4589,6 +5093,7 @@ impl<A: Auth> ThreadActor<A> {
                 name: _,
                 call_id,
                 output,
+                ..
             } => {
                 self.client
                     .send_tool_call_completed(call_id.clone(), Some(serde_json::json!(output)));
@@ -4610,10 +5115,12 @@ impl<A: Auth> ThreadActor<A> {
                 status,
                 revised_prompt,
                 result,
+                ..
             } => {
                 PromptState::send_replayed_image_generation(
                     &self.client,
-                    id.clone(),
+                    id.clone()
+                        .unwrap_or_else(|| generate_fallback_id("image_generation")),
                     status.clone(),
                     revised_prompt.clone(),
                     result.clone(),
@@ -4626,8 +5133,10 @@ impl<A: Auth> ThreadActor<A> {
 
     async fn handle_event(&mut self, Event { id, msg }: Event) {
         if let Some(submission) = self.submissions.get_mut(&id) {
+            self.pending_prompt_client_ids_by_submission_id.remove(&id);
             submission.handle_event(&self.client, msg).await;
         } else {
+            self.rebind_raced_steering_prompt(&id, &msg);
             let is_terminal = is_projection_terminal_event(&msg);
             let thread = self.thread.clone();
             let resolution_tx = self.resolution_tx.clone();
@@ -4639,6 +5148,49 @@ impl<A: Auth> ThreadActor<A> {
             if is_terminal {
                 self.event_projections.remove(&id);
             }
+        }
+    }
+
+    fn rebind_raced_steering_prompt(&mut self, active_turn_id: &str, event: &EventMsg) {
+        let EventMsg::UserMessage(UserMessageEvent {
+            client_id: Some(client_id),
+            ..
+        }) = event
+        else {
+            return;
+        };
+        let matching_submission_ids = self
+            .pending_prompt_client_ids_by_submission_id
+            .iter()
+            .filter(|(_submission_id, pending_client_id)| *pending_client_id == client_id)
+            .map(|(submission_id, _pending_client_id)| submission_id.clone())
+            .collect::<Vec<_>>();
+        let [submission_id] = matching_submission_ids.as_slice() else {
+            return;
+        };
+        let Some(mut submission) = self.submissions.remove(submission_id) else {
+            return;
+        };
+        self.pending_prompt_client_ids_by_submission_id
+            .remove(submission_id);
+        let Some(response_tx) = submission.take_response_tx() else {
+            return;
+        };
+        let thread = self.thread.clone();
+        let resolution_tx = self.resolution_tx.clone();
+        let projection = self
+            .event_projections
+            .entry(active_turn_id.to_string())
+            .or_insert_with(|| {
+                PromptState::projection(active_turn_id.to_string(), thread, resolution_tx)
+            });
+        if projection.response_tx.is_some() {
+            drop(
+                response_tx.send(Err(Error::invalid_params()
+                    .data("The active turn already has an ACP prompt awaiting completion."))),
+            );
+        } else {
+            projection.response_tx = Some(response_tx);
         }
     }
 }
@@ -5425,6 +5977,15 @@ fn image_generation_tool_status(status: &str) -> ToolCallStatus {
     }
 }
 
+fn extension_web_search_title(query: &str) -> String {
+    let query = query.trim();
+    if query.is_empty() {
+        "Web search".to_string()
+    } else {
+        format!("Searching for: {query}")
+    }
+}
+
 /// Generate a fallback ID using UUID (used when id is missing)
 fn generate_fallback_id(prefix: &str) -> String {
     format!("{}_{}", prefix, Uuid::new_v4())
@@ -5463,10 +6024,16 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
-    use agent_client_protocol::schema::{RequestPermissionResponse, TextContent};
+    use agent_client_protocol::schema::{
+        RequestPermissionResponse, SessionConfigKind, SessionConfigSelectOptions, TextContent,
+    };
     use codex_core::{config::ConfigOverrides, test_support::all_model_presets};
     use codex_protocol::config_types::ModeKind;
-    use codex_protocol::{ThreadId, protocol::ThreadGoal};
+    use codex_protocol::models::AgentMessageInputContent;
+    use codex_protocol::{
+        ThreadId,
+        protocol::{EnteredReviewModeEvent, ThreadGoal},
+    };
     use tokio::sync::{Mutex, Notify, mpsc::UnboundedSender};
 
     use super::*;
@@ -5498,6 +6065,810 @@ mod tests {
             .count()
     }
 
+    fn v2_inter_agent_message(id: Option<&str>, payload: &str) -> ResponseItem {
+        ResponseItem::AgentMessage {
+            id: id.map(str::to_string),
+            author: "/root".to_string(),
+            recipient: "/root/worker".to_string(),
+            content: vec![
+                AgentMessageInputContent::InputText {
+                    text:
+                        "Message Type: NEW_TASK\nTask name: /root/worker\nSender: /root\nPayload:\n"
+                            .to_string(),
+                },
+                AgentMessageInputContent::EncryptedContent {
+                    encrypted_content: payload.to_string(),
+                },
+            ],
+            internal_chat_message_metadata_passthrough: None,
+        }
+    }
+
+    fn prompt_state_for_projection() -> (PromptState, SessionClient, Arc<StubClient>) {
+        let client = Arc::new(StubClient::new());
+        let session_client =
+            SessionClient::with_client(SessionId::new("test"), client.clone(), Arc::default());
+        let thread = Arc::new(StubCodexThread::new());
+        let (resolution_tx, _resolution_rx) = mpsc::unbounded_channel();
+        (
+            PromptState::projection("submission-1".to_string(), thread, resolution_tx),
+            session_client,
+            client,
+        )
+    }
+
+    fn mcp_turn_item(
+        id: &str,
+        status: McpToolCallStatus,
+        result: Option<CallToolResult>,
+        error: Option<codex_protocol::items::McpToolCallError>,
+    ) -> TurnItem {
+        TurnItem::McpToolCall(codex_protocol::items::McpToolCallItem {
+            id: id.to_string(),
+            server: "github".to_string(),
+            tool: "search_issues".to_string(),
+            arguments: json!({ "query": "is:open" }),
+            connector_id: None,
+            mcp_app_resource_uri: None,
+            link_id: None,
+            app_name: None,
+            template_id: None,
+            action_name: None,
+            plugin_id: None,
+            status,
+            result,
+            error,
+            duration: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn reasoning_items_only_project_thought_content() -> anyhow::Result<()> {
+        let (mut prompt_state, session_client, client) = prompt_state_for_projection();
+        let thread_id = ThreadId::new();
+        let item = TurnItem::Reasoning(codex_protocol::items::ReasoningItem {
+            id: "reasoning-1".to_string(),
+            summary_text: vec!["Inspecting the implementation".to_string()],
+            raw_content: Vec::new(),
+        });
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: item.clone(),
+                    started_at_ms: 0,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item,
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::AgentReasoning(AgentReasoningEvent {
+                    text: "Inspecting the implementation".to_string(),
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        assert!(!notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCall(_) | SessionUpdate::ToolCallUpdate(_)
+        )));
+        assert!(notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::AgentThoughtChunk(_)
+        )));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn canonical_command_event_does_not_emit_status_alias() -> anyhow::Result<()> {
+        let (mut prompt_state, session_client, client) = prompt_state_for_projection();
+        let thread_id = ThreadId::new();
+        let cwd = std::env::current_dir()?;
+        let path = codex_utils_path_uri::PathUri::from_host_native_path(&cwd)?;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: TurnItem::CommandExecution(codex_protocol::items::CommandExecutionItem {
+                        id: "command-1".to_string(),
+                        process_id: None,
+                        command: vec!["echo".to_string(), "ok".to_string()],
+                        cwd: path.clone(),
+                        parsed_cmd: Vec::new(),
+                        source: Default::default(),
+                        interaction_input: None,
+                        status: codex_protocol::items::CommandExecutionStatus::InProgress,
+                        stdout: None,
+                        stderr: None,
+                        aggregated_output: None,
+                        exit_code: None,
+                        duration: None,
+                        formatted_output: None,
+                    }),
+                    started_at_ms: 0,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+                    call_id: "command-1".to_string(),
+                    process_id: None,
+                    turn_id: "turn-1".to_string(),
+                    started_at_ms: 0,
+                    command: vec!["echo".to_string(), "ok".to_string()],
+                    cwd: path,
+                    parsed_cmd: Vec::new(),
+                    source: Default::default(),
+                    interaction_input: None,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: TurnItem::CommandExecution(codex_protocol::items::CommandExecutionItem {
+                        id: "command-1".to_string(),
+                        process_id: None,
+                        command: vec!["echo".to_string(), "ok".to_string()],
+                        cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)?,
+                        parsed_cmd: Vec::new(),
+                        source: Default::default(),
+                        interaction_input: None,
+                        status: codex_protocol::items::CommandExecutionStatus::Completed,
+                        stdout: Some("ok\n".to_string()),
+                        stderr: Some(String::new()),
+                        aggregated_output: Some("ok\n".to_string()),
+                        exit_code: Some(0),
+                        duration: Some(Duration::from_millis(1)),
+                        formatted_output: Some("ok\n".to_string()),
+                    }),
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                    call_id: "command-1".to_string(),
+                    process_id: None,
+                    turn_id: "turn-1".to_string(),
+                    command: vec!["echo".to_string(), "ok".to_string()],
+                    cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)?,
+                    parsed_cmd: Vec::new(),
+                    source: Default::default(),
+                    interaction_input: None,
+                    stdout: "ok\n".to_string(),
+                    stderr: String::new(),
+                    aggregated_output: "ok\n".to_string(),
+                    exit_code: 0,
+                    duration: Duration::from_millis(1),
+                    formatted_output: "ok\n".to_string(),
+                    status: ExecCommandStatus::Completed,
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let tool_calls = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::ToolCall(tool_call) => Some(tool_call),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(tool_calls.len(), 1, "notifications={notifications:?}");
+        assert_eq!(tool_calls[0].tool_call_id.0.as_ref(), "command-1");
+        assert_eq!(tool_calls[0].title, "Running command");
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(
+                    &notification.update,
+                    SessionUpdate::ToolCallUpdate(update)
+                        if update.tool_call_id.0.as_ref() == "command-1"
+                ))
+                .count(),
+            2,
+            "notifications={notifications:?}"
+        );
+        assert!(notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCallUpdate(update)
+                if update.tool_call_id.0.as_ref() == "command-1"
+                    && update.fields.title.as_deref() != Some("Running command")
+        )));
+        assert!(!notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCall(tool_call)
+                if tool_call.tool_call_id.0.as_ref()
+                    == "codex-acp:status:item:command-1"
+        ) || matches!(
+            &notification.update,
+            SessionUpdate::ToolCallUpdate(update)
+                if update.tool_call_id.0.as_ref()
+                    == "codex-acp:status:item:command-1"
+        )));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_command_item_falls_back_when_canonical_events_are_missing() -> anyhow::Result<()>
+    {
+        let (mut prompt_state, session_client, client) = prompt_state_for_projection();
+        let thread_id = ThreadId::new();
+        let cwd = std::env::current_dir()?;
+        let item = |status| {
+            TurnItem::CommandExecution(codex_protocol::items::CommandExecutionItem {
+                id: "fallback-command-1".to_string(),
+                process_id: None,
+                command: vec!["echo".to_string(), "fallback".to_string()],
+                cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd).expect("valid cwd"),
+                parsed_cmd: Vec::new(),
+                source: Default::default(),
+                interaction_input: None,
+                status,
+                stdout: None,
+                stderr: None,
+                aggregated_output: None,
+                exit_code: None,
+                duration: None,
+                formatted_output: None,
+            })
+        };
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: item(codex_protocol::items::CommandExecutionStatus::InProgress),
+                    started_at_ms: 0,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: item(codex_protocol::items::CommandExecutionStatus::Failed),
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let fallback = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCall(tool_call) => Some(tool_call),
+                _ => None,
+            })
+            .expect("fallback tool call");
+        assert_eq!(fallback.tool_call_id.0.as_ref(), "fallback-command-1");
+        assert_eq!(fallback.title, "Running command");
+        assert_eq!(fallback.kind, ToolKind::Execute);
+        assert_eq!(fallback.status, ToolCallStatus::InProgress);
+        assert!(notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCallUpdate(update)
+                if update.tool_call_id.0.as_ref() == "fallback-command-1"
+                    && update.fields.status == Some(ToolCallStatus::Failed)
+                    && update.fields.raw_output.is_some()
+        )));
+        assert!(!notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCall(tool_call)
+                if tool_call.tool_call_id.0.as_ref().starts_with("codex-acp:status:item:")
+        )));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn late_image_view_event_enriches_fallback_without_second_tool_call() -> anyhow::Result<()>
+    {
+        let (mut prompt_state, session_client, client) = prompt_state_for_projection();
+        let thread_id = ThreadId::new();
+        let image_path = codex_utils_path_uri::PathUri::from_host_native_path(
+            &std::env::current_dir()?.join("image.png"),
+        )?;
+        let item = TurnItem::ImageView(codex_protocol::items::ImageViewItem {
+            id: "image-view-1".to_string(),
+            path: image_path.clone(),
+        });
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: item.clone(),
+                    started_at_ms: 0,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item,
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ViewImageToolCall(ViewImageToolCallEvent {
+                    call_id: "image-view-1".to_string(),
+                    path: image_path,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(
+                    &notification.update,
+                    SessionUpdate::ToolCall(tool_call)
+                        if tool_call.tool_call_id.0.as_ref() == "image-view-1"
+                ))
+                .count(),
+            1,
+            "notifications={notifications:?}"
+        );
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(
+                    &notification.update,
+                    SessionUpdate::ToolCallUpdate(update)
+                        if update.tool_call_id.0.as_ref() == "image-view-1"
+                ))
+                .count(),
+            2,
+            "notifications={notifications:?}"
+        );
+        assert!(notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCallUpdate(update)
+                if update.tool_call_id.0.as_ref() == "image-view-1"
+                    && update.fields.title.as_deref().is_some_and(|title| title.starts_with("View Image "))
+        )));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn completed_only_subagent_activity_enriches_fallback_without_second_tool_call()
+    -> anyhow::Result<()> {
+        let (mut prompt_state, session_client, client) = prompt_state_for_projection();
+        let parent_thread_id = ThreadId::new();
+        let child_thread_id = ThreadId::new();
+        let agent_path: codex_protocol::AgentPath = "/root/research/explorer"
+            .try_into()
+            .expect("valid agent path");
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id: parent_thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: TurnItem::SubAgentActivity(codex_protocol::items::SubAgentActivityItem {
+                        id: "subagent-activity-1".to_string(),
+                        kind: codex_protocol::protocol::SubAgentActivityKind::Started,
+                        agent_thread_id: child_thread_id,
+                        agent_path: agent_path.clone(),
+                    }),
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::SubAgentActivity(codex_protocol::protocol::SubAgentActivityEvent {
+                    event_id: "subagent-activity-1".to_string(),
+                    occurred_at_ms: 1,
+                    agent_thread_id: child_thread_id,
+                    agent_path,
+                    kind: codex_protocol::protocol::SubAgentActivityKind::Started,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let tool_call_id = "codex-acp:subagent:subagent-activity-1";
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(
+                    &notification.update,
+                    SessionUpdate::ToolCall(tool_call)
+                        if tool_call.tool_call_id.0.as_ref() == tool_call_id
+                ))
+                .count(),
+            1,
+            "notifications={notifications:?}"
+        );
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(
+                    &notification.update,
+                    SessionUpdate::ToolCallUpdate(update)
+                        if update.tool_call_id.0.as_ref() == tool_call_id
+                ))
+                .count(),
+            1,
+            "notifications={notifications:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn canonical_mcp_events_keep_one_visible_tool_without_status_alias() -> anyhow::Result<()>
+    {
+        let (mut prompt_state, session_client, client) = prompt_state_for_projection();
+        let thread_id = ThreadId::new();
+        let invocation = McpInvocation {
+            server: "github".to_string(),
+            tool: "search_issues".to_string(),
+            arguments: Some(json!({ "query": "is:open" })),
+        };
+        let result = CallToolResult {
+            content: Vec::new(),
+            structured_content: Some(json!({ "total": 0 })),
+            is_error: Some(false),
+            meta: None,
+        };
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: mcp_turn_item("mcp-1", McpToolCallStatus::InProgress, None, None),
+                    started_at_ms: 0,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
+                    call_id: "mcp-1".to_string(),
+                    invocation: invocation.clone(),
+                    connector_id: None,
+                    mcp_app_resource_uri: None,
+                    link_id: None,
+                    app_name: None,
+                    template_id: None,
+                    action_name: None,
+                    plugin_id: None,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: mcp_turn_item(
+                        "mcp-1",
+                        McpToolCallStatus::Completed,
+                        Some(result.clone()),
+                        None,
+                    ),
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::McpToolCallEnd(McpToolCallEndEvent {
+                    call_id: "mcp-1".to_string(),
+                    invocation,
+                    connector_id: None,
+                    mcp_app_resource_uri: None,
+                    link_id: None,
+                    app_name: None,
+                    template_id: None,
+                    action_name: None,
+                    plugin_id: None,
+                    duration: Duration::from_millis(1),
+                    result: Ok(result),
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let mcp_tool_calls = notifications
+            .iter()
+            .filter(|notification| {
+                matches!(
+                    &notification.update,
+                    SessionUpdate::ToolCall(tool_call)
+                        if tool_call.tool_call_id.0.as_ref() == "mcp-1"
+                )
+            })
+            .count();
+        assert_eq!(mcp_tool_calls, 1, "notifications={notifications:?}");
+        assert!(notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCallUpdate(update)
+                if update.tool_call_id.0.as_ref() == "mcp-1"
+                    && update.fields.status == Some(ToolCallStatus::Completed)
+        )));
+        assert!(!notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCall(tool_call)
+                if tool_call.tool_call_id.0.as_ref() == "codex-acp:status:item:mcp-1"
+        ) || matches!(
+            &notification.update,
+            SessionUpdate::ToolCallUpdate(update)
+                if update.tool_call_id.0.as_ref() == "codex-acp:status:item:mcp-1"
+        )));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_mcp_item_preserves_failure_in_fallback() -> anyhow::Result<()> {
+        let (mut prompt_state, session_client, client) = prompt_state_for_projection();
+        let thread_id = ThreadId::new();
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: mcp_turn_item(
+                        "mcp-fallback-1",
+                        McpToolCallStatus::InProgress,
+                        None,
+                        None,
+                    ),
+                    started_at_ms: 0,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: mcp_turn_item(
+                        "mcp-fallback-1",
+                        McpToolCallStatus::Failed,
+                        None,
+                        Some(codex_protocol::items::McpToolCallError {
+                            message: "MCP unavailable".to_string(),
+                        }),
+                    ),
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        assert_eq!(
+            notifications
+                .iter()
+                .filter(|notification| matches!(
+                    &notification.update,
+                    SessionUpdate::ToolCall(tool_call)
+                        if tool_call.tool_call_id.0.as_ref() == "mcp-fallback-1"
+                ))
+                .count(),
+            1,
+            "notifications={notifications:?}"
+        );
+        assert!(notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCallUpdate(update)
+                if update.tool_call_id.0.as_ref() == "mcp-fallback-1"
+                    && update.fields.status == Some(ToolCallStatus::Failed)
+                    && update.fields.raw_output.as_ref().is_some_and(|output| {
+                        output.to_string().contains("MCP unavailable")
+                    })
+        )));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn extension_web_search_uses_specialized_tool_projection() -> anyhow::Result<()> {
+        let (mut prompt_state, session_client, client) = prompt_state_for_projection();
+        let thread_id = ThreadId::new();
+        let item = codex_extension_items::web_search::WebSearchItem {
+            id: "web-extension-1".to_string(),
+            query: "Codex runtime".to_string(),
+            action: None,
+        };
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: TurnItem::Extension(ExtensionItem::WebSearch(item.clone())),
+                    started_at_ms: 0,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: TurnItem::Extension(ExtensionItem::WebSearch(item)),
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        assert!(notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCall(tool_call)
+                if tool_call.tool_call_id.0.as_ref() == "web-extension-1"
+                    && tool_call.kind == ToolKind::Fetch
+        )));
+        assert!(notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCallUpdate(update)
+                if update.tool_call_id.0.as_ref() == "web-extension-1"
+                    && update.fields.status == Some(ToolCallStatus::Completed)
+        )));
+        assert!(!notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCall(tool_call) if tool_call.title == "Extension"
+        )));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn extension_image_generation_uses_specialized_projection() -> anyhow::Result<()> {
+        let (mut prompt_state, session_client, client) = prompt_state_for_projection();
+        let thread_id = ThreadId::new();
+        let item = codex_extension_items::image_generation::ImageGenerationItem {
+            id: "image-extension-1".to_string(),
+            status: "completed".to_string(),
+            revised_prompt: Some("A blue square".to_string()),
+            result: "aW1hZ2U=".to_string(),
+            saved_path: None,
+        };
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: TurnItem::Extension(ExtensionItem::ImageGeneration(item.clone())),
+                    started_at_ms: 0,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ImageGenerationBegin(ImageGenerationBeginEvent {
+                    call_id: item.id.clone(),
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: TurnItem::Extension(ExtensionItem::ImageGeneration(item.clone())),
+                    completed_at_ms: 1,
+                }),
+            )
+            .await;
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::ImageGenerationEnd(ImageGenerationEndEvent {
+                    call_id: item.id,
+                    status: item.status,
+                    revised_prompt: item.revised_prompt,
+                    result: item.result,
+                    saved_path: item.saved_path,
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let started = notifications
+            .iter()
+            .filter(|notification| {
+                matches!(
+                    &notification.update,
+                    SessionUpdate::ToolCall(tool_call)
+                        if tool_call.tool_call_id.0.as_ref()
+                            == "codex-acp:image:image-extension-1"
+                )
+            })
+            .count();
+        let completed = notifications
+            .iter()
+            .filter(|notification| {
+                matches!(
+                    &notification.update,
+                    SessionUpdate::ToolCallUpdate(update)
+                        if update.tool_call_id.0.as_ref()
+                            == "codex-acp:image:image-extension-1"
+                            && update.fields.status == Some(ToolCallStatus::Completed)
+                )
+            })
+            .count();
+        assert_eq!(started, 1);
+        assert_eq!(completed, 1);
+        let completed_update = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ToolCallUpdate(update)
+                    if update.tool_call_id.0.as_ref() == "codex-acp:image:image-extension-1" =>
+                {
+                    Some(update)
+                }
+                _ => None,
+            })
+            .expect("image generation completion should be projected");
+        assert_eq!(
+            completed_update
+                .fields
+                .raw_input
+                .as_ref()
+                .and_then(|raw_input| raw_input.get("result"))
+                .and_then(serde_json::Value::as_str),
+            Some("aW1hZ2U=")
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_prompt() -> anyhow::Result<()> {
         let (session_id, client, _, message_tx, _handle) = setup().await?;
@@ -5514,6 +6885,194 @@ mod tests {
 
         let notifications = client.notifications.lock().unwrap();
         assert!(has_agent_message(&notifications, "Hi"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn steering_prompt_waits_on_the_active_turn_id() -> anyhow::Result<()> {
+        let (session_id, _client, thread, message_tx, _handle) = setup().await?;
+        *thread.steer_turn_id.lock().unwrap() = Some("external-turn".to_string());
+        let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::Prompt {
+            request: PromptRequest::new(session_id, vec!["Steer the active child".into()]),
+            response_tx: prompt_response_tx,
+        })?;
+        thread.op_tx.send(Event {
+            id: "external-turn".to_string(),
+            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                last_agent_message: None,
+                turn_id: "external-turn".to_string(),
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        })?;
+
+        let stop_reason = tokio::time::timeout(Duration::from_secs(1), prompt_response_rx)
+            .await???
+            .await??;
+        assert_eq!(stop_reason, StopReason::EndTurn);
+        assert!(thread.ops.lock().unwrap().is_empty());
+        drop(message_tx);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prompt_rebinds_when_an_external_turn_wins_the_submit_race() -> anyhow::Result<()> {
+        let (session_id, _client, thread, message_tx, _handle) = setup().await?;
+        let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::Prompt {
+            request: PromptRequest::new(session_id, vec!["raced-steer".into()]),
+            response_tx: prompt_response_tx,
+        })?;
+
+        let stop_reason = tokio::time::timeout(Duration::from_secs(1), prompt_response_rx)
+            .await???
+            .await??;
+        assert_eq!(stop_reason, StopReason::EndTurn);
+        assert_eq!(thread.ops.lock().unwrap().len(), 1);
+        drop(message_tx);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_same_text_event_cannot_capture_the_raced_prompt_waiter() -> anyhow::Result<()> {
+        let (session_id, _client, _thread, message_tx, _handle) = setup().await?;
+        let (prompt_response_tx, prompt_response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::Prompt {
+            request: PromptRequest::new(session_id, vec!["raced-steer-with-stale".into()]),
+            response_tx: prompt_response_tx,
+        })?;
+
+        let stop_reason = tokio::time::timeout(Duration::from_secs(1), prompt_response_rx)
+            .await???
+            .await??;
+        assert_eq!(stop_reason, StopReason::EndTurn);
+        drop(message_tx);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn groups_gpt_5_6_model_variants_in_config_options() -> anyhow::Result<()> {
+        let (_session_id, _client, _thread, message_tx, handle) = setup().await?;
+        let (response_tx, response_rx) = oneshot::channel();
+
+        message_tx.send(ThreadMessage::GetConfigOptions { response_tx })?;
+        let config_options = response_rx.await??;
+
+        let model_option = config_options
+            .iter()
+            .find(|option| option.id.0.as_ref() == "model")
+            .expect("model option should be present");
+        let SessionConfigKind::Select(model_select) = &model_option.kind else {
+            panic!("model option should be a select");
+        };
+        let SessionConfigSelectOptions::Grouped(groups) = &model_select.options else {
+            panic!("model options should be grouped");
+        };
+        let gpt_5_6_group = groups
+            .iter()
+            .find(|group| group.group.0.as_ref() == GPT_5_6_MODEL_GROUP_ID)
+            .expect("GPT-5.6 group should be present");
+
+        assert_eq!(gpt_5_6_group.name, GPT_5_6_MODEL_GROUP_NAME);
+        let mut variants = gpt_5_6_group
+            .options
+            .iter()
+            .map(|option| option.name.as_str())
+            .collect::<Vec<_>>();
+        variants.sort_unstable();
+        assert_eq!(variants, vec!["Luna", "Sol", "Terra"]);
+
+        drop(message_tx);
+        handle.await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn config_option_change_emits_updated_options() -> anyhow::Result<()> {
+        let (_session_id, client, _thread, message_tx, _handle) = setup().await?;
+        let presets = all_model_presets();
+        let initial_preset = presets.first().expect("model presets should not be empty");
+        let selected_preset = presets
+            .iter()
+            .find(|preset| {
+                preset.model != initial_preset.model
+                    && preset.supported_reasoning_efforts
+                        != initial_preset.supported_reasoning_efforts
+            })
+            .expect("a preset with different reasoning efforts should exist");
+        let expected_efforts = selected_preset
+            .supported_reasoning_efforts
+            .iter()
+            .map(|preset| preset.effort.to_string())
+            .collect::<Vec<_>>();
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+        message_tx.send(ThreadMessage::SetConfigOption {
+            config_id: SessionConfigId::new("model"),
+            value: SessionConfigOptionValue::value_id(selected_preset.id.clone()),
+            response_tx,
+        })?;
+        response_rx.await??;
+
+        tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                if client
+                    .notifications
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|notification| {
+                        matches!(notification.update, SessionUpdate::ConfigOptionUpdate(_))
+                    })
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+
+        let notifications = client.notifications.lock().unwrap();
+        let update = notifications
+            .iter()
+            .find_map(|notification| match &notification.update {
+                SessionUpdate::ConfigOptionUpdate(update) => Some(update),
+                _ => None,
+            })
+            .expect("config option update should be emitted");
+        let model_option = update
+            .config_options
+            .iter()
+            .find(|option| option.id.0.as_ref() == "model")
+            .expect("model option should be present");
+        let SessionConfigKind::Select(model_select) = &model_option.kind else {
+            panic!("model option should be a select");
+        };
+        assert_eq!(model_select.current_value.0.as_ref(), selected_preset.id);
+
+        let reasoning_option = update
+            .config_options
+            .iter()
+            .find(|option| option.id.0.as_ref() == "reasoning_effort")
+            .expect("reasoning effort option should be present");
+        let SessionConfigKind::Select(reasoning_select) = &reasoning_option.kind else {
+            panic!("reasoning effort option should be a select");
+        };
+        let SessionConfigSelectOptions::Ungrouped(reasoning_options) = &reasoning_select.options
+        else {
+            panic!("reasoning effort options should be ungrouped");
+        };
+        let actual_efforts = reasoning_options
+            .iter()
+            .map(|option| option.value.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_efforts, expected_efforts);
 
         Ok(())
     }
@@ -5587,6 +7146,74 @@ mod tests {
         }));
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn hides_live_v2_encrypted_inter_agent_message() -> anyhow::Result<()> {
+        let (mut prompt_state, session_client, client) = prompt_state_for_projection();
+
+        prompt_state
+            .handle_event(
+                &session_client,
+                EventMsg::RawResponseItem(codex_protocol::protocol::RawResponseItemEvent {
+                    item: v2_inter_agent_message(Some("amsg-live"), "gAAAAA-opaque-live"),
+                }),
+            )
+            .await;
+
+        let notifications = client.notifications.lock().unwrap();
+        assert!(
+            notifications.is_empty(),
+            "encrypted inter-agent payload must not reach the transcript: {notifications:?}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hides_replayed_v2_encrypted_inter_agent_message() -> anyhow::Result<()> {
+        let (_session_id, client, _thread, message_tx, handle) = setup().await?;
+        let (response_tx, response_rx) = oneshot::channel();
+
+        message_tx.send(ThreadMessage::ReplayHistory {
+            history: vec![
+                RolloutItem::InterAgentCommunicationMetadata { trigger_turn: true },
+                RolloutItem::ResponseItem(v2_inter_agent_message(
+                    Some("amsg-replay"),
+                    "gAAAAA-opaque-replay",
+                )),
+            ],
+            response_tx,
+        })?;
+        response_rx.await??;
+        drop(message_tx);
+        handle.await?;
+
+        let notifications = client.notifications.lock().unwrap();
+        assert!(
+            notifications.is_empty(),
+            "replayed encrypted payload must not reach the transcript: {notifications:?}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn extracts_plaintext_inter_agent_message_payload() {
+        let item = ResponseItem::AgentMessage {
+            id: None,
+            author: "/root".to_string(),
+            recipient: "/root/worker".to_string(),
+            content: vec![AgentMessageInputContent::InputText {
+                text: "Plaintext fallback".to_string(),
+            }],
+            internal_chat_message_metadata_passthrough: None,
+        };
+
+        assert_eq!(
+            plaintext_inter_agent_message_payload(&item),
+            Some((None, "Plaintext fallback".to_string()))
+        );
     }
 
     #[tokio::test]
@@ -5690,6 +7317,7 @@ mod tests {
                     codex_protocol::request_user_input::RequestUserInputEvent {
                         call_id: "input-call-1".to_string(),
                         turn_id: "turn-input-1".to_string(),
+                        auto_resolution_ms: None,
                         questions: vec![
                             codex_protocol::request_user_input::RequestUserInputQuestion {
                                 id: "choice".to_string(),
@@ -5903,10 +7531,7 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("A tiny blue square")
         );
-        assert_eq!(
-            raw_input.get("result").and_then(serde_json::Value::as_str),
-            Some("Zm9v")
-        );
+        assert_eq!(raw_input.get("result"), None);
         let content = update
             .fields
             .content
@@ -6134,33 +7759,15 @@ mod tests {
             PlanEntryStatus::InProgress
         );
         assert_eq!(plan_updates[1].entries[1].status, PlanEntryStatus::Pending);
-        let status_update = notifications
-            .iter()
-            .find_map(|notification| match &notification.update {
-                SessionUpdate::ToolCallUpdate(update)
-                    if update.tool_call_id.0.as_ref() == "codex-acp:status:item:plan-1" =>
-                {
-                    Some(update)
-                }
-                _ => None,
-            })
-            .expect("item completion should emit a status update");
-        assert_eq!(
-            status_update
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.get(CODEX_ACP_STATUS_EVENT_TYPE_KEY))
-                .and_then(serde_json::Value::as_str),
-            Some("status")
-        );
-        assert_eq!(
-            status_update
-                .meta
-                .as_ref()
-                .and_then(|meta| meta.get(CODEX_ACP_STATUS_KIND_KEY))
-                .and_then(serde_json::Value::as_str),
-            Some("item_activity")
-        );
+        assert!(!notifications.iter().any(|notification| matches!(
+            &notification.update,
+            SessionUpdate::ToolCall(tool_call)
+                if tool_call.tool_call_id.0.as_ref() == "codex-acp:status:item:plan-1"
+        ) || matches!(
+            &notification.update,
+            SessionUpdate::ToolCallUpdate(update)
+                if update.tool_call_id.0.as_ref() == "codex-acp:status:item:plan-1"
+        )));
 
         Ok(())
     }
@@ -6183,11 +7790,13 @@ mod tests {
         prompt_state
             .handle_event(
                 &session_client,
-                EventMsg::EnteredReviewMode(ReviewRequest {
+                EventMsg::EnteredReviewMode(EnteredReviewModeEvent {
                     user_facing_hint: Some("custom review".to_string()),
                     target: ReviewTarget::BaseBranch {
                         branch: "main".to_string(),
                     },
+                    turn_id: None,
+                    item_id: None,
                 }),
             )
             .await;
@@ -6371,7 +7980,6 @@ mod tests {
                     text_elements: vec![]
                 }],
                 final_output_json_schema: None,
-                environments: None,
                 responsesapi_client_metadata: None,
                 additional_context: Default::default(),
                 thread_settings: Default::default(),
@@ -6614,9 +8222,12 @@ mod tests {
     impl ModelsManagerImpl for StubModelsManager {
         fn get_model(
             &self,
-            _model_id: &Option<String>,
+            model_id: &Option<String>,
         ) -> Pin<Box<dyn Future<Output = String> + Send + '_>> {
-            Box::pin(async { all_model_presets()[0].to_owned().id })
+            let model_id = model_id.clone();
+            Box::pin(
+                async move { model_id.unwrap_or_else(|| all_model_presets()[0].to_owned().id) },
+            )
         }
 
         fn list_models(&self) -> Pin<Box<dyn Future<Output = Vec<ModelPreset>> + Send + '_>> {
@@ -6627,6 +8238,8 @@ mod tests {
     struct StubCodexThread {
         current_id: AtomicUsize,
         active_prompt_id: std::sync::Mutex<Option<String>>,
+        steer_turn_id: std::sync::Mutex<Option<String>>,
+        next_client_user_message_id: std::sync::Mutex<Option<String>>,
         ops: std::sync::Mutex<Vec<Op>>,
         op_tx: mpsc::UnboundedSender<Event>,
         op_rx: Mutex<mpsc::UnboundedReceiver<Event>>,
@@ -6638,6 +8251,8 @@ mod tests {
             StubCodexThread {
                 current_id: AtomicUsize::new(0),
                 active_prompt_id: std::sync::Mutex::default(),
+                steer_turn_id: std::sync::Mutex::default(),
+                next_client_user_message_id: std::sync::Mutex::default(),
                 ops: std::sync::Mutex::default(),
                 op_tx,
                 op_rx: Mutex::new(op_rx),
@@ -6646,6 +8261,24 @@ mod tests {
     }
 
     impl CodexThreadImpl for StubCodexThread {
+        fn try_steer_input(
+            &self,
+            _input: Vec<UserInput>,
+            _client_user_message_id: String,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<String>, CodexErr>> + Send + '_>> {
+            let turn_id = self.steer_turn_id.lock().unwrap().clone();
+            Box::pin(async move { Ok(turn_id) })
+        }
+
+        fn submit_user_input(
+            &self,
+            op: Op,
+            client_user_message_id: String,
+        ) -> Pin<Box<dyn Future<Output = Result<String, CodexErr>> + Send + '_>> {
+            *self.next_client_user_message_id.lock().unwrap() = Some(client_user_message_id);
+            self.submit(op)
+        }
+
         fn submit(
             &self,
             op: Op,
@@ -6654,6 +8287,8 @@ mod tests {
                 let id = self
                     .current_id
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let client_user_message_id =
+                    self.next_client_user_message_id.lock().unwrap().take();
 
                 self.ops.lock().unwrap().push(op.clone());
 
@@ -6668,7 +8303,62 @@ mod tests {
                             })
                             .join("\n");
 
-                        if prompt == "parallel-exec" {
+                        if prompt == "raced-steer" || prompt == "raced-steer-with-stale" {
+                            if prompt == "raced-steer-with-stale" {
+                                self.op_tx
+                                    .send(Event {
+                                        id: "external-stale".to_string(),
+                                        msg: EventMsg::UserMessage(UserMessageEvent {
+                                            client_id: Some("stale-client-id".to_string()),
+                                            message: prompt.clone(),
+                                            images: None,
+                                            image_details: Vec::new(),
+                                            local_images: Vec::new(),
+                                            local_image_details: Vec::new(),
+                                            text_elements: Vec::new(),
+                                        }),
+                                    })
+                                    .unwrap();
+                                self.op_tx
+                                    .send(Event {
+                                        id: "external-stale".to_string(),
+                                        msg: EventMsg::TurnAborted(TurnAbortedEvent {
+                                            turn_id: Some("external-stale".to_string()),
+                                            reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+                                            completed_at: None,
+                                            duration_ms: None,
+                                        }),
+                                    })
+                                    .unwrap();
+                            }
+                            let active_turn_id = "external-race".to_string();
+                            self.op_tx
+                                .send(Event {
+                                    id: active_turn_id.clone(),
+                                    msg: EventMsg::UserMessage(UserMessageEvent {
+                                        client_id: client_user_message_id,
+                                        message: prompt,
+                                        images: None,
+                                        image_details: Vec::new(),
+                                        local_images: Vec::new(),
+                                        local_image_details: Vec::new(),
+                                        text_elements: Vec::new(),
+                                    }),
+                                })
+                                .unwrap();
+                            self.op_tx
+                                .send(Event {
+                                    id: active_turn_id.clone(),
+                                    msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                                        last_agent_message: None,
+                                        turn_id: active_turn_id,
+                                        completed_at: None,
+                                        duration_ms: None,
+                                        time_to_first_token_ms: None,
+                                    }),
+                                })
+                                .unwrap();
+                        } else if prompt == "parallel-exec" {
                             // Emit interleaved exec events: Begin A, Begin B, End A, End B
                             let turn_id = id.to_string();
                             let cwd = std::env::current_dir().unwrap();
@@ -6685,7 +8375,7 @@ mod tests {
                                 process_id: None,
                                 turn_id: turn_id.clone(),
                                 command: vec!["echo".into(), "a".into()],
-                                cwd: cwd.clone().try_into()?,
+                                cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)?,
                                 parsed_cmd: vec![ParsedCommand::Unknown {
                                     cmd: "echo a".into(),
                                 }],
@@ -6698,7 +8388,7 @@ mod tests {
                                 process_id: None,
                                 turn_id: turn_id.clone(),
                                 command: vec!["echo".into(), "b".into()],
-                                cwd: cwd.clone().try_into()?,
+                                cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)?,
                                 parsed_cmd: vec![ParsedCommand::Unknown {
                                     cmd: "echo b".into(),
                                 }],
@@ -6711,7 +8401,7 @@ mod tests {
                                 process_id: None,
                                 turn_id: turn_id.clone(),
                                 command: vec!["echo".into(), "a".into()],
-                                cwd: cwd.clone().try_into()?,
+                                cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)?,
                                 parsed_cmd: vec![],
                                 source: Default::default(),
                                 interaction_input: None,
@@ -6729,7 +8419,7 @@ mod tests {
                                 process_id: None,
                                 turn_id: turn_id.clone(),
                                 command: vec!["echo".into(), "b".into()],
-                                cwd: cwd.clone().try_into()?,
+                                cwd: codex_utils_path_uri::PathUri::from_host_native_path(&cwd)?,
                                 parsed_cmd: vec![],
                                 source: Default::default(),
                                 interaction_input: None,
@@ -6819,6 +8509,7 @@ mod tests {
                                         call_id: "call-id".to_string(),
                                         approval_id: Some("approval-id".to_string()),
                                         turn_id: id.to_string(),
+                                        environment_id: None,
                                         started_at_ms: 0,
                                         command: vec!["echo".to_string(), "hi".to_string()],
                                         cwd: std::env::current_dir().unwrap().try_into().unwrap(),
@@ -6916,13 +8607,20 @@ mod tests {
                         self.op_tx
                             .send(Event {
                                 id: id.to_string(),
-                                msg: EventMsg::EnteredReviewMode(review_request.clone()),
+                                msg: EventMsg::EnteredReviewMode(EnteredReviewModeEvent {
+                                    target: review_request.target.clone(),
+                                    user_facing_hint: review_request.user_facing_hint.clone(),
+                                    turn_id: Some(id.to_string()),
+                                    item_id: None,
+                                }),
                             })
                             .unwrap();
                         self.op_tx
                             .send(Event {
                                 id: id.to_string(),
                                 msg: EventMsg::ExitedReviewMode(ExitedReviewModeEvent {
+                                    turn_id: Some(id.to_string()),
+                                    item_id: None,
                                     review_output: Some(ReviewOutputEvent {
                                         findings: vec![],
                                         overall_correctness: String::new(),
@@ -6950,6 +8648,7 @@ mod tests {
                     }
                     Op::ExecApproval { .. }
                     | Op::ResolveElicitation { .. }
+                    | Op::ThreadSettings { .. }
                     | Op::UserInputAnswer { .. }
                     | Op::RequestPermissionsResponse { .. }
                     | Op::PatchApproval { .. }
@@ -7152,6 +8851,7 @@ mod tests {
                 call_id: "call-id".to_string(),
                 approval_id: Some("approval-id".to_string()),
                 turn_id: "turn-id".to_string(),
+                environment_id: None,
                 started_at_ms: 0,
                 command: vec!["echo".to_string(), "hi".to_string()],
                 cwd: std::env::current_dir()?.try_into()?,
@@ -7409,6 +9109,7 @@ mod tests {
                     call_id: "call-id".to_string(),
                     approval_id: Some("approval-id".to_string()),
                     turn_id: "turn-id".to_string(),
+                    environment_id: None,
                     started_at_ms: 0,
                     command: vec!["echo".to_string(), "hi".to_string()],
                     cwd: std::env::current_dir()?.try_into()?,
@@ -7485,6 +9186,7 @@ mod tests {
                     call_id: "call-id".to_string(),
                     approval_id: Some("approval-id".to_string()),
                     turn_id: "turn-id".to_string(),
+                    environment_id: None,
                     started_at_ms: 0,
                     command: vec!["echo".to_string(), "hi".to_string()],
                     cwd: std::env::current_dir()?.try_into()?,
