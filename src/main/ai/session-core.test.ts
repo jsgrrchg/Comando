@@ -8,11 +8,98 @@ import {
     isPathInsideRoot,
     isSamePath,
     normalizeAdditionalRoots,
+    normalizeAiSessionHierarchy,
+    normalizeRestoredAiSessionSnapshot,
     resolveSessionScopedPath,
     setConfigOptionOnSnapshot,
     setManualTitleOnSnapshot,
     setRuntimeTitleOnSnapshot,
 } from "./session-core";
+
+describe("restored Codex activity normalization", () => {
+    it("repairs a self-referential root snapshot without preserving its derived close state", () => {
+        const snapshot = createSnapshot({
+            closedAt: "2026-07-10T10:00:00.000Z",
+            manualTitle: "Original parent title",
+            parentSessionId: "session-codex",
+            sessionId: "session-codex",
+            title: "root",
+        });
+
+        expect(normalizeAiSessionHierarchy(snapshot)).toMatchObject({
+            closedAt: null,
+            parentSessionId: null,
+            sessionId: "session-codex",
+            title: "Original parent title",
+        });
+        expect(normalizeRestoredAiSessionSnapshot(snapshot)).toMatchObject({
+            closedAt: null,
+            parentSessionId: null,
+        });
+    });
+
+    it("replaces legacy aliases with the canonical activity and removes reasoning", () => {
+        const activity = (overrides: Partial<AiSessionSnapshot["toolActivity"][number]>) => ({
+            action: null,
+            createdAt: "2026-07-09T10:00:00.000Z",
+            diffs: [],
+            exitCode: null,
+            id: "activity",
+            kind: "status",
+            locations: [],
+            rawInputJson: null,
+            rawOutputJson: null,
+            sessionId: "session-codex",
+            status: "completed" as const,
+            summary: null,
+            terminalOutput: null,
+            title: "Activity",
+            updatedAt: "2026-07-09T10:00:01.000Z",
+            ...overrides,
+        });
+        const snapshot = createSnapshot({
+            sessionId: "session-codex",
+            toolActivity: [
+                activity({
+                    id: "codex-acp:status:item:command-1",
+                    terminalOutput: "legacy output",
+                    title: "Running command",
+                }),
+                activity({
+                    createdAt: "2026-07-09T10:00:02.000Z",
+                    diffs: [{} as never],
+                    id: "command-1",
+                    kind: "execute",
+                    title: "Read Cargo.toml",
+                    updatedAt: "2026-07-09T10:00:03.000Z",
+                }),
+                activity({
+                    id: "codex-acp:status:item:reasoning-1",
+                    title: "Reasoning",
+                }),
+                activity({
+                    id: "codex-acp:status:item:sleep-1",
+                    title: "Waiting",
+                }),
+            ],
+        });
+
+        const normalized = normalizeRestoredAiSessionSnapshot(snapshot);
+
+        expect(normalized.toolActivity).toHaveLength(2);
+        expect(normalized.toolActivity[0]).toMatchObject({
+            createdAt: "2026-07-09T10:00:00.000Z",
+            id: "command-1",
+            terminalOutput: "legacy output",
+            title: "Read Cargo.toml",
+            updatedAt: "2026-07-09T10:00:03.000Z",
+        });
+        expect(normalized.toolActivity[1]?.id).toBe(
+            "codex-acp:status:item:sleep-1",
+        );
+        expect(normalizeRestoredAiSessionSnapshot(normalized)).toEqual(normalized);
+    });
+});
 
 describe("session-core model reconciliation", () => {
     it("merges runtime models into stale model config options", () => {

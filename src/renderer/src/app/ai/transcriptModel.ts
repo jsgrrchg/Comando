@@ -68,6 +68,7 @@ interface TranscriptMergeOptions {
 
 const PLAN_ENTRY_ID = "plan:active";
 const STATUS_ENTRY_ID = "status:active-turn";
+const OPAQUE_ENCRYPTED_MESSAGE_PATTERN = /^gAAAAA[A-Za-z0-9_-]{40,}={0,2}$/;
 
 export function createEmptyAiSessionTranscriptModel(): AiSessionTranscriptModel {
     return buildAiSessionTranscriptModel({
@@ -82,6 +83,9 @@ export function buildAiSessionTranscriptModel(
     const entries: AiSessionTranscriptEntry[] = [];
 
     for (const message of input.messages) {
+        if (isOpaqueEncryptedInterAgentMessage(message)) {
+            continue;
+        }
         entries.push(createMessageTranscriptEntry(message));
     }
 
@@ -341,6 +345,18 @@ function createMessageTranscriptEntry(
         message,
         updatedAt: message.createdAt,
     };
+}
+
+function isOpaqueEncryptedInterAgentMessage(message: AiMessage): boolean {
+    if (
+        message.kind !== "user" ||
+        (!message.id.startsWith("acp:user:") &&
+            !message.id.startsWith("amsg_"))
+    ) {
+        return false;
+    }
+
+    return OPAQUE_ENCRYPTED_MESSAGE_PATTERN.test(message.content.trim());
 }
 
 function createToolTranscriptEntry(

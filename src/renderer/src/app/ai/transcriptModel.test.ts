@@ -134,6 +134,42 @@ describe("transcriptModel", () => {
         expect(transcript.lastTurnStartedMessageId).toBe("status:active-turn");
     });
 
+    it("hides persisted encrypted inter-agent transport payloads", () => {
+        const encryptedPayload =
+            "gAAAAABqUCwGM4iUSPpzoPf1Tn5y6lh72L_8dnVbmdOR42YZ9KRaUwUBCY14DMmdBOIOmjd2HW3l6SSCckLSjJ6KebNzsXzG9m8pajAOwQ2UxYazsFGhYP6jzx7KqOsnwWhMaOxcXDla5KQQwB66JlYo6rFxvUoIfpBeLEJY6ErSJ_KAjNlUkoU=";
+        const transcript = buildAiSessionTranscriptModel({
+            messages: [
+                createMessage({
+                    content: encryptedPayload,
+                    id: "acp:user:2",
+                    kind: "user",
+                }),
+                createMessage({
+                    content: "Visible plaintext task",
+                    id: "acp:user:3",
+                    kind: "user",
+                }),
+                createMessage({
+                    content: encryptedPayload,
+                    id: "local-user-message",
+                    kind: "user",
+                }),
+            ],
+            toolActivity: [],
+        });
+
+        expect(getAiSessionTranscriptMessages(transcript)).toEqual([
+            expect.objectContaining({
+                content: "Visible plaintext task",
+                id: "acp:user:3",
+            }),
+            expect.objectContaining({
+                content: encryptedPayload,
+                id: "local-user-message",
+            }),
+        ]);
+    });
+
     it("upserts streamed message deltas by message id", () => {
         let transcript = createEmptyAiSessionTranscriptModel();
 
