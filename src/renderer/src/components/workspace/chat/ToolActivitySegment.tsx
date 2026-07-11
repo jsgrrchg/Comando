@@ -134,6 +134,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     const canExpand = segment.entries.length > 0;
     const contentId = `${segment.id}:activity`;
     const headline = getSegmentHeadline(segment, isCurrentTurnTail);
+    const isWorkedSegment = headline.startsWith("Worked ·");
     const latestActivityLabel = getLatestActivityLabel(segment);
     const changeStats = useMemo(
         () => deriveActivitySegmentChangeStats(segment.entries),
@@ -150,9 +151,19 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     const accessibleLabel = `${expanded ? "Hide" : "Show"} full activity: ${headline}.${accessibleChangeSummary} ${activityState}.`;
     const headerContent = (
         <>
+            {isWorkedSegment ? (
+                <span
+                    aria-hidden="true"
+                    className="shrink-0 self-start leading-4 text-text-secondary"
+                >
+                    {">"}
+                </span>
+            ) : null}
             <span className="min-w-0 flex-1">
                 <span
-                    className="block truncate text-[11px] font-medium leading-4"
+                    className={`block truncate text-[11px] leading-4 ${
+                        isWorkedSegment ? "font-bold" : "font-medium"
+                    }`}
                     title={headline}
                 >
                     {headline}
