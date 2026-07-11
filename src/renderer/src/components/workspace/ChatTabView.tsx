@@ -17,7 +17,6 @@ import type {
     AiImageAttachment,
     AiUserInputRequest,
     AiSessionSnapshot,
-    AiToolCardExpansionMode,
     ProjectTreeNode,
 } from "@shared/ipc";
 import {
@@ -101,8 +100,8 @@ import {
     serializePromptWithContexts,
 } from "./chat/promptContextReferences";
 import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
+import { ToolActivitySegment } from "./chat/ToolActivitySegment";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
-import { isEditedFileToolActivity } from "./chat/toolActivityKinds";
 import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
@@ -497,7 +496,9 @@ export const ChatTabView = memo(function ChatTabView({
         : null;
     const runtimeDisplayName = getRuntimeDisplayName(tab.runtimeId);
     const closedSubagentMessage =
-        snapshot.parentSessionId && snapshot.closedAt
+        snapshot.parentSessionId &&
+        snapshot.parentSessionId !== snapshot.sessionId &&
+        snapshot.closedAt
             ? CLOSED_SUBAGENT_MESSAGE
             : null;
     const parentSessionId =
@@ -848,7 +849,7 @@ export const ChatTabView = memo(function ChatTabView({
         pendingReviewCount,
         queuedPrompts: queuedPrompts.length,
         sessionId: tab.sessionId,
-        timelineRows: timelineModel.orderedAtomicRows.length,
+        timelineRows: timelineModel.orderedRows.length,
     });
 
     const isNearBottom = useCallback((el: HTMLDivElement) => {
@@ -1836,10 +1837,9 @@ export const ChatTabView = memo(function ChatTabView({
                     chatFontSize={aiChatSettings.chatFontSize}
                     elapsed={elapsed}
                     covered={composerExpanded}
-                    historyRows={timelineModel.atomicHistoryRows}
+                    historyRows={timelineModel.historyRows}
                     isStreaming={isStreaming}
-                    liveTailRow={timelineModel.atomicLiveTailRow}
-                    toolCardExpansionMode={aiChatSettings.toolCardExpansionMode}
+                    liveTailRow={timelineModel.liveTailRow}
                     onAddFileReferenceToChat={
                         handleAddResolvedFileReferenceToChat
                     }
@@ -1910,6 +1910,7 @@ export const ChatTabView = memo(function ChatTabView({
 
                             {pendingReviewCount > 0 ? (
                                 <EditedFilesBufferPanel
+                                    defaultCollapsed
                                     diffZoom={diffZoom}
                                     items={pendingReviewItems}
                                     onKeepAll={handleKeepAllPendingReview}
@@ -2305,34 +2306,6 @@ function ImageAttachmentChip(props: {
     );
 }
 
-function isEditedFileToolRow(row: ChatTimelineRow): boolean {
-    return (
-        row.kind === "tool" &&
-        isEditedFileToolActivity(
-            row.reviewEntry.activity,
-            row.reviewEntry.trackedFiles,
-        )
-    );
-}
-
-function getLatestEditedFileToolRowId(
-    historyRows: readonly ChatTimelineRow[],
-    liveTailRow: ChatTimelineRow | null,
-): string | null {
-    if (liveTailRow && isEditedFileToolRow(liveTailRow)) {
-        return liveTailRow.id;
-    }
-
-    for (let index = historyRows.length - 1; index >= 0; index -= 1) {
-        const row = historyRows[index];
-        if (row && isEditedFileToolRow(row)) {
-            return row.id;
-        }
-    }
-
-    return null;
-}
-
 type ChatTimelineProps = {
     readonly canRenderFileReference?: (
         rawReference: string,
@@ -2379,7 +2352,6 @@ type ChatTimelineProps = {
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly timelineContentRef: RefObject<HTMLDivElement | null>;
-    readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
 };
 
@@ -2412,17 +2384,8 @@ const ChatTimeline = memo(function ChatTimeline({
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
     timelineContentRef,
-    toolCardExpansionMode,
     worktreeId,
 }: ChatTimelineProps) {
-    const latestStreamingEditedFileToolRowId = useMemo(
-        () =>
-            isStreaming
-                ? getLatestEditedFileToolRowId(historyRows, liveTailRow)
-                : null,
-        [historyRows, isStreaming, liveTailRow],
-    );
-
     useRenderProbe("ChatTimeline", {
         historyRows: historyRows.length,
         isStreaming,
@@ -2478,9 +2441,6 @@ const ChatTimeline = memo(function ChatTimeline({
                             onVirtualResizeStart={onVirtualResizeStart}
                             projectId={projectId}
                             resolveFileReference={resolveFileReference}
-                            latestStreamingEditedFileToolRowId={
-                                latestStreamingEditedFileToolRowId
-                            }
                             scrollRef={scrollRef}
                             shouldPreserveVirtualMeasureAnchor={
                                 shouldPreserveVirtualMeasureAnchor
@@ -2488,7 +2448,6 @@ const ChatTimeline = memo(function ChatTimeline({
                             shouldPreserveVirtualResizeAnchor={
                                 shouldPreserveVirtualResizeAnchor
                             }
-                            toolCardExpansionMode={toolCardExpansionMode}
                             worktreeId={worktreeId}
                         />
                         <ChatTimelineLiveTail
@@ -2510,10 +2469,6 @@ const ChatTimeline = memo(function ChatTimeline({
                             projectId={projectId}
                             resolveFileReference={resolveFileReference}
                             row={liveTailRow}
-                            latestStreamingEditedFileToolRowId={
-                                latestStreamingEditedFileToolRowId
-                            }
-                            toolCardExpansionMode={toolCardExpansionMode}
                             worktreeId={worktreeId}
                         />
                         {isStreaming ? (
@@ -2610,11 +2565,9 @@ type ChatTimelineHistoryProps = {
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
-    readonly latestStreamingEditedFileToolRowId: string | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
-    readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
 };
 
@@ -2635,21 +2588,13 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     onVirtualResizeStart,
     projectId,
     resolveFileReference,
-    latestStreamingEditedFileToolRowId,
     scrollRef,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
-    toolCardExpansionMode,
     worktreeId,
 }: ChatTimelineHistoryProps) {
     const renderRow = useCallback(
-        ({
-            isLatestStreamingTool,
-            row,
-        }: {
-            readonly isLatestStreamingTool: boolean;
-            readonly row: ChatTimelineRow;
-        }) => (
+        ({ row }: { readonly row: ChatTimelineRow }) => (
             // The list `key` is owned by each call site (the virtual list keys
             // its row wrapper; the non-virtual path keys via Fragment), so this
             // renderer only describes a row's content.
@@ -2666,8 +2611,6 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
                 projectId={projectId}
                 resolveFileReference={resolveFileReference}
                 row={row}
-                isLatestStreamingTool={isLatestStreamingTool}
-                toolCardExpansionMode={toolCardExpansionMode}
                 worktreeId={worktreeId}
             />
         ),
@@ -2683,7 +2626,6 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             onRevealFileReference,
             projectId,
             resolveFileReference,
-            toolCardExpansionMode,
             worktreeId,
         ],
     );
@@ -2693,9 +2635,6 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             historyRows={historyRows}
-            latestStreamingEditedFileToolRowId={
-                latestStreamingEditedFileToolRowId
-            }
             onVirtualRangeChange={onVirtualRangeChange}
             onVirtualResizeEnd={onVirtualResizeEnd}
             onVirtualResizeAutoFollow={onVirtualResizeAutoFollow}
@@ -2708,7 +2647,6 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             shouldPreserveVirtualResizeAnchor={
                 shouldPreserveVirtualResizeAnchor
             }
-            toolCardExpansionMode={toolCardExpansionMode}
         />
     );
 });
@@ -2745,8 +2683,6 @@ type ChatTimelineLiveTailProps = {
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly row: ChatTimelineRow | null;
-    readonly latestStreamingEditedFileToolRowId: string | null;
-    readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
 };
 
@@ -2763,8 +2699,6 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
     projectId,
     resolveFileReference,
     row,
-    latestStreamingEditedFileToolRowId,
-    toolCardExpansionMode,
     worktreeId,
 }: ChatTimelineLiveTailProps) {
     if (!row) {
@@ -2785,11 +2719,8 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
             onRevealFileReference={onRevealFileReference}
             projectId={projectId}
             resolveFileReference={resolveFileReference}
+            isCurrentTurnTail={true}
             row={row}
-            isLatestStreamingTool={
-                row.id === latestStreamingEditedFileToolRowId
-            }
-            toolCardExpansionMode={toolCardExpansionMode}
             worktreeId={worktreeId}
         />
     );
@@ -2804,6 +2735,7 @@ type ChatTimelineRowViewProps = {
     ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
+    readonly isCurrentTurnTail?: boolean;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -2827,8 +2759,6 @@ type ChatTimelineRowViewProps = {
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly row: ChatTimelineRow;
-    readonly isLatestStreamingTool: boolean;
-    readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly worktreeId: string | null;
 };
 
@@ -2836,6 +2766,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     canRenderFileReference,
     chatFontFamily,
     chatFontSize,
+    isCurrentTurnTail = false,
     onAddFileReferenceToChat,
     onOpenFile,
     onOpenImage,
@@ -2845,8 +2776,6 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     projectId,
     resolveFileReference,
     row,
-    isLatestStreamingTool,
-    toolCardExpansionMode,
     worktreeId,
 }: ChatTimelineRowViewProps) {
     if (row.kind === "message") {
@@ -2868,7 +2797,21 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     }
 
     if (row.kind === "activity-segment") {
-        return null;
+        return (
+            <div className="min-w-0 w-full">
+                <ToolActivitySegment
+                    canRenderFileReference={canRenderFileReference}
+                    isCurrentTurnTail={isCurrentTurnTail}
+                    onOpenFile={onOpenFile}
+                    onOpenFileReference={onOpenResolvedFileReference}
+                    onOpenSession={onOpenSession}
+                    projectId={projectId}
+                    resolveFileReference={resolveFileReference}
+                    segment={row}
+                    worktreeId={worktreeId}
+                />
+            </div>
+        );
     }
 
     return (
@@ -2876,8 +2819,6 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
             <ToolActivityItem
                 activity={row.reviewEntry.activity}
                 canRenderFileReference={canRenderFileReference}
-                expansionMode={toolCardExpansionMode}
-                isLatestStreamingTool={isLatestStreamingTool}
                 onOpenFile={onOpenFile}
                 onOpenFileReference={onOpenResolvedFileReference}
                 onOpenSession={onOpenSession}

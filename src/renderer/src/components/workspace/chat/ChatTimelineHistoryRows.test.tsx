@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AiSessionSnapshot } from "@shared/ipc";
+import type { AiSessionSnapshot, AiToolActivity } from "@shared/ipc";
 import { useShellStore } from "@renderer/app/store/shell-store";
 
 import type { ChatTimelineRow } from "./chatTimelineModel";
@@ -148,17 +148,64 @@ function createRows(count: number): ChatTimelineRow[] {
     });
 }
 
+function createSegmentRow(): ChatTimelineRow {
+    const activity: AiToolActivity = {
+        action: null,
+        createdAt: "2026-04-14T00:00:00.000Z",
+        diffs: [],
+        exitCode: null,
+        id: "read-1",
+        kind: "read",
+        locations: [],
+        rawInputJson: JSON.stringify({ file_path: "src/app.ts" }),
+        rawOutputJson: null,
+        sessionId: "session-1",
+        status: "completed",
+        summary: null,
+        terminalOutput: null,
+        title: "Read src/app.ts",
+        updatedAt: "2026-04-14T00:00:00.000Z",
+    };
+
+    return {
+        entries: [
+            {
+                policy: "groupable",
+                reviewEntry: {
+                    activity,
+                    hasPendingTrackedFiles: false,
+                    pendingTrackedFiles: [],
+                    trackedFiles: [],
+                },
+            },
+        ],
+        id: "activity-segment:session-1:read-1",
+        kind: "activity-segment",
+        summary: {
+            actionCount: 1,
+            changeCount: 0,
+            changedFileCount: 0,
+            commandCount: 0,
+            failureCount: 0,
+            fileCount: 1,
+            hiddenActivityCount: 1,
+            isInProgress: false,
+            latestActivityId: "read-1",
+            latestTitle: "Read src/app.ts",
+            searchCount: 0,
+            startedAt: activity.createdAt,
+            updatedAt: activity.updatedAt,
+        },
+    };
+}
+
 function renderHistoryRows(historyRows: readonly ChatTimelineRow[]) {
     return renderToStaticMarkup(
         <ChatTimelineHistoryRows
             historyRows={historyRows}
-            latestStreamingEditedFileToolRowId={null}
             onVirtualRangeChange={() => {}}
-            renderRow={({ isLatestStreamingTool, row }) => (
+            renderRow={({ row }) => (
                 <div
-                    data-latest-streaming-tool={
-                        isLatestStreamingTool ? "true" : "false"
-                    }
                     data-row-id={row.id}
                     key={row.id}
                 >
@@ -166,7 +213,6 @@ function renderHistoryRows(historyRows: readonly ChatTimelineRow[]) {
                 </div>
             )}
             scrollRef={{ current: null }}
-            toolCardExpansionMode="collapsed"
         />,
     );
 }
@@ -198,14 +244,12 @@ function mountHistoryRows(
         root.render(
             <ChatTimelineHistoryRows
                 historyRows={historyRows}
-                latestStreamingEditedFileToolRowId={null}
                 renderRow={({ row }) => (
                     <div data-row-id={row.id} key={row.id}>
                         {row.id}
                     </div>
                 )}
                 scrollRef={scrollRef}
-                toolCardExpansionMode="collapsed"
             />,
         );
     });
@@ -322,6 +366,25 @@ describe("ChatTimelineHistoryRows", () => {
             `message:message-${CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1}`,
         );
         expect(markup.match(/padding-bottom:8px/g)).toHaveLength(1);
+    });
+
+    it("passes activity segments through the virtual list with their stable id", () => {
+        const rows = [
+            createSegmentRow(),
+            ...createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1),
+        ];
+        const markup = renderHistoryRows(rows);
+        const firstCall = measuredVirtualListMock.mock.calls[0]?.[0];
+
+        expect(firstCall).toMatchObject({
+            firstEstimate: 48,
+            firstKey: "activity-segment:session-1:read-1",
+            itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
+        });
+        expect(firstCall?.firstMeasurementKey).toContain(
+            "activity-segment:session-1:read-1",
+        );
+        expect(markup).toContain("activity-segment:session-1:read-1");
     });
 
     it("freezes content width during panel resize and re-syncs on release", () => {

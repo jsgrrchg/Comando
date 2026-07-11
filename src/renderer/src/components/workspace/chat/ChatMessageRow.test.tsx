@@ -4,9 +4,35 @@ import { describe, expect, it } from "vitest";
 
 import type { AiMessage } from "@shared/ipc";
 
-import { ChatMessageRow } from "./ChatMessageRow";
+import { ChatMessageRow, formatChatMessageTime } from "./ChatMessageRow";
 
 describe("ChatMessageRow generated images", () => {
+    it("renders indented user messages with time and copy metadata", () => {
+        const markup = renderMessage({
+            content: "Please update the activity rail.",
+            createdAt: "2026-04-20T12:00:00",
+            kind: "user",
+        });
+
+        expect(markup).toContain('data-user-message="true"');
+        expect(markup).toContain("user-message-layout min-w-0 w-full");
+        expect(markup).toContain("user-message-bubble ml-auto");
+        expect(markup).toContain("w-[70%] max-w-full");
+        expect(markup).toContain('data-user-message-metadata="true"');
+        expect(markup).toContain("items-center justify-end gap-1.5");
+        expect(markup).toContain('dateTime="2026-04-20T12:00:00"');
+        expect(markup).toContain("12:00 PM");
+        expect(markup).toContain('aria-label="Copy message"');
+        expect(markup).toContain("var(--color-accent) 5%");
+    });
+
+    it("formats message times in the requested locale and ignores invalid dates", () => {
+        expect(
+            formatChatMessageTime("2026-04-20T12:00:00", "en-US"),
+        ).toBe("12:00 PM");
+        expect(formatChatMessageTime("invalid", "en-US")).toBeNull();
+    });
+
     it("renders assistant text in a full-width container", () => {
         const markup = renderMessage({
             content: "A normal assistant paragraph should use the available width.",

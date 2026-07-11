@@ -524,7 +524,6 @@ function buildToolActivitySegmentSummary(
     let changeCount = 0;
     let commandCount = 0;
     let failureCount = 0;
-    let hiddenActivityCount = 0;
     let searchCount = 0;
     let updatedAt =
         entries[0]?.reviewEntry.activity.updatedAt ??
@@ -562,9 +561,6 @@ function buildToolActivitySegmentSummary(
         if (entry.policy === "standalone-change") {
             changeCount += 1;
         }
-        if (entry.policy === "groupable") {
-            hiddenActivityCount += 1;
-        }
         if (
             activity.status === "failed" ||
             (activity.exitCode !== null && activity.exitCode !== 0)
@@ -584,7 +580,7 @@ function buildToolActivitySegmentSummary(
         commandCount,
         failureCount,
         fileCount: fileTargets.length,
-        hiddenActivityCount,
+        hiddenActivityCount: entries.length,
         isInProgress: entries.some(
             (entry) =>
                 entry.reviewEntry.activity.status === "pending" ||

@@ -69,7 +69,7 @@ describe("getToolActivityPresentationPolicy", () => {
         expect(classify(createEntry({ kind }))).toBe("groupable");
     });
 
-    it("groups only terminal activity with proven success or active execution", () => {
+    it("groups terminal activity with proven success or active execution", () => {
         expect(
             classify(
                 createEntry({
@@ -93,7 +93,7 @@ describe("getToolActivityPresentationPolicy", () => {
         ).toBe("standalone-unknown");
         expect(
             classify(createEntry({ kind: "bash", status: "pending" })),
-        ).toBe("standalone-unknown");
+        ).toBe("groupable");
     });
 
     it("keeps failed and non-zero activity standalone", () => {
