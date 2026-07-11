@@ -10,6 +10,12 @@ import {
     verifyLinuxReleaseArtifacts,
     verifyPackagedLinuxUpdaterConfig,
 } from "./linux-release-metadata.mjs";
+import { codexVendorDir, isExecutableFile } from "./ai/_shared.mjs";
+import {
+    assertCodexRuntimeBundleVersion,
+    resolveExpectedCodexRuntimeVersion,
+} from "./ai/codex-runtime-version.mjs";
+import { stageCodexRuntime } from "./ai/stage-codex-runtime.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
@@ -49,8 +55,35 @@ function stageLinuxPackageResources() {
     copyAiPayload(path.join("embedded", "node"));
     copyAiPayload(path.join("embedded", "claude-agent-acp"));
     copyAiPayload("README.md");
+    verifyStagedCodexRuntime();
     writeLinuxUpdaterConfig();
     writeLinuxBuilderConfig();
+}
+
+function verifyStagedCodexRuntime() {
+    for (const binaryName of ["codex-acp", "codex-code-mode-host"]) {
+        const binaryPath = path.join(stagedAiRoot, "binaries", binaryName);
+        if (!isExecutableFile(binaryPath)) {
+            throw new Error(
+                `The staged Linux Codex runtime is incomplete: ${relativeToRepo(binaryPath)} is missing or not executable.`,
+            );
+        }
+    }
+    assertCodexRuntimeBundleVersion({
+        codeModeHostBinaryPath: path.join(
+            stagedAiRoot,
+            "binaries",
+            "codex-code-mode-host",
+        ),
+        codexBinaryPath: path.join(
+            stagedAiRoot,
+            "binaries",
+            "codex-acp",
+        ),
+        expectedVersion: resolveExpectedCodexRuntimeVersion(
+            path.join(codexVendorDir, "Cargo.toml"),
+        ),
+    });
 }
 
 function stageLinuxNativeBackendPayload(pnpmCommand) {
@@ -99,6 +132,7 @@ function main() {
             NODE_OPTIONS: nodeOptions,
         },
     });
+    stageCodexRuntime();
     stageLinuxPackageResources();
     stageLinuxNativeBackendPayload(pnpmCommand);
     run("electron-builder", [

@@ -16,6 +16,10 @@ import {
 } from "./windows-release-metadata.mjs";
 import { resolveWindowsPackagingPreflight } from "./windows-packaging-preflight.mjs";
 import {
+    assertCodexRuntimeBundleVersion,
+    resolveExpectedCodexRuntimeVersion,
+} from "./ai/codex-runtime-version.mjs";
+import {
     claudeVendorDir,
     copyExecutable,
     copyTree,
@@ -32,6 +36,11 @@ const buildRoot = path.join(repoRoot, "build");
 const packageResourcesRoot = path.join(buildRoot, "package-resources");
 const packagedAiRoot = path.join(packageResourcesRoot, "ai");
 const packagedCodexBinary = path.join(packagedAiRoot, "binaries", "codex-acp.exe");
+const packagedCodeModeHostBinary = path.join(
+    packagedAiRoot,
+    "binaries",
+    "codex-code-mode-host.exe",
+);
 const packagedClaudeRoot = path.join(
     packagedAiRoot,
     "embedded",
@@ -71,6 +80,13 @@ function main() {
         relativePath: relativeToRepo,
         repoRoot,
         targetArch,
+    });
+    assertCodexRuntimeBundleVersion({
+        codeModeHostBinaryPath: preflight.aiPayload.codeModeHostBinary,
+        codexBinaryPath: preflight.aiPayload.codexBinary,
+        expectedVersion: resolveExpectedCodexRuntimeVersion(
+            path.join(repoRoot, "vendor", "codex-acp", "Cargo.toml"),
+        ),
     });
 
     console.log(`[package:win] Preflight passed for ${targetArch}.`);
@@ -337,16 +353,25 @@ function resolvePreparedWindowsAiPayloadRoot(targetArch) {
 function stageCodexBinary(targetArch) {
     const aiSourceRoot = resolveAiSourceRoot(targetArch);
     const sourceBinary = path.join(aiSourceRoot, "binaries", "codex-acp.exe");
+    const sourceCodeModeHostBinary = path.join(
+        aiSourceRoot,
+        "binaries",
+        "codex-code-mode-host.exe",
+    );
 
-    if (!isExecutableFile(sourceBinary)) {
+    if (
+        !isExecutableFile(sourceBinary) ||
+        !isExecutableFile(sourceCodeModeHostBinary)
+    ) {
         throw new Error(
-            `Missing staged Codex ACP binary for ${targetArch}. Expected ${relativeToRepo(sourceBinary)}.`,
+            `Missing staged Codex runtime for ${targetArch}. Expected ${relativeToRepo(sourceBinary)} and ${relativeToRepo(sourceCodeModeHostBinary)}.`,
         );
     }
 
     copyExecutable(sourceBinary, packagedCodexBinary);
+    copyExecutable(sourceCodeModeHostBinary, packagedCodeModeHostBinary);
     console.log(
-        `[package:win] Staged Codex ACP from ${relativeToRepo(sourceBinary)}.`,
+        `[package:win] Staged Codex runtime from ${relativeToRepo(path.dirname(sourceBinary))}.`,
     );
 }
 
@@ -426,6 +451,7 @@ function resolveClaudeProjectRoot(targetArch) {
 function verifyWindowsAiPayload() {
     const requiredFiles = [
         packagedCodexBinary,
+        packagedCodeModeHostBinary,
         packagedNodeBinary,
         path.join(packagedClaudeRoot, "dist", "index.js"),
         path.join(packagedClaudeRoot, "package.json"),

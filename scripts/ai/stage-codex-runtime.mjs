@@ -4,13 +4,20 @@ import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 import {
+    codexBinaryName,
     codexBundledBinary,
+    codexBundledCodeModeHostBinary,
+    codexCodeModeHostBinaryName,
     codexLegacyVendorDebugBinary,
+    codexLegacyVendorDebugCodeModeHostBinary,
     codexLegacyVendorReleaseBinary,
+    codexLegacyVendorReleaseCodeModeHostBinary,
     codexLegacyVendorTargetDir,
     codexTargetDebugBinary,
+    codexTargetDebugCodeModeHostBinary,
     codexTargetDir,
     codexTargetReleaseBinary,
+    codexTargetReleaseCodeModeHostBinary,
     codexVendorDir,
     copyExecutable,
     ensureDir,
@@ -18,6 +25,12 @@ import {
     relativeToRepo,
     resolveFromPath,
 } from "./_shared.mjs";
+import {
+    assertCodexRuntimeBundleVersion,
+    resolveExpectedCodexRuntimeVersion,
+} from "./codex-runtime-version.mjs";
+
+const codexVendorCargoToml = path.join(codexVendorDir, "Cargo.toml");
 
 function resolveExplicitCandidate(rawCandidate, envName) {
     const candidate = rawCandidate?.trim() ?? "";
@@ -69,12 +82,16 @@ function migrateLegacyTargetDir() {
     }
 }
 
-function buildVendoredReleaseBinary() {
+function buildVendoredReleaseBundle(rustTarget = null) {
     ensureVendoredSourceExists();
     migrateLegacyTargetDir();
 
     const cargoCommand = process.env.CARGO?.trim() || "cargo";
-    const result = spawnSync(cargoCommand, ["build", "--release", "--locked"], {
+    const cargoArgs = ["build", "--release", "--locked", "--bins"];
+    if (rustTarget) {
+        cargoArgs.push("--target", rustTarget);
+    }
+    const result = spawnSync(cargoCommand, cargoArgs, {
         cwd: codexVendorDir,
         env: {
             ...process.env,
@@ -93,13 +110,22 @@ function buildVendoredReleaseBinary() {
         process.exit(result.status ?? 1);
     }
 
-    if (!isExecutableFile(codexTargetReleaseBinary)) {
-        throw new Error(
-            `Cargo finished, but the expected binary was not found at ${codexTargetReleaseBinary}.`,
-        );
+    const outputRoot = rustTarget
+        ? path.join(codexTargetDir, rustTarget, "release")
+        : path.join(codexTargetDir, "release");
+    const binaries = {
+        codex: path.join(outputRoot, codexBinaryName),
+        codeModeHost: path.join(outputRoot, codexCodeModeHostBinaryName),
+    };
+    for (const binaryPath of Object.values(binaries)) {
+        if (!isExecutableFile(binaryPath)) {
+            throw new Error(
+                `Cargo finished, but the expected binary was not found at ${binaryPath}.`,
+            );
+        }
     }
 
-    return codexTargetReleaseBinary;
+    return binaries;
 }
 
 function collectVendoredSourceFiles(directory, collected = []) {
@@ -126,12 +152,20 @@ function collectVendoredSourceFiles(directory, collected = []) {
     return collected;
 }
 
-function shouldRebuildVendoredReleaseBinary() {
-    if (!isExecutableFile(codexTargetReleaseBinary)) {
+function shouldRebuildVendoredReleaseBundle(
+    binaries = {
+        codex: codexTargetReleaseBinary,
+        codeModeHost: codexTargetReleaseCodeModeHostBinary,
+    },
+) {
+    const binaryPaths = Object.values(binaries);
+    if (binaryPaths.some((binaryPath) => !isExecutableFile(binaryPath))) {
         return true;
     }
 
-    const binaryMtimeMs = fs.statSync(codexTargetReleaseBinary).mtimeMs;
+    const binaryMtimeMs = Math.min(
+        ...binaryPaths.map((binaryPath) => fs.statSync(binaryPath).mtimeMs),
+    );
     const sourceFiles = collectVendoredSourceFiles(codexVendorDir);
 
     return sourceFiles.some((sourceFile) => {
@@ -143,83 +177,168 @@ function shouldRebuildVendoredReleaseBinary() {
     });
 }
 
+export function resolveVendoredCodexRuntimeBundleForTarget(rustTarget) {
+    const outputRoot = path.join(codexTargetDir, rustTarget, "release");
+    const binaries = {
+        codex: path.join(outputRoot, codexBinaryName),
+        codeModeHost: path.join(outputRoot, codexCodeModeHostBinaryName),
+    };
+    if (shouldRebuildVendoredReleaseBundle(binaries)) {
+        return buildVendoredReleaseBundle(rustTarget);
+    }
+    return binaries;
+}
+
+export function resolveVendoredCodexRuntimeForTarget(rustTarget) {
+    return resolveVendoredCodexRuntimeBundleForTarget(rustTarget).codex;
+}
+
+function resolveExplicitBundle({
+    codeModeHostEnvName,
+    codeModeHostRawCandidate,
+    codexEnvName,
+    codexRawCandidate,
+    source,
+}) {
+    const codex = resolveExplicitCandidate(codexRawCandidate, codexEnvName);
+    if (!codex) {
+        return null;
+    }
+
+    const configuredCodeModeHost = codeModeHostRawCandidate?.trim() ?? "";
+    const codeModeHost = configuredCodeModeHost
+        ? resolveExplicitCandidate(
+              configuredCodeModeHost,
+              codeModeHostEnvName,
+          )
+        : path.join(path.dirname(codex), codexCodeModeHostBinaryName);
+    if (!isExecutableFile(codeModeHost)) {
+        throw new Error(
+            `${codexEnvName} requires a sibling ${codexCodeModeHostBinaryName}, or set ${codeModeHostEnvName} explicitly. Missing: ${codeModeHost}`,
+        );
+    }
+
+    return {
+        binaries: { codex, codeModeHost },
+        source,
+    };
+}
+
 function resolveStageSource() {
     migrateLegacyTargetDir();
 
-    const bundleOverride = resolveExplicitCandidate(
-        process.env.COMANDO_CODEX_ACP_BUNDLE_BIN,
-        "COMANDO_CODEX_ACP_BUNDLE_BIN",
-    );
+    const bundleOverride = resolveExplicitBundle({
+        codeModeHostEnvName: "COMANDO_CODEX_CODE_MODE_HOST_BUNDLE_BIN",
+        codeModeHostRawCandidate:
+            process.env.COMANDO_CODEX_CODE_MODE_HOST_BUNDLE_BIN,
+        codexEnvName: "COMANDO_CODEX_ACP_BUNDLE_BIN",
+        codexRawCandidate: process.env.COMANDO_CODEX_ACP_BUNDLE_BIN,
+        source: "bundle-env",
+    });
     if (bundleOverride) {
-        return {
-            path: bundleOverride,
-            source: "bundle-env",
-        };
+        return bundleOverride;
     }
 
-    const runtimeOverride = resolveExplicitCandidate(
-        process.env.COMANDO_CODEX_ACP_BIN,
-        "COMANDO_CODEX_ACP_BIN",
-    );
+    const runtimeOverride = resolveExplicitBundle({
+        codeModeHostEnvName: "COMANDO_CODEX_CODE_MODE_HOST_BIN",
+        codeModeHostRawCandidate: process.env.COMANDO_CODEX_CODE_MODE_HOST_BIN,
+        codexEnvName: "COMANDO_CODEX_ACP_BIN",
+        codexRawCandidate: process.env.COMANDO_CODEX_ACP_BIN,
+        source: "runtime-env",
+    });
     if (runtimeOverride) {
-        return {
-            path: runtimeOverride,
-            source: "runtime-env",
-        };
+        return runtimeOverride;
     }
 
-    if (fs.existsSync(codexVendorDir) && shouldRebuildVendoredReleaseBinary()) {
+    if (fs.existsSync(codexVendorDir) && shouldRebuildVendoredReleaseBundle()) {
         return {
-            path: buildVendoredReleaseBinary(),
+            binaries: buildVendoredReleaseBundle(),
             source: "embedded-release-built",
         };
     }
 
-    if (isExecutableFile(codexTargetReleaseBinary)) {
+    if (
+        isExecutableFile(codexTargetReleaseBinary) &&
+        isExecutableFile(codexTargetReleaseCodeModeHostBinary)
+    ) {
         return {
-            path: codexTargetReleaseBinary,
+            binaries: {
+                codex: codexTargetReleaseBinary,
+                codeModeHost: codexTargetReleaseCodeModeHostBinary,
+            },
             source: "embedded-release",
         };
     }
 
-    if (isExecutableFile(codexTargetDebugBinary)) {
+    if (
+        isExecutableFile(codexTargetDebugBinary) &&
+        isExecutableFile(codexTargetDebugCodeModeHostBinary)
+    ) {
         return {
-            path: codexTargetDebugBinary,
+            binaries: {
+                codex: codexTargetDebugBinary,
+                codeModeHost: codexTargetDebugCodeModeHostBinary,
+            },
             source: "embedded-debug",
         };
     }
 
-    if (isExecutableFile(codexLegacyVendorReleaseBinary)) {
+    if (
+        isExecutableFile(codexLegacyVendorReleaseBinary) &&
+        isExecutableFile(codexLegacyVendorReleaseCodeModeHostBinary)
+    ) {
         return {
-            path: codexLegacyVendorReleaseBinary,
+            binaries: {
+                codex: codexLegacyVendorReleaseBinary,
+                codeModeHost: codexLegacyVendorReleaseCodeModeHostBinary,
+            },
             source: "legacy-vendor-release",
         };
     }
 
-    if (isExecutableFile(codexLegacyVendorDebugBinary)) {
+    if (
+        isExecutableFile(codexLegacyVendorDebugBinary) &&
+        isExecutableFile(codexLegacyVendorDebugCodeModeHostBinary)
+    ) {
         return {
-            path: codexLegacyVendorDebugBinary,
+            binaries: {
+                codex: codexLegacyVendorDebugBinary,
+                codeModeHost: codexLegacyVendorDebugCodeModeHostBinary,
+            },
             source: "legacy-vendor-debug",
         };
     }
 
     return {
-        path: buildVendoredReleaseBinary(),
+        binaries: buildVendoredReleaseBundle(),
         source: "embedded-release-built",
     };
 }
 
 export function stageCodexRuntime() {
     const resolved = resolveStageSource();
-    copyExecutable(resolved.path, codexBundledBinary);
+    assertCodexRuntimeBundleVersion({
+        codeModeHostBinaryPath: resolved.binaries.codeModeHost,
+        codexBinaryPath: resolved.binaries.codex,
+        expectedVersion:
+            resolveExpectedCodexRuntimeVersion(codexVendorCargoToml),
+    });
+    copyExecutable(resolved.binaries.codex, codexBundledBinary);
+    copyExecutable(
+        resolved.binaries.codeModeHost,
+        codexBundledCodeModeHostBinary,
+    );
 
     console.log(
-        `[stage:codex-runtime] ${resolved.source} -> ${relativeToRepo(codexBundledBinary)}`,
+        `[stage:codex-runtime] ${resolved.source} -> ${relativeToRepo(codexBundledBinary)}, ${relativeToRepo(codexBundledCodeModeHostBinary)}`,
     );
 
     return codexBundledBinary;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+    process.argv[1] &&
+    import.meta.url === pathToFileURL(process.argv[1]).href
+) {
     stageCodexRuntime();
 }

@@ -273,13 +273,14 @@ Comando currently wires five ACP runtimes:
 
 Current staging status:
 
-- Codex is staged as a native sidecar binary from `vendor/codex-acp`, or from `COMANDO_CODEX_ACP_BUNDLE_BIN` when a prebuilt bundle binary is provided.
+- Codex is staged from `vendor/codex-acp` as the adjacent `codex-acp` and `codex-code-mode-host` native binaries. A prebuilt pair can be provided with the bundle overrides below.
 - Claude is staged from `vendor/Claude-agent-acp-upstream` with an embedded Node runtime.
 - Grok, Kilo, and OpenCode are integrated as configurable external runtimes and require their corresponding CLI/auth setup or API-key configuration.
 
 Runtime binary overrides during development:
 
 - `COMANDO_CODEX_ACP_BIN`
+- `COMANDO_CODEX_CODE_MODE_HOST_BIN`
 - `COMANDO_CLAUDE_ACP_BIN`
 - `COMANDO_GROK_ACP_BIN`
 - `COMANDO_KILO_ACP_BIN`
@@ -288,6 +289,7 @@ Runtime binary overrides during development:
 Bundle/staging overrides:
 
 - `COMANDO_CODEX_ACP_BUNDLE_BIN`
+- `COMANDO_CODEX_CODE_MODE_HOST_BUNDLE_BIN`
 - `COMANDO_EMBEDDED_NODE_BIN`
 
 Credential environment variables recognized by diagnostics include:

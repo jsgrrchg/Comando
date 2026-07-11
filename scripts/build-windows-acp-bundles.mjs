@@ -87,6 +87,10 @@ function buildTargetBundle(target) {
     const binariesRoot = path.join(aiRoot, "binaries");
     const embeddedRoot = path.join(aiRoot, "embedded");
     const codexOutput = path.join(binariesRoot, "codex-acp.exe");
+    const codeModeHostOutput = path.join(
+        binariesRoot,
+        "codex-code-mode-host.exe",
+    );
     const nodeOutput = path.join(embeddedRoot, "node", "bin", "node.exe");
     const claudeOutputRoot = path.join(embeddedRoot, "claude-agent-acp");
 
@@ -94,10 +98,11 @@ function buildTargetBundle(target) {
     resetDir(tempOutputRoot);
 
     try {
-        const codexBinary = buildCodexBinary(config.rustTarget);
+        const codexRuntime = buildCodexRuntime(config.rustTarget);
         const nodeBinary = resolveNodeBinary(config.nodeArch);
 
-        copyExecutable(codexBinary, codexOutput);
+        copyExecutable(codexRuntime.codex, codexOutput);
+        copyExecutable(codexRuntime.codeModeHost, codeModeHostOutput);
         copyExecutable(nodeBinary, nodeOutput);
         stageClaudeProject(claudeOutputRoot);
 
@@ -171,31 +176,36 @@ function stageClaudeProject(destinationRoot) {
     }
 }
 
-function buildCodexBinary(rustTarget) {
+function buildCodexRuntime(rustTarget) {
     ensureRustTarget(rustTarget);
 
     console.log(`[build:windows-acp] Building Codex ACP for ${rustTarget}.`);
-    run("cargo", ["build", "--release", "--locked", "--target", rustTarget], {
-        cwd: path.join(repoRoot, "vendor", "codex-acp"),
-        env: {
-            CARGO_TARGET_DIR: cargoTargetRoot,
+    run(
+        "cargo",
+        ["build", "--release", "--locked", "--bins", "--target", rustTarget],
+        {
+            cwd: path.join(repoRoot, "vendor", "codex-acp"),
+            env: {
+                CARGO_TARGET_DIR: cargoTargetRoot,
+            },
         },
-    });
-
-    const builtBinary = path.join(
-        cargoTargetRoot,
-        rustTarget,
-        "release",
-        "codex-acp.exe",
     );
 
-    if (!isExecutableFile(builtBinary)) {
-        throw new Error(
-            `Cargo finished but ${relativeToRepo(builtBinary)} is missing.`,
-        );
+    const outputRoot = path.join(cargoTargetRoot, rustTarget, "release");
+    const binaries = {
+        codex: path.join(outputRoot, "codex-acp.exe"),
+        codeModeHost: path.join(outputRoot, "codex-code-mode-host.exe"),
+    };
+
+    for (const binaryPath of Object.values(binaries)) {
+        if (!isExecutableFile(binaryPath)) {
+            throw new Error(
+                `Cargo finished but ${relativeToRepo(binaryPath)} is missing.`,
+            );
+        }
     }
 
-    return builtBinary;
+    return binaries;
 }
 
 function ensureRustTarget(rustTarget) {

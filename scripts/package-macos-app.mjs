@@ -22,6 +22,14 @@ import {
     resetDir,
     spawnPreparedSync,
 } from "./ai/_shared.mjs";
+import {
+    resolveVendoredCodexRuntimeBundleForTarget,
+    stageCodexRuntime,
+} from "./ai/stage-codex-runtime.mjs";
+import {
+    assertCodexRuntimeBundleVersion,
+    resolveExpectedCodexRuntimeVersion,
+} from "./ai/codex-runtime-version.mjs";
 
 const buildRoot = path.join(repoRoot, "build");
 const packageAppRoot = path.join(buildRoot, "package-app");
@@ -77,10 +85,16 @@ const bundledClaudeRoot = path.join(
     "embedded",
     "claude-agent-acp",
 );
-const bundledArm64CodexBinary = path.join(
+const bundledHostCodexBinary = path.join(
     appResourcesRoot,
     "binaries",
     "codex-acp",
+);
+const codexVendorCargoTomlPath = path.join(
+    repoRoot,
+    "vendor",
+    "codex-acp",
+    "Cargo.toml",
 );
 const macEntitlementsPath = path.join(
     repoRoot,
@@ -122,9 +136,10 @@ main();
 function main() {
     const electronBuilderArgs = resolveElectronBuilderArgs(process.argv.slice(2));
 
-    console.log("[package:mac] Packaging with prebuilt ACP artifacts.");
+    console.log("[package:mac] Packaging with version-aligned ACP artifacts.");
     prepareWorkspace();
     stageClaudeRuntime();
+    stageCodexRuntime();
     stageCodexForMacArchitectures();
     stageEmbeddedNodeForMacArchitectures();
     stageNativeBackendPayload();
@@ -867,6 +882,25 @@ function verifyPackagedApplication(packagedAppPath) {
             "claude-agent-acp",
         ),
     );
+
+    for (const { arch } of macTargets) {
+        const codexRoot = path.join(
+            packagedAppPath,
+            "Contents",
+            "Resources",
+            "ai",
+            "binaries",
+            `darwin-${arch}`,
+        );
+        for (const binaryName of ["codex-acp", "codex-code-mode-host"]) {
+            const binaryPath = path.join(codexRoot, binaryName);
+            if (!isExecutableFile(binaryPath)) {
+                throw new Error(
+                    `The packaged Codex runtime is incomplete: ${binaryPath} is missing or not executable.`,
+                );
+            }
+        }
+    }
 }
 
 function verifyReleaseArtifacts() {
@@ -977,16 +1011,28 @@ function resolveClaudeProjectRoot() {
 }
 
 function stageCodexForMacArchitectures() {
+    const expectedVersion = resolveExpectedCodexRuntimeVersion(
+        codexVendorCargoTomlPath,
+    );
     for (const target of macTargets) {
-        const sourceBinary = resolvePrebuiltCodexBinary(target.arch);
-        const stagedBinaryPath = path.join(
+        const sourceBundle = resolveCodexBundleForArchitecture(
+            target.arch,
+            expectedVersion,
+        );
+        const stagedRoot = path.join(
             packagedCodexRoot,
             `darwin-${target.arch}`,
-            "codex-acp",
         );
-        copyExecutable(sourceBinary, stagedBinaryPath);
+        copyExecutable(
+            sourceBundle.codex,
+            path.join(stagedRoot, "codex-acp"),
+        );
+        copyExecutable(
+            sourceBundle.codeModeHost,
+            path.join(stagedRoot, "codex-code-mode-host"),
+        );
         console.log(
-            `[package:mac] Staged Codex ACP (${target.arch}) from ${relativeToRepo(sourceBinary)}.`,
+            `[package:mac] Staged Codex runtime (${target.arch}) from ${relativeToRepo(path.dirname(sourceBundle.codex))}.`,
         );
     }
 }
@@ -1039,20 +1085,59 @@ function resolveMacRustTarget(arch) {
     throw new Error(`Unsupported macOS native backend architecture: ${arch}`);
 }
 
-function resolvePrebuiltCodexBinary(arch) {
-    const candidates = [
-        path.join(prebuiltCodexRoot, `darwin-${arch}`, "codex-acp"),
-        path.join(desktopAiRoot, "binaries", `darwin-${arch}`, "codex-acp"),
+function resolveCodexBundleForArchitecture(arch, expectedVersion) {
+    const candidateRoots = [
+        path.join(prebuiltCodexRoot, `darwin-${arch}`),
+        path.join(desktopAiRoot, "binaries", `darwin-${arch}`),
     ];
 
-    if (arch === "arm64") {
-        candidates.unshift(bundledArm64CodexBinary);
+    if (arch === hostMacArchitecture()) {
+        candidateRoots.unshift(path.dirname(bundledHostCodexBinary));
     }
 
-    return resolveExecutableCandidate(
-        candidates,
-        `No prebuilt Codex ACP binary was found for ${arch}. Seed resources/ai/prebuilt/codex-acp/darwin-${arch}/codex-acp first.`,
-    );
+    for (const candidateRoot of candidateRoots) {
+        const candidate = {
+            codex: path.join(candidateRoot, "codex-acp"),
+            codeModeHost: path.join(candidateRoot, "codex-code-mode-host"),
+        };
+        if (
+            Object.values(candidate).some(
+                (binary) => !isExecutableFile(binary),
+            )
+        ) {
+            continue;
+        }
+        try {
+            assertCodexRuntimeBundleVersion({
+                codeModeHostBinaryPath: candidate.codeModeHost,
+                codexBinaryPath: candidate.codex,
+                expectedVersion,
+            });
+            return candidate;
+        } catch (error) {
+            console.warn(
+                `[package:mac] Ignoring stale Codex runtime (${arch}) at ${relativeToRepo(candidateRoot)}: ${formatError(error)}`,
+            );
+        }
+    }
+
+    const rustTarget = resolveMacRustTarget(arch);
+    ensureMacRustTarget(rustTarget);
+    const builtBundle = resolveVendoredCodexRuntimeBundleForTarget(rustTarget);
+    assertCodexRuntimeBundleVersion({
+        codeModeHostBinaryPath: builtBundle.codeModeHost,
+        codexBinaryPath: builtBundle.codex,
+        expectedVersion,
+    });
+    return builtBundle;
+}
+
+function hostMacArchitecture() {
+    if (process.arch === "arm64" || process.arch === "x64") {
+        return process.arch;
+    }
+
+    throw new Error(`Unsupported macOS host architecture: ${process.arch}`);
 }
 
 function stageEmbeddedNodeForMacArchitectures() {
