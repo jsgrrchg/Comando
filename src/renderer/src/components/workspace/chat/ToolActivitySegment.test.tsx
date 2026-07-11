@@ -466,7 +466,7 @@ describe("ToolActivitySegment", () => {
         const surfaces = Array.from(
             container.querySelectorAll<HTMLElement>("[data-tool-surface]"),
         ).map((member) => member.dataset.toolSurface);
-        expect(surfaces).toEqual(["rail-row", "card", "rail-row"]);
+        expect(surfaces).toEqual(["rail-row", "rail-row", "rail-row"]);
         const indents = Array.from(
             container.querySelectorAll<HTMLElement>(
                 "[data-activity-rail-indent]",

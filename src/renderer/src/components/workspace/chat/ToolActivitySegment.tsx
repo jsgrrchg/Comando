@@ -276,11 +276,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                                             onOpenSession={onOpenSession}
                                             projectId={projectId}
                                             resolveFileReference={resolveFileReference}
-                                            surface={
-                                                policy === "standalone-change"
-                                                    ? "card"
-                                                    : "rail-row"
-                                            }
+                                            surface="rail-row"
                                             trackedFiles={reviewEntry.trackedFiles}
                                             worktreeId={worktreeId}
                                         />

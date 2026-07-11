@@ -239,15 +239,11 @@ export function estimateChatTimelineRowHeight(
         }
 
         const activityHeight = row.entries.reduce(
-            (height, entry, index) =>
+            (height, _entry, index) =>
                 height +
-                (entry.policy === "groupable"
-                    ? CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX
-                    : estimateToolActivityHeight(
-                          entry.reviewEntry,
-                          context,
-                          true,
-                      )) +
+                // Every entry is now a collapsed rail row. Change previews are
+                // mounted only after the row's own disclosure is opened.
+                CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX +
                 CHAT_ACTIVITY_RAIL_ENTRY_PADDING_Y_PX +
                 (index > 0 ? CHAT_ACTIVITY_RAIL_ENTRY_GAP_PX : 0),
             0,
@@ -331,7 +327,6 @@ function estimateToolActivityHeight(
 ): number {
     const activity = reviewEntry.activity;
     const trackedFiles = reviewEntry.trackedFiles;
-    const hasInlineReview = trackedFiles.length > 0 || activity.diffs.length > 0;
     const hasTerminalOutput = !!activity.terminalOutput;
     const hasSummary = !!activity.summary;
     const hasRawJson = !!activity.rawInputJson || !!activity.rawOutputJson;
@@ -355,21 +350,6 @@ function estimateToolActivityHeight(
         return startsExpanded
             ? 210
             : CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX;
-    }
-
-    if (hasInlineReview) {
-        const collapsedItemCount = Math.max(
-            1,
-            trackedFiles.length,
-            activity.diffs.length,
-        );
-        const collapsedHeight = Math.min(
-            220,
-            collapsedItemCount * CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX +
-                Math.max(0, collapsedItemCount - 1) *
-                    CHAT_ACTIVITY_RAIL_ENTRY_PADDING_Y_PX,
-        );
-        return collapsedHeight;
     }
 
     if (isFileToolActivity(activity, trackedFiles)) {

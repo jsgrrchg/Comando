@@ -441,6 +441,64 @@ describe("ToolActivityItem", () => {
         expect(markup).not.toContain("Reject");
     });
 
+    it("keeps change review behind the compact rail disclosure", () => {
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                diffs: [
+                    {
+                        hunks: [
+                            {
+                                id: "hunk-1",
+                                lines: [
+                                    {
+                                        id: "line-1",
+                                        text: "const before = true;",
+                                        type: "remove",
+                                    },
+                                    {
+                                        id: "line-2",
+                                        text: "const after = true;",
+                                        type: "add",
+                                    },
+                                ],
+                                newCount: 1,
+                                newStart: 8,
+                                oldCount: 1,
+                                oldStart: 8,
+                            },
+                        ],
+                        isText: true,
+                        kind: "update",
+                        newText: "const after = true;\n",
+                        oldText: "const before = true;\n",
+                        path: "src/app.ts",
+                        previousPath: null,
+                        reversible: true,
+                    },
+                ],
+                kind: "edit",
+                title: "Edit src/app.ts",
+            }),
+            onOpenFile: async () => {},
+            projectId: "project-1",
+            surface: "rail-row",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+
+        expect(container.querySelector("[data-change-review-surface]")).toBeNull();
+        act(() =>
+            container
+                .querySelector<HTMLButtonElement>(
+                    'button[aria-label="Expand details"]',
+                )
+                ?.click(),
+        );
+        expect(
+            container.querySelector('[data-change-review-surface="rail-row"]'),
+        ).not.toBeNull();
+    });
+
     it("renders activity-only diffs with the rich preview instead of a summary card", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {

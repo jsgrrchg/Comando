@@ -1755,6 +1755,7 @@ function CompactToolActivityRow({
     openSessionTitle,
     projectId,
     resolveFileReference,
+    trackedFiles,
     worktreeId,
 }: {
     readonly activity: AiToolActivity;
@@ -1773,6 +1774,7 @@ function CompactToolActivityRow({
     readonly resolveFileReference?: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
+    readonly trackedFiles: readonly AiTrackedFile[];
     readonly worktreeId: string | null;
 }) {
     const descriptor = getToolActivityDescriptor(activity);
@@ -1803,12 +1805,15 @@ function CompactToolActivityRow({
         hasTerminalOutput,
     );
     const hasLocations = activity.locations.length > 0;
+    const hasInlineReview =
+        trackedFiles.length > 0 || activity.diffs.length > 0;
     const hasDetail =
         shouldShowSummary ||
         hasLocations ||
         hasRawInput ||
         hasRawOutput ||
-        hasTerminalOutput;
+        hasTerminalOutput ||
+        hasInlineReview;
     const [expanded, setExpanded] = usePersistentToolExpansion(
         `${activity.sessionId}:${activity.id}:rail-row`,
         false,
@@ -1993,6 +1998,16 @@ function CompactToolActivityRow({
                             languageInfo="json"
                         />
                     ) : null}
+                    {hasInlineReview ? (
+                        <ChangeReviewPanel
+                            activity={activity}
+                            onOpenFile={onOpenFile}
+                            projectId={projectId}
+                            resolveFileReference={resolveFileReference}
+                            trackedFiles={trackedFiles}
+                            worktreeId={worktreeId}
+                        />
+                    ) : null}
                 </div>
             ) : null}
         </div>
@@ -2096,6 +2111,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
                 openSessionTitle={openSessionTitle}
                 projectId={projectId}
                 resolveFileReference={resolveFileReference}
+                trackedFiles={trackedFiles}
                 worktreeId={worktreeId}
             />
         );
