@@ -834,7 +834,8 @@ export function SettingsApp() {
                 screenshotRetentionSeconds: aiChat.screenshotRetentionSeconds,
                 historyRetentionDays: aiChat.historyRetentionDays,
                 contextUsageBarEnabled: aiChat.contextUsageBarEnabled,
-                toolCardExpansionMode: aiChat.toolCardExpansionMode,
+                toolActivityDefaultExpansion:
+                    aiChat.toolActivityDefaultExpansion,
                 onChatFontFamilyChange: (id) =>
                     updateAiChat({
                         chatFontFamily: id as ChatFontFamily,
@@ -855,8 +856,8 @@ export function SettingsApp() {
                     updateAiChat({ historyRetentionDays: days }),
                 onContextUsageBarEnabledChange: (value) =>
                     updateAiChat({ contextUsageBarEnabled: value }),
-                onToolCardExpansionModeChange: (value) =>
-                    updateAiChat({ toolCardExpansionMode: value }),
+                onToolActivityDefaultExpansionChange: (value) =>
+                    updateAiChat({ toolActivityDefaultExpansion: value }),
             }}
             appAppearance={{
                 agentsSidebarScale: appAppearance.agentsSidebarScale,

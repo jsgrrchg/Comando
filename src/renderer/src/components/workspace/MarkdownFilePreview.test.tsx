@@ -320,10 +320,10 @@ describe("MarkdownFilePreview", () => {
         });
 
         expect(markup).toContain('data-language="ts"');
-        expect(markup).toContain("markdown-file-preview__code-frame");
-        expect(markup).toContain("markdown-file-preview__code-header");
+        expect(markup).toContain("markdown-code-frame");
+        expect(markup).toContain("markdown-code-header");
         expect(markup).toContain(">TypeScript</span>");
-        expect(markup).toContain("markdown-file-preview__code-block");
+        expect(markup).toContain("markdown-code-block");
         expect(markup).toContain("cm-static-code");
         expect(markup).toContain("const value = 1;");
     });
@@ -434,8 +434,8 @@ describe("MarkdownFilePreview", () => {
             content: "```\nplain code\n```",
         });
 
-        expect(markup).toContain("markdown-file-preview__code-block");
-        expect(markup).not.toContain("markdown-file-preview__code-header");
+        expect(markup).toContain("markdown-code-block");
+        expect(markup).not.toContain("markdown-code-header");
         expect(markup).not.toContain("data-language=");
         expect(markup).not.toContain("cm-static-code");
         expect(markup).toContain("plain code");

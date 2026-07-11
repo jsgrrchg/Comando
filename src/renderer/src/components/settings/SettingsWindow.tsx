@@ -238,12 +238,10 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Font used for messages in the chat.",
         "Chat font size",
         "Font size of messages in the chat.",
-        "Edited file cards",
-        "Choose when edited-file tool cards open automatically.",
-        "Normal",
-        "Latest expanded",
-        "Always expanded",
-        "collapsed expanded streaming tools",
+        "Tool activity",
+        "Choose whether tool activity starts collapsed or expanded.",
+        "Collapsed",
+        "Expanded",
         "Review",
         "Chat history retention",
         "How long saved chat histories stay on disk before automatic deletion.",
@@ -2446,12 +2444,11 @@ function AiChatContent({
         ],
         ["Chat font size", "Font size of messages in the chat, in pixels."],
         [
-            "Edited file cards",
-            "Choose when edited-file tool cards open automatically.",
-            "Normal",
-            "Latest expanded",
-            "Always expanded",
-            "collapsed expanded streaming tools",
+            "Tool activity",
+            "Choose whether tool activity starts collapsed or expanded.",
+            "Collapsed",
+            "Expanded",
+            "tools default disclosure",
         ],
     ]);
     const showReview = sectionHasMatches(searchQuery, "Review", [
@@ -2531,33 +2528,24 @@ function AiChatContent({
             <SearchableRow
                 searchQuery={searchQuery}
                 section="Chat"
-                label="Edited file cards"
-                description="Choose when edited-file tool cards open automatically."
+                label="Tool activity"
+                description="Choose whether tool activity starts collapsed or expanded."
                 keywords={[
-                    "Normal",
-                    "Latest expanded",
-                    "Always expanded",
-                    "edited files",
-                    "collapsed",
-                    "expanded",
-                    "streaming tools",
+                    "Collapsed",
+                    "Expanded",
+                    "tools",
+                    "default",
+                    "disclosure",
                 ]}
                 control={
                     <SelectField
-                        value={state.toolCardExpansionMode}
+                        value={state.toolActivityDefaultExpansion}
                         options={[
-                            { value: "collapsed", label: "Normal" },
-                            {
-                                value: "latest",
-                                label: "Latest expanded",
-                            },
-                            {
-                                value: "expanded",
-                                label: "Always expanded",
-                            },
+                            { value: "collapsed", label: "Collapsed" },
+                            { value: "expanded", label: "Expanded" },
                         ]}
-                        onChange={(v) =>
-                            state.onToolCardExpansionModeChange?.(v)
+                        onChange={(value) =>
+                            state.onToolActivityDefaultExpansionChange?.(value)
                         }
                     />
                 }

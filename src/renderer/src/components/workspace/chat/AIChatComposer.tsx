@@ -18,6 +18,7 @@ import type {
     ProjectTreeNode,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
+import { formatComposerDisplaySelectionLabel } from "@shared/composer-display-markers";
 
 import {
     COMPOSER_PROJECT_ENTRY_LIST_MIME,
@@ -31,6 +32,8 @@ import {
     type WorkspaceTabComposerDragDetail,
 } from "@renderer/app/drag-and-drop";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
+import { createFileTypeIconElement } from "@renderer/components/icons/createFileTypeIconElement";
+import { createFolderTypeIconElement } from "@renderer/components/icons/createFolderTypeIconElement";
 import { getChatPillMetrics, type ChatPillMetrics } from "./chatPillMetrics";
 import { CHAT_PILL_VARIANTS } from "./chatPillPalette";
 import type { AIComposerPart } from "./composerParts";
@@ -185,8 +188,23 @@ function createFileMentionNode(
     el.dataset.path = part.path;
     el.dataset.relativePath = part.relativePath;
     el.dataset.languageId = part.languageId;
-    el.textContent = `@${part.label}`;
     applyComposerPillStyles(el, metrics, CHAT_PILL_VARIANTS.file);
+    el.style.padding = "0";
+    el.style.borderRadius = "2px";
+    el.style.background = "transparent";
+    el.style.color = "var(--color-accent)";
+    el.style.transform = "translateY(2px)";
+    el.style.gap = "4px";
+    const icon = createFileTypeIconElement(
+        part.relativePath,
+        Math.max(11, Math.min(14, metrics.fontSize)),
+    );
+    if (icon) {
+        el.append(icon);
+    }
+    const label = document.createElement("span");
+    label.textContent = `@${part.label}`;
+    el.append(label);
     return el;
 }
 
@@ -199,8 +217,23 @@ function createFolderMentionNode(
     el.dataset.kind = "folder_mention";
     el.dataset.folderPath = part.folderPath;
     el.dataset.label = part.label;
-    el.textContent = `@${part.label}`;
     applyComposerPillStyles(el, metrics, CHAT_PILL_VARIANTS.folder);
+    el.style.padding = "0";
+    el.style.borderRadius = "2px";
+    el.style.background = "transparent";
+    el.style.color = "var(--color-accent)";
+    el.style.transform = "translateY(2px)";
+    el.style.gap = "4px";
+    const icon = createFolderTypeIconElement(
+        part.folderPath,
+        Math.max(11, Math.min(14, metrics.fontSize)),
+    );
+    if (icon) {
+        el.append(icon);
+    }
+    const label = document.createElement("span");
+    label.textContent = `@${part.label}`;
+    el.append(label);
     return el;
 }
 
@@ -234,10 +267,28 @@ function createSelectionMentionNode(
     el.dataset.selectedText = part.selectedText;
     el.dataset.startLine = String(part.startLine);
     el.dataset.endLine = String(part.endLine);
-    el.textContent = part.label;
-    applyComposerPillStyles(el, metrics, CHAT_PILL_VARIANTS.accent, {
-        compact: true,
+    applyComposerPillStyles(el, metrics, CHAT_PILL_VARIANTS.file);
+    el.style.padding = "0";
+    el.style.borderRadius = "2px";
+    el.style.background = "transparent";
+    el.style.color = "var(--color-accent)";
+    el.style.transform = "translateY(2px)";
+    el.style.gap = "4px";
+    const icon = createFileTypeIconElement(
+        part.path,
+        Math.max(11, Math.min(14, metrics.fontSize)),
+    );
+    if (icon) {
+        el.append(icon);
+    }
+    const label = document.createElement("span");
+    label.textContent = formatComposerDisplaySelectionLabel({
+        endLine: part.endLine,
+        label: part.label,
+        path: part.path,
+        startLine: part.startLine,
     });
+    el.append(label);
     return el;
 }
 

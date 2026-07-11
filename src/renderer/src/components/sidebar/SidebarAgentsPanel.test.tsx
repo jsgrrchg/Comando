@@ -158,6 +158,31 @@ describe("SidebarAgentsPanel history cache", () => {
         expect(markup).not.toContain("Loading...");
     });
 
+    it("renders title-only rows with provider icons", () => {
+        const fullTitle =
+            "Investigate the model selector behavior without shortening this title";
+        writeSidebarAgentsHistoryCache(
+            "project-1",
+            "worktree-1",
+            [createSummary({ title: fullTitle })],
+            100,
+        );
+        const markup = renderToStaticMarkup(
+            <SidebarAgentsPanel
+                projectId="project-1"
+                worktreeId="worktree-1"
+            />,
+        );
+
+        expect(markup).not.toContain("Use compact thread rows");
+        expect(markup).not.toContain("Show thread details");
+        expect(markup).toContain('data-provider-icon="codex"');
+        expect(markup).toContain(fullTitle);
+        expect(markup).not.toContain("Assistant returns a concise answer.");
+        expect(markup).toContain("sidebar-agents-compact-relative-time");
+        expect(markup).not.toContain("1 message");
+    });
+
     it("does not render cached sessions from another worktree scope", () => {
         writeSidebarAgentsHistoryCache(
             "project-1",
@@ -214,10 +239,10 @@ describe("SidebarAgentsPanel history cache", () => {
             markup.indexOf("Galileo"),
         );
         expect(markup).toContain('data-subagent="true"');
-        expect(markup).toContain("Agent");
+        expect(markup).toContain('data-provider-icon="codex"');
     });
 
-    it("shows Working only for child agents with a busy normalized snapshot", () => {
+    it("shows an activity dot only for working child agents", () => {
         const sessions = [
             createSummary({
                 runtimeSessionId: "runtime-parent",
@@ -297,9 +322,15 @@ describe("SidebarAgentsPanel history cache", () => {
             item.textContent?.includes("Running Child"),
         );
 
-        expect(container.textContent?.match(/Working…/g)).toHaveLength(1);
-        expect(finishedItem?.textContent).not.toContain("Working…");
-        expect(runningItem?.textContent).toContain("Working…");
+        expect(
+            container.querySelectorAll(".sidebar-agents-activity-dot"),
+        ).toHaveLength(1);
+        expect(
+            finishedItem?.querySelector(".sidebar-agents-activity-dot"),
+        ).toBeNull();
+        expect(
+            runningItem?.querySelector(".sidebar-agents-activity-dot"),
+        ).not.toBeNull();
     });
 
     it("renders live Claude Code terminal agents alongside real history", () => {
@@ -335,7 +366,7 @@ describe("SidebarAgentsPanel history cache", () => {
         expect(markup).toContain("Claude Thread");
         expect(markup).toContain("Claude Code 1");
         expect(markup).toContain("Claude Code");
-        expect(markup).toContain("Terminal");
+        expect(markup).toContain('data-provider-icon="claude"');
     });
 });
 

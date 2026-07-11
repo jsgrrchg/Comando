@@ -60,7 +60,7 @@ function createAiChatSettings(
         requireCmdEnterToSend: false,
         reviewDiffZoom: 1,
         screenshotRetentionSeconds: 300,
-        toolCardExpansionMode: "collapsed",
+        toolActivityDefaultExpansion: "collapsed",
         ...overrides,
     };
 }

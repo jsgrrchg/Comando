@@ -58,7 +58,7 @@ describe("broadcastSettingsUpdated", () => {
                 requireCmdEnterToSend: false,
                 reviewDiffZoom: 0.96,
                 screenshotRetentionSeconds: 0,
-                toolCardExpansionMode: "collapsed",
+                toolActivityDefaultExpansion: "collapsed",
             },
             DEFAULT_APP_TERMINAL_SETTINGS,
         );
@@ -74,7 +74,7 @@ describe("broadcastSettingsUpdated", () => {
                 requireCmdEnterToSend: false,
                 reviewDiffZoom: 0.96,
                 screenshotRetentionSeconds: 0,
-                toolCardExpansionMode: "collapsed",
+                toolActivityDefaultExpansion: "collapsed",
             },
             appearance: {
                 agentsSidebarScale: 1,

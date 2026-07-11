@@ -1786,7 +1786,7 @@ export function getDefaultAiChatSettings(): AppAiChatSettings {
         screenshotRetentionSeconds: 0,
         historyRetentionDays: 0,
         contextUsageBarEnabled: true,
-        toolCardExpansionMode: "collapsed",
+        toolActivityDefaultExpansion: "collapsed",
     };
 }
 
