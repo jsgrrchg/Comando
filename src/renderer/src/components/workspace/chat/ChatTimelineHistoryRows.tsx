@@ -10,7 +10,7 @@ import {
     type RefObject,
 } from "react";
 
-import type { AiToolCardExpansionMode } from "@shared/ipc";
+import { useSettingsStore } from "@renderer/app/store/settings-store";
 import { useShellStore } from "@renderer/app/store/shell-store";
 import {
     MeasuredVirtualList,
@@ -41,19 +41,14 @@ interface ChatTimelineHistoryRowsProps {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly historyRows: readonly ChatTimelineRow[];
-    readonly latestStreamingEditedFileToolRowId: string | null;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onVirtualResizeEnd?: () => void;
     readonly onVirtualResizeAutoFollow?: () => void;
     readonly onVirtualResizeStart?: () => void;
-    readonly renderRow: (params: {
-        readonly isLatestStreamingTool: boolean;
-        readonly row: ChatTimelineRow;
-    }) => ReactNode;
+    readonly renderRow: (params: { readonly row: ChatTimelineRow }) => ReactNode;
     readonly scrollRef: RefObject<HTMLElement | null>;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
-    readonly toolCardExpansionMode: AiToolCardExpansionMode;
 }
 
 export function resolveChatTimelineFrozenContentWidth(input: {
@@ -80,7 +75,6 @@ export const ChatTimelineHistoryRows = memo(
         chatFontFamily,
         chatFontSize,
         historyRows,
-        latestStreamingEditedFileToolRowId,
         onVirtualRangeChange,
         onVirtualResizeEnd,
         onVirtualResizeAutoFollow,
@@ -89,9 +83,11 @@ export const ChatTimelineHistoryRows = memo(
         scrollRef,
         shouldPreserveVirtualMeasureAnchor,
         shouldPreserveVirtualResizeAnchor,
-        toolCardExpansionMode,
     }: ChatTimelineHistoryRowsProps) {
         const historyRef = useRef<HTMLDivElement | null>(null);
+        const toolActivityDefaultExpansion = useSettingsStore(
+            (state) => state.aiChat.toolActivityDefaultExpansion,
+        );
         const pendingResizeAnchorFrameRef = useRef<number | null>(null);
         const pendingResizeAnchorRef =
             useRef<MeasuredVirtualViewportAnchor | null>(null);
@@ -346,24 +342,21 @@ export const ChatTimelineHistoryRows = memo(
         // identity key simply ignores the width bucket it carries.
         const buildRowContext = useCallback(
             (
-                row: ChatTimelineRow,
+                _row: ChatTimelineRow,
                 index: number,
             ): ChatTimelineRowMeasurementContext => ({
                 chatFontFamily,
                 chatFontSize,
                 gapPx: resolveRowGapPx(index),
-                isLatestStreamingTool:
-                    row.id === latestStreamingEditedFileToolRowId,
-                toolCardExpansionMode,
+                toolActivityDefaultExpansion,
                 width: contentMeasurementWidth,
             }),
             [
                 chatFontFamily,
                 contentMeasurementWidth,
                 chatFontSize,
-                latestStreamingEditedFileToolRowId,
                 resolveRowGapPx,
-                toolCardExpansionMode,
+                toolActivityDefaultExpansion,
             ],
         );
 
@@ -407,16 +400,11 @@ export const ChatTimelineHistoryRows = memo(
                                 : undefined
                         }
                     >
-                        {renderRow({
-                            isLatestStreamingTool:
-                                item.id === latestStreamingEditedFileToolRowId,
-                            row: item,
-                        })}
+                        {renderRow({ row: item })}
                     </div>
                 );
             },
             [
-                latestStreamingEditedFileToolRowId,
                 renderRow,
                 resolveRowGapPx,
             ],
@@ -427,12 +415,7 @@ export const ChatTimelineHistoryRows = memo(
                 <>
                     {historyRows.map((row) => (
                         <Fragment key={row.id}>
-                            {renderRow({
-                                isLatestStreamingTool:
-                                    row.id ===
-                                    latestStreamingEditedFileToolRowId,
-                                row,
-                            })}
+                            {renderRow({ row })}
                         </Fragment>
                     ))}
                 </>

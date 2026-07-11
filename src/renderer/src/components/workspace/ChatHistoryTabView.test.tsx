@@ -423,7 +423,6 @@ describe("ChatHistoryTabLayout", () => {
                 totalMessages: 1,
             },
             sessions: [session],
-            toolCardExpansionMode: "expanded",
             transcriptMessages: [
                 {
                     attachments: [],
@@ -435,6 +434,15 @@ describe("ChatHistoryTabLayout", () => {
                 },
             ],
         });
+        const groupButton = container.querySelector<HTMLButtonElement>(
+            'button[aria-label^="Show full activity:"]',
+        );
+        expect(groupButton).not.toBeNull();
+
+        act(() => {
+            groupButton?.click();
+        });
+
         const expandButton = container.querySelector<HTMLButtonElement>(
             'button[aria-label="Expand details"]',
         );

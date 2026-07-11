@@ -39,6 +39,22 @@ describe("composerParts", () => {
         ]);
     });
 
+    it("keeps the full selection preview in composer mentions", () => {
+        const selectedText =
+            "const descriptiveVariableName = buildSomethingWithoutTruncation();";
+        const parts = appendSelectionMentionPart([], {
+            endLine: 12,
+            path: "src/app.ts",
+            selectedText,
+            startLine: 12,
+        });
+
+        expect(parts.find((part) => part.type === "selection_mention")).toMatchObject({
+            label: `(12) - ${selectedText}`,
+            type: "selection_mention",
+        });
+    });
+
     it("serializes selection mentions for the prompt as line references", () => {
         const parts: AIComposerPart[] = [
             { type: "text", text: "Inspect " },

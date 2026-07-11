@@ -19,7 +19,6 @@ import {
     ACTIVE_AI_RUNTIME_IDS,
     type ActiveAiRuntimeId,
 } from "@shared/ai-runtimes";
-import { truncateChatTitle } from "@shared/chatTitle";
 
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
@@ -48,11 +47,9 @@ import {
     type ContextMenuState,
 } from "@renderer/components/context-menu/ContextMenu";
 import {
-    formatHistoryMessageCount,
     formatHistoryRelativeDateCompact,
     getHistoryRuntimeLabel,
 } from "@renderer/components/workspace/chat-history/historyPresentation";
-import { getHistoryPreviewText } from "@renderer/components/workspace/chat-history/historyPreview";
 import {
     buildAiSessionHierarchyGroups,
     countAiHistorySessionChildren,
@@ -65,6 +62,7 @@ import {
     resolveWorkspaceChatTabActivityIndicator,
     type WorkspaceChatTabActivityIndicator,
 } from "@renderer/components/workspace/workspaceTabActivity";
+import { ProviderIcon } from "@renderer/components/workspace/ProviderIcon";
 
 import {
     applySessionUpdateToSidebarHistory,
@@ -98,7 +96,6 @@ type SidebarAgentDragPreview = {
     readonly y: number;
 };
 
-const SIDEBAR_AGENTS_TITLE_MAX_CHARS = 48;
 const SIDEBAR_AGENTS_REFRESH_DEBOUNCE_MS = 800;
 const EMPTY_AGENTS_SESSIONS: readonly AiHistorySessionSummary[] = [];
 const EMPTY_COLLAPSED_IDS: ReadonlySet<string> = new Set();
@@ -1104,7 +1101,7 @@ export function SidebarAgentsPanel({
                     onClose={() => setNewAgentMenu(null)}
                 />
             ) : null}
-        </div>
+            </div>
     );
 }
 
@@ -1285,21 +1282,10 @@ function SidebarAgentsItem({
     const [dragPreview, setDragPreview] =
         useState<SidebarAgentDragPreview | null>(null);
     const [isPointerTracking, setIsPointerTracking] = useState(false);
-    const preview = getHistoryPreviewText(session);
-    const title = truncateChatTitle(session.title, SIDEBAR_AGENTS_TITLE_MAX_CHARS);
+    const title = session.title.trim();
     const isPinned = isSessionPinned(session);
     const isTerminalAgent = isClaudeCodeSidebarSession(session);
     const activity = useAgentActivityIndicator(session.sessionId);
-    const timestampLabel = activity
-        ? activity.tone === "danger"
-            ? "Error"
-            : "Working…"
-        : formatHistoryRelativeDateCompact(session.updatedAt);
-    const timestampClassName = activity
-        ? activity.tone === "danger"
-            ? "text-rose-500"
-            : "text-(--diff-warn)"
-        : "text-text-secondary";
     const indentStyle =
         depth > 0
             ? { paddingLeft: `${8 + Math.min(depth, 4) * 14}px` }
@@ -1560,6 +1546,16 @@ function SidebarAgentsItem({
                         <ChevronIcon collapsed={isCollapsed} />
                     </button>
                 ) : null}
+                <ProviderIcon
+                    className="sidebar-agents-provider-icon shrink-0 text-text-secondary"
+                    opacity={0.72}
+                    runtimeId={
+                        isTerminalAgent
+                            ? "claude"
+                            : (session.runtimeId as AiRuntimeId)
+                    }
+                    size={12}
+                />
                 <SidebarAgentActivityDot indicator={activity} />
                 {isRenaming ? (
                     <input
@@ -1616,46 +1612,10 @@ function SidebarAgentsItem({
                     </button>
                 )}
                 {isRenaming ? null : (
-                    <span
-                        className={`sidebar-agents-timestamp shrink-0 text-[10px] ${timestampClassName}`}
-                        title={activity?.title}
-                    >
-                        {timestampLabel}
+                    <span className="sidebar-agents-compact-relative-time shrink-0 text-[10px] text-text-secondary">
+                        {formatHistoryRelativeDateCompact(session.updatedAt)}
                     </span>
                 )}
-            </div>
-            <p className="sidebar-agents-preview line-clamp-1 w-full text-left text-[10.5px] leading-[1.35] text-text-secondary">
-                {preview}
-            </p>
-            <div className="sidebar-agents-meta flex w-full min-w-0 items-center gap-1.5 text-[10px] text-text-secondary">
-                {isSubagent ? (
-                    <>
-                        <span
-                            className="shrink-0 rounded-[3px] px-1 text-[9px] font-medium"
-                            style={{
-                                color: "var(--color-accent)",
-                                background:
-                                    "color-mix(in srgb, var(--color-accent) 14%, transparent)",
-                            }}
-                        >
-                            Agent
-                        </span>
-                        <span aria-hidden="true" className="shrink-0">
-                            ·
-                        </span>
-                    </>
-                ) : null}
-                <span className="shrink-0">
-                    {getSidebarAgentRuntimeLabel(session)}
-                </span>
-                <span aria-hidden="true" className="shrink-0">
-                    ·
-                </span>
-                <span className="shrink-0">
-                    {isTerminalAgent
-                        ? "Terminal"
-                        : formatHistoryMessageCount(session.messageCount)}
-                </span>
             </div>
             </div>
             {dragPreview && typeof document !== "undefined"

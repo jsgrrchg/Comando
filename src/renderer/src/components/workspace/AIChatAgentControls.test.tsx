@@ -60,6 +60,43 @@ const SUBAGENT_CONFIG_OPTIONS: readonly AiSessionConfigOption[] = [
     },
 ];
 
+const GPT_5_6_MODEL_CONFIG_OPTIONS: readonly AiSessionConfigOption[] = [
+    {
+        category: "model",
+        description: null,
+        id: "model",
+        label: "Model",
+        options: [
+            {
+                description: null,
+                groupLabel: "GPT 5.6",
+                label: "Sol",
+                value: "gpt-5.6-sol",
+            },
+            {
+                description: null,
+                groupLabel: "GPT 5.6",
+                label: "Terra",
+                value: "gpt-5.6-terra",
+            },
+            {
+                description: null,
+                groupLabel: "GPT 5.6",
+                label: "Luna",
+                value: "gpt-5.6-luna",
+            },
+            {
+                description: null,
+                groupLabel: "Other models",
+                label: "gpt-5.5",
+                value: "gpt-5.5",
+            },
+        ],
+        type: "select",
+        value: "gpt-5.6-terra",
+    },
+];
+
 function mountControls(
     overrides: Partial<Parameters<typeof AIChatAgentControls>[0]> = {},
 ) {
@@ -179,6 +216,33 @@ describe("AIChatAgentControls", () => {
         expect(onConfigOptionChange).toHaveBeenCalledWith(
             "codex-reasoning-effort",
             "low",
+        );
+    });
+
+    it("expands GPT-5.6 variants and shows the selected variant label", () => {
+        const onConfigOptionChange = vi.fn();
+        const { container } = mountControls({
+            configOptions: GPT_5_6_MODEL_CONFIG_OPTIONS,
+            modelId: "gpt-5.6-terra",
+            onConfigOptionChange,
+        });
+
+        const modelButton = getButtonByTitle(container, "Model");
+        expect(modelButton.textContent).toContain("Terra");
+        expect(modelButton.textContent).not.toContain("GPT 5.6");
+
+        click(modelButton);
+        const groupButton = getButtonByText(document.body, "GPT 5.6");
+        expect(groupButton.getAttribute("aria-expanded")).toBe("false");
+        expect(() => getButtonByText(document.body, "Sol")).toThrow();
+
+        click(groupButton);
+        expect(groupButton.getAttribute("aria-expanded")).toBe("true");
+
+        click(getButtonByText(document.body, "Sol"));
+        expect(onConfigOptionChange).toHaveBeenCalledWith(
+            "model",
+            "gpt-5.6-sol",
         );
     });
 });

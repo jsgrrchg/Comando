@@ -8,6 +8,13 @@ import {
     type ReactElement,
 } from "react";
 
+import {
+    formatComposerDisplaySelectionLabel,
+    parseComposerDisplayFileMention,
+    parseComposerDisplayFolderMention,
+    parseComposerDisplaySelectionMention,
+} from "@shared/composer-display-markers";
+
 import { extractFenceLanguageToken } from "../../app/editor/codeLanguage";
 import { openExternalUrl } from "../../app/utils/external-url";
 import {
@@ -22,19 +29,20 @@ import {
     type ContextMenuState,
 } from "../context-menu/ContextMenu";
 import { useTextContextMenu } from "../context-menu/useTextContextMenu";
+import { FileTypeIcon } from "../icons/FileTypeIcon";
+import { FolderTypeIcon } from "../icons/FolderTypeIcon";
 import { DiffLineView } from "./review/DiffLineView";
 import {
     DIFF_PANEL_MAX_HEIGHT,
     computeUnifiedDiffLines,
 } from "./review/reviewDiff";
-import {
-    getChatCodeBlockFontSize,
-    getChatCodeLabelFontSize,
-} from "./chat/chatCodeSizing";
+import { getChatCodeBlockFontSize } from "./chat/chatCodeSizing";
 import { ChatInlinePill } from "./chat/ChatInlinePill";
 import { getChatPillMetrics } from "./chat/chatPillMetrics";
 import { type ChatPillVariant } from "./chat/chatPillPalette";
+import { MarkdownCodeFrame } from "./MarkdownCodeFrame";
 import {
+    parseProjectFileReference,
     type ResolvedProjectFileReference,
 } from "./projectFileReferences";
 
@@ -321,7 +329,7 @@ function getSerializedPillDisplayLabel(label: string): string {
 const EXPLICIT_RELATIVE_PATH_RE = /^\.{1,2}[\\/]/;
 const FILE_URL_RE = /^file:\/\//i;
 const RAW_TEXT_FILE_REFERENCE_RE =
-    /file:\/\/[^\s<>"'`()[\]{}]+|(?:[A-Za-z]:[\\/]|\\\\|\/|\.{1,2}[\\/]|[A-Za-z0-9_@.-]+[\\/])[^\s<>"'`()[\]{}]+/gi;
+    /file:\/\/[^\s<>"'`()[\]{}]+|(?:[A-Za-z]:[\\/]|\\\\|\/|\.{1,2}[\\/]|[A-Za-z0-9_@.-]+[\\/])[^\s<>"'`()[\]{}]+(?:\s*\((?:line|lines)\s+\d+(?:\s*[-–]\s*\d+)?\))?|\b[A-Za-z0-9_@.-]+\.[A-Za-z0-9]+(?:\s*\((?:line|lines)\s+\d+(?:\s*[-–]\s*\d+)?\))?/gi;
 const RAW_GIT_COMMIT_REFERENCE_RE =
     /\b(?:commit|revision|sha)\s*:?\s*([0-9a-f]{7,40})\b/gi;
 const KNOWN_EXTENSIONLESS_FILE_NAMES = new Set([
@@ -455,8 +463,62 @@ function getFileReferenceName(reference: ResolvedProjectFileReference): string {
     return reference.relativePath.split("/").pop() ?? reference.relativePath;
 }
 
+function resolveTrustedComposerReference(
+    target: string,
+    resolveFileReference: InlineOptions["resolveFileReference"],
+): ResolvedProjectFileReference | null {
+    const resolved = resolveFileReference?.(target) ?? null;
+    if (resolved) {
+        return resolved;
+    }
+
+    const parsed = parseProjectFileReference(target);
+    if (!parsed || parsed.isAbsolute) {
+        return null;
+    }
+
+    return {
+        ...parsed,
+        relativePath: parsed.path,
+    };
+}
+
+function createTrustedSelectionReference(
+    path: string,
+    startLine: number,
+    endLine: number,
+): ResolvedProjectFileReference | null {
+    const normalizedPath = path.replaceAll("\\", "/").replace(/^\.\//, "");
+    if (
+        !normalizedPath ||
+        normalizedPath === ".." ||
+        normalizedPath.startsWith("../") ||
+        normalizedPath.startsWith("/") ||
+        /^[A-Za-z]:\//.test(normalizedPath)
+    ) {
+        return null;
+    }
+
+    return {
+        endLine,
+        isAbsolute: false,
+        path: normalizedPath,
+        relativePath: normalizedPath,
+        startLine,
+    };
+}
+
 function getRawReferenceLocationSuffix(rawReference: string): string {
     const trimmedReference = rawReference.trim();
+    const naturalLineMatch = trimmedReference.match(
+        /\((line|lines)\s+(\d+)(?:\s*[-–]\s*(\d+))?\)$/i,
+    );
+    if (naturalLineMatch) {
+        return naturalLineMatch[3]
+            ? ` (lines ${naturalLineMatch[2]}-${naturalLineMatch[3]})`
+            : ` (line ${naturalLineMatch[2]})`;
+    }
+
     const trailingLineMatch = trimmedReference.match(
         /:(\d+)(?::(\d+))?(?:[.,;!?])?$/,
     );
@@ -539,9 +601,17 @@ function renderFileReferencePill({
 }): ReactElement {
     return (
         <ChatInlinePill
+            appearance="link"
             interactive
             key={key}
             label={label}
+            leadingVisual={
+                <FileTypeIcon
+                    fileName={resolvedReference.relativePath}
+                    opacity={1}
+                    size={Math.max(11, Math.min(14, metrics.fontSize))}
+                />
+            }
             metrics={metrics}
             onClick={() => onOpenFile(resolvedReference)}
             onContextMenu={(event) =>
@@ -915,18 +985,194 @@ function renderInline(
             }
 
             const pillLabel = text.slice(tokenIndex + 2, pillEndIndex);
+            const fileMention = parseComposerDisplayFileMention(pillLabel);
+            const fallbackFileMention = parseComposerDisplayFileMention(pillLabel);
+            const folderMention = parseComposerDisplayFolderMention(pillLabel);
+            const selectionMention =
+                parseComposerDisplaySelectionMention(pillLabel);
+            const legacyFileTarget =
+                !fileMention &&
+                !folderMention &&
+                !selectionMention &&
+                pillLabel.startsWith("@")
+                    ? pillLabel.slice(1).trim()
+                    : null;
             const displayLabel = getSerializedPillDisplayLabel(pillLabel);
             const variant = getPillVariant(pillLabel);
             const pillMetrics = options?.metrics ?? getChatPillMetrics(14);
-            parts.push(
-                <ChatInlinePill
-                    key={key++}
-                    label={displayLabel}
-                    metrics={pillMetrics}
-                    title={pillLabel}
-                    variant={variant}
-                />,
-            );
+            const resolvedFileMention = fileMention
+                ? resolveTrustedComposerReference(
+                      fileMention.relativePath,
+                      options?.resolveFileReference,
+                  )
+                : null;
+            const selectionTarget = selectionMention
+                ? `${selectionMention.path}:${selectionMention.startLine}-${selectionMention.endLine}`
+                : null;
+            const resolvedSelectionMention = selectionTarget
+                ? (options?.resolveFileReference?.(selectionTarget) ??
+                  (selectionMention
+                      ? createTrustedSelectionReference(
+                            selectionMention.path,
+                            selectionMention.startLine,
+                            selectionMention.endLine,
+                        )
+                      : null))
+                : null;
+            const resolvedLegacyFileMention = legacyFileTarget
+                ? (options?.resolveFileReference?.(legacyFileTarget) ?? null)
+                : null;
+            if (folderMention) {
+                parts.push(
+                    <ChatInlinePill
+                        appearance="link"
+                        key={key++}
+                        label={`@${folderMention.label}`}
+                        leadingVisual={
+                            <FolderTypeIcon
+                                folderName={folderMention.folderPath}
+                                opacity={1}
+                                open={false}
+                                size={Math.max(
+                                    11,
+                                    Math.min(14, pillMetrics.fontSize),
+                                )}
+                            />
+                        }
+                        metrics={pillMetrics}
+                        title={folderMention.folderPath}
+                        variant="folder"
+                    />,
+                );
+            } else if (
+                fileMention &&
+                resolvedFileMention &&
+                options?.onOpenFile
+            ) {
+                parts.push(
+                    renderFileReferencePill({
+                        key: key++,
+                        label: `@${fileMention.label}`,
+                        metrics: pillMetrics,
+                        onFileContextMenu: options.onFileContextMenu,
+                        onOpenFile: options.onOpenFile,
+                        rawReference: fileMention.relativePath,
+                        resolvedReference: resolvedFileMention,
+                    }),
+                );
+            } else if (
+                selectionMention &&
+                selectionTarget &&
+                resolvedSelectionMention &&
+                options?.onOpenFile
+            ) {
+                parts.push(
+                    renderFileReferencePill({
+                        key: key++,
+                        label: formatComposerDisplaySelectionLabel(
+                            selectionMention,
+                        ),
+                        metrics: pillMetrics,
+                        onFileContextMenu: options.onFileContextMenu,
+                        onOpenFile: options.onOpenFile,
+                        rawReference: selectionTarget,
+                        resolvedReference: resolvedSelectionMention,
+                    }),
+                );
+            } else if (
+                legacyFileTarget &&
+                resolvedLegacyFileMention &&
+                options?.onOpenFile &&
+                canRenderResolvedFileReferencePill(
+                    legacyFileTarget,
+                    resolvedLegacyFileMention,
+                    "markdown_link",
+                    options,
+                )
+            ) {
+                parts.push(
+                    renderFileReferencePill({
+                        key: key++,
+                        label: `@${legacyFileTarget}`,
+                        metrics: pillMetrics,
+                        onFileContextMenu: options.onFileContextMenu,
+                        onOpenFile: options.onOpenFile,
+                        rawReference: legacyFileTarget,
+                        resolvedReference: resolvedLegacyFileMention,
+                    }),
+                );
+            } else if (fallbackFileMention) {
+                parts.push(
+                    <ChatInlinePill
+                        appearance="link"
+                        key={key++}
+                        label={`@${fallbackFileMention.label}`}
+                        leadingVisual={
+                            <FileTypeIcon
+                                fileName={fallbackFileMention.relativePath}
+                                opacity={1}
+                                size={Math.max(
+                                    11,
+                                    Math.min(14, pillMetrics.fontSize),
+                                )}
+                            />
+                        }
+                        metrics={pillMetrics}
+                        title={fallbackFileMention.relativePath}
+                        variant="file"
+                    />,
+                );
+            } else if (
+                legacyFileTarget &&
+                getPillVariant(pillLabel) === "file"
+            ) {
+                parts.push(
+                    <ChatInlinePill
+                        appearance="link"
+                        key={key++}
+                        label={`@${legacyFileTarget}`}
+                        leadingVisual={
+                            <FileTypeIcon
+                                fileName={legacyFileTarget}
+                                opacity={1}
+                                size={Math.max(
+                                    11,
+                                    Math.min(14, pillMetrics.fontSize),
+                                )}
+                            />
+                        }
+                        metrics={pillMetrics}
+                        title={legacyFileTarget}
+                        variant="file"
+                    />,
+                );
+            } else {
+                parts.push(
+                    <ChatInlinePill
+                        key={key++}
+                        label={
+                            fileMention
+                                ? `@${fileMention.label}`
+                                : selectionMention
+                                  ? formatComposerDisplaySelectionLabel(
+                                        selectionMention,
+                                    )
+                                  : displayLabel
+                        }
+                        metrics={pillMetrics}
+                        title={
+                            fileMention?.relativePath ??
+                            selectionTarget ??
+                            pillLabel
+                        }
+                        variant={
+                            fileMention || selectionMention
+                                ? "file"
+                                : variant
+                        }
+                    />,
+                );
+            }
             cursor = pillEndIndex + 2;
             continue;
         }
@@ -969,14 +1215,8 @@ function renderInline(
             } else {
                 parts.push(
                     <code
+                        className="chat-inline-code"
                         key={key++}
-                        style={{
-                            backgroundColor: "var(--color-bg-tertiary)",
-                            borderRadius: 4,
-                            color: "var(--color-accent)",
-                            fontSize: "0.85em",
-                            padding: "1px 5px",
-                        }}
                     >
                         {codeText}
                     </code>,
@@ -1539,43 +1779,6 @@ function parseList(
     };
 }
 
-/* ─── Copy button SVG icons ─── */
-
-function CopyIcon() {
-    return (
-        <svg
-            fill="none"
-            height="11"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="1.5"
-            viewBox="0 0 14 14"
-            width="11"
-        >
-            <rect x="5" y="3" width="6" height="8" rx="1.2" />
-            <path d="M3.5 9.5H3A1 1 0 012 8.5v-5A1.5 1.5 0 013.5 2H8" />
-        </svg>
-    );
-}
-
-function CheckIcon() {
-    return (
-        <svg
-            fill="none"
-            height="11"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="1.5"
-            viewBox="0 0 14 14"
-            width="11"
-        >
-            <path d="M3 7l2.2 2.2L11 3.8" />
-        </svg>
-    );
-}
-
 /* ─── Code block ─── */
 
 function CodeBlock({
@@ -1585,7 +1788,6 @@ function CodeBlock({
     readonly block: Block;
     readonly chatFontSize?: number;
 }) {
-    const [copied, setCopied] = useState(false);
     const languageSupport = useMarkdownCodeLanguageSupport(block.info);
     const languageToken = extractFenceLanguageToken(block.info ?? "");
     const isDiffBlock =
@@ -1596,88 +1798,20 @@ function CodeBlock({
         [block.content, isDiffBlock],
     );
     const codeFontSize = getChatCodeBlockFontSize(chatFontSize);
-    const languageLabel =
-        languageToken?.toLowerCase() === "md"
-            ? "Markdown"
-            : (languageToken ?? block.info?.trim());
-
-    const handleCopy = useCallback(() => {
-        void navigator.clipboard.writeText(block.content).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1200);
-        });
-    }, [block.content]);
-
-    const copyButton = (
-        <button
-            aria-label="Copy code block"
-            onClick={handleCopy}
-            onMouseEnter={(e) => {
-                e.currentTarget.style.opacity = "1";
-            }}
-            onMouseLeave={(e) => {
-                e.currentTarget.style.opacity = "0.9";
-            }}
-            title={copied ? "Copied" : "Copy"}
-            style={{
-                alignItems: "center",
-                backgroundColor:
-                    "color-mix(in srgb, var(--color-bg-elevated) 92%, transparent)",
-                border: "1px solid var(--color-border)",
-                borderRadius: 6,
-                color: copied
-                    ? "var(--color-accent)"
-                    : "var(--color-text-secondary)",
-                cursor: "pointer",
-                display: "inline-flex",
-                height: 22,
-                justifyContent: "center",
-                opacity: 0.9,
-                transition: "opacity 100ms ease, background-color 100ms ease",
-                width: 22,
-            }}
-            type="button"
-        >
-            {copied ? <CheckIcon /> : <CopyIcon />}
-        </button>
-    );
 
     return (
-        <div
-            className="group relative my-2 min-w-0 max-w-full select-none overflow-hidden rounded-lg"
-            style={{
-                backgroundColor: "var(--color-bg-tertiary)",
-                border: "1px solid var(--color-border)",
-            }}
+        <MarkdownCodeFrame
+            className="my-1 min-w-0 max-w-full"
+            codeText={block.content}
+            language={languageToken}
         >
-            {languageLabel ? (
-                <div
-                    className="flex items-center justify-between px-3 py-2 pr-9"
-                    style={{
-                        borderBottom: "1px solid var(--color-border)",
-                        color: "var(--color-text-secondary)",
-                        fontSize: getChatCodeLabelFontSize(chatFontSize),
-                        letterSpacing: "0.06em",
-                        textTransform: "uppercase",
-                    }}
-                >
-                    <span>{languageLabel}</span>
-                </div>
-            ) : null}
-            <div
-                className="absolute right-2"
-                style={{ top: languageLabel ? 5 : 8 }}
-            >
-                {copyButton}
-            </div>
             <pre
-                className="select-text overflow-x-auto p-3"
+                className="markdown-code-block chat-markdown-code-block select-text"
                 style={{
                     color: "var(--color-text-primary)",
                     fontFamily: "var(--font-mono)",
                     fontSize: codeFontSize,
-                    lineHeight: 1.6,
-                    margin: 0,
+                    lineHeight: 1.55,
                     overflowWrap: "anywhere",
                     whiteSpace: "pre-wrap",
                     wordBreak: "break-word",
@@ -1721,7 +1855,7 @@ function CodeBlock({
                     </code>
                 )}
             </pre>
-        </div>
+        </MarkdownCodeFrame>
     );
 }
 

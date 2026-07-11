@@ -387,6 +387,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             return;
         }
         await this.#client.request("ai_delete_session", { sessionId });
+        this.#forgetSession(sessionId);
     }
 
     async renameSession(input: AiSessionRenameMutationInput): Promise<void> {
@@ -542,20 +543,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         }
 
         if (this.#subagentParentSessionIds.has(sessionId)) {
-            const subtreeSessionIds = this.#collectSessionSubtreeIds(sessionId);
-            for (const descendantSessionId of [...subtreeSessionIds].reverse()) {
-                try {
-                    await this.cancelSession(descendantSessionId);
-                } catch (error) {
-                    if (!isCleanupSessionNotFoundError(error)) {
-                        throw error;
-                    }
-                }
-            }
-            for (const descendantSessionId of [...subtreeSessionIds].reverse()) {
-                this.#emitLocalSubagentClosed(descendantSessionId);
-            }
-            this.#forgetSession(sessionId);
+            // A child close is a view detach. ACP has no target-aware close primitive.
             return;
         }
 
@@ -936,27 +924,6 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             ...event,
             parentSessionId,
         };
-    }
-
-    #emitLocalSubagentClosed(sessionId: string): void {
-        const parentSessionId = this.#subagentParentSessionIds.get(sessionId);
-        const ownerWindowId = this.#sessionOwners.get(sessionId);
-        const runtimeId = this.#sessionRuntimeIds.get(sessionId);
-        if (!parentSessionId || !ownerWindowId || !runtimeId) {
-            return;
-        }
-
-        const closedAt = new Date().toISOString();
-        this.#onSessionEvent(ownerWindowId, {
-            closedAt,
-            kind: "session-closed",
-            origin: "live",
-            parentSessionId,
-            runtimeId,
-            runtimeSessionId: this.#runtimeSessionIds.get(sessionId) ?? null,
-            sessionId,
-            updatedAt: closedAt,
-        });
     }
 
     #restoreOwner(sessionId: string, previousOwner: string | undefined): void {

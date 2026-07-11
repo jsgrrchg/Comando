@@ -134,6 +134,30 @@ describe("transcriptModel", () => {
         expect(transcript.lastTurnStartedMessageId).toBe("status:active-turn");
     });
 
+    it("keeps repeated tool ids distinct across sessions", () => {
+        const transcript = buildAiSessionTranscriptModel({
+            messages: [],
+            toolActivity: [
+                createToolActivity(),
+                createToolActivity({
+                    createdAt: "2026-04-14T00:00:02.000Z",
+                    sessionId: "session-2",
+                    updatedAt: "2026-04-14T00:00:02.000Z",
+                }),
+            ],
+        });
+
+        expect(transcript.messageOrder).toEqual([
+            "tool:session-1:tool-1",
+            "tool:session-2:tool-1",
+        ]);
+        expect(
+            getAiSessionTranscriptToolActivity(transcript).map(
+                (activity) => activity.sessionId,
+            ),
+        ).toEqual(["session-1", "session-2"]);
+    });
+
     it("hides persisted encrypted inter-agent transport payloads", () => {
         const encryptedPayload =
             "gAAAAABqUCwGM4iUSPpzoPf1Tn5y6lh72L_8dnVbmdOR42YZ9KRaUwUBCY14DMmdBOIOmjd2HW3l6SSCckLSjJ6KebNzsXzG9m8pajAOwQ2UxYazsFGhYP6jzx7KqOsnwWhMaOxcXDla5KQQwB66JlYo6rFxvUoIfpBeLEJY6ErSJ_KAjNlUkoU=";

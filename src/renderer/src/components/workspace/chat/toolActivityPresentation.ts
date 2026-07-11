@@ -59,6 +59,7 @@ function isKnownGroupableActivity(entry: ToolActivityReviewEntry): boolean {
     }
 
     return (
+        activity.status === "pending" ||
         activity.status === "in_progress" ||
         (activity.status === "completed" && activity.exitCode === 0)
     );

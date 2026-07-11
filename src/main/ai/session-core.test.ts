@@ -11,10 +11,54 @@ import {
     normalizeAiSessionHierarchy,
     normalizeRestoredAiSessionSnapshot,
     resolveSessionScopedPath,
+    serializeComposerPartsForDisplay,
     setConfigOptionOnSnapshot,
     setManualTitleOnSnapshot,
     setRuntimeTitleOnSnapshot,
 } from "./session-core";
+
+describe("composer display serialization", () => {
+    it("preserves file mention paths for the user timeline", () => {
+        const serialized = serializeComposerPartsForDisplay(
+            [
+                {
+                    label: "thread.rs",
+                    languageId: "rust",
+                    path: "/workspace/vendor/codex-acp/src/thread.rs",
+                    relativePath: "vendor/codex-acp/src/thread.rs",
+                    type: "file_mention",
+                },
+            ],
+            "fallback",
+        );
+
+        expect(serialized).toContain(
+            "file|vendor%2Fcodex-acp%2Fsrc%2Fthread.rs|thread.rs",
+        );
+        expect(serialized).not.toContain("/workspace");
+    });
+
+    it("preserves selection paths and line ranges for the user timeline", () => {
+        const serialized = serializeComposerPartsForDisplay(
+            [
+                {
+                    endLine: 14,
+                    label: "(8:14) - selected code",
+                    path: "src/elicitation.ts",
+                    selectedText: "selected code",
+                    startLine: 8,
+                    type: "selection_mention",
+                },
+            ],
+            "fallback",
+        );
+
+        expect(serialized).toContain(
+            "selection|src%2Felicitation.ts|8|14|(8%3A14)%20-%20selected%20code",
+        );
+        expect(serialized).not.toContain("selected code selected code");
+    });
+});
 
 describe("restored Codex activity normalization", () => {
     it("repairs a self-referential root snapshot without preserving its derived close state", () => {

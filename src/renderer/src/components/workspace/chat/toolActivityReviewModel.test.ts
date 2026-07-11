@@ -93,6 +93,23 @@ describe("toolActivityReviewModel", () => {
         ).toEqual(["tracked-2", "tracked-1"]);
     });
 
+    it("scopes explicit tool-call matches to the activity session", () => {
+        const activity = createActivity();
+        const trackedFiles = [
+            createTrackedFile({ identityKey: "current-session" }),
+            createTrackedFile({
+                identityKey: "other-session",
+                sessionId: "session-2",
+            }),
+        ];
+
+        expect(
+            deriveTrackedFilesForToolActivity(activity, trackedFiles).map(
+                (trackedFile) => trackedFile.identityKey,
+            ),
+        ).toEqual(["current-session"]);
+    });
+
     it("uses path fallback only when match is unique", () => {
         const activity = createActivity({
             diffs: [
@@ -118,6 +135,47 @@ describe("toolActivityReviewModel", () => {
                 (candidate) => candidate.identityKey,
             ),
         ).toEqual(["tracked-1"]);
+    });
+
+    it("uses structured raw input when native locations are missing", () => {
+        const activity = createActivity({
+            id: "tool-without-link",
+            kind: "read",
+            locations: [],
+            rawInputJson: JSON.stringify({ file_path: "src/app.ts" }),
+        });
+        const trackedFile = createTrackedFile({ toolCallId: null });
+
+        expect(
+            deriveTrackedFilesForToolActivity(activity, [trackedFile]).map(
+                (candidate) => candidate.identityKey,
+            ),
+        ).toEqual(["tracked-1"]);
+    });
+
+    it("scopes raw-input path fallback to the activity session", () => {
+        const activity = createActivity({
+            id: "tool-without-link",
+            kind: "read",
+            rawInputJson: JSON.stringify({ file_path: "src/app.ts" }),
+        });
+        const trackedFiles = [
+            createTrackedFile({
+                identityKey: "current-session",
+                toolCallId: null,
+            }),
+            createTrackedFile({
+                identityKey: "other-session",
+                sessionId: "session-2",
+                toolCallId: null,
+            }),
+        ];
+
+        expect(
+            deriveTrackedFilesForToolActivity(activity, trackedFiles).map(
+                (trackedFile) => trackedFile.identityKey,
+            ),
+        ).toEqual(["current-session"]);
     });
 
     it("uses normalized path fallback for Windows separator aliases", () => {

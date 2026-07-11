@@ -11,6 +11,9 @@ import {
     applyReasoningEffortToConfigOptions,
     isReasoningEffortConfigOption,
 } from "@shared/ai-config-options";
+import {
+    serializeComposerMessagePartsForDisplay,
+} from "@shared/composer-display-markers";
 import type {
     AiAvailableCommand,
     AiRuntimeId,
@@ -981,46 +984,11 @@ export function setConfigOptionOnSnapshot(
     };
 }
 
-const PILL_OPEN = "\u200B\u00AB";
-const PILL_CLOSE = "\u00BB\u200B";
-
 export function serializeComposerPartsForDisplay(
     parts: SendAiPromptInput["composerParts"] | undefined,
     fallback: string,
 ): string {
-    if (!parts || parts.length === 0) {
-        return fallback;
-    }
-
-    return parts
-        .map((part) => {
-            switch (part.type) {
-                case "text":
-                    return part.text;
-                case "file_mention":
-                    return `${PILL_OPEN}@${part.label}${PILL_CLOSE}`;
-                case "folder_mention":
-                    return `${PILL_OPEN}@${part.label}${PILL_CLOSE}`;
-                case "fetch_mention":
-                    return `${PILL_OPEN}@fetch${PILL_CLOSE}`;
-                case "plan_mention":
-                    return `${PILL_OPEN}/plan${PILL_CLOSE}`;
-                case "selection_mention":
-                    return `${PILL_OPEN}${part.label}${PILL_CLOSE}`;
-                case "file_attachment":
-                    return `${PILL_OPEN}📎${part.label}${PILL_CLOSE}`;
-                case "git_commit_mention":
-                    return `${PILL_OPEN}commit: ${part.label}${PILL_CLOSE}`;
-                case "github_issue_mention":
-                    return `${PILL_OPEN}${part.label}${PILL_CLOSE}`;
-                case "github_pull_request_mention":
-                    return `${PILL_OPEN}${part.label}${PILL_CLOSE}`;
-                default:
-                    return "";
-            }
-        })
-        .join("")
-        .trim();
+    return serializeComposerMessagePartsForDisplay(parts, fallback);
 }
 
 export function normalizeAdditionalRoots(

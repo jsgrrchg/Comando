@@ -38,6 +38,7 @@ import type {
     OpenCodeRuntimeSettingsInput,
     SecretValuePatch,
 } from "@shared/ipc";
+import { serializeComposerMessagePartsForDisplay } from "@shared/composer-display-markers";
 import {
     deriveTrackedFilesFromActionLog,
     isReviewTargetVersionCurrent,
@@ -2917,19 +2918,29 @@ function normalizeIncomingActivePromptEcho(
     const messages: AiMessage[] = [];
 
     for (const message of incomingSnapshot.messages) {
+        const isCanonicalOptimisticMessage =
+            message.kind === "user" && message.id === optimisticMessageId;
         const isActivePromptEcho =
             message.kind === "user" &&
             message.id !== optimisticMessageId &&
             isTimestampAtOrAfter(message.createdAt, activeQueuedPrompt.createdAt) &&
             message.content === promptContent;
-        const nextMessage = isActivePromptEcho
+        const nextMessage = isCanonicalOptimisticMessage
+            ? {
+                  ...message,
+                  content: promptContent,
+              }
+            : isActivePromptEcho
             ? {
                   ...message,
                   id: optimisticMessageId,
               }
             : message;
 
-        if (isActivePromptEcho) {
+        if (
+            isActivePromptEcho ||
+            (isCanonicalOptimisticMessage && message.content !== promptContent)
+        ) {
             changed = true;
         }
 
@@ -3014,8 +3025,17 @@ function normalizeIncomingActivePromptEvent(
             };
         case "message-delta":
             if (
+                event.messageKind === "user" &&
+                event.messageId === optimisticMessageId
+            ) {
+                return {
+                    ...event,
+                    content: promptContent,
+                    delta: promptContent,
+                };
+            }
+            if (
                 event.messageKind !== "user" ||
-                event.messageId === optimisticMessageId ||
                 !isActivePromptEchoContent(event, promptContent)
             ) {
                 return event;
@@ -3480,31 +3500,10 @@ function completeLocalStreamingMessages(
 }
 
 function getQueuedPromptDisplayContent(queuedPrompt: QueuedPrompt): string {
-    if (queuedPrompt.prompt.trim()) {
-        return queuedPrompt.prompt.trim();
-    }
-
-    return queuedPrompt.composerPartsSnapshot
-        .map((part) => {
-            switch (part.type) {
-                case "text":
-                    return part.text;
-                case "file_mention":
-                case "folder_mention":
-                case "file_attachment":
-                case "git_commit_mention":
-                case "github_issue_mention":
-                case "github_pull_request_mention":
-                case "selection_mention":
-                    return part.label;
-                case "fetch_mention":
-                    return "@fetch";
-                case "plan_mention":
-                    return "/plan";
-            }
-        })
-        .join("")
-        .trim();
+    return serializeComposerMessagePartsForDisplay(
+        queuedPrompt.composerPartsSnapshot,
+        queuedPrompt.prompt,
+    );
 }
 
 function createQueuedPromptEditState(input: {

@@ -1,4 +1,4 @@
-import type { AiToolCardExpansionMode } from "@shared/ipc";
+import type { AiToolActivityDefaultExpansion } from "@shared/ipc";
 
 import { CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 import type { ChatTimelineRow } from "./chatTimelineModel";
@@ -16,6 +16,11 @@ export const CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT = 720;
 export const CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX = 8;
 export const CHAT_TIMELINE_VIRTUAL_WIDTH_BUCKET_PX = 24;
 export const CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX = CHAT_CONTENT_MAX_WIDTH_PX;
+export const CHAT_ACTIVITY_RAIL_HEADER_HEIGHT_PX = 40;
+export const CHAT_ACTIVITY_RAIL_CONTENT_TOP_PX = 4;
+export const CHAT_ACTIVITY_RAIL_ENTRY_GAP_PX = 6;
+export const CHAT_ACTIVITY_RAIL_ENTRY_PADDING_Y_PX = 4;
+export const CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX = 28;
 
 interface ShouldVirtualizeChatTimelineOptions {
     readonly enabled?: boolean;
@@ -25,8 +30,7 @@ interface ShouldVirtualizeChatTimelineOptions {
 export interface ChatTimelineRowEstimateContext {
     readonly chatFontSize?: number;
     readonly gapPx?: number;
-    readonly isLatestStreamingTool?: boolean;
-    readonly toolCardExpansionMode: AiToolCardExpansionMode;
+    readonly toolActivityDefaultExpansion?: AiToolActivityDefaultExpansion;
     readonly width?: number;
 }
 
@@ -65,8 +69,7 @@ function getChatTimelineRowLayoutBase(
         context.chatFontFamily ?? "default",
         context.chatFontSize ?? "default",
         context.gapPx ?? 0,
-        context.isLatestStreamingTool ? "latest" : "history",
-        context.toolCardExpansionMode,
+        context.toolActivityDefaultExpansion ?? "collapsed",
     ].join(":");
 }
 
@@ -213,10 +216,35 @@ export function estimateChatTimelineRowHeight(
     }
 
     if (row.kind === "activity-segment") {
-        return gapPx;
+        if (context.toolActivityDefaultExpansion !== "expanded") {
+            return Math.ceil(CHAT_ACTIVITY_RAIL_HEADER_HEIGHT_PX + gapPx);
+        }
+
+        const activityHeight = row.entries.reduce(
+            (height, entry, index) =>
+                height +
+                (entry.policy === "groupable"
+                    ? CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX
+                    : estimateToolActivityHeight(
+                          entry.reviewEntry,
+                          context,
+                          true,
+                      )) +
+                CHAT_ACTIVITY_RAIL_ENTRY_PADDING_Y_PX +
+                (index > 0 ? CHAT_ACTIVITY_RAIL_ENTRY_GAP_PX : 0),
+            0,
+        );
+        return Math.ceil(
+            CHAT_ACTIVITY_RAIL_HEADER_HEIGHT_PX +
+                CHAT_ACTIVITY_RAIL_CONTENT_TOP_PX +
+                activityHeight +
+                gapPx,
+        );
     }
 
-    return Math.ceil(estimateToolRowHeight(row, context) + gapPx);
+    return Math.ceil(
+        estimateToolActivityHeight(row.reviewEntry, context) + gapPx,
+    );
 }
 
 function estimateMessageRowHeight(
@@ -231,15 +259,21 @@ function estimateMessageRowHeight(
     }
 
     const content = message.content ?? "";
+    const availableCharacters = estimateCharactersPerLine(
+        context.width,
+        chatFontSize,
+    );
     const estimatedLines = estimateTextLines(
         content,
-        estimateCharactersPerLine(context.width, chatFontSize),
+        message.kind === "user" && (context.width ?? 0) > 420
+            ? Math.max(24, Math.floor(availableCharacters * 0.7))
+            : availableCharacters,
     );
     const contentHeight = Math.min(340, estimatedLines * 18 * fontScale);
     const codeBlockCount = countCodeBlocks(content);
     const attachmentHeight = message.attachments.length * 48;
     const imageHeight = message.generatedImage ? 190 : 0;
-    const baseHeight = message.kind === "user" ? 54 : 72;
+    const baseHeight = message.kind === "user" ? 74 : 72;
 
     return (
         baseHeight +
@@ -269,21 +303,20 @@ function estimateCharactersPerLine(
     );
 }
 
-function estimateToolRowHeight(
-    row: Extract<ChatTimelineRow, { readonly kind: "tool" }>,
-    context: ChatTimelineRowEstimateContext,
+function estimateToolActivityHeight(
+    reviewEntry: Extract<
+        ChatTimelineRow,
+        { readonly kind: "tool" }
+    >["reviewEntry"],
+    _context: ChatTimelineRowEstimateContext,
+    compactTerminal = false,
 ): number {
-    const activity = row.reviewEntry.activity;
-    const trackedFiles = row.reviewEntry.trackedFiles;
+    const activity = reviewEntry.activity;
+    const trackedFiles = reviewEntry.trackedFiles;
     const hasInlineReview = trackedFiles.length > 0 || activity.diffs.length > 0;
-    const hasLocations = activity.locations.length > 0;
     const hasTerminalOutput = !!activity.terminalOutput;
     const hasSummary = !!activity.summary;
     const hasRawJson = !!activity.rawInputJson || !!activity.rawOutputJson;
-    const isExpandedByMode =
-        context.toolCardExpansionMode === "expanded" ||
-        (context.toolCardExpansionMode === "latest" &&
-            context.isLatestStreamingTool === true);
 
     if (isTurnStartedActivity(activity)) {
         return 48;
@@ -294,11 +327,16 @@ function estimateToolRowHeight(
     }
 
     if (isTerminalToolActivity(activity)) {
+        if (compactTerminal) {
+            return CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX;
+        }
         const startsExpanded =
             hasTerminalOutput &&
             (activity.status === "failed" ||
                 (activity.exitCode !== null && activity.exitCode !== 0));
-        return startsExpanded ? 210 : 42;
+        return startsExpanded
+            ? 210
+            : CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX;
     }
 
     if (hasInlineReview) {
@@ -309,25 +347,15 @@ function estimateToolRowHeight(
         );
         const collapsedHeight = Math.min(
             220,
-            collapsedItemCount * 44 +
+            collapsedItemCount * CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX +
                 Math.max(0, collapsedItemCount - 1) *
-                    CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+                    CHAT_ACTIVITY_RAIL_ENTRY_PADDING_Y_PX,
         );
-        const detailHeight = Math.min(
-            360,
-            activity.diffs.length * 82 + trackedFiles.length * 58,
-        );
-        return isExpandedByMode ? 132 + detailHeight : collapsedHeight;
+        return collapsedHeight;
     }
 
     if (isFileToolActivity(activity, trackedFiles)) {
-        const hasDetail = hasSummary || hasLocations || activity.diffs.length > 0;
-        const detailHeight =
-            (hasSummary ? 76 : 0) +
-            (hasLocations ? Math.min(96, activity.locations.length * 28) : 0) +
-            Math.min(240, activity.diffs.length * 72);
-
-        return hasDetail && isExpandedByMode ? 64 + detailHeight : 42;
+        return 42;
     }
 
     if (activity.status === "failed") {

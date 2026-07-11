@@ -40,8 +40,14 @@ interface DropdownOption {
     readonly value: string;
 }
 
+interface DropdownOptionGroup {
+    readonly label: string | null;
+    readonly options: readonly DropdownOption[];
+}
+
 interface DropdownFieldProps {
     readonly buttonLabel?: string;
+    readonly collapsibleGroupLabels?: readonly string[];
     readonly disabled?: boolean;
     readonly emptySearchMessage?: string;
     readonly label: string;
@@ -57,6 +63,8 @@ interface DropdownMenuPosition {
     readonly x: number;
     readonly y: number;
 }
+
+const GPT_5_6_MODEL_GROUP = "GPT 5.6";
 
 function formatFallbackLabel(value: string): string {
     if (value.trim().includes(" ")) {
@@ -75,6 +83,24 @@ function formatFallbackLabel(value: string): string {
             return token.charAt(0).toUpperCase() + token.slice(1);
         })
         .join(" ");
+}
+
+function groupDropdownOptions(
+    options: readonly DropdownOption[],
+): readonly DropdownOptionGroup[] {
+    const groups: Array<{ label: string | null; options: DropdownOption[] }> = [];
+
+    for (const option of options) {
+        const label = option.groupLabel?.trim() || null;
+        const group = groups.find((candidate) => candidate.label === label);
+        if (group) {
+            group.options.push(option);
+        } else {
+            groups.push({ label, options: [option] });
+        }
+    }
+
+    return groups;
 }
 
 function ChevronIcon({ open }: { readonly open: boolean }) {
@@ -101,6 +127,7 @@ function ChevronIcon({ open }: { readonly open: boolean }) {
 
 function DropdownField({
     buttonLabel,
+    collapsibleGroupLabels = [],
     disabled = false,
     emptySearchMessage = "No matches found.",
     label,
@@ -112,6 +139,9 @@ function DropdownField({
 }: DropdownFieldProps) {
     const [isOpen, setIsOpen] = useState(false);
     const [query, setQuery] = useState("");
+    const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
+        () => new Set(),
+    );
     const containerRef = useRef<HTMLDivElement | null>(null);
     const buttonRef = useRef<HTMLButtonElement | null>(null);
     const menuRef = useRef<HTMLDivElement | null>(null);
@@ -137,6 +167,37 @@ function DropdownField({
             return haystack.includes(normalizedQuery);
         });
     }, [options, query, searchable]);
+    const collapsibleGroupKey = collapsibleGroupLabels.join("\u0000");
+    const collapsibleGroups = useMemo(
+        () =>
+            new Set(collapsibleGroupKey.split("\u0000").filter(Boolean)),
+        [collapsibleGroupKey],
+    );
+    const hasActiveSearch = searchable && query.trim().length > 0;
+    const optionGroups = useMemo(
+        () =>
+            collapsibleGroups.size > 0
+                ? groupDropdownOptions(filteredOptions)
+                : [{ label: null, options: filteredOptions }],
+        [collapsibleGroups, filteredOptions],
+    );
+    const visibleRowCount = useMemo(
+        () =>
+            optionGroups.reduce((count, group) => {
+                const isCollapsible =
+                    group.label !== null && collapsibleGroups.has(group.label);
+                const isExpanded =
+                    !isCollapsible ||
+                    hasActiveSearch ||
+                    expandedGroups.has(group.label ?? "");
+                return (
+                    count +
+                    (group.label === null ? 0 : 1) +
+                    (isExpanded ? group.options.length : 0)
+                );
+            }, 0),
+        [collapsibleGroups, expandedGroups, hasActiveSearch, optionGroups],
+    );
 
     const updateMenuPosition = useCallback(() => {
         const button = buttonRef.current;
@@ -151,7 +212,7 @@ function DropdownField({
         );
         const estimatedHeight = Math.min(
             288,
-            filteredOptions.length * 32 + (searchable ? 52 : 0) + 8,
+            visibleRowCount * 32 + (searchable ? 52 : 0) + 8,
         );
         const height = Math.ceil(measuredMenuRect?.height ?? estimatedHeight);
         const spaceAbove = buttonRect.top - 8;
@@ -173,7 +234,7 @@ function DropdownField({
             x: safePosition.x,
             y: safePosition.y,
         });
-    }, [filteredOptions.length, searchable]);
+    }, [searchable, visibleRowCount]);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -183,6 +244,7 @@ function DropdownField({
             if (menuRef.current?.contains(target)) return;
             setIsOpen(false);
             setQuery("");
+            setExpandedGroups(new Set());
         };
         document.addEventListener("mousedown", handlePointerDown);
         return () =>
@@ -224,8 +286,12 @@ function DropdownField({
                 ref={buttonRef}
                 onClick={() => {
                     if (isDisabled) return;
-                    setIsOpen((current) => !current);
+                    const nextIsOpen = !isOpen;
+                    setIsOpen(nextIsOpen);
                     setQuery("");
+                    if (nextIsOpen) {
+                        setExpandedGroups(new Set());
+                    }
                 }}
                 onMouseEnter={(e) => {
                     if (!isDisabled) {
@@ -311,53 +377,157 @@ function DropdownField({
                                       {emptySearchMessage}
                                   </div>
                               ) : (
-                                  filteredOptions.map((option) => (
-                                      <button
-                                          className="app-no-drag flex min-w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-xs transition"
-                                          key={`${option.groupLabel ?? "default"}:${option.value}`}
-                                          onClick={() => {
-                                              onChange(option.value);
-                                              setIsOpen(false);
-                                              setQuery("");
-                                          }}
-                                          onMouseEnter={(e) => {
-                                              e.currentTarget.style.backgroundColor =
-                                                  "var(--color-bg-tertiary)";
-                                          }}
-                                          onMouseLeave={(e) => {
-                                              e.currentTarget.style.backgroundColor =
-                                                  "transparent";
-                                          }}
-                                          style={{
-                                              backgroundColor: "transparent",
-                                              border: "none",
-                                              color:
-                                                  option.value === value
-                                                      ? "var(--color-accent)"
-                                                      : "var(--color-text-primary)",
-                                              width: "max-content",
-                                              transition:
-                                                  "background-color 100ms ease",
-                                          }}
-                                          type="button"
-                                      >
-                                          <div className="whitespace-nowrap">
-                                              <div>
-                                                  {option.groupLabel ? (
-                                                      <span
+                                  optionGroups.map((group) => {
+                                      const isCollapsible =
+                                          group.label !== null &&
+                                          collapsibleGroups.has(group.label);
+                                      const isExpanded =
+                                          !isCollapsible ||
+                                          hasActiveSearch ||
+                                          expandedGroups.has(group.label ?? "");
+
+                                      return (
+                                          <div
+                                              key={group.label ?? "ungrouped"}
+                                          >
+                                              {group.label ? (
+                                                  isCollapsible ? (
+                                                      <button
+                                                          aria-expanded={isExpanded}
+                                                          className="app-no-drag flex min-w-full items-center justify-between gap-2 rounded-md px-3 py-1.5 text-left text-xs transition"
+                                                          onClick={() => {
+                                                              setExpandedGroups(
+                                                                  (current) => {
+                                                                      const next =
+                                                                          new Set(
+                                                                              current,
+                                                                          );
+                                                                      if (
+                                                                          next.has(
+                                                                              group.label ??
+                                                                                  "",
+                                                                          )
+                                                                      ) {
+                                                                          next.delete(
+                                                                              group.label ??
+                                                                                  "",
+                                                                          );
+                                                                      } else {
+                                                                          next.add(
+                                                                              group.label ??
+                                                                                  "",
+                                                                          );
+                                                                      }
+                                                                      return next;
+                                                                  },
+                                                              );
+                                                          }}
+                                                          onMouseEnter={(e) => {
+                                                              e.currentTarget.style.backgroundColor =
+                                                                  "var(--color-bg-tertiary)";
+                                                          }}
+                                                          onMouseLeave={(e) => {
+                                                              e.currentTarget.style.backgroundColor =
+                                                                  "transparent";
+                                                          }}
+                                                          style={{
+                                                              backgroundColor:
+                                                                  "transparent",
+                                                              border: "none",
+                                                              color: "var(--color-text-primary)",
+                                                              transition:
+                                                                  "background-color 100ms ease",
+                                                          }}
+                                                          type="button"
+                                                      >
+                                                          <span className="whitespace-nowrap">
+                                                              {group.label}
+                                                          </span>
+                                                          <ChevronIcon
+                                                              open={isExpanded}
+                                                          />
+                                                      </button>
+                                                  ) : (
+                                                      <div
+                                                          className="px-3 pb-1 pt-2 text-[11px]"
                                                           style={{
                                                               color: "var(--color-text-secondary)",
                                                           }}
                                                       >
-                                                          {option.groupLabel}{" "}
-                                                          /{" "}
-                                                      </span>
-                                                  ) : null}
-                                                  <span>{option.label}</span>
-                                              </div>
+                                                          {group.label}
+                                                      </div>
+                                                  )
+                                              ) : null}
+
+                                              {isExpanded
+                                                  ? group.options.map((option) => (
+                                                        <button
+                                                            className={`app-no-drag flex min-w-full items-center gap-2 rounded-md py-1.5 text-left text-xs transition ${
+                                                                isCollapsible
+                                                                    ? "pl-7 pr-3"
+                                                                    : "px-3"
+                                                            }`}
+                                                            key={`${option.groupLabel ?? "default"}:${option.value}`}
+                                                            onClick={() => {
+                                                                onChange(
+                                                                    option.value,
+                                                                );
+                                                                setIsOpen(false);
+                                                                setQuery("");
+                                                                setExpandedGroups(
+                                                                    new Set(),
+                                                                );
+                                                            }}
+                                                            onMouseEnter={(e) => {
+                                                                e.currentTarget.style.backgroundColor =
+                                                                    "var(--color-bg-tertiary)";
+                                                            }}
+                                                            onMouseLeave={(e) => {
+                                                                e.currentTarget.style.backgroundColor =
+                                                                    "transparent";
+                                                            }}
+                                                            style={{
+                                                                backgroundColor:
+                                                                    "transparent",
+                                                                border: "none",
+                                                                color:
+                                                                    option.value ===
+                                                                    value
+                                                                        ? "var(--color-accent)"
+                                                                        : "var(--color-text-primary)",
+                                                                width: "max-content",
+                                                                transition:
+                                                                    "background-color 100ms ease",
+                                                            }}
+                                                            type="button"
+                                                        >
+                                                            <div className="whitespace-nowrap">
+                                                                <div>
+                                                                    {collapsibleGroups.size ===
+                                                                        0 &&
+                                                                    option.groupLabel ? (
+                                                                        <span
+                                                                            style={{
+                                                                                color: "var(--color-text-secondary)",
+                                                                            }}
+                                                                        >
+                                                                            {
+                                                                                option.groupLabel
+                                                                            }{" "}
+                                                                            /{" "}
+                                                                        </span>
+                                                                    ) : null}
+                                                                    <span>
+                                                                        {option.label}
+                                                                    </span>
+                                                                </div>
+                                                            </div>
+                                                        </button>
+                                                    ))
+                                                  : null}
                                           </div>
-                                      </button>
-                                  ))
+                                      );
+                                  })
                               )}
                           </div>
                       </div>,
@@ -570,6 +740,7 @@ export function AIChatAgentControls({
 
             {visibleModels.length > 0 ? (
                 <DropdownField
+                    collapsibleGroupLabels={[GPT_5_6_MODEL_GROUP]}
                     disabled={disabled}
                     emptySearchMessage={`No ${runtimeId} models match that search.`}
                     label="Model"

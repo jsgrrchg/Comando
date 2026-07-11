@@ -9,9 +9,9 @@ import type {
 
 import { DEFAULT_AI_DIFF_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
+import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 import type { ResolvedProjectFileReference } from "../projectFileReferences";
 import { EditedFileDiffPreview } from "../review/EditedFileDiffPreview";
-import { getNeutralButtonStyle } from "../review/reviewStyles";
 import { formatDiffStat, getFileNameFromPath } from "../review/reviewDiff";
 import {
     deriveChangeReviewItems,
@@ -19,20 +19,11 @@ import {
 } from "./toolActivityReviewModel";
 import { ResizableDiffContainer } from "./ResizableDiffContainer";
 import { usePersistentToolExpansion } from "./toolExpansionStore";
-import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
-
-const TOOL_ACTION_BUTTON_STYLE: CSSProperties = {
-    borderRadius: 8,
-    fontSize: "0.74em",
-    fontWeight: 600,
-    minHeight: 24,
-    padding: "0 10px",
-};
 
 function getFlatDiffStatStyle(color: string): CSSProperties {
     return {
         color,
-        fontSize: "0.74em",
+        fontSize: "0.9em",
         fontWeight: 700,
     };
 }
@@ -194,191 +185,134 @@ function renderStatus(activity: AiToolActivity) {
     return null;
 }
 
-function ChangeReviewFileCard({
+function ChangeReviewRailRow({
     activity,
-    defaultExpanded = false,
     diffZoom,
-    forceExpanded = false,
     item,
     onOpen,
 }: {
     readonly activity: AiToolActivity;
-    readonly defaultExpanded?: boolean;
     readonly diffZoom: number;
-    readonly forceExpanded?: boolean;
     readonly item: ChangeReviewItem;
     readonly onOpen: (() => void) | null;
 }) {
     // Persist expansion (and the diff height below) in the timeline scroller so
-    // it survives this card unmounting when its virtualized row scrolls out of
-    // view. The reset key still encodes the expansion mode, so switching modes
-    // re-hydrates to the mode's default exactly as before.
-    const resetKey = `${activity.id}:${item.key}:${
-        defaultExpanded ? "open" : "closed"
-    }:${forceExpanded ? "forced" : "free"}`;
+    // it survives this row unmounting when its virtualized entry scrolls out of
+    // view. Diffs always start collapsed; only an explicit user action opens
+    // their preview.
+    const resetKey = `${activity.id}:${item.key}`;
     const [expanded, setExpanded] = usePersistentToolExpansion(
         resetKey,
-        defaultExpanded,
+        false,
     );
-    const resolvedExpanded = forceExpanded ? true : expanded;
     const accent = getPanelAccent(activity);
     const actionLabel = getActivityActionLabel(activity.kind);
-    const summaryLabel = `${actionLabel} ${getFileNameFromPath(item.path)}`;
+    const fileName = getFileNameFromPath(item.path);
 
     return (
         <div
-            className="min-w-0 max-w-full select-none overflow-hidden rounded-lg"
+            className="min-w-0 max-w-full select-none"
+            data-change-review-surface="rail-row"
             style={{
-                backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--color-bg-secondary))`,
-                border: `1px solid color-mix(in srgb, ${accent} 24%, var(--color-border))`,
+                color: "var(--color-text-secondary)",
+                fontFamily: "var(--font-mono), ui-monospace, monospace",
+                fontSize: "0.82em",
             }}
         >
-            <div
-                style={{
-                    alignItems: "center",
-                    borderBottom: resolvedExpanded
-                        ? `1px solid color-mix(in srgb, ${accent} 14%, var(--color-border))`
-                        : "1px solid transparent",
-                    display: "grid",
-                    gap: 12,
-                    gridTemplateColumns: "minmax(0, 1fr) auto",
-                    padding: "7px 12px",
-                }}
-            >
-                <button
-                    aria-label={
-                        forceExpanded
-                            ? "Inline diff review expanded"
-                            : `${resolvedExpanded ? "Collapse" : "Expand"} inline diff review`
-                    }
-                    onClick={() => {
-                        if (forceExpanded) {
-                            return;
-                        }
-
-                        setExpanded((previous) => !previous);
-                    }}
+            <div className="flex min-h-7 w-full min-w-0 items-center gap-2">
+                <span
+                    aria-hidden="true"
+                    className="shrink-0"
                     style={{
-                        alignItems: "center",
-                        background: "none",
-                        border: "none",
-                        color: "inherit",
-                        cursor: forceExpanded ? "default" : "pointer",
-                        display: "flex",
-                        gap: 10,
-                        minWidth: 0,
-                        padding: 0,
-                        textAlign: "left",
+                        color: accent,
+                        display: "inline-flex",
                     }}
-                    type="button"
                 >
-                    <span
-                        style={{
-                            color: "var(--color-text-secondary)",
-                            flexShrink: 0,
-                        }}
+                    {activity.status === "failed" ? (
+                        <WarningIcon />
+                    ) : (
+                        <FileTypeIcon
+                            fileName={item.path}
+                            opacity={0.85}
+                            size={14}
+                        />
+                    )}
+                </span>
+                <span className="shrink-0 opacity-70">{actionLabel}</span>
+                {onOpen ? (
+                    <button
+                        aria-label={`Open ${item.path}`}
+                        className="app-no-drag min-w-0 truncate text-left text-text-primary underline decoration-text-secondary/40 underline-offset-2 hover:decoration-current focus-visible:rounded-sm focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--color-accent)]"
+                        onClick={onOpen}
+                        title={item.path}
+                        type="button"
                     >
-                        <Chevron expanded={resolvedExpanded} />
+                        {fileName}
+                    </button>
+                ) : (
+                    <span
+                        className="min-w-0 truncate text-text-primary"
+                        title={item.path}
+                    >
+                        {fileName}
                     </span>
-                    <span className="shrink-0" style={{ color: accent }}>
-                        {activity.status === "failed" ? (
-                            <WarningIcon />
-                        ) : (
-                            <FileTypeIcon
-                                fileName={item.path}
-                                opacity={0.85}
-                                size={14}
-                            />
+                )}
+                <span className="min-w-0 flex-1" />
+                {item.tone.badge ? (
+                    <span
+                        className="shrink-0 text-[10px] font-medium"
+                        style={{ color: item.tone.accent }}
+                    >
+                        {getBadgeLabel(item)}
+                    </span>
+                ) : null}
+                {item.stats.additions > 0 ? (
+                    <span style={getFlatDiffStatStyle("var(--diff-add)")}>
+                        +
+                        {formatDiffStat(
+                            item.stats.additions,
+                            item.stats.approximate,
                         )}
                     </span>
-                    <div className="min-w-0">
-                        <div className="flex min-w-0 items-center gap-2">
-                            <span
-                                className="truncate"
-                                style={{
-                                    color: "var(--color-text-primary)",
-                                    fontSize: "0.84em",
-                                    fontWeight: 400,
-                                }}
-                            >
-                                {summaryLabel}
-                            </span>
-                            {item.tone.badge ? (
-                                <span
-                                    style={{
-                                        backgroundColor: `color-mix(in srgb, ${item.tone.accent} 10%, transparent)`,
-                                        borderRadius: 999,
-                                        color: item.tone.accent,
-                                        fontSize: "0.62em",
-                                        fontWeight: 700,
-                                        letterSpacing: "0.04em",
-                                        padding: "2px 6px",
-                                        textTransform: "uppercase",
-                                    }}
-                                >
-                                    {getBadgeLabel(item)}
-                                </span>
-                            ) : null}
-                        </div>
-                    </div>
+                ) : null}
+                {item.stats.deletions > 0 ? (
+                    <span style={getFlatDiffStatStyle("var(--diff-remove)")}>
+                        -
+                        {formatDiffStat(
+                            item.stats.deletions,
+                            item.stats.approximate,
+                        )}
+                    </span>
+                ) : null}
+                {renderStatus(activity)}
+                <button
+                    aria-label={
+                        `${expanded ? "Collapse" : "Expand"} inline diff review`
+                    }
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-secondary hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--color-accent)]"
+                    onClick={() => setExpanded((previous) => !previous)}
+                    type="button"
+                >
+                    <Chevron expanded={expanded} />
                 </button>
-
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                    {item.stats.additions > 0 ? (
-                        <span style={getFlatDiffStatStyle("var(--diff-add)")}>
-                            +
-                            {formatDiffStat(
-                                item.stats.additions,
-                                item.stats.approximate,
-                            )}
-                        </span>
-                    ) : null}
-                    {item.stats.deletions > 0 ? (
-                        <span
-                            style={getFlatDiffStatStyle("var(--diff-remove)")}
-                        >
-                            -
-                            {formatDiffStat(
-                                item.stats.deletions,
-                                item.stats.approximate,
-                            )}
-                        </span>
-                    ) : null}
-                    {onOpen ? (
-                        <button
-                            aria-label="Open File"
-                            className="review-text-btn"
-                            onClick={onOpen}
-                            style={{
-                                ...getNeutralButtonStyle(),
-                                ...TOOL_ACTION_BUTTON_STYLE,
-                                transition:
-                                    "background-color 100ms ease, opacity 100ms ease, transform 90ms ease, filter 90ms ease",
-                            }}
-                            title="Open File"
-                            type="button"
-                        >
-                            Open
-                        </button>
-                    ) : null}
-                    {renderStatus(activity)}
-                </div>
             </div>
 
-            {resolvedExpanded ? (
-                <ResizableDiffContainer
-                    accent={accent}
-                    persistKey={`${activity.id}:${item.key}:diff-height`}
-                >
-                    <EditedFileDiffPreview
-                        compactLineNumbers
-                        diff={item.diff}
-                        diffZoom={diffZoom}
-                        expanded={resolvedExpanded}
-                        file={item.file ?? undefined}
-                        testId={`change-review-panel:${item.key}`}
-                    />
-                </ResizableDiffContainer>
+            {expanded ? (
+                <div className="ml-5 mt-1 overflow-hidden border-l border-border pl-2">
+                    <ResizableDiffContainer
+                        accent={accent}
+                        persistKey={`${activity.id}:${item.key}:diff-height`}
+                    >
+                        <EditedFileDiffPreview
+                            compactLineNumbers
+                            diff={item.diff}
+                            diffZoom={diffZoom}
+                            expanded={expanded}
+                            file={item.file ?? undefined}
+                            testId={`change-review-panel:${item.key}`}
+                        />
+                    </ResizableDiffContainer>
+                </div>
             ) : null}
         </div>
     );
@@ -386,9 +320,6 @@ function ChangeReviewFileCard({
 
 export interface ChangeReviewPanelProps {
     readonly activity: AiToolActivity;
-    readonly defaultExpanded?: boolean;
-    readonly defaultExpandedFileKeys?: readonly string[];
-    readonly forceExpanded?: boolean;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -406,9 +337,6 @@ export interface ChangeReviewPanelProps {
 
 export const ChangeReviewPanel = memo(function ChangeReviewPanel({
     activity,
-    defaultExpanded = false,
-    defaultExpandedFileKeys = [],
-    forceExpanded = false,
     onOpenFile,
     projectId,
     resolveFileReference,
@@ -463,11 +391,9 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
         }
 
         return (
-            <ChangeReviewFileCard
+            <ChangeReviewRailRow
                 activity={activity}
-                defaultExpanded={defaultExpanded}
                 diffZoom={diffZoom}
-                forceExpanded={forceExpanded}
                 item={singleItem}
                 onOpen={
                     canOpenItem(singleItem, projectId, resolveFileReference)
@@ -478,20 +404,12 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
         );
     }
 
-    const defaultExpandedKeys = new Set(defaultExpandedFileKeys);
-
     return (
-        <div className="space-y-2">
+        <div className="space-y-1">
             {items.map((item) => (
-                <ChangeReviewFileCard
+                <ChangeReviewRailRow
                     activity={activity}
-                    defaultExpanded={
-                        defaultExpandedKeys.size > 0
-                            ? defaultExpandedKeys.has(item.key)
-                            : defaultExpanded
-                    }
                     diffZoom={diffZoom}
-                    forceExpanded={forceExpanded}
                     item={item}
                     key={item.key}
                     onOpen={
@@ -513,9 +431,6 @@ function areChangeReviewPanelPropsEqual(
 ) {
     return (
         previous.activity === next.activity &&
-        previous.defaultExpanded === next.defaultExpanded &&
-        previous.defaultExpandedFileKeys === next.defaultExpandedFileKeys &&
-        previous.forceExpanded === next.forceExpanded &&
         previous.projectId === next.projectId &&
         previous.trackedFiles === next.trackedFiles &&
         previous.worktreeId === next.worktreeId

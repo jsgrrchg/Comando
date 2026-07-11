@@ -43,7 +43,7 @@ function createSettingsWindowProps(
             historyRetentionDays: 0,
             requireCmdEnterToSend: false,
             screenshotRetentionSeconds: 0,
-            toolCardExpansionMode: "collapsed",
+            toolActivityDefaultExpansion: "collapsed",
         },
         aiProviders: {
             runtimeStatuses: {},
@@ -139,6 +139,29 @@ describe("SettingsWindow terminal settings", () => {
         );
 
         expect(markup).toContain("Terminal");
+    });
+
+    it("renders the default tool activity expansion preference in AI settings", () => {
+        const props = createSettingsWindowProps({ initialCategory: "ai" });
+        const markup = renderToStaticMarkup(
+            <SettingsWindow {...props} />,
+        );
+        const expandedMarkup = renderToStaticMarkup(
+            <SettingsWindow
+                {...props}
+                aiChat={{
+                    ...props.aiChat,
+                    toolActivityDefaultExpansion: "expanded",
+                }}
+            />,
+        );
+
+        expect(markup).toContain("Tool activity");
+        expect(markup).toContain(
+            "Choose whether tool activity starts collapsed or expanded.",
+        );
+        expect(markup).toContain("Collapsed");
+        expect(expandedMarkup).toContain("Expanded");
     });
 
     it("renders a release notes action in the Updates category", () => {

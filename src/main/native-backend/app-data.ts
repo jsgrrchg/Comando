@@ -21,7 +21,6 @@ import {
     EDITOR_FONT_FAMILY_IDS,
 } from "@shared/typography";
 import type {
-    AiToolCardExpansionMode,
     AiPromptQueueSnapshot,
     AiHistorySessionSummary,
     AiRuntimeId,
@@ -1138,13 +1137,6 @@ function createLegacySettingsSnapshot(
                     settings,
                     "ai.composer.screenshot_retention_seconds",
                 ) ?? defaults.aiChat.screenshotRetentionSeconds,
-            toolCardExpansionMode:
-                parseLegacyToolCardExpansionMode(
-                    readLegacyStringSetting(
-                        settings,
-                        "ai.chat.tool_card_expansion_mode",
-                    ),
-                ) ?? defaults.aiChat.toolCardExpansionMode,
         },
         appearance: {
             ...defaults.appearance,
@@ -1658,15 +1650,6 @@ function parseLegacyThemePreset(
         : null;
 }
 
-function parseLegacyToolCardExpansionMode(
-    value: string | null | undefined,
-): AiToolCardExpansionMode | null {
-    if (value === "collapsed" || value === "latest" || value === "expanded") {
-        return value;
-    }
-    return null;
-}
-
 function normalizeLegacyFontFamily(
     value: string | null | undefined,
 ): (typeof EDITOR_FONT_FAMILY_IDS)[number] | null {
@@ -1792,7 +1775,7 @@ function createDefaultSettingsSnapshot(): CompleteSettingsSnapshot {
             requireCmdEnterToSend: false,
             reviewDiffZoom: 0.96,
             screenshotRetentionSeconds: 0,
-            toolCardExpansionMode: "collapsed",
+            toolActivityDefaultExpansion: "collapsed",
         },
         appearance: {
             agentsSidebarScale: AGENTS_SIDEBAR_SCALE_DEFAULT,
@@ -1821,9 +1804,23 @@ function createDefaultSettingsSnapshot(): CompleteSettingsSnapshot {
 
 function normalizeSettingsSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot {
     const defaults = createDefaultSettingsSnapshot();
+    const persistedAiChat = snapshot.aiChat as
+        | (Partial<AppAiChatSettings> & {
+              readonly toolCardExpansionMode?: unknown;
+          })
+        | undefined;
+    const aiChat = { ...(persistedAiChat ?? {}) };
+    delete aiChat.toolCardExpansionMode;
     return {
         ai: snapshot.ai ?? defaults.ai,
-        aiChat: snapshot.aiChat ?? defaults.aiChat,
+        aiChat: {
+            ...defaults.aiChat,
+            ...aiChat,
+            toolActivityDefaultExpansion:
+                persistedAiChat?.toolActivityDefaultExpansion === "expanded"
+                    ? "expanded"
+                    : "collapsed",
+        },
         appearance: {
             ...defaults.appearance,
             ...(snapshot.appearance ?? {}),

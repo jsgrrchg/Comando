@@ -107,11 +107,10 @@ function createTrackedFile(
 }
 
 describe("ChangeReviewPanel", () => {
-    it("renders single-file case with actions and expandable diff", () => {
+    it("renders a single-file terminal row with a linked file and collapsed diff", () => {
         const markup = renderToStaticMarkup(
             createElement(ChangeReviewPanel, {
                 activity: createActivity(),
-                defaultExpanded: true,
                 onOpenFile: async () => {},
                 projectId: "project-1",
                 trackedFiles: [createTrackedFile()],
@@ -119,16 +118,19 @@ describe("ChangeReviewPanel", () => {
             }),
         );
 
-        expect(markup).toContain("Edited app.ts");
-        expect(markup).toContain("font-weight:400");
-        expect(markup).toContain("Open");
+        expect(markup).toContain(">Edited<");
+        expect(markup).toContain(">app.ts<");
+        expect(markup).toContain('data-change-review-surface="rail-row"');
+        expect(markup).toContain('aria-label="Open src/app.ts"');
+        expect(markup).toContain("ui-monospace");
+        expect(markup).not.toContain("review-text-btn");
         expect(markup).not.toContain("Accept");
         expect(markup).not.toContain("Reject");
-        expect(markup).toContain("Resize diff preview");
-        expect(markup).toContain("change-review-panel:file-1");
+        expect(markup).not.toContain("Resize diff preview");
+        expect(markup).not.toContain("change-review-panel:file-1");
         expect(markup).toContain(">+1<");
         expect(markup).toContain(">-1<");
-        expect(markup).toContain('data-line-wrapping="false"');
+        expect(markup).not.toContain('data-line-wrapping="false"');
         expect(markup).not.toContain(
             "background-color:color-mix(in srgb, var(--diff-add) 8%, var(--color-bg-secondary))",
         );
@@ -137,7 +139,7 @@ describe("ChangeReviewPanel", () => {
         );
     });
 
-    it("renders multi-file case as independent single-file cards", () => {
+    it("renders multi-file case as independent terminal rows", () => {
         const primaryDiff = createActivity().diffs[0];
         if (!primaryDiff) {
             throw new Error("Expected a primary diff for the test.");
@@ -173,8 +175,6 @@ describe("ChangeReviewPanel", () => {
         const markup = renderToStaticMarkup(
             createElement(ChangeReviewPanel, {
                 activity,
-                defaultExpanded: true,
-                defaultExpandedFileKeys: ["file-1"],
                 onOpenFile: async () => {},
                 projectId: "project-1",
                 trackedFiles: [createTrackedFile(), secondaryTrackedFile],
@@ -182,9 +182,10 @@ describe("ChangeReviewPanel", () => {
         );
 
         expect(markup).not.toContain("Edited 2 files");
-        expect(markup).toContain("Edited app.ts");
-        expect(markup).toContain("Edited secondary.ts");
-        expect(markup).toContain("change-review-panel:file-1");
+        expect(markup).toContain(">Edited<");
+        expect(markup).toContain(">app.ts<");
+        expect(markup).toContain(">secondary.ts<");
+        expect(markup).not.toContain("change-review-panel:file-1");
         expect(markup).not.toContain("change-review-panel:file-2");
     });
 
@@ -199,7 +200,6 @@ describe("ChangeReviewPanel", () => {
                         },
                     ],
                 }),
-                defaultExpanded: true,
                 onOpenFile: async () => {},
                 projectId: "project-1",
                 resolveFileReference: (reference) =>
@@ -220,7 +220,9 @@ describe("ChangeReviewPanel", () => {
             }),
         );
 
-        expect(markup).toContain("Open");
+        expect(markup).toContain(
+            'aria-label="Open /workspace/comando/src/app.ts"',
+        );
     });
 
     it("keeps the open action available for UNC tracked paths", () => {
@@ -235,7 +237,6 @@ describe("ChangeReviewPanel", () => {
                         },
                     ],
                 }),
-                defaultExpanded: true,
                 onOpenFile: async () => {},
                 projectId: "project-1",
                 resolveFileReference: (reference) =>
@@ -256,7 +257,7 @@ describe("ChangeReviewPanel", () => {
             }),
         );
 
-        expect(markup).toContain("Open");
+        expect(markup).toContain(`aria-label="Open ${uncPath}`);
     });
 
     it("keeps wrapping enabled for markdown review cards", () => {
@@ -270,7 +271,6 @@ describe("ChangeReviewPanel", () => {
                         },
                     ],
                 }),
-                defaultExpanded: true,
                 onOpenFile: async () => {},
                 projectId: "project-1",
                 trackedFiles: [
@@ -281,6 +281,6 @@ describe("ChangeReviewPanel", () => {
             }),
         );
 
-        expect(markup).toContain('data-line-wrapping="true"');
+        expect(markup).not.toContain('data-line-wrapping="true"');
     });
 });

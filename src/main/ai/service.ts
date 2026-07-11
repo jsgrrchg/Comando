@@ -1746,32 +1746,53 @@ export class AiService {
         }
 
         await this.#requireNativeAiGateway().closeSession(sessionId);
+        if (this.#nativeChildParentSessionIds.has(sessionId)) {
+            this.#detachLiveSession(sessionId);
+            return;
+        }
         this.#clearLiveSession(sessionId);
     }
 
     async deleteSession(sessionId: string): Promise<void> {
-        this.#deletedSessionIds.add(sessionId);
+        const subtreeSessionIds = await this.#collectSessionSubtreeIds(sessionId);
+        for (const subtreeSessionId of subtreeSessionIds) {
+            this.#deletedSessionIds.add(subtreeSessionId);
+        }
         try {
-            if (this.#liveSessionContexts.has(sessionId)) {
+            for (const subtreeSessionId of [...subtreeSessionIds].reverse()) {
+                if (!this.#liveSessionContexts.has(subtreeSessionId)) {
+                    continue;
+                }
                 try {
-                    await this.cancelSession(sessionId);
+                    await this.cancelSession(subtreeSessionId);
                 } catch (error) {
-                    // Closing and deleting the local session state is still safe.
+                    // Deleting the persisted session tree is still safe after an interrupt failure.
                     debugBenignError("ai.service.deleteSession.cancel", error);
                 }
+            }
 
+            if (
+                this.#liveSessionContexts.has(sessionId) &&
+                !this.#nativeChildParentSessionIds.has(sessionId)
+            ) {
                 await this.closeSession(sessionId);
             }
 
             this.#clearLiveSession(sessionId);
-            this.#promptQueue.deleteSession(sessionId);
+            for (const subtreeSessionId of subtreeSessionIds) {
+                this.#promptQueue.deleteSession(subtreeSessionId);
+            }
             if (this.#nativeAi?.shouldHandleHistory()) {
                 await this.#nativeAi.deleteSession(sessionId);
                 return;
             }
-            await this.#persistence.deleteSession(sessionId);
+            for (const subtreeSessionId of [...subtreeSessionIds].reverse()) {
+                await this.#persistence.deleteSession(subtreeSessionId);
+            }
         } catch (error) {
-            this.#deletedSessionIds.delete(sessionId);
+            for (const subtreeSessionId of subtreeSessionIds) {
+                this.#deletedSessionIds.delete(subtreeSessionId);
+            }
             throw error;
         }
     }
@@ -2371,6 +2392,19 @@ export class AiService {
         this.#scheduleSessionRetentionTimer();
     }
 
+    #detachLiveSession(sessionId: string): void {
+        this.#liveSnapshots.delete(sessionId);
+        this.#liveSessionContexts.delete(sessionId);
+        this.#liveSessionTouches.delete(sessionId);
+        this.#freezingSessionIds.delete(sessionId);
+        this.#nativeReviewBaselines.delete(sessionId);
+        this.#recentNativeReviewContexts.delete(sessionId);
+        this.#resolvedReviewVersions.delete(sessionId);
+        this.#reviewMutationChains.delete(sessionId);
+        // Keep the child-to-parent mapping so future runtime events retain their owner.
+        this.#scheduleSessionRetentionTimer();
+    }
+
     #touchLiveSession(sessionId: string): void {
         if (!this.#liveSessionContexts.has(sessionId)) {
             return;
@@ -2479,9 +2513,8 @@ export class AiService {
 
         this.#freezingSessionIds.add(sessionId);
         try {
-            await this.#requireNativeAiGateway().closeSession(sessionId);
+            await this.closeSession(sessionId);
             this.#recordRetentionClose(sessionId, reason);
-            this.#clearLiveSession(sessionId);
         } catch (error) {
             this.#deferSessionRetentionRetry(sessionId);
             debugBenignError("ai.service.freezeNativeSession", error);
@@ -3511,6 +3544,35 @@ export class AiService {
         );
 
         return mappings;
+    }
+
+    async #collectSessionSubtreeIds(sessionId: string): Promise<readonly string[]> {
+        const sessionIds = new Set<string>([sessionId]);
+        const pendingSessionIds = [sessionId];
+        while (pendingSessionIds.length > 0) {
+            const currentSessionId = pendingSessionIds.shift();
+            if (!currentSessionId) {
+                continue;
+            }
+            for (const [childSessionId, parentSessionId] of this
+                .#nativeChildParentSessionIds) {
+                if (
+                    parentSessionId === currentSessionId &&
+                    !sessionIds.has(childSessionId)
+                ) {
+                    sessionIds.add(childSessionId);
+                    pendingSessionIds.push(childSessionId);
+                }
+            }
+        }
+
+        for (const mapping of await this.#listPersistedRuntimeMappingsForParent(
+            sessionId,
+        )) {
+            sessionIds.add(mapping.appSessionId);
+        }
+
+        return [...sessionIds];
     }
 
     async #buildNativePrepareLaunchForSession(
