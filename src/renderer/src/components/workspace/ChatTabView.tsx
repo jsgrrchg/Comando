@@ -1860,6 +1860,7 @@ export const ChatTabView = memo(function ChatTabView({
                     projectId={tab.projectId}
                     resolveFileReference={resolveChatFileReference}
                     scrollRef={scrollRef}
+                    sessionId={tab.sessionId}
                     showJumpToBottom={showJumpToBottom}
                     shouldPreserveVirtualMeasureAnchor={
                         shouldPreserveTimelineVirtualMeasureAnchor
@@ -2348,6 +2349,7 @@ type ChatTimelineProps = {
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
+    readonly sessionId: string;
     readonly showJumpToBottom: boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
@@ -2380,6 +2382,7 @@ const ChatTimeline = memo(function ChatTimeline({
     projectId,
     resolveFileReference,
     scrollRef,
+    sessionId,
     showJumpToBottom,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
@@ -2397,7 +2400,7 @@ const ChatTimeline = memo(function ChatTimeline({
         : "relative min-h-0 min-w-0 flex-1";
 
     return (
-        <ToolExpansionStoreProvider>
+        <ToolExpansionStoreProvider scopeKey={sessionId}>
             <div
                 aria-hidden={covered}
                 className={timelineContainerClassName}
