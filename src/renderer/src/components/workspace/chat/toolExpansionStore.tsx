@@ -2,6 +2,7 @@ import {
     createContext,
     useCallback,
     useContext,
+    useMemo,
     useState,
     type Dispatch,
     type ReactNode,
@@ -9,32 +10,63 @@ import {
 } from "react";
 
 /**
- * Per-tab store of transient tool-card UI state, keyed by a caller-provided
- * string. The timeline virtualizes its history, so a row's `ToolActivityItem`
- * (and the `ChangeReviewPanel` it can render) unmounts when it scrolls out of
- * range and would lose any locally-held state — which card is expanded, how
- * tall the user dragged a diff preview. The store lives in the scroller (which
- * does not unmount on scroll), so that state survives the row remounting.
+ * Store of transient tool-card UI state, keyed by a caller-provided string.
+ * A scoped provider reuses the same store after its chat tab remounts; an
+ * unscoped provider keeps the previous local-only behavior. This lets virtual
+ * rows and inactive chat tabs unmount without losing expansion or diff sizing.
  *
- * The store is a plain Map held in a stable state slot: its identity never
- * changes, so providing it through context does not trigger re-renders. When
+ * The store is a plain Map whose identity remains stable for its scope, so
+ * providing it through context does not trigger unrelated re-renders. When
  * absent (no provider), the hooks degrade to ordinary local state.
  */
 type ToolUiStateStore = Map<string, unknown>;
 
 const ToolUiStateStoreContext = createContext<ToolUiStateStore | null>(null);
+const toolUiStateStoreByScope = new Map<string, ToolUiStateStore>();
+
+export function getScopedToolUiStateStore(
+    scopeKey: string,
+): ToolUiStateStore {
+    const existing = toolUiStateStoreByScope.get(scopeKey);
+    if (existing) {
+        return existing;
+    }
+
+    const store = new Map<string, unknown>();
+    toolUiStateStoreByScope.set(scopeKey, store);
+    return store;
+}
+
+/**
+ * Discards state after its chat session has been permanently deleted. This is
+ * intentionally separate from provider unmounting: virtual rows and inactive
+ * tabs unmount temporarily and must retain their UI state.
+ */
+export function releaseScopedToolUiStateStore(scopeKey: string): void {
+    toolUiStateStoreByScope.delete(scopeKey);
+}
+
+export function resetScopedToolUiStateStoresForTests(): void {
+    toolUiStateStoreByScope.clear();
+}
 
 export function ToolExpansionStoreProvider({
     children,
+    scopeKey,
 }: {
     readonly children: ReactNode;
+    readonly scopeKey?: string;
 }) {
-    // Lazy-initialized once; the Map identity is stable across renders, so the
-    // context value never changes and consumers don't re-render from it.
-    const [store] = useState<ToolUiStateStore>(() => new Map());
+    const store = useMemo(
+        () =>
+            scopeKey
+                ? getScopedToolUiStateStore(scopeKey)
+                : new Map<string, unknown>(),
+        [scopeKey],
+    );
 
     return (
-        <ToolUiStateStoreContext.Provider value={store}>
+        <ToolUiStateStoreContext.Provider key={scopeKey} value={store}>
             {children}
         </ToolUiStateStoreContext.Provider>
     );

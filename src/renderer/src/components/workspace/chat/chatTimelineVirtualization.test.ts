@@ -12,6 +12,7 @@ import {
     CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
     CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
     CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+    calculateChatTimelineVirtualizationCost,
     calculateChatTimelineVirtualScrollMarginTop,
     estimateChatTimelineRowHeight,
     getChatTimelineEffectiveContentWidth,
@@ -165,6 +166,24 @@ describe("chatTimelineVirtualization", () => {
                 threshold: 20,
             }),
         ).toBe(true);
+    });
+
+    it("counts virtualizable presentation rows rather than segment entries", () => {
+        const segment = createActivitySegmentRow();
+        if (segment.kind !== "activity-segment") {
+            throw new Error("Expected an activity segment.");
+        }
+
+        const repeatedEntries = Array.from(
+            { length: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD },
+            () => segment.entries[0],
+        );
+
+        expect(
+            calculateChatTimelineVirtualizationCost([
+                { ...segment, entries: repeatedEntries },
+            ]),
+        ).toBe(1);
     });
 
     it("preserves row ids as virtual keys", () => {

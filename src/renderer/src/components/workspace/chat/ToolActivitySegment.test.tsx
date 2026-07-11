@@ -16,7 +16,10 @@ import type {
 } from "./chatTimelineModel";
 import type { ToolActivityReviewEntry } from "./toolActivityReviewModel";
 import { ToolActivitySegment } from "./ToolActivitySegment";
-import { ToolExpansionStoreProvider } from "./toolExpansionStore";
+import {
+    resetScopedToolUiStateStoresForTests,
+    ToolExpansionStoreProvider,
+} from "./toolExpansionStore";
 
 vi.mock("./ToolActivityItem", () => ({
     ToolActivityItem: ({
@@ -51,6 +54,7 @@ afterEach(() => {
         }
     }
     resetSettingsStoreForTests();
+    resetScopedToolUiStateStoresForTests();
 });
 
 function createActivity(
@@ -462,7 +466,7 @@ describe("ToolActivitySegment", () => {
         const surfaces = Array.from(
             container.querySelectorAll<HTMLElement>("[data-tool-surface]"),
         ).map((member) => member.dataset.toolSurface);
-        expect(surfaces).toEqual(["rail-row", "card", "rail-row"]);
+        expect(surfaces).toEqual(["rail-row", "rail-row", "rail-row"]);
         const indents = Array.from(
             container.querySelectorAll<HTMLElement>(
                 "[data-activity-rail-indent]",
@@ -569,5 +573,55 @@ describe("ToolActivitySegment", () => {
                 .querySelector<HTMLButtonElement>("button")
                 ?.getAttribute("aria-expanded"),
         ).toBe("true");
+    });
+
+    it("restores expansion after the scoped provider remounts", () => {
+        const segment = createSegment([
+            createEntry("read-11"),
+            createEntry("read-12"),
+        ]);
+        const container = document.createElement("div");
+        document.body.appendChild(container);
+        const root = createRoot(container);
+        mountedRoots.push(root);
+
+        const renderChat = () =>
+            root.render(
+                <ToolExpansionStoreProvider scopeKey="session-1">
+                    <ToolActivitySegment
+                        {...DEFAULT_PROPS}
+                        segment={segment}
+                    />
+                </ToolExpansionStoreProvider>,
+            );
+
+        act(renderChat);
+        act(() => container.querySelector<HTMLButtonElement>("button")?.click());
+        act(() => root.render(null));
+        act(renderChat);
+
+        expect(
+            container
+                .querySelector<HTMLButtonElement>("button")
+                ?.getAttribute("aria-expanded"),
+        ).toBe("true");
+
+        act(() => root.render(null));
+        act(() =>
+            root.render(
+                <ToolExpansionStoreProvider scopeKey="session-2">
+                    <ToolActivitySegment
+                        {...DEFAULT_PROPS}
+                        segment={segment}
+                    />
+                </ToolExpansionStoreProvider>,
+            ),
+        );
+
+        expect(
+            container
+                .querySelector<HTMLButtonElement>("button")
+                ?.getAttribute("aria-expanded"),
+        ).toBe("false");
     });
 });

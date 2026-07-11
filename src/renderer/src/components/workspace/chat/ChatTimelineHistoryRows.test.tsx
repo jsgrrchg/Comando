@@ -148,53 +148,56 @@ function createRows(count: number): ChatTimelineRow[] {
     });
 }
 
-function createSegmentRow(): ChatTimelineRow {
-    const activity: AiToolActivity = {
-        action: null,
-        createdAt: "2026-04-14T00:00:00.000Z",
-        diffs: [],
-        exitCode: null,
-        id: "read-1",
-        kind: "read",
-        locations: [],
-        rawInputJson: JSON.stringify({ file_path: "src/app.ts" }),
-        rawOutputJson: null,
-        sessionId: "session-1",
-        status: "completed",
-        summary: null,
-        terminalOutput: null,
-        title: "Read src/app.ts",
-        updatedAt: "2026-04-14T00:00:00.000Z",
-    };
+function createSegmentRow(entryCount = 1): ChatTimelineRow {
+    const activities: AiToolActivity[] = Array.from(
+        { length: entryCount },
+        (_, index) => ({
+            action: null,
+            createdAt: "2026-04-14T00:00:00.000Z",
+            diffs: [],
+            exitCode: null,
+            id: `read-${index + 1}`,
+            kind: "read",
+            locations: [],
+            rawInputJson: JSON.stringify({ file_path: "src/app.ts" }),
+            rawOutputJson: null,
+            sessionId: "session-1",
+            status: "completed",
+            summary: null,
+            terminalOutput: null,
+            title: "Read src/app.ts",
+            updatedAt: "2026-04-14T00:00:00.000Z",
+        }),
+    );
+    const firstActivity = activities[0];
+    const latestActivity = activities.at(-1)!;
 
     return {
-        entries: [
-            {
-                policy: "groupable",
-                reviewEntry: {
-                    activity,
-                    hasPendingTrackedFiles: false,
-                    pendingTrackedFiles: [],
-                    trackedFiles: [],
-                },
+        entries: activities.map((activity) => ({
+            policy: "groupable",
+            reviewEntry: {
+                activity,
+                hasPendingTrackedFiles: false,
+                pendingTrackedFiles: [],
+                trackedFiles: [],
             },
-        ],
+        })),
         id: "activity-segment:session-1:read-1",
         kind: "activity-segment",
         summary: {
-            actionCount: 1,
+            actionCount: entryCount,
             changeCount: 0,
             changedFileCount: 0,
             commandCount: 0,
             failureCount: 0,
             fileCount: 1,
-            hiddenActivityCount: 1,
+            hiddenActivityCount: entryCount,
             isInProgress: false,
-            latestActivityId: "read-1",
+            latestActivityId: latestActivity.id,
             latestTitle: "Read src/app.ts",
             searchCount: 0,
-            startedAt: activity.createdAt,
-            updatedAt: activity.updatedAt,
+            startedAt: firstActivity.createdAt,
+            updatedAt: latestActivity.updatedAt,
         },
     };
 }
@@ -385,6 +388,19 @@ describe("ChatTimelineHistoryRows", () => {
             "activity-segment:session-1:read-1",
         );
         expect(markup).toContain("activity-segment:session-1:read-1");
+    });
+
+    it("keeps an activity-heavy single presentation row non-virtualized", () => {
+        const rows = [
+            createSegmentRow(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD),
+        ];
+        const markup = renderHistoryRows(rows);
+
+        // Virtualization only mounts and unmounts top-level timeline rows.
+        // A single segment would still render all of its entries either way.
+        expect(measuredVirtualListMock).not.toHaveBeenCalled();
+        expect(markup).toContain("activity-segment:session-1:read-1");
+        expect(markup).not.toContain("mock-measured-virtual-list");
     });
 
     it("freezes content width during panel resize and re-syncs on release", () => {

@@ -2,9 +2,39 @@ import { describe, expect, it } from "vitest";
 
 import {
     applyPersistentToolStateUpdate,
+    getScopedToolUiStateStore,
     readStoredToolState,
+    releaseScopedToolUiStateStore,
+    resetScopedToolUiStateStoresForTests,
     resolvePersistentToolState,
 } from "./toolExpansionStore";
+
+describe("getScopedToolUiStateStore", () => {
+    it("reuses state for the same chat scope and isolates other chats", () => {
+        resetScopedToolUiStateStoresForTests();
+        const firstMount = getScopedToolUiStateStore("session-1");
+        firstMount.set("activity", true);
+
+        expect(getScopedToolUiStateStore("session-1")).toBe(firstMount);
+        expect(
+            getScopedToolUiStateStore("session-1").get("activity"),
+        ).toBe(true);
+        expect(
+            getScopedToolUiStateStore("session-2").has("activity"),
+        ).toBe(false);
+    });
+
+    it("releases state for a permanently deleted chat scope", () => {
+        resetScopedToolUiStateStoresForTests();
+        getScopedToolUiStateStore("session-1").set("activity", true);
+
+        releaseScopedToolUiStateStore("session-1");
+
+        expect(getScopedToolUiStateStore("session-1").has("activity")).toBe(
+            false,
+        );
+    });
+});
 
 describe("readStoredToolState", () => {
     it("returns the default when the key is absent", () => {

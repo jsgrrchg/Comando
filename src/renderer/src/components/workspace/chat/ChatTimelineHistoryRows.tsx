@@ -23,6 +23,7 @@ import type { ChatTimelineRow } from "./chatTimelineModel";
 import {
     CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
     CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN,
+    calculateChatTimelineVirtualizationCost,
     calculateChatTimelineVirtualScrollMarginTop,
     estimateChatTimelineRowHeight,
     getChatTimelineEffectiveContentWidth,
@@ -111,9 +112,11 @@ export const ChatTimelineHistoryRows = memo(
         >(null);
         const isFreezeActiveRef = useRef(false);
         isFreezeActiveRef.current = frozenContentWidth !== null;
-        const shouldVirtualize = shouldVirtualizeChatTimeline(
-            historyRows.length,
+        const virtualizationCost = calculateChatTimelineVirtualizationCost(
+            historyRows,
         );
+        const shouldVirtualize =
+            shouldVirtualizeChatTimeline(virtualizationCost);
 
         const restorePendingResizeAnchor = useCallback(() => {
             const anchor = pendingResizeAnchorRef.current;
