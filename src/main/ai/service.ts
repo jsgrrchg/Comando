@@ -1530,6 +1530,7 @@ export class AiService {
     }
 
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
+        this.#cancelCapturedRuntimeDefaults(input.sessionId);
         await this.#setSessionMode(input, { rememberRuntimePreference: true });
     }
 
@@ -1561,6 +1562,7 @@ export class AiService {
     }
 
     async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
+        this.#cancelCapturedRuntimeDefaults(input.sessionId);
         await this.#setSessionModel(input, { rememberRuntimePreference: true });
     }
 
@@ -1594,9 +1596,14 @@ export class AiService {
     async setSessionConfigOption(
         input: AiSessionConfigOptionMutationInput,
     ): Promise<void> {
+        this.#cancelCapturedRuntimeDefaults(input.sessionId);
         await this.#setSessionConfigOption(input, {
             rememberRuntimePreference: true,
         });
+    }
+
+    #cancelCapturedRuntimeDefaults(sessionId: string): void {
+        this.#capturedRuntimeDefaultsBySessionId.delete(sessionId);
     }
 
     async #setSessionConfigOption(
@@ -2702,7 +2709,7 @@ export class AiService {
         const modelConfig = getModelConfigOption(snapshot.configOptions);
         if (
             !modelConfig &&
-            canApplyCapturedDefaults &&
+            this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults) &&
             capturedDefaults.modelId &&
             capturedDefaults.modelId !== snapshot.modelId &&
             snapshot.models.some((model) => model.id === capturedDefaults.modelId)
@@ -2720,7 +2727,7 @@ export class AiService {
         const modeConfig = getModeConfigOption(snapshot.configOptions);
         if (
             !modeConfig &&
-            canApplyCapturedDefaults &&
+            this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults) &&
             capturedDefaults.modeId &&
             capturedDefaults.modeId !== snapshot.modeId &&
             snapshot.modes.some((mode) => mode.id === capturedDefaults.modeId)
@@ -2743,6 +2750,9 @@ export class AiService {
             },
         );
         for (const mutation of mutations) {
+            if (!this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults)) {
+                break;
+            }
             await this.#setSessionConfigOption(
                 {
                     optionId: mutation.optionId,
@@ -2755,13 +2765,23 @@ export class AiService {
         }
 
         if (
-            canApplyCapturedDefaults &&
+            this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults) &&
             snapshotHasEffectiveSelections(snapshot)
         ) {
             this.#capturedRuntimeDefaultsBySessionId.delete(sessionId);
         }
 
         return snapshot;
+    }
+
+    #hasCapturedRuntimeDefaults(
+        sessionId: string,
+        capturedDefaults: CapturedRuntimeDefaults,
+    ): boolean {
+        return (
+            this.#capturedRuntimeDefaultsBySessionId.get(sessionId) ===
+            capturedDefaults
+        );
     }
 
     #scheduleCapturedRuntimeDefaultsApplication(
