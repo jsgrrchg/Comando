@@ -223,7 +223,7 @@ export type ThemePreset =
     | "claude"
     | "codex";
 
-export type AiToolCardExpansionMode = "collapsed" | "latest" | "expanded";
+export type AiToolActivityDefaultExpansion = "collapsed" | "expanded";
 
 export interface AppAiChatSettings {
     readonly chatFontFamily: ChatFontFamily;
@@ -235,7 +235,7 @@ export interface AppAiChatSettings {
     readonly screenshotRetentionSeconds: number;
     readonly historyRetentionDays: number;
     readonly contextUsageBarEnabled: boolean;
-    readonly toolCardExpansionMode: AiToolCardExpansionMode;
+    readonly toolActivityDefaultExpansion: AiToolActivityDefaultExpansion;
 }
 
 export interface AppAppearanceSettings {

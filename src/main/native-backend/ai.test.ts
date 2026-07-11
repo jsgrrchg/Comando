@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type {
-    AiSessionClosedEvent,
     AiSessionSnapshot,
     AiTrackedFile,
     AiRuntimeStatus,
@@ -414,32 +413,17 @@ describe("NativeAiGateway", () => {
         });
 
         client.request.mockClear();
+        onSessionEvent.mockClear();
         await gateway.closeSession("session-1:subagent:runtime-child-1");
+        expect(client.request).not.toHaveBeenCalled();
+        expect(onSessionEvent).not.toHaveBeenCalled();
+
+        await gateway.cancelSession("session-1:subagent:runtime-child-1");
         expect(client.request).toHaveBeenCalledWith("ai_cancel_session", {
             runtimeSessionId: "runtime-child-1",
             sessionId: "session-1",
             targetSessionId: "session-1:subagent:runtime-child-1",
         });
-        expect(onSessionEvent).toHaveBeenCalledWith(
-            "window-1",
-            expect.objectContaining({
-                kind: "session-closed",
-                parentSessionId: "session-1",
-                runtimeId: "opencode",
-                runtimeSessionId: "runtime-child-1",
-                sessionId: "session-1:subagent:runtime-child-1",
-            }),
-        );
-        const closedEvent = onSessionEvent.mock.calls
-            .map(([, event]) => event)
-            .find(
-                (event): event is AiSessionClosedEvent =>
-                    event.kind === "session-closed" &&
-                    event.sessionId === "session-1:subagent:runtime-child-1",
-            );
-        expect(closedEvent?.kind).toBe("session-closed");
-        expect(typeof closedEvent?.closedAt).toBe("string");
-        expect(typeof closedEvent?.updatedAt).toBe("string");
     });
 
     it("hydrates persisted subagent mappings before child events arrive", async () => {
@@ -580,33 +564,17 @@ describe("NativeAiGateway", () => {
         });
 
         client.request.mockClear();
+        onSessionEvent.mockClear();
         await gateway.closeSession(childSessionId);
-        expect(client.request.mock.calls).toEqual([
-            [
-                "ai_cancel_session",
-                {
-                    runtimeSessionId: "runtime-grandchild",
-                    sessionId: "session-1",
-                    targetSessionId: grandchildSessionId,
-                },
-            ],
-            [
-                "ai_cancel_session",
-                {
-                    runtimeSessionId: "runtime-child",
-                    sessionId: "session-1",
-                    targetSessionId: childSessionId,
-                },
-            ],
-        ]);
-        const closedSessionIds = onSessionEvent.mock.calls
-            .map(([, event]) => event)
-            .filter((event) => event.kind === "session-closed")
-            .map((event) => event.sessionId);
-        expect(closedSessionIds).toEqual([
-            grandchildSessionId,
-            childSessionId,
-        ]);
+        expect(client.request).not.toHaveBeenCalled();
+        expect(onSessionEvent).not.toHaveBeenCalled();
+
+        await gateway.cancelSession(grandchildSessionId);
+        expect(client.request).toHaveBeenCalledWith("ai_cancel_session", {
+            runtimeSessionId: "runtime-grandchild",
+            sessionId: "session-1",
+            targetSessionId: grandchildSessionId,
+        });
     });
 
     it("requests and adapts native history payloads when history is enabled", async () => {
@@ -958,8 +926,8 @@ describe("NativeAiGateway", () => {
             "window-1",
             expect.objectContaining({
                 kind: "message-delta",
-                content: "Review \u200B«@new-note.md»\u200B",
-                delta: "Review \u200B«@new-note.md»\u200B",
+                content: "Review \u200B«file|new-note.md|new-note.md»\u200B",
+                delta: "Review \u200B«file|new-note.md|new-note.md»\u200B",
                 messageId: "user-message-1",
                 messageKind: "user",
             }),
@@ -968,7 +936,8 @@ describe("NativeAiGateway", () => {
             messageId: "user-message-1",
             prompt: {
                 attachments: [attachment],
-                displayText: "Review \u200B«@new-note.md»\u200B",
+                displayText:
+                    "Review \u200B«file|new-note.md|new-note.md»\u200B",
                 text: "Implement the feature.",
             },
             runtimeSessionId: null,

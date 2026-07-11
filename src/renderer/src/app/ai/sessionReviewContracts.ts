@@ -2,6 +2,7 @@ import type {
     AiComposerMessagePart,
     AiFileContextAttachment,
     AiImageAttachment,
+    AiQueuedPromptStatus,
 } from "@shared/ipc";
 
 export const DEFAULT_AI_DIFF_ZOOM = 0.96;
@@ -10,13 +11,7 @@ export const FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM = 1.25;
 // Fase 0 / Ruta B: el undo de reject queda fuera del alcance inicial.
 export const AI_REVIEW_UNDO_ENABLED = false;
 
-export type AiQueuedPromptStatus =
-    | "editing"
-    | "failed"
-    | "pending_dispatch"
-    | "queued"
-    | "running"
-    | "sending";
+export type { AiQueuedPromptStatus };
 
 export type AiComposerDraftPart = AiComposerMessagePart;
 
@@ -48,11 +43,9 @@ export function buildSelectionMentionLabel(
     endLine: number,
 ): string {
     const preview = selectedText.replace(/\s+/g, " ").trim();
-    const truncated =
-        preview.length > 20 ? `${preview.slice(0, 20).trimEnd()}...` : preview;
     const range =
         startLine === endLine ? `(${startLine})` : `(${startLine}:${endLine})`;
-    return truncated ? `${range} - ${truncated}` : range;
+    return preview ? `${range} - ${preview}` : range;
 }
 
 function ensureTrailingSpace(

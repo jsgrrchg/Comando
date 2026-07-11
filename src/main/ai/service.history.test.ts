@@ -96,6 +96,39 @@ describe("AiService history", () => {
         expect(deleteSession).toHaveBeenCalledWith("session-1");
     });
 
+    it("deletes every persisted descendant from leaf to root", async () => {
+        const deleteSession = vi.fn();
+        const listSessionRuntimeMappingsForParent = vi.fn(() => [
+            {
+                appSessionId: "session-child",
+                parentAppSessionId: "session-parent",
+                parentRuntimeSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child",
+            },
+            {
+                appSessionId: "session-grandchild",
+                parentAppSessionId: "session-child",
+                parentRuntimeSessionId: "runtime-child",
+                runtimeSessionId: "runtime-grandchild",
+            },
+        ]);
+        const service = createService({
+            deleteSession,
+            listSessionRuntimeMappingsForParent,
+        });
+
+        await service.deleteSession("session-parent");
+
+        expect(listSessionRuntimeMappingsForParent).toHaveBeenCalledWith(
+            "session-parent",
+        );
+        expect(deleteSession.mock.calls).toEqual([
+            ["session-grandchild"],
+            ["session-child"],
+            ["session-parent"],
+        ]);
+    });
+
     it("ignores late worker snapshots after deleting a session", async () => {
         const deleteSession = vi.fn();
         const onSessionSnapshot = vi.fn();
@@ -732,6 +765,7 @@ function createService(overrides: {
     readonly deleteSession?: ReturnType<typeof vi.fn>;
     readonly loadLatestRuntimeCatalog?: ReturnType<typeof vi.fn>;
     readonly listSessionHistory?: ReturnType<typeof vi.fn>;
+    readonly listSessionRuntimeMappingsForParent?: ReturnType<typeof vi.fn>;
     readonly loadSessionSnapshot?: ReturnType<typeof vi.fn>;
     readonly loadSessionTranscriptPage?: ReturnType<typeof vi.fn>;
     readonly onSessionSnapshot?: (
@@ -763,6 +797,8 @@ function createService(overrides: {
             loadSessionSnapshot: overrides.loadSessionSnapshot ?? vi.fn(() => null),
             loadSessionTranscriptPage:
                 overrides.loadSessionTranscriptPage ?? vi.fn(() => null),
+            listSessionRuntimeMappingsForParent:
+                overrides.listSessionRuntimeMappingsForParent ?? vi.fn(() => []),
             saveRuntimeSelectionPreferenceOption: vi.fn(),
             saveRuntimeModePreference: vi.fn(),
             saveRuntimeModelPreference: vi.fn(),
