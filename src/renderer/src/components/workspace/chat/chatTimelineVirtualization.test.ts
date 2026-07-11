@@ -324,6 +324,25 @@ describe("chatTimelineVirtualization", () => {
         expect(failedHeight).toBeGreaterThan(collapsedHeight);
     });
 
+    it("uses the compact estimate for lifecycle status rows", () => {
+        const statusRow = createToolRow({
+            activity: createActivity({
+                id: "codex-acp:status:item:wait-1",
+                kind: "other",
+                rawInputJson: JSON.stringify({ ignored: true }),
+                summary: "1000ms",
+                title: "Waiting",
+            }),
+        });
+
+        expect(
+            estimateChatTimelineRowHeight(statusRow, {
+                gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+                toolCardExpansionMode: "expanded",
+            }),
+        ).toBe(28 + CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX);
+    });
+
     it("calculates scroll margin from the history offset inside the scroller", () => {
         const scrollContainer = {
             getBoundingClientRect: () => ({ top: 20 }) as DOMRect,
@@ -576,13 +595,13 @@ describe("chatTimelineVirtualization", () => {
                 });
 
         const model1 = reconcile("first", "2026-04-14T00:00:00.000Z")(null);
-        const row1 = model1.historyRows[0];
+        const row1 = model1.atomicHistoryRows[0];
         const key1 = row1 && getChatTimelineRowMeasurementKey(row1, context);
 
         // A real content change (the model sees a new updatedAt) allocates a
         // fresh row reference, so the measurement key must change.
         const model2 = reconcile("second", "2026-04-14T00:00:05.000Z")(model1);
-        const row2 = model2.historyRows[0];
+        const row2 = model2.atomicHistoryRows[0];
         expect(row2).not.toBe(row1);
         expect(row2 && getChatTimelineRowMeasurementKey(row2, context)).not.toBe(
             key1,
@@ -591,7 +610,7 @@ describe("chatTimelineVirtualization", () => {
         // An identical snapshot reuses the same reference, so the key is reused
         // and the measured height is kept.
         const model3 = reconcile("second", "2026-04-14T00:00:05.000Z")(model2);
-        const row3 = model3.historyRows[0];
+        const row3 = model3.atomicHistoryRows[0];
         expect(row3).toBe(row2);
         expect(row3 && getChatTimelineRowMeasurementKey(row3, context)).toBe(
             row2 && getChatTimelineRowMeasurementKey(row2, context),

@@ -365,7 +365,7 @@ function createToolTranscriptEntry(
     return {
         activity,
         createdAt: activity.createdAt,
-        id: getToolTranscriptId(activity.id),
+        id: getToolTranscriptId(activity.sessionId, activity.id),
         kind: "tool",
         updatedAt: activity.updatedAt,
     };
@@ -375,8 +375,8 @@ function getMessageTranscriptId(messageId: string): string {
     return `message:${messageId}`;
 }
 
-function getToolTranscriptId(toolCallId: string): string {
-    return `tool:${toolCallId}`;
+function getToolTranscriptId(sessionId: string, toolCallId: string): string {
+    return `tool:${sessionId}:${toolCallId}`;
 }
 
 function buildAiSessionTranscriptModelFromEntries(

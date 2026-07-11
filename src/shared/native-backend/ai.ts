@@ -552,6 +552,7 @@ export type NativeAiStatusEventPayload = NativeAiEventBase & {
     readonly status: string;
     readonly title: string;
     readonly detail: string | null;
+    readonly turnId?: string | null;
 };
 
 export type NativeAiMessageStartedPayload = NativeAiEventBase & {

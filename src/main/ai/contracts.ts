@@ -2,6 +2,7 @@ import type {
     AiPermissionResponseInput,
     AiHistorySessionSummary,
     AiPromptResult,
+    AiPromptQueueSnapshot,
     AiSessionConfigOption,
     AiSessionConfigOptionMutationInput,
     AiSessionModeMutationInput,
@@ -54,6 +55,7 @@ export const CODEX_ACP_PARENT_SESSION_ID_KEY = "codexAcpParentSessionId";
 export const CODEX_ACP_PARENT_THREAD_ID_KEY = "codexAcpParentThreadId";
 export const CODEX_ACP_CHILD_SESSION_ID_KEY = "codexAcpChildSessionId";
 export const CODEX_ACP_CHILD_THREAD_ID_KEY = "codexAcpChildThreadId";
+export const CODEX_ACP_AGENT_PATH_KEY = "codexAcpAgentPath";
 export const CODEX_ACP_AGENT_NICKNAME_KEY = "codexAcpAgentNickname";
 export const CODEX_ACP_AGENT_ROLE_KEY = "codexAcpAgentRole";
 export const CODEX_ACP_AGENT_STATUS_KEY = "codexAcpAgentStatus";
@@ -93,6 +95,10 @@ export interface AiServiceOptions {
     readonly onSessionSnapshot: (
         ownerWindowId: string,
         update: AiSessionUpdate,
+    ) => void;
+    readonly onPromptQueueSnapshot?: (
+        ownerWindowId: string,
+        snapshot: AiPromptQueueSnapshot,
     ) => void;
     readonly persistence: AiPersistenceGateway;
 }

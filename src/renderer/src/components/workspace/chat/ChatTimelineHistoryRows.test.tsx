@@ -23,6 +23,7 @@ interface MeasuredVirtualListMockSnapshot {
     readonly hasOnReady: boolean;
     readonly itemCount: number;
     readonly overscan?: number;
+    readonly preserveScrollAnchorOnItemsChange?: boolean;
     readonly preserveScrollAnchorOnMeasure?: boolean;
     readonly scrollMarginTop?: number;
 }
@@ -51,6 +52,7 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
             onRangeChange,
             onReady,
             overscan,
+            preserveScrollAnchorOnItemsChange,
             preserveScrollAnchorOnMeasure,
             renderItem,
             scrollMarginTop,
@@ -65,6 +67,7 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
             readonly onRangeChange?: () => void;
             readonly onReady?: () => void;
             readonly overscan?: number;
+            readonly preserveScrollAnchorOnItemsChange?: boolean;
             readonly preserveScrollAnchorOnMeasure?: boolean;
             readonly renderItem: (params: {
                 readonly index: number;
@@ -85,6 +88,7 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
                 hasOnReady: typeof onReady === "function",
                 itemCount: items.length,
                 overscan,
+                preserveScrollAnchorOnItemsChange,
                 preserveScrollAnchorOnMeasure,
                 scrollMarginTop,
             });
@@ -305,6 +309,7 @@ describe("ChatTimelineHistoryRows", () => {
                 hasOnReady: true,
                 itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
                 overscan: 10,
+                preserveScrollAnchorOnItemsChange: true,
                 preserveScrollAnchorOnMeasure: true,
                 scrollMarginTop: 0,
             }),

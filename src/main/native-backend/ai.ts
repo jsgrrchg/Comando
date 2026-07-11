@@ -542,7 +542,19 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         }
 
         if (this.#subagentParentSessionIds.has(sessionId)) {
-            this.#emitLocalSubagentClosed(sessionId);
+            const subtreeSessionIds = this.#collectSessionSubtreeIds(sessionId);
+            for (const descendantSessionId of [...subtreeSessionIds].reverse()) {
+                try {
+                    await this.cancelSession(descendantSessionId);
+                } catch (error) {
+                    if (!isCleanupSessionNotFoundError(error)) {
+                        throw error;
+                    }
+                }
+            }
+            for (const descendantSessionId of [...subtreeSessionIds].reverse()) {
+                this.#emitLocalSubagentClosed(descendantSessionId);
+            }
             this.#forgetSession(sessionId);
             return;
         }
@@ -559,7 +571,11 @@ export class NativeAiGateway implements NativeAiGatewayContract {
 
     closeOwnedByWindow(ownerWindowId: string): void {
         const sessionIds = [...this.#sessionOwners.entries()]
-            .filter(([, owner]) => owner === ownerWindowId)
+            .filter(
+                ([sessionId, owner]) =>
+                    owner === ownerWindowId &&
+                    !this.#subagentParentSessionIds.has(sessionId),
+            )
             .map(([sessionId]) => sessionId);
         for (const sessionId of sessionIds) {
             void this.closeSession(sessionId).catch((error: unknown) => {
@@ -953,16 +969,33 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     #forgetSession(sessionId: string): void {
-        const childSessionIds = [...this.#subagentParentSessionIds.entries()]
-            .filter(([, parentSessionId]) => parentSessionId === sessionId)
-            .map(([childSessionId]) => childSessionId);
-        for (const childSessionId of childSessionIds) {
-            this.#forgetSession(childSessionId);
+        for (const subtreeSessionId of this.#collectSessionSubtreeIds(sessionId)) {
+            this.#subagentParentSessionIds.delete(subtreeSessionId);
+            this.#runtimeSessionIds.delete(subtreeSessionId);
+            this.#sessionOwners.delete(subtreeSessionId);
+            this.#sessionRuntimeIds.delete(subtreeSessionId);
         }
-        this.#subagentParentSessionIds.delete(sessionId);
-        this.#runtimeSessionIds.delete(sessionId);
-        this.#sessionOwners.delete(sessionId);
-        this.#sessionRuntimeIds.delete(sessionId);
+    }
+
+    #collectSessionSubtreeIds(sessionId: string): string[] {
+        const subtreeSessionIds: string[] = [];
+        const pendingSessionIds = [sessionId];
+        const visitedSessionIds = new Set<string>();
+        while (pendingSessionIds.length > 0) {
+            const currentSessionId = pendingSessionIds.shift();
+            if (!currentSessionId || visitedSessionIds.has(currentSessionId)) {
+                continue;
+            }
+            visitedSessionIds.add(currentSessionId);
+            subtreeSessionIds.push(currentSessionId);
+            for (const [childSessionId, parentSessionId] of this
+                .#subagentParentSessionIds) {
+                if (parentSessionId === currentSessionId) {
+                    pendingSessionIds.push(childSessionId);
+                }
+            }
+        }
+        return subtreeSessionIds;
     }
 
     #resolveSessionTarget(sessionId: string): {
@@ -970,8 +1003,19 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         readonly runtimeSessionId: string | null;
         readonly targetSessionId: string | null;
     } {
-        const parentSessionId = this.#subagentParentSessionIds.get(sessionId);
-        if (!parentSessionId) {
+        let backendSessionId = sessionId;
+        const visited = new Set([sessionId]);
+        while (true) {
+            const parentSessionId =
+                this.#subagentParentSessionIds.get(backendSessionId) ?? null;
+            if (!parentSessionId || visited.has(parentSessionId)) {
+                break;
+            }
+            visited.add(parentSessionId);
+            backendSessionId = parentSessionId;
+        }
+
+        if (backendSessionId === sessionId) {
             return {
                 backendSessionId: sessionId,
                 runtimeSessionId: null,
@@ -980,7 +1024,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         }
 
         return {
-            backendSessionId: parentSessionId,
+            backendSessionId,
             runtimeSessionId: this.#runtimeSessionIds.get(sessionId) ?? null,
             targetSessionId: sessionId,
         };
@@ -1026,12 +1070,19 @@ function nativeSummaryToSnapshot(
     launch: NativeAiPrepareSessionRpcInput["launch"],
 ): AiSessionSnapshot {
     const status = nativeSessionStatusToIpc(summary.status);
+    const preservesActiveTurn =
+        status === "streaming" ||
+        status === "waiting_permission" ||
+        status === "waiting_user_input";
     return {
         ...launch.persistedSnapshot,
         activeTurnStartedAt:
-            status === "streaming"
-                ? summary.updatedAt
+            preservesActiveTurn
+                ? launch.persistedSnapshot.activeTurnStartedAt
                 : null,
+        // Preparing creates a live runtime session, even when the persisted
+        // history snapshot was closed before the application restarted.
+        closedAt: null,
         configOptions: launch.desiredSelections.configOptions,
         modeId: launch.desiredSelections.modeId,
         modelId: launch.desiredSelections.modelId,

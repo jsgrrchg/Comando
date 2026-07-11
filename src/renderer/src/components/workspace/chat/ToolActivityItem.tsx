@@ -29,6 +29,11 @@ import {
 } from "../projectFileReferences";
 import { ChangeReviewPanel } from "./ChangeReviewPanel";
 import {
+    getStructuredToolCommand,
+    getStructuredToolTarget,
+} from "./toolActivityDescriptor";
+import {
+    isEditedFileToolActivity,
     isFileToolActivity,
     isTerminalToolActivity,
     isTurnStartedActivity,
@@ -152,16 +157,6 @@ function Chevron({ expanded }: { readonly expanded: boolean }) {
 
 /* ─── Helpers ─── */
 
-const EDITED_FILE_TOOL_KINDS = new Set([
-    "create",
-    "delete",
-    "edit",
-    "move",
-    "remove",
-    "rename",
-    "update",
-    "write",
-]);
 const TOOL_TITLE_TARGET_MAX_LENGTH = 72;
 
 function getToolAccent(kind: string): string {
@@ -185,15 +180,6 @@ function getToolIcon(kind: string) {
     )
         return <EditIcon />;
     return <DefaultIcon />;
-}
-
-export function isEditedFileToolActivity(
-    activity: AiToolActivity,
-    trackedFiles: readonly AiTrackedFile[],
-): boolean {
-    if (trackedFiles.length > 0) return true;
-    if (activity.diffs.length > 0) return true;
-    return EDITED_FILE_TOOL_KINDS.has(activity.kind.toLowerCase());
 }
 
 function summarizeDiff(oldText: string | null, newText: string | null): string {
@@ -240,20 +226,6 @@ function parseToolTitleReference(
 
 function isPlaceholderToolTarget(target: string): boolean {
     return /^\.{2,}$/.test(target.trim());
-}
-
-function isRecordValue(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function readRecordString(
-    record: Record<string, unknown>,
-    key: string,
-): string | null {
-    const value = record[key];
-    return typeof value === "string" && value.trim().length > 0
-        ? value.trim()
-        : null;
 }
 
 function getToolActionPrefix(kind: string): string {
@@ -340,41 +312,6 @@ function compactToolTitleTarget(target: string): string {
             (candidate) => candidate.length <= TOOL_TITLE_TARGET_MAX_LENGTH,
         ) ?? candidates.at(-1) ?? trimmedTarget
     );
-}
-
-function parseToolRawInputJson(
-    rawInputJson: string | null,
-): Record<string, unknown> | null {
-    if (!rawInputJson) {
-        return null;
-    }
-
-    try {
-        const value = parseJsonValue(rawInputJson);
-        return isRecordValue(value) ? value : null;
-    } catch {
-        return null;
-    }
-}
-
-function getStructuredToolTarget(activity: AiToolActivity): string | null {
-    const rawInput = parseToolRawInputJson(activity.rawInputJson);
-    const rawInputPath = rawInput
-        ? (readRecordString(rawInput, "file_path") ??
-          readRecordString(rawInput, "filePath") ??
-          readRecordString(rawInput, "path") ??
-          readRecordString(rawInput, "target"))
-        : null;
-    const locationPath = activity.locations.find(
-        (location) => location.path.trim().length > 0,
-    )?.path;
-    if (locationPath && hasPathSeparator(locationPath)) {
-        return locationPath.trim();
-    }
-    if (rawInputPath) {
-        return rawInputPath;
-    }
-    return locationPath?.trim() ?? null;
 }
 
 function getToolTitleReference(
@@ -1453,24 +1390,6 @@ function parseJsonValue(raw: string): unknown {
     return JSON.parse(raw) as unknown;
 }
 
-function extractCommand(rawInputJson: string | null): string | null {
-    if (!rawInputJson) return null;
-    try {
-        const parsed = parseJsonValue(rawInputJson);
-        if (
-            typeof parsed === "object" &&
-            parsed !== null &&
-            "command" in parsed &&
-            typeof parsed.command === "string"
-        ) {
-            return parsed.command;
-        }
-    } catch {
-        /* ignore */
-    }
-    return null;
-}
-
 function isCommandDuplicatedByTitle(title: string, command: string): boolean {
     const normalizedTitle = title.trim();
     const normalizedCommand = command.trim();
@@ -1521,7 +1440,7 @@ function TerminalToolMessage({
     const terminalTone = getTerminalToolTone(activity);
     const isDangerTone = terminalTone === "danger";
     const accent = getTerminalToolToneColor(terminalTone);
-    const command = extractCommand(activity.rawInputJson);
+    const command = getStructuredToolCommand(activity);
     const shouldShowCommand =
         !!command && !isCommandDuplicatedByTitle(activity.title, command);
     const hasTerminalOutput = !!activity.terminalOutput;

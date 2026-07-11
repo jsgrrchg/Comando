@@ -1024,6 +1024,11 @@ fn normalize_legacy_codex_tool_activities(activities: &mut Vec<Value>) -> bool {
     let mut removed = HashSet::<usize>::new();
 
     for (alias_index, alias) in original.iter().enumerate() {
+        if is_completed_turn_status_activity(alias) {
+            removed.insert(alias_index);
+            continue;
+        }
+
         let Some(alias_id) = alias.get("id").and_then(Value::as_str) else {
             continue;
         };
@@ -1137,6 +1142,18 @@ fn is_internal_codex_item_title(title: &str) -> bool {
     ["Preparing input", "Drafting response", "Reasoning"]
         .iter()
         .any(|candidate| title.trim().eq_ignore_ascii_case(candidate))
+}
+
+fn is_completed_turn_status_activity(activity: &Value) -> bool {
+    let is_turn_status = activity
+        .get("id")
+        .and_then(Value::as_str)
+        .is_some_and(|id| id.starts_with("comando:turn:") || id.starts_with("acp:turn:"));
+    let is_completed = activity
+        .get("title")
+        .and_then(Value::as_str)
+        .is_some_and(|title| title.trim().eq_ignore_ascii_case("Completed"));
+    is_turn_status && is_completed
 }
 
 fn collect_descendant_runtime_mappings(
@@ -2279,6 +2296,14 @@ mod tests {
             json!({
                 "id": "codex-acp:status:item:sleep-1",
                 "title": "Waiting"
+            }),
+            json!({
+                "id": "comando:turn:message-1:completed",
+                "title": "Completed"
+            }),
+            json!({
+                "id": "acp:turn:message-2",
+                "title": "Completed"
             }),
         ];
 

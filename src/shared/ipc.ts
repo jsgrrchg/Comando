@@ -138,7 +138,14 @@ export const IPC_CHANNELS = {
     getAiSessionSnapshot: "ai:get-session-snapshot",
     resyncAiSession: "ai:resync-session",
     getAiSessionTranscriptPage: "ai:get-session-transcript-page",
-    sendAiPrompt: "ai:send-prompt",
+    getAiPromptQueue: "ai:get-prompt-queue",
+    enqueueAiPrompt: "ai:enqueue-prompt",
+    removeAiQueuedPrompt: "ai:remove-queued-prompt",
+    clearAiPromptQueue: "ai:clear-prompt-queue",
+    beginEditAiQueuedPrompt: "ai:begin-edit-queued-prompt",
+    cancelEditAiQueuedPrompt: "ai:cancel-edit-queued-prompt",
+    updateAiQueuedPrompt: "ai:update-queued-prompt",
+    steerAiQueuedPrompt: "ai:steer-queued-prompt",
     setAiSessionMode: "ai:set-session-mode",
     setAiSessionModel: "ai:set-session-model",
     setAiSessionConfigOption: "ai:set-session-config-option",
@@ -182,6 +189,7 @@ export const IPC_EVENTS = {
     aiRuntimeStatus: "ai:runtime-status",
     aiSessionSnapshot: "ai:session-snapshot",
     aiSessionEvent: "ai:session-event",
+    aiPromptQueue: "ai:prompt-queue",
     aiSessionStreamPort: "ai:session-stream-port",
     nativeBackendEvent: "native-backend:event",
 } as const;
@@ -2489,6 +2497,7 @@ export interface AiSessionDomainEventBase {
         | "thinking-started"
         | "token-usage"
         | "tool-activity"
+        | "turn-status"
         | "user-input-request";
     readonly origin: AiSessionEventOrigin;
     readonly parentSessionId: string | null;
@@ -2551,6 +2560,15 @@ export interface AiSessionStatusEvent extends AiSessionDomainEventBase {
     readonly lastError: string | null;
     readonly status: AiSessionStatus;
     readonly title?: string | null;
+}
+
+export type AiTurnStatus = "cancelled" | "completed" | "failed";
+
+export interface AiSessionTurnStatusEvent extends AiSessionDomainEventBase {
+    readonly error: string | null;
+    readonly kind: "turn-status";
+    readonly status: AiTurnStatus;
+    readonly turnId: string;
 }
 
 export interface AiSessionClosedEvent extends AiSessionDomainEventBase {
@@ -2635,6 +2653,7 @@ export type AiSessionDomainEvent =
     | AiSessionThinkingStartedEvent
     | AiSessionTokenUsageEvent
     | AiSessionToolActivityEvent
+    | AiSessionTurnStatusEvent
     | AiSessionUserInputRequestEvent;
 
 export type AiSessionStreamPayload = AiSessionDomainEvent | AiSessionUpdate;
@@ -2667,6 +2686,55 @@ export interface SendAiPromptInput {
     readonly sessionId: string;
     readonly title: string;
     readonly worktreeId?: string | null;
+}
+
+export type AiQueuedPromptStatus =
+    | "editing"
+    | "failed"
+    | "pending_dispatch"
+    | "queued"
+    | "running"
+    | "sending";
+
+export interface AiQueuedPrompt {
+    readonly additionalRoots?: readonly string[];
+    readonly attachments: readonly AiImageAttachment[];
+    readonly composerPartsSnapshot: readonly AiComposerMessagePart[];
+    readonly createdAt: string;
+    readonly error: string | null;
+    readonly fileContextsSnapshot: readonly AiFileContextAttachment[];
+    readonly id: string;
+    readonly messageId: string;
+    readonly optimisticMessageId?: string;
+    readonly projectId: string | null;
+    readonly prompt: string;
+    readonly runtimeId: AiRuntimeId;
+    readonly sessionId: string;
+    readonly status: AiQueuedPromptStatus;
+    readonly title: string;
+    readonly worktreeId: string | null;
+}
+
+export interface AiPromptQueueSnapshot {
+    readonly activeItem: AiQueuedPrompt | null;
+    readonly editingItem: AiQueuedPrompt | null;
+    readonly items: readonly AiQueuedPrompt[];
+    readonly paused: boolean;
+    readonly revision: number;
+    readonly sessionId: string;
+}
+
+export interface EnqueueAiPromptInput extends SendAiPromptInput {
+    readonly fileContextsSnapshot?: readonly AiFileContextAttachment[];
+}
+
+export interface AiQueuedPromptMutationInput {
+    readonly promptId: string;
+    readonly sessionId: string;
+}
+
+export interface UpdateAiQueuedPromptInput extends EnqueueAiPromptInput {
+    readonly promptId: string;
 }
 
 export interface PrepareAiSessionInput {
@@ -3072,7 +3140,26 @@ export interface ComandoApi {
     getAiSessionTranscriptPage: (
         input: GetAiSessionTranscriptPageInput,
     ) => Promise<AiSessionTranscriptPage>;
-    sendAiPrompt: (input: SendAiPromptInput) => Promise<AiPromptResult>;
+    getAiPromptQueue: (sessionId: string) => Promise<AiPromptQueueSnapshot>;
+    enqueueAiPrompt: (
+        input: EnqueueAiPromptInput,
+    ) => Promise<AiPromptQueueSnapshot>;
+    removeAiQueuedPrompt: (
+        input: AiQueuedPromptMutationInput,
+    ) => Promise<AiPromptQueueSnapshot>;
+    clearAiPromptQueue: (sessionId: string) => Promise<AiPromptQueueSnapshot>;
+    beginEditAiQueuedPrompt: (
+        input: AiQueuedPromptMutationInput,
+    ) => Promise<AiPromptQueueSnapshot>;
+    cancelEditAiQueuedPrompt: (
+        sessionId: string,
+    ) => Promise<AiPromptQueueSnapshot>;
+    updateAiQueuedPrompt: (
+        input: UpdateAiQueuedPromptInput,
+    ) => Promise<AiPromptQueueSnapshot>;
+    steerAiQueuedPrompt: (
+        input: AiQueuedPromptMutationInput,
+    ) => Promise<AiPromptQueueSnapshot>;
     setAiSessionMode: (input: AiSessionModeMutationInput) => Promise<void>;
     setAiSessionModel: (input: AiSessionModelMutationInput) => Promise<void>;
     setAiSessionConfigOption: (
@@ -3171,5 +3258,8 @@ export interface ComandoApi {
     ) => () => void;
     onAiSessionEvent?: (
         listener: (event: AiSessionDomainEvent) => void,
+    ) => () => void;
+    onAiPromptQueue: (
+        listener: (snapshot: AiPromptQueueSnapshot) => void,
     ) => () => void;
 }

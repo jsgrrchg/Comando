@@ -614,10 +614,7 @@ function nativeAiToolActivityToIpc(
         sessionId: payload.sessionId,
         status: payload.status as AiToolActivity["status"],
         summary: payload.summary,
-        terminalOutput:
-            typeof payload.terminalOutput === "string"
-                ? payload.terminalOutput
-                : null,
+        terminalOutput: resolveNativeTerminalOutput(payload),
         title: payload.title,
         updatedAt: payload.updatedAt,
     };
@@ -627,6 +624,64 @@ function nativeAiToolActivityToIpc(
         activity,
         kind: "tool-activity",
     };
+}
+
+const TERMINAL_TOOL_KINDS = new Set([
+    "bash",
+    "command",
+    "execute",
+    "exec_command",
+    "shell",
+    "terminal",
+]);
+
+function resolveNativeTerminalOutput(
+    payload: NativeAiToolActivityPayload,
+): string | null {
+    if (typeof payload.terminalOutput === "string") {
+        return payload.terminalOutput;
+    }
+
+    const isTerminalActivity =
+        TERMINAL_TOOL_KINDS.has(payload.kind.toLocaleLowerCase()) ||
+        payload.summary?.trim().toLocaleLowerCase() ===
+            "terminal output available.";
+    if (!isTerminalActivity) {
+        return null;
+    }
+
+    return extractTerminalOutputText(payload.rawOutput);
+}
+
+function extractTerminalOutputText(value: unknown): string | null {
+    if (typeof value === "string") {
+        return value.length > 0 ? value : null;
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return null;
+    }
+
+    const record = value as Record<string, unknown>;
+    for (const key of [
+        "formatted_output",
+        "aggregated_output",
+        "stdout",
+        "output",
+    ]) {
+        const candidate = record[key];
+        if (typeof candidate === "string" && candidate.length > 0) {
+            return candidate;
+        }
+    }
+
+    for (const key of ["result", "data"]) {
+        const nested = extractTerminalOutputText(record[key]);
+        if (nested !== null) {
+            return nested;
+        }
+    }
+
+    return null;
 }
 
 function stringifyNativeJson(value: unknown): string | null {
@@ -644,6 +699,21 @@ function stringifyNativeJson(value: unknown): string | null {
 function nativeAiStatusEventToIpc(
     payload: NativeAiStatusEventPayload,
 ): AiSessionDomainEvent {
+    if (
+        payload.turnId &&
+        (payload.status === "cancelled" ||
+            payload.status === "completed" ||
+            payload.status === "failed")
+    ) {
+        return {
+            ...nativeAiEventBase(payload),
+            error: payload.status === "failed" ? payload.detail : null,
+            kind: "turn-status",
+            status: payload.status,
+            turnId: payload.turnId,
+        };
+    }
+
     return {
         ...nativeAiEventBase(payload),
         activity: {
@@ -670,7 +740,11 @@ function nativeAiStatusEventToIpc(
 function shouldSuppressNativeStatusActivity(
     payload: NativeAiStatusEventPayload,
 ): boolean {
-    return payload.status === "completed" && payload.title === "Completed";
+    return (
+        !payload.turnId &&
+        payload.status === "completed" &&
+        payload.title === "Completed"
+    );
 }
 
 function nativeAiPlanUpdatedToIpc(

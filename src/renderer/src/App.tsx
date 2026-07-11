@@ -337,6 +337,9 @@ export function App() {
         (state) => state.applyRuntimeStatus,
     );
     const applyAiSessionEvent = useAiStore((state) => state.applySessionEvent);
+    const applyAiPromptQueueSnapshot = useAiStore(
+        (state) => state.applyPromptQueueSnapshot,
+    );
     const applyAiSessionUpdate = useAiStore(
         (state) => state.applySessionUpdate,
     );
@@ -783,13 +786,22 @@ export function App() {
         const unsubscribeSession = comandoApi.onAiSessionSnapshot((update) => {
             applyAiSessionUpdate(update);
         });
+        const unsubscribePromptQueue = comandoApi.onAiPromptQueue((snapshot) => {
+            applyAiPromptQueueSnapshot(snapshot);
+        });
 
         return () => {
             unsubscribeRuntime();
             unsubscribeSessionEvent();
             unsubscribeSession();
+            unsubscribePromptQueue();
         };
-    }, [applyAiRuntimeStatus, applyAiSessionEvent, applyAiSessionUpdate]);
+    }, [
+        applyAiPromptQueueSnapshot,
+        applyAiRuntimeStatus,
+        applyAiSessionEvent,
+        applyAiSessionUpdate,
+    ]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();

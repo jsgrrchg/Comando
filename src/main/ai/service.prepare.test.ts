@@ -198,6 +198,87 @@ describe("AiService prepareSession", () => {
         expect(runtimeStatusEvents.at(-1)).toEqual(readyStatus);
     });
 
+    it("prepares and dispatches a queued prompt from persisted history", async () => {
+        const persistedSnapshot = createSnapshot({
+            runtimeSessionId: "runtime-session-history",
+            sessionId: "session-history",
+            title: "Saved chat",
+        });
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+            ({ launch }) =>
+                Promise.resolve({
+                    ...launch.persistedSnapshot,
+                    runtimeSessionId: "runtime-session-history",
+                    status: "idle",
+                }),
+        );
+        const sendPrompt = vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
+            Promise.resolve({
+                sessionId: input.sessionId,
+                stopReason: "accepted",
+            }),
+        );
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                captureReviewBaseline: vi.fn(() => Promise.resolve(true)),
+                loadSessionSnapshot: vi.fn(() =>
+                    Promise.resolve(persistedSnapshot),
+                ),
+                prepareSession,
+                sendPrompt,
+            }),
+        });
+
+        service.enqueuePrompt(
+            {
+                attachments: [],
+                composerParts: [{ text: "Continue.", type: "text" }],
+                fileContextsSnapshot: [],
+                messageId: "message-history-1",
+                projectId: null,
+                prompt: "Continue.",
+                runtimeId: "codex",
+                sessionId: "session-history",
+                title: "Saved chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        await vi.waitFor(() => {
+            const queue = service.getPromptQueue(
+                "session-history",
+                "window-1",
+            );
+            expect(queue.activeItem?.status ?? queue.items[0]?.error).toBe(
+                "running",
+            );
+        });
+
+        expect(sendPrompt).toHaveBeenCalledTimes(1);
+        expect(prepareSession).toHaveBeenCalledTimes(1);
+        expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({
+            input: {
+                messageId: "message-history-1",
+                sessionId: "session-history",
+            },
+            launch: {
+                ownerWindowId: "window-1",
+                persistedSnapshot,
+            },
+        });
+        expect(
+            service.getPromptQueue("session-history", "window-1"),
+        ).toMatchObject({
+            activeItem: {
+                messageId: "message-history-1",
+                status: "running",
+            },
+            items: [],
+            paused: false,
+        });
+    });
+
     it("hydrates newly prepared native sessions with persisted ACP catalog controls", async () => {
         const nativeSnapshot: AiSessionSnapshot = {
             availableCommands: [],
@@ -1348,13 +1429,23 @@ describe("AiService prepareSession", () => {
             reasoningEffort: "high",
             sessionId: "session-parent:subagent:runtime-child",
         });
+        const parentSnapshot = createSnapshot({
+            configOptions: [createReasoningConfig("medium")],
+            parentSessionId: null,
+            reasoningEffort: "medium",
+            sessionId: "session-parent",
+        });
         const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
             ({ launch }) => Promise.resolve(launch.persistedSnapshot),
         );
         const service = createPrepareService({
             nativeAi: createNativeAi({
-                loadSessionSnapshot: vi.fn(() =>
-                    Promise.resolve(persistedSnapshot),
+                loadSessionSnapshot: vi.fn((sessionId) =>
+                    Promise.resolve(
+                        sessionId === "session-parent"
+                            ? parentSnapshot
+                            : persistedSnapshot,
+                    ),
                 ),
                 prepareSession,
             }),
@@ -1374,7 +1465,11 @@ describe("AiService prepareSession", () => {
                     modeId: null,
                     modelId: null,
                 })),
-                loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+                loadSessionSnapshot: vi.fn((sessionId) =>
+                    sessionId === "session-parent"
+                        ? parentSnapshot
+                        : persistedSnapshot,
+                ),
                 saveRuntimeSelectionPreferenceOption: vi.fn(),
                 saveRuntimeModePreference: vi.fn(),
                 saveRuntimeModelPreference: vi.fn(),
@@ -1382,7 +1477,7 @@ describe("AiService prepareSession", () => {
             } as never,
         });
 
-        await service.prepareSession(
+        const prepared = await service.prepareSession(
             {
                 projectId: null,
                 runtimeId: "codex",
@@ -1399,7 +1494,8 @@ describe("AiService prepareSession", () => {
             desiredSelections?.configOptions.find(
                 (option) => option.id === "reasoning_effort",
             )?.value,
-        ).toBe("high");
+        ).toBe("medium");
+        expect(prepared.reasoningEffort).toBe("high");
     });
 
     it("keeps Codex subagents on inherited config instead of runtime preferences", async () => {
@@ -1412,6 +1508,12 @@ describe("AiService prepareSession", () => {
             reasoningEffort: null,
             sessionId: "session-parent:subagent:runtime-child",
         });
+        const parentSnapshot = createSnapshot({
+            configOptions: [createReasoningConfig("medium")],
+            parentSessionId: null,
+            reasoningEffort: "medium",
+            sessionId: "session-parent",
+        });
         const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
             ({ launch }) => Promise.resolve(launch.persistedSnapshot),
         );
@@ -1420,8 +1522,12 @@ describe("AiService prepareSession", () => {
         >(() => Promise.resolve());
         const service = createPrepareService({
             nativeAi: createNativeAi({
-                loadSessionSnapshot: vi.fn(() =>
-                    Promise.resolve(persistedSnapshot),
+                loadSessionSnapshot: vi.fn((sessionId) =>
+                    Promise.resolve(
+                        sessionId === "session-parent"
+                            ? parentSnapshot
+                            : persistedSnapshot,
+                    ),
                 ),
                 prepareSession,
                 setSessionConfigOption,
@@ -1442,7 +1548,11 @@ describe("AiService prepareSession", () => {
                     modeId: null,
                     modelId: null,
                 })),
-                loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+                loadSessionSnapshot: vi.fn((sessionId) =>
+                    sessionId === "session-parent"
+                        ? parentSnapshot
+                        : persistedSnapshot,
+                ),
                 saveRuntimeSelectionPreferenceOption: vi.fn(),
                 saveRuntimeModePreference: vi.fn(),
                 saveRuntimeModelPreference: vi.fn(),
