@@ -4,6 +4,7 @@ import {
     applyPersistentToolStateUpdate,
     getScopedToolUiStateStore,
     readStoredToolState,
+    releaseScopedToolUiStateStore,
     resetScopedToolUiStateStoresForTests,
     resolvePersistentToolState,
 } from "./toolExpansionStore";
@@ -21,6 +22,17 @@ describe("getScopedToolUiStateStore", () => {
         expect(
             getScopedToolUiStateStore("session-2").has("activity"),
         ).toBe(false);
+    });
+
+    it("releases state for a permanently deleted chat scope", () => {
+        resetScopedToolUiStateStoresForTests();
+        getScopedToolUiStateStore("session-1").set("activity", true);
+
+        releaseScopedToolUiStateStore("session-1");
+
+        expect(getScopedToolUiStateStore("session-1").has("activity")).toBe(
+            false,
+        );
     });
 });
 

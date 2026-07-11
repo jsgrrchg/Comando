@@ -57,21 +57,14 @@ export function shouldVirtualizeChatTimeline(
 }
 
 /**
- * Presentation rows deliberately collapse consecutive tool activity into a
- * single rail. Count the activities represented by that rail so grouping the
- * UI cannot accidentally disable virtualization for an otherwise large chat.
+ * The virtual list can only mount and unmount top-level timeline rows. Tool
+ * activity inside a segment is rendered together by that one row, so counting
+ * its entries here would enable virtualization without reducing that work.
  */
 export function calculateChatTimelineVirtualizationCost(
     rows: readonly ChatTimelineRow[],
 ): number {
-    return rows.reduce(
-        (cost, row) =>
-            cost +
-            (row.kind === "activity-segment"
-                ? Math.max(1, row.entries.length)
-                : 1),
-        0,
-    );
+    return rows.length;
 }
 
 export function getChatTimelineRowKey(row: ChatTimelineRow): string {

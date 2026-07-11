@@ -37,6 +37,15 @@ export function getScopedToolUiStateStore(
     return store;
 }
 
+/**
+ * Discards state after its chat session has been permanently deleted. This is
+ * intentionally separate from provider unmounting: virtual rows and inactive
+ * tabs unmount temporarily and must retain their UI state.
+ */
+export function releaseScopedToolUiStateStore(scopeKey: string): void {
+    toolUiStateStoreByScope.delete(scopeKey);
+}
+
 export function resetScopedToolUiStateStoresForTests(): void {
     toolUiStateStoreByScope.clear();
 }

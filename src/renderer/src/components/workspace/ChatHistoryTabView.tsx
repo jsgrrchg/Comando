@@ -49,6 +49,7 @@ import { ChatMessageRow } from "./chat/ChatMessageRow";
 import { PlanMessage } from "./chat/PlanMessage";
 import { ToolActivitySegment } from "./chat/ToolActivitySegment";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
+import { releaseScopedToolUiStateStore } from "./chat/toolExpansionStore";
 import {
     reconcileChatTimelineModel,
     type ChatTimelineRow,
@@ -840,6 +841,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
                     .map((candidate) => candidate.id);
 
                 await getComandoApi().deleteAiSession(session.sessionId);
+                releaseScopedToolUiStateStore(session.sessionId);
 
                 for (const tabId of matchingTabIds) {
                     await closeTab(tabId);
