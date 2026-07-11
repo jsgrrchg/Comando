@@ -46,14 +46,32 @@ export interface ChatTimelineVirtualScrollMarginOptions {
 }
 
 export function shouldVirtualizeChatTimeline(
-    rowCount: number,
+    virtualizationCost: number,
     options: ShouldVirtualizeChatTimelineOptions = {},
 ): boolean {
     const enabled = options.enabled ?? CHAT_TIMELINE_VIRTUALIZATION_ENABLED;
     const threshold =
         options.threshold ?? CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD;
 
-    return enabled && rowCount >= threshold;
+    return enabled && virtualizationCost >= threshold;
+}
+
+/**
+ * Presentation rows deliberately collapse consecutive tool activity into a
+ * single rail. Count the activities represented by that rail so grouping the
+ * UI cannot accidentally disable virtualization for an otherwise large chat.
+ */
+export function calculateChatTimelineVirtualizationCost(
+    rows: readonly ChatTimelineRow[],
+): number {
+    return rows.reduce(
+        (cost, row) =>
+            cost +
+            (row.kind === "activity-segment"
+                ? Math.max(1, row.entries.length)
+                : 1),
+        0,
+    );
 }
 
 export function getChatTimelineRowKey(row: ChatTimelineRow): string {
