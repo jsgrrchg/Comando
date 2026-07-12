@@ -429,15 +429,12 @@ export const ChatTabView = memo(function ChatTabView({
     const runAgentControlMutation = useCallback(
         (mutation: () => Promise<void>) => {
             void (async () => {
-                await ensureLiveAgentSession();
-
                 try {
                     await mutation();
                     return;
                 } catch (error) {
-                    // The renderer can retain a live snapshot after the ACP
-                    // runtime has dropped its remote session. Force a real
-                    // prepare before retrying instead of repeating the stale RPC.
+                    // A live snapshot can outlast its remote session. Recreate it
+                    // only after a mutation fails, then retry the stale RPC once.
                     await ensureLiveAgentSession(true);
                     await mutation();
                     console.warn(

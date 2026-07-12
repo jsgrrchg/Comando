@@ -1163,9 +1163,7 @@ impl CodexAgent {
 
         let thread = self.get_thread(&args.session_id)?;
 
-        thread.set_config_option(args.config_id, args.value).await?;
-
-        let config_options = thread.config_options().await?;
+        let config_options = thread.set_config_option(args.config_id, args.value).await?;
 
         Ok(SetSessionConfigOptionResponse::new(config_options))
     }

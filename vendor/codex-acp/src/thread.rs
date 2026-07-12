@@ -16,10 +16,10 @@ use agent_client_protocol::{
         PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, PromptRequest,
         RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
         ResourceLink, SelectedPermissionOutcome, SessionConfigId, SessionConfigOption,
-        SessionConfigOptionCategory, SessionConfigOptionValue,
-        SessionConfigSelectOption, SessionConfigValueId, SessionId, SessionInfoUpdate, SessionMode,
-        SessionModeId, SessionModeState, SessionNotification, SessionUpdate, StopReason, Terminal,
-        TextContent, TextResourceContents, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation,
+        SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOption,
+        SessionConfigValueId, SessionId, SessionInfoUpdate, SessionMode, SessionModeId,
+        SessionModeState, SessionNotification, SessionUpdate, StopReason, Terminal, TextContent,
+        TextResourceContents, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation,
         ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UnstructuredCommandInput,
         UsageUpdate,
     },
@@ -609,6 +609,7 @@ enum ThreadMessage {
     Load {
         response_tx: oneshot::Sender<Result<LoadSessionResponse, Error>>,
     },
+    #[cfg(test)]
     GetConfigOptions {
         response_tx: oneshot::Sender<Result<Vec<SessionConfigOption>, Error>>,
     },
@@ -623,7 +624,7 @@ enum ThreadMessage {
     SetConfigOption {
         config_id: SessionConfigId,
         value: SessionConfigOptionValue,
-        response_tx: oneshot::Sender<Result<(), Error>>,
+        response_tx: oneshot::Sender<Result<Vec<SessionConfigOption>, Error>>,
     },
     Cancel {
         response_tx: oneshot::Sender<Result<(), Error>>,
@@ -695,17 +696,6 @@ impl Thread {
             .map_err(|e| Error::internal_error().data(e.to_string()))?
     }
 
-    pub async fn config_options(&self) -> Result<Vec<SessionConfigOption>, Error> {
-        let (response_tx, response_rx) = oneshot::channel();
-
-        let message = ThreadMessage::GetConfigOptions { response_tx };
-        drop(self.message_tx.send(message));
-
-        response_rx
-            .await
-            .map_err(|e| Error::internal_error().data(e.to_string()))?
-    }
-
     pub async fn prompt(&self, request: PromptRequest) -> Result<StopReason, Error> {
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -737,7 +727,7 @@ impl Thread {
         &self,
         config_id: SessionConfigId,
         value: SessionConfigOptionValue,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<SessionConfigOption>, Error> {
         let (response_tx, response_rx) = oneshot::channel();
 
         let message = ThreadMessage::SetConfigOption {
@@ -4045,6 +4035,7 @@ impl<A: Auth> ThreadActor<A> {
                     ));
                 });
             }
+            #[cfg(test)]
             ThreadMessage::GetConfigOptions { response_tx } => {
                 let result = self.config_options().await;
                 drop(response_tx.send(result));
@@ -4066,12 +4057,17 @@ impl<A: Auth> ThreadActor<A> {
                 value,
                 response_tx,
             } => {
-                let result = self.handle_set_config_option(config_id, value).await;
-                let config_changed = result.is_ok();
+                let result = match self.handle_set_config_option(config_id, value).await {
+                    Ok(()) => match self.config_options().await {
+                        Ok(config_options) => {
+                            self.emit_config_options_update(config_options.clone());
+                            Ok(config_options)
+                        }
+                        Err(error) => Err(error),
+                    },
+                    Err(error) => Err(error),
+                };
                 drop(response_tx.send(result));
-                if config_changed {
-                    self.maybe_emit_config_options_update().await;
-                }
             }
             ThreadMessage::Cancel { response_tx } => {
                 let result = self.handle_cancel().await;
@@ -4337,6 +4333,10 @@ impl<A: Auth> ThreadActor<A> {
     async fn maybe_emit_config_options_update(&mut self) {
         let config_options = self.config_options().await.unwrap_or_default();
 
+        self.emit_config_options_update(config_options);
+    }
+
+    fn emit_config_options_update(&mut self, config_options: Vec<SessionConfigOption>) {
         if self
             .last_sent_config_options
             .as_ref()
@@ -6982,7 +6982,7 @@ mod tests {
             value: SessionConfigOptionValue::value_id(selected_preset.id.clone()),
             response_tx,
         })?;
-        response_rx.await??;
+        let response_config_options = response_rx.await??;
 
         tokio::time::timeout(Duration::from_millis(100), async {
             loop {
@@ -7010,6 +7010,7 @@ mod tests {
                 _ => None,
             })
             .expect("config option update should be emitted");
+        assert_eq!(response_config_options, update.config_options);
         let model_option = update
             .config_options
             .iter()
