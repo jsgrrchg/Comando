@@ -412,14 +412,16 @@ export const ChatTabView = memo(function ChatTabView({
         [sessionTab],
     );
     const ensureLiveAgentSession = useCallback(async () => {
+        const currentSession = useAiStore.getState().sessions[tab.sessionId] ?? null;
+        if (currentSession?.snapshot?.runtimeSessionId) {
+            return;
+        }
         await ensureSession(liveSessionTab, { force: true });
-    }, [ensureSession, liveSessionTab]);
+    }, [ensureSession, liveSessionTab, tab.sessionId]);
     const runAgentControlMutation = useCallback(
         (mutation: () => Promise<void>) => {
             void (async () => {
-                if (tab.sessionOpenMode === "history") {
-                    await ensureLiveAgentSession();
-                }
+                await ensureLiveAgentSession();
 
                 try {
                     await mutation();
@@ -439,7 +441,7 @@ export const ChatTabView = memo(function ChatTabView({
                 );
             });
         },
-        [ensureLiveAgentSession, tab.sessionOpenMode],
+        [ensureLiveAgentSession],
     );
 
     useEffect(() => {

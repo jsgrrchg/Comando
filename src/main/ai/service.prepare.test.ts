@@ -1352,6 +1352,99 @@ describe("AiService prepareSession", () => {
         expect(loadRuntimeSelectionPreferences).toHaveBeenCalledTimes(1);
     });
 
+    it("stops applying captured defaults after a manual selection", async () => {
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+            ({ launch }) => Promise.resolve(launch.persistedSnapshot),
+        );
+        let resolveModelMutation!: () => void;
+        const modelMutationPending = new Promise<void>((resolve) => {
+            resolveModelMutation = resolve;
+        });
+        const setSessionConfigOption = vi.fn<
+            NativeAiGateway["setSessionConfigOption"]
+        >((input) =>
+            input.optionId === "model"
+                ? modelMutationPending
+                : Promise.resolve(),
+        );
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession,
+                setSessionConfigOption,
+            }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {
+                        model: "gpt-5.5",
+                        reasoning_effort: "low",
+                    },
+                    modeId: null,
+                    modelId: "gpt-5.5",
+                })),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        service.handleNativeSessionCatalogPatch(
+            "window-1",
+            "session-1",
+            {
+                configOptions: [
+                    createModelConfig("gpt-5.4-mini"),
+                    createReasoningConfig("medium"),
+                ],
+            },
+            "2026-04-15T22:24:13.719838Z",
+        );
+        await vi.waitFor(() => {
+            expect(setSessionConfigOption).toHaveBeenCalledWith({
+                optionId: "model",
+                sessionId: "session-1",
+                value: "gpt-5.5",
+            });
+        });
+
+        const manualModelMutation = service.setSessionConfigOption({
+            optionId: "model",
+            sessionId: "session-1",
+            value: "gpt-5.4-mini",
+        });
+        resolveModelMutation();
+        await manualModelMutation;
+
+        expect(setSessionConfigOption).not.toHaveBeenCalledWith({
+            optionId: "reasoning_effort",
+            sessionId: "session-1",
+            value: "low",
+        });
+        expect(setSessionConfigOption).toHaveBeenCalledWith({
+            optionId: "model",
+            sessionId: "session-1",
+            value: "gpt-5.4-mini",
+        });
+        const updatedSnapshot = await service.getSessionSnapshot("session-1");
+        expect(
+            updatedSnapshot?.configOptions.find((option) => option.id === "model")
+                ?.value,
+        ).toBe("gpt-5.4-mini");
+    });
+
     it("does not apply runtime preferences to restored sessions without their own selections", async () => {
         const runtimeCatalog = createSnapshot({
             configOptions: [createReasoningConfig("medium")],
