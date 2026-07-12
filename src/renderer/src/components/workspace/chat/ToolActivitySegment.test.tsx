@@ -184,6 +184,23 @@ describe("ToolActivitySegment", () => {
         expect(markup).toContain("Worked · 1 action");
         expect(markup).toContain("git status --short");
         expect(markup).not.toContain("Latest:");
+        expect(markup).toContain('data-activity-rail-prefix="true"');
+    });
+
+    it("uses the same activity prefix for explored work", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivitySegment, {
+                ...DEFAULT_PROPS,
+                segment: createSegment([createEntry("read-1")], {
+                    commandCount: 0,
+                    fileCount: 1,
+                    searchCount: 0,
+                }),
+            }),
+        );
+
+        expect(markup).toContain("Explored 1 file");
+        expect(markup).toContain('data-activity-rail-prefix="true"');
     });
 
     it("uses the turn tail rather than stale tool state for the headline", () => {
@@ -466,7 +483,7 @@ describe("ToolActivitySegment", () => {
         const surfaces = Array.from(
             container.querySelectorAll<HTMLElement>("[data-tool-surface]"),
         ).map((member) => member.dataset.toolSurface);
-        expect(surfaces).toEqual(["rail-row", "rail-row", "rail-row"]);
+        expect(surfaces).toEqual(["rail-row", "card", "rail-row"]);
         const indents = Array.from(
             container.querySelectorAll<HTMLElement>(
                 "[data-activity-rail-indent]",
@@ -516,6 +533,33 @@ describe("ToolActivitySegment", () => {
         expect(
             container.querySelectorAll('[data-tool-surface="rail-row"]'),
         ).toHaveLength(3);
+    });
+
+    it("keeps changed files as individual review cards below Worked", () => {
+        const container = renderInteractive(
+            createSegment([
+                createEntry("read-1"),
+                createEntry("edit-2", "standalone-change", {
+                    kind: "edit",
+                    title: "Updated ChatTabView.tsx",
+                }),
+            ]),
+        );
+
+        act(() =>
+            container.querySelector<HTMLButtonElement>("button")?.click(),
+        );
+
+        expect(
+            container
+                .querySelector<HTMLElement>('[data-child-activity="edit-2"]')
+                ?.dataset.toolSurface,
+        ).toBe("card");
+        expect(
+            container
+                .querySelector<HTMLElement>('[data-child-activity="read-1"]')
+                ?.dataset.toolSurface,
+        ).toBe("rail-row");
     });
 
     it("hides important-only segments behind the same disclosure", () => {
