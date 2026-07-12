@@ -80,11 +80,30 @@ import {
     persistSidebarAgentsCollapsedSessionIds,
     readSidebarAgentsCollapsedSessionIds,
 } from "./sidebarAgentsCollapseState";
+import {
+    createSidebarAgentsFolder,
+    deleteSidebarAgentsFolder,
+    getOrderedSidebarAgentFolderIds,
+    getSidebarAgentsFolderStorageKey,
+    moveSidebarAgentSessionToFolder,
+    persistSidebarAgentsFolderState,
+    readSidebarAgentsFolderState,
+    removeSidebarAgentSessionFolderAssignment,
+    renameSidebarAgentsFolder,
+    reorderSidebarAgentsFolder,
+    toggleSidebarAgentsFolderCollapsed,
+    type SidebarAgentFolder,
+    type SidebarAgentsFolderState,
+} from "./sidebarAgentsFolderState";
 import { emitSidebarAgentDrag } from "./sidebarAgentDragEvents";
 import {
     shouldCancelSidebarDragOnMove,
     shouldEmitSidebarDragCancel,
 } from "./sidebarDragGuards";
+import {
+    SidebarAgentsFolderList,
+    type EditingSidebarAgentFolder,
+} from "./SidebarAgentsFolderList";
 
 interface SidebarAgentsContextMenuPayload {
     readonly sessionId: string;
@@ -92,11 +111,22 @@ interface SidebarAgentsContextMenuPayload {
 
 type SidebarAgentDragPreview = {
     readonly activity: WorkspaceChatTabActivityIndicator;
+    readonly canOpenInPane: boolean;
     readonly runtimeLabel: string;
     readonly title: string;
     readonly x: number;
     readonly y: number;
 };
+
+type SidebarAgentDragCoordinates = {
+    readonly clientX: number;
+    readonly clientY: number;
+};
+
+type SidebarAgentInternalDropTarget =
+    | { readonly folderId: string; readonly kind: "folder" }
+    | { readonly kind: "unfiled" }
+    | null;
 
 const SIDEBAR_AGENTS_REFRESH_DEBOUNCE_MS = 800;
 const EMPTY_AGENTS_SESSIONS: readonly AiHistorySessionSummary[] = [];
@@ -153,6 +183,10 @@ export function SidebarAgentsPanel({
         () => getSidebarAgentsHistoryCacheKey(projectId, worktreeId),
         [projectId, worktreeId],
     );
+    const folderScopeKey = useMemo(
+        () => getSidebarAgentsFolderStorageKey(projectId, worktreeId),
+        [projectId, worktreeId],
+    );
 
     const [sessions, setSessions] = useState<readonly AiHistorySessionSummary[]>(
         () => readSidebarAgentsHistoryCache(projectId, worktreeId)?.sessions ?? [],
@@ -165,6 +199,11 @@ export function SidebarAgentsPanel({
     const [contextMenu, setContextMenu] = useState<
         ContextMenuState<SidebarAgentsContextMenuPayload> | null
     >(null);
+    const [folderMenu, setFolderMenu] = useState<
+        ContextMenuState<SidebarAgentFolder> | null
+    >(null);
+    const [editingFolder, setEditingFolder] =
+        useState<EditingSidebarAgentFolder | null>(null);
     const [newAgentMenu, setNewAgentMenu] = useState<
         ContextMenuState<undefined> | null
     >(null);
@@ -178,6 +217,19 @@ export function SidebarAgentsPanel({
     const [collapsedSessionIds, setCollapsedSessionIds] = useState<
         ReadonlySet<string>
     >(() => readSidebarAgentsCollapsedSessionIds(projectId, worktreeId));
+    const [folderState, setFolderState] = useState<SidebarAgentsFolderState>(
+        () => readSidebarAgentsFolderState(projectId, worktreeId),
+    );
+    const folderStateRef = useRef<{
+        readonly scopeKey: string;
+        readonly state: SidebarAgentsFolderState;
+    } | null>(null);
+    const [loadedFolderScopeKey, setLoadedFolderScopeKey] =
+        useState(folderScopeKey);
+    const [dragOverFolderId, setDragOverFolderId] = useState<string | null>(
+        null,
+    );
+    const [isDraggingOverUnfiled, setIsDraggingOverUnfiled] = useState(false);
     const [loadedHistoryScopeKey, setLoadedHistoryScopeKey] = useState<
         string | null
     >(
@@ -195,6 +247,25 @@ export function SidebarAgentsPanel({
         loadedHistoryScopeKey === historyScopeKey
             ? null
             : readSidebarAgentsHistoryCache(projectId, worktreeId);
+    const visibleFolderState =
+        loadedFolderScopeKey === folderScopeKey
+            ? folderState
+            : readSidebarAgentsFolderState(projectId, worktreeId);
+    folderStateRef.current = {
+        scopeKey: folderScopeKey,
+        state: visibleFolderState,
+    };
+    const orderedFolders = useMemo(
+        () =>
+            getOrderedSidebarAgentFolderIds(
+                visibleFolderState.folders,
+                visibleFolderState.folderOrder,
+            ).flatMap((folderId) => {
+                const folder = visibleFolderState.folders[folderId];
+                return folder ? [folder] : [];
+            }),
+        [visibleFolderState.folderOrder, visibleFolderState.folders],
+    );
     const visibleHistorySessions =
         loadedHistoryScopeKey === historyScopeKey
             ? sessions
@@ -252,6 +323,31 @@ export function SidebarAgentsPanel({
             });
         },
         [historyScopeKey, loadedHistoryScopeKey, projectId, worktreeId],
+    );
+
+    const updateFolderState = useCallback(
+        (
+            updater: (
+                current: SidebarAgentsFolderState,
+            ) => SidebarAgentsFolderState,
+        ) => {
+            const currentScopeState =
+                folderStateRef.current?.scopeKey === folderScopeKey
+                    ? folderStateRef.current.state
+                    : readSidebarAgentsFolderState(projectId, worktreeId);
+            const nextState = persistSidebarAgentsFolderState(
+                projectId,
+                worktreeId,
+                updater(currentScopeState),
+            );
+            folderStateRef.current = {
+                scopeKey: folderScopeKey,
+                state: nextState,
+            };
+            setLoadedFolderScopeKey(folderScopeKey);
+            setFolderState(nextState);
+        },
+        [folderScopeKey, projectId, worktreeId],
     );
 
     const loadSessions = useCallback(async ({
@@ -340,6 +436,15 @@ export function SidebarAgentsPanel({
             readSidebarAgentsCollapsedSessionIds(projectId, worktreeId),
         );
     }, [projectId, worktreeId]);
+
+    useEffect(() => {
+        setFolderState(readSidebarAgentsFolderState(projectId, worktreeId));
+        setLoadedFolderScopeKey(folderScopeKey);
+        setEditingFolder(null);
+        setFolderMenu(null);
+        setDragOverFolderId(null);
+        setIsDraggingOverUnfiled(false);
+    }, [folderScopeKey, projectId, worktreeId]);
 
     useEffect(() => {
         return subscribeClaudeCodeSidebarSessions(() => {
@@ -510,6 +615,61 @@ export function SidebarAgentsPanel({
         [],
     );
 
+    const createFolderForSession = useCallback(
+        (sessionId: string | null = null) => {
+            const result = createSidebarAgentsFolder(
+                visibleFolderState,
+                "New Folder",
+            );
+            if (!result.folderId) {
+                return;
+            }
+
+            const nextState = sessionId
+                ? moveSidebarAgentSessionToFolder(
+                      result.state,
+                      sessionId,
+                      result.folderId,
+                  )
+                : result.state;
+            updateFolderState(() => nextState);
+            setEditingFolder({
+                folderId: result.folderId,
+                name: "New Folder",
+            });
+        },
+        [updateFolderState, visibleFolderState],
+    );
+
+    const commitFolderRename = useCallback(() => {
+        if (!editingFolder) {
+            return;
+        }
+        updateFolderState((current) =>
+            renameSidebarAgentsFolder(
+                current,
+                editingFolder.folderId,
+                editingFolder.name,
+            ),
+        );
+        setEditingFolder(null);
+    }, [editingFolder, updateFolderState]);
+
+    const handleFolderContextMenu = useCallback(
+        (event: ReactMouseEvent, folder: SidebarAgentFolder) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setContextMenu(null);
+            setNewAgentMenu(null);
+            setFolderMenu({
+                payload: folder,
+                x: event.clientX,
+                y: event.clientY,
+            });
+        },
+        [],
+    );
+
     const startRename = useCallback(
         (session: SidebarAgentSessionSummary) => {
             if (!isClaudeCodeSidebarSession(session) && isSubagentSession(session)) {
@@ -599,6 +759,12 @@ export function SidebarAgentsPanel({
         async (session: SidebarAgentSessionSummary) => {
             if (isClaudeCodeSidebarSession(session)) {
                 await closeClaudeCodeSidebarSession(session);
+                updateFolderState((current) =>
+                    removeSidebarAgentSessionFolderAssignment(
+                        current,
+                        session.sessionId,
+                    ),
+                );
                 return;
             }
             const historySession = session as AiHistorySessionSummary;
@@ -648,6 +814,12 @@ export function SidebarAgentsPanel({
                     .map((candidate) => candidate.id);
 
                 await api.deleteAiSession(historySession.sessionId);
+                updateFolderState((current) =>
+                    removeSidebarAgentSessionFolderAssignment(
+                        current,
+                        historySession.sessionId,
+                    ),
+                );
                 releaseScopedToolUiStateStore(historySession.sessionId);
                 releaseCachedChatTimeline(historySession.sessionId);
 
@@ -664,7 +836,12 @@ export function SidebarAgentsPanel({
                 );
             }
         },
-        [closeTab, setSessionsAndCache, visibleHistorySessions],
+        [
+            closeTab,
+            setSessionsAndCache,
+            updateFolderState,
+            visibleHistorySessions,
+        ],
     );
 
     const handleTogglePinned = useCallback(
@@ -763,6 +940,48 @@ export function SidebarAgentsPanel({
             });
         }
 
+        entries.push({
+            label: "Move to Folder",
+            disabled: isSubagentSession(session),
+            children: [
+                {
+                    label: "New Folder…",
+                    action: () => createFolderForSession(session.sessionId),
+                },
+                { type: "separator" },
+                {
+                    label: "No Folder",
+                    disabled:
+                        !visibleFolderState.sessionFolderIds[
+                            session.sessionId
+                        ],
+                    action: () =>
+                        updateFolderState((current) =>
+                            moveSidebarAgentSessionToFolder(
+                                current,
+                                session.sessionId,
+                                null,
+                            ),
+                        ),
+                },
+                ...orderedFolders.map((folder) => ({
+                    label: folder.name,
+                    disabled:
+                        visibleFolderState.sessionFolderIds[
+                            session.sessionId
+                        ] === folder.id,
+                    action: () =>
+                        updateFolderState((current) =>
+                            moveSidebarAgentSessionToFolder(
+                                current,
+                                session.sessionId,
+                                folder.id,
+                            ),
+                        ),
+                })),
+            ],
+        });
+
         entries.push(
             {
                 label: isClaudeCodeSidebarSession(session)
@@ -776,9 +995,13 @@ export function SidebarAgentsPanel({
         return entries;
     }, [
         contextMenu,
+        createFolderForSession,
         handleDelete,
         handleTogglePinned,
+        orderedFolders,
         startRename,
+        updateFolderState,
+        visibleFolderState.sessionFolderIds,
         visibleSessions,
     ]);
 
@@ -945,6 +1168,39 @@ export function SidebarAgentsPanel({
             ),
         [openSessionIds, unpinnedGroups],
     );
+    const folderGroups = useMemo(() => {
+        const groupsByFolderId = new Map<
+            string,
+            AiSessionHierarchyGroup<SidebarAgentSessionSummary>[]
+        >();
+        for (const folder of orderedFolders) {
+            groupsByFolderId.set(folder.id, []);
+        }
+        for (const group of hierarchyGroups) {
+            const folderId =
+                visibleFolderState.sessionFolderIds[
+                    group.rootSession.sessionId
+                ];
+            if (folderId && groupsByFolderId.has(folderId)) {
+                groupsByFolderId.get(folderId)?.push(group);
+            }
+        }
+        return groupsByFolderId;
+    }, [
+        hierarchyGroups,
+        orderedFolders,
+        visibleFolderState.sessionFolderIds,
+    ]);
+    const unfiledOtherGroups = useMemo(
+        () =>
+            otherGroups.filter(
+                (group) =>
+                    !visibleFolderState.sessionFolderIds[
+                        group.rootSession.sessionId
+                    ],
+            ),
+        [otherGroups, visibleFolderState.sessionFolderIds],
+    );
     const showUnpinnedSectionHeaders =
         pinnedGroups.length > 0 ||
         (openGroups.length > 0 && otherGroups.length > 0);
@@ -968,6 +1224,87 @@ export function SidebarAgentsPanel({
         [projectId, worktreeId],
     );
 
+    const updateAgentInternalDropTarget = useCallback(
+        (
+            session: SidebarAgentSessionSummary,
+            coordinates: SidebarAgentDragCoordinates,
+        ) => {
+            const target = isSubagentSession(session)
+                ? null
+                : getSidebarAgentInternalDropTargetAtPoint(
+                      coordinates.clientX,
+                      coordinates.clientY,
+                  );
+            setDragOverFolderId(
+                target?.kind === "folder" ? target.folderId : null,
+            );
+            setIsDraggingOverUnfiled(target?.kind === "unfiled");
+        },
+        [],
+    );
+
+    const handleAgentInternalDragEnd = useCallback(
+        (
+            session: SidebarAgentSessionSummary,
+            coordinates: SidebarAgentDragCoordinates,
+        ) => {
+            const target = isSubagentSession(session)
+                ? null
+                : getSidebarAgentInternalDropTargetAtPoint(
+                      coordinates.clientX,
+                      coordinates.clientY,
+                  );
+            if (target?.kind === "folder") {
+                updateFolderState((current) =>
+                    moveSidebarAgentSessionToFolder(
+                        current,
+                        session.sessionId,
+                        target.folderId,
+                    ),
+                );
+            } else if (target?.kind === "unfiled") {
+                updateFolderState((current) =>
+                    moveSidebarAgentSessionToFolder(
+                        current,
+                        session.sessionId,
+                        null,
+                    ),
+                );
+            }
+            setDragOverFolderId(null);
+            setIsDraggingOverUnfiled(false);
+            return target !== null;
+        },
+        [updateFolderState],
+    );
+
+    const handleAgentInternalDragCancel = useCallback(() => {
+        setDragOverFolderId(null);
+        setIsDraggingOverUnfiled(false);
+    }, []);
+
+    const handleToggleFolder = useCallback(
+        (folderId: string) => {
+            updateFolderState((current) =>
+                toggleSidebarAgentsFolderCollapsed(current, folderId),
+            );
+        },
+        [updateFolderState],
+    );
+
+    const handleReorderFolder = useCallback(
+        (folderId: string, destinationIndex: number) => {
+            updateFolderState((current) =>
+                reorderSidebarAgentsFolder(
+                    current,
+                    folderId,
+                    destinationIndex,
+                ),
+            );
+        },
+        [updateFolderState],
+    );
+
     const statusLine = showBlockingLoading
         ? "Loading..."
         : visibleError
@@ -989,6 +1326,15 @@ export function SidebarAgentsPanel({
                 >
                     {statusLine}
                 </span>
+                <button
+                    aria-label="New folder"
+                    className="sidebar-toolbar-action sidebar-toolbar-action--icon"
+                    onClick={() => createFolderForSession()}
+                    title="New folder"
+                    type="button"
+                >
+                    <NewFolderIcon />
+                </button>
                 <button
                     aria-haspopup="menu"
                     aria-label="New agent thread"
@@ -1036,6 +1382,10 @@ export function SidebarAgentsPanel({
                         cancelRename={cancelRename}
                         commitRename={() => void commitRename()}
                         onContextMenu={handleContextMenu}
+                        onDragCancel={handleAgentInternalDragCancel}
+                        onDragEnd={handleAgentInternalDragEnd}
+                        onDragMove={updateAgentInternalDropTarget}
+                        onDragStart={updateAgentInternalDropTarget}
                         onOpen={handleOpenSession}
                         onRenameDraftChange={setRenameDraft}
                         onToggleCollapsed={handleToggleCollapsed}
@@ -1055,6 +1405,10 @@ export function SidebarAgentsPanel({
                         cancelRename={cancelRename}
                         commitRename={() => void commitRename()}
                         onContextMenu={handleContextMenu}
+                        onDragCancel={handleAgentInternalDragCancel}
+                        onDragEnd={handleAgentInternalDragEnd}
+                        onDragMove={updateAgentInternalDropTarget}
+                        onDragStart={updateAgentInternalDropTarget}
                         onOpen={handleOpenSession}
                         onRenameDraftChange={setRenameDraft}
                         onToggleCollapsed={handleToggleCollapsed}
@@ -1069,23 +1423,85 @@ export function SidebarAgentsPanel({
                     />
                 ) : null}
 
-                {otherGroups.length > 0 ? (
-                    <SidebarAgentsSection
-                        cancelRename={cancelRename}
-                        commitRename={() => void commitRename()}
-                        onContextMenu={handleContextMenu}
-                        onOpen={handleOpenSession}
-                        onRenameDraftChange={setRenameDraft}
-                        onToggleCollapsed={handleToggleCollapsed}
-                        onTogglePinned={handleTogglePinned}
-                        activeSessionId={activePaneSessionId}
-                        collapsedSessionIds={collapsedSessionIds}
-                        collapseEnabled={!hasQuery}
-                        renameDraft={renameDraft}
-                        renamingSessionId={renamingSessionId}
-                        groups={otherGroups}
-                        title={showUnpinnedSectionHeaders ? "All" : null}
+                {!showBlockingLoading &&
+                !visibleError &&
+                (!hasQuery || filteredSessionCount > 0) ? (
+                    <SidebarAgentsFolderList
+                        collapsedFolderIds={
+                            visibleFolderState.collapsedFolderIds
+                        }
+                        dragOverFolderId={dragOverFolderId}
+                        editingFolder={editingFolder}
+                        folders={orderedFolders}
+                        getFolderGroupCount={(folderId) =>
+                            folderGroups.get(folderId)?.length ?? 0
+                        }
+                        onCommitFolderRename={commitFolderRename}
+                        onEditingFolderChange={setEditingFolder}
+                        onFolderContextMenu={handleFolderContextMenu}
+                        onReorderFolder={handleReorderFolder}
+                        onToggleFolder={handleToggleFolder}
+                        renderFolderContents={(folder) => (
+                            <SidebarAgentsSection
+                                activeSessionId={activePaneSessionId}
+                                cancelRename={cancelRename}
+                                collapsedSessionIds={collapsedSessionIds}
+                                collapseEnabled={!hasQuery}
+                                commitRename={() => void commitRename()}
+                                groups={folderGroups.get(folder.id) ?? []}
+                                onContextMenu={handleContextMenu}
+                                onDragCancel={handleAgentInternalDragCancel}
+                                onDragEnd={handleAgentInternalDragEnd}
+                                onDragMove={updateAgentInternalDropTarget}
+                                onDragStart={updateAgentInternalDropTarget}
+                                onOpen={handleOpenSession}
+                                onRenameDraftChange={setRenameDraft}
+                                onToggleCollapsed={handleToggleCollapsed}
+                                onTogglePinned={handleTogglePinned}
+                                renameDraft={renameDraft}
+                                renamingSessionId={renamingSessionId}
+                                title={null}
+                            />
+                        )}
                     />
+                ) : null}
+
+                {unfiledOtherGroups.length > 0 ||
+                (orderedFolders.length > 0 &&
+                    (!hasQuery || filteredSessionCount > 0)) ? (
+                    <div
+                        className="sidebar-agents-unfiled-drop-zone rounded"
+                        data-agent-unfiled-drop-zone="true"
+                        data-drop-target={
+                            isDraggingOverUnfiled ? "true" : "false"
+                        }
+                    >
+                        <SidebarAgentsSection
+                            cancelRename={cancelRename}
+                            commitRename={() => void commitRename()}
+                            onContextMenu={handleContextMenu}
+                            onDragCancel={handleAgentInternalDragCancel}
+                            onDragEnd={handleAgentInternalDragEnd}
+                            onDragMove={updateAgentInternalDropTarget}
+                            onDragStart={updateAgentInternalDropTarget}
+                            onOpen={handleOpenSession}
+                            onRenameDraftChange={setRenameDraft}
+                            onToggleCollapsed={handleToggleCollapsed}
+                            onTogglePinned={handleTogglePinned}
+                            activeSessionId={activePaneSessionId}
+                            collapsedSessionIds={collapsedSessionIds}
+                            collapseEnabled={!hasQuery}
+                            renameDraft={renameDraft}
+                            renamingSessionId={renamingSessionId}
+                            groups={unfiledOtherGroups}
+                            title={
+                                showUnpinnedSectionHeaders ||
+                                orderedFolders.length > 0
+                                    ? "All"
+                                    : null
+                            }
+                        />
+                    </div>
                 ) : null}
             </div>
 
@@ -1095,6 +1511,36 @@ export function SidebarAgentsPanel({
                     menu={contextMenu}
                     minWidth={160}
                     onClose={() => setContextMenu(null)}
+                />
+            ) : null}
+
+            {folderMenu ? (
+                <ContextMenu
+                    entries={[
+                        {
+                            label: "Rename Folder",
+                            action: () =>
+                                setEditingFolder({
+                                    folderId: folderMenu.payload.id,
+                                    name: folderMenu.payload.name,
+                                }),
+                        },
+                        { type: "separator" },
+                        {
+                            label: "Delete Folder",
+                            danger: true,
+                            action: () =>
+                                updateFolderState((current) =>
+                                    deleteSidebarAgentsFolder(
+                                        current,
+                                        folderMenu.payload.id,
+                                    ),
+                                ),
+                        },
+                    ]}
+                    menu={folderMenu}
+                    minWidth={160}
+                    onClose={() => setFolderMenu(null)}
                 />
             ) : null}
 
@@ -1143,6 +1589,10 @@ function SidebarAgentsSection({
     commitRename,
     groups,
     onContextMenu,
+    onDragCancel,
+    onDragEnd,
+    onDragMove,
+    onDragStart,
     onOpen,
     onRenameDraftChange,
     onToggleCollapsed,
@@ -1160,6 +1610,19 @@ function SidebarAgentsSection({
     readonly onContextMenu: (
         event: ReactMouseEvent,
         session: SidebarAgentSessionSummary,
+    ) => void;
+    readonly onDragCancel?: (session: SidebarAgentSessionSummary) => void;
+    readonly onDragEnd?: (
+        session: SidebarAgentSessionSummary,
+        coordinates: SidebarAgentDragCoordinates,
+    ) => boolean;
+    readonly onDragMove?: (
+        session: SidebarAgentSessionSummary,
+        coordinates: SidebarAgentDragCoordinates,
+    ) => void;
+    readonly onDragStart?: (
+        session: SidebarAgentSessionSummary,
+        coordinates: SidebarAgentDragCoordinates,
     ) => void;
     readonly onOpen: (session: SidebarAgentSessionSummary) => void;
     readonly onRenameDraftChange: (value: string) => void;
@@ -1224,6 +1687,19 @@ function SidebarAgentsSection({
                                 onCancelRename={cancelRename}
                                 onCommitRename={commitRename}
                                 onContextMenu={onContextMenu}
+                                onDragCancel={() =>
+                                    onDragCancel?.(row.session)
+                                }
+                                onDragEnd={(coordinates) =>
+                                    onDragEnd?.(row.session, coordinates) ??
+                                    false
+                                }
+                                onDragMove={(coordinates) =>
+                                    onDragMove?.(row.session, coordinates)
+                                }
+                                onDragStart={(coordinates) =>
+                                    onDragStart?.(row.session, coordinates)
+                                }
                                 onOpen={onOpen}
                                 onRenameDraftChange={onRenameDraftChange}
                                 onToggleCollapsed={onToggleCollapsed}
@@ -1249,6 +1725,10 @@ function SidebarAgentsItem({
     onCancelRename,
     onCommitRename,
     onContextMenu,
+    onDragCancel,
+    onDragEnd,
+    onDragMove,
+    onDragStart,
     onOpen,
     onRenameDraftChange,
     onToggleCollapsed,
@@ -1268,6 +1748,10 @@ function SidebarAgentsItem({
         event: ReactMouseEvent,
         session: SidebarAgentSessionSummary,
     ) => void;
+    readonly onDragCancel?: () => void;
+    readonly onDragEnd?: (coordinates: SidebarAgentDragCoordinates) => boolean;
+    readonly onDragMove?: (coordinates: SidebarAgentDragCoordinates) => void;
+    readonly onDragStart?: (coordinates: SidebarAgentDragCoordinates) => void;
     readonly onOpen: (session: SidebarAgentSessionSummary) => void;
     readonly onRenameDraftChange: (value: string) => void;
     readonly onToggleCollapsed: (sessionId: string) => void;
@@ -1284,12 +1768,15 @@ function SidebarAgentsItem({
         active: boolean;
     } | null>(null);
     const suppressClickRef = useRef(false);
+    const onDragCancelRef = useRef(onDragCancel);
+    onDragCancelRef.current = onDragCancel;
     const [dragPreview, setDragPreview] =
         useState<SidebarAgentDragPreview | null>(null);
     const [isPointerTracking, setIsPointerTracking] = useState(false);
     const title = session.title.trim();
     const isPinned = isSessionPinned(session);
     const isTerminalAgent = isClaudeCodeSidebarSession(session);
+    const canOpenInPane = !isTerminalAgent;
     const activity = useAgentActivityIndicator(session.sessionId);
     const indentStyle =
         depth > 0
@@ -1301,6 +1788,9 @@ function SidebarAgentsItem({
             phase: "cancel" | "end" | "move" | "start",
             event?: Pick<ReactPointerEvent<HTMLElement>, "clientX" | "clientY">,
         ) => {
+            if (!canOpenInPane) {
+                return;
+            }
             emitSidebarAgentDrag({
                 phase,
                 projectId: session.projectId,
@@ -1312,20 +1802,21 @@ function SidebarAgentsItem({
                 y: event?.clientY ?? 0,
             });
         },
-        [session],
+        [canOpenInPane, session],
     );
 
     const updateDragPreview = useCallback(
         (event: Pick<ReactPointerEvent<HTMLElement>, "clientX" | "clientY">) => {
             setDragPreview({
                 activity,
+                canOpenInPane,
                 runtimeLabel: getSidebarAgentRuntimeLabel(session),
                 title: session.title,
                 x: event.clientX,
                 y: event.clientY,
             });
         },
-        [activity, session],
+        [activity, canOpenInPane, session],
     );
 
     const clearDragState = useCallback(
@@ -1360,6 +1851,7 @@ function SidebarAgentsItem({
             }
 
             if (emitCancel && shouldEmitSidebarDragCancel(dragState.active)) {
+                onDragCancelRef.current?.();
                 emitDrag("cancel", event);
             }
         },
@@ -1442,7 +1934,6 @@ function SidebarAgentsItem({
             onPointerDown={(event) => {
                 if (
                     isRenaming ||
-                    isTerminalAgent ||
                     event.button !== 0 ||
                     isInteractiveSidebarAgentDragTarget(
                         event.target,
@@ -1488,9 +1979,17 @@ function SidebarAgentsItem({
 
                     dragState.active = true;
                     updateDragPreview(event);
+                    onDragStart?.({
+                        clientX: event.clientX,
+                        clientY: event.clientY,
+                    });
                     emitDrag("start", event);
                 } else {
                     updateDragPreview(event);
+                    onDragMove?.({
+                        clientX: event.clientX,
+                        clientY: event.clientY,
+                    });
                     emitDrag("move", event);
                 }
 
@@ -1517,7 +2016,12 @@ function SidebarAgentsItem({
                 window.requestAnimationFrame(() => {
                     suppressClickRef.current = false;
                 });
-                emitDrag("end", event);
+                const consumed =
+                    onDragEnd?.({
+                        clientX: event.clientX,
+                        clientY: event.clientY,
+                    }) ?? false;
+                emitDrag(consumed ? "cancel" : "end", event);
             }}
             role="button"
             style={indentStyle}
@@ -1677,7 +2181,10 @@ function SidebarAgentDragGhost({
                             </span>
                         ) : null}
                         <span className="truncate">
-                            Drag to open in pane · {preview.runtimeLabel}
+                            {preview.canOpenInPane
+                                ? "Drag to a folder or pane"
+                                : "Drag to a folder"}{" "}
+                            · {preview.runtimeLabel}
                         </span>
                     </div>
                 </div>
@@ -1698,6 +2205,31 @@ function isInteractiveSidebarAgentDragTarget(
         "button,input,textarea,select,a,[role='button']",
     );
     return Boolean(interactive && interactive !== currentTarget);
+}
+
+function getSidebarAgentInternalDropTargetAtPoint(
+    clientX: number,
+    clientY: number,
+): SidebarAgentInternalDropTarget {
+    if (
+        typeof document === "undefined" ||
+        typeof document.elementFromPoint !== "function"
+    ) {
+        return null;
+    }
+
+    const target = document.elementFromPoint(clientX, clientY);
+    if (!(target instanceof Element)) {
+        return null;
+    }
+    const folderId = target.closest<HTMLElement>("[data-agent-folder-id]")
+        ?.dataset.agentFolderId;
+    if (folderId) {
+        return { folderId, kind: "folder" };
+    }
+    return target.closest("[data-agent-unfiled-drop-zone]")
+        ? { kind: "unfiled" }
+        : null;
 }
 
 function useAgentActivityIndicator(
@@ -1769,6 +2301,25 @@ function PlusIcon() {
         >
             <path d="M12 5v14" />
             <path d="M5 12h14" />
+        </svg>
+    );
+}
+
+function NewFolderIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="14"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.7"
+            viewBox="0 0 24 24"
+            width="14"
+        >
+            <path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2.5h6.5A2.5 2.5 0 0 1 21 10v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" />
+            <path d="M12 11v5M9.5 13.5h5" />
         </svg>
     );
 }

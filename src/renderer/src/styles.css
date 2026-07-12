@@ -1405,6 +1405,84 @@ button {
     letter-spacing: 0;
 }
 
+.sidebar-agents-folder {
+    border-block: 2px solid transparent;
+    outline: 1px solid transparent;
+    transition:
+        background-color 120ms ease,
+        opacity 120ms ease,
+        outline-color 120ms ease;
+}
+
+.sidebar-agents-folder[data-drop-target="true"] {
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+    outline-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
+.sidebar-agents-folder[data-reorder-position="before"] {
+    border-top-color: var(--color-accent);
+}
+
+.sidebar-agents-folder[data-reorder-position="after"] {
+    border-bottom-color: var(--color-accent);
+}
+
+.sidebar-agents-folder[data-dragging="true"] {
+    opacity: 0.55;
+}
+
+.sidebar-agents-folder-header {
+    min-height: calc(22px * var(--sidebar-list-scale, 1));
+    padding-block: calc(3px * var(--sidebar-list-scale, 1));
+    font-size: calc(10px * var(--sidebar-list-scale, 1));
+    letter-spacing: 0.07em;
+    border-radius: 5px;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.sidebar-agents-folder-header:hover {
+    color: var(--color-text-primary);
+    background: color-mix(in srgb, var(--color-bg-tertiary) 45%, transparent);
+}
+
+.sidebar-agents-folder-header:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
+    outline-offset: 1px;
+}
+
+.sidebar-agents-folder-contents {
+    margin-left: calc(8px * var(--sidebar-list-scale, 1));
+}
+
+.sidebar-agents-folder-contents > .sidebar-agents-section {
+    margin-top: 0;
+}
+
+.sidebar-agents-folder-rename {
+    font-size: calc(10px * var(--sidebar-list-scale, 1));
+    line-height: 1.3;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.sidebar-agents-folder-empty {
+    font-size: calc(10.5px * var(--sidebar-list-scale, 1));
+}
+
+.sidebar-agents-unfiled-drop-zone {
+    outline: 1px solid transparent;
+    transition:
+        background-color 120ms ease,
+        outline-color 120ms ease;
+}
+
+.sidebar-agents-unfiled-drop-zone[data-drop-target="true"] {
+    background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+    outline-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+
 .sidebar-agents-main-line {
     gap: calc(6px * var(--sidebar-list-scale, 1));
 }
