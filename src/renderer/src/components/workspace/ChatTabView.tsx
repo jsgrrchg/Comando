@@ -123,6 +123,7 @@ import {
 /* ─── Types ─── */
 
 interface ChatTabViewProps {
+    readonly active: boolean;
     readonly onDraftChange: (tabId: string, draft: string) => void;
     readonly onOpenFile: (
         projectId: string,
@@ -174,6 +175,7 @@ type AiRuntimeCatalog = Pick<
 /* ─── Main component ─── */
 
 export const ChatTabView = memo(function ChatTabView({
+    active,
     onDraftChange,
     onOpenFile,
     onOpenImage,
@@ -274,6 +276,7 @@ export const ChatTabView = memo(function ChatTabView({
     const scrollPersistTimerRef = useRef<number | null>(null);
     const pendingPersistedScrollTopRef = useRef<number | null>(null);
     const pendingPersistedNearBottomRef = useRef<boolean | null>(null);
+    const hasActivatedViewRef = useRef(false);
     const stableTimelineRef = useRef<{
         readonly model: ChatTimelineModel | null;
         readonly sessionId: string;
@@ -457,10 +460,13 @@ export const ChatTabView = memo(function ChatTabView({
     }, [sessionTab]);
 
     useEffect(() => {
-        if (latestSessionTabRef.current.sessionOpenMode === "history") {
+        if (
+            active &&
+            latestSessionTabRef.current.sessionOpenMode === "history"
+        ) {
             void ensureSession(latestSessionTabRef.current);
         }
-    }, [ensureSession, sessionPreparationKey]);
+    }, [active, ensureSession, sessionPreparationKey]);
 
     const snapshot =
         sessionState?.snapshot ?? createEmptySnapshot(tab, runtimeCatalog);
@@ -759,7 +765,7 @@ export const ChatTabView = memo(function ChatTabView({
         pendingReviewCount > 0;
 
     useEffect(() => {
-        if (activeTurnKey === null || activeTurnStartedAt === null) {
+        if (!active || activeTurnKey === null || activeTurnStartedAt === null) {
             streamStartTimeRef.current = null;
             let cancelled = false;
             queueMicrotask(() => {
@@ -802,7 +808,7 @@ export const ChatTabView = memo(function ChatTabView({
             cancelled = true;
             window.clearInterval(interval);
         };
-    }, [activeTurnKey, activeTurnStartedAt]);
+    }, [active, activeTurnKey, activeTurnStartedAt]);
 
     /* eslint-disable react-hooks/refs -- The timeline reconciler needs the last committed model to preserve row identity during render. */
     const attentionToolCallIds = useMemo(() => {
@@ -883,6 +889,14 @@ export const ChatTabView = memo(function ChatTabView({
             ),
         [tab.projectId, tab.sessionId, tab.worktreeId],
     );
+    const persistedViewStateRef = useRef<{
+        readonly isNearBottom: boolean;
+        readonly scrollTop: number;
+    } | null>(persistedViewState);
+
+    useEffect(() => {
+        persistedViewStateRef.current = persistedViewState;
+    }, [persistedViewState]);
 
     useRenderProbe("ChatTabView", {
         composerPartCount: composerParts.length,
@@ -1012,16 +1026,24 @@ export const ChatTabView = memo(function ChatTabView({
             readonly scrollTop?: number;
         }) => {
             const scrollEl = scrollRef.current;
+            const previousViewState = persistedViewStateRef.current;
             const scrollTop =
                 overrides?.scrollTop ??
                 scrollEl?.scrollTop ??
-                persistedViewState?.scrollTop ??
+                previousViewState?.scrollTop ??
                 0;
             const nextIsNearBottom =
                 overrides?.isNearBottom ??
                 (scrollEl
                     ? isNearBottom(scrollEl)
-                    : persistedViewState?.isNearBottom ?? true);
+                    : previousViewState?.isNearBottom ?? true);
+
+            // Retained chat views do not remount between tab switches, so keep
+            // the latest persisted position in memory for the next activation.
+            persistedViewStateRef.current = {
+                isNearBottom: nextIsNearBottom,
+                scrollTop,
+            };
 
             persistChatViewState(
                 tab.projectId,
@@ -1035,8 +1057,6 @@ export const ChatTabView = memo(function ChatTabView({
         },
         [
             isNearBottom,
-            persistedViewState?.isNearBottom,
-            persistedViewState?.scrollTop,
             tab.projectId,
             tab.sessionId,
             tab.worktreeId,
@@ -1202,6 +1222,10 @@ export const ChatTabView = memo(function ChatTabView({
     ]);
 
     useLayoutEffect(() => {
+        if (!active) {
+            return;
+        }
+
         let cancelled = false;
         const setJumpToBottomVisibility = (visible: boolean) => {
             queueMicrotask(() => {
@@ -1211,8 +1235,9 @@ export const ChatTabView = memo(function ChatTabView({
             });
         };
         const scrollEl = scrollRef.current;
-        const restoreScrollTop = persistedViewState?.scrollTop ?? 0;
-        const shouldRestoreBottom = persistedViewState?.isNearBottom ?? true;
+        const restoreScrollTop = persistedViewStateRef.current?.scrollTop ?? 0;
+        const shouldRestoreBottom =
+            persistedViewStateRef.current?.isNearBottom ?? true;
 
         if (!scrollEl) {
             shouldAutoFollowRef.current = shouldRestoreBottom;
@@ -1220,6 +1245,35 @@ export const ChatTabView = memo(function ChatTabView({
             return () => {
                 cancelled = true;
             };
+        }
+
+        const wasPreviouslyActivated = hasActivatedViewRef.current;
+        hasActivatedViewRef.current = true;
+
+        const persistViewStateOnDeactivate = () => {
+            cancelled = true;
+            cancelPendingScrollToBottom();
+            cancelBottomFollowSettle();
+            if (restoreScrollFrameRef.current !== null) {
+                window.cancelAnimationFrame(restoreScrollFrameRef.current);
+                restoreScrollFrameRef.current = null;
+            }
+            const flushedState = flushScheduledScrollPersist();
+            persistCurrentViewState(
+                resolveChatScrollPersistenceState({
+                    currentScrollTop: scrollEl.scrollTop,
+                    pendingIsNearBottom: flushedState?.isNearBottom ?? null,
+                    pendingScrollTop: flushedState?.scrollTop ?? null,
+                    restoreScrollTop,
+                    shouldAutoFollow: shouldAutoFollowRef.current,
+                }),
+            );
+        };
+
+        // A retained view already owns the correct DOM scroll position. Avoid
+        // forcing layout and scheduling follow-up frames on every tab switch.
+        if (wasPreviouslyActivated) {
+            return persistViewStateOnDeactivate;
         }
 
         if (shouldRestoreBottom) {
@@ -1252,48 +1306,34 @@ export const ChatTabView = memo(function ChatTabView({
             setJumpToBottomVisibility(!isNearBottom(nextScrollEl));
         });
 
-        return () => {
-            cancelled = true;
-            cancelPendingScrollToBottom();
-            cancelBottomFollowSettle();
-            if (restoreScrollFrameRef.current !== null) {
-                window.cancelAnimationFrame(restoreScrollFrameRef.current);
-                restoreScrollFrameRef.current = null;
-            }
-            const flushedState = flushScheduledScrollPersist();
-            persistCurrentViewState(
-                resolveChatScrollPersistenceState({
-                    currentScrollTop: scrollEl.scrollTop,
-                    pendingIsNearBottom: flushedState?.isNearBottom ?? null,
-                    pendingScrollTop: flushedState?.scrollTop ?? null,
-                    restoreScrollTop,
-                    shouldAutoFollow: shouldAutoFollowRef.current,
-                }),
-            );
-        };
+        return persistViewStateOnDeactivate;
     }, [
         cancelBottomFollowSettle,
         cancelPendingScrollToBottom,
         flushScheduledScrollPersist,
         isNearBottom,
         persistCurrentViewState,
-        persistedViewState?.isNearBottom,
-        persistedViewState?.scrollTop,
         scheduleScrollToBottom,
         scrollToBottom,
+        active,
         tab.sessionId,
     ]);
 
     useLayoutEffect(() => {
-        if (shouldAutoFollowRef.current) {
+        if (active && shouldAutoFollowRef.current) {
             scheduleScrollToBottom();
         }
-    }, [scheduleScrollToBottom, snapshot.updatedAt]);
+    }, [active, scheduleScrollToBottom, snapshot.updatedAt]);
 
     useEffect(() => {
         const scrollEl = scrollRef.current;
         const contentEl = timelineContentRef.current;
-        if (!scrollEl || !contentEl || typeof ResizeObserver === "undefined") {
+        if (
+            !active ||
+            !scrollEl ||
+            !contentEl ||
+            typeof ResizeObserver === "undefined"
+        ) {
             return;
         }
 
@@ -1309,7 +1349,7 @@ export const ChatTabView = memo(function ChatTabView({
         return () => {
             observer.disconnect();
         };
-    }, [scheduleScrollToBottom, tab.sessionId]);
+    }, [active, scheduleScrollToBottom, tab.sessionId]);
 
     const handleScroll = useCallback(() => {
         const el = scrollRef.current;
@@ -1763,8 +1803,10 @@ export const ChatTabView = memo(function ChatTabView({
     );
 
     const handleChatFocus = useCallback(() => {
-        markChatTabFocused(tab.id);
-    }, [markChatTabFocused, tab.id]);
+        if (active) {
+            markChatTabFocused(tab.id);
+        }
+    }, [active, markChatTabFocused, tab.id]);
 
     return (
         <div
@@ -1873,6 +1915,7 @@ export const ChatTabView = memo(function ChatTabView({
                 ) : null}
 
                 <ChatTimeline
+                    active={active}
                     canRenderFileReference={canRenderFileReference}
                     chatFontFamily={chatFontFamily}
                     chatFontSize={aiChatSettings.chatFontSize}
@@ -2349,6 +2392,7 @@ function ImageAttachmentChip(props: {
 }
 
 type ChatTimelineProps = {
+    readonly active: boolean;
     readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
@@ -2398,7 +2442,24 @@ type ChatTimelineProps = {
     readonly worktreeId: string | null;
 };
 
+function areChatTimelinePropsEqual(
+    previous: Readonly<ChatTimelineProps>,
+    next: Readonly<ChatTimelineProps>,
+): boolean {
+    // Hidden warm views should retain their last committed DOM until they are
+    // activated again. The next active render receives the latest timeline.
+    if (!previous.active && !next.active) {
+        return true;
+    }
+
+    const previousEntries = Object.entries(previous) as Array<
+        [keyof ChatTimelineProps, ChatTimelineProps[keyof ChatTimelineProps]]
+    >;
+    return previousEntries.every(([key, value]) => Object.is(value, next[key]));
+}
+
 const ChatTimeline = memo(function ChatTimeline({
+    active,
     canRenderFileReference,
     chatFontFamily,
     chatFontSize,
@@ -2431,6 +2492,7 @@ const ChatTimeline = memo(function ChatTimeline({
     worktreeId,
 }: ChatTimelineProps) {
     useRenderProbe("ChatTimeline", {
+        active,
         historyRows: historyRows.length,
         isStreaming,
         rows: historyRows.length + (liveTailRow ? 1 : 0),
@@ -2528,7 +2590,7 @@ const ChatTimeline = memo(function ChatTimeline({
             </div>
         </ToolExpansionStoreProvider>
     );
-});
+}, areChatTimelinePropsEqual);
 
 ChatTimeline.displayName = "ChatTimeline";
 
