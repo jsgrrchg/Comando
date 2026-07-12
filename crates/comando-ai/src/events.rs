@@ -82,6 +82,17 @@ pub fn session_updated(session: &NativeAiSessionSummary) -> NativeAiSessionUpdat
     }
 }
 
+pub fn session_status_updated(session: &NativeAiSessionSummary) -> NativeAiSessionUpdatedPayload {
+    NativeAiSessionUpdatedPayload {
+        session_id: session.session_id.clone(),
+        runtime_id: session.runtime_id.clone(),
+        runtime_session_id: session.runtime_session_id.clone(),
+        status: session.status.clone(),
+        title: None,
+        updated_at: session.updated_at.clone(),
+    }
+}
+
 pub fn session_closed(session: &NativeAiSessionSummary) -> NativeAiSessionClosedPayload {
     NativeAiSessionClosedPayload {
         session_id: session.session_id.clone(),

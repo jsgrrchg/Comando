@@ -596,6 +596,28 @@ describe("ai-store queue", () => {
         ).toBe("Revisa login");
     });
 
+    it("preserves the root chat title when cancellation only changes status", () => {
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                status: "streaming",
+                title: "Diagnose chat cancellation",
+            }),
+        );
+
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "status",
+                status: "idle",
+                title: null,
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.title,
+        ).toBe("Diagnose chat cancellation");
+    });
+
     it("does not request resync for idle sessions", async () => {
         vi.useFakeTimers();
         const resyncAiSession = vi.fn().mockResolvedValue(null);
