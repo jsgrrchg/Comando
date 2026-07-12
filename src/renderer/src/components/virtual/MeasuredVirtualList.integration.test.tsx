@@ -114,6 +114,7 @@ function createItems(count: number): Item[] {
 
 interface MountConfig {
     readonly estimateSize?: (item: Item, index: number) => number;
+    readonly geometryCacheSignature?: string;
     readonly items: readonly Item[];
     readonly measurementCacheKey?: string;
     readonly overscan: number;
@@ -160,6 +161,7 @@ function mountList(config: MountConfig): MountedList {
             getItemIdentityKey={config.getItemIdentityKey}
             getItemKey={(item) => item.id}
             getItemMeasurementKey={currentMeasurementKey}
+            geometryCacheSignature={config.geometryCacheSignature}
             items={currentItems}
             measurementCacheKey={config.measurementCacheKey}
             overscan={config.overscan}
@@ -288,6 +290,22 @@ afterEach(() => {
 });
 
 describe("MeasuredVirtualList scroll anchoring (integration)", () => {
+    it("expands the rendered buffer after a large scroll jump", () => {
+        const list = mountList({
+            items: createItems(500),
+            overscan: 10,
+            preserveScrollAnchorOnMeasure: true,
+        });
+
+        scrollTo(list, 3600);
+
+        // A fixed overscan of 10 would keep roughly 25 rows mounted. The
+        // velocity-aware buffer covers the next paint while momentum scrolling.
+        expect(renderedIndexes(list.mountNode).length).toBeGreaterThan(80);
+
+        list.root.unmount();
+    });
+
     it("preserves a keyed viewport anchor when rows split above it", () => {
         const initialItems = createItems(60);
         const list = mountList({
@@ -478,6 +496,7 @@ describe("MeasuredVirtualList measurement wiring (integration)", () => {
         const estimateSize = vi.fn(() => ITEM_HEIGHT);
         const config = {
             estimateSize,
+            geometryCacheSignature: "default",
             items,
             measurementCacheKey: "chat-timeline:session-a",
             overscan: 10,
@@ -501,9 +520,9 @@ describe("MeasuredVirtualList measurement wiring (integration)", () => {
         estimateSize.mockClear();
         const returnedTab = mountList(config);
 
-        // Virtualization saves DOM work, but the current geometry builder still
-        // estimates every off-screen row before it can calculate the range.
-        expect(estimateSize.mock.calls.length).toBeGreaterThanOrEqual(4900);
+        // Returning to an already open tab reuses the base layout instead of
+        // estimating every off-screen row before calculating the range.
+        expect(estimateSize.mock.calls.length).toBeLessThan(100);
 
         act(() => {
             returnedTab.root.unmount();

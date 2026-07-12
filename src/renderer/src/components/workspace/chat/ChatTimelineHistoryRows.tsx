@@ -448,6 +448,16 @@ export const ChatTimelineHistoryRows = memo(
                     getItemKey={getChatTimelineRowKey}
                     getItemIdentityKey={getItemIdentityKey}
                     getItemMeasurementKey={getItemMeasurementKey}
+                    geometryCacheSignature={
+                        contentMeasurementWidth > 0
+                            ? [
+                                  chatFontFamily ?? "default",
+                                  chatFontSize ?? "default",
+                                  toolActivityDefaultExpansion,
+                                  contentMeasurementWidth,
+                              ].join(":")
+                            : null
+                    }
                     items={historyRows}
                     measurementCacheKey={
                         sessionId ? `chat-timeline:${sessionId}` : undefined
