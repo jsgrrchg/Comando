@@ -1799,6 +1799,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 
     setActivePane: async (paneId) => {
+        // A mouse-down inside a pane bubbles to the pane container. Avoid
+        // treating an interaction in the already focused pane as navigation.
+        if (get().activePaneId === paneId) {
+            return;
+        }
+
         set((state) => ({
             ...(() => {
                 const nextState = activatePane(state, paneId);
@@ -2773,21 +2779,13 @@ function ensureActiveHydratedSessions(state: WorkspaceTreeState): void {
 function prewarmFocusedAiSession(
     tab: RuntimeWorkspaceTab,
 ): void {
-    if (tab.kind !== "chat" && tab.kind !== "review") {
+    if (tab.kind !== "chat" || tab.sessionOpenMode !== "history") {
         return;
     }
 
-    void (async () => {
-        await useAiStore.getState().ensureSession(tab);
-        if (tab.kind !== "chat" || tab.sessionOpenMode !== "history") {
-            return;
-        }
-
-        await useAiStore.getState().ensureSession(
-            { ...tab, sessionOpenMode: "live" },
-            { force: true },
-        );
-    })();
+    // History is readable without a live ACP runtime. Runtime preparation is
+    // intentionally deferred to prompt dispatch or an explicit control action.
+    void useAiStore.getState().ensureSession(tab);
 }
 
 async function hydrateRuntimeTabs(

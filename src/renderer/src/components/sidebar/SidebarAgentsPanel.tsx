@@ -64,6 +64,7 @@ import {
 } from "@renderer/components/workspace/workspaceTabActivity";
 import { ProviderIcon } from "@renderer/components/workspace/ProviderIcon";
 import { releaseScopedToolUiStateStore } from "@renderer/components/workspace/chat/toolExpansionStore";
+import { releaseCachedChatTimeline } from "@renderer/components/workspace/chat/chatTimelineCache";
 
 import {
     applySessionUpdateToSidebarHistory,
@@ -647,6 +648,7 @@ export function SidebarAgentsPanel({
 
                 await api.deleteAiSession(historySession.sessionId);
                 releaseScopedToolUiStateStore(historySession.sessionId);
+                releaseCachedChatTimeline(historySession.sessionId);
 
                 for (const tabId of matchingTabIds) {
                     await closeTab(tabId);

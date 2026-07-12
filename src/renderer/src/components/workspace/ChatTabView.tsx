@@ -71,6 +71,10 @@ import {
     type ChatTimelineRow,
 } from "./chat/chatTimelineModel";
 import {
+    cacheChatTimeline,
+    getCachedChatTimeline,
+} from "./chat/chatTimelineCache";
+import {
     isActiveChatTurnStatus,
     isChatStreamingStatus,
 } from "./chat/chatTurnStatus";
@@ -413,7 +417,10 @@ export const ChatTabView = memo(function ChatTabView({
     );
     const ensureLiveAgentSession = useCallback(async () => {
         const currentSession = useAiStore.getState().sessions[tab.sessionId] ?? null;
-        if (currentSession?.snapshot?.runtimeSessionId) {
+        if (
+            currentSession?.runtimeState === "live" &&
+            currentSession.snapshot?.runtimeSessionId
+        ) {
             return;
         }
         await ensureSession(liveSessionTab, { force: true });
@@ -449,7 +456,9 @@ export const ChatTabView = memo(function ChatTabView({
     }, [sessionTab]);
 
     useEffect(() => {
-        void ensureSession(latestSessionTabRef.current);
+        if (latestSessionTabRef.current.sessionOpenMode === "history") {
+            void ensureSession(latestSessionTabRef.current);
+        }
     }, [ensureSession, sessionPreparationKey]);
 
     const snapshot =
@@ -806,6 +815,18 @@ export const ChatTabView = memo(function ChatTabView({
         return toolCallIds;
     }, [pendingPermission?.toolCallId, pendingUserInput?.toolCallId]);
     const timelineModel = useMemo(() => {
+        const cachedTimeline = getCachedChatTimeline({
+            activeTurnStartedAt,
+            attentionToolCallIds,
+            sessionId: tab.sessionId,
+            status: snapshot.status,
+            trackedFiles: canonicalTrackedFiles,
+            transcript,
+        });
+        if (cachedTimeline) {
+            return cachedTimeline;
+        }
+
         const previousTimelineState = stableTimelineRef.current;
         const previousTimelineModel =
             previousTimelineState.sessionId === tab.sessionId
@@ -834,7 +855,24 @@ export const ChatTabView = memo(function ChatTabView({
             model: timelineModel,
             sessionId: tab.sessionId,
         };
-    }, [timelineModel, tab.sessionId]);
+        cacheChatTimeline({
+            activeTurnStartedAt,
+            attentionToolCallIds,
+            model: timelineModel,
+            sessionId: tab.sessionId,
+            status: snapshot.status,
+            trackedFiles: canonicalTrackedFiles,
+            transcript,
+        });
+    }, [
+        activeTurnStartedAt,
+        attentionToolCallIds,
+        canonicalTrackedFiles,
+        snapshot.status,
+        tab.sessionId,
+        timelineModel,
+        transcript,
+    ]);
     const persistedViewState = useMemo(
         () =>
             readPersistedChatViewState(

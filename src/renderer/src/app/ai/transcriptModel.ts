@@ -70,6 +70,19 @@ const PLAN_ENTRY_ID = "plan:active";
 const STATUS_ENTRY_ID = "status:active-turn";
 const OPAQUE_ENCRYPTED_MESSAGE_PATTERN = /^gAAAAA[A-Za-z0-9_-]{40,}={0,2}$/;
 
+interface TranscriptPresentationCache {
+    readonly messages: readonly AiMessage[];
+    readonly toolActivity: readonly AiToolActivity[];
+}
+
+// Transcript models are immutable. Cache their projected arrays so remounting
+// a chat does not scan the complete ordered entry list twice before timeline
+// reconciliation even begins.
+const transcriptPresentationCache = new WeakMap<
+    AiSessionTranscriptModel,
+    TranscriptPresentationCache
+>();
+
 export function createEmptyAiSessionTranscriptModel(): AiSessionTranscriptModel {
     return buildAiSessionTranscriptModel({
         messages: [],
@@ -243,19 +256,37 @@ export function writeAiSessionTranscriptToSnapshot(
 export function getAiSessionTranscriptMessages(
     transcript: AiSessionTranscriptModel,
 ): readonly AiMessage[] {
-    return transcript.messageOrder.flatMap((entryId) => {
-        const entry = transcript.messagesById[entryId];
-        return entry?.kind === "message" ? [entry.message] : [];
-    });
+    return getTranscriptPresentationCache(transcript).messages;
 }
 
 export function getAiSessionTranscriptToolActivity(
     transcript: AiSessionTranscriptModel,
 ): readonly AiToolActivity[] {
-    return transcript.messageOrder.flatMap((entryId) => {
+    return getTranscriptPresentationCache(transcript).toolActivity;
+}
+
+function getTranscriptPresentationCache(
+    transcript: AiSessionTranscriptModel,
+): TranscriptPresentationCache {
+    const cached = transcriptPresentationCache.get(transcript);
+    if (cached) {
+        return cached;
+    }
+
+    const messages: AiMessage[] = [];
+    const toolActivity: AiToolActivity[] = [];
+    for (const entryId of transcript.messageOrder) {
         const entry = transcript.messagesById[entryId];
-        return entry?.kind === "tool" ? [entry.activity] : [];
-    });
+        if (entry?.kind === "message") {
+            messages.push(entry.message);
+        } else if (entry?.kind === "tool") {
+            toolActivity.push(entry.activity);
+        }
+    }
+
+    const presentation = { messages, toolActivity };
+    transcriptPresentationCache.set(transcript, presentation);
+    return presentation;
 }
 
 export function mergeAiSessionTranscriptSources(
