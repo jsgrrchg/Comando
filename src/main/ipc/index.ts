@@ -172,6 +172,7 @@ import { createIpcInFlightLimiter } from "@main/ipc/rate-limit";
 import { resolveSettingsSnapshotSaveEffects } from "@main/ipc/settings-save-effects";
 import { debugBenignError } from "@main/observability/logging";
 import { resolveCodexGeneratedImageFilePath } from "@main/file-preview-protocol";
+import { isNativeBackendOperationCancelled } from "@main/native-backend/client";
 
 import type { AiService } from "@main/ai/service";
 import {
@@ -1624,10 +1625,19 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     const searchProjectEntriesLimiter = createIpcInFlightLimiter(8);
     ipcMain.handle(
         IPC_CHANNELS.searchProjectEntries,
-        (_event, input: SearchProjectEntriesInput) =>
-            searchProjectEntriesLimiter(() =>
-                options.projectService.searchProjectEntries(input),
-            ),
+        async (_event, input: SearchProjectEntriesInput) => {
+            try {
+                return await searchProjectEntriesLimiter(() =>
+                    options.projectService.searchProjectEntries(input),
+                );
+            } catch (error) {
+                if (isNativeBackendOperationCancelled(error)) {
+                    debugBenignError("projects.search-entries.cancelled", error);
+                    return [];
+                }
+                throw error;
+            }
+        },
     );
     ipcMain.handle(IPC_CHANNELS.getWorkspaceSnapshot, (event) => {
         const context = requireWindowContext(event.sender, "main");

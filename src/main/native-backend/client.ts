@@ -38,6 +38,13 @@ export class NativeBackendError extends Error {
     }
 }
 
+export function isNativeBackendOperationCancelled(error: unknown): boolean {
+    return (
+        error instanceof NativeBackendError &&
+        error.code === "operation_cancelled"
+    );
+}
+
 function formatNativeBackendErrorMessage(
     payload: NativeBackendErrorPayload,
 ): string {
