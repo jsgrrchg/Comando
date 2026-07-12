@@ -151,14 +151,13 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     const accessibleLabel = `${expanded ? "Hide" : "Show"} full activity: ${headline}.${accessibleChangeSummary} ${activityState}.`;
     const headerContent = (
         <>
-            {isWorkedSegment ? (
-                <span
-                    aria-hidden="true"
-                    className="shrink-0 self-start leading-4 text-text-secondary"
-                >
-                    {">"}
-                </span>
-            ) : null}
+            <span
+                aria-hidden="true"
+                className="shrink-0 self-start leading-4 text-text-secondary"
+                data-activity-rail-prefix="true"
+            >
+                {">"}
+            </span>
             <span className="min-w-0 flex-1">
                 <span
                     className={`block truncate text-[11px] leading-4 ${
@@ -287,7 +286,11 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                                             onOpenSession={onOpenSession}
                                             projectId={projectId}
                                             resolveFileReference={resolveFileReference}
-                                            surface="rail-row"
+                                            surface={
+                                                policy === "standalone-change"
+                                                    ? "card"
+                                                    : "rail-row"
+                                            }
                                             trackedFiles={reviewEntry.trackedFiles}
                                             worktreeId={worktreeId}
                                         />

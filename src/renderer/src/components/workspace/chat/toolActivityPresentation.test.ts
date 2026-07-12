@@ -90,7 +90,7 @@ describe("getToolActivityPresentationPolicy", () => {
                     status: "completed",
                 }),
             ),
-        ).toBe("standalone-unknown");
+        ).toBe("groupable");
         expect(
             classify(createEntry({ kind: "bash", status: "pending" })),
         ).toBe("groupable");
@@ -171,13 +171,18 @@ describe("getToolActivityPresentationPolicy", () => {
         ).toBe("structural");
     });
 
-    it("keeps unknown and MCP activity standalone", () => {
-        expect(classify(createEntry({ kind: "other" }))).toBe(
-            "standalone-unknown",
-        );
-        expect(classify(createEntry({ kind: "mcp" }))).toBe(
-            "standalone-unknown",
-        );
+    it("groups successful unknown and unified exec activity", () => {
+        expect(classify(createEntry({ kind: "other" }))).toBe("groupable");
+        expect(classify(createEntry({ kind: "mcp" }))).toBe("groupable");
+        expect(
+            classify(
+                createEntry({
+                    exitCode: 0,
+                    kind: "exec",
+                    status: "completed",
+                }),
+            ),
+        ).toBe("groupable");
     });
 
     it("prioritizes structural and change evidence over attention", () => {

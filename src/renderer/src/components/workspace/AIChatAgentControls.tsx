@@ -64,8 +64,6 @@ interface DropdownMenuPosition {
     readonly y: number;
 }
 
-const GPT_5_6_MODEL_GROUP = "GPT 5.6";
-
 function formatFallbackLabel(value: string): string {
     if (value.trim().includes(" ")) {
         return value;
@@ -622,10 +620,11 @@ function getModeConfigOption(
 
 function mapConfigOption(
     option: Extract<AiSessionConfigOption, { type: "select" }>,
+    includeGroupLabels = true,
 ) {
     return option.options.map((item) => ({
         description: item.description,
-        groupLabel: item.groupLabel,
+        groupLabel: includeGroupLabels ? item.groupLabel : null,
         label: formatFallbackLabel(item.label),
         value: item.value,
     }));
@@ -701,7 +700,7 @@ export function AIChatAgentControls({
               }));
     const visibleModels =
         modelConfig?.type === "select"
-            ? mapConfigOption(modelConfig)
+            ? mapConfigOption(modelConfig, false)
             : models.map((model) => ({
                   description: model.description,
                   label: formatFallbackLabel(model.name),
@@ -740,7 +739,6 @@ export function AIChatAgentControls({
 
             {visibleModels.length > 0 ? (
                 <DropdownField
-                    collapsibleGroupLabels={[GPT_5_6_MODEL_GROUP]}
                     disabled={disabled}
                     emptySearchMessage={`No ${runtimeId} models match that search.`}
                     label="Model"

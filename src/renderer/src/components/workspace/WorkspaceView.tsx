@@ -245,6 +245,7 @@ const CLAUDE_CODE_TERMINAL_DESCRIPTION =
 const CLAUDE_CODE_NOT_FOUND_MESSAGE =
     "The claude command was not found in Comando's PATH. Your shell may still resolve it.";
 const GIT_GUTTER_LIVE_DIFF_DEBOUNCE_MS = 200;
+const MAX_RETAINED_CHAT_TAB_VIEWS = 4;
 
 type GitGutterLiveDiffState =
     | {
@@ -1732,6 +1733,28 @@ function WorkspacePaneView({
         ? (paneTabs.find((tab) => tab.id === paneActiveTabId) ?? null)
         : null;
     const activeChatTab = activeTab?.kind === "chat" ? activeTab : null;
+    const [retainedChatTabIds, setRetainedChatTabIds] = useState<
+        readonly string[]
+    >(() => (activeChatTab ? [activeChatTab.id] : []));
+    const retainChatTab = useCallback((tabId: string) => {
+        const tab = useWorkspaceStore.getState().tabsById[tabId];
+        if (tab?.kind !== "chat") {
+            return;
+        }
+
+        setRetainedChatTabIds((currentIds) => {
+            if (currentIds.at(-1) === tabId) {
+                return currentIds;
+            }
+
+            // Keep recently visited chats warm without retaining an unbounded
+            // number of full transcript trees in a pane.
+            return [
+                ...currentIds.filter((currentTabId) => currentTabId !== tabId),
+                tabId,
+            ].slice(-MAX_RETAINED_CHAT_TAB_VIEWS);
+        });
+    }, []);
     const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
     const paneFileTabs = useMemo(
         () =>
@@ -1744,6 +1767,55 @@ function WorkspacePaneView({
         (state) => state.recentActiveTabIds,
     );
     const isActivePane = activePaneId === paneNodeId;
+
+    useEffect(() => {
+        const activeChatTabId = activeChatTab?.id;
+        if (!activeChatTabId) {
+            return;
+        }
+
+        let cancelled = false;
+        queueMicrotask(() => {
+            if (!cancelled) {
+                retainChatTab(activeChatTabId);
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [activeChatTab?.id, retainChatTab]);
+
+    const retainedChatTabs = useMemo(
+        () =>
+            paneTabs.filter(
+                (tab): tab is RuntimeWorkspaceChatTab =>
+                    tab.kind === "chat" &&
+                    (retainedChatTabIds.includes(tab.id) ||
+                        tab.id === activeChatTab?.id),
+            ),
+        [activeChatTab?.id, paneTabs, retainedChatTabIds],
+    );
+    const handleSelectTab = useCallback(
+        (tabId: string) => {
+            retainChatTab(tabId);
+            void selectTab(paneNodeId, tabId);
+        },
+        [paneNodeId, retainChatTab, selectTab],
+    );
+    const handleSelectAdjacentTab = useCallback(
+        async (direction: "next" | "previous") => {
+            await selectAdjacentTab(paneNodeId, direction);
+            const nextPane = findWorkspaceNodeById(
+                useWorkspaceStore.getState().rootNode,
+                paneNodeId,
+            );
+            if (nextPane?.type === "pane" && nextPane.activeTabId) {
+                retainChatTab(nextPane.activeTabId);
+            }
+        },
+        [paneNodeId, retainChatTab, selectAdjacentTab],
+    );
     const activeTabWorktreeId = activeTab?.worktreeId ?? null;
     const activeChatSessionId = activeChatTab?.sessionId ?? null;
     const activeChatFallbackTitle = activeChatTab?.title ?? "Chat";
@@ -1916,7 +1988,7 @@ function WorkspacePaneView({
         event.preventDefault();
         event.stopPropagation();
         void setActivePane(paneNodeId);
-        void selectTab(paneNodeId, tabId);
+        handleSelectTab(tabId);
         setTabContextMenu({
             x: event.clientX,
             y: event.clientY,
@@ -2047,6 +2119,9 @@ function WorkspacePaneView({
                 const paneId = findPaneIdByTabId(candidateTabId) ?? paneNodeId;
 
                 await setActivePane(paneId);
+                if (paneId === paneNodeId) {
+                    retainChatTab(candidateTabId);
+                }
                 await selectTab(paneId, candidateTabId);
 
                 const targetTab =
@@ -2109,6 +2184,7 @@ function WorkspacePaneView({
             attachSelectionMention,
             createChatTab,
             paneNodeId,
+            retainChatTab,
             selectTab,
             setActivePane,
         ],
@@ -2297,7 +2373,7 @@ function WorkspacePaneView({
         openChatHistoryTab,
         openGitTab,
         paneNodeId,
-        selectAdjacentTab,
+        selectAdjacentTab: handleSelectAdjacentTab,
     });
     useEffect(() => {
         paneShortcutHandlersRef.current = {
@@ -2309,7 +2385,7 @@ function WorkspacePaneView({
             openChatHistoryTab,
             openGitTab,
             paneNodeId,
-            selectAdjacentTab,
+            selectAdjacentTab: handleSelectAdjacentTab,
         };
     }, [
         createTerminalTab,
@@ -2320,7 +2396,7 @@ function WorkspacePaneView({
         openChatHistoryTab,
         openGitTab,
         paneNodeId,
-        selectAdjacentTab,
+        handleSelectAdjacentTab,
     ]);
 
     useEffect(() => {
@@ -2376,7 +2452,6 @@ function WorkspacePaneView({
                 event.preventDefault();
                 event.stopPropagation();
                 void handlers.selectAdjacentTab(
-                    handlers.paneNodeId,
                     event.shiftKey ? "previous" : "next",
                 );
                 return;
@@ -2516,7 +2591,7 @@ function WorkspacePaneView({
                                                 return;
                                             }
 
-                                            void selectTab(paneNodeId, tab.id);
+                                            handleSelectTab(tab.id);
                                         }}
                                         onContextMenu={(event) =>
                                             handleTabContextMenu(event, tab.id)
@@ -2653,6 +2728,33 @@ function WorkspacePaneView({
                         onSave={saveFileTab}
                         recentActiveTabIds={recentActiveTabIds}
                     />
+                    {retainedChatTabs.map((tab) => {
+                        const isActiveChat = tab.id === activeTab?.id;
+
+                        return (
+                            <div
+                                aria-hidden={!isActiveChat}
+                                className={
+                                    isActiveChat
+                                        ? "relative z-1 h-full"
+                                        : "pointer-events-none invisible absolute inset-0"
+                                }
+                                inert={!isActiveChat}
+                                key={tab.id}
+                            >
+                                <ChatTabView
+                                    active={isActiveChat}
+                                    onDraftChange={handleChatDraftChange}
+                                    onOpenFile={handleOpenWorkspaceFile}
+                                    onOpenImage={handleOpenChatImage}
+                                    onOpenReview={() =>
+                                        handleOpenChatReview(tab)
+                                    }
+                                    tab={tab}
+                                />
+                            </div>
+                        );
+                    })}
                     {activeTab ? (
                         activeTab.kind === "file" ? (
                             null
@@ -2677,18 +2779,7 @@ function WorkspacePaneView({
                             <GitHubPullRequestsTabView tab={activeTab} />
                         ) : activeTab.kind === "github_pull_request" ? (
                             <GitHubPullRequestTabView tab={activeTab} />
-                        ) : activeTab.kind === "terminal" ? null : (
-                            <ChatTabView
-                                key={activeTab.id}
-                                onDraftChange={handleChatDraftChange}
-                                onOpenFile={handleOpenWorkspaceFile}
-                                onOpenImage={handleOpenChatImage}
-                                onOpenReview={() =>
-                                    handleOpenChatReview(activeTab)
-                                }
-                                tab={activeTab}
-                            />
-                        )
+                        ) : null
                     ) : (
                         <WorkspacePaneEmptyState />
                     )}

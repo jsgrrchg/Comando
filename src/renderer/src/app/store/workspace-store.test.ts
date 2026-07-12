@@ -263,7 +263,7 @@ describe("workspace file opening", () => {
 
         await useWorkspaceStore.getState().hydrate();
 
-        expect(ensureSessionMock).toHaveBeenCalledTimes(4);
+        expect(ensureSessionMock).toHaveBeenCalledTimes(2);
         expect(ensureSessionMock).toHaveBeenCalledWith(
             expect.objectContaining({ sessionId: "session-left" }),
         );
@@ -272,20 +272,6 @@ describe("workspace file opening", () => {
         );
         expect(ensureSessionMock).not.toHaveBeenCalledWith(
             expect.objectContaining({ sessionId: "session-inactive" }),
-        );
-        expect(ensureSessionMock).toHaveBeenCalledWith(
-            expect.objectContaining({
-                sessionId: "session-left",
-                sessionOpenMode: "live",
-            }),
-            { force: true },
-        );
-        expect(ensureSessionMock).toHaveBeenCalledWith(
-            expect.objectContaining({
-                sessionId: "session-right",
-                sessionOpenMode: "live",
-            }),
-            { force: true },
         );
     });
 
@@ -345,12 +331,8 @@ describe("workspace file opening", () => {
 
         await useWorkspaceStore.getState().selectTab("pane-root", tab.id);
 
-        expect(ensureSessionMock).toHaveBeenCalledTimes(2);
+        expect(ensureSessionMock).toHaveBeenCalledTimes(1);
         expect(ensureSessionMock.mock.calls[0]).toEqual([tab]);
-        expect(ensureSessionMock.mock.calls[1]).toEqual([
-            { ...tab, sessionOpenMode: "live" },
-            { force: true },
-        ]);
     });
 
     it("creates OpenCode chat tabs with OpenCode titles", async () => {
@@ -1999,20 +1981,15 @@ describe("workspace file opening", () => {
             kind: "chat",
             projectId: "project-1",
             runtimeId: "codex",
+            sessionOpenMode: "history",
             sessionId: "session-persisted",
             title: "Recovered session",
             worktreeId: "worktree-1",
         });
-        expect(ensureSessionMock).toHaveBeenCalledTimes(1);
         expect(ensureSessionMock).toHaveBeenCalledWith(
             expect.objectContaining({
-                id: "chat-existing",
-                kind: "chat",
-                projectId: "project-1",
-                runtimeId: "codex",
+                sessionOpenMode: "history",
                 sessionId: "session-persisted",
-                title: "Recovered session",
-                worktreeId: "worktree-1",
             }),
         );
         await flushWorkspacePersistenceForTests();
@@ -2206,19 +2183,15 @@ describe("workspace file opening", () => {
             kind: "chat",
             projectId: "project-1",
             runtimeId: "grok",
+            sessionOpenMode: "history",
             sessionId: "session-new-history",
             title: "Recovered Grok session",
             worktreeId: "worktree-9",
         });
-        expect(ensureSessionMock).toHaveBeenCalledTimes(1);
         expect(ensureSessionMock).toHaveBeenCalledWith(
             expect.objectContaining({
-                kind: "chat",
-                projectId: "project-1",
-                runtimeId: "grok",
+                sessionOpenMode: "history",
                 sessionId: "session-new-history",
-                title: "Recovered Grok session",
-                worktreeId: "worktree-9",
             }),
         );
         await flushWorkspacePersistenceForTests();

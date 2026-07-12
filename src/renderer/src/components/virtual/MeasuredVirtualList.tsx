@@ -11,6 +11,76 @@ import {
 
 const DEFAULT_OVERSCAN = 4;
 const DEFAULT_VIEWPORT_HEIGHT = 720;
+const MAX_CACHED_MEASUREMENT_SETS = 12;
+const MAX_DYNAMIC_OVERSCAN_ROWS = 64;
+const SCROLL_OVERSCAN_ROW_HEIGHT_PX = 72;
+
+interface CachedMeasurements {
+    readonly geometry: CachedGeometry | null;
+    readonly measuredByIdentity: ReadonlyMap<string, number>;
+    readonly measuredSizes: ReadonlyMap<string, number>;
+}
+
+interface CachedGeometry {
+    readonly itemIdentityKeys: readonly string[];
+    readonly itemKeys: readonly string[];
+    readonly itemMeasurementKeys: readonly string[];
+    readonly items: readonly unknown[];
+    readonly offsets: readonly number[];
+    readonly signature: string;
+    readonly sizes: readonly number[];
+    readonly totalSize: number;
+}
+
+const cachedMeasurementsByKey = new Map<string, CachedMeasurements>();
+
+function getCachedMeasurements(cacheKey: string): CachedMeasurements | null {
+    const cached = cachedMeasurementsByKey.get(cacheKey) ?? null;
+    if (!cached) {
+        return null;
+    }
+
+    cachedMeasurementsByKey.delete(cacheKey);
+    cachedMeasurementsByKey.set(cacheKey, cached);
+    return cached;
+}
+
+function cacheMeasurements(
+    cacheKey: string,
+    measurements: CachedMeasurements,
+): void {
+    cachedMeasurementsByKey.delete(cacheKey);
+    cachedMeasurementsByKey.set(cacheKey, measurements);
+
+    while (cachedMeasurementsByKey.size > MAX_CACHED_MEASUREMENT_SETS) {
+        const oldestKey = cachedMeasurementsByKey.keys().next().value;
+        if (!oldestKey) {
+            return;
+        }
+        cachedMeasurementsByKey.delete(oldestKey);
+    }
+}
+
+function cacheCurrentMeasurements(
+    cacheKey: string,
+    geometry: CachedGeometry | null,
+    measuredSizesRef: Readonly<{
+        readonly current: ReadonlyMap<string, number>;
+    }>,
+    measuredByIdentityRef: Readonly<{
+        readonly current: ReadonlyMap<string, number>;
+    }>,
+): void {
+    cacheMeasurements(cacheKey, {
+        geometry,
+        measuredByIdentity: new Map(measuredByIdentityRef.current),
+        measuredSizes: new Map(measuredSizesRef.current),
+    });
+}
+
+export function resetMeasuredVirtualListMeasurementsForTests(): void {
+    cachedMeasurementsByKey.clear();
+}
 
 export interface MeasuredVirtualRange {
     readonly startIndex: number;
@@ -56,6 +126,13 @@ export interface MeasuredVirtualListProps<T> {
      * to estimateSize. Defaults to the measurement key (no carry-over).
      */
     readonly getItemIdentityKey?: (item: T, index: number) => string;
+    /**
+     * Keeps measurements across an unmount/remount of the same list. Item keys
+     * still validate each entry, so stale rows are ignored after a change.
+     */
+    readonly measurementCacheKey?: string;
+    /** Stable layout inputs. A changed value invalidates cached geometry. */
+    readonly geometryCacheSignature?: string | null;
     readonly onRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onReady?: (handle: MeasuredVirtualListHandle | null) => void;
     readonly preserveScrollAnchorOnItemsChange?: boolean;
@@ -80,7 +157,9 @@ interface MeasuredVirtualItem<T> {
 }
 
 interface LayoutSnapshot<T> {
+    readonly offsets: readonly number[];
     readonly range: MeasuredVirtualRange;
+    readonly sizes: readonly number[];
     readonly totalSize: number;
     readonly virtualItems: readonly MeasuredVirtualItem<T>[];
 }
@@ -405,6 +484,8 @@ export function MeasuredVirtualList<T>({
     getItemKey,
     getItemMeasurementKey,
     getItemIdentityKey,
+    measurementCacheKey,
+    geometryCacheSignature = null,
     onRangeChange,
     onReady,
     preserveScrollAnchorOnItemsChange = false,
@@ -415,11 +496,23 @@ export function MeasuredVirtualList<T>({
 }: MeasuredVirtualListProps<T>) {
     const isBrowser = typeof window !== "undefined";
     const normalizedScrollMarginTop = Math.max(0, scrollMarginTop);
+    const initialMeasurementsRef = useRef<
+        CachedMeasurements | null | undefined
+    >(undefined);
+    if (initialMeasurementsRef.current === undefined) {
+        initialMeasurementsRef.current = measurementCacheKey
+            ? getCachedMeasurements(measurementCacheKey)
+            : null;
+    }
+    const initialMeasuredSizesRef = useRef(
+        new Map(initialMeasurementsRef.current?.measuredSizes),
+    );
     const [measuredSizes, setMeasuredSizes] = useState<Map<string, number>>(
-        () => new Map(),
+        initialMeasuredSizesRef.current,
     );
     const measuredSizesRef = useRef(measuredSizes);
     const [scrollState, setScrollState] = useState(() => ({
+        overscan,
         scrollTop: 0,
         viewportHeight: isBrowser
             ? defaultViewportHeight
@@ -442,6 +535,7 @@ export function MeasuredVirtualList<T>({
     const previousItemKeysRef = useRef<readonly string[] | null>(null);
     const resizeObserverRef = useRef<ResizeObserver | null>(null);
     const previousRangeRef = useRef<MeasuredVirtualRange | null>(null);
+    const previousScrollTopRef = useRef(0);
     const shouldPreserveScrollAnchorOnMeasureRef = useRef(
         shouldPreserveScrollAnchorOnMeasure,
     );
@@ -452,18 +546,36 @@ export function MeasuredVirtualList<T>({
         shouldPreserveScrollAnchorOnMeasure;
     shouldPreserveScrollAnchorOnItemsChangeRef.current =
         shouldPreserveScrollAnchorOnItemsChange;
+    const cachedGeometry = useMemo(() => {
+        const geometry = initialMeasurementsRef.current?.geometry ?? null;
+        if (!geometry || geometry.items !== items) {
+            return null;
+        }
+        if (
+            geometryCacheSignature !== null &&
+            geometry.signature !== geometryCacheSignature
+        ) {
+            return null;
+        }
+        return geometry;
+    }, [geometryCacheSignature, items]);
     const itemKeys = useMemo(
-        () => items.map((item, index) => getItemKey(item, index)),
-        [getItemKey, items],
+        () =>
+            cachedGeometry
+                ? cachedGeometry.itemKeys
+                : items.map((item, index) => getItemKey(item, index)),
+        [cachedGeometry, getItemKey, items],
     );
     const itemMeasurementKeys = useMemo(
         () =>
-            items.map((item, index) =>
-                getItemMeasurementKey
-                    ? getItemMeasurementKey(item, index)
-                    : itemKeys[index],
-            ),
-        [getItemMeasurementKey, itemKeys, items],
+            cachedGeometry
+                ? cachedGeometry.itemMeasurementKeys
+                : items.map((item, index) =>
+                      getItemMeasurementKey
+                          ? getItemMeasurementKey(item, index)
+                          : itemKeys[index],
+                  ),
+        [cachedGeometry, getItemMeasurementKey, itemKeys, items],
     );
     const itemIndexByMeasurementKey = useMemo(() => {
         const next = new Map<string, number>();
@@ -476,12 +588,14 @@ export function MeasuredVirtualList<T>({
     }, [itemMeasurementKeys]);
     const itemIdentityKeys = useMemo(
         () =>
-            items.map((item, index) =>
-                getItemIdentityKey
-                    ? getItemIdentityKey(item, index)
-                    : itemMeasurementKeys[index],
-            ),
-        [getItemIdentityKey, itemMeasurementKeys, items],
+            cachedGeometry
+                ? cachedGeometry.itemIdentityKeys
+                : items.map((item, index) =>
+                      getItemIdentityKey
+                          ? getItemIdentityKey(item, index)
+                          : itemMeasurementKeys[index],
+                  ),
+        [cachedGeometry, getItemIdentityKey, itemMeasurementKeys, items],
     );
     // Live list-key -> measurement-key map. The row ref is keyed by the stable
     // list key, so a measurement must resolve the row's CURRENT measurement key
@@ -499,7 +613,10 @@ export function MeasuredVirtualList<T>({
     // the element maps below) and read during layout to bridge a row's height
     // across a measurement-key churn; pruned to the live identities alongside
     // measuredSizes so it stays bounded.
-    const measuredByIdentityRef = useRef(new Map<string, number>());
+    const measuredByIdentityRef = useRef(
+        new Map(initialMeasurementsRef.current?.measuredByIdentity),
+    );
+    const geometryRef = useRef<CachedGeometry | null>(null);
     const virtualizationEnabled = enabled && isBrowser;
 
     // Keep the latest values in refs so updateMeasuredSize — and therefore the
@@ -526,6 +643,21 @@ export function MeasuredVirtualList<T>({
     itemIndexByMeasurementKeyRef.current = itemIndexByMeasurementKey;
     itemIdentityKeysRef.current = itemIdentityKeys;
     measurementKeyByListKeyRef.current = measurementKeyByListKey;
+
+    useEffect(() => {
+        if (!measurementCacheKey) {
+            return;
+        }
+
+        return () => {
+            cacheCurrentMeasurements(
+                measurementCacheKey,
+                geometryRef.current,
+                measuredSizesRef,
+                measuredByIdentityRef,
+            );
+        };
+    }, [measurementCacheKey]);
 
     const shouldPreserveScrollAnchorOnMeasureNow = useCallback(() => {
         return (
@@ -719,9 +851,19 @@ export function MeasuredVirtualList<T>({
         const syncScrollState = () => {
             const nextScrollTop = container.scrollTop;
             const nextViewportHeight = container.clientHeight;
+            const scrollDelta = Math.abs(
+                nextScrollTop - previousScrollTopRef.current,
+            );
+            previousScrollTopRef.current = nextScrollTop;
+            const dynamicOverscan = Math.min(
+                MAX_DYNAMIC_OVERSCAN_ROWS,
+                overscan +
+                    Math.ceil(scrollDelta / SCROLL_OVERSCAN_ROW_HEIGHT_PX),
+            );
 
             setScrollState((current) => {
                 if (
+                    current.overscan === dynamicOverscan &&
                     current.scrollTop === nextScrollTop &&
                     current.viewportHeight === nextViewportHeight
                 ) {
@@ -729,6 +871,7 @@ export function MeasuredVirtualList<T>({
                 }
 
                 return {
+                    overscan: dynamicOverscan,
                     scrollTop: nextScrollTop,
                     viewportHeight: nextViewportHeight,
                 };
@@ -753,7 +896,7 @@ export function MeasuredVirtualList<T>({
             container.removeEventListener("scroll", syncScrollState);
             observer?.disconnect();
         };
-    }, [scrollContainerRef, virtualizationEnabled]);
+    }, [overscan, scrollContainerRef, virtualizationEnabled]);
 
     // Resolve a row's height: an exact measurement wins; otherwise the row's
     // last measurement under its width-invariant identity (so a resize doesn't
@@ -785,19 +928,30 @@ export function MeasuredVirtualList<T>({
     );
 
     const layout = useMemo((): LayoutSnapshot<T> => {
-        const sizes = items.map((_item, index) => resolveItemSize(index));
-        const offsets = new Array<number>(items.length);
-        let totalSize = 0;
+        const canReuseBaseGeometry =
+            cachedGeometry !== null &&
+            measuredSizes === initialMeasuredSizesRef.current;
+        const sizes = canReuseBaseGeometry
+            ? cachedGeometry.sizes
+            : items.map((_item, index) => resolveItemSize(index));
+        let offsets: readonly number[];
+        let totalSize = canReuseBaseGeometry ? cachedGeometry.totalSize : 0;
 
-        for (let index = 0; index < items.length; index += 1) {
-            offsets[index] = totalSize;
-            totalSize += sizes[index];
+        if (canReuseBaseGeometry) {
+            offsets = cachedGeometry.offsets;
+        } else {
+            const nextOffsets = new Array<number>(items.length);
+            for (let index = 0; index < items.length; index += 1) {
+                nextOffsets[index] = totalSize;
+                totalSize += sizes[index];
+            }
+            offsets = nextOffsets;
         }
 
         const range = calculateMeasuredVirtualRange({
             itemCount: items.length,
             offsets,
-            overscan,
+            overscan: scrollState.overscan,
             scrollMarginTop: normalizedScrollMarginTop,
             scrollTop: scrollState.scrollTop,
             sizes,
@@ -807,7 +961,9 @@ export function MeasuredVirtualList<T>({
 
         if (items.length === 0) {
             return {
+                offsets,
                 range,
+                sizes,
                 totalSize,
                 virtualItems: [],
             };
@@ -815,7 +971,9 @@ export function MeasuredVirtualList<T>({
 
         if (!virtualizationEnabled) {
             return {
+                offsets,
                 range,
+                sizes,
                 totalSize,
                 virtualItems: items.map((item, index) => ({
                     index,
@@ -850,21 +1008,39 @@ export function MeasuredVirtualList<T>({
         }
 
         return {
+            offsets,
             range,
+            sizes,
             totalSize,
             virtualItems,
         };
     }, [
+        cachedGeometry,
         itemMeasurementKeys,
         itemKeys,
         items,
+        measuredSizes,
         normalizedScrollMarginTop,
-        overscan,
         resolveItemSize,
         scrollState.scrollTop,
+        scrollState.overscan,
         scrollState.viewportHeight,
         virtualizationEnabled,
     ]);
+
+    geometryRef.current =
+        geometryCacheSignature === null
+            ? null
+            : {
+                  itemIdentityKeys,
+                  itemKeys,
+                  itemMeasurementKeys,
+                  items,
+                  offsets: layout.offsets,
+                  signature: geometryCacheSignature,
+                  sizes: layout.sizes,
+                  totalSize: layout.totalSize,
+              };
 
     layoutRangeRef.current = layout.range;
 

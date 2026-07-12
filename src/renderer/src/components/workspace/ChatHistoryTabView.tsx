@@ -50,6 +50,7 @@ import { PlanMessage } from "./chat/PlanMessage";
 import { ToolActivitySegment } from "./chat/ToolActivitySegment";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
 import { releaseScopedToolUiStateStore } from "./chat/toolExpansionStore";
+import { releaseCachedChatTimeline } from "./chat/chatTimelineCache";
 import {
     reconcileChatTimelineModel,
     type ChatTimelineRow,
@@ -842,6 +843,7 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
 
                 await getComandoApi().deleteAiSession(session.sessionId);
                 releaseScopedToolUiStateStore(session.sessionId);
+                releaseCachedChatTimeline(session.sessionId);
 
                 for (const tabId of matchingTabIds) {
                     await closeTab(tabId);

@@ -64,6 +64,7 @@ import {
 } from "@renderer/components/workspace/workspaceTabActivity";
 import { ProviderIcon } from "@renderer/components/workspace/ProviderIcon";
 import { releaseScopedToolUiStateStore } from "@renderer/components/workspace/chat/toolExpansionStore";
+import { releaseCachedChatTimeline } from "@renderer/components/workspace/chat/chatTimelineCache";
 
 import {
     applySessionUpdateToSidebarHistory,
@@ -443,6 +444,7 @@ export function SidebarAgentsPanel({
             void openChatSessionTab({
                 projectId: session.projectId,
                 runtimeId: session.runtimeId as AiRuntimeId,
+                sessionOpenMode: "history",
                 sessionId: session.sessionId,
                 title: session.title,
                 worktreeId: session.worktreeId ?? null,
@@ -647,6 +649,7 @@ export function SidebarAgentsPanel({
 
                 await api.deleteAiSession(historySession.sessionId);
                 releaseScopedToolUiStateStore(historySession.sessionId);
+                releaseCachedChatTimeline(historySession.sessionId);
 
                 for (const tabId of matchingTabIds) {
                     await closeTab(tabId);

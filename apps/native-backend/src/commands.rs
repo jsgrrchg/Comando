@@ -5,7 +5,8 @@ use std::thread;
 use comando_ai::AiEngine;
 use comando_ai::events::{
     AI_ERROR_EVENT, AI_RUNTIME_STATUS_EVENT, AI_SESSION_CLOSED_EVENT, AI_SESSION_CREATED_EVENT,
-    AI_SESSION_UPDATED_EVENT, AiRuntimeEvent, session_closed, session_created, session_updated,
+    AI_SESSION_UPDATED_EVENT, AiRuntimeEvent, session_closed, session_created,
+    session_status_updated, session_updated,
 };
 use comando_ai::history::{
     AiHistoryMigrationMode, AiHistoryMigrationOptions, AiHistoryMigrator, AiHistoryStore,
@@ -2261,7 +2262,7 @@ impl NativeBackend {
                             ),
                             event(
                                 AI_SESSION_UPDATED_EVENT,
-                                serde_json::to_value(session_updated(&summary))
+                                serde_json::to_value(session_status_updated(&summary))
                                     .expect("ai session updated event serializes"),
                             ),
                         ],

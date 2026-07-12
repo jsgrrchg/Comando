@@ -817,7 +817,7 @@ describe("chatTimelineModel activity segments", () => {
                 "groupable",
                 "standalone-attention",
                 "groupable",
-                "standalone-unknown",
+                "groupable",
             ]);
         }
     });

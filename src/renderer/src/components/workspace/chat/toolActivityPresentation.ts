@@ -1,21 +1,9 @@
 import {
     isEditedFileToolActivity,
     isStatusToolActivity,
-    isTerminalToolActivity,
     isTurnStartedActivity,
 } from "./toolActivityKinds";
 import type { ToolActivityReviewEntry } from "./toolActivityReviewModel";
-
-const GROUPABLE_OBSERVATION_TOOL_KINDS = new Set([
-    "fetch",
-    "find",
-    "glob",
-    "grep",
-    "list",
-    "read",
-    "read_file",
-    "search",
-]);
 
 export type ToolActivityPresentationPolicy =
     | "groupable"
@@ -46,25 +34,6 @@ function requiresAttention(
     );
 }
 
-function isKnownGroupableActivity(entry: ToolActivityReviewEntry): boolean {
-    const { activity } = entry;
-    const kind = activity.kind.toLowerCase();
-
-    if (GROUPABLE_OBSERVATION_TOOL_KINDS.has(kind)) {
-        return true;
-    }
-
-    if (!isTerminalToolActivity(activity)) {
-        return false;
-    }
-
-    return (
-        activity.status === "pending" ||
-        activity.status === "in_progress" ||
-        (activity.status === "completed" && activity.exitCode === 0)
-    );
-}
-
 export function getToolActivityPresentationPolicy(
     entry: ToolActivityReviewEntry,
     context: ToolActivityPresentationContext,
@@ -84,9 +53,8 @@ export function getToolActivityPresentationPolicy(
         return "standalone-attention";
     }
 
-    if (isKnownGroupableActivity(entry)) {
-        return "groupable";
-    }
-
-    return "standalone-unknown";
+    // ACP runtimes can introduce successful tool kinds without a renderer
+    // release. Unknown routine work belongs in the collapsed activity rail;
+    // only changes, failures, and user-facing actions need their own card.
+    return "groupable";
 }
