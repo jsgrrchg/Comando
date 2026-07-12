@@ -297,6 +297,7 @@ describe("SidebarAgentsPanel history cache", () => {
         expect(markup).not.toContain("Use compact thread rows");
         expect(markup).not.toContain("Show thread details");
         expect(markup).toContain('data-provider-icon="codex"');
+        expect(markup).toContain("sidebar-agents-provider-slot");
         expect(markup).toContain(fullTitle);
         expect(markup).not.toContain("Assistant returns a concise answer.");
         expect(markup).toContain("sidebar-agents-compact-relative-time");
@@ -450,6 +451,11 @@ describe("SidebarAgentsPanel history cache", () => {
         ).toBeNull();
         expect(
             runningItem?.querySelector(".sidebar-agents-activity-dot"),
+        ).not.toBeNull();
+        expect(
+            runningItem?.querySelector(
+                ".sidebar-agents-provider-slot .sidebar-agents-activity-dot",
+            ),
         ).not.toBeNull();
     });
 

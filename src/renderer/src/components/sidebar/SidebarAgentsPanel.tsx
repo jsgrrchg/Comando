@@ -2055,17 +2055,19 @@ function SidebarAgentsItem({
                         <ChevronIcon collapsed={isCollapsed} />
                     </button>
                 ) : null}
-                <ProviderIcon
-                    className="sidebar-agents-provider-icon shrink-0 text-text-secondary"
-                    opacity={0.72}
-                    runtimeId={
-                        isTerminalAgent
-                            ? "claude"
-                            : (session.runtimeId as AiRuntimeId)
-                    }
-                    size={12}
-                />
-                <SidebarAgentActivityDot indicator={activity} />
+                <span className="sidebar-agents-provider-slot relative flex shrink-0 items-center justify-center text-text-secondary">
+                    <ProviderIcon
+                        className="sidebar-agents-provider-icon block"
+                        opacity={0.68}
+                        runtimeId={
+                            isTerminalAgent
+                                ? "claude"
+                                : (session.runtimeId as AiRuntimeId)
+                        }
+                        size={13}
+                    />
+                    <SidebarAgentActivityDot indicator={activity} />
+                </span>
                 {isRenaming ? (
                     <input
                         autoFocus

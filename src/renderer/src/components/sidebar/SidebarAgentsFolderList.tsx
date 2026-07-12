@@ -261,8 +261,12 @@ export function SidebarAgentsFolderList({
                     tabIndex={0}
                     title={collapsed ? "Expand folder" : "Collapse folder"}
                 >
-                    <FolderChevronIcon collapsed={collapsed} />
-                    <FolderIcon />
+                    <span className="sidebar-agents-folder-chevron-slot flex shrink-0 items-center justify-center">
+                        <FolderChevronIcon collapsed={collapsed} />
+                    </span>
+                    <span className="sidebar-agents-folder-icon-slot flex shrink-0 items-center justify-center">
+                        <FolderIcon />
+                    </span>
                     {isRenaming && editingFolder ? (
                         <input
                             aria-label="Folder name"
@@ -289,11 +293,11 @@ export function SidebarAgentsFolderList({
                             value={editingFolder.name}
                         />
                     ) : (
-                        <span className="min-w-0 flex-1 truncate">
+                        <span className="sidebar-agents-folder-title min-w-0 flex-1 truncate">
                             {folder.name}
                         </span>
                     )}
-                    <span className="font-normal text-text-secondary/60">
+                    <span className="sidebar-agents-folder-count font-normal text-text-secondary/60">
                         {groupCount}
                     </span>
                 </div>
