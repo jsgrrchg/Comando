@@ -132,6 +132,8 @@ interface ActiveQueuedPromptState {
     readonly queuedPrompt: QueuedPrompt;
 }
 
+type AiHistoryHydrationState = "not_loaded" | "loading" | "loaded" | "failed";
+
 interface AiSessionClientState {
     readonly activeDispatchToken: string | null;
     readonly activePromptMessageAliases: Readonly<Record<string, string>>;
@@ -144,6 +146,7 @@ interface AiSessionClientState {
     readonly editingQueuedPromptState: QueuedPromptEditState | null;
     readonly editingQueuedPrompt: QueuedPrompt | null;
     readonly incomingSnapshotVersion: number;
+    readonly historyHydrationState: AiHistoryHydrationState;
     readonly isDispatching: boolean;
     readonly lastIncomingSnapshotUpdatedAt: string | null;
     readonly localError: string | null;
@@ -1195,8 +1198,25 @@ export const useAiStore = create<AiStore>((set, get) => ({
         const currentSession = get().sessions[tab.sessionId] ?? null;
         const shouldHydratePassively =
             !options?.force &&
-            getSessionRuntimeStateForTab(tab) === "history" &&
-            currentSession?.runtimeState !== "live";
+            getSessionRuntimeStateForTab(tab) === "history";
+
+        if (shouldHydratePassively) {
+            // A registered tab receives an empty snapshot placeholder. Only a
+            // completed history read may suppress a later hydration.
+            if (
+                currentSession?.runtimeState === "live" ||
+                currentSession?.historyHydrationState === "loaded"
+            ) {
+                return;
+            }
+        } else if (
+            !options?.force &&
+            currentSession?.runtimeState === "live" &&
+            currentSession.snapshot?.runtimeSessionId
+        ) {
+            return;
+        }
+
         const requestKey = `${tab.sessionId}:${shouldHydratePassively ? "history" : "live"}`;
         const existingRequest = ensureSessionInFlight.get(requestKey);
         if (existingRequest) {
@@ -1809,13 +1829,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return;
         }
 
-        if (getSessionRuntimeStateForTab(tab) === "history") {
-            await get().ensureSession(
-                { ...tab, sessionOpenMode: "live" },
-                { force: true },
-            );
-        }
-
         get().registerSessionTab(tab);
         const session = get().sessions[tab.sessionId] ?? createSessionState();
         const editingQueuedPrompt = session.editingQueuedPrompt;
@@ -1866,6 +1879,8 @@ function createSessionState(
         editingQueuedPromptState: null,
         editingQueuedPrompt: null,
         incomingSnapshotVersion: 0,
+        historyHydrationState:
+            runtimeState === "history" ? "not_loaded" : "loaded",
         isDispatching: false,
         lastIncomingSnapshotUpdatedAt: null,
         localError: null,
@@ -2013,12 +2028,18 @@ async function executeSessionPrepare(
                             ? error.message
                             : `Could not hydrate the ${getRuntimeDisplayName(tab.runtimeId)} session.`,
                     meta: buildSessionMeta(tab),
-                    runtimeState: "live",
-                    snapshot: createEmptySessionSnapshot(
-                        tab,
-                        state.runtimeCatalogById[tab.runtimeId] ?? null,
-                    ),
-                    transcript: createEmptyAiSessionTranscriptModel(),
+                    runtimeState: "history",
+                    // Keep the readable history on screen when reconnecting the
+                    // runtime fails. The user can retry without losing context.
+                    snapshot:
+                        state.sessions[tab.sessionId]?.snapshot ??
+                        createEmptySessionSnapshot(
+                            tab,
+                            state.runtimeCatalogById[tab.runtimeId] ?? null,
+                        ),
+                    transcript:
+                        state.sessions[tab.sessionId]?.transcript ??
+                        createEmptyAiSessionTranscriptModel(),
                 },
             },
         }));
@@ -2031,6 +2052,24 @@ async function executePassiveSessionHydration(
     set: SetAiState,
 ): Promise<void> {
     get().registerSessionTab(tab);
+
+    set((state) => {
+        const session = state.sessions[tab.sessionId];
+        if (!session || session.runtimeState === "live") {
+            return state;
+        }
+
+        return {
+            sessions: {
+                ...state.sessions,
+                [tab.sessionId]: {
+                    ...session,
+                    historyHydrationState: "loading",
+                    localError: null,
+                },
+            },
+        };
+    });
 
     try {
         const runtimeStatusPromise = getComandoApi().getAiRuntimeStatus(
@@ -2106,6 +2145,7 @@ async function executePassiveSessionHydration(
                                       null,
                               }),
                         localError: null,
+                        historyHydrationState: "loaded",
                         meta: buildSessionMeta(tab),
                         runtimeState: "history",
                         snapshot: resolved.snapshot,
@@ -2136,6 +2176,7 @@ async function executePassiveSessionHydration(
                             error instanceof Error
                                 ? error.message
                                 : "Could not load this saved chat.",
+                        historyHydrationState: "failed",
                         meta: buildSessionMeta(tab),
                         runtimeState: "history",
                         snapshot: createEmptySessionSnapshot(

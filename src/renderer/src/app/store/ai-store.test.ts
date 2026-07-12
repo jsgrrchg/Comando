@@ -905,7 +905,7 @@ describe("ai-store queue", () => {
             writable: true,
         });
 
-        await useAiStore.getState().ensureSession(TAB);
+        await useAiStore.getState().ensureSession(TAB, { force: true });
 
         expect(prepareAiSession).toHaveBeenCalledWith({
             projectId: TAB.projectId,
@@ -956,7 +956,7 @@ describe("ai-store queue", () => {
         });
 
         await useAiStore.getState().ensureSession(TAB);
-        await useAiStore.getState().ensureSession(TAB);
+        await useAiStore.getState().ensureSession(TAB, { force: true });
 
         expect(prepareAiSession).toHaveBeenCalledTimes(2);
         expect(
@@ -1130,6 +1130,48 @@ describe("ai-store queue", () => {
         expect(session?.snapshot?.modelId).toBe("gpt-5");
     });
 
+    it("hydrates a registered history tab instead of mistaking its placeholder for history", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            sessionOpenMode: "history",
+        };
+        const snapshot = createSnapshot({
+            messages: [createMessage({ content: "Restored history" })],
+        });
+        const getAiSessionSnapshot = vi.fn().mockResolvedValue(snapshot);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    getAiSessionSnapshot,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().registerSessionTab(historyTab);
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]
+                ?.historyHydrationState,
+        ).toBe("not_loaded");
+
+        await useAiStore.getState().ensureSession(historyTab);
+
+        expect(getAiSessionSnapshot).toHaveBeenCalledWith(TAB.sessionId);
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.messages[0]
+                ?.content,
+        ).toBe("Restored history");
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]
+                ?.historyHydrationState,
+        ).toBe("loaded");
+    });
+
     it("prepares a closed restored history chat before queuing a follow-up prompt", async () => {
         const historyTab: WorkspaceChatTab = {
             ...TAB,
@@ -1190,14 +1232,10 @@ describe("ai-store queue", () => {
         await useAiStore.getState().ensureSession(historyTab);
         await useAiStore.getState().sendPrompt(historyTab, "Continue.");
 
-        expect(prepareAiSession).toHaveBeenCalledWith({
-            projectId: TAB.projectId,
-            runtimeId: TAB.runtimeId,
-            sessionId: TAB.sessionId,
-            title: TAB.title,
-            worktreeId: TAB.worktreeId,
-        });
-        expect(enqueueAiPrompt).toHaveBeenCalledAfter(prepareAiSession);
+        // Dispatch preparation belongs to the main-owned prompt queue. The
+        // renderer keeps history navigation free of runtime work.
+        expect(prepareAiSession).not.toHaveBeenCalled();
+        expect(enqueueAiPrompt).toHaveBeenCalled();
         expect(
             useAiStore.getState().sessions[TAB.sessionId]?.activeQueuedPrompt
                 ?.queuedPrompt.status,
