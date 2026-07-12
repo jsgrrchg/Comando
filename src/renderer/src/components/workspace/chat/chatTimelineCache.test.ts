@@ -39,6 +39,12 @@ describe("chatTimelineCache", () => {
                 ...input,
                 attentionToolCallIds: new Set<string>(),
             }),
+        ).toBe(model);
+        expect(
+            getCachedChatTimeline({
+                ...input,
+                attentionToolCallIds: new Set(["tool-call-1"]),
+            }),
         ).toBeNull();
     });
 });

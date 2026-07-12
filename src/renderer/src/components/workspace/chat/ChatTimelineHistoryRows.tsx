@@ -42,6 +42,7 @@ interface ChatTimelineHistoryRowsProps {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly historyRows: readonly ChatTimelineRow[];
+    readonly sessionId?: string;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onVirtualResizeEnd?: () => void;
     readonly onVirtualResizeAutoFollow?: () => void;
@@ -76,6 +77,7 @@ export const ChatTimelineHistoryRows = memo(
         chatFontFamily,
         chatFontSize,
         historyRows,
+        sessionId,
         onVirtualRangeChange,
         onVirtualResizeEnd,
         onVirtualResizeAutoFollow,
@@ -447,6 +449,9 @@ export const ChatTimelineHistoryRows = memo(
                     getItemIdentityKey={getItemIdentityKey}
                     getItemMeasurementKey={getItemMeasurementKey}
                     items={historyRows}
+                    measurementCacheKey={
+                        sessionId ? `chat-timeline:${sessionId}` : undefined
+                    }
                     onRangeChange={onVirtualRangeChange}
                     onReady={handleVirtualListReady}
                     overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}

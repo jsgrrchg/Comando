@@ -11,6 +11,60 @@ import {
 
 const DEFAULT_OVERSCAN = 4;
 const DEFAULT_VIEWPORT_HEIGHT = 720;
+const MAX_CACHED_MEASUREMENT_SETS = 12;
+
+interface CachedMeasurements {
+    readonly measuredByIdentity: ReadonlyMap<string, number>;
+    readonly measuredSizes: ReadonlyMap<string, number>;
+}
+
+const cachedMeasurementsByKey = new Map<string, CachedMeasurements>();
+
+function getCachedMeasurements(cacheKey: string): CachedMeasurements | null {
+    const cached = cachedMeasurementsByKey.get(cacheKey) ?? null;
+    if (!cached) {
+        return null;
+    }
+
+    cachedMeasurementsByKey.delete(cacheKey);
+    cachedMeasurementsByKey.set(cacheKey, cached);
+    return cached;
+}
+
+function cacheMeasurements(
+    cacheKey: string,
+    measurements: CachedMeasurements,
+): void {
+    cachedMeasurementsByKey.delete(cacheKey);
+    cachedMeasurementsByKey.set(cacheKey, measurements);
+
+    while (cachedMeasurementsByKey.size > MAX_CACHED_MEASUREMENT_SETS) {
+        const oldestKey = cachedMeasurementsByKey.keys().next().value;
+        if (!oldestKey) {
+            return;
+        }
+        cachedMeasurementsByKey.delete(oldestKey);
+    }
+}
+
+function cacheCurrentMeasurements(
+    cacheKey: string,
+    measuredSizesRef: Readonly<{
+        readonly current: ReadonlyMap<string, number>;
+    }>,
+    measuredByIdentityRef: Readonly<{
+        readonly current: ReadonlyMap<string, number>;
+    }>,
+): void {
+    cacheMeasurements(cacheKey, {
+        measuredByIdentity: new Map(measuredByIdentityRef.current),
+        measuredSizes: new Map(measuredSizesRef.current),
+    });
+}
+
+export function resetMeasuredVirtualListMeasurementsForTests(): void {
+    cachedMeasurementsByKey.clear();
+}
 
 export interface MeasuredVirtualRange {
     readonly startIndex: number;
@@ -56,6 +110,11 @@ export interface MeasuredVirtualListProps<T> {
      * to estimateSize. Defaults to the measurement key (no carry-over).
      */
     readonly getItemIdentityKey?: (item: T, index: number) => string;
+    /**
+     * Keeps measurements across an unmount/remount of the same list. Item keys
+     * still validate each entry, so stale rows are ignored after a change.
+     */
+    readonly measurementCacheKey?: string;
     readonly onRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onReady?: (handle: MeasuredVirtualListHandle | null) => void;
     readonly preserveScrollAnchorOnItemsChange?: boolean;
@@ -405,6 +464,7 @@ export function MeasuredVirtualList<T>({
     getItemKey,
     getItemMeasurementKey,
     getItemIdentityKey,
+    measurementCacheKey,
     onRangeChange,
     onReady,
     preserveScrollAnchorOnItemsChange = false,
@@ -415,8 +475,16 @@ export function MeasuredVirtualList<T>({
 }: MeasuredVirtualListProps<T>) {
     const isBrowser = typeof window !== "undefined";
     const normalizedScrollMarginTop = Math.max(0, scrollMarginTop);
+    const initialMeasurementsRef = useRef<
+        CachedMeasurements | null | undefined
+    >(undefined);
+    if (initialMeasurementsRef.current === undefined) {
+        initialMeasurementsRef.current = measurementCacheKey
+            ? getCachedMeasurements(measurementCacheKey)
+            : null;
+    }
     const [measuredSizes, setMeasuredSizes] = useState<Map<string, number>>(
-        () => new Map(),
+        () => new Map(initialMeasurementsRef.current?.measuredSizes),
     );
     const measuredSizesRef = useRef(measuredSizes);
     const [scrollState, setScrollState] = useState(() => ({
@@ -499,7 +567,9 @@ export function MeasuredVirtualList<T>({
     // the element maps below) and read during layout to bridge a row's height
     // across a measurement-key churn; pruned to the live identities alongside
     // measuredSizes so it stays bounded.
-    const measuredByIdentityRef = useRef(new Map<string, number>());
+    const measuredByIdentityRef = useRef(
+        new Map(initialMeasurementsRef.current?.measuredByIdentity),
+    );
     const virtualizationEnabled = enabled && isBrowser;
 
     // Keep the latest values in refs so updateMeasuredSize — and therefore the
@@ -526,6 +596,20 @@ export function MeasuredVirtualList<T>({
     itemIndexByMeasurementKeyRef.current = itemIndexByMeasurementKey;
     itemIdentityKeysRef.current = itemIdentityKeys;
     measurementKeyByListKeyRef.current = measurementKeyByListKey;
+
+    useEffect(() => {
+        if (!measurementCacheKey) {
+            return;
+        }
+
+        return () => {
+            cacheCurrentMeasurements(
+                measurementCacheKey,
+                measuredSizesRef,
+                measuredByIdentityRef,
+            );
+        };
+    }, [measurementCacheKey]);
 
     const shouldPreserveScrollAnchorOnMeasureNow = useCallback(() => {
         return (

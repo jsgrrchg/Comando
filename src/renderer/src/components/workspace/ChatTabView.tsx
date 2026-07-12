@@ -2485,6 +2485,7 @@ const ChatTimeline = memo(function ChatTimeline({
                             projectId={projectId}
                             resolveFileReference={resolveFileReference}
                             scrollRef={scrollRef}
+                            sessionId={sessionId}
                             shouldPreserveVirtualMeasureAnchor={
                                 shouldPreserveVirtualMeasureAnchor
                             }
@@ -2609,6 +2610,7 @@ type ChatTimelineHistoryProps = {
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
+    readonly sessionId: string;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly worktreeId: string | null;
@@ -2632,6 +2634,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     projectId,
     resolveFileReference,
     scrollRef,
+    sessionId,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
     worktreeId,
@@ -2684,6 +2687,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             onVirtualResizeStart={onVirtualResizeStart}
             renderRow={renderRow}
             scrollRef={scrollRef}
+            sessionId={sessionId}
             shouldPreserveVirtualMeasureAnchor={
                 shouldPreserveVirtualMeasureAnchor
             }

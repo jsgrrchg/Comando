@@ -7,7 +7,7 @@ const MAX_CACHED_TIMELINES = 12;
 
 interface CachedTimeline {
     readonly activeTurnStartedAt: string | null;
-    readonly attentionToolCallIds: ReadonlySet<string>;
+    readonly attentionToolCallIdsKey: string;
     readonly model: ChatTimelineModel;
     readonly status: AiSessionSnapshot["status"];
     readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
@@ -15,6 +15,10 @@ interface CachedTimeline {
 }
 
 const cachedTimelines = new Map<string, CachedTimeline>();
+
+function getAttentionToolCallIdsKey(ids: ReadonlySet<string>): string {
+    return [...ids].sort().join("\u0000");
+}
 
 export function getCachedChatTimeline(input: {
     readonly activeTurnStartedAt: string | null;
@@ -28,7 +32,8 @@ export function getCachedChatTimeline(input: {
     if (
         !cached ||
         cached.activeTurnStartedAt !== input.activeTurnStartedAt ||
-        cached.attentionToolCallIds !== input.attentionToolCallIds ||
+        cached.attentionToolCallIdsKey !==
+            getAttentionToolCallIdsKey(input.attentionToolCallIds) ||
         cached.status !== input.status ||
         cached.trackedFiles !== input.trackedFiles ||
         cached.transcript !== input.transcript
@@ -52,7 +57,12 @@ export function cacheChatTimeline(input: {
     readonly transcript: AiSessionTranscriptModel;
 }): void {
     cachedTimelines.delete(input.sessionId);
-    cachedTimelines.set(input.sessionId, input);
+    cachedTimelines.set(input.sessionId, {
+        ...input,
+        attentionToolCallIdsKey: getAttentionToolCallIdsKey(
+            input.attentionToolCallIds,
+        ),
+    });
 
     while (cachedTimelines.size > MAX_CACHED_TIMELINES) {
         const oldestSessionId = cachedTimelines.keys().next().value;

@@ -11,7 +11,10 @@ import {
     type MockInstance,
 } from "vitest";
 
-import { MeasuredVirtualList } from "./MeasuredVirtualList";
+import {
+    MeasuredVirtualList,
+    resetMeasuredVirtualListMeasurementsForTests,
+} from "./MeasuredVirtualList";
 
 // Integration coverage for the virtualized measurement path under react-dom:
 // the scroll-anchor compensation (a row above the viewport re-measures → scroll
@@ -81,6 +84,7 @@ class FakeResizeObserver {
 // getBoundingClientRect off this map so a fired resize stays reflected if the row
 // is ever re-measured; fireRowResize updates it alongside firing the observer.
 const heightByElement = new WeakMap<Element, number>();
+const heightByListKey = new Map<string, number>();
 
 function fireRowResize(
     element: Element,
@@ -88,6 +92,10 @@ function fireRowResize(
     options?: { readonly contentHeight?: number },
 ) {
     heightByElement.set(element, height);
+    const listKey = (element as HTMLElement).dataset.listKey;
+    if (listKey) {
+        heightByListKey.set(listKey, height);
+    }
     const contentHeight = options?.contentHeight ?? height;
     for (const observer of observers) {
         observer.fire(element, height, contentHeight);
@@ -105,7 +113,9 @@ function createItems(count: number): Item[] {
 }
 
 interface MountConfig {
+    readonly estimateSize?: (item: Item, index: number) => number;
     readonly items: readonly Item[];
+    readonly measurementCacheKey?: string;
     readonly overscan: number;
     readonly preserveScrollAnchorOnItemsChange?: boolean;
     readonly preserveScrollAnchorOnMeasure: boolean;
@@ -146,11 +156,12 @@ function mountList(config: MountConfig): MountedList {
     const element = () => (
         <MeasuredVirtualList
             defaultViewportHeight={VIEWPORT_HEIGHT}
-            estimateSize={() => ITEM_HEIGHT}
+            estimateSize={config.estimateSize ?? (() => ITEM_HEIGHT)}
             getItemIdentityKey={config.getItemIdentityKey}
             getItemKey={(item) => item.id}
             getItemMeasurementKey={currentMeasurementKey}
             items={currentItems}
+            measurementCacheKey={config.measurementCacheKey}
             overscan={config.overscan}
             preserveScrollAnchorOnItemsChange={
                 config.preserveScrollAnchorOnItemsChange
@@ -235,6 +246,8 @@ beforeEach(() => {
     (
         globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
     ).IS_REACT_ACT_ENVIRONMENT = true;
+    resetMeasuredVirtualListMeasurementsForTests();
+    heightByListKey.clear();
     (
         globalThis as unknown as { ResizeObserver: typeof FakeResizeObserver }
     ).ResizeObserver = FakeResizeObserver;
@@ -246,9 +259,14 @@ beforeEach(() => {
     getBoundingClientRectSpy = vi
         .spyOn(Element.prototype, "getBoundingClientRect")
         .mockImplementation(function getBoundingClientRect(
-            this: Element,
-        ): DOMRect {
-            const height = heightByElement.get(this) ?? ITEM_HEIGHT;
+        this: Element,
+    ): DOMRect {
+            const height =
+                heightByElement.get(this) ??
+                heightByListKey.get(
+                    (this as HTMLElement).dataset.listKey ?? "",
+                ) ??
+                ITEM_HEIGHT;
             return {
                 height,
                 width: 0,
@@ -455,6 +473,70 @@ describe("MeasuredVirtualList scroll anchoring (integration)", () => {
 });
 
 describe("MeasuredVirtualList measurement wiring (integration)", () => {
+    it("recomputes long-chat geometry when returning to an already open tab", () => {
+        const items = createItems(5000);
+        const estimateSize = vi.fn(() => ITEM_HEIGHT);
+        const config = {
+            estimateSize,
+            items,
+            measurementCacheKey: "chat-timeline:session-a",
+            overscan: 10,
+            preserveScrollAnchorOnMeasure: true,
+        };
+        const firstTab = mountList(config);
+
+        act(() => {
+            firstTab.root.unmount();
+        });
+        const otherTab = mountList({
+            items: createItems(20),
+            measurementCacheKey: "chat-timeline:session-b",
+            overscan: 10,
+            preserveScrollAnchorOnMeasure: true,
+        });
+        act(() => {
+            otherTab.root.unmount();
+        });
+
+        estimateSize.mockClear();
+        const returnedTab = mountList(config);
+
+        // Virtualization saves DOM work, but the current geometry builder still
+        // estimates every off-screen row before it can calculate the range.
+        expect(estimateSize.mock.calls.length).toBeGreaterThanOrEqual(4900);
+
+        act(() => {
+            returnedTab.root.unmount();
+        });
+    });
+
+    it("reuses measured row heights after remounting the same list", () => {
+        const config = {
+            items: createItems(60),
+            measurementCacheKey: "chat-timeline:session-1",
+            overscan: 10,
+            preserveScrollAnchorOnMeasure: true,
+        };
+        const firstMount = mountList(config);
+
+        act(() => {
+            fireRowResize(rowWrapper(firstMount.mountNode, 0), 60);
+        });
+        expect(totalHeightPx(firstMount)).toBe("1240px");
+        act(() => {
+            firstMount.root.unmount();
+        });
+
+        const secondMount = mountList(config);
+
+        // The cached measurement is applied before the newly mounted rows are
+        // observed, avoiding the estimate → measured layout correction.
+        expect(totalHeightPx(secondMount)).toBe("1240px");
+        act(() => {
+            secondMount.root.unmount();
+        });
+    });
+
     it("measures each row once on attach, not on every render", () => {
         const list = mountList({
             items: createItems(60),
