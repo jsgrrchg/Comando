@@ -415,9 +415,10 @@ export const ChatTabView = memo(function ChatTabView({
         }),
         [sessionTab],
     );
-    const ensureLiveAgentSession = useCallback(async () => {
+    const ensureLiveAgentSession = useCallback(async (force = false) => {
         const currentSession = useAiStore.getState().sessions[tab.sessionId] ?? null;
         if (
+            !force &&
             currentSession?.runtimeState === "live" &&
             currentSession.snapshot?.runtimeSessionId
         ) {
@@ -434,7 +435,10 @@ export const ChatTabView = memo(function ChatTabView({
                     await mutation();
                     return;
                 } catch (error) {
-                    await ensureLiveAgentSession();
+                    // The renderer can retain a live snapshot after the ACP
+                    // runtime has dropped its remote session. Force a real
+                    // prepare before retrying instead of repeating the stale RPC.
+                    await ensureLiveAgentSession(true);
                     await mutation();
                     console.warn(
                         "[comando] Recovered AI session control update after live session prepare.",
