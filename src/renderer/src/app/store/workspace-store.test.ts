@@ -1981,11 +1981,17 @@ describe("workspace file opening", () => {
             kind: "chat",
             projectId: "project-1",
             runtimeId: "codex",
+            sessionOpenMode: "history",
             sessionId: "session-persisted",
             title: "Recovered session",
             worktreeId: "worktree-1",
         });
-        expect(ensureSessionMock).not.toHaveBeenCalled();
+        expect(ensureSessionMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                sessionOpenMode: "history",
+                sessionId: "session-persisted",
+            }),
+        );
         await flushWorkspacePersistenceForTests();
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
     });
@@ -2177,11 +2183,17 @@ describe("workspace file opening", () => {
             kind: "chat",
             projectId: "project-1",
             runtimeId: "grok",
+            sessionOpenMode: "history",
             sessionId: "session-new-history",
             title: "Recovered Grok session",
             worktreeId: "worktree-9",
         });
-        expect(ensureSessionMock).not.toHaveBeenCalled();
+        expect(ensureSessionMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                sessionOpenMode: "history",
+                sessionId: "session-new-history",
+            }),
+        );
         await flushWorkspacePersistenceForTests();
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
     });

@@ -575,7 +575,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 projectId: input.projectId,
                 runtimeId: input.runtimeId,
                 sessionOpenMode:
-                    input.sessionOpenMode ?? existingTab.sessionOpenMode,
+                    input.sessionOpenMode ??
+                    existingTab.sessionOpenMode ??
+                    "history",
                 title: input.title,
                 worktreeId: input.worktreeId ?? null,
             };
@@ -650,7 +652,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             kind: "chat",
             projectId: input.projectId,
             runtimeId: input.runtimeId,
-            sessionOpenMode: input.sessionOpenMode,
+            // This API opens an existing session. Loading its durable
+            // transcript must not depend on every caller passing a mode.
+            sessionOpenMode: input.sessionOpenMode ?? "history",
             sessionId: input.sessionId,
             title: input.title,
             worktreeId: input.worktreeId ?? null,

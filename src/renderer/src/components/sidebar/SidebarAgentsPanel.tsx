@@ -444,6 +444,7 @@ export function SidebarAgentsPanel({
             void openChatSessionTab({
                 projectId: session.projectId,
                 runtimeId: session.runtimeId as AiRuntimeId,
+                sessionOpenMode: "history",
                 sessionId: session.sessionId,
                 title: session.title,
                 worktreeId: session.worktreeId ?? null,
