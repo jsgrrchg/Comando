@@ -219,7 +219,7 @@ describe("AIChatAgentControls", () => {
         );
     });
 
-    it("expands GPT-5.6 variants and shows the selected variant label", () => {
+    it("lists GPT-5.6 variants with their short labels", () => {
         const onConfigOptionChange = vi.fn();
         const { container } = mountControls({
             configOptions: GPT_5_6_MODEL_CONFIG_OPTIONS,
@@ -229,16 +229,10 @@ describe("AIChatAgentControls", () => {
 
         const modelButton = getButtonByTitle(container, "Model");
         expect(modelButton.textContent).toContain("Terra");
-        expect(modelButton.textContent).not.toContain("GPT 5.6");
-
         click(modelButton);
-        const groupButton = getButtonByText(document.body, "GPT 5.6");
-        expect(groupButton.getAttribute("aria-expanded")).toBe("false");
-        expect(() => getButtonByText(document.body, "Sol")).toThrow();
-
-        click(groupButton);
-        expect(groupButton.getAttribute("aria-expanded")).toBe("true");
-
+        expect(document.body.textContent).not.toContain("GPT 5.6");
+        expect(document.body.textContent).not.toContain("Other models");
+        expect(getButtonByText(document.body, "Terra")).toBeTruthy();
         click(getButtonByText(document.body, "Sol"));
         expect(onConfigOptionChange).toHaveBeenCalledWith(
             "model",

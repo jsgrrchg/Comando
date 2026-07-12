@@ -16,7 +16,7 @@ use agent_client_protocol::{
         PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, PromptRequest,
         RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
         ResourceLink, SelectedPermissionOutcome, SessionConfigId, SessionConfigOption,
-        SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectGroup,
+        SessionConfigOptionCategory, SessionConfigOptionValue,
         SessionConfigSelectOption, SessionConfigValueId, SessionId, SessionInfoUpdate, SessionMode,
         SessionModeId, SessionModeState, SessionNotification, SessionUpdate, StopReason, Terminal,
         TextContent, TextResourceContents, ToolCall, ToolCallContent, ToolCallId, ToolCallLocation,
@@ -147,10 +147,6 @@ const CODEX_ACP_STATUS_EVENT_ID_PREFIX: &str = "codex-acp:status:";
 const CODEX_ACP_IMAGE_GENERATION_EVENT_ID_PREFIX: &str = "codex-acp:image:";
 const FILE_DELETED_PLACEHOLDER: &str = "[file deleted]";
 const GPT_5_6_MODEL_PREFIX: &str = "gpt-5.6-";
-const GPT_5_6_MODEL_GROUP_ID: &str = "gpt-5.6";
-const GPT_5_6_MODEL_GROUP_NAME: &str = "GPT 5.6";
-const OTHER_MODELS_GROUP_ID: &str = "other-models";
-const OTHER_MODELS_GROUP_NAME: &str = "Other models";
 
 fn debug_ai_worker_enabled() -> bool {
     matches!(std::env::var("COMANDO_DEBUG_AI_WORKER").as_deref(), Ok("1"))
@@ -159,31 +155,6 @@ fn debug_ai_worker_enabled() -> bool {
 fn gpt_5_6_variant_name(preset: &ModelPreset) -> Option<String> {
     let variant = preset.model.strip_prefix(GPT_5_6_MODEL_PREFIX)?;
     (!variant.is_empty()).then(|| variant.to_title_case())
-}
-
-fn model_picker_groups(
-    gpt_5_6_options: Vec<SessionConfigSelectOption>,
-    other_options: Vec<SessionConfigSelectOption>,
-) -> Vec<SessionConfigSelectGroup> {
-    let mut groups = Vec::with_capacity(2);
-
-    if !gpt_5_6_options.is_empty() {
-        groups.push(SessionConfigSelectGroup::new(
-            GPT_5_6_MODEL_GROUP_ID,
-            GPT_5_6_MODEL_GROUP_NAME,
-            gpt_5_6_options,
-        ));
-    }
-
-    if !other_options.is_empty() {
-        groups.push(SessionConfigSelectGroup::new(
-            OTHER_MODELS_GROUP_ID,
-            OTHER_MODELS_GROUP_NAME,
-            other_options,
-        ));
-    }
-
-    groups
 }
 
 fn session_mode_id_for_active_profile(profile_id: &str) -> Option<&'static str> {
@@ -4255,12 +4226,11 @@ impl<A: Auth> ThreadActor<A> {
         let current_model = self.get_current_model().await;
         let current_preset = presets.iter().find(|p| p.model == current_model).cloned();
 
-        let mut gpt_5_6_model_select_options = Vec::new();
-        let mut other_model_select_options = Vec::new();
+        let mut model_select_options = Vec::new();
 
         if current_preset.is_none() {
             // If no preset found, return the current model string as-is
-            other_model_select_options.push(SessionConfigSelectOption::new(
+            model_select_options.push(SessionConfigSelectOption::new(
                 current_model.clone(),
                 current_model.clone(),
             ));
@@ -4271,11 +4241,11 @@ impl<A: Auth> ThreadActor<A> {
             .filter(|model| model.show_in_picker || model.model == current_model)
         {
             match gpt_5_6_variant_name(&preset) {
-                Some(variant_name) => gpt_5_6_model_select_options.push(
+                Some(variant_name) => model_select_options.push(
                     SessionConfigSelectOption::new(preset.id, variant_name)
                         .description(preset.description),
                 ),
-                None => other_model_select_options.push(
+                None => model_select_options.push(
                     SessionConfigSelectOption::new(preset.id, preset.display_name)
                         .description(preset.description),
                 ),
@@ -4283,14 +4253,9 @@ impl<A: Auth> ThreadActor<A> {
         }
 
         options.push(
-            SessionConfigOption::select(
-                "model",
-                "Model",
-                current_model,
-                model_picker_groups(gpt_5_6_model_select_options, other_model_select_options),
-            )
-            .category(SessionConfigOptionCategory::Model)
-            .description("Choose which model Codex should use"),
+            SessionConfigOption::select("model", "Model", current_model, model_select_options)
+                .category(SessionConfigOptionCategory::Model)
+                .description("Choose which model Codex should use"),
         );
 
         let current_service_tier = self.current_service_tier();
@@ -6957,7 +6922,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn groups_gpt_5_6_model_variants_in_config_options() -> anyhow::Result<()> {
+    async fn lists_gpt_5_6_model_variants_with_other_config_options() -> anyhow::Result<()> {
         let (_session_id, _client, _thread, message_tx, handle) = setup().await?;
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -6971,18 +6936,17 @@ mod tests {
         let SessionConfigKind::Select(model_select) = &model_option.kind else {
             panic!("model option should be a select");
         };
-        let SessionConfigSelectOptions::Grouped(groups) = &model_select.options else {
-            panic!("model options should be grouped");
+        let SessionConfigSelectOptions::Ungrouped(model_options) = &model_select.options else {
+            panic!("model options should be ungrouped");
         };
-        let gpt_5_6_group = groups
+        let mut variants = model_options
             .iter()
-            .find(|group| group.group.0.as_ref() == GPT_5_6_MODEL_GROUP_ID)
-            .expect("GPT-5.6 group should be present");
-
-        assert_eq!(gpt_5_6_group.name, GPT_5_6_MODEL_GROUP_NAME);
-        let mut variants = gpt_5_6_group
-            .options
-            .iter()
+            .filter(|option| {
+                matches!(
+                    option.value.0.as_ref(),
+                    "gpt-5.6-luna" | "gpt-5.6-sol" | "gpt-5.6-terra"
+                )
+            })
             .map(|option| option.name.as_str())
             .collect::<Vec<_>>();
         variants.sort_unstable();
