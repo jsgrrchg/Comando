@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 
@@ -93,6 +93,12 @@ struct AuthTerminalSession {
     action: AuthTerminalAction,
     runtime_id: String,
     method_id: String,
+}
+
+#[derive(Default)]
+struct ProjectGitStatuses {
+    exact: HashMap<String, String>,
+    changed_directories: HashSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1383,6 +1389,34 @@ impl NativeBackend {
         }
     }
 
+    fn project_git_statuses(&self, root: &ProjectRoot) -> ProjectGitStatuses {
+        let Ok(snapshot) = get_status(&self.git_runner, &root.root_path, root.worktree_id.clone())
+        else {
+            return ProjectGitStatuses::default();
+        };
+
+        let mut statuses = ProjectGitStatuses::default();
+        for change in snapshot.entries {
+            let path = change.path.trim_end_matches('/');
+            if path.is_empty() {
+                continue;
+            }
+
+            statuses.exact.insert(
+                path.to_string(),
+                project_tree_git_status(&change.kind).to_string(),
+            );
+
+            let mut ancestor = path;
+            while let Some((parent, _)) = ancestor.rsplit_once('/') {
+                statuses.changed_directories.insert(parent.to_string());
+                ancestor = parent;
+            }
+        }
+
+        statuses
+    }
+
     fn list_project_tree_children(&mut self, request: RpcRequest) -> CommandResult {
         if let Err(error) = self.sync_fs_registry_from_store().map(|_| ()) {
             return error_only(request.id, error);
@@ -1392,11 +1426,23 @@ impl NativeBackend {
             Err(error) => return error_only(request.id, error),
         };
 
+        let root = match self
+            .fs_service
+            .resolve_root(&input.project_id, input.worktree_id.as_ref())
+        {
+            Ok(root) => root,
+            Err(error) => return error_only(request.id, fs_error(error)),
+        };
+        let git_statuses = self.project_git_statuses(&root);
+
         match self.fs_service.list_tree_children(&input) {
-            Ok(result) => response_only(
-                request.id,
-                serde_json::to_value(result).expect("tree children serializes"),
-            ),
+            Ok(mut result) => {
+                apply_project_git_statuses(&mut result.entries, &git_statuses);
+                response_only(
+                    request.id,
+                    serde_json::to_value(result).expect("tree children serializes"),
+                )
+            }
             Err(error) => error_only(request.id, fs_error(error)),
         }
     }
@@ -1417,8 +1463,11 @@ impl NativeBackend {
             Err(error) => return error_only(request.id, fs_error(error)),
         };
 
+        let git_statuses = self.project_git_statuses(&root);
+
         match self.index_service.list_project_entries(root) {
             Ok((mut entries, events)) => {
+                apply_project_git_statuses(&mut entries, &git_statuses);
                 let truncated = input.limit.is_some_and(|limit| entries.len() > limit);
                 if let Some(limit) = input.limit {
                     entries.truncate(limit);
@@ -1885,6 +1934,7 @@ impl NativeBackend {
             Ok(root) => root,
             Err(error) => return error_only(request.id, error),
         };
+        let git_statuses = self.project_git_statuses(&root);
         let query = ProjectSearchQuery::new(&input.query);
         let limit = input.limit.max(1) as usize;
 
@@ -1908,9 +1958,9 @@ impl NativeBackend {
                         entries: result
                             .entries
                             .into_iter()
-                            .map(indexed_project_entry)
+                            .map(|entry| indexed_project_entry(entry, &git_statuses))
                             .collect(),
-                        matches: path_search_matches(result.matches),
+                        matches: path_search_matches(result.matches, &git_statuses),
                         stats: native_index_stats(status.stats),
                     })
                     .expect("project entry search result serializes"),
@@ -1941,6 +1991,7 @@ impl NativeBackend {
             Ok(root) => root,
             Err(error) => return error_only(request.id, error),
         };
+        let git_statuses = self.project_git_statuses(&root);
         let query = ProjectSearchQuery::new(&input.query);
         let limit = input.limit.max(1) as usize;
         if query.is_empty() {
@@ -1964,9 +2015,9 @@ impl NativeBackend {
                             entries: result
                                 .entries
                                 .into_iter()
-                                .map(indexed_project_entry)
+                                .map(|entry| indexed_project_entry(entry, &git_statuses))
                                 .collect(),
-                            matches: path_search_matches(result.matches),
+                            matches: path_search_matches(result.matches, &git_statuses),
                             stats: native_index_stats(status.stats),
                         })
                         .expect("project entry search result serializes"),
@@ -2009,8 +2060,11 @@ impl NativeBackend {
                         operation_id,
                         generation: snapshot.generation,
                         status: native_index_status_kind(snapshot.status),
-                        entries: entries.into_iter().map(indexed_project_entry).collect(),
-                        matches: path_search_matches(matches),
+                        entries: entries
+                            .into_iter()
+                            .map(|entry| indexed_project_entry(entry, &git_statuses))
+                            .collect(),
+                        matches: path_search_matches(matches, &git_statuses),
                         stats: native_index_stats(snapshot.stats),
                     })
                     .expect("project entry search result serializes"),
@@ -4305,17 +4359,48 @@ fn native_index_stats(stats: comando_index::IndexBuildStats) -> native_index::Na
     }
 }
 
-fn indexed_project_entry(
-    entry: comando_index::IndexedProjectEntry,
-) -> native_index::NativeIndexedProjectEntry {
-    entry.to_project_tree_entry().into()
+fn apply_project_git_statuses(
+    entries: &mut [native_projects::NativeProjectTreeEntry],
+    statuses: &ProjectGitStatuses,
+) {
+    for entry in entries {
+        entry.git_status = if entry.kind == "directory"
+            && statuses.changed_directories.contains(&entry.relative_path)
+        {
+            Some("mixed".to_string())
+        } else {
+            statuses.exact.get(&entry.relative_path).cloned()
+        };
+    }
 }
 
-fn path_search_matches(matches: Vec<SearchMatch>) -> Vec<native_index::NativePathSearchMatch> {
+fn project_tree_git_status(kind: &str) -> &'static str {
+    match kind {
+        "added" | "copied" => "added",
+        "deleted" => "deleted",
+        "untracked" => "untracked",
+        "conflicted" => "mixed",
+        _ => "modified",
+    }
+}
+
+fn indexed_project_entry(
+    entry: comando_index::IndexedProjectEntry,
+    statuses: &ProjectGitStatuses,
+) -> native_index::NativeIndexedProjectEntry {
+    let mut entry = entry.to_project_tree_entry();
+    apply_project_git_statuses(std::slice::from_mut(&mut entry), statuses);
+    entry.into()
+}
+
+fn path_search_matches(
+    matches: Vec<SearchMatch>,
+    statuses: &ProjectGitStatuses,
+) -> Vec<native_index::NativePathSearchMatch> {
     matches
         .into_iter()
         .map(|search_match| native_index::NativePathSearchMatch {
-            entry: indexed_project_entry(search_match.entry),
+            entry: indexed_project_entry(search_match.entry, statuses),
             score: search_match.score,
         })
         .collect()
@@ -4417,6 +4502,7 @@ fn emit_test_event(request: RpcRequest) -> CommandResult {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::process::Command;
     use std::sync::{Arc, Mutex};
 
     use comando_settings::{InMemoryRuntimeSecretStore, RuntimeSecretStore, SecretStoreError};
@@ -5183,6 +5269,81 @@ mod tests {
     }
 
     #[test]
+    fn annotates_project_tree_entries_with_uncommitted_git_status() {
+        let (temp_dir, mut backend, project_id) = backend_with_registered_project();
+        let project_path = temp_dir.path().join("project-native");
+        fs::create_dir_all(project_path.join("src")).expect("src");
+        fs::write(
+            project_path.join("src/main.ts"),
+            "export const value = 1;\n",
+        )
+        .expect("main");
+        run_git(&project_path, &["init", "-b", "main"]);
+        run_git(&project_path, &["config", "user.name", "Test User"]);
+        run_git(&project_path, &["config", "user.email", "test@example.com"]);
+        run_git(&project_path, &["add", "."]);
+        run_git(&project_path, &["commit", "-m", "Initial commit"]);
+
+        fs::write(
+            project_path.join("src/main.ts"),
+            "export const value = 2;\n",
+        )
+        .expect("modify main");
+        fs::write(project_path.join("new.ts"), "export const fresh = true;\n").expect("new file");
+
+        let list_result = backend.handle_request(request(
+            "project_list_entries",
+            json!({
+                "projectId": project_id,
+                "worktreeId": null,
+            }),
+        ));
+        let entries = only_response(&list_result).result.as_ref().unwrap()["entries"]
+            .as_array()
+            .expect("entries");
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry["relativePath"] == "src")
+                .and_then(|entry| entry["gitStatus"].as_str()),
+            Some("mixed")
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry["relativePath"] == "src/main.ts")
+                .and_then(|entry| entry["gitStatus"].as_str()),
+            Some("modified")
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry["relativePath"] == "new.ts")
+                .and_then(|entry| entry["gitStatus"].as_str()),
+            Some("untracked")
+        );
+
+        let tree_result = backend.handle_request(request(
+            "project_list_tree_children",
+            json!({
+                "projectId": project_id,
+                "worktreeId": null,
+                "parentRelativePath": null,
+            }),
+        ));
+        let tree_entries = only_response(&tree_result).result.as_ref().unwrap()["entries"]
+            .as_array()
+            .expect("tree entries");
+        assert_eq!(
+            tree_entries
+                .iter()
+                .find(|entry| entry["relativePath"] == "src")
+                .and_then(|entry| entry["gitStatus"].as_str()),
+            Some("mixed")
+        );
+    }
+
+    #[test]
     fn background_search_empty_query_does_not_build_index() {
         let (temp_dir, mut backend, project_id) = backend_with_registered_project();
         let project_path = temp_dir.path().join("project-native");
@@ -5370,6 +5531,15 @@ mod tests {
             .to_string();
 
         (temp_dir, backend, project_id)
+    }
+
+    fn run_git(root: &std::path::Path, args: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .status()
+            .expect("git command should start");
+        assert!(status.success(), "git command failed: {args:?}");
     }
 
     fn backend_with_memory_runtime_setup() -> (TempDir, NativeBackend) {
