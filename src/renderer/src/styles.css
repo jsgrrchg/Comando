@@ -2936,6 +2936,12 @@ body.resizing-composer {
     [data-activity-rail-current="true"] {
         display: none;
     }
+
+    /* The header becomes single-line here, so keep the rail prefix centered
+       with the title instead of pinned to the button's top edge. */
+    [data-activity-rail-prefix="true"] {
+        align-self: center;
+    }
 }
 
 /* User messages stay compact in wide panes and recover the full row width in
