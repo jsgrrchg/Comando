@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
+import type { WorkspaceNode } from "@shared/ipc";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import {
     collectPaneNodes,
@@ -16,11 +17,35 @@ function getComandoApiOrNull() {
     return globalThis.window?.comando ?? null;
 }
 
+export function getReadyActiveWorkspaceTabIds(
+    rootNode: WorkspaceNode,
+    deferredPaneIds: ReadonlySet<string>,
+    activePaneId: string,
+): ReadonlySet<string> {
+    return new Set(
+        collectPaneNodes(rootNode).flatMap((pane) =>
+            pane.activeTabId &&
+            (pane.id === activePaneId || !deferredPaneIds.has(pane.id))
+                ? [pane.activeTabId]
+                : [],
+        ),
+    );
+}
+
 export function WorkspaceTerminalHost() {
-    const { activeContextKey, contextsByKey, rootNode, tabsById } = useWorkspaceStore(
+    const {
+        activeContextKey,
+        activePaneId,
+        contextsByKey,
+        deferredPaneIds,
+        rootNode,
+        tabsById,
+    } = useWorkspaceStore(
         useShallow((state) => ({
             activeContextKey: state.activeContextKey,
+            activePaneId: state.activePaneId,
             contextsByKey: state.contextsByKey,
+            deferredPaneIds: state.deferredPaneIds,
             rootNode: state.rootNode,
             tabsById: state.tabsById,
         })),
@@ -34,14 +59,14 @@ export function WorkspaceTerminalHost() {
         [tabsById],
     );
     const activeTerminalTabs = useMemo(() => {
-        const activeTabIds = new Set(
-            collectPaneNodes(rootNode).flatMap((pane) =>
-                pane.activeTabId ? [pane.activeTabId] : [],
-            ),
+        const activeTabIds = getReadyActiveWorkspaceTabIds(
+            rootNode,
+            deferredPaneIds,
+            activePaneId,
         );
 
         return visibleTerminalTabs.filter((tab) => activeTabIds.has(tab.id));
-    }, [rootNode, visibleTerminalTabs]);
+    }, [activePaneId, deferredPaneIds, rootNode, visibleTerminalTabs]);
     const liveTerminalIds = useMemo(() => {
         const inactiveTerminalIds = Object.values(contextsByKey)
             .filter((context) => context.key !== activeContextKey)

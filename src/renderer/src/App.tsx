@@ -35,6 +35,7 @@ import {
 import { createGitProjectRefreshScheduler } from "./app/git/refresh-scheduler";
 import {
     areGitWorktreeIdsEquivalent,
+    getGitContextKey,
     resolveProjectContextWorktreeId,
 } from "./app/git/context-key";
 import {
@@ -55,6 +56,10 @@ import {
 } from "./app/projects/quick-open";
 import { filterProjectEntriesForTreeFilter } from "./app/projects/tree-filter";
 import { getProjectContextKey } from "./app/projects/context-key";
+import {
+    resolveWorkspaceContextRefreshPlan,
+    runDeduplicatedContextRefresh,
+} from "./app/workspace/context-activation-refresh";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
 import {
     edgePeekConfig,
@@ -519,6 +524,12 @@ export function App() {
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
     const [sidebarOverlayClosing, setSidebarOverlayClosing] = useState(false);
+    const pendingContextTreeRefreshesRef = useRef(
+        new Map<string, Promise<void>>(),
+    );
+    const pendingContextGitRefreshesRef = useRef(
+        new Map<string, Promise<GitRepositorySnapshot | null>>(),
+    );
     const [gitChangesFilter, setGitChangesFilter] = useState("");
     const [agentsFilter, setAgentsFilter] = useState("");
     const [issuesFilter, setIssuesFilter] = useState("");
@@ -1022,40 +1033,54 @@ export function App() {
         activeProjectId,
         activeWorktreeId,
     );
-    const activeGitContextKey = getGitContextKey(
-        activeProjectId,
-        activeWorktreeId,
-    );
+    const activeGitContextKey = activeProjectId
+        ? getGitContextKey(activeProjectId, activeWorktreeId)
+        : null;
 
     useEffect(() => {
         if (!activeWorkspaceContext) {
             return;
         }
 
-        let cancelled = false;
         const { projectId, worktreeId } = activeWorkspaceContext;
-        void (async () => {
-            await setActiveWorktree(projectId, worktreeId);
-            if (cancelled) {
-                return;
-            }
+        void setActiveWorktree(projectId, worktreeId);
 
-            await Promise.all([
-                refreshProjectTree(projectId, worktreeId),
-                refreshGitProject(projectId, worktreeId),
-                refreshGitHistory(projectId, worktreeId),
-            ]);
-        })();
+        const projectContextKey = getProjectContextKey(projectId, worktreeId);
+        const gitContextKey = getGitContextKey(projectId, worktreeId);
+        const projectsState = useProjectsStore.getState();
+        const gitState = useGitStore.getState();
+        const refreshPlan = resolveWorkspaceContextRefreshPlan({
+            hasGitSnapshot: Object.hasOwn(gitState.snapshots, gitContextKey),
+            hasProjectTree: Object.hasOwn(
+                projectsState.treeNodes[projectContextKey] ?? {},
+                ROOT_NODE_KEY,
+            ),
+            sidebarView,
+            sidebarVisible: !leftCollapsed || sidebarOverlayVisible,
+        });
 
-        return () => {
-            cancelled = true;
-        };
+        if (refreshPlan.projectTree) {
+            void runDeduplicatedContextRefresh(
+                pendingContextTreeRefreshesRef.current,
+                projectContextKey,
+                () => refreshProjectTree(projectId, worktreeId),
+            );
+        }
+        if (refreshPlan.gitSnapshot) {
+            void runDeduplicatedContextRefresh(
+                pendingContextGitRefreshesRef.current,
+                gitContextKey,
+                () => refreshGitProject(projectId, worktreeId),
+            );
+        }
     }, [
         activeWorkspaceContext,
-        refreshGitHistory,
+        leftCollapsed,
         refreshGitProject,
         refreshProjectTree,
         setActiveWorktree,
+        sidebarOverlayVisible,
+        sidebarView,
     ]);
 
     useEffect(() => {
@@ -1732,7 +1757,9 @@ export function App() {
             }),
         [activeProjectId, activeWorkspaceTab, activeWorktreeId],
     );
-    const activeGitError = gitErrors[activeGitContextKey] ?? null;
+    const activeGitError = activeGitContextKey
+        ? (gitErrors[activeGitContextKey] ?? null)
+        : null;
     const isMac = bootstrap?.platform === "darwin";
     const topStatus = [
         bootstrapError,
@@ -4976,13 +5003,6 @@ function getSettingsUpdateMenuLabel(state: AppUpdateState): string | null {
     }
 
     return null;
-}
-
-function getGitContextKey(
-    projectId: string | null,
-    worktreeId: string | null,
-): string {
-    return `${projectId ?? "__none__"}::${worktreeId ?? "__primary__"}`;
 }
 
 function joinProjectPath(rootPath: string, relativePath: string): string {

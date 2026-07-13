@@ -131,6 +131,11 @@ import { GitTabView } from "@renderer/components/workspace/GitTabView";
 import { ProviderIcon } from "@renderer/components/workspace/ProviderIcon";
 import { ReviewTabView } from "@renderer/components/workspace/ReviewTabView";
 import {
+    getIndexedWorkspaceHasChat,
+    getIndexedWorkspaceNode,
+    getIndexedWorkspacePaneCount,
+} from "@renderer/components/workspace/workspaceViewIndex";
+import {
     WorkspacePaneEmptyState,
     type WorkspacePaneRecentProject,
 } from "@renderer/components/workspace/WorkspacePaneEmptyState";
@@ -1106,7 +1111,7 @@ function WorkspaceNodeView({
     const node = useWorkspaceStore(
         useCallback(
             (state: ReturnType<typeof useWorkspaceStore.getState>) =>
-                findWorkspaceNodeById(state.rootNode, nodeId),
+                getIndexedWorkspaceNode(state.rootNode, nodeId),
             [nodeId],
         ),
     );
@@ -1369,7 +1374,10 @@ function WorkspaceSplitView({
     const node = useWorkspaceStore(
         useCallback(
             (state: ReturnType<typeof useWorkspaceStore.getState>) => {
-                const match = findWorkspaceNodeById(state.rootNode, splitId);
+                const match = getIndexedWorkspaceNode(
+                    state.rootNode,
+                    splitId,
+                );
                 return match?.type === "split" ? match : null;
             },
             [splitId],
@@ -1633,23 +1641,83 @@ function WorkspacePaneView({
     readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
-    const node = useWorkspaceStore(
-        useCallback(
-            (state: ReturnType<typeof useWorkspaceStore.getState>) => {
-                const match = findWorkspaceNodeById(state.rootNode, paneId);
-                return match?.type === "pane" ? match : null;
-            },
-            [paneId],
-        ),
-    );
     const addDraftFileContext = useAiStore((s) => s.addDraftFileContext);
     const attachSelectionMention = useAiStore((s) => s.attachSelectionMention);
-    const activePaneId = useWorkspaceStore((state) => state.activePaneId);
-    const closeOtherTabs = useWorkspaceStore((state) => state.closeOtherTabs);
-    const closePane = useWorkspaceStore((state) => state.closePane);
-    const closeTab = useWorkspaceStore((state) => state.closeTab);
-    const closeTabsToRight = useWorkspaceStore(
-        (state) => state.closeTabsToRight,
+    const {
+        activePaneId,
+        closeOtherTabs,
+        closePane,
+        closeTab,
+        closeTabsToRight,
+        createChatTab,
+        createTerminalTab,
+        hasAnyChatTab,
+        lastFocusedRuntimeId,
+        lastQuickCreateAction,
+        moveTab,
+        node,
+        openChatHistoryTab,
+        openChatImageTab,
+        openFileTab,
+        openGitTab,
+        openReviewTab,
+        paneCount,
+        recentActiveTabIds,
+        reloadFileTab,
+        saveFileTab,
+        selectAdjacentTab,
+        selectTab,
+        setActivePane,
+        shouldRenderPaneContent,
+        togglePaneTabPinned,
+        updateChatDraft,
+        updateFileDraft,
+    } = useWorkspaceStore(
+        useShallow(
+            useCallback(
+                (state: ReturnType<typeof useWorkspaceStore.getState>) => {
+                    const candidate = getIndexedWorkspaceNode(
+                        state.rootNode,
+                        paneId,
+                    );
+                    return {
+                        activePaneId: state.activePaneId,
+                        closeOtherTabs: state.closeOtherTabs,
+                        closePane: state.closePane,
+                        closeTab: state.closeTab,
+                        closeTabsToRight: state.closeTabsToRight,
+                        createChatTab: state.createChatTab,
+                        createTerminalTab: state.createTerminalTab,
+                        hasAnyChatTab: getIndexedWorkspaceHasChat(
+                            state.tabsById,
+                        ),
+                        lastFocusedRuntimeId: state.lastFocusedRuntimeId,
+                        lastQuickCreateAction: state.lastQuickCreateAction,
+                        moveTab: state.moveTab,
+                        node: candidate?.type === "pane" ? candidate : null,
+                        openChatHistoryTab: state.openChatHistoryTab,
+                        openChatImageTab: state.openChatImageTab,
+                        openFileTab: state.openFileTab,
+                        openGitTab: state.openGitTab,
+                        openReviewTab: state.openReviewTab,
+                        paneCount: getIndexedWorkspacePaneCount(state.rootNode),
+                        recentActiveTabIds: state.recentActiveTabIds,
+                        reloadFileTab: state.reloadFileTab,
+                        saveFileTab: state.saveFileTab,
+                        selectAdjacentTab: state.selectAdjacentTab,
+                        selectTab: state.selectTab,
+                        setActivePane: state.setActivePane,
+                        shouldRenderPaneContent:
+                            state.activePaneId === paneId ||
+                            !state.deferredPaneIds.has(paneId),
+                        togglePaneTabPinned: state.togglePaneTabPinned,
+                        updateChatDraft: state.updateChatDraft,
+                        updateFileDraft: state.updateFileDraft,
+                    };
+                },
+                [paneId],
+            ),
+        ),
     );
     const confirmBeforeClose = useCallback(
         async (
@@ -1696,38 +1764,6 @@ function WorkspacePaneView({
         },
         [closeTabsToRight, collectPaneTabIds, confirmBeforeClose],
     );
-    const createChatTab = useWorkspaceStore((state) => state.createChatTab);
-    const createTerminalTab = useWorkspaceStore(
-        (state) => state.createTerminalTab,
-    );
-    const openChatHistoryTab = useWorkspaceStore(
-        (state) => state.openChatHistoryTab,
-    );
-    const openGitTab = useWorkspaceStore((state) => state.openGitTab);
-    const lastQuickCreateAction = useWorkspaceStore(
-        (state) => state.lastQuickCreateAction,
-    );
-    const lastFocusedRuntimeId = useWorkspaceStore(
-        (state) => state.lastFocusedRuntimeId,
-    );
-    const moveTab = useWorkspaceStore((state) => state.moveTab);
-    const togglePaneTabPinned = useWorkspaceStore(
-        (state) => state.togglePaneTabPinned,
-    );
-    const openFileTab: (
-        projectId: string,
-        relativePath: string,
-        worktreeId?: string | null,
-        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
-        targetPaneId?: string | null,
-        targetIndex?: number,
-        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
-    ) => Promise<void> = useWorkspaceStore((state) => state.openFileTab);
-    const openChatImageTab = useWorkspaceStore((state) => state.openChatImageTab);
-    const openReviewTab = useWorkspaceStore((state) => state.openReviewTab);
-    const paneCount = useWorkspaceStore(
-        (state) => collectPaneNodes(state.rootNode).length,
-    );
     const paneNodeId = node?.id ?? paneId;
     const paneTabIds = node?.tabIds ?? EMPTY_TAB_IDS;
     const panePinnedTabIds = node?.pinnedTabIds ?? EMPTY_TAB_IDS;
@@ -1748,18 +1784,6 @@ function WorkspacePaneView({
                 [paneTabIds],
             ),
         ),
-    );
-    const selectTab = useWorkspaceStore((state) => state.selectTab);
-    const setActivePane = useWorkspaceStore((state) => state.setActivePane);
-    const hasAnyChatTab = useWorkspaceStore((state) =>
-        Object.values(state.tabsById).some((tab) => tab.kind === "chat"),
-    );
-    const updateChatDraft = useWorkspaceStore((state) => state.updateChatDraft);
-    const updateFileDraft = useWorkspaceStore((state) => state.updateFileDraft);
-    const reloadFileTab = useWorkspaceStore((state) => state.reloadFileTab);
-    const saveFileTab = useWorkspaceStore((state) => state.saveFileTab);
-    const selectAdjacentTab = useWorkspaceStore(
-        (state) => state.selectAdjacentTab,
     );
     const tabStripRef = useRef<HTMLDivElement | null>(null);
     const [tabContextMenu, setTabContextMenu] =
@@ -1810,9 +1834,6 @@ function WorkspacePaneView({
                 (tab): tab is RuntimeWorkspaceFileTab => tab.kind === "file",
             ),
         [paneTabs],
-    );
-    const recentActiveTabIds = useWorkspaceStore(
-        (state) => state.recentActiveTabIds,
     );
     const isActivePane = activePaneId === paneNodeId;
 
@@ -1896,6 +1917,7 @@ function WorkspacePaneView({
 
     useRenderProbe("WorkspacePaneView", {
         activeTabId: activeTab?.id ?? null,
+        contentReady: shouldRenderPaneContent,
         paneId: node?.id ?? paneId,
         tabCount: node?.tabIds.length ?? 0,
     });
@@ -2755,83 +2777,91 @@ function WorkspacePaneView({
                     </div>
                 </div>
 
-                <div className="relative min-h-0 flex-1 overflow-hidden bg-editor">
-                    {activeTab?.kind === "terminal" ? (
-                        <WorkspaceTerminalView
-                            active
-                            activePane={isActivePane}
-                            tab={activeTab}
-                        />
-                    ) : null}
-                    <WorkspaceFileEditorHost
-                        activeFileTab={activeFileTab}
-                        fileTabs={paneFileTabs}
-                        isActivePane={isActivePane}
-                        onAttachLineFragment={handleAttachLineFragment}
-                        onDraftChange={updateFileDraft}
-                        onReload={reloadFileTab}
-                        onSave={saveFileTab}
-                        recentActiveTabIds={recentActiveTabIds}
-                    />
-                    {retainedChatTabs.map((tab) => {
-                        const isActiveChat = tab.id === activeTab?.id;
-
-                        return (
-                            <div
-                                aria-hidden={!isActiveChat}
-                                className={
-                                    isActiveChat
-                                        ? "relative z-1 h-full"
-                                        : "pointer-events-none invisible absolute inset-0"
-                                }
-                                inert={!isActiveChat}
-                                key={tab.id}
-                            >
-                                <ChatTabView
-                                    active={isActiveChat}
-                                    onDraftChange={handleChatDraftChange}
-                                    onOpenFile={handleOpenWorkspaceFile}
-                                    onOpenImage={handleOpenChatImage}
-                                    onOpenReview={() =>
-                                        handleOpenChatReview(tab)
-                                    }
-                                    tab={tab}
+                <div
+                    className="relative min-h-0 flex-1 overflow-hidden bg-editor"
+                    data-workspace-pane-content-ready={shouldRenderPaneContent}
+                >
+                    {shouldRenderPaneContent ? (
+                        <>
+                            {activeTab?.kind === "terminal" ? (
+                                <WorkspaceTerminalView
+                                    active
+                                    activePane={isActivePane}
+                                    tab={activeTab}
                                 />
-                            </div>
-                        );
-                    })}
-                    {activeTab ? (
-                        activeTab.kind === "file" ? (
-                            null
-                        ) : activeTab.kind === "git" ? (
-                            <GitTabView tab={activeTab} />
-                        ) : activeTab.kind === "git_worktree_diff" ? (
-                            <GitWorktreeDiffTabView tab={activeTab} />
-                        ) : activeTab.kind === "chat_history" ? (
-                            <ChatHistoryTabView tab={activeTab} />
-                        ) : activeTab.kind === "git_commit" ? (
-                            <GitCommitTabView tab={activeTab} />
-                        ) : activeTab.kind === "review" ? (
-                            <ReviewTabView
-                                onOpenFile={handleOpenWorkspaceFile}
-                                tab={activeTab}
+                            ) : null}
+                            <WorkspaceFileEditorHost
+                                activeFileTab={activeFileTab}
+                                fileTabs={paneFileTabs}
+                                isActivePane={isActivePane}
+                                onAttachLineFragment={handleAttachLineFragment}
+                                onDraftChange={updateFileDraft}
+                                onReload={reloadFileTab}
+                                onSave={saveFileTab}
+                                recentActiveTabIds={recentActiveTabIds}
                             />
-                        ) : activeTab.kind === "github_issues" ? (
-                            <GitHubIssuesTabView tab={activeTab} />
-                        ) : activeTab.kind === "github_issue" ? (
-                            <GitHubIssueTabView tab={activeTab} />
-                        ) : activeTab.kind === "github_pull_requests" ? (
-                            <GitHubPullRequestsTabView tab={activeTab} />
-                        ) : activeTab.kind === "github_pull_request" ? (
-                            <GitHubPullRequestTabView tab={activeTab} />
-                        ) : null
-                    ) : (
-                        <WorkspacePaneEmptyState
-                            onOpenProject={onOpenProject}
-                            onOpenProjects={onOpenProjects}
-                            recentProjects={recentProjects}
-                        />
-                    )}
+                            {retainedChatTabs.map((tab) => {
+                                const isActiveChat = tab.id === activeTab?.id;
+
+                                return (
+                                    <div
+                                        aria-hidden={!isActiveChat}
+                                        className={
+                                            isActiveChat
+                                                ? "relative z-1 h-full"
+                                                : "pointer-events-none invisible absolute inset-0"
+                                        }
+                                        inert={!isActiveChat}
+                                        key={tab.id}
+                                    >
+                                        <ChatTabView
+                                            active={isActiveChat}
+                                            onDraftChange={handleChatDraftChange}
+                                            onOpenFile={handleOpenWorkspaceFile}
+                                            onOpenImage={handleOpenChatImage}
+                                            onOpenReview={() =>
+                                                handleOpenChatReview(tab)
+                                            }
+                                            tab={tab}
+                                        />
+                                    </div>
+                                );
+                            })}
+                            {activeTab ? (
+                                activeTab.kind === "file" ? (
+                                    null
+                                ) : activeTab.kind === "git" ? (
+                                    <GitTabView tab={activeTab} />
+                                ) : activeTab.kind === "git_worktree_diff" ? (
+                                    <GitWorktreeDiffTabView tab={activeTab} />
+                                ) : activeTab.kind === "chat_history" ? (
+                                    <ChatHistoryTabView tab={activeTab} />
+                                ) : activeTab.kind === "git_commit" ? (
+                                    <GitCommitTabView tab={activeTab} />
+                                ) : activeTab.kind === "review" ? (
+                                    <ReviewTabView
+                                        onOpenFile={handleOpenWorkspaceFile}
+                                        tab={activeTab}
+                                    />
+                                ) : activeTab.kind === "github_issues" ? (
+                                    <GitHubIssuesTabView tab={activeTab} />
+                                ) : activeTab.kind === "github_issue" ? (
+                                    <GitHubIssueTabView tab={activeTab} />
+                                ) : activeTab.kind ===
+                                  "github_pull_requests" ? (
+                                    <GitHubPullRequestsTabView tab={activeTab} />
+                                ) : activeTab.kind === "github_pull_request" ? (
+                                    <GitHubPullRequestTabView tab={activeTab} />
+                                ) : null
+                            ) : (
+                                <WorkspacePaneEmptyState
+                                    onOpenProject={onOpenProject}
+                                    onOpenProjects={onOpenProjects}
+                                    recentProjects={recentProjects}
+                                />
+                            )}
+                        </>
+                    ) : null}
                 </div>
             </section>
 

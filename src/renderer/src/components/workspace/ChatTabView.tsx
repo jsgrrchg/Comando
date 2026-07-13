@@ -137,6 +137,41 @@ interface ChatTabViewProps {
     readonly tab: RuntimeWorkspaceChatTab;
 }
 
+type ChatSessionViewState = Pick<
+    ReturnType<typeof useAiStore.getState>["sessions"][string],
+    | "dismissedPlanUpdatedAt"
+    | "draftAttachments"
+    | "draftComposerParts"
+    | "draftFileContexts"
+    | "editingQueuedPrompt"
+    | "localError"
+    | "queue"
+    | "snapshot"
+    | "transcript"
+>;
+
+function selectChatSessionViewState(
+    state: ReturnType<typeof useAiStore.getState>,
+    sessionId: string,
+): ChatSessionViewState | null {
+    const session = state.sessions[sessionId];
+    if (!session) {
+        return null;
+    }
+
+    return {
+        dismissedPlanUpdatedAt: session.dismissedPlanUpdatedAt,
+        draftAttachments: session.draftAttachments,
+        draftComposerParts: session.draftComposerParts,
+        draftFileContexts: session.draftFileContexts,
+        editingQueuedPrompt: session.editingQueuedPrompt,
+        localError: session.localError,
+        queue: session.queue,
+        snapshot: session.snapshot,
+        transcript: session.transcript,
+    };
+}
+
 /* ─── Constants ─── */
 
 const FALLBACK_COMMANDS: readonly AiAvailableCommand[] = [
@@ -240,26 +275,21 @@ export const ChatTabView = memo(function ChatTabView({
     const runtimeCatalog = useAiStore(
         (s) => s.runtimeCatalogById[tab.runtimeId] ?? null,
     );
+    const frozenSessionStateRef = useRef<ChatSessionViewState | null>(null);
     const sessionState = useAiStore(
         useShallow((s) => {
-            const session = s.sessions[tab.sessionId];
-            if (!session) {
-                return null;
+            if (!active) {
+                return frozenSessionStateRef.current;
             }
 
-            return {
-                dismissedPlanUpdatedAt: session.dismissedPlanUpdatedAt,
-                draftAttachments: session.draftAttachments,
-                draftComposerParts: session.draftComposerParts,
-                draftFileContexts: session.draftFileContexts,
-                editingQueuedPrompt: session.editingQueuedPrompt,
-                localError: session.localError,
-                queue: session.queue,
-                snapshot: session.snapshot,
-                transcript: session.transcript,
-            };
+            return selectChatSessionViewState(s, tab.sessionId);
         }),
     );
+    useEffect(() => {
+        if (active) {
+            frozenSessionStateRef.current = sessionState;
+        }
+    }, [active, sessionState]);
     const projectSummary = useProjectsStore((state) =>
         tab.projectId
             ? (state.projects.find((project) => project.id === tab.projectId) ??
@@ -2684,6 +2714,7 @@ const ChatTimeline = memo(function ChatTimeline({
                         }}
                     >
                         <ChatTimelineHistory
+                            active={active}
                             canRenderFileReference={
                                 canRenderFileReference
                             }
@@ -2800,6 +2831,7 @@ function ChatJumpToBottomButton(props: {
 }
 
 type ChatTimelineHistoryProps = {
+    readonly active: boolean;
     readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
@@ -2841,6 +2873,7 @@ type ChatTimelineHistoryProps = {
 };
 
 const ChatTimelineHistory = memo(function ChatTimelineHistory({
+    active,
     canRenderFileReference,
     chatFontFamily,
     chatFontSize,
@@ -2902,6 +2935,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
 
     return (
         <ChatTimelineHistoryRows
+            active={active}
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             historyRows={historyRows}
