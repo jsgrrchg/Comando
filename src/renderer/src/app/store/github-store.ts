@@ -174,6 +174,11 @@ export interface GitHubStoreState {
         number: number,
         input: GitHubUpdateIssueOptions,
     ) => Promise<GitHubIssueDetail>;
+    setIssueLabels: (
+        ref: GitHubRepositoryRef,
+        number: number,
+        labels: readonly string[],
+    ) => Promise<readonly GitHubLabelSummary[]>;
     createPullRequest: (
         ref: GitHubRepositoryRef,
         input: GitHubCreatePullRequestOptions,
@@ -490,6 +495,23 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
                 });
                 setIssueDetail(set, ref, detail);
                 return detail;
+            },
+        ),
+
+    setIssueLabels: async (ref, number, labels) =>
+        dedupeMutation(
+            set,
+            getRepoKey(ref),
+            `issue:${number}:labels`,
+            async (clientRequestId) => {
+                const result = await getComandoApi().setGitHubIssueLabels({
+                    clientRequestId,
+                    labels,
+                    number,
+                    repository: ref,
+                });
+                setIssueLabelsInCache(set, ref, number, result.labels);
+                return result.labels;
             },
         ),
 
@@ -940,17 +962,26 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
         }
 
         return await withLoading(set, `${repoKey}:labels`, async () => {
-            const result = await getComandoApi().listGitHubLabels({
-                limit: 100,
-                repository: ref,
-            });
+            const labels: GitHubLabelSummary[] = [];
+            let cursor: string | null = null;
+
+            do {
+                const result = await getComandoApi().listGitHubLabels({
+                    ...(cursor ? { cursor } : {}),
+                    limit: 100,
+                    repository: ref,
+                });
+                labels.push(...result.labels);
+                cursor = result.nextCursor;
+            } while (cursor);
+
             set((state) => ({
                 labelsByRepo: {
                     ...state.labelsByRepo,
-                    [repoKey]: result.labels,
+                    [repoKey]: labels,
                 },
             }));
-            return result.labels;
+            return labels;
         });
     },
 
@@ -1252,6 +1283,42 @@ function setIssueDetail(
             detail,
         ),
     }));
+}
+
+function setIssueLabelsInCache(
+    set: SetGitHubState,
+    ref: GitHubRepositoryRef,
+    number: number,
+    labels: readonly GitHubLabelSummary[],
+): void {
+    const repoKey = getRepoKey(ref);
+    set((state) => {
+        const detail = state.issueDetailsByRepo[repoKey]?.[number];
+        const issues = state.issuesByRepo[repoKey];
+
+        return {
+            issueDetailsByRepo: detail
+                ? {
+                      ...state.issueDetailsByRepo,
+                      [repoKey]: {
+                          ...(state.issueDetailsByRepo[repoKey] ?? {}),
+                          [number]: { ...detail, labels },
+                      },
+                  }
+                : state.issueDetailsByRepo,
+            issuesByRepo: issues
+                ? {
+                      ...state.issuesByRepo,
+                      [repoKey]: replaceLabelsByNumber(issues, number, labels),
+                  }
+                : state.issuesByRepo,
+            issuesByRepoAndState: updateIssueStateCaches(
+                state.issuesByRepoAndState,
+                repoKey,
+                (entries) => replaceLabelsByNumber(entries, number, labels),
+            ),
+        };
+    });
 }
 
 function appendIssueComment(
@@ -1599,6 +1666,26 @@ function upsertByNumber<T extends { readonly number: number }>(
 
     return entries.map((entry, index) =>
         index === existingIndex ? nextEntry : entry,
+    );
+}
+
+function replaceLabelsByNumber<
+    T extends {
+        readonly labels: readonly GitHubLabelSummary[];
+        readonly number: number;
+    },
+>(
+    entries: readonly T[],
+    number: number,
+    labels: readonly GitHubLabelSummary[],
+): readonly T[] {
+    const entryIndex = entries.findIndex((entry) => entry.number === number);
+    if (entryIndex < 0) {
+        return entries;
+    }
+
+    return entries.map((entry, index) =>
+        index === entryIndex ? { ...entry, labels } : entry,
     );
 }
 

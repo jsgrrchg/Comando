@@ -13,6 +13,8 @@ import type {
     GitHubReleaseSummary,
     GitHubRequestPullRequestReviewInput,
     GitHubRepositoryRef,
+    GitHubSetIssueLabelsInput,
+    GitHubSetIssueLabelsResult,
     GitHubUpdateCommentInput,
     GitHubUpdateIssueInput,
     GitHubUpdatePullRequestInput,
@@ -343,6 +345,56 @@ describe("github-store", () => {
                 `${repoKey}:issue:9:update`
             ],
         ).toBe(false);
+    });
+
+    it("assigns issue labels through the canonical transport and patches caches", async () => {
+        const previousLabels = [createLabel({ name: "bug" })];
+        const nextLabels = [
+            createLabel({ name: "bug" }),
+            createLabel({ id: 2, name: "area/ui" }),
+        ];
+        const issue = createIssueDetail({
+            labels: previousLabels,
+            number: 9,
+        });
+        const setGitHubIssueLabels = vi.fn<
+            (input: GitHubSetIssueLabelsInput) => Promise<GitHubSetIssueLabelsResult>
+        >().mockResolvedValue({ labels: nextLabels, number: 9 });
+        useGitHubStore.setState({
+            issueDetailsByRepo: { [repoKey]: { 9: issue } },
+            issuesByRepo: { [repoKey]: [issue] },
+            issuesByRepoAndState: {
+                [repoKey]: { all: [issue], open: [issue] },
+            },
+        });
+        stubComando({ setGitHubIssueLabels });
+
+        await expect(
+            useGitHubStore
+                .getState()
+                .setIssueLabels(repository, 9, ["bug", "area/ui"]),
+        ).resolves.toEqual(nextLabels);
+
+        const input = setGitHubIssueLabels.mock.calls[0]?.[0];
+        expect(input).toMatchObject({
+            labels: ["bug", "area/ui"],
+            number: 9,
+            repository,
+        });
+        expect(input?.clientRequestId).toEqual(
+            expect.stringContaining(`${repoKey}:issue:9:labels:`),
+        );
+        const state = useGitHubStore.getState();
+        expect(state.issueDetailsByRepo[repoKey]?.[9]?.labels).toEqual(
+            nextLabels,
+        );
+        expect(state.issuesByRepo[repoKey]?.[0]?.labels).toEqual(nextLabels);
+        expect(state.issuesByRepoAndState[repoKey]?.open?.[0]?.labels).toEqual(
+            nextLabels,
+        );
+        expect(state.issuesByRepoAndState[repoKey]?.all?.[0]?.labels).toEqual(
+            nextLabels,
+        );
     });
 
     it("appends comments to cached issue details and summaries", async () => {
@@ -680,6 +732,38 @@ describe("github-store", () => {
         expect(useGitHubStore.getState().milestonesByRepo[repoKey]).toEqual([
             milestone,
         ]);
+    });
+
+    it("loads every page of repository labels", async () => {
+        const firstLabel = createLabel({ id: 1, name: "bug" });
+        const secondLabel = createLabel({ id: 2, name: "area/ui" });
+        const listGitHubLabels = vi
+            .fn()
+            .mockResolvedValueOnce({
+                labels: [firstLabel],
+                nextCursor: "2",
+                totalCount: null,
+            })
+            .mockResolvedValueOnce({
+                labels: [secondLabel],
+                nextCursor: null,
+                totalCount: null,
+            });
+        stubComando({ listGitHubLabels });
+
+        await expect(
+            useGitHubStore.getState().refreshLabels(repository),
+        ).resolves.toEqual([firstLabel, secondLabel]);
+
+        expect(listGitHubLabels).toHaveBeenNthCalledWith(1, {
+            limit: 100,
+            repository,
+        });
+        expect(listGitHubLabels).toHaveBeenNthCalledWith(2, {
+            cursor: "2",
+            limit: 100,
+            repository,
+        });
     });
 
     it("clears a repository cache without touching auth status", () => {
