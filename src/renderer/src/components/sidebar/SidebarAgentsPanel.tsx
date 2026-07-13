@@ -118,6 +118,11 @@ type SidebarAgentDragPreview = {
     readonly y: number;
 };
 
+type SidebarAgentActivity = {
+    readonly indicator: NonNullable<WorkspaceChatTabActivityIndicator>;
+    readonly label: string;
+} | null;
+
 type SidebarAgentDragCoordinates = {
     readonly clientX: number;
     readonly clientY: number;
@@ -1777,7 +1782,8 @@ function SidebarAgentsItem({
     const isPinned = isSessionPinned(session);
     const isTerminalAgent = isClaudeCodeSidebarSession(session);
     const canOpenInPane = !isTerminalAgent;
-    const activity = useAgentActivityIndicator(session.sessionId);
+    const activityState = useAgentActivityIndicator(session.sessionId);
+    const activity = activityState?.indicator ?? null;
     const indentStyle =
         depth > 0
             ? { paddingLeft: `${8 + Math.min(depth, 4) * 14}px` }
@@ -2055,7 +2061,7 @@ function SidebarAgentsItem({
                         <ChevronIcon collapsed={isCollapsed} />
                     </button>
                 ) : null}
-                <span className="sidebar-agents-provider-slot relative flex shrink-0 items-center justify-center text-text-secondary">
+                <span className="sidebar-agents-provider-slot flex shrink-0 items-center justify-center text-text-secondary">
                     <ProviderIcon
                         className="sidebar-agents-provider-icon block"
                         opacity={0.68}
@@ -2066,7 +2072,6 @@ function SidebarAgentsItem({
                         }
                         size={13}
                     />
-                    <SidebarAgentActivityDot indicator={activity} />
                 </span>
                 {isRenaming ? (
                     <input
@@ -2122,7 +2127,12 @@ function SidebarAgentsItem({
                         <PinIcon active={isPinned} />
                     </button>
                 )}
-                {isRenaming ? null : (
+                {activityState ? (
+                    <SidebarAgentActivityLabel
+                        indicator={activityState.indicator}
+                        label={activityState.label}
+                    />
+                ) : isRenaming ? null : (
                     <span className="sidebar-agents-compact-relative-time shrink-0 text-[10px] text-text-secondary">
                         {formatHistoryRelativeDateCompact(session.updatedAt)}
                     </span>
@@ -2236,7 +2246,7 @@ function getSidebarAgentInternalDropTargetAtPoint(
 
 function useAgentActivityIndicator(
     sessionId: string,
-): WorkspaceChatTabActivityIndicator {
+): SidebarAgentActivity {
     const localError = useAiStore(
         (state) => state.sessions[sessionId]?.localError ?? null,
     );
@@ -2244,36 +2254,43 @@ function useAgentActivityIndicator(
         (state) => state.sessions[sessionId]?.snapshot?.status ?? null,
     );
     return useMemo(
-        () =>
-            resolveWorkspaceChatTabActivityIndicator({
+        () => {
+            const indicator = resolveWorkspaceChatTabActivityIndicator({
                 localError,
                 snapshot: status ? { status } : null,
-            }),
+            });
+            if (!indicator) {
+                return null;
+            }
+
+            const label =
+                indicator.tone === "danger"
+                    ? "Error"
+                    : status === "waiting_permission"
+                      ? "Waiting permission…"
+                      : status === "waiting_user_input"
+                        ? "Waiting input…"
+                        : "Working…";
+            return { indicator, label };
+        },
         [localError, status],
     );
 }
 
-function SidebarAgentActivityDot({
+function SidebarAgentActivityLabel({
     indicator,
+    label,
 }: {
-    readonly indicator: WorkspaceChatTabActivityIndicator;
+    readonly indicator: NonNullable<WorkspaceChatTabActivityIndicator>;
+    readonly label: string;
 }) {
-    if (!indicator) {
-        return null;
-    }
-
     return (
         <span
-            aria-hidden="true"
-            className={[
-                "sidebar-agents-activity-dot shrink-0 text-[9px] leading-none",
-                indicator.tone === "danger"
-                    ? "text-rose-500"
-                    : "text-(--diff-warn)",
-            ].join(" ")}
+            className="sidebar-agents-activity-label shrink-0"
+            data-tone={indicator.tone}
             title={indicator.title}
         >
-            ●
+            {label}
         </span>
     );
 }
