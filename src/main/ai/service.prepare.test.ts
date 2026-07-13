@@ -436,6 +436,79 @@ describe("AiService prepareSession", () => {
         });
     });
 
+    it("projects saved selections over the persisted runtime catalog", async () => {
+        const runtimeCatalog = {
+            availableCommands: [],
+            configOptions: [
+                createModelConfig("gpt-5.4-mini"),
+                createReasoningConfig("low"),
+            ],
+            modeId: "default",
+            modes: [
+                {
+                    description: null,
+                    id: "default",
+                    name: "Default",
+                },
+                {
+                    description: null,
+                    id: "full-access",
+                    name: "Full Access",
+                },
+            ],
+            modelId: "gpt-5.4-mini",
+            models: [
+                {
+                    description: null,
+                    id: "gpt-5.4-mini",
+                    name: "GPT 5.4 Mini",
+                },
+                {
+                    description: null,
+                    id: "gpt-5.5",
+                    name: "GPT 5.5",
+                },
+            ],
+        };
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                getRuntimeStatus: vi.fn(() => Promise.resolve(readyStatus)),
+            }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => runtimeCatalog),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {
+                        model: "gpt-5.5",
+                        reasoning_effort: "high",
+                    },
+                    modeId: "full-access",
+                    modelId: "gpt-5.5",
+                })),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+        });
+
+        const status = await service.getRuntimeStatus("codex");
+
+        expect(status).toMatchObject({
+            modeId: "full-access",
+            modelId: "gpt-5.5",
+        });
+        expect(
+            status.configOptions?.find((option) => option.id === "model")
+                ?.value,
+        ).toBe("gpt-5.5");
+        expect(
+            status.configOptions?.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("high");
+    });
+
     it("normalizes restored active snapshots before native startup", async () => {
         const persistedSnapshot = createSnapshot({
             activeTurnStartedAt: "2026-04-15T22:23:13.000Z",
