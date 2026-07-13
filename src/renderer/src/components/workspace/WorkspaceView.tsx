@@ -2625,7 +2625,7 @@ function WorkspacePaneView({
                                                 ? "opacity-35"
                                                 : "",
                                             isActive
-                                                ? "z-10 bg-bg-primary text-text-primary shadow-[inset_0_-2px_0_0_var(--color-accent)] duration-0"
+                                                ? "z-10 bg-bg-primary font-medium text-text-primary shadow-[inset_0_2px_0_0_var(--color-accent),inset_0_-1px_0_0_var(--color-accent)] duration-0"
                                                 : "z-0 bg-bg-chrome text-text-secondary hover:bg-bg-tertiary hover:text-text-primary",
                                         ].join(" ")}
                                         data-workspace-tab-id={tab.id}
