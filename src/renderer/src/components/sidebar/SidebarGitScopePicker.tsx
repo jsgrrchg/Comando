@@ -6,6 +6,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type AnimationEvent as ReactAnimationEvent,
     type FormEvent,
     type KeyboardEvent as ReactKeyboardEvent,
     type MouseEvent as ReactMouseEvent,
@@ -53,9 +54,11 @@ import { buildGitScopeBranchTopology } from "./sidebarGitBranchTopology";
 
 type GitScopeTabId = "branches" | "worktrees";
 type GitScopeBranchNodePosition = "first" | "last" | "middle" | "only";
+type GitScopeMenuAnimationState = "closing" | "open" | "opening";
 
 interface MenuPosition {
     readonly height: number;
+    readonly placement: "above" | "below";
     readonly width: number;
     readonly x: number;
     readonly y: number;
@@ -96,6 +99,7 @@ const GIT_SCOPE_MENU_DEFAULT_MAX_HEIGHT = 420;
 const GIT_SCOPE_MENU_MAX_HEIGHT = 720;
 const GIT_SCOPE_TOPOLOGY_INITIAL_HISTORY_LIMIT = 300;
 const GIT_SCOPE_TOPOLOGY_MAX_HISTORY_LIMIT = 2_400;
+const GIT_SCOPE_MENU_ANIMATION_FALLBACK_MS = 160;
 
 function getStorage(): Storage | null {
     try {
@@ -276,6 +280,9 @@ export function SidebarGitScopePicker({
     worktreeId,
 }: SidebarGitScopePickerProps) {
     const [isOpen, setIsOpen] = useState(false);
+    const [isMenuMounted, setIsMenuMounted] = useState(false);
+    const [menuAnimationState, setMenuAnimationState] =
+        useState<GitScopeMenuAnimationState>("open");
     const [activeTab, setActiveTab] = useState<GitScopeTabId>("branches");
     const [actionError, setActionError] = useState<string | null>(null);
     const [isBusy, setIsBusy] = useState(false);
@@ -796,6 +803,7 @@ export function SidebarGitScopePicker({
 
         setMenuPosition({
             height: size.height,
+            placement: openAbove ? "above" : "below",
             width: size.width,
             x: safePosition.x,
             y: safePosition.y,
@@ -827,9 +835,56 @@ export function SidebarGitScopePicker({
     useEffect(() => {
         if (!isOpen) {
             setItemContextMenu(null);
+        }
+        if (!isMenuMounted) {
             setBranchCreationDraft(null);
         }
-    }, [isOpen]);
+    }, [isMenuMounted, isOpen]);
+
+    useLayoutEffect(() => {
+        if (isOpen) {
+            setIsMenuMounted(true);
+            setMenuAnimationState("opening");
+            return;
+        }
+
+        if (isMenuMounted) {
+            setMenuAnimationState("closing");
+        }
+    }, [isMenuMounted, isOpen]);
+
+    const finishMenuAnimation = useCallback(() => {
+        if (menuAnimationState === "opening" && isOpen) {
+            setMenuAnimationState("open");
+            return;
+        }
+
+        if (menuAnimationState === "closing" && !isOpen) {
+            setIsMenuMounted(false);
+            setMenuAnimationState("open");
+        }
+    }, [isOpen, menuAnimationState]);
+
+    useEffect(() => {
+        if (menuAnimationState === "open") {
+            return;
+        }
+
+        const timeout = window.setTimeout(
+            finishMenuAnimation,
+            GIT_SCOPE_MENU_ANIMATION_FALLBACK_MS,
+        );
+        return () => window.clearTimeout(timeout);
+    }, [finishMenuAnimation, menuAnimationState]);
+
+    const handleMenuAnimationEnd = useCallback(
+        (event: ReactAnimationEvent<HTMLDivElement>) => {
+            if (event.target === event.currentTarget) {
+                finishMenuAnimation();
+            }
+        },
+        [finishMenuAnimation],
+    );
 
     useEffect(() => {
         if (activeTab !== "branches") {
@@ -2245,10 +2300,16 @@ export function SidebarGitScopePicker({
                 <ChevronIcon open={isOpen} />
             </button>
 
-            {isOpen
+            {isMenuMounted
                 ? createPortal(
                       <div
                           className="sidebar-git-scope-menu"
+                          data-animation-state={menuAnimationState}
+                          data-placement={
+                              menuPosition?.placement ?? "below"
+                          }
+                          inert={!isOpen}
+                          onAnimationEnd={handleMenuAnimationEnd}
                           onKeyDown={handleListKeyDown}
                           ref={menuRef}
                           style={{
