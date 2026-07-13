@@ -131,6 +131,18 @@ function createDeferred<T>() {
     };
 }
 
+function installActivationFrameQueue(): FrameRequestCallback[] {
+    const activationFrames: FrameRequestCallback[] = [];
+    Object.assign(window, {
+        cancelAnimationFrame: vi.fn(),
+        requestAnimationFrame: vi.fn((callback: FrameRequestCallback) => {
+            activationFrames.push(callback);
+            return activationFrames.length;
+        }),
+    });
+    return activationFrames;
+}
+
 describe("workspace file opening", () => {
     beforeEach(() => {
         resetWorkspacePersistenceForTests();
@@ -234,6 +246,7 @@ describe("workspace file opening", () => {
                 },
             },
             error: null,
+            deferredPaneIds: new Set(),
             hydrated: true,
             lastFocusedChatTabId: null,
             lastFocusedRuntimeId: "codex",
@@ -447,7 +460,9 @@ describe("workspace file opening", () => {
 
         await useWorkspaceStore.getState().hydrate();
 
-        expect(ensureSessionMock).toHaveBeenCalledTimes(2);
+        await vi.waitFor(() => {
+            expect(ensureSessionMock).toHaveBeenCalledTimes(2);
+        });
         expect(ensureSessionMock).toHaveBeenCalledWith(
             expect.objectContaining({ sessionId: "session-left" }),
         );
@@ -527,6 +542,474 @@ describe("workspace file opening", () => {
             relativePath: inactiveFile.relativePath,
             worktreeId: null,
         });
+    });
+
+    it("defers secondary pane hydration until after the activation frame", async () => {
+        const activationFrames = installActivationFrameQueue();
+
+        const focusedFile = createWorkspaceFileTab(
+            "focused-file",
+            "src/focused.ts",
+        );
+        const secondaryFile = createWorkspaceFileTab(
+            "secondary-file",
+            "src/secondary.ts",
+        );
+        const tertiaryFile = createWorkspaceFileTab(
+            "tertiary-file",
+            "src/tertiary.ts",
+        );
+        const targetContextKey = "project-2::__primary__";
+        const targetWorkspace: WorkspaceTreeState = {
+            activePaneId: "pane-left",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: focusedFile.id,
+                        id: "pane-left",
+                        tabIds: [focusedFile.id],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: secondaryFile.id,
+                        id: "pane-right",
+                        tabIds: [secondaryFile.id],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: tertiaryFile.id,
+                        id: "pane-far-right",
+                        tabIds: [tertiaryFile.id],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.34, 0.33, 0.33],
+                type: "split",
+            },
+            tabsById: {
+                [focusedFile.id]: { ...focusedFile, projectId: "project-2" },
+                [secondaryFile.id]: {
+                    ...secondaryFile,
+                    projectId: "project-2",
+                },
+                [tertiaryFile.id]: {
+                    ...tertiaryFile,
+                    projectId: "project-2",
+                },
+            },
+        };
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            contextsByKey: {
+                ...state.contextsByKey,
+                [targetContextKey]: {
+                    key: targetContextKey,
+                    lastActivatedAt: "2026-04-14T00:00:00.000Z",
+                    projectId: "project-2",
+                    workspace: targetWorkspace,
+                    worktreeId: null,
+                },
+            },
+            openContextKeys: [...state.openContextKeys, targetContextKey],
+        }));
+
+        await useWorkspaceStore.getState().activateContext(targetContextKey);
+
+        expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        expect(openProjectFileMock).toHaveBeenCalledWith({
+            projectId: "project-2",
+            relativePath: focusedFile.relativePath,
+            worktreeId: null,
+        });
+        expect(useWorkspaceStore.getState().deferredPaneIds).toEqual(
+            new Set(["pane-right", "pane-far-right"]),
+        );
+
+        activationFrames.shift()?.(performance.now());
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(2);
+        });
+        expect(openProjectFileMock).toHaveBeenLastCalledWith({
+            projectId: "project-2",
+            relativePath: secondaryFile.relativePath,
+            worktreeId: null,
+        });
+        expect(useWorkspaceStore.getState().deferredPaneIds).toEqual(
+            new Set(["pane-far-right"]),
+        );
+
+        expect(activationFrames).toHaveLength(1);
+        activationFrames.shift()?.(performance.now());
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(3);
+        });
+        expect(openProjectFileMock).toHaveBeenLastCalledWith({
+            projectId: "project-2",
+            relativePath: tertiaryFile.relativePath,
+            worktreeId: null,
+        });
+        expect(useWorkspaceStore.getState().deferredPaneIds.size).toBe(0);
+    });
+
+    it("does not promote a background tab when the focused pane is empty", async () => {
+        const activationFrames = installActivationFrameQueue();
+        const backgroundFile = createWorkspaceFileTab(
+            "background-file",
+            "src/background.ts",
+        );
+        const targetContextKey = "project-2::__primary__";
+        const targetWorkspace: WorkspaceTreeState = {
+            activePaneId: "pane-empty",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: null,
+                        id: "pane-empty",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: backgroundFile.id,
+                        id: "pane-background",
+                        tabIds: [backgroundFile.id],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                [backgroundFile.id]: {
+                    ...backgroundFile,
+                    projectId: "project-2",
+                },
+            },
+        };
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            contextsByKey: {
+                ...state.contextsByKey,
+                [targetContextKey]: {
+                    key: targetContextKey,
+                    lastActivatedAt: "2026-04-14T00:00:00.000Z",
+                    projectId: "project-2",
+                    workspace: targetWorkspace,
+                    worktreeId: null,
+                },
+            },
+            openContextKeys: [...state.openContextKeys, targetContextKey],
+        }));
+
+        await useWorkspaceStore.getState().activateContext(targetContextKey);
+
+        expect(openProjectFileMock).not.toHaveBeenCalled();
+        expect(useWorkspaceStore.getState().deferredPaneIds).toEqual(
+            new Set(["pane-background"]),
+        );
+
+        activationFrames.shift()?.(performance.now());
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        });
+        expect(openProjectFileMock).toHaveBeenCalledWith({
+            projectId: "project-2",
+            relativePath: backgroundFile.relativePath,
+            worktreeId: null,
+        });
+    });
+
+    it("resolves the current pane tab when its deferred frame arrives", async () => {
+        const activationFrames = installActivationFrameQueue();
+        const focusedFile = createWorkspaceFileTab(
+            "focused-file",
+            "src/focused.ts",
+        );
+        const staleFile = createWorkspaceFileTab("stale-file", "src/stale.ts");
+        const currentFile = createWorkspaceFileTab(
+            "current-file",
+            "src/current.ts",
+        );
+        const targetContextKey = "project-2::__primary__";
+        const targetWorkspace: WorkspaceTreeState = {
+            activePaneId: "pane-left",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: focusedFile.id,
+                        id: "pane-left",
+                        tabIds: [focusedFile.id],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: staleFile.id,
+                        id: "pane-right",
+                        tabIds: [staleFile.id, currentFile.id],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: Object.fromEntries(
+                [focusedFile, staleFile, currentFile].map((tab) => [
+                    tab.id,
+                    { ...tab, projectId: "project-2" },
+                ]),
+            ),
+        };
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            contextsByKey: {
+                ...state.contextsByKey,
+                [targetContextKey]: {
+                    key: targetContextKey,
+                    lastActivatedAt: "2026-04-14T00:00:00.000Z",
+                    projectId: "project-2",
+                    workspace: targetWorkspace,
+                    worktreeId: null,
+                },
+            },
+            openContextKeys: [...state.openContextKeys, targetContextKey],
+        }));
+
+        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore
+            .getState()
+            .selectTab("pane-right", currentFile.id);
+        activationFrames.shift()?.(performance.now());
+
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledWith({
+                projectId: "project-2",
+                relativePath: currentFile.relativePath,
+                worktreeId: null,
+            });
+        });
+        expect(openProjectFileMock).not.toHaveBeenCalledWith(
+            expect.objectContaining({ relativePath: staleFile.relativePath }),
+        );
+    });
+
+    it("reveals and prepares a deferred pane immediately when it gains focus", async () => {
+        const activationFrames = installActivationFrameQueue();
+        const backgroundFile = createWorkspaceFileTab(
+            "background-file",
+            "src/background.ts",
+        );
+        const targetContextKey = "project-2::__primary__";
+        const targetWorkspace: WorkspaceTreeState = {
+            activePaneId: "pane-empty",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: null,
+                        id: "pane-empty",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: backgroundFile.id,
+                        id: "pane-background",
+                        tabIds: [backgroundFile.id],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                [backgroundFile.id]: {
+                    ...backgroundFile,
+                    projectId: "project-2",
+                },
+            },
+        };
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            contextsByKey: {
+                ...state.contextsByKey,
+                [targetContextKey]: {
+                    key: targetContextKey,
+                    lastActivatedAt: "2026-04-14T00:00:00.000Z",
+                    projectId: "project-2",
+                    workspace: targetWorkspace,
+                    worktreeId: null,
+                },
+            },
+            openContextKeys: [...state.openContextKeys, targetContextKey],
+        }));
+
+        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore.getState().setActivePane("pane-background");
+
+        expect(useWorkspaceStore.getState().deferredPaneIds.size).toBe(0);
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        });
+
+        activationFrames.shift()?.(performance.now());
+        await Promise.resolve();
+        expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the active pane outside the deferred queue after any mutation", () => {
+        useWorkspaceStore.setState({
+            activePaneId: "pane-background",
+            deferredPaneIds: new Set(["pane-background", "pane-other"]),
+        });
+
+        expect(useWorkspaceStore.getState().deferredPaneIds).toEqual(
+            new Set(["pane-other"]),
+        );
+    });
+
+    it("prepares a deferred fallback after closing the active pane", async () => {
+        const activationFrames = installActivationFrameQueue();
+        const fallbackFile = createWorkspaceFileTab(
+            "fallback-file",
+            "src/fallback.ts",
+        );
+        const targetContextKey = "project-2::__primary__";
+        const targetWorkspace: WorkspaceTreeState = {
+            activePaneId: "pane-empty",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: null,
+                        id: "pane-empty",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: fallbackFile.id,
+                        id: "pane-fallback",
+                        tabIds: [fallbackFile.id],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                [fallbackFile.id]: {
+                    ...fallbackFile,
+                    projectId: "project-2",
+                },
+            },
+        };
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            contextsByKey: {
+                ...state.contextsByKey,
+                [targetContextKey]: {
+                    key: targetContextKey,
+                    lastActivatedAt: "2026-04-14T00:00:00.000Z",
+                    projectId: "project-2",
+                    workspace: targetWorkspace,
+                    worktreeId: null,
+                },
+            },
+            openContextKeys: [...state.openContextKeys, targetContextKey],
+        }));
+
+        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore.getState().closePane("pane-empty");
+
+        expect(useWorkspaceStore.getState().activePaneId).toBe("pane-fallback");
+        expect(useWorkspaceStore.getState().deferredPaneIds.size).toBe(0);
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        });
+        expect(openProjectFileMock).toHaveBeenCalledWith({
+            projectId: "project-2",
+            relativePath: fallbackFile.relativePath,
+            worktreeId: null,
+        });
+
+        activationFrames.shift()?.(performance.now());
+        await Promise.resolve();
+        expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("cancels a deferred pane queue after a rapid context switch", async () => {
+        const activationFrames = installActivationFrameQueue();
+        const backgroundFile = createWorkspaceFileTab(
+            "background-file",
+            "src/background.ts",
+        );
+        const targetContextKey = "project-2::__primary__";
+        const targetWorkspace: WorkspaceTreeState = {
+            activePaneId: "pane-empty",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: null,
+                        id: "pane-empty",
+                        tabIds: [],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: backgroundFile.id,
+                        id: "pane-background",
+                        tabIds: [backgroundFile.id],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                [backgroundFile.id]: {
+                    ...backgroundFile,
+                    projectId: "project-2",
+                },
+            },
+        };
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            contextsByKey: {
+                ...state.contextsByKey,
+                [targetContextKey]: {
+                    key: targetContextKey,
+                    lastActivatedAt: "2026-04-14T00:00:00.000Z",
+                    projectId: "project-2",
+                    workspace: targetWorkspace,
+                    worktreeId: null,
+                },
+            },
+            openContextKeys: [...state.openContextKeys, targetContextKey],
+        }));
+
+        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore
+            .getState()
+            .activateContext("project-1::__primary__");
+        activationFrames.shift()?.(performance.now());
+        await Promise.resolve();
+
+        expect(openProjectFileMock).not.toHaveBeenCalled();
+        expect(useWorkspaceStore.getState().activeContextKey).toBe(
+            "project-1::__primary__",
+        );
+        expect(useWorkspaceStore.getState().deferredPaneIds.size).toBe(0);
     });
 
     it("retries a file load after a rapid context switch", async () => {

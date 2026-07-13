@@ -112,6 +112,12 @@ export interface MeasuredVirtualListHandle {
 export interface MeasuredVirtualListProps<T> {
     readonly items: readonly T[];
     readonly enabled?: boolean;
+    /**
+     * Keeps virtual layout intact while temporarily disconnecting row observers.
+     * Useful for retained, hidden views that should preserve their DOM without
+     * doing background measurement work.
+     */
+    readonly observeMeasurements?: boolean;
     readonly overscan?: number;
     readonly defaultViewportHeight?: number;
     readonly scrollMarginTop?: number;
@@ -476,6 +482,7 @@ export function calculateMeasuredVirtualScrollAnchorAdjustment({
 export function MeasuredVirtualList<T>({
     items,
     enabled = true,
+    observeMeasurements = true,
     overscan = DEFAULT_OVERSCAN,
     defaultViewportHeight = DEFAULT_VIEWPORT_HEIGHT,
     scrollMarginTop = 0,
@@ -727,7 +734,11 @@ export function MeasuredVirtualList<T>({
     }, [shouldPreserveScrollAnchorOnMeasureNow, virtualizationEnabled]);
 
     useEffect(() => {
-        if (!virtualizationEnabled || typeof ResizeObserver === "undefined") {
+        if (
+            !virtualizationEnabled ||
+            !observeMeasurements ||
+            typeof ResizeObserver === "undefined"
+        ) {
             return;
         }
 
@@ -767,7 +778,7 @@ export function MeasuredVirtualList<T>({
             observer.disconnect();
             resizeObserverRef.current = null;
         };
-    }, [updateMeasuredSize, virtualizationEnabled]);
+    }, [observeMeasurements, updateMeasuredSize, virtualizationEnabled]);
 
     useLayoutEffect(() => {
         if (!virtualizationEnabled) {

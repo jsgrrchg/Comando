@@ -124,6 +124,7 @@ export interface RuntimeWorkspaceContext {
 interface WorkspaceStore extends WorkspaceTreeState {
     readonly activeContextKey: string | null;
     readonly contextsByKey: Record<string, RuntimeWorkspaceContext>;
+    readonly deferredPaneIds: ReadonlySet<string>;
     getContextNavigationSnapshot: (
         contextKey: string,
     ) => WorkspaceNavigationSnapshot | null;
@@ -389,6 +390,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     ...createDefaultWorkspaceState(),
     activeContextKey: null,
     contextsByKey: {},
+    deferredPaneIds: new Set(),
     error: null,
     hydrated: false,
     lastFocusedChatTabId: null,
@@ -446,6 +448,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     lastActivatedAt: new Date().toISOString(),
                 },
             },
+            deferredPaneIds: getDeferredWorkspacePaneIds(targetWorkspace),
             error: null,
             lastFocusedChatTabId: getPaneChatTabId(
                 targetWorkspace,
@@ -474,8 +477,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             scopeEpoch,
         });
 
-        ensureActiveHydratedSessions(targetWorkspace);
-        void hydrateActiveRuntimeTabs(
+        void activateWorkspaceRuntimePanes(
             targetWorkspace,
             get,
             set,
@@ -523,6 +525,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ...nextWorkspace,
             activeContextKey: nextContextKey,
             contextsByKey: nextContextsByKey,
+            deferredPaneIds: getDeferredWorkspacePaneIds(nextWorkspace),
             error: null,
             lastFocusedChatTabId: getPaneChatTabId(
                 nextWorkspace,
@@ -553,8 +556,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         });
 
         if (nextContextKey) {
-            ensureActiveHydratedSessions(nextWorkspace);
-            void hydrateActiveRuntimeTabs(
+            void activateWorkspaceRuntimePanes(
                 nextWorkspace,
                 get,
                 set,
@@ -1262,6 +1264,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 ...hydratedState,
                 activeContextKey,
                 contextsByKey,
+                deferredPaneIds: getDeferredWorkspacePaneIds(hydratedState),
                 error: null,
                 hydrated: true,
                 openContextKeys,
@@ -1290,9 +1293,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 ),
                 scopeEpoch,
             });
-            ensureActiveHydratedSessions(hydratedState);
             if (activeContextKey) {
-                void hydrateActiveRuntimeTabs(
+                void activateWorkspaceRuntimePanes(
                     hydratedState,
                     get,
                     set,
@@ -1307,6 +1309,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 ...createDefaultWorkspaceState(),
                 activeContextKey: null,
                 contextsByKey: {},
+                deferredPaneIds: new Set(),
                 error:
                     error instanceof Error
                         ? error.message
@@ -2157,6 +2160,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 const chatTabId = getPaneChatTabId(nextState, paneId);
                 return {
                     ...nextState,
+                    deferredPaneIds: removeDeferredWorkspacePane(
+                        state.deferredPaneIds,
+                        paneId,
+                    ),
                     error: null,
                     ...(chatTabId ? { lastFocusedChatTabId: chatTabId } : {}),
                     ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
@@ -2358,6 +2365,34 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         await persistWorkspaceState(get);
     },
 }));
+
+// Every workspace mutation may choose a new active pane. Keep the active pane
+// outside the deferred queue regardless of which tree helper produced it.
+const unsubscribeActivePaneDeferredInvariant = useWorkspaceStore.subscribe(
+    (state) => {
+        if (!state.deferredPaneIds.has(state.activePaneId)) {
+            return;
+        }
+
+        const activeTabId = getPaneActiveTabId(state, state.activePaneId);
+        const activeTab = activeTabId ? state.tabsById[activeTabId] : null;
+        useWorkspaceStore.setState({
+            deferredPaneIds: removeDeferredWorkspacePane(
+                state.deferredPaneIds,
+                state.activePaneId,
+            ),
+        });
+        prepareFocusedWorkspaceTab(
+            activeTab,
+            useWorkspaceStore.getState,
+            useWorkspaceStore.setState,
+        );
+    },
+);
+
+if (import.meta.hot) {
+    import.meta.hot.dispose(unsubscribeActivePaneDeferredInvariant);
+}
 
 type WorkspaceSetState = typeof useWorkspaceStore.setState;
 
@@ -3246,17 +3281,6 @@ function createHydratedRuntimeTabs(
     ) as Record<string, RuntimeWorkspaceTab>;
 }
 
-function ensureActiveHydratedSessions(state: WorkspaceTreeState): void {
-    for (const pane of collectPaneNodes(state.rootNode)) {
-        const activeTab = pane.activeTabId
-            ? state.tabsById[pane.activeTabId]
-            : null;
-        if (activeTab?.kind === "chat" || activeTab?.kind === "review") {
-            prewarmFocusedAiSession(activeTab);
-        }
-    }
-}
-
 function prepareFocusedWorkspaceTab(
     tab: RuntimeWorkspaceTab | null | undefined,
     get: GetWorkspaceState,
@@ -3289,7 +3313,7 @@ function prewarmFocusedAiSession(
     void useAiStore.getState().ensureSession(tab);
 }
 
-async function hydrateActiveRuntimeTabs(
+async function activateWorkspaceRuntimePanes(
     workspace: WorkspaceTreeState,
     get: GetWorkspaceState,
     set: WorkspaceSetState,
@@ -3298,20 +3322,106 @@ async function hydrateActiveRuntimeTabs(
         readonly scopeEpoch: number;
     },
 ): Promise<void> {
-    const activeTabIds = new Set(
-        collectPaneNodes(workspace.rootNode).flatMap((pane) =>
-            pane.activeTabId ? [pane.activeTabId] : [],
-        ),
-    );
+    const panes = collectPaneNodes(workspace.rootNode);
+    const focusedPane = panes.find(
+        (pane) => pane.id === workspace.activePaneId,
+    ) ?? null;
+    const focusedTab = focusedPane?.activeTabId
+        ? workspace.tabsById[focusedPane.activeTabId]
+        : null;
+    const focusedLoad = focusedTab
+        ? hydrateWorkspaceRuntimeTab(focusedTab, get, set, scope)
+        : Promise.resolve();
+    const backgroundPaneIds = panes
+        .filter((pane) => pane.id !== workspace.activePaneId)
+        .map((pane) => pane.id);
 
-    await Promise.all(
-        [...activeTabIds].map(async (tabId) => {
-            const tab = workspace.tabsById[tabId];
-            if (tab?.kind === "file") {
-                await loadFileTabDocument(get, set, tab.id, scope);
-            }
-        }),
+    // Let the focused pane commit before secondary panes start file I/O and
+    // history hydration. This keeps context switching responsive on dense layouts.
+    const backgroundLoads: Promise<void>[] = [];
+    for (const paneId of backgroundPaneIds) {
+        await waitForWorkspaceActivationFrame();
+        if (!isWorkspaceScopeCurrent(get, scope)) {
+            break;
+        }
+
+        if (!get().deferredPaneIds.has(paneId)) {
+            continue;
+        }
+
+        set((state) => ({
+            deferredPaneIds: removeDeferredWorkspacePane(
+                state.deferredPaneIds,
+                paneId,
+            ),
+        }));
+
+        const currentState = get();
+        const currentPane = findPaneById(currentState.rootNode, paneId);
+        const currentTab = currentPane?.activeTabId
+            ? currentState.tabsById[currentPane.activeTabId]
+            : null;
+        if (currentTab) {
+            backgroundLoads.push(
+                hydrateWorkspaceRuntimeTab(currentTab, get, set, scope),
+            );
+        }
+    }
+
+    await Promise.all([focusedLoad, ...backgroundLoads]);
+}
+
+function getDeferredWorkspacePaneIds(
+    workspace: WorkspaceTreeState,
+): ReadonlySet<string> {
+    return new Set(
+        collectPaneNodes(workspace.rootNode)
+            .filter((pane) => pane.id !== workspace.activePaneId)
+            .map((pane) => pane.id),
     );
+}
+
+function removeDeferredWorkspacePane(
+    deferredPaneIds: ReadonlySet<string>,
+    paneId: string,
+): ReadonlySet<string> {
+    if (!deferredPaneIds.has(paneId)) {
+        return deferredPaneIds;
+    }
+
+    const nextDeferredPaneIds = new Set(deferredPaneIds);
+    nextDeferredPaneIds.delete(paneId);
+    return nextDeferredPaneIds;
+}
+
+async function hydrateWorkspaceRuntimeTab(
+    tab: RuntimeWorkspaceTab,
+    get: GetWorkspaceState,
+    set: WorkspaceSetState,
+    scope?: {
+        readonly contextKey: string;
+        readonly scopeEpoch: number;
+    },
+): Promise<void> {
+    if (tab.kind === "file") {
+        await loadFileTabDocument(get, set, tab.id, scope);
+        return;
+    }
+
+    if (tab.kind === "chat" || tab.kind === "review") {
+        prewarmFocusedAiSession(tab);
+    }
+}
+
+function waitForWorkspaceActivationFrame(): Promise<void> {
+    return new Promise((resolve) => {
+        if (typeof window.requestAnimationFrame === "function") {
+            window.requestAnimationFrame(() => resolve());
+            return;
+        }
+
+        queueMicrotask(resolve);
+    });
 }
 
 function isWorkspaceScopeCurrent(
