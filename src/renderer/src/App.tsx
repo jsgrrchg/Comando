@@ -3639,6 +3639,68 @@ export function App() {
     }, [requestCloseWorkspaceContext, workspaceActiveContextKey]);
 
     useEffect(() => {
+        const isSupportedPlatform =
+            bootstrap?.platform === "darwin" ||
+            bootstrap?.platform === "linux" ||
+            bootstrap?.platform === "win32";
+        if (!isSupportedPlatform) {
+            return;
+        }
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (
+                event.defaultPrevented ||
+                event.shiftKey ||
+                !event.altKey ||
+                (isMac ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey)
+            ) {
+                return;
+            }
+
+            const direction =
+                event.code === "BracketRight"
+                    ? "next"
+                    : event.code === "BracketLeft"
+                      ? "previous"
+                      : null;
+            if (!direction || openWorkspaceContextKeys.length < 2) {
+                return;
+            }
+
+            const activeIndex = openWorkspaceContextKeys.indexOf(
+                workspaceActiveContextKey ?? "",
+            );
+            if (activeIndex < 0) {
+                return;
+            }
+
+            const targetIndex =
+                direction === "next"
+                    ? (activeIndex + 1) % openWorkspaceContextKeys.length
+                    : (activeIndex - 1 + openWorkspaceContextKeys.length) %
+                      openWorkspaceContextKeys.length;
+            const targetContextKey = openWorkspaceContextKeys[targetIndex];
+            if (!targetContextKey) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            void useWorkspaceStore.getState().activateContext(targetContextKey);
+        };
+
+        window.addEventListener("keydown", handleKeyDown, true);
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown, true);
+        };
+    }, [
+        bootstrap?.platform,
+        isMac,
+        openWorkspaceContextKeys,
+        workspaceActiveContextKey,
+    ]);
+
+    useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === "b" && (event.metaKey || event.ctrlKey)) {
                 event.preventDefault();
