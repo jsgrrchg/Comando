@@ -157,7 +157,7 @@ describe("window titlebar overlays", () => {
 
         expect(electronMocks.windows[0]?.options).toMatchObject({
             titleBarStyle: "hidden",
-            trafficLightPosition: { x: 14, y: 8 },
+            trafficLightPosition: { x: 14, y: 12 },
         });
         expect(electronMocks.windows[1]?.options).toMatchObject({
             titleBarStyle: "hidden",
@@ -167,6 +167,6 @@ describe("window titlebar overlays", () => {
         electronMocks.windows[0]?.triggerDidFinishLoad();
         expect(
             electronMocks.windows[0]?.setWindowButtonPosition,
-        ).toHaveBeenCalledWith({ x: 14, y: 8 });
+        ).toHaveBeenCalledWith({ x: 14, y: 12 });
     });
 });
