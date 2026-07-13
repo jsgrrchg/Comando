@@ -48,8 +48,13 @@ import type {
     ThemePreset,
     WorkspaceNode,
     WorkspaceNavigationSnapshot,
+    WindowWorkspaceRestoreRecord,
     WorkspaceSnapshot,
 } from "@shared/ipc";
+import {
+    createWindowWorkspaceRestoreRecord,
+    normalizeWindowWorkspaceRestoreRecord,
+} from "@shared/workspace-restore";
 
 import type {
     AiPersistenceGateway,
@@ -156,6 +161,7 @@ interface PersistedWindowRecord {
     readonly isOpen: boolean;
     readonly lastOpenedAt: string;
     readonly snapshot: PersistenceSnapshot;
+    readonly workspaceRestore?: WindowWorkspaceRestoreRecord;
 }
 
 interface LegacySettingRow {
@@ -205,6 +211,7 @@ interface LegacyProjectSettingRow {
 class NativeJsonStore {
     readonly #client: NativeBackendRequester;
     readonly #pendingWrites = new Set<Promise<void>>();
+    readonly #writeChains = new Map<string, Promise<void>>();
 
     constructor(client: NativeBackendRequester) {
         this.#client = client;
@@ -238,7 +245,20 @@ class NativeJsonStore {
     }
 
     async saveNow(key: string, value: unknown): Promise<void> {
-        await this.#client.request("app_data_set_json", { key, value });
+        const previous = this.#writeChains.get(key) ?? Promise.resolve();
+        const write = previous
+            .catch(() => undefined)
+            .then(async () => {
+                await this.#client.request("app_data_set_json", { key, value });
+            });
+        this.#writeChains.set(key, write);
+        try {
+            await write;
+        } finally {
+            if (this.#writeChains.get(key) === write) {
+                this.#writeChains.delete(key);
+            }
+        }
     }
 
     async flush(): Promise<void> {
@@ -251,6 +271,7 @@ class NativePersistenceClient implements PersistenceGateway {
     readonly #store: NativeJsonStore;
     readonly #recordsByWindowId = new Map<string, PersistedWindowRecord>();
     readonly #windowOrder: string[] = [];
+    #workspaceCommitChain: Promise<void> = Promise.resolve();
 
     constructor(
         store: NativeJsonStore,
@@ -376,6 +397,82 @@ class NativePersistenceClient implements PersistenceGateway {
 
     markWindowOpen(windowId: string): void {
         this.#setOpen(windowId, true);
+    }
+
+    findWorkspaceRestore(
+        workspaceId: string,
+    ): WindowWorkspaceRestoreRecord | null {
+        for (const record of this.#recordsByWindowId.values()) {
+            if (record.snapshot.windowContext?.workspaceId === workspaceId) {
+                return record.workspaceRestore ?? null;
+            }
+        }
+        return null;
+    }
+
+    findWorkspaceScope(workspaceId: string): {
+        readonly projectId: string | null;
+        readonly worktreeId: string | null;
+    } {
+        for (const record of this.#recordsByWindowId.values()) {
+            if (record.snapshot.windowContext?.workspaceId === workspaceId) {
+                return {
+                    projectId: record.snapshot.activeProjectId,
+                    worktreeId: record.snapshot.activeWorktreeId ?? null,
+                };
+            }
+        }
+        return { projectId: null, worktreeId: null };
+    }
+
+    async commitWorkspaceRestore(
+        workspaceId: string,
+        snapshot: WorkspaceNavigationSnapshot,
+    ): Promise<void> {
+        const commit = this.#workspaceCommitChain.then(() =>
+            this.#commitWorkspaceRestoreNow(workspaceId, snapshot),
+        );
+        this.#workspaceCommitChain = commit.catch(() => undefined);
+        await commit;
+    }
+
+    async #commitWorkspaceRestoreNow(
+        workspaceId: string,
+        snapshot: WorkspaceNavigationSnapshot,
+    ): Promise<void> {
+        const entry = [...this.#recordsByWindowId.entries()].find(
+            ([, record]) =>
+                record.snapshot.windowContext?.workspaceId === workspaceId,
+        );
+        if (!entry) {
+            throw new Error("The workspace window was not found.");
+        }
+        const [windowId, current] = entry;
+        const currentRevision = current.workspaceRestore?.revision ?? 0;
+        const activeContext = snapshot.contexts.find(
+            (context) => context.key === snapshot.activeContextKey,
+        );
+        const restore = createWindowWorkspaceRestoreRecord(
+            snapshot,
+            currentRevision + 1,
+        );
+        this.#recordsByWindowId.set(windowId, {
+            ...current,
+            snapshot: {
+                ...current.snapshot,
+                activeProjectId: activeContext?.projectId ?? null,
+                activeWorktreeId: activeContext?.worktreeId ?? null,
+                windowContext: current.snapshot.windowContext
+                    ? {
+                          ...current.snapshot.windowContext,
+                          projectId: activeContext?.projectId ?? null,
+                          worktreeId: activeContext?.worktreeId ?? null,
+                      }
+                    : null,
+            },
+            workspaceRestore: restore,
+        });
+        await this.#persist();
     }
 
     #rehydrate(records: readonly PersistedWindowRecord[]): void {
@@ -717,26 +814,62 @@ class NativeSecretStore implements SecretStoreGateway {
 }
 
 class NativeWorkspaceClient implements WorkspaceGateway {
+    readonly #persistence: NativePersistenceClient;
     readonly #store: NativeJsonStore;
 
-    constructor(store: NativeJsonStore) {
+    constructor(
+        store: NativeJsonStore,
+        persistence: NativePersistenceClient,
+    ) {
         this.#store = store;
+        this.#persistence = persistence;
     }
 
     async loadSnapshot(
         workspaceId: string,
-    ): Promise<PersistedWorkspaceSnapshot> {
-        return await this.#store.load(
+    ): Promise<WindowWorkspaceRestoreRecord> {
+        const embedded = this.#persistence.findWorkspaceRestore(workspaceId);
+        if (embedded) {
+            const normalized = normalizeWindowWorkspaceRestoreRecord(
+                embedded,
+                this.#persistence.findWorkspaceScope(workspaceId),
+            );
+            if (JSON.stringify(normalized) !== JSON.stringify(embedded)) {
+                await this.#persistence.commitWorkspaceRestore(
+                    workspaceId,
+                    normalized.snapshot,
+                );
+                return this.#persistence.findWorkspaceRestore(workspaceId) ?? normalized;
+            }
+            return normalized;
+        }
+        const legacy = await this.#store.load<PersistedWorkspaceSnapshot>(
             workspaceKey(workspaceId),
             createDefaultWorkspaceSnapshot(),
         );
+        const normalized = normalizeWindowWorkspaceRestoreRecord(
+            legacy,
+            this.#persistence.findWorkspaceScope(workspaceId),
+        );
+        await this.#persistence.commitWorkspaceRestore(
+            workspaceId,
+            normalized.snapshot,
+        );
+        return this.#persistence.findWorkspaceRestore(workspaceId) ?? normalized;
     }
 
     async saveSnapshot(
         workspaceId: string,
         snapshot: WorkspaceNavigationSnapshot,
     ): Promise<void> {
-        await this.#store.saveNow(workspaceKey(workspaceId), snapshot);
+        const normalizedSnapshot = normalizeWindowWorkspaceRestoreRecord(
+            snapshot,
+            this.#persistence.findWorkspaceScope(workspaceId),
+        ).snapshot;
+        return await this.#persistence.commitWorkspaceRestore(
+            workspaceId,
+            normalizedSnapshot,
+        );
     }
 
     loadChatSessionState(
@@ -1703,7 +1836,7 @@ export async function createNativeAppDataClient(
             appliedMigrations: ["native-schema"],
             databaseFile: options.databaseFile,
         },
-        workspace: new NativeWorkspaceClient(store),
+        workspace: new NativeWorkspaceClient(store, persistence),
         close: () => store.flush(),
     };
 }

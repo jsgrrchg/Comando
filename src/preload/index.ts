@@ -828,6 +828,30 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceFlushRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            requestId: string,
+        ) => {
+            void Promise.resolve()
+                .then(listener)
+                .then(() => {
+                    ipcRenderer.send(
+                        IPC_EVENTS.workspaceFlushAcknowledged,
+                        requestId,
+                    );
+                })
+                .catch(() => undefined);
+        };
+
+        ipcRenderer.on(IPC_EVENTS.workspaceFlushRequested, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceFlushRequested,
+                handleEvent,
+            );
+        };
+    },
     onTerminalData: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,

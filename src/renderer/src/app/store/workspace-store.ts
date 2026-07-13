@@ -24,6 +24,7 @@ import {
     getAiRuntimeDisplayName,
     type ActiveAiRuntimeId,
 } from "@shared/ai-runtimes";
+import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
 
 import {
     activatePane,
@@ -2367,6 +2368,7 @@ let pendingWorkspacePersistTimer: ReturnType<typeof setTimeout> | null = null;
 let workspacePersistDirty = false;
 let workspacePersistGet: GetWorkspaceState | null = null;
 let workspacePersistInFlight: Promise<void> | null = null;
+let workspacePersistFailureCount = 0;
 const pendingFileDocumentLoads = new Map<string, Promise<ProjectFileDocument>>();
 
 export function getWorkspaceTabRuntimeId(
@@ -3120,39 +3122,10 @@ function resolveWorkspaceNavigationSnapshot(
     activeProjectId: string | null,
     activeWorktreeId: string | null,
 ): WorkspaceNavigationSnapshot {
-    if (isWorkspaceNavigationSnapshot(snapshot)) {
-        return snapshot;
-    }
-
-    const firstScopedTab = snapshot.tabs.find(
-        (tab) => typeof tab.projectId === "string" && tab.projectId.length > 0,
-    );
-    const projectId = activeProjectId ?? firstScopedTab?.projectId ?? null;
-    if (!projectId) {
-        return {
-            activeContextKey: null,
-            contexts: [],
-            openContextKeys: [],
-            version: 2,
-        };
-    }
-
-    const worktreeId = activeWorktreeId ?? firstScopedTab?.worktreeId ?? null;
-    const key = getProjectContextKey(projectId, worktreeId);
-    return {
-        activeContextKey: key,
-        contexts: [
-            {
-                key,
-                lastActivatedAt: new Date().toISOString(),
-                projectId,
-                workspace: snapshot,
-                worktreeId,
-            },
-        ],
-        openContextKeys: [key],
-        version: 2,
-    };
+    return normalizeWorkspaceNavigationSnapshot(snapshot, {
+        projectId: activeProjectId,
+        worktreeId: activeWorktreeId,
+    }).snapshot;
 }
 
 function workspaceStoreToNavigationSnapshot(
@@ -3383,6 +3356,20 @@ export async function flushWorkspacePersistenceForTests(): Promise<void> {
     await flushWorkspacePersistence(undefined, { force: true });
 }
 
+export async function flushWorkspacePersistenceNow(): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (pendingWorkspacePersistTimer !== null) {
+            clearTimeout(pendingWorkspacePersistTimer);
+            pendingWorkspacePersistTimer = null;
+        }
+        await flushWorkspacePersistence(undefined, { force: true });
+        if (!workspacePersistDirty) {
+            return;
+        }
+    }
+    throw new Error("Could not persist the workspace before closing.");
+}
+
 export function resetWorkspacePersistenceForTests(): void {
     if (pendingWorkspacePersistTimer !== null) {
         clearTimeout(pendingWorkspacePersistTimer);
@@ -3392,6 +3379,7 @@ export function resetWorkspacePersistenceForTests(): void {
     workspacePersistDirty = false;
     workspacePersistGet = null;
     workspacePersistInFlight = null;
+    workspacePersistFailureCount = 0;
     pendingFileDocumentLoads.clear();
 }
 
@@ -3439,7 +3427,7 @@ async function flushWorkspacePersistence(
     if (workspacePersistInFlight) {
         await workspacePersistInFlight;
 
-        if (workspacePersistDirty) {
+        if (workspacePersistDirty && workspacePersistFailureCount === 0) {
             await flushWorkspacePersistence();
         }
 
@@ -3462,7 +3450,7 @@ async function flushWorkspacePersistence(
         }
     }
 
-    if (workspacePersistDirty) {
+    if (workspacePersistDirty && workspacePersistFailureCount === 0) {
         await flushWorkspacePersistence();
     }
 }
@@ -3473,6 +3461,7 @@ async function persistWorkspaceStateNow(get: GetWorkspaceState): Promise<void> {
         await getComandoApi().saveWorkspaceSnapshot(
             workspaceStoreToNavigationSnapshot(state),
         );
+        workspacePersistFailureCount = 0;
     } catch (error) {
         // Workspace persistence failure silently loses layout/tabs on restart;
         // surface it at error level so diagnostics don't start from scratch.
@@ -3480,6 +3469,17 @@ async function persistWorkspaceStateNow(get: GetWorkspaceState): Promise<void> {
             "[workspace-store] saveWorkspaceSnapshot failed",
             error,
         );
+        workspacePersistDirty = true;
+        workspacePersistFailureCount += 1;
+        if (
+            pendingWorkspacePersistTimer === null &&
+            workspacePersistFailureCount <= 3
+        ) {
+            pendingWorkspacePersistTimer = setTimeout(() => {
+                pendingWorkspacePersistTimer = null;
+                void flushWorkspacePersistence();
+            }, Math.min(1_000 * workspacePersistFailureCount, 3_000));
+        }
     }
 }
 

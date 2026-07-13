@@ -5,7 +5,10 @@ import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { AiSessionSnapshot } from "@shared/ipc";
+import type {
+    AiSessionSnapshot,
+    WorkspaceNavigationSnapshot,
+} from "@shared/ipc";
 
 import type { NativeBackendRequester } from "./persistence";
 
@@ -24,6 +27,76 @@ afterEach(() => {
 });
 
 describe("createNativeAppDataClient", () => {
+    it("atomically restores isolated workspace snapshots for multiple windows", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        new DatabaseSync(databaseFile).close();
+        const native = createFakeNativeRequester();
+        const { createNativeAppDataClient } = await import("./app-data");
+        const firstClient = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        const firstWindow = await firstClient.persistence.createMainWindowSession({
+            projectId: "project-1",
+        });
+        const secondWindow = await firstClient.persistence.createMainWindowSession({
+            projectId: "project-2",
+            worktreeId: "worktree-2",
+        });
+        const firstWorkspaceId = firstWindow.windowContext?.workspaceId;
+        const secondWorkspaceId = secondWindow.windowContext?.workspaceId;
+        if (!firstWorkspaceId || !secondWorkspaceId) {
+            throw new Error("Expected workspace ids for both windows.");
+        }
+        await firstClient.workspace.saveSnapshot(
+            firstWorkspaceId,
+            workspaceNavigation("project-1", null, "pane-a"),
+        );
+        await firstClient.workspace.saveSnapshot(
+            secondWorkspaceId,
+            workspaceNavigation("project-2", "worktree-2", "pane-b"),
+        );
+        await firstClient.close();
+
+        const secondClient = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        const firstRestore = await secondClient.workspace.loadSnapshot(firstWorkspaceId);
+        const secondRestore = await secondClient.workspace.loadSnapshot(secondWorkspaceId);
+
+        expect(firstRestore.revision).toBe(1);
+        expect(firstRestore.snapshot.contexts[0]?.workspace.activePaneId).toBe("pane-a");
+        expect(secondRestore.snapshot.contexts[0]).toMatchObject({
+            projectId: "project-2",
+            worktreeId: "worktree-2",
+            workspace: { activePaneId: "pane-b" },
+        });
+        expect(
+            secondClient.persistence.listRestorableMainWindowSnapshots(),
+        ).toHaveLength(2);
+        await secondClient.workspace.saveSnapshot(firstWorkspaceId, {
+            activeContextKey: null,
+            contexts: [],
+            openContextKeys: [],
+            version: 2,
+        });
+        const firstWindowId = firstWindow.windowContext?.windowId;
+        if (!firstWindowId) {
+            throw new Error("Expected the first window id.");
+        }
+        expect(
+            secondClient.persistence.loadSnapshot(firstWindowId),
+        ).toMatchObject({
+            activeProjectId: null,
+            activeWorktreeId: null,
+            windowContext: { projectId: null, worktreeId: null },
+        });
+        await secondClient.close();
+    });
+
     it("migrates legacy SQLite app data into native app-data and keyring", async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
         tempDirs.push(tempDir);
@@ -86,14 +159,13 @@ describe("createNativeAppDataClient", () => {
         expect(windows[0]?.windowContext?.workspaceId).toBe("workspace-1");
 
         const workspace = await client.workspace.loadSnapshot("workspace-1");
-        expect("version" in workspace).toBe(false);
-        if ("version" in workspace) {
-            throw new Error("Expected the migrated legacy workspace layout.");
-        }
-        expect(workspace.activePaneId).toBe("pane-1");
-        expect(workspace.tabs).toHaveLength(1);
-        expect(workspace.tabs[0]?.title).toBe("README.md");
-        expect(workspace.tabs[0]?.worktreeId).toBe("worktree-1");
+        expect(workspace.schemaVersion).toBe(1);
+        expect(workspace.snapshot.version).toBe(2);
+        const restoredLayout = workspace.snapshot.contexts[0]?.workspace;
+        expect(restoredLayout?.activePaneId).toBe("pane-1");
+        expect(restoredLayout?.tabs).toHaveLength(1);
+        expect(restoredLayout?.tabs[0]?.title).toBe("README.md");
+        expect(restoredLayout?.tabs[0]?.worktreeId).toBe("worktree-1");
 
         const projectSettings =
             client.settings.loadProjectSettings("project-1");
@@ -308,6 +380,37 @@ describe("createNativeAppDataClient", () => {
         await client.close();
     });
 });
+
+function workspaceNavigation(
+    projectId: string,
+    worktreeId: string | null,
+    paneId: string,
+): WorkspaceNavigationSnapshot {
+    const key = `${projectId}::${worktreeId ?? "__primary__"}`;
+    return {
+        activeContextKey: key,
+        contexts: [
+            {
+                key,
+                lastActivatedAt: "2026-01-01T00:00:00.000Z",
+                projectId,
+                workspace: {
+                    activePaneId: paneId,
+                    rootNode: {
+                        activeTabId: null,
+                        id: paneId,
+                        tabIds: [],
+                        type: "pane",
+                    },
+                    tabs: [],
+                },
+                worktreeId,
+            },
+        ],
+        openContextKeys: [key],
+        version: 2,
+    };
+}
 
 function createFakeNativeRequester(): {
     readonly appData: Map<string, unknown>;

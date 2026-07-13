@@ -81,6 +81,7 @@ import { useProjectsStore } from "./app/store/projects-store";
 import { useSettingsStore } from "./app/store/settings-store";
 import { useShellStore } from "./app/store/shell-store";
 import {
+    flushWorkspacePersistenceNow,
     getBestMatchingChatTabId,
     useWorkspaceStore,
 } from "./app/store/workspace-store";
@@ -929,6 +930,16 @@ export function App() {
     }, [reopenLastClosedTab]);
 
     useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+        return comandoApi.onWorkspaceFlushRequested(
+            flushWorkspacePersistenceNow,
+        );
+    }, []);
+
+    useEffect(() => {
         syncViewport(window.innerWidth);
 
         const handleResize = () => {
@@ -966,14 +977,6 @@ export function App() {
         persistenceReady,
         sidebarView,
     ]);
-
-    useEffect(() => {
-        if (!persistenceReady || !window.comando) {
-            return;
-        }
-
-        void window.comando.saveActiveProjectId(activeProjectId);
-    }, [activeProjectId, persistenceReady]);
 
     const gitActiveWorktreeId = useGitStore((state) =>
         activeProjectId
@@ -1050,14 +1053,6 @@ export function App() {
             setQuickOpenSelectedIndex(0);
         });
     }, [activeProjectId, activeWorktreeId]);
-
-    useEffect(() => {
-        if (!persistenceReady || !window.comando) {
-            return;
-        }
-
-        void window.comando.saveActiveWorktreeId(activeWorktreeId);
-    }, [activeWorktreeId, persistenceReady]);
 
     useEffect(() => {
         if (!isFileTreeSearchOpen) {
@@ -1441,7 +1436,7 @@ export function App() {
                 const project = context
                     ? projects.find((entry) => entry.id === context.projectId)
                     : null;
-                if (!context || !project) {
+                if (!context) {
                     return [];
                 }
 
@@ -1460,12 +1455,12 @@ export function App() {
                     {
                         key: context.key,
                         projectId: context.projectId,
-                        projectName: project.name,
+                        projectName: project?.name ?? "Missing project",
                         worktreeId: context.worktreeId,
                         worktreeLabel: worktree
                             ? getWorktreeDisplayLabel(worktree)
                             : context.worktreeId
-                              ? "Worktree"
+                              ? "Missing worktree"
                               : "Main checkout",
                     },
                 ];

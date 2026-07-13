@@ -1,6 +1,7 @@
 import {
     app,
     BrowserWindow,
+    ipcMain,
     MessageChannelMain,
     type MessagePortMain,
 } from "electron";
@@ -118,9 +119,31 @@ let terminalService: TerminalGateway | null = null;
 let nativeBackendClient: NativeBackendClient | null = null;
 let workspaceService: WorkspaceGateway | null = null;
 let isQuitting = false;
+let isWorkspaceQuitReady = false;
+let pendingWorkspaceQuit: Promise<void> | null = null;
 let isFinalizingQuit = false;
 let hasRequestedNativeBackendTestEvent = false;
 let pendingShutdown: Promise<void> | null = null;
+let nextWorkspaceFlushRequestId = 0;
+const pendingWorkspaceFlushes = new Map<
+    string,
+    { readonly senderId: number; readonly resolve: () => void }
+>();
+
+ipcMain.on(
+    IPC_EVENTS.workspaceFlushAcknowledged,
+    (event, requestId: unknown) => {
+        if (typeof requestId !== "string") {
+            return;
+        }
+        const pending = pendingWorkspaceFlushes.get(requestId);
+        if (!pending || pending.senderId !== event.sender.id) {
+            return;
+        }
+        pendingWorkspaceFlushes.delete(requestId);
+        pending.resolve();
+    },
+);
 
 const AI_SESSION_STREAM_ACK_STALE_MS = 10_000;
 const AI_SESSION_STREAM_HEARTBEAT_MS = 1_000;
@@ -386,8 +409,19 @@ app.on("window-all-closed", () => {
     }
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
     isQuitting = true;
+    if (isWorkspaceQuitReady) {
+        return;
+    }
+    event.preventDefault();
+    if (!pendingWorkspaceQuit) {
+        pendingWorkspaceQuit = flushAllWorkspaceWindowsForQuit().finally(() => {
+            pendingWorkspaceQuit = null;
+            isWorkspaceQuitReady = true;
+            app.quit();
+        });
+    }
 });
 
 app.on("will-quit", (event) => {
@@ -640,19 +674,8 @@ function restoreMainWindows(): void {
 function filterRestorableMainWindowSnapshots(
     snapshots: readonly PersistenceSnapshot[],
 ): readonly PersistenceSnapshot[] {
-    if (
-        !snapshots.some((snapshot) => getSnapshotProjectId(snapshot) !== null)
-    ) {
-        return snapshots;
-    }
-
-    return snapshots.filter(
-        (snapshot) => getSnapshotProjectId(snapshot) !== null,
-    );
-}
-
-function getSnapshotProjectId(snapshot: PersistenceSnapshot): string | null {
-    return snapshot.windowContext?.projectId ?? null;
+    // A projectless window is still a user-owned workspace and must survive restart.
+    return snapshots;
 }
 
 async function openNewMainWindow(projectId: string | null): Promise<void> {
@@ -864,6 +887,8 @@ function attachMainWindowLifecycle(
     context: WindowContextSnapshot,
 ): void {
     let timeout: NodeJS.Timeout | null = null;
+    let closeFlushComplete = false;
+    let closeFlushInFlight = false;
 
     const persistWindowState = () => {
         if (!persistenceService) {
@@ -905,8 +930,27 @@ function attachMainWindowLifecycle(
     window.on("unmaximize", schedulePersist);
     window.on("enter-full-screen", schedulePersist);
     window.on("leave-full-screen", schedulePersist);
-    window.on("close", () => {
+    window.on("close", (event) => {
         persistWindowState();
+
+        if (
+            !isWorkspaceQuitReady &&
+            !closeFlushComplete &&
+            !window.webContents.isDestroyed()
+        ) {
+            event.preventDefault();
+            if (!closeFlushInFlight) {
+                closeFlushInFlight = true;
+                void requestWorkspaceFlush(window).finally(() => {
+                    closeFlushComplete = true;
+                    closeFlushInFlight = false;
+                    if (!window.isDestroyed()) {
+                        window.close();
+                    }
+                });
+            }
+            return;
+        }
 
         if (isClosingLastAppWindow()) {
             isQuitting = true;
@@ -942,6 +986,39 @@ function attachMainWindowLifecycle(
     });
 
     persistWindowState();
+}
+
+async function requestWorkspaceFlush(window: BrowserWindow): Promise<void> {
+    const requestId = `${window.id}:${++nextWorkspaceFlushRequestId}`;
+    await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            pendingWorkspaceFlushes.delete(requestId);
+            resolve();
+        };
+        const timer = setTimeout(finish, 1_500);
+        pendingWorkspaceFlushes.set(requestId, {
+            resolve: finish,
+            senderId: window.webContents.id,
+        });
+        window.webContents.send(
+            IPC_EVENTS.workspaceFlushRequested,
+            requestId,
+        );
+    });
+}
+
+async function flushAllWorkspaceWindowsForQuit(): Promise<void> {
+    const windows = BrowserWindow.getAllWindows().filter((window) => {
+        if (window.isDestroyed() || window.webContents.isDestroyed()) {
+            return false;
+        }
+        return windowRegistry.getContextByBrowserWindow(window)?.windowKind === "main";
+    });
+    await Promise.all(windows.map(requestWorkspaceFlush));
 }
 
 function isClosingLastAppWindow(): boolean {

@@ -156,6 +156,7 @@ import {
     type WorkspaceNavigationSnapshot,
 } from "@shared/ipc";
 import { normalizePathKey as normalizeSharedPathKey } from "@shared/path-identity";
+import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
 
 import {
     BrowserWindow,
@@ -1640,16 +1641,39 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(IPC_CHANNELS.getWorkspaceSnapshot, (event) => {
         const context = requireWindowContext(event.sender, "main");
-        return options.workspaceService.loadSnapshot(context.workspaceId!);
+        return Promise.resolve(
+            options.workspaceService.loadSnapshot(context.workspaceId!),
+        )
+            .then((record) => record.snapshot);
     });
     ipcMain.handle(
         IPC_CHANNELS.saveWorkspaceSnapshot,
-        (event, snapshot: WorkspaceNavigationSnapshot) => {
+        async (event, snapshot: WorkspaceNavigationSnapshot) => {
             const context = requireWindowContext(event.sender, "main");
-            return options.workspaceService.saveSnapshot(
-                context.workspaceId!,
+            const normalizedSnapshot = normalizeWorkspaceNavigationSnapshot(
                 snapshot,
+            ).snapshot;
+            await options.workspaceService.saveSnapshot(
+                context.workspaceId!,
+                normalizedSnapshot,
             );
+            const activeContext = normalizedSnapshot.contexts.find(
+                (candidate) =>
+                    candidate.key === normalizedSnapshot.activeContextKey,
+            );
+            const projectId = activeContext?.projectId ?? null;
+            const worktreeId = activeContext?.worktreeId ?? null;
+            windowRegistry.updateMainWindowProjectId(
+                context.windowId,
+                projectId,
+                worktreeId,
+            );
+            const ownerWindow = BrowserWindow.fromWebContents(event.sender);
+            if (ownerWindow) {
+                ownerWindow.setTitle(
+                    buildMainWindowTitle(options.projectService, projectId),
+                );
+            }
         },
     );
     ipcMain.handle(

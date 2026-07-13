@@ -15,6 +15,7 @@ import {
 import { useAiStore } from "./ai-store";
 import {
     flushWorkspacePersistenceForTests,
+    flushWorkspacePersistenceNow,
     getBestMatchingChatTabId,
     getPaneChatTabId,
     getPaneRuntimeId,
@@ -1958,6 +1959,22 @@ describe("workspace file opening", () => {
         await flushWorkspacePersistenceForTests();
 
         expect(saveWorkspaceSnapshotMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not report a successful close flush when persistence keeps failing", async () => {
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        saveWorkspaceSnapshotMock.mockRejectedValue(
+            new Error("persistence unavailable"),
+        );
+        await useWorkspaceStore.getState().openContext("project-failure");
+
+        await expect(flushWorkspacePersistenceNow()).rejects.toThrow(
+            "Could not persist the workspace before closing.",
+        );
+        expect(saveWorkspaceSnapshotMock).toHaveBeenCalledTimes(3);
+
+        saveWorkspaceSnapshotMock.mockResolvedValue(undefined);
+        errorSpy.mockRestore();
     });
 
     it("flushes split resize immediately when the drag is committed", async () => {

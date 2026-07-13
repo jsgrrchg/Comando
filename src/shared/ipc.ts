@@ -180,6 +180,8 @@ export const IPC_EVENTS = {
     projectSettingsUpdated: "settings:project-updated",
     workspaceCloseActiveTab: "workspace:close-active-tab",
     workspaceReopenLastClosedTab: "workspace:reopen-last-closed-tab",
+    workspaceFlushRequested: "workspace:flush-requested",
+    workspaceFlushAcknowledged: "workspace:flush-acknowledged",
     gitRepositoryInvalidated: "git:repository-invalidated",
     gitRepositorySnapshotUpdated: "git:repository-snapshot-updated",
     gitWorktreesUpdated: "git:worktrees-updated",
@@ -2097,6 +2099,13 @@ export interface WorkspaceNavigationSnapshot {
     readonly version: 2;
 }
 
+export interface WindowWorkspaceRestoreRecord {
+    readonly revision: number;
+    readonly schemaVersion: 1;
+    readonly snapshot: WorkspaceNavigationSnapshot;
+    readonly updatedAt: string;
+}
+
 export type PersistedWorkspaceSnapshot =
     | WorkspaceLayoutSnapshot
     | WorkspaceNavigationSnapshot;
@@ -3272,6 +3281,9 @@ export interface ComandoApi {
     ) => () => void;
     onWorkspaceCloseActiveTab: (listener: () => void) => () => void;
     onWorkspaceReopenLastClosedTab: (listener: () => void) => () => void;
+    onWorkspaceFlushRequested: (
+        listener: () => Promise<void> | void,
+    ) => () => void;
     onTerminalData: (
         listener: (event: TerminalDataEvent) => void,
     ) => () => void;
