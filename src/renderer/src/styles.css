@@ -420,7 +420,7 @@
     min-width: 0;
     max-width: none;
     height: 28px;
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     align-items: center;
     gap: 4px;
     overflow-x: auto;

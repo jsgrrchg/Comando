@@ -375,7 +375,6 @@ export function DesktopTopBar({
                     onClose={() => setContextMenu(null)}
                 />
             ) : null}
-            <div className="min-w-4 flex-1" />
         </header>
     );
 }
