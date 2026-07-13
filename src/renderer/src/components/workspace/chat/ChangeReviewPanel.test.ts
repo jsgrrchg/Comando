@@ -107,6 +107,26 @@ function createTrackedFile(
 }
 
 describe("ChangeReviewPanel", () => {
+    it("keeps the review rail surface while an edit is pending its diff", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ChangeReviewPanel, {
+                activity: createActivity({
+                    diffs: [],
+                    status: "in_progress",
+                    title: "Write src/app.ts",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+            }),
+        );
+
+        expect(markup).toContain('data-change-review-surface="rail-row"');
+        expect(markup).toContain('data-change-review-pending="true"');
+        expect(markup).toContain(">Edited<");
+        expect(markup).toContain(">app.ts<");
+    });
+
     it("renders a single-file terminal row with a linked file and collapsed diff", () => {
         const markup = renderToStaticMarkup(
             createElement(ChangeReviewPanel, {

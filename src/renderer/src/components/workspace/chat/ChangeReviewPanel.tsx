@@ -17,6 +17,7 @@ import {
     deriveChangeReviewItems,
     type ChangeReviewItem,
 } from "./toolActivityReviewModel";
+import { getStructuredToolTarget } from "./toolActivityDescriptor";
 import { ResizableDiffContainer } from "./ResizableDiffContainer";
 import { usePersistentToolExpansion } from "./toolExpansionStore";
 
@@ -318,6 +319,53 @@ function ChangeReviewRailRow({
     );
 }
 
+function PendingChangeReviewRailRow({
+    activity,
+}: {
+    readonly activity: AiToolActivity;
+}) {
+    const target = getStructuredToolTarget(activity);
+    const actionLabel = getActivityActionLabel(activity.kind);
+
+    return (
+        <div
+            className="min-w-0 max-w-full select-none"
+            data-change-review-pending="true"
+            data-change-review-surface="rail-row"
+            style={{
+                color: "var(--color-text-secondary)",
+                fontFamily: "var(--font-mono), ui-monospace, monospace",
+                fontSize: "0.82em",
+            }}
+        >
+            <div className="flex min-h-7 w-full min-w-0 items-center gap-2">
+                <span
+                    aria-hidden="true"
+                    className="shrink-0"
+                    style={{
+                        color: getPanelAccent(activity),
+                        display: "inline-flex",
+                    }}
+                >
+                    <FileTypeIcon
+                        fileName={target ?? activity.title}
+                        opacity={0.85}
+                        size={14}
+                    />
+                </span>
+                <span className="shrink-0 opacity-70">{actionLabel}</span>
+                <span
+                    className="min-w-0 flex-1 truncate text-text-primary"
+                    title={target ?? activity.title}
+                >
+                    {target ? getFileNameFromPath(target) : activity.title}
+                </span>
+                {renderStatus(activity)}
+            </div>
+        </div>
+    );
+}
+
 export interface ChangeReviewPanelProps {
     readonly activity: AiToolActivity;
     readonly onOpenFile: (
@@ -381,6 +429,13 @@ export const ChangeReviewPanel = memo(function ChangeReviewPanel({
     );
 
     if (items.length === 0) {
+        if (
+            activity.status === "in_progress" ||
+            activity.status === "pending"
+        ) {
+            return <PendingChangeReviewRailRow activity={activity} />;
+        }
+
         return null;
     }
 
