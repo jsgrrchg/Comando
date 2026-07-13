@@ -581,7 +581,6 @@
 }
 
 .project-context-menu-root {
-    position: relative;
     flex: 0 0 auto;
 }
 
@@ -604,42 +603,56 @@
     color: var(--color-text-primary);
 }
 
-.project-context-menu {
+.project-context-menu-backdrop {
     position: fixed;
     z-index: 80;
-    top: 38px;
-    width: min(340px, calc(100vw - 16px));
-    max-height: min(560px, calc(100vh - 52px));
-    overflow: hidden;
-    border: 1px solid var(--color-border);
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--color-bg-elevated) 94%, transparent);
-    box-shadow: var(--shadow-soft);
-    padding: 6px;
-    backdrop-filter: blur(22px) saturate(135%);
+    inset: 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    background: color-mix(in srgb, var(--color-bg-primary) 72%, transparent);
+    padding: clamp(56px, 15vh, 160px) 16px 24px;
+    backdrop-filter: blur(10px);
 }
 
-:root[data-transparency-enabled="false"] .project-context-menu {
+.project-context-menu {
+    width: min(620px, 100%);
+    max-height: min(620px, calc(100vh - 80px));
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+    border-radius: 12px;
     background: var(--color-bg-elevated);
+    box-shadow:
+        0 24px 80px rgb(0 0 0 / 0.22),
+        0 0 0 1px color-mix(in srgb, var(--color-border) 40%, transparent);
+    padding: 0;
+}
+
+:root[data-transparency-enabled="false"] .project-context-menu-backdrop {
     backdrop-filter: none;
 }
 
 .project-context-search-shell {
     display: flex;
     width: 100%;
-    height: 32px;
+    height: 42px;
     align-items: center;
     gap: 7px;
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--color-bg-primary) 72%, transparent);
+    border: 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+    border-radius: 0;
+    background: transparent;
     color: var(--color-text-secondary);
-    padding: 0 8px;
+    padding: 0 14px;
 }
 
 .project-context-search-shell:focus-within {
-    border-color: color-mix(in srgb, var(--color-accent) 72%, transparent);
-    box-shadow: 0 0 0 1px
+    border-bottom-color: color-mix(
+        in srgb,
+        var(--color-accent) 58%,
+        var(--color-border)
+    );
+    box-shadow: inset 0 -1px 0
         color-mix(in srgb, var(--color-accent) 18%, transparent);
 }
 
@@ -660,8 +673,10 @@
 }
 
 .project-context-project-list {
-    max-height: min(390px, calc(100vh - 170px));
-    margin-top: 5px;
+    max-height: min(390px, calc(100vh - 220px));
+    min-height: 146px;
+    margin: 0;
+    padding: 8px;
     overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-width: thin;
@@ -700,8 +715,10 @@
 
 .project-context-project-main:hover,
 .project-context-project-main:focus-visible,
+.project-context-project-main[data-selected="true"],
 .project-context-worktree-row:hover,
 .project-context-worktree-row:focus-visible,
+.project-context-worktree-row[data-selected="true"],
 .project-context-menu-actions button:hover,
 .project-context-menu-actions button:focus-visible,
 .project-context-disclosure:hover,
@@ -798,6 +815,9 @@
 }
 
 .project-context-menu-empty {
+    display: grid;
+    min-height: 130px;
+    place-items: center;
     padding: 22px 12px;
     color: var(--color-text-secondary);
     font-size: 12px;
@@ -806,13 +826,14 @@
 
 .project-context-menu-separator {
     height: 1px;
-    margin: 5px 4px;
+    margin: 0;
     background: var(--color-border-subtle);
 }
 
 .project-context-menu-actions {
-    display: grid;
-    gap: 1px;
+    display: flex;
+    gap: 2px;
+    padding: 7px 8px;
 }
 
 .project-context-menu-actions button {
@@ -820,7 +841,9 @@
     min-height: 30px;
     align-items: center;
     gap: 7px;
-    padding: 5px 8px 5px 26px;
+    padding: 5px 9px;
+    color: var(--color-text-secondary);
+    font-size: 11px;
 }
 
 .project-context-update-dot {
@@ -833,7 +856,7 @@
 }
 
 .project-context-clone-form {
-    padding: 6px;
+    padding: 16px;
 }
 
 .project-context-menu-heading {
@@ -877,6 +900,15 @@
     background: var(--color-bg-panel);
     color: var(--color-text-primary);
     padding: 0 10px;
+}
+
+.project-context-menu-footer {
+    display: flex;
+    justify-content: flex-end;
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+    padding: 6px 14px;
+    color: color-mix(in srgb, var(--color-text-secondary) 70%, transparent);
+    font-size: 11px;
 }
 
 * {

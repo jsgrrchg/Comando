@@ -7,7 +7,6 @@ describe("ProjectContextMenu", () => {
     it("groups worktrees under projects and exposes workspace actions", () => {
         const markup = renderToStaticMarkup(
             <ProjectContextMenu
-                anchorLeft={84}
                 onCloneRepository={vi.fn(() => Promise.resolve(true))}
                 onClose={vi.fn()}
                 onOpenProject={vi.fn()}
@@ -43,6 +42,8 @@ describe("ProjectContextMenu", () => {
         expect(markup).toContain("Settings");
         expect(markup).toContain("Update ready");
         expect(markup).toContain("project-context-update-dot");
+        expect(markup).toContain("project-context-menu-backdrop");
+        expect(markup).toContain("Navigate");
         expect(markup).toContain('aria-expanded="true"');
     });
 });

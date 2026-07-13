@@ -353,14 +353,6 @@ export function DesktopTopBar({
 
                 {menuOpen && (
                     <ProjectContextMenu
-                        anchorLeft={Math.max(
-                            8,
-                            Math.min(
-                                menuRootRef.current?.getBoundingClientRect()
-                                    .left ?? 8,
-                                window.innerWidth - 348,
-                            ),
-                        )}
                         onCloneRepository={onCloneRepository}
                         onClose={() => setMenuOpen(false)}
                         onOpenProject={onOpenProject}

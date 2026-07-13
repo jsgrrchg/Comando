@@ -1,4 +1,11 @@
-import { useMemo, useState } from "react";
+import {
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type KeyboardEvent,
+    type ReactNode,
+} from "react";
 
 export interface ProjectContextMenuProject {
     readonly id: string;
@@ -14,7 +21,6 @@ export interface ProjectContextMenuProject {
 }
 
 interface ProjectContextMenuProps {
-    readonly anchorLeft: number;
     readonly onCloneRepository: (repositoryUrl: string) => Promise<boolean>;
     readonly onClose: () => void;
     readonly onOpenProject: (projectId: string) => void;
@@ -26,7 +32,6 @@ interface ProjectContextMenuProps {
 }
 
 export function ProjectContextMenu({
-    anchorLeft,
     onCloneRepository,
     onClose,
     onOpenProject,
@@ -37,6 +42,7 @@ export function ProjectContextMenu({
     settingsLabel,
 }: ProjectContextMenuProps) {
     const [query, setQuery] = useState("");
+    const [selectedIndex, setSelectedIndex] = useState(0);
     const [cloneMode, setCloneMode] = useState(false);
     const [cloneUrl, setCloneUrl] = useState("");
     const [cloneError, setCloneError] = useState<string | null>(null);
@@ -56,6 +62,7 @@ export function ProjectContextMenu({
             ),
     );
     const normalizedQuery = query.trim().toLowerCase();
+    const searchRef = useRef<HTMLInputElement | null>(null);
     const filteredProjects = useMemo(
         () =>
             projects.flatMap((project) => {
@@ -85,9 +92,84 @@ export function ProjectContextMenu({
         [normalizedQuery, projects],
     );
 
+    const selectableEntries = useMemo(
+        () =>
+            filteredProjects.flatMap((project) => {
+                const expanded =
+                    normalizedQuery.length > 0 ||
+                    expandedProjectIds.has(project.id);
+                return [
+                    { projectId: project.id, worktreeId: null },
+                    ...(expanded
+                        ? project.worktrees.map((worktree) => ({
+                              projectId: project.id,
+                              worktreeId: worktree.id,
+                          }))
+                        : []),
+                ];
+            }),
+        [expandedProjectIds, filteredProjects, normalizedQuery],
+    );
+
+    useEffect(() => {
+        searchRef.current?.focus();
+    }, []);
+
+    useEffect(() => {
+        setSelectedIndex((currentIndex) =>
+            Math.min(currentIndex, Math.max(selectableEntries.length - 1, 0)),
+        );
+    }, [selectableEntries.length]);
+
     const runAndClose = (action: () => void) => {
         onClose();
         queueMicrotask(action);
+    };
+
+    const openSelectableEntry = (index: number) => {
+        const entry = selectableEntries[index];
+        if (!entry) {
+            return;
+        }
+
+        runAndClose(() => {
+            if (entry.worktreeId) {
+                onOpenWorktree(entry.projectId, entry.worktreeId);
+                return;
+            }
+            onOpenProject(entry.projectId);
+        });
+    };
+
+    const handleSearchKeyDown = (
+        event: KeyboardEvent<HTMLInputElement>,
+    ) => {
+        if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+            return;
+        }
+
+        if (event.key === "Enter") {
+            event.preventDefault();
+            openSelectableEntry(selectedIndex);
+            return;
+        }
+
+        if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+            return;
+        }
+
+        event.preventDefault();
+        if (selectableEntries.length === 0) {
+            return;
+        }
+        const direction = event.key === "ArrowDown" ? 1 : -1;
+        setSelectedIndex(
+            (currentIndex) =>
+                (currentIndex + direction + selectableEntries.length) %
+                selectableEntries.length,
+        );
     };
 
     const handleCloneSubmit = async () => {
@@ -117,13 +199,11 @@ export function ProjectContextMenu({
 
     if (cloneMode) {
         return (
-            <div
-                aria-label="Clone repository"
-                className="project-context-menu"
-                role="dialog"
-                style={{ left: anchorLeft }}
-            >
-                <div className="project-context-clone-form">
+            <ProjectContextModal onClose={onClose}>
+                <div
+                    aria-label="Clone repository"
+                    className="project-context-clone-form"
+                >
                     <div className="project-context-menu-heading">
                         Clone repository
                     </div>
@@ -169,17 +249,12 @@ export function ProjectContextMenu({
                         </button>
                     </div>
                 </div>
-            </div>
+            </ProjectContextModal>
         );
     }
 
     return (
-        <div
-            aria-label="Open workspace"
-            className="project-context-menu"
-            role="dialog"
-            style={{ left: anchorLeft }}
-        >
+        <ProjectContextModal onClose={onClose}>
             <div className="project-context-search-shell">
                 <svg
                     aria-hidden="true"
@@ -199,7 +274,9 @@ export function ProjectContextMenu({
                     aria-label="Search projects and worktrees"
                     autoFocus
                     onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={handleSearchKeyDown}
                     placeholder="Search projects and worktrees…"
+                    ref={searchRef}
                     spellCheck={false}
                     value={query}
                 />
@@ -219,6 +296,14 @@ export function ProjectContextMenu({
                             <div className="project-context-project-row">
                                 <button
                                     className="project-context-project-main"
+                                    data-selected={
+                                        selectableEntries[selectedIndex]
+                                            ?.projectId === project.id &&
+                                        selectableEntries[selectedIndex]
+                                            ?.worktreeId === null
+                                            ? "true"
+                                            : undefined
+                                    }
                                     onClick={() =>
                                         runAndClose(() =>
                                             onOpenProject(project.id),
@@ -291,6 +376,14 @@ export function ProjectContextMenu({
                                     {project.worktrees.map((worktree) => (
                                         <button
                                             className="project-context-worktree-row"
+                                            data-selected={
+                                                selectableEntries[selectedIndex]
+                                                    ?.projectId === project.id &&
+                                                selectableEntries[selectedIndex]
+                                                    ?.worktreeId === worktree.id
+                                                    ? "true"
+                                                    : undefined
+                                            }
                                             key={worktree.id}
                                             onClick={() =>
                                                 runAndClose(() =>
@@ -370,6 +463,37 @@ export function ProjectContextMenu({
                         />
                     ) : null}
                 </button>
+            </div>
+            <div className="project-context-menu-footer">
+                <span>↑↓ Navigate · Enter Open · Esc Close</span>
+            </div>
+        </ProjectContextModal>
+    );
+}
+
+function ProjectContextModal({
+    children,
+    onClose,
+}: {
+    readonly children: ReactNode;
+    readonly onClose: () => void;
+}) {
+    return (
+        <div
+            className="project-context-menu-backdrop"
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget) {
+                    onClose();
+                }
+            }}
+        >
+            <div
+                aria-label="Open workspace"
+                aria-modal="true"
+                className="project-context-menu"
+                role="dialog"
+            >
+                {children}
             </div>
         </div>
     );
