@@ -59,7 +59,6 @@ export function PlanMessage({
     const tone = getPlanTone(plan.entries);
     const toneColor = PLAN_TONE_COLOR[tone];
     const title = plan.title ?? "Plan";
-    const progressRatio = totalCount > 0 ? completedCount / totalCount : 0;
 
     return (
         <div
@@ -220,27 +219,7 @@ export function PlanMessage({
                     ))}
 
                     {/* Progress footer */}
-                    <div className="mt-1 flex items-center gap-2">
-                        <div
-                            style={{
-                                background:
-                                    "color-mix(in srgb, var(--color-border) 60%, transparent)",
-                                borderRadius: 2,
-                                flex: 1,
-                                height: 3,
-                                overflow: "hidden",
-                            }}
-                        >
-                            <div
-                                style={{
-                                    background: toneColor,
-                                    borderRadius: 2,
-                                    height: "100%",
-                                    transition: "width 200ms ease",
-                                    width: `${progressRatio * 100}%`,
-                                }}
-                            />
-                        </div>
+                    <div className="mt-1 flex justify-end">
                         <span
                             style={{
                                 color: "var(--color-text-secondary)",
