@@ -30,6 +30,7 @@ describe("ProjectContextMenu", () => {
                         ],
                     },
                 ]}
+                settingsLabel="Settings · Update ready"
             />,
         );
 
@@ -40,6 +41,8 @@ describe("ProjectContextMenu", () => {
         expect(markup).toContain("Open folder…");
         expect(markup).toContain("Clone repository…");
         expect(markup).toContain("Settings");
+        expect(markup).toContain("Update ready");
+        expect(markup).toContain("project-context-update-dot");
         expect(markup).toContain('aria-expanded="true"');
     });
 });

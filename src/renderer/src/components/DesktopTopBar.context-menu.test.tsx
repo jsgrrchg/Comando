@@ -62,6 +62,7 @@ function renderTopBar() {
                 onReorderContext: vi.fn(),
                 onToggleLeftSidebar: vi.fn(),
                 platform: "darwin",
+                settingsLabel: null,
             }),
         );
     });

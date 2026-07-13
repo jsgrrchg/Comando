@@ -53,7 +53,7 @@ interface DesktopTopBarProps {
     readonly onMoveContextToNewWindow: (contextKey: string) => void;
     readonly onOpenProject: (projectId: string) => void;
     readonly onOpenProjects: () => void;
-    readonly onOpenSettings: () => void;
+    readonly onOpenSettings: (initialCategory?: "updates") => void;
     readonly onOpenWorktree: (projectId: string, worktreeId: string) => void;
     readonly onReorderContext: (
         contextKey: string,
@@ -61,6 +61,7 @@ interface DesktopTopBarProps {
     ) => Promise<void> | void;
     readonly onToggleLeftSidebar: () => void;
     readonly platform: string | null;
+    readonly settingsLabel: string | null;
 }
 
 export function DesktopTopBar({
@@ -79,6 +80,7 @@ export function DesktopTopBar({
     onReorderContext,
     onToggleLeftSidebar,
     platform,
+    settingsLabel,
 }: DesktopTopBarProps) {
     const [menuOpen, setMenuOpen] = useState(false);
     const [contextMenu, setContextMenu] =
@@ -366,6 +368,7 @@ export function DesktopTopBar({
                         onOpenSettings={onOpenSettings}
                         onOpenWorktree={onOpenWorktree}
                         projects={menuProjects}
+                        settingsLabel={settingsLabel}
                     />
                 )}
             </div>

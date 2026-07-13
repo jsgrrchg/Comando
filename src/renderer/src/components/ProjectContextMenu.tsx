@@ -19,9 +19,10 @@ interface ProjectContextMenuProps {
     readonly onClose: () => void;
     readonly onOpenProject: (projectId: string) => void;
     readonly onOpenProjects: () => void;
-    readonly onOpenSettings: () => void;
+    readonly onOpenSettings: (initialCategory?: "updates") => void;
     readonly onOpenWorktree: (projectId: string, worktreeId: string) => void;
     readonly projects: readonly ProjectContextMenuProject[];
+    readonly settingsLabel: string | null;
 }
 
 export function ProjectContextMenu({
@@ -33,6 +34,7 @@ export function ProjectContextMenu({
     onOpenSettings,
     onOpenWorktree,
     projects,
+    settingsLabel,
 }: ProjectContextMenuProps) {
     const [query, setQuery] = useState("");
     const [cloneMode, setCloneMode] = useState(false);
@@ -351,10 +353,22 @@ export function ProjectContextMenu({
                     Clone repository…
                 </button>
                 <button
-                    onClick={() => runAndClose(onOpenSettings)}
+                    onClick={() =>
+                        runAndClose(() =>
+                            onOpenSettings(
+                                settingsLabel ? "updates" : undefined,
+                            ),
+                        )
+                    }
                     type="button"
                 >
-                    Settings
+                    <span>{settingsLabel ?? "Settings"}</span>
+                    {settingsLabel ? (
+                        <span
+                            aria-hidden="true"
+                            className="project-context-update-dot"
+                        />
+                    ) : null}
                 </button>
             </div>
         </div>

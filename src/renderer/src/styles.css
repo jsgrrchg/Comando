@@ -816,8 +816,20 @@
 }
 
 .project-context-menu-actions button {
+    display: flex;
     min-height: 30px;
+    align-items: center;
+    gap: 7px;
     padding: 5px 8px 5px 26px;
+}
+
+.project-context-update-dot {
+    width: 6px;
+    height: 6px;
+    margin-left: auto;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: linear-gradient(180deg, #f97316, #ef4444);
 }
 
 .project-context-clone-form {
@@ -2903,173 +2915,6 @@ button {
     width: 26px;
     height: 26px;
     flex-shrink: 0;
-}
-
-.project-switcher-menu {
-    position: absolute;
-    bottom: 100%;
-    left: 0;
-    right: 0;
-    z-index: 9999;
-    margin-bottom: 4px;
-    border: 1px solid var(--color-border);
-    border-radius: 8px;
-    background: var(--color-bg-secondary);
-    padding: 4px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-}
-
-.project-switcher-search {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 4px;
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    background: var(--color-bg-primary);
-    padding: 5px 8px;
-}
-
-.project-switcher-search-input {
-    flex: 1;
-    min-width: 0;
-    border: none;
-    background: transparent;
-    color: var(--color-text-primary);
-    font-family: inherit;
-    font-size: 12px;
-    outline: none;
-}
-
-.project-switcher-search-count {
-    flex-shrink: 0;
-    color: var(--color-text-secondary);
-    font-family: monospace;
-    font-size: 10px;
-}
-
-.project-switcher-list {
-    max-height: 240px;
-    overflow-y: auto;
-}
-
-.project-switcher-empty {
-    padding: 6px 8px 8px;
-    color: var(--color-text-secondary);
-    font-size: 12px;
-}
-
-.project-switcher-menu-item {
-    display: flex;
-    width: 100%;
-    align-items: center;
-    gap: 8px;
-    border-radius: 4px;
-    padding: 5px 10px;
-    font-size: 12px;
-    text-align: left;
-    color: var(--color-text-primary);
-    transition: background-color 100ms ease;
-}
-
-.project-switcher-menu-item:hover {
-    background: var(--color-bg-tertiary);
-}
-
-.project-switcher-check {
-    width: 12px;
-    flex-shrink: 0;
-    color: var(--color-accent);
-}
-
-.project-switcher-update-dot {
-    width: 6px;
-    height: 6px;
-    flex-shrink: 0;
-    border-radius: 999px;
-    background: linear-gradient(180deg, #f97316, #ef4444);
-}
-
-.project-switcher-sep {
-    height: 1px;
-    margin: 4px 0;
-    background: var(--color-border);
-}
-
-.project-switcher-clone {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 6px;
-}
-
-.project-switcher-clone-label {
-    color: var(--color-text-secondary);
-    font-size: 11px;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-}
-
-.project-switcher-clone-input {
-    width: 100%;
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    background: var(--color-bg-primary);
-    padding: 6px 8px;
-    color: var(--color-text-primary);
-    font-family: inherit;
-    font-size: 12px;
-    outline: none;
-}
-
-.project-switcher-clone-input:focus {
-    border-color: var(--color-accent);
-}
-
-.project-switcher-clone-input:disabled {
-    opacity: 0.6;
-}
-
-.project-switcher-clone-error {
-    color: var(--color-danger, #f87171);
-    font-size: 11px;
-    line-height: 1.3;
-}
-
-.project-switcher-clone-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 6px;
-}
-
-.project-switcher-clone-btn {
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    background: var(--color-bg-primary);
-    padding: 4px 10px;
-    color: var(--color-text-primary);
-    font-size: 11px;
-    transition: background-color 100ms ease;
-}
-
-.project-switcher-clone-btn:hover:not(:disabled) {
-    background: var(--color-bg-tertiary);
-}
-
-.project-switcher-clone-btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-}
-
-.project-switcher-clone-btn-primary {
-    border-color: var(--color-accent);
-    background: var(--color-accent);
-    color: var(--color-accent-foreground, #fff);
-}
-
-.project-switcher-clone-btn-primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--color-accent) 85%, black);
 }
 
 .tree-row {
