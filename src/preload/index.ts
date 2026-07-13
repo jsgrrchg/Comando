@@ -38,6 +38,7 @@ import {
     type CloneRepositoryInput,
     type CloneRepositoryResult,
     type ComandoApi,
+    type ConfirmWorkspaceCloseInput,
     type CheckCommandAvailabilityInput,
     type CheckCommandAvailabilityResult,
     type CodexRuntimeSettingsInput,
@@ -511,6 +512,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.revealGeneratedImage, path),
     openProjectWindow: (input: OpenProjectWindowInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.openProjectWindow, input),
+    confirmWorkspaceClose: (input: ConfirmWorkspaceCloseInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.confirmWorkspaceClose, input),
     checkCommandAvailability: async (input: CheckCommandAvailabilityInput) =>
         assertCommandAvailabilityResult(
             IPC_CHANNELS.checkCommandAvailability,

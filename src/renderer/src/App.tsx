@@ -136,7 +136,10 @@ import {
 } from "./components/workspace/quick-create";
 import { QuickOpenFilePalette } from "./components/workspace/QuickOpenFilePalette";
 import type { WorkspacePaneRecentProject } from "./components/workspace/WorkspacePaneEmptyState";
-import { closeWorkspaceTabsWithConfirmation } from "./components/workspace/workspaceCloseGuard";
+import {
+    closeWorkspaceContextWithConfirmation,
+    closeWorkspaceTabsWithConfirmation,
+} from "./components/workspace/workspaceCloseGuard";
 import {
     DesktopTopBar,
     type ProjectContextMenuProject,
@@ -351,10 +354,33 @@ export function App() {
             workspaceState.activeContextKey === contextKey
                 ? workspaceState.tabsById
                 : context.workspace.tabsById;
-        return closeWorkspaceTabsWithConfirmation(
-            Object.keys(tabsById),
+        const workspaceName =
+            useProjectsStore
+                .getState()
+                .projects.find((project) => project.id === context.projectId)
+                ?.name ?? "this workspace";
+        return closeWorkspaceContextWithConfirmation(
+            {
+                projectId: context.projectId,
+                sessions: useAiStore.getState().sessions,
+                tabsById,
+                worktreeId: context.worktreeId,
+            },
             () => useWorkspaceStore.getState().closeContext(contextKey),
-            { tabsById },
+            {
+                confirm: async (summary) => {
+                    const comandoApi = getComandoApi();
+                    if (!comandoApi) {
+                        return false;
+                    }
+
+                    return comandoApi.confirmWorkspaceClose({
+                        activeAgentCount: summary.activeAgentCount,
+                        dirtyFileCount: summary.dirtyFileCount,
+                        workspaceName,
+                    });
+                },
+            },
         );
     }, []);
     const requestMoveWorkspaceContextToNewWindow = useCallback(

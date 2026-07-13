@@ -3,7 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { RuntimeWorkspaceTab } from "@renderer/app/workspace/tree";
 
 import {
+    closeWorkspaceContextWithConfirmation,
     closeWorkspaceTabsWithConfirmation,
+    getWorkspaceCloseSummary,
     getWorkspaceTabCloseConfirmationMessage,
 } from "./workspaceCloseGuard";
 
@@ -152,6 +154,130 @@ describe("getWorkspaceTabCloseConfirmationMessage", () => {
                 confirm: () => false,
                 tabsById,
             },
+        );
+
+        expect(closed).toBe(false);
+    });
+});
+
+describe("getWorkspaceCloseSummary", () => {
+    it("protects active agents that belong to the workspace, including subagents without tabs", () => {
+        expect(
+            getWorkspaceCloseSummary({
+                projectId: "project-1",
+                sessions: {
+                    "session-1": {
+                        meta: {
+                            projectId: "project-1",
+                            title: "Parent",
+                            worktreeId: null,
+                        },
+                        snapshot: {
+                            projectId: "project-1",
+                            sessionId: "session-1",
+                            status: "streaming",
+                            title: "Parent",
+                            worktreeId: null,
+                        },
+                    },
+                    "subagent-1": {
+                        meta: {
+                            projectId: "project-1",
+                            title: "Ada",
+                            worktreeId: null,
+                        },
+                        snapshot: {
+                            projectId: "project-1",
+                            sessionId: "subagent-1",
+                            status: "waiting_permission",
+                            title: "Ada",
+                            worktreeId: null,
+                        },
+                    },
+                    "other-worktree": {
+                        meta: {
+                            projectId: "project-1",
+                            title: "Other worktree",
+                            worktreeId: "worktree-2",
+                        },
+                        snapshot: {
+                            projectId: "project-1",
+                            sessionId: "other-worktree",
+                            status: "streaming",
+                            title: "Other worktree",
+                            worktreeId: "worktree-2",
+                        },
+                    },
+                },
+                tabsById: {
+                    "chat-1": createChatTab("chat-1", "session-1"),
+                    "file-1": createFileTab("file-1", true),
+                },
+                worktreeId: null,
+            }),
+        ).toEqual({
+            activeAgentCount: 2,
+            dirtyFileCount: 1,
+        });
+    });
+
+    it("does not request confirmation when the workspace is safe to close", async () => {
+        let closed = false;
+        let confirmationRequested = false;
+
+        await closeWorkspaceContextWithConfirmation(
+            {
+                projectId: "project-1",
+                sessions: {},
+                tabsById: { "file-1": createFileTab("file-1", false) },
+                worktreeId: null,
+            },
+            () => {
+                closed = true;
+                return Promise.resolve();
+            },
+            {
+                confirm: () => {
+                    confirmationRequested = true;
+                    return Promise.resolve(false);
+                },
+            },
+        );
+
+        expect(closed).toBe(true);
+        expect(confirmationRequested).toBe(false);
+    });
+
+    it("keeps the workspace open when native confirmation is declined", async () => {
+        let closed = false;
+
+        await closeWorkspaceContextWithConfirmation(
+            {
+                projectId: "project-1",
+                sessions: {
+                    "session-1": {
+                        meta: {
+                            projectId: "project-1",
+                            title: "Agent",
+                            worktreeId: null,
+                        },
+                        snapshot: {
+                            projectId: "project-1",
+                            sessionId: "session-1",
+                            status: "starting",
+                            title: "Agent",
+                            worktreeId: null,
+                        },
+                    },
+                },
+                tabsById: {},
+                worktreeId: null,
+            },
+            () => {
+                closed = true;
+                return Promise.resolve();
+            },
+            { confirm: () => Promise.resolve(false) },
         );
 
         expect(closed).toBe(false);

@@ -22,6 +22,7 @@ export const IPC_CHANNELS = {
     openGeneratedImage: "app:open-generated-image",
     revealGeneratedImage: "app:reveal-generated-image",
     openProjectWindow: "app:open-project-window",
+    confirmWorkspaceClose: "workspace:confirm-close",
     checkCommandAvailability: "app:check-command-availability",
     readClaudeCodeTranscript: "app:read-claude-code-transcript",
     getSettingsSnapshot: "settings:get-snapshot",
@@ -2897,6 +2898,12 @@ export interface AiTrackedFileHunkMutationInput {
     readonly trackedFileId?: string | null;
 }
 
+export interface ConfirmWorkspaceCloseInput {
+    readonly activeAgentCount: number;
+    readonly dirtyFileCount: number;
+    readonly workspaceName: string;
+}
+
 export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
     getAppUpdateState: () => Promise<AppUpdateState>;
@@ -2913,6 +2920,9 @@ export interface ComandoApi {
     openGeneratedImage: (path: string) => Promise<void>;
     revealGeneratedImage: (path: string) => Promise<void>;
     openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
+    confirmWorkspaceClose: (
+        input: ConfirmWorkspaceCloseInput,
+    ) => Promise<boolean>;
     checkCommandAvailability: (
         input: CheckCommandAvailabilityInput,
     ) => Promise<CheckCommandAvailabilityResult>;

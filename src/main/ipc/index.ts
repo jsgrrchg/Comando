@@ -27,6 +27,7 @@ import {
     type ClearProjectAppDataInput,
     type CloneRepositoryInput,
     type CloneRepositoryResult,
+    type ConfirmWorkspaceCloseInput,
     type CodexRuntimeSettingsInput,
     type CopyExternalProjectEntriesInput,
     type CopyProjectEntriesInput,
@@ -165,6 +166,7 @@ import {
     ipcMain,
     nativeTheme,
     shell,
+    type MessageBoxOptions,
     type OpenDialogOptions,
 } from "electron";
 
@@ -242,6 +244,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.openGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.revealGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.openProjectWindow);
+    ipcMain.removeHandler(IPC_CHANNELS.confirmWorkspaceClose);
     ipcMain.removeHandler(IPC_CHANNELS.checkCommandAvailability);
     ipcMain.removeHandler(IPC_CHANNELS.readClaudeCodeTranscript);
     ipcMain.removeHandler(IPC_CHANNELS.getSettingsSnapshot);
@@ -466,6 +469,53 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.openProjectWindow,
         (_event, input: OpenProjectWindowInput) =>
             options.openProjectWindow(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.confirmWorkspaceClose,
+        async (event, input: ConfirmWorkspaceCloseInput): Promise<boolean> => {
+            if (
+                !input ||
+                typeof input.workspaceName !== "string" ||
+                !Number.isInteger(input.activeAgentCount) ||
+                !Number.isInteger(input.dirtyFileCount) ||
+                input.activeAgentCount < 0 ||
+                input.dirtyFileCount < 0
+            ) {
+                throw new TypeError("Expected a valid workspace close confirmation input.");
+            }
+
+            const ownerWindow =
+                BrowserWindow.fromWebContents(event.sender) ??
+                BrowserWindow.getFocusedWindow();
+            const details = [
+                input.activeAgentCount > 0
+                    ? `${input.activeAgentCount} ${input.activeAgentCount === 1 ? "agent is" : "agents are"} still working. ${input.activeAgentCount === 1 ? "It" : "They"} will continue running in the background if you close this workspace.`
+                    : null,
+                input.dirtyFileCount > 0
+                    ? `${input.dirtyFileCount} unsaved ${input.dirtyFileCount === 1 ? "file will" : "files will"} be discarded.`
+                    : null,
+            ]
+                .filter((detail): detail is string => Boolean(detail))
+                .join("\n\n");
+            const dialogOptions: MessageBoxOptions = {
+                buttons: ["Keep Workspace Open", "Close Workspace"],
+                cancelId: 0,
+                defaultId: 0,
+                detail: details,
+                message: `Close “${input.workspaceName}”?`,
+                noLink: true,
+                title:
+                    input.activeAgentCount > 0
+                        ? "Agents are still working"
+                        : "Unsaved changes",
+                type: "warning",
+            };
+            const result = ownerWindow
+                ? await dialog.showMessageBox(ownerWindow, dialogOptions)
+                : await dialog.showMessageBox(dialogOptions);
+
+            return result.response === 1;
+        },
     );
     ipcMain.handle(
         IPC_CHANNELS.checkCommandAvailability,
