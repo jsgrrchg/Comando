@@ -363,7 +363,7 @@ describe("SidebarAgentsPanel history cache", () => {
         expect(markup).toContain('data-provider-icon="codex"');
     });
 
-    it("shows an activity dot only for working child agents", () => {
+    it("renders activity labels at the end of active child agent rows", () => {
         const sessions = [
             createSummary({
                 runtimeSessionId: "runtime-parent",
@@ -381,6 +381,24 @@ describe("SidebarAgentsPanel history cache", () => {
                 runtimeSessionId: "runtime-child-running",
                 sessionId: "child-running",
                 title: "Running Child",
+            }),
+            createSummary({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-error",
+                sessionId: "child-error",
+                title: "Errored Child",
+            }),
+            createSummary({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-permission",
+                sessionId: "child-permission",
+                title: "Permission Child",
+            }),
+            createSummary({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-input",
+                sessionId: "child-input",
+                title: "Input Child",
             }),
         ];
         writeSidebarAgentsHistoryCache(
@@ -405,6 +423,33 @@ describe("SidebarAgentsPanel history cache", () => {
                 sessionId: "child-running",
                 status: "streaming",
                 title: "Running Child",
+            }),
+        );
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-error",
+                sessionId: "child-error",
+                status: "error",
+                title: "Errored Child",
+            }),
+        );
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-permission",
+                sessionId: "child-permission",
+                status: "waiting_permission",
+                title: "Permission Child",
+            }),
+        );
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-input",
+                sessionId: "child-input",
+                status: "waiting_user_input",
+                title: "Input Child",
             }),
         );
         Object.defineProperty(window, "comando", {
@@ -442,19 +487,60 @@ describe("SidebarAgentsPanel history cache", () => {
         const runningItem = items.find((item) =>
             item.textContent?.includes("Running Child"),
         );
+        const erroredItem = items.find((item) =>
+            item.textContent?.includes("Errored Child"),
+        );
+        const permissionItem = items.find((item) =>
+            item.textContent?.includes("Permission Child"),
+        );
+        const inputItem = items.find((item) =>
+            item.textContent?.includes("Input Child"),
+        );
 
         expect(
-            container.querySelectorAll(".sidebar-agents-activity-dot"),
-        ).toHaveLength(1);
+            container.querySelectorAll(".sidebar-agents-activity-label"),
+        ).toHaveLength(4);
         expect(
-            finishedItem?.querySelector(".sidebar-agents-activity-dot"),
+            container.querySelector(".sidebar-agents-activity-dot"),
         ).toBeNull();
         expect(
-            runningItem?.querySelector(".sidebar-agents-activity-dot"),
-        ).not.toBeNull();
+            finishedItem?.querySelector(".sidebar-agents-activity-label"),
+        ).toBeNull();
+        expect(
+            runningItem?.querySelector(".sidebar-agents-activity-label")
+                ?.textContent,
+        ).toBe("Working…");
         expect(
             runningItem?.querySelector(
-                ".sidebar-agents-provider-slot .sidebar-agents-activity-dot",
+                ".sidebar-agents-provider-slot .sidebar-agents-activity-label",
+            ),
+        ).toBeNull();
+        expect(
+            erroredItem?.querySelector(".sidebar-agents-activity-label")
+                ?.textContent,
+        ).toBe("Error");
+        expect(
+            permissionItem?.querySelector(".sidebar-agents-activity-label")
+                ?.textContent,
+        ).toBe("Waiting permission…");
+        expect(
+            inputItem?.querySelector(".sidebar-agents-activity-label")
+                ?.textContent,
+        ).toBe("Waiting input…");
+        expect(
+            runningItem?.querySelector(".sidebar-agents-main-line")
+                ?.lastElementChild?.classList.contains(
+                    "sidebar-agents-activity-label",
+                ),
+        ).toBe(true);
+        expect(
+            runningItem?.querySelector(
+                ".sidebar-agents-compact-relative-time",
+            ),
+        ).toBeNull();
+        expect(
+            finishedItem?.querySelector(
+                ".sidebar-agents-compact-relative-time",
             ),
         ).not.toBeNull();
     });
