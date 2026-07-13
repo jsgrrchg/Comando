@@ -6,6 +6,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type AnimationEvent as ReactAnimationEvent,
     type FormEvent,
     type KeyboardEvent as ReactKeyboardEvent,
     type MouseEvent as ReactMouseEvent,
@@ -15,6 +16,7 @@ import { createPortal } from "react-dom";
 
 import type {
     GitBranchSummary,
+    GitHistoryCommitSummary,
     GitRepositorySnapshot,
     GitWorktreeSummary,
 } from "@shared/ipc";
@@ -48,11 +50,18 @@ import {
     type BranchCreationBaseOption,
     type BranchCreationDraft,
 } from "./sidebarGitBranchCreation";
+import {
+    buildGitScopeBranchTopology,
+    buildGitScopeBranchTopologyRequestKey,
+} from "./sidebarGitBranchTopology";
 
 type GitScopeTabId = "branches" | "worktrees";
+type GitScopeBranchNodePosition = "first" | "last" | "middle" | "only";
+type GitScopeMenuAnimationState = "closing" | "open" | "opening";
 
 interface MenuPosition {
     readonly height: number;
+    readonly placement: "above" | "below";
     readonly width: number;
     readonly x: number;
     readonly y: number;
@@ -75,10 +84,11 @@ interface SidebarGitScopePickerProps {
 }
 
 const EMPTY_BRANCHES: readonly GitBranchSummary[] = [];
+const EMPTY_HISTORY: readonly GitHistoryCommitSummary[] = [];
 const EMPTY_WORKTREES: readonly GitWorktreeSummary[] = [];
 const GIT_SCOPE_VIRTUALIZATION_THRESHOLD = 120;
 const GIT_SCOPE_VIRTUALIZATION_OVERSCAN = 6;
-const GIT_SCOPE_ROW_ESTIMATE = 52;
+const GIT_SCOPE_ROW_ESTIMATE = 44;
 const GIT_SCOPE_SECTION_ESTIMATE = 30;
 const GIT_SCOPE_MENU_CHROME_ESTIMATE = 144;
 const GIT_SCOPE_BRANCH_CREATION_FORM_ESTIMATE = 188;
@@ -90,16 +100,9 @@ const GIT_SCOPE_MENU_MAX_WIDTH = 720;
 const GIT_SCOPE_MENU_MIN_HEIGHT = 260;
 const GIT_SCOPE_MENU_DEFAULT_MAX_HEIGHT = 420;
 const GIT_SCOPE_MENU_MAX_HEIGHT = 720;
-
-export function compareGitScopeBranchNames(left: string, right: string): number {
-    const leftIsMain = left === "main";
-    const rightIsMain = right === "main";
-    if (leftIsMain === rightIsMain) {
-        return 0;
-    }
-
-    return leftIsMain ? -1 : 1;
-}
+const GIT_SCOPE_TOPOLOGY_INITIAL_HISTORY_LIMIT = 300;
+const GIT_SCOPE_TOPOLOGY_MAX_HISTORY_LIMIT = 2_400;
+const GIT_SCOPE_MENU_ANIMATION_FALLBACK_MS = 160;
 
 function getStorage(): Storage | null {
     try {
@@ -280,6 +283,9 @@ export function SidebarGitScopePicker({
     worktreeId,
 }: SidebarGitScopePickerProps) {
     const [isOpen, setIsOpen] = useState(false);
+    const [isMenuMounted, setIsMenuMounted] = useState(false);
+    const [menuAnimationState, setMenuAnimationState] =
+        useState<GitScopeMenuAnimationState>("open");
     const [activeTab, setActiveTab] = useState<GitScopeTabId>("branches");
     const [actionError, setActionError] = useState<string | null>(null);
     const [isBusy, setIsBusy] = useState(false);
@@ -301,6 +307,11 @@ export function SidebarGitScopePicker({
     const [userMenuSize, setUserMenuSize] = useState<GitScopeMenuSize | null>(
         () => readPersistedGitScopeMenuSize(),
     );
+    const [loadedTopologyHistory, setLoadedTopologyHistory] = useState<{
+        readonly contextKey: string;
+        readonly commits: readonly GitHistoryCommitSummary[];
+        readonly requestKey: string;
+    } | null>(null);
     const buttonRef = useRef<HTMLButtonElement | null>(null);
     const containerRef = useRef<HTMLDivElement | null>(null);
     const menuRef = useRef<HTMLDivElement | null>(null);
@@ -337,6 +348,17 @@ export function SidebarGitScopePicker({
             ? (state.branchesByProject[projectId] ?? EMPTY_BRANCHES)
             : EMPTY_BRANCHES,
     );
+    const gitContextKey = projectId
+        ? getGitContextKey(projectId, worktreeId)
+        : null;
+    const cachedHistory = useGitStore((state) =>
+        gitContextKey
+            ? (state.historyByContext[gitContextKey] ?? EMPTY_HISTORY)
+            : EMPTY_HISTORY,
+    );
+    const cachedHistorySearch = useGitStore((state) =>
+        gitContextKey ? state.historySearchesByContext[gitContextKey] : undefined,
+    );
     const checkoutBranch = useGitStore((state) => state.checkoutBranch);
     const createBranch = useGitStore((state) => state.createBranch);
     const createWorktree = useGitStore((state) => state.createWorktree);
@@ -359,9 +381,11 @@ export function SidebarGitScopePicker({
         snapshot?.worktrees.find((entry) => entry.isPrimary) ??
         null;
     const canInitializeGit = snapshot?.repositoryState === "not_repo";
-    const activeBranchName =
+    const contextualActiveBranchName =
         activeWorktree?.branchName ??
-        snapshot?.branch?.name ??
+        (snapshot?.branch?.isDetached ? null : (snapshot?.branch?.name ?? null));
+    const activeBranchName =
+        contextualActiveBranchName ??
         (canInitializeGit ? "No Git Repository" : "Detached HEAD");
     const activeRootPath =
         activeWorktree?.rootPath ?? snapshot?.rootPath ?? null;
@@ -369,6 +393,26 @@ export function SidebarGitScopePicker({
     const worktrees = snapshot?.worktrees ?? EMPTY_WORKTREES;
     const availableWorktrees = worktrees.length;
     const deferredQuery = useDeferredValue(query);
+    const topologyRequestKey = useMemo(
+        () => buildGitScopeBranchTopologyRequestKey(gitContextKey, branches),
+        [branches, gitContextKey],
+    );
+    const topologyHistory =
+        loadedTopologyHistory?.contextKey === gitContextKey &&
+        loadedTopologyHistory.requestKey === topologyRequestKey
+            ? loadedTopologyHistory.commits
+            : !cachedHistorySearch?.query
+              ? cachedHistory
+              : EMPTY_HISTORY;
+    const branchTopology = useMemo(
+        () =>
+            buildGitScopeBranchTopology(
+                branches,
+                topologyHistory,
+                contextualActiveBranchName,
+            ),
+        [branches, contextualActiveBranchName, topologyHistory],
+    );
     const branchCreationBaseOptions = useMemo(
         () => buildBranchCreationBaseOptions(branches),
         [branches],
@@ -477,15 +521,15 @@ export function SidebarGitScopePicker({
                 description,
                 isActive: branch.isRemote
                     ? snapshot?.branch?.upstreamName === branch.name
-                    : snapshot?.branch?.name === branch.name,
+                    : contextualActiveBranchName === branch.name,
                 remoteResolution,
                 searchText,
             } satisfies BranchListRow;
         });
     }, [
         branches,
+        contextualActiveBranchName,
         projectId,
-        snapshot?.branch?.name,
         snapshot?.branch?.upstreamName,
         worktreeId,
         worktrees,
@@ -549,17 +593,36 @@ export function SidebarGitScopePicker({
     }, [branchRows, normalizedQuery]);
 
     const localBranchRows = useMemo(
-        () =>
-            filteredBranchRows
-                .filter((row) => !row.branch.isRemote)
-                .toSorted((left, right) =>
-                    compareGitScopeBranchNames(
-                        left.branch.name,
-                        right.branch.name,
-                    ),
-                ),
-        [filteredBranchRows],
+        () => {
+            const filteredRowsByName = new Map(
+                filteredBranchRows
+                    .filter((row) => !row.branch.isRemote)
+                    .map((row) => [row.branch.name, row]),
+            );
+            return branchTopology.orderedBranchNames.flatMap((branchName) => {
+                const row = filteredRowsByName.get(branchName);
+                return row ? [row] : [];
+            });
+        },
+        [branchTopology.orderedBranchNames, filteredBranchRows],
     );
+    const branchNodePositionByName = useMemo(() => {
+        const positions = new Map<string, GitScopeBranchNodePosition>();
+        const lastIndex = localBranchRows.length - 1;
+        localBranchRows.forEach((row, index) => {
+            positions.set(
+                row.branch.name,
+                lastIndex === 0
+                    ? "only"
+                    : index === 0
+                      ? "first"
+                      : index === lastIndex
+                        ? "last"
+                        : "middle",
+            );
+        });
+        return positions;
+    }, [localBranchRows]);
     const remoteBranchRows = useMemo(
         () => filteredBranchRows.filter((row) => row.branch.isRemote),
         [filteredBranchRows],
@@ -744,6 +807,7 @@ export function SidebarGitScopePicker({
 
         setMenuPosition({
             height: size.height,
+            placement: openAbove ? "above" : "below",
             width: size.width,
             x: safePosition.x,
             y: safePosition.y,
@@ -775,15 +839,157 @@ export function SidebarGitScopePicker({
     useEffect(() => {
         if (!isOpen) {
             setItemContextMenu(null);
+        }
+        if (!isMenuMounted) {
             setBranchCreationDraft(null);
         }
-    }, [isOpen]);
+    }, [isMenuMounted, isOpen]);
+
+    useLayoutEffect(() => {
+        if (isOpen) {
+            setIsMenuMounted(true);
+            setMenuAnimationState("opening");
+            return;
+        }
+
+        if (isMenuMounted) {
+            setMenuAnimationState("closing");
+        }
+    }, [isMenuMounted, isOpen]);
+
+    const finishMenuAnimation = useCallback(() => {
+        if (menuAnimationState === "opening" && isOpen) {
+            setMenuAnimationState("open");
+            return;
+        }
+
+        if (menuAnimationState === "closing" && !isOpen) {
+            setIsMenuMounted(false);
+            setMenuAnimationState("open");
+        }
+    }, [isOpen, menuAnimationState]);
+
+    useEffect(() => {
+        if (menuAnimationState === "open") {
+            return;
+        }
+
+        const timeout = window.setTimeout(
+            finishMenuAnimation,
+            GIT_SCOPE_MENU_ANIMATION_FALLBACK_MS,
+        );
+        return () => window.clearTimeout(timeout);
+    }, [finishMenuAnimation, menuAnimationState]);
+
+    const handleMenuAnimationEnd = useCallback(
+        (event: ReactAnimationEvent<HTMLDivElement>) => {
+            if (event.target === event.currentTarget) {
+                finishMenuAnimation();
+            }
+        },
+        [finishMenuAnimation],
+    );
 
     useEffect(() => {
         if (activeTab !== "branches") {
             setBranchCreationDraft(null);
         }
     }, [activeTab]);
+
+    useEffect(() => {
+        if (
+            !isOpen ||
+            activeTab !== "branches" ||
+            !projectId ||
+            !gitContextKey ||
+            !topologyRequestKey ||
+            loadedTopologyHistory?.requestKey === topologyRequestKey
+        ) {
+            return;
+        }
+
+        const localTipShas = new Set(
+            branches.flatMap((branch) =>
+                !branch.isRemote && branch.commitSha ? [branch.commitSha] : [],
+            ),
+        );
+        if (localTipShas.size === 0) {
+            return;
+        }
+
+        let cancelled = false;
+        void (async () => {
+            let limit = GIT_SCOPE_TOPOLOGY_INITIAL_HISTORY_LIMIT;
+            let commits: readonly GitHistoryCommitSummary[];
+
+            try {
+                while (true) {
+                    if (cancelled) {
+                        return;
+                    }
+
+                    const result = await getComandoApi().listGitHistory({
+                        includeAllRefs: true,
+                        limit,
+                        projectId,
+                        worktreeId,
+                    });
+                    if (cancelled) {
+                        return;
+                    }
+
+                    commits = result.commits;
+                    const loadedShas = new Set(
+                        commits.map((commit) => commit.sha),
+                    );
+                    const hasEveryLocalTip = [...localTipShas].every((sha) =>
+                        loadedShas.has(sha),
+                    );
+                    if (
+                        hasEveryLocalTip ||
+                        commits.length >= result.totalCount ||
+                        limit >= GIT_SCOPE_TOPOLOGY_MAX_HISTORY_LIMIT
+                    ) {
+                        break;
+                    }
+
+                    limit = Math.min(
+                        limit * 2,
+                        GIT_SCOPE_TOPOLOGY_MAX_HISTORY_LIMIT,
+                    );
+                }
+
+                if (!cancelled) {
+                    setLoadedTopologyHistory({
+                        commits,
+                        contextKey: gitContextKey,
+                        requestKey: topologyRequestKey,
+                    });
+                }
+            } catch {
+                if (!cancelled) {
+                    setLoadedTopologyHistory({
+                        commits: EMPTY_HISTORY,
+                        contextKey: gitContextKey,
+                        requestKey: topologyRequestKey,
+                    });
+                }
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        activeTab,
+        branches,
+        gitContextKey,
+        isOpen,
+        loadedTopologyHistory?.requestKey,
+        projectId,
+        topologyRequestKey,
+        worktreeId,
+    ]);
 
     useEffect(() => {
         if (!branchCreationDraft) {
@@ -1916,15 +2122,39 @@ export function SidebarGitScopePicker({
 
             if (item.kind === "branch") {
                 const { row, selectableIndex } = item;
+                const nodePosition = row.branch.isRemote
+                    ? null
+                    : (branchNodePositionByName.get(row.branch.name) ?? "only");
 
                 return (
-                    <div data-row-index={selectableIndex}>
+                    <div
+                        className={
+                            nodePosition
+                                ? "sidebar-git-scope-menu__branch-node"
+                                : undefined
+                        }
+                        data-branch-node-position={nodePosition ?? undefined}
+                        data-row-index={selectableIndex}
+                    >
                         <SidebarNodeRow
                             badges={row.badges}
                             description={row.description}
                             isActive={row.isActive}
                             isSelected={selectableIndex === focusIndex}
-                            leading={<BranchGlyph />}
+                            leading={
+                                row.branch.isRemote ? (
+                                    <BranchGlyph />
+                                ) : (
+                                    <BranchTopologyBullet
+                                        connected={
+                                            branchTopology.byBranchName.get(
+                                                row.branch.name,
+                                            )?.connected ?? false
+                                        }
+                                        isCurrent={row.isActive}
+                                    />
+                                )
+                            }
                             onContextMenu={(event) =>
                                 handleBranchContextMenu(
                                     event,
@@ -1996,6 +2226,8 @@ export function SidebarGitScopePicker({
             );
         },
         [
+            branchNodePositionByName,
+            branchTopology.byBranchName,
             focusIndex,
             handleBranchContextMenu,
             handleMenuTriggerClick,
@@ -2080,10 +2312,16 @@ export function SidebarGitScopePicker({
                 <ChevronIcon open={isOpen} />
             </button>
 
-            {isOpen
+            {isMenuMounted
                 ? createPortal(
                       <div
                           className="sidebar-git-scope-menu"
+                          data-animation-state={menuAnimationState}
+                          data-placement={
+                              menuPosition?.placement ?? "below"
+                          }
+                          inert={!isOpen}
+                          onAnimationEnd={handleMenuAnimationEnd}
                           onKeyDown={handleListKeyDown}
                           ref={menuRef}
                           style={{
@@ -2563,6 +2801,34 @@ function RowMenuTrigger({
         >
             <HorizontalDotsIcon />
         </button>
+    );
+}
+
+/**
+ * A single commit-graph node sitting on the branch list's dashed rail (see
+ * `.sidebar-git-scope-menu__branch-node` in styles.css). Deliberately
+ * monochrome instead of a multi-lane colored graph so it reads as one quiet
+ * timeline rather than competing with the rest of the glass menu.
+ */
+function BranchTopologyBullet({
+    connected,
+    isCurrent,
+}: {
+    readonly connected: boolean;
+    readonly isCurrent: boolean;
+}) {
+    return (
+        <svg aria-hidden="true" className="h-3.5 w-3.5" fill="none" viewBox="0 0 16 16">
+            <circle
+                cx="8"
+                cy="8"
+                fill={isCurrent ? "var(--color-accent)" : "var(--color-bg-elevated)"}
+                r={isCurrent ? 3.5 : 3}
+                stroke={isCurrent ? "var(--color-accent)" : "currentColor"}
+                strokeDasharray={connected ? undefined : "1.5 1.5"}
+                strokeWidth="1.4"
+            />
+        </svg>
     );
 }
 
