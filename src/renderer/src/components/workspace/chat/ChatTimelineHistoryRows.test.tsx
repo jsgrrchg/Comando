@@ -22,6 +22,7 @@ interface MeasuredVirtualListMockSnapshot {
     readonly hasOnRangeChange: boolean;
     readonly hasOnReady: boolean;
     readonly itemCount: number;
+    readonly observeMeasurements?: boolean;
     readonly overscan?: number;
     readonly preserveScrollAnchorOnItemsChange?: boolean;
     readonly preserveScrollAnchorOnMeasure?: boolean;
@@ -51,6 +52,7 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
             items,
             onRangeChange,
             onReady,
+            observeMeasurements,
             overscan,
             preserveScrollAnchorOnItemsChange,
             preserveScrollAnchorOnMeasure,
@@ -66,6 +68,7 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
             readonly items: readonly T[];
             readonly onRangeChange?: () => void;
             readonly onReady?: () => void;
+            readonly observeMeasurements?: boolean;
             readonly overscan?: number;
             readonly preserveScrollAnchorOnItemsChange?: boolean;
             readonly preserveScrollAnchorOnMeasure?: boolean;
@@ -87,6 +90,7 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
                 hasOnRangeChange: typeof onRangeChange === "function",
                 hasOnReady: typeof onReady === "function",
                 itemCount: items.length,
+                observeMeasurements,
                 overscan,
                 preserveScrollAnchorOnItemsChange,
                 preserveScrollAnchorOnMeasure,
@@ -202,9 +206,13 @@ function createSegmentRow(entryCount = 1): ChatTimelineRow {
     };
 }
 
-function renderHistoryRows(historyRows: readonly ChatTimelineRow[]) {
+function renderHistoryRows(
+    historyRows: readonly ChatTimelineRow[],
+    active = true,
+) {
     return renderToStaticMarkup(
         <ChatTimelineHistoryRows
+            active={active}
             historyRows={historyRows}
             onVirtualRangeChange={() => {}}
             renderRow={({ row }) => (
@@ -355,6 +363,7 @@ describe("ChatTimelineHistoryRows", () => {
                 hasOnRangeChange: true,
                 hasOnReady: true,
                 itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
+                observeMeasurements: true,
                 overscan: 10,
                 preserveScrollAnchorOnItemsChange: true,
                 preserveScrollAnchorOnMeasure: true,
@@ -369,6 +378,20 @@ describe("ChatTimelineHistoryRows", () => {
             `message:message-${CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1}`,
         );
         expect(markup.match(/padding-bottom:8px/g)).toHaveLength(1);
+    });
+
+    it("keeps virtual layout but stops row measurements while retained and hidden", () => {
+        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD);
+
+        const markup = renderHistoryRows(rows, false);
+
+        expect(measuredVirtualListMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
+                observeMeasurements: false,
+            }),
+        );
+        expect(markup).toContain("mock-measured-virtual-list");
     });
 
     it("passes activity segments through the virtual list with their stable id", () => {
