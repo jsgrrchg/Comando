@@ -123,6 +123,9 @@ export interface RuntimeWorkspaceContext {
 interface WorkspaceStore extends WorkspaceTreeState {
     readonly activeContextKey: string | null;
     readonly contextsByKey: Record<string, RuntimeWorkspaceContext>;
+    getContextNavigationSnapshot: (
+        contextKey: string,
+    ) => WorkspaceNavigationSnapshot | null;
     readonly openContextKeys: readonly string[];
     readonly scopeEpoch: number;
     activateContext: (contextKey: string) => Promise<void>;
@@ -395,6 +398,28 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     recentFocusedChatTabIds: [],
     openContextKeys: [],
     scopeEpoch: 0,
+
+    getContextNavigationSnapshot: (contextKey) => {
+        const context = captureVisibleWorkspaceContext(get())[contextKey];
+        if (!context) {
+            return null;
+        }
+
+        return {
+            activeContextKey: context.key,
+            contexts: [
+                {
+                    key: context.key,
+                    lastActivatedAt: context.lastActivatedAt,
+                    projectId: context.projectId,
+                    workspace: workspaceStateToSnapshot(context.workspace),
+                    worktreeId: context.worktreeId,
+                },
+            ],
+            openContextKeys: [context.key],
+            version: 2,
+        };
+    },
 
     activateContext: async (contextKey) => {
         const currentState = get();

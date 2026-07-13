@@ -333,6 +333,46 @@ describe("workspace file opening", () => {
         ]);
     });
 
+    it("exports one context as a self-contained navigation snapshot", () => {
+        const tab = createWorkspaceFileTab("file-project-1", "README.md");
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: tab.id,
+                id: "pane-root",
+                tabIds: [tab.id],
+                type: "pane",
+            },
+            tabsById: { [tab.id]: tab },
+        }));
+
+        const snapshot = useWorkspaceStore
+            .getState()
+            .getContextNavigationSnapshot("project-1::__primary__");
+
+        expect(snapshot).toMatchObject({
+            activeContextKey: "project-1::__primary__",
+            openContextKeys: ["project-1::__primary__"],
+            version: 2,
+        });
+        expect(snapshot?.contexts).toHaveLength(1);
+        expect(snapshot?.contexts[0]).toMatchObject({
+            key: "project-1::__primary__",
+            projectId: "project-1",
+            worktreeId: null,
+        });
+        expect(snapshot?.contexts[0]?.workspace).toMatchObject({
+            activePaneId: "pane-root",
+                tabs: [
+                expect.objectContaining({
+                    id: tab.id,
+                    relativePath: "README.md",
+                }),
+            ],
+        });
+    });
+
     it("reorders workspace contexts without changing the active context", async () => {
         await useWorkspaceStore
             .getState()

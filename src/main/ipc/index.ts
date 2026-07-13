@@ -214,7 +214,7 @@ interface RegisterIpcHandlersOptions {
     readonly gitService: GitGateway;
     readonly githubService: GitHubGateway;
     readonly getSnapshot: () => AppBootstrapSnapshot;
-    readonly openProjectWindow: (input: OpenProjectWindowInput) => void;
+    readonly openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
     readonly persistenceService: PersistenceGateway;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsGateway;
@@ -459,9 +459,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.openProjectWindow,
-        (_event, input: OpenProjectWindowInput) => {
-            options.openProjectWindow(input);
-        },
+        (_event, input: OpenProjectWindowInput) =>
+            options.openProjectWindow(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.checkCommandAvailability,

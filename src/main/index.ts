@@ -24,6 +24,7 @@ import {
     type TerminalDataEvent,
     type TerminalExitEvent,
     type WindowContextSnapshot,
+    type WorkspaceNavigationSnapshot,
 } from "@shared/ipc";
 import {
     nativeProjectTreeInvalidationToIpc,
@@ -297,9 +298,7 @@ if (!hasSingleInstanceLock) {
                 persistenceService,
                 gitService,
                 githubService,
-                openProjectWindow: (input) => {
-                    openOrFocusProjectWindow(input);
-                },
+                openProjectWindow: openOrFocusProjectWindow,
                 projectService,
                 settingsService,
                 terminalService,
@@ -662,18 +661,21 @@ async function openNewMainWindow(projectId: string | null): Promise<void> {
     });
 }
 
-function openOrFocusProjectWindow(input: OpenProjectWindowInput): void {
+async function openOrFocusProjectWindow(
+    input: OpenProjectWindowInput,
+): Promise<void> {
     if (!persistenceService) {
-        return;
+        throw new Error("The persistence service is unavailable.");
     }
 
     const existingWindow = input.forceNewWindow
         ? null
         : windowRegistry.getMainWindowByProjectId(input.projectId);
     if (!existingWindow) {
-        void openNewMainWindowWithOptions({
+        await openNewMainWindowWithOptions({
             forceNewWindow: input.forceNewWindow,
             projectId: input.projectId,
+            workspaceSnapshot: input.workspaceSnapshot,
             worktreeId: input.worktreeId,
         });
         return;
@@ -711,10 +713,11 @@ function openOrFocusProjectWindow(input: OpenProjectWindowInput): void {
 async function openNewMainWindowWithOptions(input: {
     readonly forceNewWindow?: boolean;
     readonly projectId: string | null;
+    readonly workspaceSnapshot?: WorkspaceNavigationSnapshot;
     readonly worktreeId?: string | null;
 }): Promise<void> {
     if (!persistenceService) {
-        return;
+        throw new Error("The persistence service is unavailable.");
     }
 
     if (input.projectId && !input.forceNewWindow) {
@@ -759,6 +762,15 @@ async function openNewMainWindowWithOptions(input: {
                   worktreeId: input.worktreeId,
               },
     );
+
+    const workspaceId = snapshot.windowContext?.workspaceId;
+    if (input.workspaceSnapshot) {
+        if (!workspaceService || !workspaceId) {
+            throw new Error("The workspace service is unavailable.");
+        }
+        // Persist before the renderer hydrates so it restores the transferred layout.
+        await workspaceService.saveSnapshot(workspaceId, input.workspaceSnapshot);
+    }
 
     createTrackedMainWindow(snapshot);
 }

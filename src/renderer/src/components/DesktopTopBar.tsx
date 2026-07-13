@@ -10,6 +10,10 @@ import {
     ProjectContextMenu,
     type ProjectContextMenuProject,
 } from "./ProjectContextMenu";
+import {
+    ContextMenu,
+    type ContextMenuState,
+} from "./context-menu/ContextMenu";
 import { SidebarGitScopePicker } from "./sidebar/SidebarGitScopePicker";
 import { useProjectContextTabDrag } from "./useProjectContextTabDrag";
 
@@ -46,6 +50,7 @@ interface DesktopTopBarProps {
     readonly onActivateContext: (contextKey: string) => void;
     readonly onCloneRepository: (repositoryUrl: string) => Promise<boolean>;
     readonly onCloseContext: (contextKey: string) => void;
+    readonly onMoveContextToNewWindow: (contextKey: string) => void;
     readonly onOpenProject: (projectId: string) => void;
     readonly onOpenProjects: () => void;
     readonly onOpenSettings: () => void;
@@ -66,6 +71,7 @@ export function DesktopTopBar({
     onActivateContext,
     onCloneRepository,
     onCloseContext,
+    onMoveContextToNewWindow,
     onOpenProject,
     onOpenProjects,
     onOpenSettings,
@@ -75,6 +81,8 @@ export function DesktopTopBar({
     platform,
 }: DesktopTopBarProps) {
     const [menuOpen, setMenuOpen] = useState(false);
+    const [contextMenu, setContextMenu] =
+        useState<ContextMenuState<ProjectContextTabItem> | null>(null);
     const menuRootRef = useRef<HTMLDivElement | null>(null);
     const tabsRef = useRef<HTMLDivElement | null>(null);
     const contextTabDrag = useProjectContextTabDrag({
@@ -213,6 +221,15 @@ export function DesktopTopBar({
                             }
                             data-project-context-tab-key={context.key}
                             key={context.key}
+                            onContextMenu={(event) => {
+                                event.preventDefault();
+                                setMenuOpen(false);
+                                setContextMenu({
+                                    payload: context,
+                                    x: event.clientX,
+                                    y: event.clientY,
+                                });
+                            }}
                             onPointerDown={(event) =>
                                 contextTabDrag.beginTabPointerDown(
                                     context.key,
@@ -352,6 +369,28 @@ export function DesktopTopBar({
                     />
                 )}
             </div>
+            {contextMenu ? (
+                <ContextMenu
+                    entries={[
+                        {
+                            action: () =>
+                                onMoveContextToNewWindow(
+                                    contextMenu.payload.key,
+                                ),
+                            label: "Move to New Window",
+                        },
+                        { type: "separator" },
+                        {
+                            action: () =>
+                                onCloseContext(contextMenu.payload.key),
+                            danger: true,
+                            label: "Close",
+                        },
+                    ]}
+                    menu={contextMenu}
+                    onClose={() => setContextMenu(null)}
+                />
+            ) : null}
             <div className="min-w-4 flex-1" />
         </header>
     );

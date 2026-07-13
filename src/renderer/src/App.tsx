@@ -358,6 +358,41 @@ export function App() {
             { tabsById },
         );
     }, []);
+    const requestMoveWorkspaceContextToNewWindow = useCallback(
+        (contextKey: string) => {
+            const workspaceState = useWorkspaceStore.getState();
+            const context = workspaceState.contextsByKey[contextKey];
+            const workspaceSnapshot =
+                workspaceState.getContextNavigationSnapshot(contextKey);
+            if (!context || !workspaceSnapshot) {
+                return Promise.resolve();
+            }
+
+            const tabsById =
+                workspaceState.activeContextKey === contextKey
+                    ? workspaceState.tabsById
+                    : context.workspace.tabsById;
+            return closeWorkspaceTabsWithConfirmation(
+                Object.keys(tabsById),
+                async () => {
+                    const comandoApi = getComandoApi();
+                    if (!comandoApi) {
+                        throw new Error("The desktop bridge is unavailable.");
+                    }
+
+                    await comandoApi.openProjectWindow({
+                        forceNewWindow: true,
+                        projectId: context.projectId,
+                        workspaceSnapshot,
+                        worktreeId: context.worktreeId,
+                    });
+                    await useWorkspaceStore.getState().closeContext(contextKey);
+                },
+                { tabsById },
+            );
+        },
+        [],
+    );
     const requestCloseActiveWorkspaceTab = useEffectEvent(() => {
         const workspaceState = useWorkspaceStore.getState();
         const activePane = findPaneById(
@@ -4377,6 +4412,11 @@ export function App() {
                         }}
                         onCloseContext={(contextKey) => {
                             void requestCloseWorkspaceContext(contextKey);
+                        }}
+                        onMoveContextToNewWindow={(contextKey) => {
+                            void requestMoveWorkspaceContextToNewWindow(
+                                contextKey,
+                            );
                         }}
                         onOpenProject={(projectId) => {
                             void useWorkspaceStore

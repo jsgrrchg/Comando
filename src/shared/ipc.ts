@@ -675,6 +675,7 @@ export interface OpenProjectWindowInput {
     readonly branchName?: string | null;
     readonly forceNewWindow?: boolean;
     readonly projectId: string;
+    readonly workspaceSnapshot?: WorkspaceNavigationSnapshot;
     readonly worktreeId?: string | null;
 }
 

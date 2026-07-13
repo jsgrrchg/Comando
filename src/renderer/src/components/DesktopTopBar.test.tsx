@@ -29,6 +29,7 @@ describe("DesktopTopBar", () => {
                 onActivateContext={vi.fn()}
                 onCloneRepository={vi.fn(() => Promise.resolve(true))}
                 onCloseContext={vi.fn()}
+                onMoveContextToNewWindow={vi.fn()}
                 onOpenProject={vi.fn()}
                 onOpenProjects={vi.fn()}
                 onOpenSettings={vi.fn()}
