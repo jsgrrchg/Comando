@@ -24,6 +24,7 @@ describe("DesktopTopBar", () => {
                         worktreeLabel: "feature/navigation",
                     },
                 ]}
+                leftSidebarCollapsed={false}
                 menuProjects={[]}
                 onActivateContext={vi.fn()}
                 onCloneRepository={vi.fn(() => Promise.resolve(true))}
@@ -32,6 +33,7 @@ describe("DesktopTopBar", () => {
                 onOpenProjects={vi.fn()}
                 onOpenSettings={vi.fn()}
                 onOpenWorktree={vi.fn()}
+                onToggleLeftSidebar={vi.fn()}
                 platform="darwin"
             />,
         );
@@ -41,6 +43,7 @@ describe("DesktopTopBar", () => {
         expect(markup).toContain('role="tab"');
         expect(markup).toContain('aria-selected="true"');
         expect(markup).toContain("feature/navigation");
+        expect(markup).toContain("sidebar-git-scope-trigger--titlebar");
         expect(markup).toContain("app-no-drag");
     });
 });

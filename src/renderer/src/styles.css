@@ -419,10 +419,10 @@
     width: max-content;
     min-width: 0;
     max-width: min(72vw, 980px, calc(100% - 40px));
-    height: 32px;
+    height: 28px;
     flex: 0 1 auto;
     align-items: center;
-    gap: 3px;
+    gap: 4px;
     overflow-x: auto;
     scrollbar-width: none;
 }
@@ -434,20 +434,16 @@
 .project-context-tab-shell {
     position: relative;
     display: flex;
-    min-width: 118px;
-    max-width: 220px;
-    height: 30px;
-    flex: 0 1 190px;
+    min-width: 120px;
+    max-width: 280px;
+    height: 26px;
+    flex: 0 1 220px;
     align-items: center;
     overflow: hidden;
     border: 1px solid
-        color-mix(in srgb, var(--color-border) 26%, transparent);
-    border-radius: 7px;
-    background: color-mix(
-        in srgb,
-        var(--color-bg-elevated) 22%,
-        transparent
-    );
+        color-mix(in srgb, var(--color-border) 30%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--color-bg-elevated) 26%, transparent);
     color: var(--color-text-secondary);
     transition:
         background-color 120ms ease,
@@ -458,22 +454,21 @@
 .project-context-tab-shell:hover {
     border-color: color-mix(
         in srgb,
-        var(--color-border-strong) 42%,
+        var(--color-border-strong) 44%,
         transparent
     );
-    background: color-mix(in srgb, var(--color-bg-elevated) 42%, transparent);
+    background: color-mix(in srgb, var(--color-bg-elevated) 44%, transparent);
     color: var(--color-text-primary);
 }
 
 .project-context-tab-shell[data-active] {
     border-color: color-mix(
         in srgb,
-        var(--color-border-strong) 62%,
+        var(--color-border-strong) 60%,
         transparent
     );
-    background: color-mix(in srgb, var(--color-bg-elevated) 68%, transparent);
+    background: color-mix(in srgb, var(--color-bg-elevated) 66%, transparent);
     color: var(--color-text-primary);
-    box-shadow: 0 1px 7px color-mix(in srgb, #000 10%, transparent);
 }
 
 :root[data-transparency-enabled="false"] .project-context-tab-shell[data-active] {
@@ -482,6 +477,20 @@
 
 :root[data-transparency-enabled="false"] .project-context-tab-shell:not([data-active]) {
     background: var(--color-bg-panel);
+}
+
+.project-context-tab-icon {
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    place-items: center;
+    margin: 0 5px 0 6px;
+    border-radius: 5px;
+    color: #fff;
+    font-size: 9.5px;
+    font-weight: 700;
+    line-height: 1;
 }
 
 .project-context-tab {
@@ -494,45 +503,46 @@
     background: transparent;
     color: inherit;
     cursor: default;
-    padding: 0 27px 0 10px;
+    padding: 0 20px 0 0;
     text-align: left;
 }
 
 .project-context-tab-copy {
-    display: flex;
+    display: block;
     min-width: 0;
     flex: 1;
-    flex-direction: column;
-    line-height: 1.05;
-}
-
-.project-context-tab-title,
-.project-context-tab-subtitle {
     overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
+    text-overflow: ellipsis;
 }
 
 .project-context-tab-title {
-    font-size: 11.5px;
-    font-weight: 570;
+    font-size: 11px;
+    font-weight: 600;
 }
 
 .project-context-tab-subtitle {
-    margin-top: 2px;
+    margin-left: 5px;
     color: var(--color-text-secondary);
-    font-size: 9.5px;
+    font-size: 10px;
+    font-weight: 450;
+}
+
+.project-context-tab-subtitle::before {
+    margin-right: 5px;
+    color: color-mix(in srgb, var(--color-text-secondary) 60%, transparent);
+    content: "·";
 }
 
 .project-context-tab-close {
     position: absolute;
-    right: 5px;
+    right: 4px;
     display: grid;
-    width: 20px;
-    height: 20px;
+    width: 16px;
+    height: 16px;
     place-items: center;
     border: 0;
-    border-radius: 5px;
+    border-radius: 4px;
     background: transparent;
     color: currentColor;
     cursor: default;
@@ -564,11 +574,11 @@
 
 .project-context-add {
     display: grid;
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
     place-items: center;
     border: 1px solid transparent;
-    border-radius: 7px;
+    border-radius: 6px;
     background: transparent;
     color: var(--color-text-secondary);
     cursor: default;
@@ -2156,6 +2166,72 @@ button {
     font-size: 13px;
     font-weight: 600;
     color: var(--color-text-primary);
+}
+
+.sidebar-git-scope-picker--titlebar {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-self: stretch;
+}
+
+.sidebar-git-scope-trigger--titlebar {
+    min-width: 0;
+    height: 100%;
+    flex: 1;
+    gap: 4px;
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
+    padding: 0 20px 0 0;
+    color: inherit;
+    text-align: left;
+    transform: none;
+}
+
+.sidebar-git-scope-trigger--titlebar:hover,
+.sidebar-git-scope-trigger--titlebar:active:not(:disabled),
+.sidebar-git-scope-trigger--titlebar.sidebar-git-scope-trigger--open {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    color: inherit;
+    transform: none;
+}
+
+.sidebar-git-scope-trigger__titlebar-copy {
+    display: block;
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.sidebar-git-scope-trigger__titlebar-project {
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.sidebar-git-scope-trigger__titlebar-branch {
+    margin-left: 5px;
+    color: var(--color-text-secondary);
+    font-size: 10px;
+    font-weight: 450;
+}
+
+.sidebar-git-scope-trigger__titlebar-branch::before {
+    margin-right: 5px;
+    color: color-mix(in srgb, var(--color-text-secondary) 60%, transparent);
+    content: "·";
+}
+
+.sidebar-git-scope-trigger--titlebar > svg {
+    width: 10px;
+    height: 10px;
+    flex: 0 0 auto;
+    margin-right: 1px;
+    color: var(--color-text-secondary);
 }
 
 .sidebar-git-scope-menu {

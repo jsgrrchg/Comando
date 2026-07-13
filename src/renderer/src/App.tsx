@@ -110,7 +110,6 @@ import {
     SidebarAgentsPanel,
     SidebarGitHubPanel,
     SidebarGitPanel,
-    SidebarGitScopePicker,
     type SidebarGitHubAddToChatRequest,
 } from "./components/sidebar";
 import {
@@ -3693,7 +3692,7 @@ export function App() {
                     paddingTop: isMac ? 42 : isWindows ? 0 : 8,
                 }}
             >
-                {isMac && (
+                {(isMac || isWindows) && (
                     <button
                         className="sidebar-collapse-toggle app-no-drag"
                         onClick={() => {
@@ -3734,57 +3733,10 @@ export function App() {
                         </svg>
                     </button>
                 )}
-                <div className="mt-1 flex items-center gap-1">
-                    <div className="min-w-0 flex-1">
-                        <SidebarGitScopePicker
-                            projectId={activeProjectId}
-                            worktreeId={activeWorktreeId}
-                        />
-                    </div>
-                    {isWindows && (
-                        <button
-                            className="sidebar-collapse-toggle sidebar-collapse-toggle--inline app-no-drag"
-                            onClick={() => {
-                                toggleLeftCollapsed();
-                                hideSidebarOverlayImmediately();
-                            }}
-                            title={
-                                leftCollapsed
-                                    ? "Expand sidebar"
-                                    : "Collapse sidebar"
-                            }
-                            type="button"
-                        >
-                            <svg
-                                aria-hidden="true"
-                                fill="none"
-                                height="16"
-                                viewBox="0 0 16 16"
-                                width="16"
-                            >
-                                <rect
-                                    x="1.5"
-                                    y="2.5"
-                                    width="13"
-                                    height="11"
-                                    rx="1.5"
-                                    stroke="currentColor"
-                                    strokeWidth="1.2"
-                                />
-                                <line
-                                    x1="5.5"
-                                    y1="2.5"
-                                    x2="5.5"
-                                    y2="13.5"
-                                    stroke="currentColor"
-                                    strokeWidth="1.2"
-                                />
-                            </svg>
-                        </button>
-                    )}
-                </div>
-
-                <div className="mt-1 flex items-center gap-1">
+                <div
+                    className="mt-1 flex items-center gap-1"
+                    style={isWindows ? { paddingRight: 36 } : undefined}
+                >
                     <button
                         className={[
                             "sidebar-action-row sidebar-action-row--compact app-no-drag min-w-0 flex-1",
@@ -4442,6 +4394,7 @@ export function App() {
                     <DesktopTopBar
                         activeContextKey={workspaceActiveContextKey}
                         contexts={projectContextTabs}
+                        leftSidebarCollapsed={leftCollapsed}
                         menuProjects={projectContextMenuProjects}
                         onActivateContext={(contextKey) => {
                             void useWorkspaceStore
@@ -4483,6 +4436,10 @@ export function App() {
                             void useWorkspaceStore
                                 .getState()
                                 .openContext(projectId, worktreeId);
+                        }}
+                        onToggleLeftSidebar={() => {
+                            toggleLeftCollapsed();
+                            hideSidebarOverlayImmediately();
                         }}
                         platform={bootstrap?.platform ?? null}
                     />

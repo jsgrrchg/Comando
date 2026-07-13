@@ -10,6 +10,7 @@ import {
     ProjectContextMenu,
     type ProjectContextMenuProject,
 } from "./ProjectContextMenu";
+import { SidebarGitScopePicker } from "./sidebar/SidebarGitScopePicker";
 
 export type { ProjectContextMenuProject } from "./ProjectContextMenu";
 
@@ -21,9 +22,25 @@ export interface ProjectContextTabItem {
     readonly worktreeLabel: string | null;
 }
 
+const PROJECT_AVATAR_HUES = [142, 210, 265, 320, 20, 45, 190, 355] as const;
+
+function projectAvatarColor(projectId: string): string {
+    let hash = 0;
+    for (let index = 0; index < projectId.length; index += 1) {
+        hash = (hash * 31 + projectId.charCodeAt(index)) >>> 0;
+    }
+    const hue = PROJECT_AVATAR_HUES[hash % PROJECT_AVATAR_HUES.length];
+    return `hsl(${hue} 58% 42%)`;
+}
+
+function projectAvatarInitial(projectName: string): string {
+    return projectName.trim().charAt(0).toUpperCase() || "?";
+}
+
 interface DesktopTopBarProps {
     readonly activeContextKey: string | null;
     readonly contexts: readonly ProjectContextTabItem[];
+    readonly leftSidebarCollapsed: boolean;
     readonly menuProjects: readonly ProjectContextMenuProject[];
     readonly onActivateContext: (contextKey: string) => void;
     readonly onCloneRepository: (repositoryUrl: string) => Promise<boolean>;
@@ -32,12 +49,14 @@ interface DesktopTopBarProps {
     readonly onOpenProjects: () => void;
     readonly onOpenSettings: () => void;
     readonly onOpenWorktree: (projectId: string, worktreeId: string) => void;
+    readonly onToggleLeftSidebar: () => void;
     readonly platform: string | null;
 }
 
 export function DesktopTopBar({
     activeContextKey,
     contexts,
+    leftSidebarCollapsed,
     menuProjects,
     onActivateContext,
     onCloneRepository,
@@ -46,6 +65,7 @@ export function DesktopTopBar({
     onOpenProjects,
     onOpenSettings,
     onOpenWorktree,
+    onToggleLeftSidebar,
     platform,
 }: DesktopTopBarProps) {
     const [menuOpen, setMenuOpen] = useState(false);
@@ -122,6 +142,40 @@ export function DesktopTopBar({
                         : 8,
             }}
         >
+            <button
+                aria-pressed={leftSidebarCollapsed}
+                className="sidebar-collapse-toggle sidebar-collapse-toggle--inline app-no-drag"
+                onClick={onToggleLeftSidebar}
+                style={{ marginRight: 8 }}
+                title={leftSidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
+                type="button"
+            >
+                <svg
+                    aria-hidden="true"
+                    fill="none"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    width="16"
+                >
+                    <rect
+                        height="11"
+                        rx="1.5"
+                        stroke="currentColor"
+                        strokeWidth="1.2"
+                        width="13"
+                        x="1.5"
+                        y="2.5"
+                    />
+                    <line
+                        stroke="currentColor"
+                        strokeWidth="1.2"
+                        x1="5.5"
+                        x2="5.5"
+                        y1="2.5"
+                        y2="13.5"
+                    />
+                </svg>
+            </button>
             <div
                 aria-label="Open project workspaces"
                 className="project-context-tabs app-no-drag"
@@ -137,34 +191,58 @@ export function DesktopTopBar({
                             data-active={isActive || undefined}
                             key={context.key}
                         >
-                            <button
-                                aria-selected={isActive}
-                                className="project-context-tab"
-                                data-project-context-key={context.key}
-                                onClick={() => onActivateContext(context.key)}
-                                onKeyDown={(event) =>
-                                    handleTabKeyDown(event, index)
-                                }
-                                role="tab"
-                                tabIndex={isActive ? 0 : -1}
-                                title={
-                                    context.worktreeLabel
-                                        ? `${context.projectName} — ${context.worktreeLabel}`
-                                        : context.projectName
-                                }
-                                type="button"
+                            <span
+                                aria-hidden="true"
+                                className="project-context-tab-icon"
+                                style={{
+                                    background: projectAvatarColor(
+                                        context.projectId,
+                                    ),
+                                }}
                             >
-                                <span className="project-context-tab-copy">
-                                    <span className="project-context-tab-title">
-                                        {context.projectName}
-                                    </span>
-                                    {context.worktreeLabel && (
-                                        <span className="project-context-tab-subtitle">
-                                            {context.worktreeLabel}
+                                {projectAvatarInitial(context.projectName)}
+                            </span>
+                            {isActive ? (
+                                <SidebarGitScopePicker
+                                    onTitlebarKeyDown={(event) =>
+                                        handleTabKeyDown(event, index)
+                                    }
+                                    projectId={context.projectId}
+                                    title={context.projectName}
+                                    titlebarContextKey={context.key}
+                                    triggerVariant="titlebar"
+                                    worktreeId={context.worktreeId}
+                                />
+                            ) : (
+                                <button
+                                    aria-selected={false}
+                                    className="project-context-tab"
+                                    data-project-context-key={context.key}
+                                    onClick={() => onActivateContext(context.key)}
+                                    onKeyDown={(event) =>
+                                        handleTabKeyDown(event, index)
+                                    }
+                                    role="tab"
+                                    tabIndex={-1}
+                                    title={
+                                        context.worktreeLabel
+                                            ? `${context.projectName} — ${context.worktreeLabel}`
+                                            : context.projectName
+                                    }
+                                    type="button"
+                                >
+                                    <span className="project-context-tab-copy">
+                                        <span className="project-context-tab-title">
+                                            {context.projectName}
                                         </span>
-                                    )}
-                                </span>
-                            </button>
+                                        {context.worktreeLabel && (
+                                            <span className="project-context-tab-subtitle">
+                                                {context.worktreeLabel}
+                                            </span>
+                                        )}
+                                    </span>
+                                </button>
+                            )}
                             <button
                                 aria-label={`Close ${context.projectName}`}
                                 className="project-context-tab-close"
@@ -179,9 +257,9 @@ export function DesktopTopBar({
                                 <svg
                                     aria-hidden="true"
                                     fill="none"
-                                    height="12"
+                                    height="10"
                                     viewBox="0 0 12 12"
-                                    width="12"
+                                    width="10"
                                 >
                                     <path
                                         d="m3 3 6 6M9 3 3 9"
@@ -211,9 +289,9 @@ export function DesktopTopBar({
                     <svg
                         aria-hidden="true"
                         fill="none"
-                        height="14"
+                        height="12"
                         viewBox="0 0 14 14"
-                        width="14"
+                        width="12"
                     >
                         <path
                             d="M7 2v10M2 7h10"
