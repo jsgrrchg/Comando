@@ -1,4 +1,8 @@
-import type { GitStatusBadge, ProjectTreeNode } from "@shared/ipc";
+import type {
+    GitChangeEntry,
+    GitStatusBadge,
+    ProjectTreeNode,
+} from "@shared/ipc";
 
 import type { GitNodeStatus, GitTreeNode } from "@renderer/components/git";
 
@@ -10,11 +14,18 @@ export function buildGitTreeNodesFromProjectTree(
     rootNodes: readonly ProjectTreeNode[],
     nodesByParent: Record<ParentKey, readonly ProjectTreeNode[]>,
     expandedPaths: readonly string[] = [],
+    gitChanges: readonly GitChangeEntry[] = [],
 ): readonly GitTreeNode[] {
     const expandedPathSet = new Set(expandedPaths);
+    const gitStatusByPath = buildGitStatusByPath(gitChanges);
 
     return rootNodes.map((node) =>
-        convertProjectTreeNode(node, nodesByParent, expandedPathSet),
+        convertProjectTreeNode(
+            node,
+            nodesByParent,
+            expandedPathSet,
+            gitStatusByPath,
+        ),
     );
 }
 
@@ -37,8 +48,10 @@ export interface HierarchicalGitTreeFromEntries {
 export function buildHierarchicalGitTreeNodesFromProjectEntries(
     entries: readonly ProjectTreeNode[],
     metadataEntries: readonly ProjectTreeNode[] = entries,
+    gitChanges: readonly GitChangeEntry[] = [],
 ): HierarchicalGitTreeFromEntries {
     const byPath = new Map<string, HierarchicalBuildNode>();
+    const gitStatusByPath = buildGitStatusByPath(gitChanges);
     const directoryMetadataByPath = new Map(
         metadataEntries
             .filter((entry) => entry.kind === "directory")
@@ -64,7 +77,12 @@ export function buildHierarchicalGitTreeNodesFromProjectEntries(
             kind: "directory",
             name: metadata?.name ?? name,
             path,
-            status: mapGitNodeStatus(metadata?.gitStatus ?? null),
+            status: resolveProjectTreeStatus(
+                "directory",
+                path,
+                metadata?.gitStatus ?? null,
+                gitStatusByPath,
+            ),
         };
         byPath.set(path, synthetic);
         return synthetic;
@@ -99,7 +117,12 @@ export function buildHierarchicalGitTreeNodesFromProjectEntries(
             kind: entry.kind,
             name: entry.name,
             path: entry.relativePath,
-            status: mapGitNodeStatus(entry.gitStatus),
+            status: resolveProjectTreeStatus(
+                entry.kind,
+                entry.relativePath,
+                entry.gitStatus,
+                gitStatusByPath,
+            ),
         });
     }
 
@@ -170,6 +193,7 @@ function buildGitTreeNodeChildren(
     node: ProjectTreeNode,
     nodesByParent: Record<ParentKey, readonly ProjectTreeNode[]>,
     expandedPaths: ReadonlySet<string>,
+    gitStatusByPath: ReadonlyMap<string, GitNodeStatus>,
 ): readonly GitTreeNode[] | undefined {
     if (node.kind !== "directory" || !expandedPaths.has(node.relativePath)) {
         return undefined;
@@ -181,7 +205,12 @@ function buildGitTreeNodeChildren(
     }
 
     return children.map((child) =>
-        convertProjectTreeNode(child, nodesByParent, expandedPaths),
+        convertProjectTreeNode(
+            child,
+            nodesByParent,
+            expandedPaths,
+            gitStatusByPath,
+        ),
     );
 }
 
@@ -189,17 +218,89 @@ function convertProjectTreeNode(
     node: ProjectTreeNode,
     nodesByParent: Record<ParentKey, readonly ProjectTreeNode[]>,
     expandedPaths: ReadonlySet<string>,
+    gitStatusByPath: ReadonlyMap<string, GitNodeStatus>,
 ): GitTreeNode {
     return {
-        children: buildGitTreeNodeChildren(node, nodesByParent, expandedPaths),
+        children: buildGitTreeNodeChildren(
+            node,
+            nodesByParent,
+            expandedPaths,
+            gitStatusByPath,
+        ),
         hasChildren: node.hasChildren,
         id: node.id,
         isGitIgnored: node.isGitIgnored,
         kind: node.kind,
         name: node.name,
         path: node.relativePath,
-        status: mapGitNodeStatus(node.gitStatus),
+        status: resolveProjectTreeStatus(
+            node.kind,
+            node.relativePath,
+            node.gitStatus,
+            gitStatusByPath,
+        ),
     };
+}
+
+function buildGitStatusByPath(
+    changes: readonly GitChangeEntry[],
+): ReadonlyMap<string, GitNodeStatus> {
+    return new Map(
+        changes.map((change) => [
+            change.path,
+            mapGitChangeStatus(change),
+        ]),
+    );
+}
+
+function resolveProjectTreeStatus(
+    kind: ProjectTreeNode["kind"],
+    relativePath: string,
+    fallbackStatus: GitStatusBadge | null,
+    gitStatusByPath: ReadonlyMap<string, GitNodeStatus>,
+): GitNodeStatus | null {
+    if (kind === "directory") {
+        return hasChangedDescendant(relativePath, gitStatusByPath)
+            ? "mixed"
+            : (gitStatusByPath.get(relativePath) ??
+                  mapGitNodeStatus(fallbackStatus));
+    }
+
+    return gitStatusByPath.get(relativePath) ?? mapGitNodeStatus(fallbackStatus);
+}
+
+function hasChangedDescendant(
+    directoryPath: string,
+    gitStatusByPath: ReadonlyMap<string, GitNodeStatus>,
+): boolean {
+    const prefix = `${directoryPath}/`;
+    for (const path of gitStatusByPath.keys()) {
+        if (path.startsWith(prefix)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function mapGitChangeStatus(change: GitChangeEntry): GitNodeStatus {
+    switch (change.kind) {
+        case "conflicted":
+            return "conflict";
+        case "added":
+            return change.scope === "staged" ? "staged" : "added";
+        case "deleted":
+            return "deleted";
+        case "renamed":
+            return "renamed";
+        case "untracked":
+            return "untracked";
+        case "copied":
+        case "modified":
+        case "typechange":
+        default:
+            return change.scope === "staged" ? "staged" : "modified";
+    }
 }
 
 function mapGitNodeStatus(status: GitStatusBadge | null): GitNodeStatus | null {
