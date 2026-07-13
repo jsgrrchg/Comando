@@ -118,6 +118,7 @@ function createBaseWindow(options: {
     const usesNativeTransparency = options.transparencyEnabled !== false;
     const isAcrylic = isWindows && usesNativeTransparency;
     const isMacVibrant = isMac && usesNativeTransparency;
+    const isMainWindow = options.kind === "main";
 
     const titleBarOverlay = hasNativeTitleBarOverlay
         ? resolveDesktopTitleBarOverlay()
@@ -138,12 +139,16 @@ function createBaseWindow(options: {
         backgroundMaterial: isAcrylic ? "acrylic" : undefined,
         titleBarOverlay,
         titleBarStyle: isMac
-            ? "hiddenInset"
+            ? isMainWindow
+                ? "hidden"
+                : "hiddenInset"
             : hasNativeTitleBarOverlay
               ? "hidden"
               : "default",
+        // hiddenInset adds a platform-dependent offset to explicit positions.
         trafficLightPosition: isMac
-            ? (options.trafficLightPosition ?? { x: 18, y: 18 })
+            ? (options.trafficLightPosition ??
+              (isMainWindow ? { x: 14, y: 8 } : undefined))
             : undefined,
         vibrancy: isMacVibrant ? "sidebar" : undefined,
         visualEffectState: isMacVibrant ? "active" : undefined,

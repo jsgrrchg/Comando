@@ -130,4 +130,15 @@ describe("window titlebar overlays", () => {
             titleBarStyle: "hidden",
         });
     });
+
+    it("positions macOS main window traffic lights against the titlebar edge", () => {
+        vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+
+        createMainWindow();
+
+        expect(electronMocks.windows[0]?.options).toMatchObject({
+            titleBarStyle: "hidden",
+            trafficLightPosition: { x: 14, y: 11 },
+        });
+    });
 });
