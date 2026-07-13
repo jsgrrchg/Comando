@@ -117,6 +117,7 @@ interface MountConfig {
     readonly geometryCacheSignature?: string;
     readonly items: readonly Item[];
     readonly measurementCacheKey?: string;
+    readonly observeMeasurements?: boolean;
     readonly overscan: number;
     readonly preserveScrollAnchorOnItemsChange?: boolean;
     readonly preserveScrollAnchorOnMeasure: boolean;
@@ -133,6 +134,7 @@ interface MountedList {
     readonly rerender: (next?: {
         readonly items?: readonly Item[];
         readonly getItemMeasurementKey?: (item: Item, index: number) => string;
+        readonly observeMeasurements?: boolean;
     }) => void;
 }
 
@@ -153,6 +155,7 @@ function mountList(config: MountConfig): MountedList {
 
     let currentItems = config.items;
     let currentMeasurementKey = config.getItemMeasurementKey;
+    let currentObserveMeasurements = config.observeMeasurements;
 
     const element = () => (
         <MeasuredVirtualList
@@ -164,6 +167,7 @@ function mountList(config: MountConfig): MountedList {
             geometryCacheSignature={config.geometryCacheSignature}
             items={currentItems}
             measurementCacheKey={config.measurementCacheKey}
+            observeMeasurements={currentObserveMeasurements}
             overscan={config.overscan}
             preserveScrollAnchorOnItemsChange={
                 config.preserveScrollAnchorOnItemsChange
@@ -193,6 +197,9 @@ function mountList(config: MountConfig): MountedList {
         }
         if (next?.getItemMeasurementKey) {
             currentMeasurementKey = next.getItemMeasurementKey;
+        }
+        if (next?.observeMeasurements !== undefined) {
+            currentObserveMeasurements = next.observeMeasurements;
         }
         act(() => {
             root.render(element());
@@ -491,6 +498,27 @@ describe("MeasuredVirtualList scroll anchoring (integration)", () => {
 });
 
 describe("MeasuredVirtualList measurement wiring (integration)", () => {
+    it("disconnects row measurement observers while a retained view is hidden", () => {
+        const list = mountList({
+            items: createItems(60),
+            observeMeasurements: false,
+            overscan: 10,
+            preserveScrollAnchorOnMeasure: true,
+        });
+        const firstRow = rowWrapper(list.mountNode, 0);
+
+        expect(
+            observers.some((observer) => observer.elements.has(firstRow)),
+        ).toBe(false);
+
+        list.rerender({ observeMeasurements: true });
+
+        expect(
+            observers.some((observer) => observer.elements.has(firstRow)),
+        ).toBe(true);
+        list.root.unmount();
+    });
+
     it("recomputes long-chat geometry when returning to an already open tab", () => {
         const items = createItems(5000);
         const estimateSize = vi.fn(() => ITEM_HEIGHT);
