@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 interface MockedBrowserWindow {
     readonly options: Record<string, unknown>;
     readonly setBackgroundMaterial: ReturnType<typeof vi.fn>;
+    readonly setWindowButtonPosition: ReturnType<typeof vi.fn>;
     readonly setTitleBarOverlay: ReturnType<typeof vi.fn>;
     readonly setVibrancy: ReturnType<typeof vi.fn>;
+    triggerDidFinishLoad(): void;
 }
 
 const electronMocks = vi.hoisted(() => {
@@ -23,8 +25,14 @@ const electronMocks = vi.hoisted(() => {
         readonly setTitle = vi.fn();
         readonly setTitleBarOverlay = vi.fn();
         readonly setVibrancy = vi.fn();
+        readonly setWindowButtonPosition = vi.fn();
+        private readonly didFinishLoadHandlers: Array<() => void> = [];
         readonly webContents = {
-            on: vi.fn(),
+            on: vi.fn((eventName: string, listener: () => void) => {
+                if (eventName === "did-finish-load") {
+                    this.didFinishLoadHandlers.push(listener);
+                }
+            }),
             setWindowOpenHandler: vi.fn(),
         };
 
@@ -38,6 +46,12 @@ const electronMocks = vi.hoisted(() => {
 
         isDestroyed() {
             return this.destroyed;
+        }
+
+        triggerDidFinishLoad() {
+            for (const handler of this.didFinishLoadHandlers) {
+                handler();
+            }
         }
     }
 
@@ -80,7 +94,11 @@ vi.mock("electron", () => ({
     shell: electronMocks.shell,
 }));
 
-import { createMainWindow, refreshWindowsTitleBarOverlays } from "./window";
+import {
+    createMainWindow,
+    createSettingsWindow,
+    refreshWindowsTitleBarOverlays,
+} from "./window";
 
 describe("window titlebar overlays", () => {
     beforeEach(() => {
@@ -135,10 +153,20 @@ describe("window titlebar overlays", () => {
         vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
 
         createMainWindow();
+        createSettingsWindow();
 
         expect(electronMocks.windows[0]?.options).toMatchObject({
             titleBarStyle: "hidden",
+            trafficLightPosition: { x: 14, y: 8 },
+        });
+        expect(electronMocks.windows[1]?.options).toMatchObject({
+            titleBarStyle: "hidden",
             trafficLightPosition: { x: 14, y: 14 },
         });
+
+        electronMocks.windows[0]?.triggerDidFinishLoad();
+        expect(
+            electronMocks.windows[0]?.setWindowButtonPosition,
+        ).toHaveBeenCalledWith({ x: 14, y: 8 });
     });
 });

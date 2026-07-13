@@ -168,7 +168,11 @@ import {
     type OpenDialogOptions,
 } from "electron";
 
-import { forEachLiveWindow, refreshWindowsTitleBarOverlays } from "@main/window";
+import {
+    forEachLiveWindow,
+    MAC_MAIN_TRAFFIC_LIGHT_POSITION,
+    refreshWindowsTitleBarOverlays,
+} from "@main/window";
 import { createIpcInFlightLimiter } from "@main/ipc/rate-limit";
 import { resolveSettingsSnapshotSaveEffects } from "@main/ipc/settings-save-effects";
 import { debugBenignError } from "@main/observability/logging";
@@ -591,7 +595,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const win = BrowserWindow.fromWebContents(event.sender);
             if (win && process.platform === "darwin") {
                 win.setWindowButtonPosition(
-                    visible ? { x: 18, y: 18 } : { x: -80, y: -80 },
+                    visible ? MAC_MAIN_TRAFFIC_LIGHT_POSITION : { x: -80, y: -80 },
                 );
             }
         },
