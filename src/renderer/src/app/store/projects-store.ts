@@ -9,6 +9,7 @@ import type {
     ProjectSummary,
     ProjectTreeNode,
 } from "@shared/ipc";
+import { getProjectContextKey } from "../projects/context-key";
 
 const ROOT_NODE_KEY = "__root__";
 
@@ -971,7 +972,7 @@ function getTreeContextKey(
     projectId: string,
     worktreeId: string | null | undefined,
 ): string {
-    return `${projectId}::${worktreeId ?? "__primary__"}`;
+    return getProjectContextKey(projectId, worktreeId ?? null);
 }
 
 export function resolveProjectTreeRefresh(input: {
