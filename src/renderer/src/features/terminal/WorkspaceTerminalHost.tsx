@@ -2,7 +2,10 @@ import { useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
-import type { RuntimeWorkspaceTerminalTab } from "@renderer/app/workspace/tree";
+import {
+    collectPaneNodes,
+    type RuntimeWorkspaceTerminalTab,
+} from "@renderer/app/workspace/tree";
 
 import { useTerminalRuntimeStore } from "./terminalRuntimeStore";
 
@@ -14,10 +17,11 @@ function getComandoApiOrNull() {
 }
 
 export function WorkspaceTerminalHost() {
-    const { activeContextKey, contextsByKey, tabsById } = useWorkspaceStore(
+    const { activeContextKey, contextsByKey, rootNode, tabsById } = useWorkspaceStore(
         useShallow((state) => ({
             activeContextKey: state.activeContextKey,
             contextsByKey: state.contextsByKey,
+            rootNode: state.rootNode,
             tabsById: state.tabsById,
         })),
     );
@@ -29,6 +33,15 @@ export function WorkspaceTerminalHost() {
             ),
         [tabsById],
     );
+    const activeTerminalTabs = useMemo(() => {
+        const activeTabIds = new Set(
+            collectPaneNodes(rootNode).flatMap((pane) =>
+                pane.activeTabId ? [pane.activeTabId] : [],
+            ),
+        );
+
+        return visibleTerminalTabs.filter((tab) => activeTabIds.has(tab.id));
+    }, [rootNode, visibleTerminalTabs]);
     const liveTerminalIds = useMemo(() => {
         const inactiveTerminalIds = Object.values(contextsByKey)
             .filter((context) => context.key !== activeContextKey)
@@ -144,15 +157,15 @@ export function WorkspaceTerminalHost() {
     }, []);
 
     useEffect(() => {
-        for (const tab of visibleTerminalTabs) {
+        for (const tab of activeTerminalTabs) {
             ensureTerminal(tab);
         }
         closeMissingTerminals(liveTerminalIds);
     }, [
+        activeTerminalTabs,
         closeMissingTerminals,
         ensureTerminal,
         liveTerminalIds,
-        visibleTerminalTabs,
     ]);
 
     useEffect(

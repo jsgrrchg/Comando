@@ -2708,16 +2708,13 @@ function WorkspacePaneView({
                 </div>
 
                 <div className="relative min-h-0 flex-1 overflow-hidden bg-editor">
-                    {paneTabs
-                        .filter((tab) => tab.kind === "terminal")
-                        .map((tab) => (
-                            <WorkspaceTerminalView
-                                key={tab.id}
-                                active={tab.id === paneActiveTabId}
-                                activePane={isActivePane}
-                                tab={tab}
-                            />
-                        ))}
+                    {activeTab?.kind === "terminal" ? (
+                        <WorkspaceTerminalView
+                            active
+                            activePane={isActivePane}
+                            tab={activeTab}
+                        />
+                    ) : null}
                     <WorkspaceFileEditorHost
                         activeFileTab={activeFileTab}
                         fileTabs={paneFileTabs}

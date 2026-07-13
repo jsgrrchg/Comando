@@ -115,6 +115,21 @@ function getActivePersistedLayout(snapshot: WorkspaceNavigationSnapshot) {
     )?.workspace;
 }
 
+function createDeferred<T>() {
+    let resolve: (value: T) => void = (_value: T): void => {
+        void _value;
+        throw new Error("Deferred promise was not initialized.");
+    };
+    const promise = new Promise<T>((nextResolve) => {
+        resolve = nextResolve;
+    });
+
+    return {
+        promise,
+        resolve: (value: T) => resolve(value),
+    };
+}
+
 describe("workspace file opening", () => {
     beforeEach(() => {
         resetWorkspacePersistenceForTests();
@@ -367,6 +382,313 @@ describe("workspace file opening", () => {
         expect(ensureSessionMock).not.toHaveBeenCalledWith(
             expect.objectContaining({ sessionId: "session-inactive" }),
         );
+    });
+
+    it("hydrates only active file tabs and loads inactive files on focus", async () => {
+        const activeFile = createWorkspaceFileTab(
+            "active-file",
+            "src/active.ts",
+        );
+        const inactiveFile = createWorkspaceFileTab(
+            "inactive-file",
+            "src/inactive.ts",
+        );
+        const targetContextKey = "project-2::__primary__";
+        const targetWorkspace: WorkspaceTreeState = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: activeFile.id,
+                id: "pane-root",
+                tabIds: [activeFile.id, inactiveFile.id],
+                type: "pane",
+            },
+            tabsById: {
+                [activeFile.id]: {
+                    ...activeFile,
+                    projectId: "project-2",
+                },
+                [inactiveFile.id]: {
+                    ...inactiveFile,
+                    projectId: "project-2",
+                },
+            },
+        };
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            contextsByKey: {
+                ...state.contextsByKey,
+                [targetContextKey]: {
+                    key: targetContextKey,
+                    lastActivatedAt: "2026-04-14T00:00:00.000Z",
+                    projectId: "project-2",
+                    workspace: targetWorkspace,
+                    worktreeId: null,
+                },
+            },
+            openContextKeys: [...state.openContextKeys, targetContextKey],
+        }));
+
+        await useWorkspaceStore.getState().activateContext(targetContextKey);
+
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        });
+        expect(openProjectFileMock).toHaveBeenCalledWith({
+            projectId: "project-2",
+            relativePath: activeFile.relativePath,
+            worktreeId: null,
+        });
+
+        await useWorkspaceStore
+            .getState()
+            .selectTab("pane-root", inactiveFile.id);
+
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(2);
+        });
+        expect(openProjectFileMock).toHaveBeenLastCalledWith({
+            projectId: "project-2",
+            relativePath: inactiveFile.relativePath,
+            worktreeId: null,
+        });
+    });
+
+    it("retries a file load after a rapid context switch", async () => {
+        const sourceContextKey = "project-1::__primary__";
+        const targetContextKey = "project-2::__primary__";
+        const fileTab = createWorkspaceFileTab("file-source", "src/app.ts");
+        const sourceWorkspace: WorkspaceTreeState = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: fileTab.id,
+                id: "pane-root",
+                tabIds: [fileTab.id],
+                type: "pane",
+            },
+            tabsById: { [fileTab.id]: fileTab },
+        };
+        const initialLoad = createDeferred<ProjectFileDocument>();
+        openProjectFileMock.mockImplementationOnce(
+            () => initialLoad.promise,
+        );
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            ...sourceWorkspace,
+            contextsByKey: {
+                ...state.contextsByKey,
+                [sourceContextKey]: {
+                    ...state.contextsByKey[sourceContextKey],
+                    workspace: sourceWorkspace,
+                },
+                [targetContextKey]: {
+                    key: targetContextKey,
+                    lastActivatedAt: "2026-04-14T00:00:00.000Z",
+                    projectId: "project-2",
+                    workspace: createDefaultWorkspaceState(),
+                    worktreeId: null,
+                },
+            },
+            openContextKeys: [sourceContextKey, targetContextKey],
+        }));
+
+        await useWorkspaceStore.getState().selectTab("pane-root", fileTab.id);
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        });
+
+        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        initialLoad.resolve({
+            absolutePath: "/tmp/src/app.ts",
+            content: "export const value = 1;\n",
+            imageDataBase64: null,
+            isBinary: false,
+            isTooLarge: false,
+            kind: "text",
+            languageId: "typescript",
+            languageLabel: "TypeScript",
+            mimeType: "text/typescript",
+            modifiedAtMs: 1,
+            name: "app.ts",
+            projectId: "project-1",
+            relativePath: fileTab.relativePath,
+            sizeBytes: 24,
+        });
+
+        await vi.waitFor(() => {
+            const storedTab =
+                useWorkspaceStore.getState().contextsByKey[sourceContextKey]
+                    ?.workspace.tabsById[fileTab.id];
+            expect(storedTab).toMatchObject({ isLoading: false });
+        });
+
+        await useWorkspaceStore.getState().activateContext(sourceContextKey);
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(2);
+        });
+    });
+
+    it("reuses the pending load when returning to a context before it resolves", async () => {
+        const sourceContextKey = "project-1::__primary__";
+        const targetContextKey = "project-2::__primary__";
+        const fileTab = createWorkspaceFileTab("file-source", "src/app.ts");
+        const sourceWorkspace: WorkspaceTreeState = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: fileTab.id,
+                id: "pane-root",
+                tabIds: [fileTab.id],
+                type: "pane",
+            },
+            tabsById: { [fileTab.id]: fileTab },
+        };
+        const initialLoad = createDeferred<ProjectFileDocument>();
+        openProjectFileMock.mockImplementationOnce(() => initialLoad.promise);
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            ...sourceWorkspace,
+            contextsByKey: {
+                ...state.contextsByKey,
+                [sourceContextKey]: {
+                    ...state.contextsByKey[sourceContextKey],
+                    workspace: sourceWorkspace,
+                },
+                [targetContextKey]: {
+                    key: targetContextKey,
+                    lastActivatedAt: "2026-04-14T00:00:00.000Z",
+                    projectId: "project-2",
+                    workspace: createDefaultWorkspaceState(),
+                    worktreeId: null,
+                },
+            },
+            openContextKeys: [sourceContextKey, targetContextKey],
+        }));
+
+        await useWorkspaceStore.getState().selectTab("pane-root", fileTab.id);
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        });
+
+        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore.getState().activateContext(sourceContextKey);
+        initialLoad.resolve({
+            absolutePath: "/tmp/src/app.ts",
+            content: "export const value = 1;\n",
+            imageDataBase64: null,
+            isBinary: false,
+            isTooLarge: false,
+            kind: "text",
+            languageId: "typescript",
+            languageLabel: "TypeScript",
+            mimeType: "text/typescript",
+            modifiedAtMs: 1,
+            name: "app.ts",
+            projectId: "project-1",
+            relativePath: fileTab.relativePath,
+            sizeBytes: 24,
+        });
+
+        await vi.waitFor(() => {
+            const currentTab = useWorkspaceStore.getState().tabsById[fileTab.id];
+            expect(
+                currentTab?.kind === "file"
+                    ? currentTab.document?.content
+                    : null,
+            ).toBe("export const value = 1;\n");
+        });
+        expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("shares a pending file load between active duplicate tabs", async () => {
+        const firstFile = createWorkspaceFileTab("file-left", "src/app.ts");
+        const secondFile = createWorkspaceFileTab("file-right", "src/app.ts");
+        const targetContextKey = "project-2::__primary__";
+        const targetWorkspace: WorkspaceTreeState = {
+            activePaneId: "pane-left",
+            rootNode: {
+                axis: "horizontal",
+                children: [
+                    {
+                        activeTabId: firstFile.id,
+                        id: "pane-left",
+                        tabIds: [firstFile.id],
+                        type: "pane",
+                    },
+                    {
+                        activeTabId: secondFile.id,
+                        id: "pane-right",
+                        tabIds: [secondFile.id],
+                        type: "pane",
+                    },
+                ],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                [firstFile.id]: { ...firstFile, projectId: "project-2" },
+                [secondFile.id]: { ...secondFile, projectId: "project-2" },
+            },
+        };
+        const sharedLoad = createDeferred<ProjectFileDocument>();
+        openProjectFileMock.mockImplementationOnce(
+            () => sharedLoad.promise,
+        );
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            contextsByKey: {
+                ...state.contextsByKey,
+                [targetContextKey]: {
+                    key: targetContextKey,
+                    lastActivatedAt: "2026-04-14T00:00:00.000Z",
+                    projectId: "project-2",
+                    workspace: targetWorkspace,
+                    worktreeId: null,
+                },
+            },
+            openContextKeys: [...state.openContextKeys, targetContextKey],
+        }));
+
+        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        });
+
+        sharedLoad.resolve({
+            absolutePath: "/tmp/src/app.ts",
+            content: "export const value = 1;\n",
+            imageDataBase64: null,
+            isBinary: false,
+            isTooLarge: false,
+            kind: "text",
+            languageId: "typescript",
+            languageLabel: "TypeScript",
+            mimeType: "text/typescript",
+            modifiedAtMs: 1,
+            name: "app.ts",
+            projectId: "project-2",
+            relativePath: firstFile.relativePath,
+            sizeBytes: 24,
+        });
+
+        await vi.waitFor(() => {
+            const tabs = useWorkspaceStore.getState().tabsById;
+            const firstTab = tabs[firstFile.id];
+            const secondTab = tabs[secondFile.id];
+            expect(
+                firstTab?.kind === "file"
+                    ? firstTab.document?.content
+                    : null,
+            ).toBe("export const value = 1;\n");
+            expect(
+                secondTab?.kind === "file"
+                    ? secondTab.document?.content
+                    : null,
+            ).toBe("export const value = 1;\n");
+        });
     });
 
     it("hydrates legacy restored chat tabs in history mode", async () => {

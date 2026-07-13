@@ -448,8 +448,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         });
 
         ensureActiveHydratedSessions(targetWorkspace);
-        void hydrateRuntimeTabs(
-            workspaceStateToSnapshot(targetWorkspace),
+        void hydrateActiveRuntimeTabs(
+            targetWorkspace,
             get,
             set,
             { contextKey, scopeEpoch },
@@ -527,8 +527,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
         if (nextContextKey) {
             ensureActiveHydratedSessions(nextWorkspace);
-            void hydrateRuntimeTabs(
-                workspaceStateToSnapshot(nextWorkspace),
+            void hydrateActiveRuntimeTabs(
+                nextWorkspace,
                 get,
                 set,
                 { contextKey: nextContextKey, scopeEpoch: get().scopeEpoch },
@@ -1265,8 +1265,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             });
             ensureActiveHydratedSessions(hydratedState);
             if (activeContextKey) {
-                void hydrateRuntimeTabs(
-                    workspaceStateToSnapshot(hydratedState),
+                void hydrateActiveRuntimeTabs(
+                    hydratedState,
                     get,
                     set,
                     { contextKey: activeContextKey, scopeEpoch },
@@ -1625,6 +1625,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 set,
                 tab.id,
                 getCurrentWorkspaceScope(get),
+                { force: true },
             );
         } catch (error) {
             set({
@@ -1804,6 +1805,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             set,
             tabId,
             getCurrentWorkspaceScope(get),
+            { force: true },
         );
     },
 
@@ -1842,6 +1844,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     set,
                     tab.id,
                     getCurrentWorkspaceScope(get),
+                    { force: true },
                 );
             }),
         );
@@ -2028,9 +2031,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }));
         const activeTabId = getPaneActiveTabId(get(), paneId);
         const activeTab = activeTabId ? get().tabsById[activeTabId] : null;
-        if (activeTab?.kind === "chat" || activeTab?.kind === "review") {
-            prewarmFocusedAiSession(activeTab);
-        }
+        prepareFocusedWorkspaceTab(activeTab, get, set);
         await persistWorkspaceState(get);
     },
 
@@ -2061,9 +2062,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             })(),
         }));
         const tab = get().tabsById[tabId];
-        if (tab?.kind === "chat" || tab?.kind === "review") {
-            prewarmFocusedAiSession(tab);
-        }
+        prepareFocusedWorkspaceTab(tab, get, set);
         await persistWorkspaceState(get);
     },
 
@@ -2105,9 +2104,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }));
         const activeTabId = getPaneActiveTabId(get(), paneId);
         const activeTab = activeTabId ? get().tabsById[activeTabId] : null;
-        if (activeTab?.kind === "chat" || activeTab?.kind === "review") {
-            prewarmFocusedAiSession(activeTab);
-        }
+        prepareFocusedWorkspaceTab(activeTab, get, set);
         await persistWorkspaceState(get);
     },
 
@@ -2302,6 +2299,7 @@ let pendingWorkspacePersistTimer: ReturnType<typeof setTimeout> | null = null;
 let workspacePersistDirty = false;
 let workspacePersistGet: GetWorkspaceState | null = null;
 let workspacePersistInFlight: Promise<void> | null = null;
+const pendingFileDocumentLoads = new Map<string, Promise<ProjectFileDocument>>();
 
 export function getWorkspaceTabRuntimeId(
     tab: RuntimeWorkspaceTab | null | undefined,
@@ -3131,7 +3129,7 @@ function createHydratedRuntimeTabs(
                     draftContent: "",
                     hasExternalChange: false,
                     isDirty: false,
-                    isLoading: true,
+                    isLoading: false,
                     isSaving: false,
                     loadError: null,
                     reviewContext: null,
@@ -3156,6 +3154,26 @@ function ensureActiveHydratedSessions(state: WorkspaceTreeState): void {
     }
 }
 
+function prepareFocusedWorkspaceTab(
+    tab: RuntimeWorkspaceTab | null | undefined,
+    get: GetWorkspaceState,
+    set: WorkspaceSetState,
+): void {
+    if (tab?.kind === "file") {
+        void loadFileTabDocument(
+            get,
+            set,
+            tab.id,
+            getCurrentWorkspaceScope(get),
+        );
+        return;
+    }
+
+    if (tab?.kind === "chat" || tab?.kind === "review") {
+        prewarmFocusedAiSession(tab);
+    }
+}
+
 function prewarmFocusedAiSession(
     tab: RuntimeWorkspaceTab,
 ): void {
@@ -3168,8 +3186,8 @@ function prewarmFocusedAiSession(
     void useAiStore.getState().ensureSession(tab);
 }
 
-async function hydrateRuntimeTabs(
-    snapshot: WorkspaceLayoutSnapshot,
+async function hydrateActiveRuntimeTabs(
+    workspace: WorkspaceTreeState,
     get: GetWorkspaceState,
     set: WorkspaceSetState,
     scope?: {
@@ -3177,73 +3195,18 @@ async function hydrateRuntimeTabs(
         readonly scopeEpoch: number;
     },
 ): Promise<void> {
+    const activeTabIds = new Set(
+        collectPaneNodes(workspace.rootNode).flatMap((pane) =>
+            pane.activeTabId ? [pane.activeTabId] : [],
+        ),
+    );
+
     await Promise.all(
-        snapshot.tabs.map(async (tab) => {
-            if (tab.kind === "chat") {
-                try {
-                    const persistedSession =
-                        await getComandoApi().getChatSessionState(
-                            tab.sessionId,
-                        );
-
-                    if (!persistedSession) {
-                        return;
-                    }
-
-                    if (!isWorkspaceScopeCurrent(get, scope)) {
-                        return;
-                    }
-
-                    set((state) => ({
-                        error: null,
-                        tabsById: {
-                            ...state.tabsById,
-                            [tab.id]: {
-                                ...tab,
-                                draft: persistedSession.draft,
-                                projectId: persistedSession.projectId,
-                                title: persistedSession.title,
-                                worktreeId: persistedSession.worktreeId ?? null,
-                            },
-                        },
-                    }));
-                } catch {
-                    return;
-                }
-
-                return;
+        [...activeTabIds].map(async (tabId) => {
+            const tab = workspace.tabsById[tabId];
+            if (tab?.kind === "file") {
+                await loadFileTabDocument(get, set, tab.id, scope);
             }
-
-            if (tab.kind === "git") {
-                return;
-            }
-
-            if (tab.kind === "chat_history") {
-                return;
-            }
-
-            if (tab.kind === "git_commit") {
-                return;
-            }
-
-            if (
-                tab.kind === "github_issues" ||
-                tab.kind === "github_issue" ||
-                tab.kind === "github_pull_requests" ||
-                tab.kind === "github_pull_request"
-            ) {
-                return;
-            }
-
-            if (tab.kind === "review") {
-                return;
-            }
-
-            if (tab.kind === "terminal") {
-                return;
-            }
-
-            await loadFileTabDocument(get, set, tab.id, scope);
         }),
     );
 }
@@ -3299,6 +3262,7 @@ export function resetWorkspacePersistenceForTests(): void {
     workspacePersistDirty = false;
     workspacePersistGet = null;
     workspacePersistInFlight = null;
+    pendingFileDocumentLoads.clear();
 }
 
 function scheduleWorkspacePersistence(get: GetWorkspaceState): void {
@@ -3397,6 +3361,9 @@ async function loadFileTabDocument(
         readonly contextKey: string;
         readonly scopeEpoch: number;
     },
+    options: {
+        readonly force?: boolean;
+    } = {},
 ): Promise<void> {
     if (!isWorkspaceScopeCurrent(get, scope)) {
         return;
@@ -3406,17 +3373,7 @@ async function loadFileTabDocument(
         return;
     }
 
-    const hasSiblingLoadInFlight = Object.values(get().tabsById).some(
-        (candidate): candidate is RuntimeWorkspaceFileTab =>
-            candidate.kind === "file" &&
-            candidate.id !== tab.id &&
-            candidate.projectId === tab.projectId &&
-            normalizeWorktreeId(candidate.worktreeId) ===
-                normalizeWorktreeId(tab.worktreeId) &&
-            candidate.relativePath === tab.relativePath &&
-            candidate.isLoading,
-    );
-    if (hasSiblingLoadInFlight) {
+    if (!options.force && tab.document) {
         return;
     }
 
@@ -3426,13 +3383,10 @@ async function loadFileTabDocument(
             error: null,
         }));
 
-        const document = await getComandoApi().openProjectFile({
-            projectId: tab.projectId,
-            relativePath: tab.relativePath,
-            worktreeId: tab.worktreeId ?? null,
-        });
+        const document = await getOrCreateFileDocumentLoad(tab);
 
         if (!isWorkspaceScopeCurrent(get, scope)) {
+            clearStaleFileTabLoading(set, tabId, scope);
             return;
         }
 
@@ -3442,6 +3396,7 @@ async function loadFileTabDocument(
         }));
     } catch (error) {
         if (!isWorkspaceScopeCurrent(get, scope)) {
+            clearStaleFileTabLoading(set, tabId, scope);
             return;
         }
         set((state) => ({
@@ -3458,6 +3413,84 @@ async function loadFileTabDocument(
                     : "Could not refresh the open workspace tabs.",
         }));
     }
+}
+
+function getOrCreateFileDocumentLoad(
+    tab: RuntimeWorkspaceFileTab,
+): Promise<ProjectFileDocument> {
+    const key = getWorkspaceFileLoadKey(tab);
+    const existingLoad = pendingFileDocumentLoads.get(key);
+    if (existingLoad) {
+        return existingLoad;
+    }
+
+    const load = getComandoApi().openProjectFile({
+        projectId: tab.projectId,
+        relativePath: tab.relativePath,
+        worktreeId: tab.worktreeId ?? null,
+    });
+    pendingFileDocumentLoads.set(key, load);
+    void load.then(
+        () => {
+            if (pendingFileDocumentLoads.get(key) === load) {
+                pendingFileDocumentLoads.delete(key);
+            }
+        },
+        () => {
+            if (pendingFileDocumentLoads.get(key) === load) {
+                pendingFileDocumentLoads.delete(key);
+            }
+        },
+    );
+    return load;
+}
+
+function getWorkspaceFileLoadKey(tab: RuntimeWorkspaceFileTab): string {
+    return [
+        tab.projectId,
+        normalizeWorktreeId(tab.worktreeId) ?? "__primary__",
+        tab.relativePath,
+    ].join("\u0000");
+}
+
+function clearStaleFileTabLoading(
+    set: WorkspaceSetState,
+    tabId: string,
+    scope: { readonly contextKey: string; readonly scopeEpoch: number } | undefined,
+): void {
+    if (!scope) {
+        return;
+    }
+
+    set((state) => {
+        if (state.activeContextKey === scope.contextKey) {
+            // A newer activation already owns the visible tab state.
+            return state;
+        }
+
+        const context = state.contextsByKey[scope.contextKey];
+        const tab = context?.workspace.tabsById[tabId];
+        if (!context || !tab || tab.kind !== "file" || !tab.isLoading) {
+            return state;
+        }
+
+        return {
+            ...state,
+            contextsByKey: {
+                ...state.contextsByKey,
+                [scope.contextKey]: {
+                    ...context,
+                    workspace: {
+                        ...context.workspace,
+                        tabsById: {
+                            ...context.workspace.tabsById,
+                            [tabId]: { ...tab, isLoading: false },
+                        },
+                    },
+                },
+            },
+        };
+    });
 }
 
 async function closeTabSideEffects(tab: RuntimeWorkspaceTab): Promise<void> {
