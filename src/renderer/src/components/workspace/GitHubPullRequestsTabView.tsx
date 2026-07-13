@@ -390,12 +390,7 @@ export function GitHubPullRequestsTabView({
                 return true;
             }
 
-            return (
-                pullRequest.title.toLowerCase().includes(normalizedQuery) ||
-                String(pullRequest.number).includes(normalizedQuery) ||
-                pullRequest.head.label.toLowerCase().includes(normalizedQuery) ||
-                pullRequest.base.label.toLowerCase().includes(normalizedQuery)
-            );
+            return pullRequestMatchesSearch(pullRequest, normalizedQuery);
         });
 
         return sortPullRequestsNewestFirst(filteredPullRequests);
@@ -1265,6 +1260,21 @@ function getPullRequestListState(
     filter: PullRequestFilter,
 ): "all" | "closed" | "open" {
     return filter === "draft" || filter === "branch" ? "all" : filter;
+}
+
+export function pullRequestMatchesSearch(
+    pullRequest: GitHubPullRequestSummary,
+    normalizedQuery: string,
+): boolean {
+    return (
+        pullRequest.title.toLowerCase().includes(normalizedQuery) ||
+        String(pullRequest.number).includes(normalizedQuery) ||
+        pullRequest.head.label.toLowerCase().includes(normalizedQuery) ||
+        pullRequest.base.label.toLowerCase().includes(normalizedQuery) ||
+        pullRequest.labels.some((label) =>
+            label.name.toLowerCase().includes(normalizedQuery),
+        )
+    );
 }
 
 function getContextKey(projectId: string, worktreeId: string | null): string {

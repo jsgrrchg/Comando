@@ -1,4 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+    useEffect,
+    useRef,
+    useState,
+    type ReactNode,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import type {
@@ -27,6 +32,7 @@ import {
     GitHubEmptyState,
     GitHubErrorState,
     GitHubInput,
+    GitHubLabelPill,
     GitHubMergeablePill,
     GitHubSection,
     GitHubSectionLabel,
@@ -37,6 +43,7 @@ import {
     openGitHubWebUrl,
 } from "./GitHubWorkspacePrimitives";
 import { GitHubActionsPanel } from "./GitHubActionsPanel";
+import { GitHubLabelPicker } from "./GitHubLabelPicker";
 import { MarkdownContent } from "./MarkdownContent";
 import { IdeActionButton } from "./ide-bar";
 
@@ -59,6 +66,11 @@ export function GitHubPullRequestTabView({
     const [isEditingDescription, setIsEditingDescription] = useState(false);
     const [titleDraft, setTitleDraft] = useState("");
     const [descriptionDraft, setDescriptionDraft] = useState("");
+    const [labelPickerAnchor, setLabelPickerAnchor] = useState<{
+        readonly x: number;
+        readonly y: number;
+    } | null>(null);
+    const labelPickerTriggerRef = useRef<HTMLSpanElement | null>(null);
 
     const detail = useGitHubStore(
         (state) =>
@@ -74,6 +86,9 @@ export function GitHubPullRequestTabView({
     const authStatus = useGitHubStore(
         (state) => state.authStatusByHost[repo.host] ?? null,
     );
+    const labels = useGitHubStore(
+        (state) => state.labelsByRepo[repoKey] ?? [],
+    );
     const commentMutatingKeys = useGitHubStore((state) => state.mutatingKeys);
     const commentErrors = useGitHubStore((state) => state.errors);
 
@@ -81,7 +96,7 @@ export function GitHubPullRequestTabView({
         ? getGitHubPullRequestChecksKey(repo, detail.head.sha)
         : null;
 
-    const { isLoading, isLoadingChecks } = useGitHubStore(
+    const { isLoading, isLoadingChecks, isLoadingLabels } = useGitHubStore(
         useShallow((state) => ({
             isLoading:
                 state.loadingKeys[
@@ -90,6 +105,7 @@ export function GitHubPullRequestTabView({
             isLoadingChecks: checksKey
                 ? (state.loadingKeys[checksKey] ?? false)
                 : false,
+            isLoadingLabels: state.loadingKeys[`${repoKey}:labels`] ?? false,
         })),
     );
 
@@ -99,6 +115,7 @@ export function GitHubPullRequestTabView({
         isConvertingDraft,
         isRequestingReview,
         isUpdatingPullRequest,
+        isUpdatingLabels,
     } = useGitHubStore(
         useShallow((state) => ({
             isCommenting:
@@ -121,6 +138,10 @@ export function GitHubPullRequestTabView({
                 state.mutatingKeys[
                     `${repoKey}:pr:${pullRequestNumber}:update`
                 ] ?? false,
+            isUpdatingLabels:
+                state.mutatingKeys[
+                    `${repoKey}:pr:${pullRequestNumber}:labels`
+                ] ?? false,
         })),
     );
 
@@ -132,6 +153,8 @@ export function GitHubPullRequestTabView({
         requestReviewError,
         checksError,
         updateError,
+        labelMutationError,
+        labelsError,
     } = useGitHubStore(
         useShallow((state) => ({
             checksError: checksKey ? (state.errors[checksKey] ?? null) : null,
@@ -157,6 +180,11 @@ export function GitHubPullRequestTabView({
                 state.errors[
                     `${repoKey}:pr:${pullRequestNumber}:update`
                 ] ?? null,
+            labelMutationError:
+                state.errors[
+                    `${repoKey}:pr:${pullRequestNumber}:labels`
+                ] ?? null,
+            labelsError: state.errors[`${repoKey}:labels`] ?? null,
         })),
     );
 
@@ -185,6 +213,10 @@ export function GitHubPullRequestTabView({
     const updatePullRequest = useGitHubStore(
         (state) => state.updatePullRequest,
     );
+    const refreshLabels = useGitHubStore((state) => state.refreshLabels);
+    const setPullRequestLabels = useGitHubStore(
+        (state) => state.setPullRequestLabels,
+    );
     const openGitCommitTab = useWorkspaceStore(
         (state) => state.openGitCommitTab,
     );
@@ -193,12 +225,16 @@ export function GitHubPullRequestTabView({
         authStatus,
         "pull_requests",
     );
+    const canEditLabels =
+        canWritePullRequests || hasGitHubWritePermission(authStatus, "issues");
     const canCommentPullRequests =
         hasGitHubWritePermission(authStatus, "issues") ||
         canWritePullRequests;
     const writePermissionLabel = getGitHubWritePermissionLabel("pull_requests");
     const commentPermissionLabel =
         "Your GitHub token cannot write PR conversation comments.";
+    const labelPermissionLabel =
+        "Your GitHub token cannot edit pull request labels.";
 
     useEffect(() => {
         let cancelled = false;
@@ -365,6 +401,33 @@ export function GitHubPullRequestTabView({
         setIsEditingDescription(false);
     };
 
+    const handleOpenLabelPicker = () => {
+        if (!detail || !canEditLabels) {
+            return;
+        }
+
+        const rect = labelPickerTriggerRef.current?.getBoundingClientRect();
+        if (!rect) {
+            return;
+        }
+
+        setLabelPickerAnchor({ x: rect.left, y: rect.bottom + 6 });
+        void refreshLabels(repo).catch(() => undefined);
+    };
+
+    const handleSaveLabels = async (labelNames: readonly string[]) => {
+        if (!detail || !canEditLabels) {
+            return;
+        }
+
+        try {
+            await setPullRequestLabels(repo, pullRequestNumber, labelNames);
+            setLabelPickerAnchor(null);
+        } catch {
+            // The store exposes the mutation error while the picker remains open.
+        }
+    };
+
     const stateTone = detail?.draft
         ? "draft"
         : detail?.mergedAt
@@ -498,6 +561,27 @@ export function GitHubPullRequestTabView({
                                 <span className="text-[11px] text-text-secondary">
                                     updated{" "}
                                     {formatGitHubDateTime(detail.updatedAt)}
+                                </span>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                                {detail.labels.map((label) => (
+                                    <GitHubLabelPill
+                                        key={label.id}
+                                        label={label}
+                                    />
+                                ))}
+                                <span ref={labelPickerTriggerRef}>
+                                    <IdeActionButton
+                                        disabled={!canEditLabels}
+                                        onClick={handleOpenLabelPicker}
+                                        title={
+                                            canEditLabels
+                                                ? undefined
+                                                : labelPermissionLabel
+                                        }
+                                    >
+                                        Edit labels
+                                    </IdeActionButton>
                                 </span>
                             </div>
                             <div className="flex flex-wrap items-center gap-2 text-[11px]">
@@ -821,6 +905,19 @@ export function GitHubPullRequestTabView({
                     </>
                 ) : null}
             </div>
+            {detail && labelPickerAnchor ? (
+                <GitHubLabelPicker
+                    anchor={labelPickerAnchor}
+                    error={labelMutationError ?? labelsError}
+                    isLoading={isLoadingLabels}
+                    isSaving={isUpdatingLabels}
+                    item={detail}
+                    key={detail.number}
+                    labels={labels}
+                    onClose={() => setLabelPickerAnchor(null)}
+                    onSave={(labelNames) => void handleSaveLabels(labelNames)}
+                />
+            ) : null}
         </GitHubTabShell>
     );
 }

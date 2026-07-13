@@ -2190,6 +2190,9 @@ function pullRequestMatchesSearch(
         pullRequest.head.ref.toLowerCase().includes(normalizedSearch) ||
         pullRequest.base.label.toLowerCase().includes(normalizedSearch) ||
         pullRequest.base.ref.toLowerCase().includes(normalizedSearch) ||
+        pullRequest.labels.some((label) =>
+            label.name.toLowerCase().includes(normalizedSearch),
+        ) ||
         (pullRequest.author?.login.toLowerCase().includes(normalizedSearch) ??
             false)
     );

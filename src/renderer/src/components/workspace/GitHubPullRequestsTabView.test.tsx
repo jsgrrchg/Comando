@@ -124,6 +124,7 @@ import {
     GITHUB_PULL_REQUESTS_VIRTUALIZATION_THRESHOLD,
     GitHubPullRequestsTabView,
     getVisiblePullRequestCheckTargets,
+    pullRequestMatchesSearch,
 } from "./GitHubPullRequestsTabView";
 
 class MemoryStorage implements Storage {
@@ -400,6 +401,16 @@ describe("GitHubPullRequestsTabView", () => {
         expect(markup).toContain("checks pending");
         expect(markup).toContain("checks...");
         expect(markup).toContain("checks unknown");
+    });
+
+    it("matches pull requests by their labels", () => {
+        const pullRequest = createPullRequestSummary(5);
+
+        expect(pullRequest.labels).toHaveLength(1);
+        expect(pullRequestMatchesSearch(pullRequest, "stack-5")).toBe(true);
+        expect(pullRequestMatchesSearch(pullRequest, "missing-label")).toBe(
+            false,
+        );
     });
 
     it("derives check targets from the virtual visible range", () => {
