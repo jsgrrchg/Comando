@@ -17,6 +17,7 @@ import type {
     GitRepositorySnapshot,
     GitWorktreeSummary,
     PersistenceSnapshot,
+    ProjectSummary,
     ProjectTreeNode,
     SettingsWindowCategory,
     SettingsSnapshot,
@@ -134,6 +135,7 @@ import {
     createWorkspaceQuickFile,
 } from "./components/workspace/quick-create";
 import { QuickOpenFilePalette } from "./components/workspace/QuickOpenFilePalette";
+import type { WorkspacePaneRecentProject } from "./components/workspace/WorkspacePaneEmptyState";
 import { closeWorkspaceTabsWithConfirmation } from "./components/workspace/workspaceCloseGuard";
 import {
     DesktopTopBar,
@@ -153,6 +155,7 @@ type SidebarView = "files" | "git" | "agents" | "issues" | "pull_requests";
 
 const ROOT_NODE_KEY = "__root__";
 const PROJECT_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
+const WORKSPACE_RECENT_PROJECTS_LIMIT = 6;
 
 function collectProjectWorktrees(
     snapshots: Readonly<Record<string, GitRepositorySnapshot | null>>,
@@ -1463,6 +1466,17 @@ export function App() {
             workspaceContextsByKey,
         ],
     );
+    const workspaceRecentProjects = useMemo<
+        readonly WorkspacePaneRecentProject[]
+    >(() => {
+        const lastOpenedTime = (project: ProjectSummary) =>
+            project.lastOpenedAt ? Date.parse(project.lastOpenedAt) : 0;
+        return projects
+            .filter((project) => project.id !== activeProjectId)
+            .toSorted((a, b) => lastOpenedTime(b) - lastOpenedTime(a))
+            .slice(0, WORKSPACE_RECENT_PROJECTS_LIMIT)
+            .map((project) => ({ id: project.id, name: project.name }));
+    }, [activeProjectId, projects]);
     const projectContextMenuProjects = useMemo<
         readonly ProjectContextMenuProject[]
     >(() => {
@@ -4326,6 +4340,19 @@ export function App() {
         </>
     );
 
+    const handleOpenProject = (projectId: string) => {
+        void useWorkspaceStore.getState().openContext(projectId);
+    };
+
+    const handleOpenProjects = () => {
+        void (async () => {
+            const projectIds = await addProjects();
+            for (const projectId of projectIds) {
+                await useWorkspaceStore.getState().openContext(projectId);
+            }
+        })();
+    };
+
     return (
         <div
             className="min-h-screen text-text-primary"
@@ -4361,21 +4388,8 @@ export function App() {
                                 contextKey,
                             );
                         }}
-                        onOpenProject={(projectId) => {
-                            void useWorkspaceStore
-                                .getState()
-                                .openContext(projectId);
-                        }}
-                        onOpenProjects={() => {
-                            void (async () => {
-                                const projectIds = await addProjects();
-                                for (const projectId of projectIds) {
-                                    await useWorkspaceStore
-                                        .getState()
-                                        .openContext(projectId);
-                                }
-                            })();
-                        }}
+                        onOpenProject={handleOpenProject}
+                        onOpenProjects={handleOpenProjects}
                         onOpenSettings={(initialCategory) =>
                             openSettingsWindow(initialCategory)
                         }
@@ -4468,9 +4482,12 @@ export function App() {
                             <WorkspaceView
                                 defaultProjectId={activeProjectId}
                                 defaultWorktreeId={activeWorktreeId}
+                                onOpenProject={handleOpenProject}
+                                onOpenProjects={handleOpenProjects}
                                 onRequestCreateFile={() => {
                                     void handleCreateTreeEntry("file", null);
                                 }}
+                                recentProjects={workspaceRecentProjects}
                             />
                         </main>
                     </div>
