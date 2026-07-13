@@ -93,14 +93,26 @@ type RuntimeAiSessionTab = RuntimeWorkspaceChatTab | RuntimeWorkspaceReviewTab;
 type AiSessionRuntimeState = "history" | "live";
 
 const ensureSessionInFlight = new Map<string, Promise<void>>();
+type OptimisticSnapshotMutator = (
+    snapshot: AiSessionSnapshot,
+) => AiSessionSnapshot;
+
 const optimisticSnapshotMutationStates = new Map<
     string,
     {
         latestVersion: number;
+        latestVersionByConflictKey: Map<string, number>;
         nextVersion: number;
+        pendingVersionsByConflictKey: Map<string, Set<number>>;
+        preservedMutations: Map<number, OptimisticSnapshotMutator>;
+        rollbackBaseSnapshotsByConflictKey: Map<string, AiSessionSnapshot>;
         pendingVersions: Set<number>;
     }
 >();
+
+interface AiSessionControlMutationOptions {
+    readonly ensureLiveSession?: (force: boolean) => Promise<void>;
+}
 
 interface RegisteredSessionMeta {
     readonly projectId: string | null;
@@ -301,10 +313,17 @@ interface AiStore {
         status: QueuedPrompt["status"],
     ) => void;
     setSessionDiffZoom: (sessionId: string, diffZoom: number) => void;
-    setSessionMode: (input: AiSessionModeMutationInput) => Promise<void>;
-    setSessionModel: (input: AiSessionModelMutationInput) => Promise<void>;
+    setSessionMode: (
+        input: AiSessionModeMutationInput,
+        options?: AiSessionControlMutationOptions,
+    ) => Promise<void>;
+    setSessionModel: (
+        input: AiSessionModelMutationInput,
+        options?: AiSessionControlMutationOptions,
+    ) => Promise<void>;
     setSessionConfigOption: (
         input: AiSessionConfigOptionMutationInput,
+        options?: AiSessionControlMutationOptions,
     ) => Promise<void>;
     renameSession: (input: AiSessionRenameMutationInput) => Promise<void>;
     sendQueuedPromptNow: (sessionId: string, promptId: string) => Promise<void>;
@@ -1060,9 +1079,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             );
             const nextSnapshot = resolved.snapshot;
             const nextTranscript = resolved.transcript;
-            const resolvedCatalog = hasCatalogChanges(update.patch.changes)
-                ? extractRuntimeCatalog(nextSnapshot)
-                : null;
+            const resolvedCatalog = nextCatalog;
             const nextMeta = session.meta
                 ? session.meta.title === nextSnapshot.title
                     ? session.meta
@@ -1115,7 +1132,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 state.sessions[snapshot.sessionId] ?? createSessionState();
             const existingCatalog =
                 state.runtimeCatalogById[snapshot.runtimeId] ?? null;
-            const nextSnapshot =
+            const incomingSnapshot =
                 existingCatalog && hasRuntimeCatalog(existingCatalog)
                     ? mergeRuntimeCatalogIntoSnapshot(
                           snapshot,
@@ -1123,7 +1140,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                       )
                     : snapshot;
             const resolved = resolveIncomingSessionSnapshot(
-                nextSnapshot,
+                incomingSnapshot,
                 session,
                 {
                     preserveCurrentReviewState: true,
@@ -1139,7 +1156,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
             if (nextMeta !== session.meta) {
                 syncedTitle = resolvedSnapshot.title;
             }
-            const nextCatalog = extractRuntimeCatalog(resolvedSnapshot);
+            // Runtime defaults must come from provider state, never from the
+            // optimistic session overlay applied by the resolver.
+            const nextCatalog = extractRuntimeCatalog(incomingSnapshot);
 
             return {
                 runtimeCatalogById: hasRuntimeCatalog(nextCatalog)
@@ -1154,7 +1173,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         ...session,
                         ...resolveIncomingSnapshotProgress(
                             session,
-                            nextSnapshot.updatedAt,
+                            incomingSnapshot.updatedAt,
                         ),
                         localError: resolvedSnapshot.lastError,
                         meta: nextMeta,
@@ -1715,62 +1734,141 @@ export const useAiStore = create<AiStore>((set, get) => ({
         return status;
     },
 
-    setSessionMode: async (input) => {
-        const snapshot = get().sessions[input.sessionId]?.snapshot ?? null;
+    setSessionMode: async (input, options) => {
+        const snapshot = getSelectionMutationSnapshot(input.sessionId, get);
         const modeConfig = snapshot ? getModeConfigOption(snapshot) : null;
 
         await runOptimisticSnapshotMutation(
             input.sessionId,
             (currentSnapshot) =>
-                setModeOnSnapshot(currentSnapshot, input.modeId),
+                setModeOnSnapshot(
+                    hydrateOptimisticSelectionSnapshot(currentSnapshot, get),
+                    input.modeId,
+                ),
             () =>
-                modeConfig?.type === "select" &&
-                hasSelectConfigValue(modeConfig, input.modeId)
-                    ? getComandoApi().setAiSessionConfigOption({
-                          optionId: modeConfig.id,
-                          sessionId: input.sessionId,
-                          value: input.modeId,
-                      })
-                    : getComandoApi().setAiSessionMode(input),
+                runAiSessionControlRemoteMutation(
+                    () =>
+                        modeConfig?.type === "select" &&
+                        hasSelectConfigValue(modeConfig, input.modeId)
+                            ? getComandoApi().setAiSessionConfigOption({
+                                  optionId: modeConfig.id,
+                                  sessionId: input.sessionId,
+                                  value: input.modeId,
+                              })
+                            : getComandoApi().setAiSessionMode(input),
+                    options?.ensureLiveSession,
+                ),
             set,
             get,
+            {
+                conflictKey: "mode",
+                preserveDuringIncomingSnapshots: true,
+                rollbackSnapshot: (currentSnapshot, rollbackBaseSnapshot) =>
+                    rollbackBaseSnapshot.modeId
+                        ? setModeOnSnapshot(
+                              hydrateOptimisticSelectionSnapshot(
+                                  currentSnapshot,
+                                  get,
+                              ),
+                              rollbackBaseSnapshot.modeId,
+                          )
+                        : {
+                              ...currentSnapshot,
+                              modeId: null,
+                              updatedAt: new Date().toISOString(),
+                          },
+            },
         );
     },
 
-    setSessionModel: async (input) => {
-        const snapshot = get().sessions[input.sessionId]?.snapshot ?? null;
+    setSessionModel: async (input, options) => {
+        const snapshot = getSelectionMutationSnapshot(input.sessionId, get);
         const modelConfig = snapshot ? getModelConfigOption(snapshot) : null;
 
         await runOptimisticSnapshotMutation(
             input.sessionId,
             (currentSnapshot) =>
-                setModelOnSnapshot(currentSnapshot, input.modelId),
+                setModelOnSnapshot(
+                    hydrateOptimisticSelectionSnapshot(currentSnapshot, get),
+                    input.modelId,
+                ),
             () =>
-                modelConfig?.type === "select" &&
-                hasSelectConfigValue(modelConfig, input.modelId)
-                    ? getComandoApi().setAiSessionConfigOption({
-                          optionId: modelConfig.id,
-                          sessionId: input.sessionId,
-                          value: input.modelId,
-                      })
-                    : getComandoApi().setAiSessionModel(input),
+                runAiSessionControlRemoteMutation(
+                    () =>
+                        modelConfig?.type === "select" &&
+                        hasSelectConfigValue(modelConfig, input.modelId)
+                            ? getComandoApi().setAiSessionConfigOption({
+                                  optionId: modelConfig.id,
+                                  sessionId: input.sessionId,
+                                  value: input.modelId,
+                              })
+                            : getComandoApi().setAiSessionModel(input),
+                    options?.ensureLiveSession,
+                ),
             set,
             get,
+            {
+                conflictKey: "model",
+                preserveDuringIncomingSnapshots: true,
+                rollbackSnapshot: (currentSnapshot, rollbackBaseSnapshot) =>
+                    rollbackBaseSnapshot.modelId
+                        ? setModelOnSnapshot(
+                              hydrateOptimisticSelectionSnapshot(
+                                  currentSnapshot,
+                                  get,
+                              ),
+                              rollbackBaseSnapshot.modelId,
+                          )
+                        : {
+                              ...currentSnapshot,
+                              modelId: null,
+                              updatedAt: new Date().toISOString(),
+                          },
+            },
         );
     },
 
-    setSessionConfigOption: async (input) => {
+    setSessionConfigOption: async (input, options) => {
+        const snapshot = getSelectionMutationSnapshot(input.sessionId, get);
+        const conflictKey = getConfigOptionConflictKey(
+            snapshot,
+            input.optionId,
+        );
+
         await runOptimisticSnapshotMutation(
             input.sessionId,
-            (snapshot) =>
+            (currentSnapshot) =>
                 setConfigOptionOnSnapshot(
-                    snapshot,
+                    hydrateOptimisticSelectionSnapshot(currentSnapshot, get),
                     input.optionId,
                     input.value,
                 ),
-            () => getComandoApi().setAiSessionConfigOption(input),
+            () =>
+                runAiSessionControlRemoteMutation(
+                    () => getComandoApi().setAiSessionConfigOption(input),
+                    options?.ensureLiveSession,
+                ),
             set,
             get,
+            {
+                conflictKey,
+                preserveDuringIncomingSnapshots: true,
+                rollbackSnapshot: (currentSnapshot, rollbackBaseSnapshot) => {
+                    const rollbackValue = rollbackBaseSnapshot.configOptions.find(
+                        (option) => option.id === input.optionId,
+                    )?.value;
+                    return rollbackValue !== undefined
+                        ? setConfigOptionOnSnapshot(
+                              hydrateOptimisticSelectionSnapshot(
+                                  currentSnapshot,
+                                  get,
+                              ),
+                              input.optionId,
+                              rollbackValue,
+                          )
+                        : currentSnapshot;
+                },
+            },
         );
     },
 
@@ -2813,6 +2911,51 @@ function resolveIncomingSessionSnapshot(
     currentSession: AiSessionClientState | null | undefined,
     options: ResolveIncomingSnapshotOptions = {},
 ): ResolvedIncomingSessionSnapshot {
+    const resolved = resolveIncomingSessionSnapshotBase(
+        incomingSnapshot,
+        currentSession,
+        options,
+    );
+    const snapshot = applyPendingOptimisticSelectionMutations(
+        resolved.snapshot,
+    );
+
+    return snapshot === resolved.snapshot
+        ? resolved
+        : {
+              ...resolved,
+              snapshot,
+          };
+}
+
+function applyPendingOptimisticSelectionMutations(
+    snapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    const mutations = optimisticSnapshotMutationStates.get(snapshot.sessionId)
+        ?.preservedMutations;
+    if (!mutations || mutations.size === 0) {
+        return snapshot;
+    }
+
+    const authoritativeUpdatedAt = snapshot.updatedAt;
+    let nextSnapshot = snapshot;
+    for (const mutateSnapshot of mutations.values()) {
+        nextSnapshot = mutateSnapshot(nextSnapshot);
+    }
+
+    return nextSnapshot === snapshot
+        ? snapshot
+        : {
+              ...nextSnapshot,
+              updatedAt: authoritativeUpdatedAt,
+          };
+}
+
+function resolveIncomingSessionSnapshotBase(
+    incomingSnapshot: AiSessionSnapshot,
+    currentSession: AiSessionClientState | null | undefined,
+    options: ResolveIncomingSnapshotOptions = {},
+): ResolvedIncomingSessionSnapshot {
     const session = currentSession ?? null;
     const currentSnapshot = session?.snapshot ?? null;
     const normalizedIncomingSnapshot = normalizeIncomingActivePromptEcho(
@@ -3742,56 +3885,234 @@ function pauseQueue(sessionId: string, set: SetAiState): void {
     });
 }
 
-async function runOptimisticSnapshotMutation(
-    sessionId: string,
-    mutateSnapshot: (snapshot: AiSessionSnapshot) => AiSessionSnapshot,
-    runRemote: () => Promise<void>,
-    set: SetAiState,
-    get: GetAiState,
-): Promise<void> {
-    const mutationState = optimisticSnapshotMutationStates.get(sessionId) ?? {
-        latestVersion: 0,
-        nextVersion: 0,
-        pendingVersions: new Set<number>(),
-    };
-    const mutationVersion = mutationState.nextVersion + 1;
-    mutationState.latestVersion = mutationVersion;
-    mutationState.nextVersion = mutationVersion;
-    mutationState.pendingVersions.add(mutationVersion);
-    optimisticSnapshotMutationStates.set(sessionId, mutationState);
-    const previousSession = get().sessions[sessionId] ?? null;
-    const previousSnapshot = previousSession?.snapshot ?? null;
+interface OptimisticSnapshotMutationOptions {
+    readonly conflictKey?: string;
+    readonly preserveDuringIncomingSnapshots?: boolean;
+    readonly rollbackSnapshot?: (
+        currentSnapshot: AiSessionSnapshot,
+        previousSnapshot: AiSessionSnapshot,
+    ) => AiSessionSnapshot;
+}
 
-    if (previousSession && previousSnapshot) {
-        set((state) => ({
-            sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                    ...previousSession,
-                    snapshot: mutateSnapshot(previousSnapshot),
-                },
-            },
-        }));
+function getSelectionMutationSnapshot(
+    sessionId: string,
+    get: GetAiState,
+): AiSessionSnapshot | null {
+    const snapshot = get().sessions[sessionId]?.snapshot ?? null;
+    return snapshot
+        ? hydrateOptimisticSelectionSnapshot(snapshot, get)
+        : null;
+}
+
+function getConfigOptionConflictKey(
+    snapshot: AiSessionSnapshot | null,
+    optionId: string,
+): string {
+    if (snapshot && getModelConfigOption(snapshot)?.id === optionId) {
+        return "model";
     }
+    if (snapshot && getModeConfigOption(snapshot)?.id === optionId) {
+        return "mode";
+    }
+    return `config:${optionId}`;
+}
+
+function hydrateOptimisticSelectionSnapshot(
+    snapshot: AiSessionSnapshot,
+    get: GetAiState,
+): AiSessionSnapshot {
+    const runtimeCatalog = get().runtimeCatalogById[snapshot.runtimeId] ?? null;
+    return runtimeCatalog && hasRuntimeCatalog(runtimeCatalog)
+        ? mergeRuntimeCatalogIntoSnapshot(snapshot, runtimeCatalog)
+        : snapshot;
+}
+
+async function runAiSessionControlRemoteMutation(
+    runRemote: () => Promise<void>,
+    ensureLiveSession?: (force: boolean) => Promise<void>,
+): Promise<void> {
+    await ensureLiveSession?.(false);
 
     try {
         await runRemote();
     } catch (error) {
-        if (
-            previousSession &&
-            optimisticSnapshotMutationStates.get(sessionId)?.latestVersion ===
-                mutationVersion
-        ) {
-            set((state) => ({
+        if (!ensureLiveSession || !isMissingAiSessionControlError(error)) {
+            throw error;
+        }
+
+        await ensureLiveSession(true);
+        await runRemote();
+    }
+}
+
+function isMissingAiSessionControlError(error: unknown): boolean {
+    const message =
+        error instanceof Error
+            ? error.message
+            : typeof error === "string"
+              ? error
+              : "";
+    const normalizedMessage = message.toLowerCase();
+    return (
+        normalizedMessage.includes("ai session was not found") ||
+        normalizedMessage.includes("ai session is no longer open")
+    );
+}
+
+async function runOptimisticSnapshotMutation(
+    sessionId: string,
+    mutateSnapshot: OptimisticSnapshotMutator,
+    runRemote: () => Promise<void>,
+    set: SetAiState,
+    get: GetAiState,
+    options: OptimisticSnapshotMutationOptions = {},
+): Promise<void> {
+    const mutationState = optimisticSnapshotMutationStates.get(sessionId) ?? {
+        latestVersion: 0,
+        latestVersionByConflictKey: new Map<string, number>(),
+        nextVersion: 0,
+        pendingVersionsByConflictKey: new Map<string, Set<number>>(),
+        preservedMutations: new Map<number, OptimisticSnapshotMutator>(),
+        rollbackBaseSnapshotsByConflictKey: new Map<
+            string,
+            AiSessionSnapshot
+        >(),
+        pendingVersions: new Set<number>(),
+    };
+    const previousSession = get().sessions[sessionId] ?? null;
+    const previousSnapshot = previousSession?.snapshot ?? null;
+    const mutationVersion = mutationState.nextVersion + 1;
+    mutationState.latestVersion = mutationVersion;
+    mutationState.nextVersion = mutationVersion;
+    mutationState.pendingVersions.add(mutationVersion);
+    if (options.conflictKey) {
+        mutationState.latestVersionByConflictKey.set(
+            options.conflictKey,
+            mutationVersion,
+        );
+        const pendingConflictVersions =
+            mutationState.pendingVersionsByConflictKey.get(
+                options.conflictKey,
+            ) ?? new Set<number>();
+        if (pendingConflictVersions.size === 0 && previousSnapshot) {
+            mutationState.rollbackBaseSnapshotsByConflictKey.set(
+                options.conflictKey,
+                previousSnapshot,
+            );
+        }
+        pendingConflictVersions.add(mutationVersion);
+        mutationState.pendingVersionsByConflictKey.set(
+            options.conflictKey,
+            pendingConflictVersions,
+        );
+    }
+    if (options.preserveDuringIncomingSnapshots) {
+        mutationState.preservedMutations.set(mutationVersion, mutateSnapshot);
+    }
+    optimisticSnapshotMutationStates.set(sessionId, mutationState);
+
+    if (previousSession && previousSnapshot) {
+        set((state) => {
+            const currentSession = state.sessions[sessionId];
+            if (!currentSession?.snapshot) {
+                return state;
+            }
+
+            return {
                 sessions: {
                     ...state.sessions,
-                    [sessionId]: previousSession,
+                    [sessionId]: {
+                        ...currentSession,
+                        snapshot: mutateSnapshot(currentSession.snapshot),
+                    },
                 },
-            }));
+            };
+        });
+    }
+
+    try {
+        await runRemote();
+        if (options.conflictKey) {
+            const pendingConflictVersions =
+                mutationState.pendingVersionsByConflictKey.get(
+                    options.conflictKey,
+                );
+            const hasNewerPendingMutation = Boolean(
+                pendingConflictVersions &&
+                    [...pendingConflictVersions].some(
+                        (version) => version > mutationVersion,
+                    ),
+            );
+            const rollbackBase =
+                mutationState.rollbackBaseSnapshotsByConflictKey.get(
+                    options.conflictKey,
+                );
+            if (hasNewerPendingMutation && rollbackBase) {
+                mutationState.rollbackBaseSnapshotsByConflictKey.set(
+                    options.conflictKey,
+                    mutateSnapshot(rollbackBase),
+                );
+            }
+        }
+    } catch (error) {
+        mutationState.preservedMutations.delete(mutationVersion);
+        const latestMutationVersion = options.conflictKey
+            ? mutationState.latestVersionByConflictKey.get(options.conflictKey)
+            : mutationState.latestVersion;
+        if (
+            previousSession &&
+            optimisticSnapshotMutationStates.get(sessionId) === mutationState &&
+            latestMutationVersion === mutationVersion
+        ) {
+            set((state) => {
+                const currentSession = state.sessions[sessionId];
+                if (!currentSession) {
+                    return state;
+                }
+
+                const currentSnapshot = currentSession.snapshot;
+                const rollbackBaseSnapshot = options.conflictKey
+                    ? (mutationState.rollbackBaseSnapshotsByConflictKey.get(
+                          options.conflictKey,
+                      ) ?? previousSnapshot)
+                    : previousSnapshot;
+                const rollbackSnapshot =
+                    currentSnapshot && rollbackBaseSnapshot
+                        ? (options.rollbackSnapshot?.(
+                              currentSnapshot,
+                              rollbackBaseSnapshot,
+                          ) ?? rollbackBaseSnapshot)
+                        : rollbackBaseSnapshot;
+
+                return {
+                    sessions: {
+                        ...state.sessions,
+                        [sessionId]: {
+                            ...currentSession,
+                            snapshot: rollbackSnapshot,
+                        },
+                    },
+                };
+            });
         }
         throw error;
     } finally {
         mutationState.pendingVersions.delete(mutationVersion);
+        if (options.conflictKey) {
+            const pendingConflictVersions =
+                mutationState.pendingVersionsByConflictKey.get(
+                    options.conflictKey,
+                );
+            pendingConflictVersions?.delete(mutationVersion);
+            if (!pendingConflictVersions?.size) {
+                mutationState.pendingVersionsByConflictKey.delete(
+                    options.conflictKey,
+                );
+                mutationState.rollbackBaseSnapshotsByConflictKey.delete(
+                    options.conflictKey,
+                );
+            }
+        }
         if (mutationState.pendingVersions.size === 0) {
             optimisticSnapshotMutationStates.delete(sessionId);
         }

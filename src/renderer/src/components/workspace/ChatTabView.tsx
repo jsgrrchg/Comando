@@ -172,6 +172,25 @@ type AiRuntimeCatalog = Pick<
     | "models"
 >;
 
+interface AgentControlDiscoveryAttempt {
+    readonly attemptCount: number;
+    readonly status: "completed" | "exhausted" | "idle" | "loading" | "retrying";
+}
+
+const MAX_AGENT_CONTROL_DISCOVERY_ATTEMPTS = 3;
+const AGENT_CONTROL_DISCOVERY_RETRY_DELAY_MS = 250;
+
+function hasAgentControlCatalog(
+    catalog: AiRuntimeCatalog | null | undefined,
+): boolean {
+    return Boolean(
+        catalog &&
+        (catalog.configOptions.length > 0 ||
+            catalog.models.length > 0 ||
+            catalog.modes.length > 0),
+    );
+}
+
 /* ─── Main component ─── */
 
 export const ChatTabView = memo(function ChatTabView({
@@ -187,6 +206,8 @@ export const ChatTabView = memo(function ChatTabView({
     const clearQueuedPrompts = useAiStore((s) => s.clearQueuedPrompts);
     const ensureSession = useAiStore((s) => s.ensureSession);
     const editQueuedPrompt = useAiStore((s) => s.editQueuedPrompt);
+    const refreshRuntimeStatus = useAiStore((s) => s.refreshRuntimeStatus);
+    const registerSessionTab = useAiStore((s) => s.registerSessionTab);
     const removeQueuedPrompt = useAiStore((s) => s.removeQueuedPrompt);
     const respondPermission = useAiStore((s) => s.respondPermission);
     const respondUserInput = useAiStore((s) => s.respondUserInput);
@@ -411,6 +432,40 @@ export const ChatTabView = memo(function ChatTabView({
     );
     const sessionPreparationKey = getChatSessionPreparationKey(sessionTab);
     const latestSessionTabRef = useRef(sessionTab);
+    const agentControlDiscoveryAttemptsRef = useRef(
+        new Map<string, AgentControlDiscoveryAttempt>(),
+    );
+    const agentControlDiscoveryMountedRef = useRef(true);
+    const agentControlDiscoveryRetryTimersRef = useRef(new Set<number>());
+    const [agentControlDiscoveryRetryNonce, setAgentControlDiscoveryRetryNonce] =
+        useState(0);
+    const liveSessionTab = useMemo(
+        () => ({
+            ...sessionTab,
+            sessionOpenMode: "live" as const,
+        }),
+        [sessionTab],
+    );
+    const ensureLiveAgentSession = useCallback(
+        async (force: boolean) => {
+            const currentSession =
+                useAiStore.getState().sessions[tab.sessionId] ?? null;
+            if (
+                !force &&
+                currentSession?.runtimeState === "live" &&
+                currentSession.snapshot?.runtimeSessionId
+            ) {
+                return;
+            }
+
+            await ensureSession(liveSessionTab, { force: true });
+        },
+        [ensureSession, liveSessionTab, tab.sessionId],
+    );
+    const agentControlMutationOptions = useMemo(
+        () => ({ ensureLiveSession: ensureLiveAgentSession }),
+        [ensureLiveAgentSession],
+    );
     const runAgentControlMutation = useCallback(
         (mutation: () => Promise<void>) => {
             void mutation().catch((error: unknown) => {
@@ -426,6 +481,22 @@ export const ChatTabView = memo(function ChatTabView({
     useEffect(() => {
         latestSessionTabRef.current = sessionTab;
     }, [sessionTab]);
+
+    useEffect(() => {
+        agentControlDiscoveryMountedRef.current = true;
+        const retryTimers = agentControlDiscoveryRetryTimersRef.current;
+        return () => {
+            agentControlDiscoveryMountedRef.current = false;
+            for (const retryTimer of retryTimers) {
+                window.clearTimeout(retryTimer);
+            }
+            retryTimers.clear();
+        };
+    }, []);
+
+    useEffect(() => {
+        registerSessionTab(sessionTab);
+    }, [registerSessionTab, sessionTab]);
 
     useEffect(() => {
         if (
@@ -581,6 +652,116 @@ export const ChatTabView = memo(function ChatTabView({
         agentConfigOptions.length > 0 ||
         agentModels.length > 0 ||
         agentModes.length > 0;
+
+    useEffect(() => {
+        const discoveryKey = `${tab.sessionId}:${tab.runtimeId}`;
+        const previousAttempt =
+            agentControlDiscoveryAttemptsRef.current.get(discoveryKey);
+        if (
+            !active ||
+            latestSessionTabRef.current.sessionOpenMode === "history" ||
+            hasAgentControls ||
+            previousAttempt?.status === "completed" ||
+            previousAttempt?.status === "exhausted" ||
+            previousAttempt?.status === "loading" ||
+            previousAttempt?.status === "retrying"
+        ) {
+            return;
+        }
+
+        const attemptCount = (previousAttempt?.attemptCount ?? 0) + 1;
+        agentControlDiscoveryAttemptsRef.current.set(discoveryKey, {
+            attemptCount,
+            status: "loading",
+        });
+        void (async () => {
+            try {
+                if (!runtimeCatalog) {
+                    await refreshRuntimeStatus(tab.runtimeId);
+                }
+
+                const state = useAiStore.getState();
+                const currentSnapshot =
+                    state.sessions[tab.sessionId]?.snapshot ?? null;
+                const currentCatalog =
+                    state.runtimeCatalogById[tab.runtimeId] ?? null;
+                if (
+                    hasAgentControlCatalog(currentSnapshot) ||
+                    hasAgentControlCatalog(currentCatalog)
+                ) {
+                    agentControlDiscoveryAttemptsRef.current.set(discoveryKey, {
+                        attemptCount,
+                        status: "completed",
+                    });
+                    return;
+                }
+
+                // A provider without a cached catalog must start once to
+                // discover its controls before the first prompt.
+                await ensureSession(liveSessionTab, { force: true });
+                agentControlDiscoveryAttemptsRef.current.set(discoveryKey, {
+                    attemptCount,
+                    status: "completed",
+                });
+            } catch (error) {
+                console.warn(
+                    "[comando] Failed to load AI session controls.",
+                    error,
+                );
+                if (!agentControlDiscoveryMountedRef.current) {
+                    return;
+                }
+
+                if (
+                    attemptCount >= MAX_AGENT_CONTROL_DISCOVERY_ATTEMPTS
+                ) {
+                    agentControlDiscoveryAttemptsRef.current.set(discoveryKey, {
+                        attemptCount,
+                        status: "exhausted",
+                    });
+                    return;
+                }
+
+                agentControlDiscoveryAttemptsRef.current.set(discoveryKey, {
+                    attemptCount,
+                    status: "retrying",
+                });
+                const retryTimer = window.setTimeout(() => {
+                    agentControlDiscoveryRetryTimersRef.current.delete(
+                        retryTimer,
+                    );
+                    const pendingAttempt =
+                        agentControlDiscoveryAttemptsRef.current.get(
+                            discoveryKey,
+                        );
+                    if (
+                        !agentControlDiscoveryMountedRef.current ||
+                        pendingAttempt?.attemptCount !== attemptCount ||
+                        pendingAttempt.status !== "retrying"
+                    ) {
+                        return;
+                    }
+
+                    agentControlDiscoveryAttemptsRef.current.set(discoveryKey, {
+                        attemptCount,
+                        status: "idle",
+                    });
+                    setAgentControlDiscoveryRetryNonce((nonce) => nonce + 1);
+                }, AGENT_CONTROL_DISCOVERY_RETRY_DELAY_MS * 2 ** (attemptCount - 1));
+                agentControlDiscoveryRetryTimersRef.current.add(retryTimer);
+            }
+        })();
+    }, [
+        active,
+        agentControlDiscoveryRetryNonce,
+        ensureSession,
+        hasAgentControls,
+        liveSessionTab,
+        refreshRuntimeStatus,
+        runtimeCatalog,
+        tab.runtimeId,
+        tab.sessionId,
+    ]);
 
     const canonicalTrackedFiles = useMemo(
         () =>
@@ -2032,27 +2213,39 @@ export const ChatTabView = memo(function ChatTabView({
                                             value,
                                         ) => {
                                             runAgentControlMutation(() =>
-                                                setSessionConfigOption({
-                                                    optionId,
-                                                    sessionId: tab.sessionId,
-                                                    value,
-                                                }),
+                                                setSessionConfigOption(
+                                                    {
+                                                        optionId,
+                                                        sessionId:
+                                                            tab.sessionId,
+                                                        value,
+                                                    },
+                                                    agentControlMutationOptions,
+                                                ),
                                             );
                                         }}
                                         onModeChange={(modeId) => {
                                             runAgentControlMutation(() =>
-                                                setSessionMode({
-                                                    modeId,
-                                                    sessionId: tab.sessionId,
-                                                }),
+                                                setSessionMode(
+                                                    {
+                                                        modeId,
+                                                        sessionId:
+                                                            tab.sessionId,
+                                                    },
+                                                    agentControlMutationOptions,
+                                                ),
                                             );
                                         }}
                                         onModelChange={(modelId) => {
                                             runAgentControlMutation(() =>
-                                                setSessionModel({
-                                                    modelId,
-                                                    sessionId: tab.sessionId,
-                                                }),
+                                                setSessionModel(
+                                                    {
+                                                        modelId,
+                                                        sessionId:
+                                                            tab.sessionId,
+                                                    },
+                                                    agentControlMutationOptions,
+                                                ),
                                             );
                                         }}
                                         runtimeId={tab.runtimeId}
