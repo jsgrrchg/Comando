@@ -1656,7 +1656,6 @@ export function App() {
     );
     const activeGitError = gitErrors[activeGitContextKey] ?? null;
     const isMac = bootstrap?.platform === "darwin";
-    const isWindows = bootstrap?.platform === "win32";
     const topStatus = [
         bootstrapError,
         projectsError,
@@ -3685,58 +3684,8 @@ export function App() {
 
     const sidebarContent = (
         <>
-            <div
-                className="app-drag relative px-2"
-                style={{
-                    // Keep sidebar controls clear of the macOS traffic lights.
-                    paddingTop: isMac ? 42 : isWindows ? 0 : 8,
-                }}
-            >
-                {(isMac || isWindows) && (
-                    <button
-                        className="sidebar-collapse-toggle app-no-drag"
-                        onClick={() => {
-                            toggleLeftCollapsed();
-                            hideSidebarOverlayImmediately();
-                        }}
-                        title={
-                            leftCollapsed
-                                ? "Expand sidebar"
-                                : "Collapse sidebar"
-                        }
-                        type="button"
-                    >
-                        <svg
-                            aria-hidden="true"
-                            fill="none"
-                            height="16"
-                            viewBox="0 0 16 16"
-                            width="16"
-                        >
-                            <rect
-                                x="1.5"
-                                y="2.5"
-                                width="13"
-                                height="11"
-                                rx="1.5"
-                                stroke="currentColor"
-                                strokeWidth="1.2"
-                            />
-                            <line
-                                x1="5.5"
-                                y1="2.5"
-                                x2="5.5"
-                                y2="13.5"
-                                stroke="currentColor"
-                                strokeWidth="1.2"
-                            />
-                        </svg>
-                    </button>
-                )}
-                <div
-                    className="mt-1 flex items-center gap-1"
-                    style={isWindows ? { paddingRight: 36 } : undefined}
-                >
+            <div className="app-drag px-2">
+                <div className="mt-1 flex items-center gap-1">
                     <button
                         className={[
                             "sidebar-action-row sidebar-action-row--compact app-no-drag min-w-0 flex-1",
