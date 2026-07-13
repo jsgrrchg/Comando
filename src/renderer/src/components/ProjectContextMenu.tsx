@@ -7,6 +7,12 @@ import {
     type ReactNode,
 } from "react";
 
+import type { GitRepositorySnapshot, GitWorktreeSummary } from "@shared/ipc";
+
+import { useGitStore } from "@renderer/app/store/git-store";
+import { useProjectsStore } from "@renderer/app/store/projects-store";
+import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
+
 export interface ProjectContextMenuProject {
     readonly id: string;
     readonly mainIsActive: boolean;
@@ -47,22 +53,18 @@ export function ProjectContextMenu({
     const [cloneUrl, setCloneUrl] = useState("");
     const [cloneError, setCloneError] = useState<string | null>(null);
     const [cloneSubmitting, setCloneSubmitting] = useState(false);
-    const [expandedProjectIds, setExpandedProjectIds] = useState<
-        ReadonlySet<string>
-    >(
-        () =>
-            new Set(
-                projects
-                    .filter(
-                        (project) =>
-                            project.mainIsActive ||
-                            project.worktrees.some((worktree) => worktree.isActive),
-                    )
-                    .map((project) => project.id),
-            ),
+    const [worktreeBranchName, setWorktreeBranchName] = useState("");
+    const [worktreeError, setWorktreeError] = useState<string | null>(null);
+    const [worktreeProjectId, setWorktreeProjectId] = useState<string | null>(
+        null,
     );
+    const [worktreeSubmitting, setWorktreeSubmitting] = useState(false);
     const normalizedQuery = query.trim().toLowerCase();
     const searchRef = useRef<HTMLInputElement | null>(null);
+    const projectSummaries = useProjectsStore((state) => state.projects);
+    const gitSnapshots = useGitStore((state) => state.snapshots);
+    const createWorktree = useGitStore((state) => state.createWorktree);
+    const openContext = useWorkspaceStore((state) => state.openContext);
     const filteredProjects = useMemo(
         () =>
             projects.flatMap((project) => {
@@ -95,20 +97,15 @@ export function ProjectContextMenu({
     const selectableEntries = useMemo(
         () =>
             filteredProjects.flatMap((project) => {
-                const expanded =
-                    normalizedQuery.length > 0 ||
-                    expandedProjectIds.has(project.id);
                 return [
                     { projectId: project.id, worktreeId: null },
-                    ...(expanded
-                        ? project.worktrees.map((worktree) => ({
-                              projectId: project.id,
-                              worktreeId: worktree.id,
-                          }))
-                        : []),
+                    ...project.worktrees.map((worktree) => ({
+                        projectId: project.id,
+                        worktreeId: worktree.id,
+                    })),
                 ];
             }),
-        [expandedProjectIds, filteredProjects, normalizedQuery],
+        [filteredProjects],
     );
 
     useEffect(() => {
@@ -196,6 +193,125 @@ export function ProjectContextMenu({
             );
         }
     };
+
+    const worktreeProject = worktreeProjectId
+        ? (projects.find((project) => project.id === worktreeProjectId) ?? null)
+        : null;
+    const worktreeProjectSummary = worktreeProject
+        ? (projectSummaries.find(
+              (project) => project.id === worktreeProject.id,
+          ) ?? null)
+        : null;
+    const worktreeSnapshot = worktreeProject
+        ? findProjectSnapshot(gitSnapshots, worktreeProject.id)
+        : null;
+    const worktreeBaseBranch = resolveWorktreeBaseBranch(worktreeSnapshot);
+
+    const handleCreateWorktree = async () => {
+        const branchName = worktreeBranchName.trim();
+        if (!worktreeProject || !worktreeProjectSummary || !branchName) {
+            setWorktreeError("Enter a branch name to create the worktree.");
+            return;
+        }
+        if (!worktreeSnapshot || !worktreeBaseBranch) {
+            setWorktreeError("This project does not have a branch to use as a base.");
+            return;
+        }
+
+        setWorktreeError(null);
+        setWorktreeSubmitting(true);
+        try {
+            const createdWorktree = await createWorktree({
+                branchName,
+                path: buildSuggestedWorktreePath(
+                    worktreeProjectSummary.rootPath,
+                    branchName,
+                    worktreeSnapshot.worktrees,
+                ),
+                projectId: worktreeProject.id,
+                startPoint: worktreeBaseBranch,
+                worktreeId: null,
+            });
+            await openContext(worktreeProject.id, createdWorktree.id, {
+                emptyLayout: true,
+            });
+            onClose();
+        } catch (error) {
+            setWorktreeError(
+                error instanceof Error
+                    ? error.message
+                    : "Could not create the worktree.",
+            );
+        } finally {
+            setWorktreeSubmitting(false);
+        }
+    };
+
+    if (worktreeProject) {
+        return (
+            <ProjectContextModal onClose={onClose}>
+                <div className="project-context-worktree-form">
+                    <div className="project-context-menu-heading">
+                        New worktree
+                    </div>
+                    <div className="project-context-worktree-project">
+                        {worktreeProject.name}
+                    </div>
+                    <input
+                        autoFocus
+                        className="project-context-clone-input"
+                        disabled={worktreeSubmitting}
+                        onChange={(event) => {
+                            setWorktreeBranchName(event.target.value);
+                            setWorktreeError(null);
+                        }}
+                        onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                                event.preventDefault();
+                                void handleCreateWorktree();
+                            }
+                        }}
+                        placeholder="feature/my-branch"
+                        spellCheck={false}
+                        value={worktreeBranchName}
+                    />
+                    <div className="project-context-worktree-hint">
+                        {worktreeBaseBranch
+                            ? `Creates a branch from ${worktreeBaseBranch}`
+                            : "A Git branch is required"}
+                    </div>
+                    {worktreeError && (
+                        <div className="project-context-clone-error">
+                            {worktreeError}
+                        </div>
+                    )}
+                    <div className="project-context-clone-actions">
+                        <button
+                            disabled={worktreeSubmitting}
+                            onClick={() => {
+                                setWorktreeProjectId(null);
+                                setWorktreeError(null);
+                            }}
+                            type="button"
+                        >
+                            Back
+                        </button>
+                        <button
+                            disabled={
+                                worktreeSubmitting ||
+                                !worktreeBranchName.trim() ||
+                                !worktreeBaseBranch
+                            }
+                            onClick={() => void handleCreateWorktree()}
+                            type="button"
+                        >
+                            {worktreeSubmitting ? "Creating…" : "Create worktree"}
+                        </button>
+                    </div>
+                </div>
+            </ProjectContextModal>
+        );
+    }
 
     if (cloneMode) {
         return (
@@ -285,9 +401,6 @@ export function ProjectContextMenu({
 
             <div className="project-context-project-list">
                 {filteredProjects.map((project) => {
-                    const expanded =
-                        normalizedQuery.length > 0 ||
-                        expandedProjectIds.has(project.id);
                     return (
                         <div
                             className="project-context-project-group"
@@ -322,56 +435,19 @@ export function ProjectContextMenu({
                                         Main
                                     </span>
                                 </button>
-                                {project.worktrees.length > 0 && (
-                                    <button
-                                        aria-expanded={expanded}
-                                        aria-label={`${expanded ? "Collapse" : "Expand"} ${project.name} worktrees`}
-                                        className="project-context-disclosure"
-                                        onClick={() => {
-                                            setExpandedProjectIds(
-                                                (currentProjectIds) => {
-                                                    const nextProjectIds = new Set(
-                                                        currentProjectIds,
-                                                    );
-                                                    if (expanded) {
-                                                        nextProjectIds.delete(
-                                                            project.id,
-                                                        );
-                                                    } else {
-                                                        nextProjectIds.add(
-                                                            project.id,
-                                                        );
-                                                    }
-                                                    return nextProjectIds;
-                                                },
-                                            );
-                                        }}
-                                        type="button"
-                                    >
-                                        <svg
-                                            aria-hidden="true"
-                                            fill="none"
-                                            height="12"
-                                            viewBox="0 0 12 12"
-                                            width="12"
-                                        >
-                                            <path
-                                                d="m4.5 3 3 3-3 3"
-                                                stroke="currentColor"
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                                style={{
-                                                    transform: expanded
-                                                        ? "rotate(90deg)"
-                                                        : undefined,
-                                                    transformOrigin: "center",
-                                                }}
-                                            />
-                                        </svg>
-                                    </button>
-                                )}
+                                <button
+                                    className="project-context-new-worktree-trigger"
+                                    onClick={() => {
+                                        setWorktreeBranchName("");
+                                        setWorktreeError(null);
+                                        setWorktreeProjectId(project.id);
+                                    }}
+                                    type="button"
+                                >
+                                    New worktree
+                                </button>
                             </div>
-                            {expanded && project.worktrees.length > 0 && (
+                            {project.worktrees.length > 0 && (
                                 <div className="project-context-worktree-list">
                                     {project.worktrees.map((worktree) => (
                                         <button
@@ -497,6 +573,54 @@ function ProjectContextModal({
             </div>
         </div>
     );
+}
+
+function findProjectSnapshot(
+    snapshots: Record<string, GitRepositorySnapshot | null>,
+    projectId: string,
+): GitRepositorySnapshot | null {
+    return (
+        Object.values(snapshots).find(
+            (snapshot) => snapshot?.projectId === projectId,
+        ) ?? null
+    );
+}
+
+function resolveWorktreeBaseBranch(
+    snapshot: GitRepositorySnapshot | null,
+): string | null {
+    const primaryWorktree = snapshot?.worktrees.find(
+        (worktree) => worktree.isPrimary,
+    );
+    return primaryWorktree?.branchName ?? snapshot?.branch?.name ?? null;
+}
+
+function buildSuggestedWorktreePath(
+    rootPath: string,
+    branchName: string,
+    worktrees: readonly GitWorktreeSummary[],
+): string {
+    const normalizedRoot = rootPath.replace(/[\\/]+$/, "");
+    const suffix = branchName
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._/-]+/g, "-")
+        .replace(/[\\/]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "worktree";
+    const existingPaths = new Set(
+        worktrees.map((worktree) =>
+            worktree.rootPath.replace(/[\\/]+$/, ""),
+        ),
+    );
+    let candidate = `${normalizedRoot}-${suffix}`;
+    let index = 2;
+
+    while (existingPaths.has(candidate)) {
+        candidate = `${normalizedRoot}-${suffix}-${index}`;
+        index += 1;
+    }
+
+    return candidate;
 }
 
 function ContextStateIndicator({

@@ -39,11 +39,11 @@ describe("ProjectContextMenu", () => {
         expect(markup).toContain("Open");
         expect(markup).toContain("Open folder…");
         expect(markup).toContain("Clone repository…");
+        expect(markup).toContain("New worktree");
         expect(markup).toContain("Settings");
         expect(markup).toContain("Update ready");
         expect(markup).toContain("project-context-update-dot");
         expect(markup).toContain("project-context-menu-backdrop");
         expect(markup).toContain("Navigate");
-        expect(markup).toContain('aria-expanded="true"');
     });
 });

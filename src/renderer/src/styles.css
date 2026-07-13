@@ -720,9 +720,7 @@
 .project-context-worktree-row:focus-visible,
 .project-context-worktree-row[data-selected="true"],
 .project-context-menu-actions button:hover,
-.project-context-menu-actions button:focus-visible,
-.project-context-disclosure:hover,
-.project-context-disclosure:focus-visible {
+.project-context-menu-actions button:focus-visible {
     background: var(--color-accent-soft);
     outline: none;
 }
@@ -733,22 +731,6 @@
     flex: 0 0 auto;
     color: var(--color-text-secondary);
     font-size: 10px;
-}
-
-.project-context-disclosure {
-    display: grid;
-    width: 28px;
-    flex: 0 0 28px;
-    place-items: center;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--color-text-secondary);
-    cursor: default;
-}
-
-.project-context-disclosure path {
-    transition: transform 120ms ease;
 }
 
 .project-context-worktree-list {
@@ -782,6 +764,26 @@
 .project-context-worktree-row:hover,
 .project-context-worktree-row:focus-visible {
     color: var(--color-text-primary);
+}
+
+.project-context-new-worktree-trigger {
+    flex: 0 0 auto;
+    margin: 4px 5px 4px 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: default;
+    font: inherit;
+    font-size: 10px;
+    padding: 3px 5px;
+}
+
+.project-context-new-worktree-trigger:hover,
+.project-context-new-worktree-trigger:focus-visible {
+    background: var(--color-accent-soft);
+    color: var(--color-text-primary);
+    outline: none;
 }
 
 .project-context-branch-icon {
@@ -857,6 +859,22 @@
 
 .project-context-clone-form {
     padding: 16px;
+}
+
+.project-context-worktree-form {
+    padding: 16px;
+}
+
+.project-context-worktree-project {
+    margin: -3px 0 10px;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+}
+
+.project-context-worktree-hint {
+    margin-top: 7px;
+    color: var(--color-text-secondary);
+    font-size: 11px;
 }
 
 .project-context-menu-heading {
