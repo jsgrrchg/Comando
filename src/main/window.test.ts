@@ -138,7 +138,7 @@ describe("window titlebar overlays", () => {
 
         expect(electronMocks.windows[0]?.options).toMatchObject({
             titleBarStyle: "hidden",
-            trafficLightPosition: { x: 14, y: 11 },
+            trafficLightPosition: { x: 14, y: 14 },
         });
     });
 });
