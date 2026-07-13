@@ -462,12 +462,8 @@
 }
 
 .project-context-tab-shell[data-active] {
-    border-color: color-mix(
-        in srgb,
-        var(--color-border-strong) 60%,
-        transparent
-    );
-    background: color-mix(in srgb, var(--color-bg-elevated) 66%, transparent);
+    border-color: color-mix(in srgb, var(--color-accent) 48%, transparent);
+    background: color-mix(in srgb, var(--color-bg-elevated) 78%, transparent);
     color: var(--color-text-primary);
 }
 
