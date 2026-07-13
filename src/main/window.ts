@@ -148,7 +148,7 @@ function createBaseWindow(options: {
         // hiddenInset adds a platform-dependent offset to explicit positions.
         trafficLightPosition: isMac
             ? (options.trafficLightPosition ??
-              (isMainWindow ? { x: 14, y: 8 } : undefined))
+              (isMainWindow ? { x: 14, y: 14 } : undefined))
             : undefined,
         vibrancy: isMacVibrant ? "sidebar" : undefined,
         visualEffectState: isMacVibrant ? "active" : undefined,

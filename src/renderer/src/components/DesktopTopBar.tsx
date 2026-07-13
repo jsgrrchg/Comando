@@ -153,26 +153,26 @@ export function DesktopTopBar({
                 <svg
                     aria-hidden="true"
                     fill="none"
-                    height="16"
-                    viewBox="0 0 16 16"
-                    width="16"
+                    height="14"
+                    viewBox="0 0 14 14"
+                    width="14"
                 >
                     <rect
-                        height="11"
-                        rx="1.5"
+                        height="9"
+                        rx="1.3"
                         stroke="currentColor"
-                        strokeWidth="1.2"
-                        width="13"
+                        strokeWidth="1.1"
+                        width="11"
                         x="1.5"
                         y="2.5"
                     />
-                    <line
+                    <path
+                        d="M5 3.4v7.2"
+                        fill="none"
                         stroke="currentColor"
-                        strokeWidth="1.2"
-                        x1="5.5"
-                        x2="5.5"
-                        y1="2.5"
-                        y2="13.5"
+                        strokeLinecap="round"
+                        strokeOpacity="0.55"
+                        strokeWidth="2.4"
                     />
                 </svg>
             </button>
