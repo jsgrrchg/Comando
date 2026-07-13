@@ -15,6 +15,8 @@ import { createPortal } from "react-dom";
 import type {
     AppUpdateState,
     ComandoApi,
+    GitRepositorySnapshot,
+    GitWorktreeSummary,
     PersistenceSnapshot,
     ProjectTreeNode,
     ProjectSummary,
@@ -32,6 +34,10 @@ import {
     findProjectTreeNodeByPath,
 } from "./app/projects/git-tree";
 import { createGitProjectRefreshScheduler } from "./app/git/refresh-scheduler";
+import {
+    areGitWorktreeIdsEquivalent,
+    resolveProjectContextWorktreeId,
+} from "./app/git/context-key";
 import {
     reconcileFileTreeSelection,
     resolveActiveFileTreePath,
@@ -131,7 +137,11 @@ import {
 } from "./components/workspace/quick-create";
 import { QuickOpenFilePalette } from "./components/workspace/QuickOpenFilePalette";
 import { closeWorkspaceTabsWithConfirmation } from "./components/workspace/workspaceCloseGuard";
-import { DesktopTopBar } from "./components/DesktopTopBar";
+import {
+    DesktopTopBar,
+    type ProjectContextMenuProject,
+    type ProjectContextTabItem,
+} from "./components/DesktopTopBar";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 
@@ -145,6 +155,31 @@ type SidebarView = "files" | "git" | "agents" | "issues" | "pull_requests";
 
 const ROOT_NODE_KEY = "__root__";
 const PROJECT_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
+
+function collectProjectWorktrees(
+    snapshots: Readonly<Record<string, GitRepositorySnapshot | null>>,
+    projectId: string,
+): readonly GitWorktreeSummary[] {
+    const worktreesById = new Map<string, GitWorktreeSummary>();
+    for (const snapshot of Object.values(snapshots)) {
+        if (snapshot?.projectId !== projectId) {
+            continue;
+        }
+        for (const worktree of snapshot.worktrees) {
+            worktreesById.set(worktree.id, worktree);
+        }
+    }
+    return [...worktreesById.values()];
+}
+
+function getWorktreeDisplayLabel(worktree: GitWorktreeSummary): string {
+    if (worktree.branchName) {
+        return worktree.branchName;
+    }
+
+    const pathParts = worktree.rootPath.split(/[\\/]/).filter(Boolean);
+    return pathParts.at(-1) ?? "Detached worktree";
+}
 
 type FileTreeContextMenuPayload =
     | {
@@ -221,7 +256,29 @@ export function App() {
     const bootstrapError = useAppStore((state) => state.error);
     const hydrateBootstrap = useAppStore((state) => state.hydrate);
 
-    const activeProjectId = useProjectsStore((state) => state.activeProjectId);
+    const persistedActiveProjectId = useProjectsStore(
+        (state) => state.activeProjectId,
+    );
+    const workspaceActiveContextKey = useWorkspaceStore(
+        (state) => state.activeContextKey,
+    );
+    const workspaceNavigationHydrated = useWorkspaceStore(
+        (state) => state.hydrated,
+    );
+    const workspaceContextsByKey = useWorkspaceStore(
+        (state) => state.contextsByKey,
+    );
+    const openWorkspaceContextKeys = useWorkspaceStore(
+        (state) => state.openContextKeys,
+    );
+    const activeWorkspaceContext = useWorkspaceStore((state) =>
+        state.activeContextKey
+            ? (state.contextsByKey[state.activeContextKey] ?? null)
+            : null,
+    );
+    const activeProjectId =
+        activeWorkspaceContext?.projectId ??
+        (workspaceNavigationHydrated ? null : persistedActiveProjectId);
     const addProjects = useProjectsStore((state) => state.addProjects);
     const cloneRepository = useProjectsStore((state) => state.cloneRepository);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
@@ -260,6 +317,7 @@ export function App() {
     const refreshGitHistory = useGitStore((state) => state.refreshHistory);
     const refreshGitProject = useGitStore((state) => state.refreshProject);
     const ingestGitSnapshot = useGitStore((state) => state.ingestSnapshot);
+    const gitSnapshots = useGitStore((state) => state.snapshots);
     const setActiveWorktree = useGitStore((state) => state.setActiveWorktree);
     const selectGitBranch = useGitStore((state) => state.selectBranch);
 
@@ -534,7 +592,10 @@ export function App() {
                         resolvedWorktreeId,
                     );
                 }
-                await workspaceHydrate();
+                await workspaceHydrate({
+                    activeProjectId: persistedProjectId,
+                    activeWorktreeId: persistedWorktreeId,
+                });
             } finally {
                 if (!isDisposed) {
                     setPersistenceReady(true);
@@ -654,10 +715,6 @@ export function App() {
 
         const unsubscribe = comandoApi.onProjectWindowRequested((payload) => {
             void (async () => {
-                if (activeProjectId !== payload.projectId) {
-                    await setActiveProject(payload.projectId);
-                }
-
                 const requestedWorktreeId =
                     payload.worktreeId !== undefined
                         ? (payload.worktreeId ?? null)
@@ -665,12 +722,9 @@ export function App() {
                               payload.projectId
                           ] ?? null);
 
-                if (payload.worktreeId !== undefined) {
-                    await setActiveWorktree(
-                        payload.projectId,
-                        requestedWorktreeId,
-                    );
-                }
+                await useWorkspaceStore
+                    .getState()
+                    .openContext(payload.projectId, requestedWorktreeId);
 
                 if (payload.branchName !== undefined) {
                     selectGitBranch(
@@ -680,22 +734,12 @@ export function App() {
                     );
                 }
 
-                await refreshGitProject(payload.projectId, requestedWorktreeId);
-                await refreshProjectTree(
-                    payload.projectId,
-                    requestedWorktreeId,
-                );
             })();
         });
 
         return unsubscribe;
     }, [
-        activeProjectId,
-        refreshGitProject,
-        refreshProjectTree,
         selectGitBranch,
-        setActiveProject,
-        setActiveWorktree,
     ]);
 
     useEffect(() => {
@@ -880,11 +924,22 @@ export function App() {
         void window.comando.saveActiveProjectId(activeProjectId);
     }, [activeProjectId, persistenceReady]);
 
-    const activeWorktreeId = useGitStore((state) =>
+    const gitActiveWorktreeId = useGitStore((state) =>
         activeProjectId
             ? (state.activeWorktreeIds[activeProjectId] ?? null)
             : null,
     );
+    const activeWorktreeId = activeWorkspaceContext
+        ? // Macro contexts use null for the logical primary checkout, while
+          // scoped services persist and query its canonical worktree id.
+          resolveProjectContextWorktreeId(
+              activeWorkspaceContext.projectId,
+              activeWorkspaceContext.worktreeId,
+              gitActiveWorktreeId,
+          )
+        : workspaceNavigationHydrated
+          ? null
+          : gitActiveWorktreeId;
     const activeProjectContextKey = getProjectContextKey(
         activeProjectId,
         activeWorktreeId,
@@ -893,6 +948,41 @@ export function App() {
         activeProjectId,
         activeWorktreeId,
     );
+
+    useEffect(() => {
+        if (!activeWorkspaceContext) {
+            return;
+        }
+
+        let cancelled = false;
+        const { projectId, worktreeId } = activeWorkspaceContext;
+        void (async () => {
+            await setActiveWorktree(projectId, worktreeId);
+            if (useProjectsStore.getState().activeProjectId !== projectId) {
+                await setActiveProject(projectId);
+            }
+            if (cancelled) {
+                return;
+            }
+
+            await Promise.all([
+                refreshProjectTree(projectId, worktreeId),
+                refreshGitProject(projectId, worktreeId),
+                refreshGitHistory(projectId, worktreeId),
+            ]);
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        activeWorkspaceContext,
+        refreshGitHistory,
+        refreshGitProject,
+        refreshProjectTree,
+        setActiveProject,
+        setActiveWorktree,
+    ]);
 
     useEffect(() => {
         return scheduleEffectStateUpdate(() => {
@@ -1288,6 +1378,125 @@ export function App() {
 
     const activeProject =
         projects.find((project) => project.id === activeProjectId) ?? null;
+    useEffect(() => {
+        document.title = activeProject
+            ? `${activeProject.name} — Comando`
+            : (bootstrap?.app.windowTitle ?? "Comando");
+    }, [activeProject, bootstrap?.app.windowTitle]);
+    const projectContextTabs = useMemo<readonly ProjectContextTabItem[]>(
+        () =>
+            openWorkspaceContextKeys.flatMap((contextKey) => {
+                const context = workspaceContextsByKey[contextKey];
+                const project = context
+                    ? projects.find((entry) => entry.id === context.projectId)
+                    : null;
+                if (!context || !project) {
+                    return [];
+                }
+
+                const worktrees = collectProjectWorktrees(
+                    gitSnapshots,
+                    context.projectId,
+                );
+                const worktree = worktrees.find((entry) =>
+                    areGitWorktreeIdsEquivalent(
+                        context.projectId,
+                        context.worktreeId,
+                        entry.isPrimary ? null : entry.id,
+                    ),
+                );
+                return [
+                    {
+                        key: context.key,
+                        projectId: context.projectId,
+                        projectName: project.name,
+                        worktreeId: context.worktreeId,
+                        worktreeLabel: worktree
+                            ? getWorktreeDisplayLabel(worktree)
+                            : context.worktreeId
+                              ? "Worktree"
+                              : "Main checkout",
+                    },
+                ];
+            }),
+        [
+            gitSnapshots,
+            openWorkspaceContextKeys,
+            projects,
+            workspaceContextsByKey,
+        ],
+    );
+    const projectContextMenuProjects = useMemo<
+        readonly ProjectContextMenuProject[]
+    >(() => {
+        const openContextIdentities = openWorkspaceContextKeys.flatMap(
+            (contextKey) => {
+                const context = workspaceContextsByKey[contextKey];
+                return context
+                    ? [
+                          {
+                              projectId: context.projectId,
+                              worktreeId: context.worktreeId,
+                          },
+                      ]
+                    : [];
+            },
+        );
+
+        return projects.map((project) => {
+            const primaryIsOpen = openContextIdentities.some(
+                (context) =>
+                    context.projectId === project.id &&
+                    areGitWorktreeIdsEquivalent(
+                        project.id,
+                        context.worktreeId,
+                        null,
+                    ),
+            );
+            const worktrees = collectProjectWorktrees(gitSnapshots, project.id)
+                .filter((worktree) => !worktree.isPrimary)
+                .map((worktree) => ({
+                    id: worktree.id,
+                    isActive:
+                        activeWorkspaceContext?.projectId === project.id &&
+                        areGitWorktreeIdsEquivalent(
+                            project.id,
+                            activeWorkspaceContext.worktreeId,
+                            worktree.id,
+                        ),
+                    isOpen: openContextIdentities.some(
+                        (context) =>
+                            context.projectId === project.id &&
+                            areGitWorktreeIdsEquivalent(
+                                project.id,
+                                context.worktreeId,
+                                worktree.id,
+                            ),
+                    ),
+                    label: getWorktreeDisplayLabel(worktree),
+                }));
+
+            return {
+                id: project.id,
+                mainIsActive:
+                    activeWorkspaceContext?.projectId === project.id &&
+                    areGitWorktreeIdsEquivalent(
+                        project.id,
+                        activeWorkspaceContext.worktreeId,
+                        null,
+                    ),
+                mainIsOpen: primaryIsOpen,
+                name: project.name,
+                worktrees,
+            };
+        });
+    }, [
+        activeWorkspaceContext,
+        gitSnapshots,
+        openWorkspaceContextKeys,
+        projects,
+        workspaceContextsByKey,
+    ]);
     const activeTreeNodesByParent = useMemo(
         () => treeNodes[activeProjectContextKey] ?? {},
         [activeProjectContextKey, treeNodes],
@@ -1449,10 +1658,6 @@ export function App() {
     const activeGitError = gitErrors[activeGitContextKey] ?? null;
     const isMac = bootstrap?.platform === "darwin";
     const isWindows = bootstrap?.platform === "win32";
-    const isLinux = bootstrap?.platform === "linux";
-    const hasDesktopTitleBar = isWindows || isLinux;
-    const desktopTitleBarTitle =
-        activeProject?.name ?? bootstrap?.app.windowTitle ?? "Comando";
     const topStatus = [
         bootstrapError,
         projectsError,
@@ -3343,6 +3548,31 @@ export function App() {
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
+            if (
+                event.defaultPrevented ||
+                !(event.metaKey || event.ctrlKey) ||
+                event.altKey ||
+                !event.shiftKey ||
+                event.key.toLowerCase() !== "w" ||
+                !workspaceActiveContextKey
+            ) {
+                return;
+            }
+
+            event.preventDefault();
+            void useWorkspaceStore
+                .getState()
+                .closeContext(workspaceActiveContextKey);
+        };
+
+        window.addEventListener("keydown", handleKeyDown, true);
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown, true);
+        };
+    }, [workspaceActiveContextKey]);
+
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === "b" && (event.metaKey || event.ctrlKey)) {
                 event.preventDefault();
                 toggleLeftCollapsed();
@@ -3411,9 +3641,8 @@ export function App() {
 
     useEffect(() => {
         if (!isMac) return;
-        const visible = !leftCollapsed || sidebarOverlayVisible;
-        void window.comando?.setTrafficLightVisibility(visible);
-    }, [isMac, leftCollapsed, sidebarOverlayVisible]);
+        void window.comando?.setTrafficLightVisibility(true);
+    }, [isMac]);
 
     useEffect(() => {
         const platform = bootstrap?.platform;
@@ -3460,6 +3689,7 @@ export function App() {
             <div
                 className="app-drag relative px-2"
                 style={{
+                    // Keep sidebar controls clear of the macOS traffic lights.
                     paddingTop: isMac ? 42 : isWindows ? 0 : 8,
                 }}
             >
@@ -4167,11 +4397,24 @@ export function App() {
                 <ProjectSwitcher
                     activeProject={activeProject}
                     appUpdateState={appUpdateState}
-                    onCloneRepository={(repositoryUrl) =>
-                        cloneRepository(repositoryUrl)
-                    }
+                    onCloneRepository={async (repositoryUrl) => {
+                        const projectIds = await cloneRepository(repositoryUrl);
+                        for (const projectId of projectIds) {
+                            await useWorkspaceStore
+                                .getState()
+                                .openContext(projectId);
+                        }
+                        return projectIds.length > 0;
+                    }}
                     onOpenProjects={() => {
-                        void addProjects();
+                        void (async () => {
+                            const projectIds = await addProjects();
+                            for (const projectId of projectIds) {
+                                await useWorkspaceStore
+                                    .getState()
+                                    .openContext(projectId);
+                            }
+                        })();
                     }}
                     onOpenSettings={openSettingsWindow}
                     onSelectProject={(projectId) => {
@@ -4179,9 +4422,9 @@ export function App() {
                             return;
                         }
 
-                        void getComandoApi()?.openProjectWindow({
-                            projectId,
-                        });
+                        void useWorkspaceStore
+                            .getState()
+                            .openContext(projectId);
                     }}
                     projects={projects}
                 />
@@ -4196,9 +4439,53 @@ export function App() {
         >
             <div className="relative h-screen">
                 <div className="flex h-full flex-col overflow-hidden">
-                    {hasDesktopTitleBar && (
-                        <DesktopTopBar title={desktopTitleBarTitle} />
-                    )}
+                    <DesktopTopBar
+                        activeContextKey={workspaceActiveContextKey}
+                        contexts={projectContextTabs}
+                        menuProjects={projectContextMenuProjects}
+                        onActivateContext={(contextKey) => {
+                            void useWorkspaceStore
+                                .getState()
+                                .activateContext(contextKey);
+                        }}
+                        onCloneRepository={async (repositoryUrl) => {
+                            const projectIds =
+                                await cloneRepository(repositoryUrl);
+                            for (const projectId of projectIds) {
+                                await useWorkspaceStore
+                                    .getState()
+                                    .openContext(projectId);
+                            }
+                            return projectIds.length > 0;
+                        }}
+                        onCloseContext={(contextKey) => {
+                            void useWorkspaceStore
+                                .getState()
+                                .closeContext(contextKey);
+                        }}
+                        onOpenProject={(projectId) => {
+                            void useWorkspaceStore
+                                .getState()
+                                .openContext(projectId);
+                        }}
+                        onOpenProjects={() => {
+                            void (async () => {
+                                const projectIds = await addProjects();
+                                for (const projectId of projectIds) {
+                                    await useWorkspaceStore
+                                        .getState()
+                                        .openContext(projectId);
+                                }
+                            })();
+                        }}
+                        onOpenSettings={() => openSettingsWindow()}
+                        onOpenWorktree={(projectId, worktreeId) => {
+                            void useWorkspaceStore
+                                .getState()
+                                .openContext(projectId, worktreeId);
+                        }}
+                        platform={bootstrap?.platform ?? null}
+                    />
                     <div
                         className="grid min-h-0 flex-1"
                         style={{
@@ -4282,7 +4569,7 @@ export function App() {
                         style={{
                             position: "absolute",
                             left: 0,
-                            top: 0,
+                            top: "var(--desktop-titlebar-height, 40px)",
                             bottom: 0,
                             width: sidebarOverlayVisible
                                 ? 0
@@ -4304,7 +4591,7 @@ export function App() {
                         style={{
                             position: "absolute",
                             left: 0,
-                            top: 0,
+                            top: "var(--desktop-titlebar-height, 40px)",
                             bottom: 0,
                             width: leftWidth,
                             zIndex: 10,

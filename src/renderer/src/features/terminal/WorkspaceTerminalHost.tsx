@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
@@ -14,14 +14,38 @@ function getComandoApiOrNull() {
 }
 
 export function WorkspaceTerminalHost() {
-    const terminalTabs = useWorkspaceStore(
-        useShallow((state) =>
-            Object.values(state.tabsById).filter(
+    const { activeContextKey, contextsByKey, tabsById } = useWorkspaceStore(
+        useShallow((state) => ({
+            activeContextKey: state.activeContextKey,
+            contextsByKey: state.contextsByKey,
+            tabsById: state.tabsById,
+        })),
+    );
+    const visibleTerminalTabs = useMemo(
+        () =>
+            Object.values(tabsById).filter(
                 (tab): tab is RuntimeWorkspaceTerminalTab =>
                     tab.kind === "terminal",
             ),
-        ),
+        [tabsById],
     );
+    const liveTerminalIds = useMemo(() => {
+        const inactiveTerminalIds = Object.values(contextsByKey)
+            .filter((context) => context.key !== activeContextKey)
+            .flatMap((context) =>
+                Object.values(context.workspace.tabsById)
+                    .filter(
+                        (tab): tab is RuntimeWorkspaceTerminalTab =>
+                            tab.kind === "terminal",
+                    )
+                    .map((tab) => tab.terminalId),
+            );
+
+        return [
+            ...visibleTerminalTabs.map((tab) => tab.terminalId),
+            ...inactiveTerminalIds,
+        ];
+    }, [activeContextKey, contextsByKey, visibleTerminalTabs]);
     const ensureTerminal = useTerminalRuntimeStore(
         (state) => state.ensureTerminal,
     );
@@ -120,11 +144,16 @@ export function WorkspaceTerminalHost() {
     }, []);
 
     useEffect(() => {
-        for (const tab of terminalTabs) {
+        for (const tab of visibleTerminalTabs) {
             ensureTerminal(tab);
         }
-        closeMissingTerminals(terminalTabs.map((tab) => tab.terminalId));
-    }, [closeMissingTerminals, ensureTerminal, terminalTabs]);
+        closeMissingTerminals(liveTerminalIds);
+    }, [
+        closeMissingTerminals,
+        ensureTerminal,
+        liveTerminalIds,
+        visibleTerminalTabs,
+    ]);
 
     useEffect(
         () => () => {

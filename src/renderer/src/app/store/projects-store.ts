@@ -26,9 +26,9 @@ interface ProjectsState {
         Record<ParentKey, readonly ProjectTreeNode[]>
     >;
     addProjectPath: (projectPath: string) => Promise<void>;
-    addProjects: () => Promise<void>;
+    addProjects: () => Promise<readonly string[]>;
     clearProjectAppData: (projectId: string) => Promise<void>;
-    cloneRepository: (repositoryUrl: string) => Promise<boolean>;
+    cloneRepository: (repositoryUrl: string) => Promise<readonly string[]>;
     createEntry: (
         projectId: string,
         parentRelativePath: string | null,
@@ -164,7 +164,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                 await loadDirectory(nextActiveProjectId, null, set, get);
             }
 
-            await openProjectsInWindows(projectIdsToOpen);
+            void projectIdsToOpen;
         } catch (error) {
             set({
                 error:
@@ -195,7 +195,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                 await loadDirectory(nextActiveProjectId, null, set, get);
             }
 
-            await openProjectsInWindows(projectIdsToOpen);
+            return projectIdsToOpen;
         } catch (error) {
             set({
                 error:
@@ -203,6 +203,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                         ? error.message
                         : "Could not add the selected project.",
             });
+            return [];
         }
     },
 
@@ -240,7 +241,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
         const normalizedUrl = repositoryUrl.trim();
         if (!normalizedUrl) {
             set({ error: "Paste a repository URL before cloning." });
-            return false;
+            return [];
         }
 
         try {
@@ -250,7 +251,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
 
             if (response.kind === "canceled") {
                 set({ error: null });
-                return false;
+                return [];
             }
 
             const { projectIdsToOpen, projects } = response.result;
@@ -270,8 +271,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                 await loadDirectory(nextActiveProjectId, null, set, get);
             }
 
-            await openProjectsInWindows(projectIdsToOpen);
-            return true;
+            return projectIdsToOpen;
         } catch (error) {
             set({
                 error:
@@ -279,7 +279,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
                         ? error.message
                         : "Could not clone the repository.",
             });
-            return false;
+            return [];
         }
     },
 
@@ -862,19 +862,6 @@ export function resolveNextActiveProjectId({
     }
 
     return null;
-}
-
-async function openProjectsInWindows(
-    projectIdsToOpen: readonly string[],
-): Promise<void> {
-    const comandoApi = getComandoApi();
-    if (!comandoApi || projectIdsToOpen.length === 0) {
-        return;
-    }
-
-    for (const projectId of projectIdsToOpen) {
-        await comandoApi.openProjectWindow({ projectId });
-    }
 }
 
 function getParentKey(parentRelativePath: string | null): ParentKey {

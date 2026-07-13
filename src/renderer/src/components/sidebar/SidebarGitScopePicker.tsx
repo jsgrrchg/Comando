@@ -25,6 +25,7 @@ import {
 } from "@renderer/app/git/context-key";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
+import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import { getViewportSafeMenuPosition } from "@renderer/app/utils/menu-position";
 import {
     ContextMenu,
@@ -327,7 +328,7 @@ export function SidebarGitScopePicker({
     const refreshGitHistory = useGitStore((state) => state.refreshHistory);
     const refreshGitProject = useGitStore((state) => state.refreshProject);
     const removeWorktree = useGitStore((state) => state.removeWorktree);
-    const setActiveWorktree = useGitStore((state) => state.setActiveWorktree);
+    const openContext = useWorkspaceStore((state) => state.openContext);
 
     const activeWorktree =
         snapshot?.worktrees.find(
@@ -898,11 +899,18 @@ export function SidebarGitScopePicker({
                 return;
             }
 
+            const normalizedWorktreeId =
+                snapshot?.worktrees.find(
+                    (candidate) => candidate.id === nextWorktreeId,
+                )?.isPrimary === true
+                    ? null
+                    : nextWorktreeId;
+
             if (
                 areGitScopeWorktreeIdsEqual(
                     projectId,
                     worktreeId,
-                    nextWorktreeId,
+                    normalizedWorktreeId,
                 )
             ) {
                 setIsOpen(false);
@@ -915,12 +923,7 @@ export function SidebarGitScopePicker({
             setIsBusy(true);
 
             try {
-                await setActiveWorktree(projectId, nextWorktreeId);
-                await Promise.all([
-                    refreshGitProject(projectId, nextWorktreeId),
-                    refreshGitHistory(projectId, nextWorktreeId),
-                    refreshProjectTree(projectId, nextWorktreeId),
-                ]);
+                await openContext(projectId, normalizedWorktreeId);
                 setIsOpen(false);
                 setQuery("");
             } catch (error) {
@@ -936,10 +939,8 @@ export function SidebarGitScopePicker({
         [
             isBusy,
             projectId,
-            refreshGitHistory,
-            refreshGitProject,
-            refreshProjectTree,
-            setActiveWorktree,
+            snapshot?.worktrees,
+            openContext,
             worktreeId,
         ],
     );
@@ -1074,10 +1075,8 @@ export function SidebarGitScopePicker({
                     worktreeId: worktreeId ?? snapshot?.currentWorktreeId ?? null,
                 });
 
-                await getComandoApi().openProjectWindow({
-                    forceNewWindow: true,
-                    projectId,
-                    worktreeId: createdWorktree.id,
+                await openContext(projectId, createdWorktree.id, {
+                    emptyLayout: true,
                 });
 
                 setIsOpen(false);
@@ -1096,6 +1095,7 @@ export function SidebarGitScopePicker({
             branches,
             createWorktree,
             isBusy,
+            openContext,
             project,
             projectId,
             snapshot?.currentWorktreeId,
