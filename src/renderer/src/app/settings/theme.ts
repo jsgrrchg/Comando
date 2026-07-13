@@ -2,6 +2,10 @@ import {
     AGENTS_SIDEBAR_SCALE_DEFAULT,
     clampAgentsSidebarScale,
 } from "@shared/agents-sidebar-scale";
+import {
+    CHROME_TRANSPARENCY_DEFAULT,
+    clampChromeTransparency,
+} from "@shared/chrome-transparency";
 import { APP_ZOOM_FACTOR_DEFAULT, clampAppZoomFactor } from "@shared/app-zoom";
 import {
     EDITOR_AUTOSAVE_DELAY_MS_DEFAULT,
@@ -1753,6 +1757,7 @@ export function getDefaultAppAppearance(): AppAppearanceSettings {
     return {
         agentsSidebarScale: AGENTS_SIDEBAR_SCALE_DEFAULT,
         boostCodeContrast: true,
+        chromeTransparency: CHROME_TRANSPARENCY_DEFAULT,
         fileTreeScale: FILE_TREE_SCALE_DEFAULT,
         stickyFoldersEnabled: true,
         themeMode: "system",
@@ -1818,6 +1823,9 @@ export function resolveAppearance(
         ),
         boostCodeContrast:
             appAppearance?.boostCodeContrast ?? defaults.boostCodeContrast,
+        chromeTransparency: clampChromeTransparency(
+            appAppearance?.chromeTransparency ?? defaults.chromeTransparency,
+        ),
         fileTreeScale: clampFileTreeScale(
             appAppearance?.fileTreeScale ?? defaults.fileTreeScale,
         ),
@@ -1946,6 +1954,10 @@ export function applyAppearance(
     root.setAttribute(
         "data-transparency-enabled",
         appearance.transparencyEnabled ? "true" : "false",
+    );
+    root.style.setProperty(
+        "--chrome-transparency",
+        `${appearance.chromeTransparency}%`,
     );
     root.style.setProperty("--color-app", palette.app);
     root.style.setProperty("--color-bg-primary", palette.bgPrimary);

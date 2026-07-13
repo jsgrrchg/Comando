@@ -15,10 +15,12 @@ export interface ShortcutDefinition {
         | "open_git_history"
         | "new_window"
         | "next_pane_tab"
+        | "next_workspace"
         | "open_current_project_in_new_window"
         | "open_file_picker"
         | "open_settings"
         | "previous_pane_tab"
+        | "previous_workspace"
         | "reload_window"
         | "reset_editor_font_size"
         | "reveal_active_file_in_tree"
@@ -162,6 +164,16 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         section: "General",
     },
     {
+        id: "next_workspace",
+        label: "Next workspace",
+        description: "Switch to the next open workspace.",
+        keys: {
+            mac: "Cmd+Alt+]",
+            windows: "Ctrl+Alt+]",
+        },
+        section: "General",
+    },
+    {
         id: "open_settings",
         label: "Open settings",
         description:
@@ -179,6 +191,16 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         keys: {
             mac: "Ctrl+Shift+Tab",
             windows: "Ctrl+Shift+Tab",
+        },
+        section: "General",
+    },
+    {
+        id: "previous_workspace",
+        label: "Previous workspace",
+        description: "Switch to the previous open workspace.",
+        keys: {
+            mac: "Cmd+Alt+[",
+            windows: "Ctrl+Alt+[",
         },
         section: "General",
     },

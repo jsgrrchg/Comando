@@ -31,4 +31,32 @@ describe("shortcutDefinitions", () => {
             section: "Git",
         });
     });
+
+    it("includes workspace navigation shortcuts", () => {
+        const nextWorkspaceShortcut = shortcutDefinitions.find(
+            (shortcut) => shortcut.id === "next_workspace",
+        );
+        const previousWorkspaceShortcut = shortcutDefinitions.find(
+            (shortcut) => shortcut.id === "previous_workspace",
+        );
+
+        expect(nextWorkspaceShortcut).toMatchObject({
+            description: "Switch to the next open workspace.",
+            keys: {
+                mac: "Cmd+Alt+]",
+                windows: "Ctrl+Alt+]",
+            },
+            label: "Next workspace",
+            section: "General",
+        });
+        expect(previousWorkspaceShortcut).toMatchObject({
+            description: "Switch to the previous open workspace.",
+            keys: {
+                mac: "Cmd+Alt+[",
+                windows: "Ctrl+Alt+[",
+            },
+            label: "Previous workspace",
+            section: "General",
+        });
+    });
 });

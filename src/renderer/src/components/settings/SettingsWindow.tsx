@@ -13,6 +13,10 @@ import {
     clampAppZoomFactor,
 } from "@shared/app-zoom";
 import {
+    CHROME_TRANSPARENCY_MAX,
+    CHROME_TRANSPARENCY_MIN,
+} from "@shared/chrome-transparency";
+import {
     EDITOR_AUTOSAVE_DELAY_MS_MAX,
     EDITOR_AUTOSAVE_DELAY_MS_MIN,
 } from "@shared/editor-autosave";
@@ -1639,6 +1643,10 @@ function AppearanceContent({
             "Window transparency",
             "Use native acrylic transparency on Windows and vibrancy on macOS.",
         ],
+        [
+            "Sidebar and top bar transparency",
+            "Set how much of the background shows through the sidebar and title bar.",
+        ],
     ]);
     const showMode = sectionHasMatches(searchQuery, "Mode", [
         [
@@ -1734,6 +1742,21 @@ function AppearanceContent({
                         onChange={(v) =>
                             state.onTransparencyEnabledChange?.(v)
                         }
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Workspace"
+                label="Sidebar and top bar transparency"
+                description="Set how much of the background shows through the sidebar and title bar."
+                control={
+                    <SliderField
+                        value={state.chromeTransparency}
+                        min={CHROME_TRANSPARENCY_MIN}
+                        max={CHROME_TRANSPARENCY_MAX}
+                        onChange={(v) => state.onChromeTransparencyChange?.(v)}
+                        formatValue={(v) => `${v}%`}
                     />
                 }
             />

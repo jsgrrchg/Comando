@@ -1,8 +1,11 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
-import type { RuntimeWorkspaceTerminalTab } from "@renderer/app/workspace/tree";
+import {
+    collectPaneNodes,
+    type RuntimeWorkspaceTerminalTab,
+} from "@renderer/app/workspace/tree";
 
 import { useTerminalRuntimeStore } from "./terminalRuntimeStore";
 
@@ -14,14 +17,48 @@ function getComandoApiOrNull() {
 }
 
 export function WorkspaceTerminalHost() {
-    const terminalTabs = useWorkspaceStore(
-        useShallow((state) =>
-            Object.values(state.tabsById).filter(
+    const { activeContextKey, contextsByKey, rootNode, tabsById } = useWorkspaceStore(
+        useShallow((state) => ({
+            activeContextKey: state.activeContextKey,
+            contextsByKey: state.contextsByKey,
+            rootNode: state.rootNode,
+            tabsById: state.tabsById,
+        })),
+    );
+    const visibleTerminalTabs = useMemo(
+        () =>
+            Object.values(tabsById).filter(
                 (tab): tab is RuntimeWorkspaceTerminalTab =>
                     tab.kind === "terminal",
             ),
-        ),
+        [tabsById],
     );
+    const activeTerminalTabs = useMemo(() => {
+        const activeTabIds = new Set(
+            collectPaneNodes(rootNode).flatMap((pane) =>
+                pane.activeTabId ? [pane.activeTabId] : [],
+            ),
+        );
+
+        return visibleTerminalTabs.filter((tab) => activeTabIds.has(tab.id));
+    }, [rootNode, visibleTerminalTabs]);
+    const liveTerminalIds = useMemo(() => {
+        const inactiveTerminalIds = Object.values(contextsByKey)
+            .filter((context) => context.key !== activeContextKey)
+            .flatMap((context) =>
+                Object.values(context.workspace.tabsById)
+                    .filter(
+                        (tab): tab is RuntimeWorkspaceTerminalTab =>
+                            tab.kind === "terminal",
+                    )
+                    .map((tab) => tab.terminalId),
+            );
+
+        return [
+            ...visibleTerminalTabs.map((tab) => tab.terminalId),
+            ...inactiveTerminalIds,
+        ];
+    }, [activeContextKey, contextsByKey, visibleTerminalTabs]);
     const ensureTerminal = useTerminalRuntimeStore(
         (state) => state.ensureTerminal,
     );
@@ -120,11 +157,16 @@ export function WorkspaceTerminalHost() {
     }, []);
 
     useEffect(() => {
-        for (const tab of terminalTabs) {
+        for (const tab of activeTerminalTabs) {
             ensureTerminal(tab);
         }
-        closeMissingTerminals(terminalTabs.map((tab) => tab.terminalId));
-    }, [closeMissingTerminals, ensureTerminal, terminalTabs]);
+        closeMissingTerminals(liveTerminalIds);
+    }, [
+        activeTerminalTabs,
+        closeMissingTerminals,
+        ensureTerminal,
+        liveTerminalIds,
+    ]);
 
     useEffect(
         () => () => {

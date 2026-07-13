@@ -130,7 +130,10 @@ import { GitWorktreeDiffTabView } from "@renderer/components/workspace/GitWorktr
 import { GitTabView } from "@renderer/components/workspace/GitTabView";
 import { ProviderIcon } from "@renderer/components/workspace/ProviderIcon";
 import { ReviewTabView } from "@renderer/components/workspace/ReviewTabView";
-import { WorkspacePaneEmptyState } from "@renderer/components/workspace/WorkspacePaneEmptyState";
+import {
+    WorkspacePaneEmptyState,
+    type WorkspacePaneRecentProject,
+} from "@renderer/components/workspace/WorkspacePaneEmptyState";
 import { MarkdownFilePreview } from "@renderer/components/workspace/MarkdownFilePreview";
 import { persistChatDraftForTab } from "@renderer/components/workspace/chatDraftPersistence";
 import {
@@ -208,6 +211,9 @@ import {
 interface WorkspaceViewProps {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
+    readonly recentProjects: readonly WorkspacePaneRecentProject[];
+    readonly onOpenProject: (projectId: string) => void;
+    readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
 }
 
@@ -668,6 +674,9 @@ function resolveActiveRuntimeId(runtimeId: AiRuntimeId): ActiveAiRuntimeId {
 export function WorkspaceView({
     defaultProjectId,
     defaultWorktreeId,
+    recentProjects,
+    onOpenProject,
+    onOpenProjects,
     onRequestCreateFile,
 }: WorkspaceViewProps) {
     const closeTab = useWorkspaceStore((state) => state.closeTab);
@@ -1051,7 +1060,10 @@ export function WorkspaceView({
             <WorkspaceNodeView
                 defaultProjectId={defaultProjectId}
                 defaultWorktreeId={defaultWorktreeId}
+                recentProjects={recentProjects}
                 nodeId={rootNodeId}
+                onOpenProject={onOpenProject}
+                onOpenProjects={onOpenProjects}
                 onRequestCreateFile={onRequestCreateFile}
                 tabDrag={tabDrag}
             />
@@ -1075,13 +1087,19 @@ export function WorkspaceView({
 function WorkspaceNodeView({
     defaultProjectId,
     defaultWorktreeId,
+    recentProjects,
     nodeId,
+    onOpenProject,
+    onOpenProjects,
     onRequestCreateFile,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
+    readonly recentProjects: readonly WorkspacePaneRecentProject[];
     readonly nodeId: string;
+    readonly onOpenProject: (projectId: string) => void;
+    readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
@@ -1101,7 +1119,10 @@ function WorkspaceNodeView({
             <WorkspacePaneView
                 defaultProjectId={defaultProjectId}
                 defaultWorktreeId={defaultWorktreeId}
+                recentProjects={recentProjects}
                 paneId={node.id}
+                onOpenProject={onOpenProject}
+                onOpenProjects={onOpenProjects}
                 onRequestCreateFile={onRequestCreateFile}
                 tabDrag={tabDrag}
             />
@@ -1112,7 +1133,10 @@ function WorkspaceNodeView({
         <WorkspaceSplitView
             defaultProjectId={defaultProjectId}
             defaultWorktreeId={defaultWorktreeId}
+            recentProjects={recentProjects}
             splitId={node.id}
+            onOpenProject={onOpenProject}
+            onOpenProjects={onOpenProjects}
             onRequestCreateFile={onRequestCreateFile}
             tabDrag={tabDrag}
         />
@@ -1326,13 +1350,19 @@ function findPaneIdForWorkspaceTab(
 function WorkspaceSplitView({
     defaultProjectId,
     defaultWorktreeId,
+    recentProjects,
     splitId,
+    onOpenProject,
+    onOpenProjects,
     onRequestCreateFile,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
+    readonly recentProjects: readonly WorkspacePaneRecentProject[];
     readonly splitId: string;
+    readonly onOpenProject: (projectId: string) => void;
+    readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
@@ -1457,10 +1487,13 @@ function WorkspaceSplitView({
                     axis={node.axis}
                     defaultProjectId={defaultProjectId}
                     defaultWorktreeId={defaultWorktreeId}
+                    recentProjects={recentProjects}
                     handleIndex={index}
                     isLast={index === node.children.length - 1}
                     key={child.id}
                     nodeId={child.id}
+                    onOpenProject={onOpenProject}
+                    onOpenProjects={onOpenProjects}
                     onRequestCreateFile={onRequestCreateFile}
                     onPointerDown={(event) => {
                         if (!isPrimaryPointerButton(event.button)) {
@@ -1500,9 +1533,12 @@ function FragmentPane({
     axis,
     defaultProjectId,
     defaultWorktreeId,
+    recentProjects,
     handleIndex,
     isLast,
     nodeId,
+    onOpenProject,
+    onOpenProjects,
     onRequestCreateFile,
     onPointerDown,
     size,
@@ -1511,9 +1547,12 @@ function FragmentPane({
     readonly axis: "horizontal" | "vertical";
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
+    readonly recentProjects: readonly WorkspacePaneRecentProject[];
     readonly handleIndex: number;
     readonly isLast: boolean;
     readonly nodeId: string;
+    readonly onOpenProject: (projectId: string) => void;
+    readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
     readonly onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
     readonly size: number;
@@ -1532,7 +1571,10 @@ function FragmentPane({
                 <WorkspaceNodeView
                     defaultProjectId={defaultProjectId}
                     defaultWorktreeId={defaultWorktreeId}
+                    recentProjects={recentProjects}
                     nodeId={nodeId}
+                    onOpenProject={onOpenProject}
+                    onOpenProjects={onOpenProjects}
                     onRequestCreateFile={onRequestCreateFile}
                     tabDrag={tabDrag}
                 />
@@ -1575,13 +1617,19 @@ function FragmentPane({
 function WorkspacePaneView({
     defaultProjectId,
     defaultWorktreeId,
+    recentProjects,
     paneId,
+    onOpenProject,
+    onOpenProjects,
     onRequestCreateFile,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
+    readonly recentProjects: readonly WorkspacePaneRecentProject[];
     readonly paneId: string;
+    readonly onOpenProject: (projectId: string) => void;
+    readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
@@ -2577,7 +2625,7 @@ function WorkspacePaneView({
                                                 ? "opacity-35"
                                                 : "",
                                             isActive
-                                                ? "z-10 bg-bg-primary text-text-primary shadow-[inset_0_-2px_0_0_var(--color-accent)] duration-0"
+                                                ? "z-10 bg-bg-primary font-medium text-text-primary shadow-[inset_0_2px_0_0_var(--color-accent),inset_0_-1px_0_0_var(--color-accent)] duration-0"
                                                 : "z-0 bg-bg-chrome text-text-secondary hover:bg-bg-tertiary hover:text-text-primary",
                                         ].join(" ")}
                                         data-workspace-tab-id={tab.id}
@@ -2708,16 +2756,13 @@ function WorkspacePaneView({
                 </div>
 
                 <div className="relative min-h-0 flex-1 overflow-hidden bg-editor">
-                    {paneTabs
-                        .filter((tab) => tab.kind === "terminal")
-                        .map((tab) => (
-                            <WorkspaceTerminalView
-                                key={tab.id}
-                                active={tab.id === paneActiveTabId}
-                                activePane={isActivePane}
-                                tab={tab}
-                            />
-                        ))}
+                    {activeTab?.kind === "terminal" ? (
+                        <WorkspaceTerminalView
+                            active
+                            activePane={isActivePane}
+                            tab={activeTab}
+                        />
+                    ) : null}
                     <WorkspaceFileEditorHost
                         activeFileTab={activeFileTab}
                         fileTabs={paneFileTabs}
@@ -2781,7 +2826,11 @@ function WorkspacePaneView({
                             <GitHubPullRequestTabView tab={activeTab} />
                         ) : null
                     ) : (
-                        <WorkspacePaneEmptyState />
+                        <WorkspacePaneEmptyState
+                            onOpenProject={onOpenProject}
+                            onOpenProjects={onOpenProjects}
+                            recentProjects={recentProjects}
+                        />
                     )}
                 </div>
             </section>

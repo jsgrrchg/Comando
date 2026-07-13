@@ -17,6 +17,7 @@ import {
     renameWorkspaceTabsForProjectPath,
     replaceFileDocument,
     selectAdjacentPaneTab,
+    selectPaneTab,
     setFileTabExternalChange,
     setFileTabMarkdownPreviewScrollTop,
     setFileTabSaving,
@@ -26,6 +27,7 @@ import {
     updateFileDraft,
     type RuntimeWorkspaceFileTab,
     type RuntimeWorkspaceTab,
+    type WorkspaceTreeState,
     workspaceStateFromSnapshot,
     workspaceStateToSnapshot,
 } from "./tree";
@@ -314,6 +316,60 @@ describe("workspace tree helpers", () => {
 
         expect(selected.rootNode.activeTabId).toBe("tab-2");
         expect(selected.activePaneId).toBe("pane-root");
+    });
+
+    it("preserves untouched split branches when selecting a tab", () => {
+        const targetPane = {
+            activeTabId: "tab-1",
+            id: "pane-target",
+            tabIds: ["tab-1", "tab-2"],
+            type: "pane" as const,
+        };
+        const targetBranch = {
+            axis: "vertical" as const,
+            children: [targetPane],
+            id: "split-target",
+            sizes: [1],
+            type: "split" as const,
+        };
+        const untouchedBranch = {
+            axis: "vertical" as const,
+            children: [
+                {
+                    activeTabId: "tab-3",
+                    id: "pane-untouched",
+                    tabIds: ["tab-3"],
+                    type: "pane" as const,
+                },
+            ],
+            id: "split-untouched",
+            sizes: [1],
+            type: "split" as const,
+        };
+        const state: WorkspaceTreeState = {
+            activePaneId: targetPane.id,
+            rootNode: {
+                axis: "horizontal",
+                children: [targetBranch, untouchedBranch],
+                id: "split-root",
+                sizes: [0.5, 0.5],
+                type: "split",
+            },
+            tabsById: {
+                "tab-1": makeChatTab("tab-1"),
+                "tab-2": makeChatTab("tab-2"),
+                "tab-3": makeChatTab("tab-3"),
+            },
+        };
+
+        const selected = selectPaneTab(state, targetPane.id, "tab-2");
+
+        expect(selected.rootNode.type).toBe("split");
+        if (selected.rootNode.type !== "split") {
+            return;
+        }
+
+        expect(selected.rootNode.children[1]).toBe(untouchedBranch);
     });
 
     it("omits transient file tabs from the persisted snapshot", () => {

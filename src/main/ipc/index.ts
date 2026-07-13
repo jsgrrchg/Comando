@@ -27,6 +27,7 @@ import {
     type ClearProjectAppDataInput,
     type CloneRepositoryInput,
     type CloneRepositoryResult,
+    type ConfirmWorkspaceCloseInput,
     type CodexRuntimeSettingsInput,
     type CopyExternalProjectEntriesInput,
     type CopyProjectEntriesInput,
@@ -153,9 +154,10 @@ import {
     type TsconfigResolutionSnapshot,
     type WindowContextSnapshot,
     type WriteTerminalInput,
-    type WorkspaceSnapshot,
+    type WorkspaceNavigationSnapshot,
 } from "@shared/ipc";
 import { normalizePathKey as normalizeSharedPathKey } from "@shared/path-identity";
+import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
 
 import {
     BrowserWindow,
@@ -164,10 +166,15 @@ import {
     ipcMain,
     nativeTheme,
     shell,
+    type MessageBoxOptions,
     type OpenDialogOptions,
 } from "electron";
 
-import { forEachLiveWindow, refreshWindowsTitleBarOverlays } from "@main/window";
+import {
+    forEachLiveWindow,
+    MAC_MAIN_TRAFFIC_LIGHT_POSITION,
+    refreshWindowsTitleBarOverlays,
+} from "@main/window";
 import { createIpcInFlightLimiter } from "@main/ipc/rate-limit";
 import { resolveSettingsSnapshotSaveEffects } from "@main/ipc/settings-save-effects";
 import { debugBenignError } from "@main/observability/logging";
@@ -214,7 +221,7 @@ interface RegisterIpcHandlersOptions {
     readonly gitService: GitGateway;
     readonly githubService: GitHubGateway;
     readonly getSnapshot: () => AppBootstrapSnapshot;
-    readonly openProjectWindow: (input: OpenProjectWindowInput) => void;
+    readonly openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
     readonly persistenceService: PersistenceGateway;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsGateway;
@@ -237,6 +244,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.openGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.revealGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.openProjectWindow);
+    ipcMain.removeHandler(IPC_CHANNELS.confirmWorkspaceClose);
     ipcMain.removeHandler(IPC_CHANNELS.checkCommandAvailability);
     ipcMain.removeHandler(IPC_CHANNELS.readClaudeCodeTranscript);
     ipcMain.removeHandler(IPC_CHANNELS.getSettingsSnapshot);
@@ -459,8 +467,54 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.openProjectWindow,
-        (_event, input: OpenProjectWindowInput) => {
-            options.openProjectWindow(input);
+        (_event, input: OpenProjectWindowInput) =>
+            options.openProjectWindow(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.confirmWorkspaceClose,
+        async (event, input: ConfirmWorkspaceCloseInput): Promise<boolean> => {
+            if (
+                !input ||
+                typeof input.workspaceName !== "string" ||
+                !Number.isInteger(input.activeAgentCount) ||
+                !Number.isInteger(input.dirtyFileCount) ||
+                input.activeAgentCount < 0 ||
+                input.dirtyFileCount < 0
+            ) {
+                throw new TypeError("Expected a valid workspace close confirmation input.");
+            }
+
+            const ownerWindow =
+                BrowserWindow.fromWebContents(event.sender) ??
+                BrowserWindow.getFocusedWindow();
+            const details = [
+                input.activeAgentCount > 0
+                    ? `${input.activeAgentCount} ${input.activeAgentCount === 1 ? "agent is" : "agents are"} still working. ${input.activeAgentCount === 1 ? "It" : "They"} will continue running in the background if you close this workspace.`
+                    : null,
+                input.dirtyFileCount > 0
+                    ? `${input.dirtyFileCount} unsaved ${input.dirtyFileCount === 1 ? "file will" : "files will"} be discarded.`
+                    : null,
+            ]
+                .filter((detail): detail is string => Boolean(detail))
+                .join("\n\n");
+            const dialogOptions: MessageBoxOptions = {
+                buttons: ["Keep Workspace Open", "Close Workspace"],
+                cancelId: 0,
+                defaultId: 0,
+                detail: details,
+                message: `Close “${input.workspaceName}”?`,
+                noLink: true,
+                title:
+                    input.activeAgentCount > 0
+                        ? "Agents are still working"
+                        : "Unsaved changes",
+                type: "warning",
+            };
+            const result = ownerWindow
+                ? await dialog.showMessageBox(ownerWindow, dialogOptions)
+                : await dialog.showMessageBox(dialogOptions);
+
+            return result.response === 1;
         },
     );
     ipcMain.handle(
@@ -591,7 +645,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const win = BrowserWindow.fromWebContents(event.sender);
             if (win && process.platform === "darwin") {
                 win.setWindowButtonPosition(
-                    visible ? { x: 18, y: 18 } : { x: -80, y: -80 },
+                    visible ? MAC_MAIN_TRAFFIC_LIGHT_POSITION : { x: -80, y: -80 },
                 );
             }
         },
@@ -1641,16 +1695,39 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(IPC_CHANNELS.getWorkspaceSnapshot, (event) => {
         const context = requireWindowContext(event.sender, "main");
-        return options.workspaceService.loadSnapshot(context.workspaceId!);
+        return Promise.resolve(
+            options.workspaceService.loadSnapshot(context.workspaceId!),
+        )
+            .then((record) => record.snapshot);
     });
     ipcMain.handle(
         IPC_CHANNELS.saveWorkspaceSnapshot,
-        (event, snapshot: WorkspaceSnapshot) => {
+        async (event, snapshot: WorkspaceNavigationSnapshot) => {
             const context = requireWindowContext(event.sender, "main");
-            return options.workspaceService.saveSnapshot(
-                context.workspaceId!,
+            const normalizedSnapshot = normalizeWorkspaceNavigationSnapshot(
                 snapshot,
+            ).snapshot;
+            await options.workspaceService.saveSnapshot(
+                context.workspaceId!,
+                normalizedSnapshot,
             );
+            const activeContext = normalizedSnapshot.contexts.find(
+                (candidate) =>
+                    candidate.key === normalizedSnapshot.activeContextKey,
+            );
+            const projectId = activeContext?.projectId ?? null;
+            const worktreeId = activeContext?.worktreeId ?? null;
+            windowRegistry.updateMainWindowProjectId(
+                context.windowId,
+                projectId,
+                worktreeId,
+            );
+            const ownerWindow = BrowserWindow.fromWebContents(event.sender);
+            if (ownerWindow) {
+                ownerWindow.setTitle(
+                    buildMainWindowTitle(options.projectService, projectId),
+                );
+            }
         },
     );
     ipcMain.handle(

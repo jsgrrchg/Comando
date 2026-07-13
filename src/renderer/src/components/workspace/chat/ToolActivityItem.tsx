@@ -34,6 +34,7 @@ import {
     getStructuredToolTarget,
 } from "./toolActivityDescriptor";
 import {
+    isEditedFileToolActivity,
     isFileToolActivity,
     isStatusToolActivity,
     isTerminalToolActivity,
@@ -2058,6 +2059,9 @@ export const ToolActivityItem = memo(function ToolActivityItem({
         isAiTrackedFileUnresolved,
     );
     const hasInlineReview = trackedFiles.length > 0 || activity.diffs.length > 0;
+    const hasPendingChangeReview =
+        isEditedFileToolActivity(activity, trackedFiles) &&
+        (activity.status === "in_progress" || activity.status === "pending");
 
     // Validate file references in tool summaries against the real project file
     // index so only existing files become clickable pills (mirrors chat
@@ -2118,7 +2122,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     }
 
     if (isFileToolActivity(activity, trackedFiles)) {
-        if (hasInlineReview) {
+        if (hasInlineReview || hasPendingChangeReview) {
             const reviewPanel = (
                 <ChangeReviewPanel
                     activity={activity}
