@@ -534,6 +534,57 @@ describe("github-store", () => {
         ).toEqual([updated]);
     });
 
+    it("assigns pull request labels through the shared issue endpoint", async () => {
+        const nextLabels = [
+            createLabel({ name: "bug" }),
+            createLabel({ id: 2, name: "area/ui" }),
+        ];
+        const pullRequest = createPullRequestDetail({
+            labels: [createLabel({ name: "needs-review" })],
+            number: 12,
+        });
+        const setGitHubIssueLabels = vi.fn<
+            (input: GitHubSetIssueLabelsInput) => Promise<GitHubSetIssueLabelsResult>
+        >().mockResolvedValue({ labels: nextLabels, number: 12 });
+        useGitHubStore.setState({
+            pullRequestDetailsByRepo: { [repoKey]: { 12: pullRequest } },
+            pullRequestsByRepo: { [repoKey]: [pullRequest] },
+            pullRequestsByRepoAndState: {
+                [repoKey]: { all: [pullRequest], open: [pullRequest] },
+            },
+        });
+        stubComando({ setGitHubIssueLabels });
+
+        await expect(
+            useGitHubStore
+                .getState()
+                .setPullRequestLabels(repository, 12, ["bug", "area/ui"]),
+        ).resolves.toEqual(nextLabels);
+
+        const input = setGitHubIssueLabels.mock.calls[0]?.[0];
+        expect(input).toMatchObject({
+            labels: ["bug", "area/ui"],
+            number: 12,
+            repository,
+        });
+        expect(input?.clientRequestId).toEqual(
+            expect.stringContaining(`${repoKey}:pr:12:labels:`),
+        );
+        const state = useGitHubStore.getState();
+        expect(state.pullRequestDetailsByRepo[repoKey]?.[12]?.labels).toEqual(
+            nextLabels,
+        );
+        expect(state.pullRequestsByRepo[repoKey]?.[0]?.labels).toEqual(
+            nextLabels,
+        );
+        expect(
+            state.pullRequestsByRepoAndState[repoKey]?.open?.[0]?.labels,
+        ).toEqual(nextLabels);
+        expect(
+            state.pullRequestsByRepoAndState[repoKey]?.all?.[0]?.labels,
+        ).toEqual(nextLabels);
+    });
+
     it("updates pull request caches from draft state mutations", async () => {
         const pullRequest = createPullRequestDetail({
             draft: false,

@@ -148,8 +148,8 @@ type SidebarGitHubContextMenuPayload = {
     readonly itemNumbers: readonly number[];
 };
 
-type SidebarIssueLabelPickerState = {
-    readonly issueNumber: number;
+type SidebarGitHubLabelPickerState = {
+    readonly itemNumber: number;
     readonly x: number;
     readonly y: number;
 };
@@ -316,6 +316,9 @@ export function SidebarGitHubPanel({
         (state) => state.refreshPullRequests,
     );
     const setIssueLabels = useGitHubStore((state) => state.setIssueLabels);
+    const setPullRequestLabels = useGitHubStore(
+        (state) => state.setPullRequestLabels,
+    );
     const mutatingKeys = useGitHubStore((state) => state.mutatingKeys);
     const openGitHubIssuesTab = useWorkspaceStore(
         (state) => state.openGitHubIssuesTab,
@@ -332,7 +335,7 @@ export function SidebarGitHubPanel({
     const [githubContextMenu, setGitHubContextMenu] =
         useState<ContextMenuState<SidebarGitHubContextMenuPayload> | null>(null);
     const [labelPicker, setLabelPicker] =
-        useState<SidebarIssueLabelPickerState | null>(null);
+        useState<SidebarGitHubLabelPickerState | null>(null);
     const [selectionAnchorNumber, setSelectionAnchorNumber] = useState<
         number | null
     >(null);
@@ -548,6 +551,14 @@ export function SidebarGitHubPanel({
         [currentBranch, pullRequests, repoRef],
     );
     const canWriteIssues = hasGitHubWritePermission(authStatus, "issues");
+    const canWritePullRequests = hasGitHubWritePermission(
+        authStatus,
+        "pull_requests",
+    );
+    const canEditLabels =
+        kind === "issues"
+            ? canWriteIssues
+            : canWritePullRequests || canWriteIssues;
     const visibleItemNumbers = useMemo(
         () =>
             kind === "issues"
@@ -627,24 +638,33 @@ export function SidebarGitHubPanel({
     );
     const contextItemCount =
         kind === "issues" ? contextIssues.length : contextPullRequests.length;
-    const activeLabelPickerIssue = labelPicker
-        ? (visibleIssues.find(
-              (issue) => issue.number === labelPicker.issueNumber,
-          ) ??
-          issues.find((issue) => issue.number === labelPicker.issueNumber) ??
-          null)
+    const activeLabelPickerItem = labelPicker
+        ? kind === "issues"
+            ? (visibleIssues.find(
+                  (issue) => issue.number === labelPicker.itemNumber,
+              ) ??
+              issues.find((issue) => issue.number === labelPicker.itemNumber) ??
+              null)
+            : (visiblePullRequests.find(
+                  (pullRequest) =>
+                      pullRequest.number === labelPicker.itemNumber,
+              ) ??
+              pullRequests.find(
+                  (pullRequest) =>
+                      pullRequest.number === labelPicker.itemNumber,
+              ) ??
+              null)
         : null;
-    const isUpdatingLabelPickerIssue =
-        repoKey && activeLabelPickerIssue
-            ? (mutatingKeys[
-                  `${repoKey}:issue:${activeLabelPickerIssue.number}:labels`
-              ] ?? false)
-            : false;
+    const labelPickerMutationKey =
+        repoKey && activeLabelPickerItem
+            ? `${repoKey}:${kind === "issues" ? "issue" : "pr"}:${activeLabelPickerItem.number}:labels`
+            : null;
+    const isUpdatingLabelPicker = labelPickerMutationKey
+        ? (mutatingKeys[labelPickerMutationKey] ?? false)
+        : false;
     const labelPickerMutationError = useGitHubStore((state) =>
-        repoKey && activeLabelPickerIssue
-            ? (state.errors[
-                  `${repoKey}:issue:${activeLabelPickerIssue.number}:labels`
-              ] ?? null)
+        labelPickerMutationKey
+            ? (state.errors[labelPickerMutationKey] ?? null)
             : null,
     );
     const openIssueTab = useCallback(
@@ -662,14 +682,17 @@ export function SidebarGitHubPanel({
         },
         [openGitHubIssueTab, projectId, repoRef, worktreeId],
     );
-    const openIssueLabelPicker = useCallback(
-        (issue: GitHubIssueSummary, position: { x: number; y: number }) => {
+    const openLabelPicker = useCallback(
+        (
+            item: GitHubIssueSummary | GitHubPullRequestSummary,
+            position: { x: number; y: number },
+        ) => {
             if (!repoRef) {
                 return;
             }
 
             setLabelPicker({
-                issueNumber: issue.number,
+                itemNumber: item.number,
                 x: position.x,
                 y: position.y,
             });
@@ -726,7 +749,7 @@ export function SidebarGitHubPanel({
     const contextMenuEntries: ContextMenuEntry[] =
         repoRef && githubContextMenu && contextMenuPosition && contextItemCount > 0
             ? buildSidebarGitHubContextMenuEntries({
-                  canWriteIssues,
+                  canEditLabels,
                   count: contextItemCount,
                   kind,
                   onAddToChat: () =>
@@ -734,12 +757,18 @@ export function SidebarGitHubPanel({
                   onAddToNewChat: () =>
                       addGitHubItemsToChat({ forceNewChat: true }),
                   onEditLabels:
-                      kind === "issues" && contextIssues.length === 1
-                          ? () =>
-                                openIssueLabelPicker(
-                                    contextIssues[0],
-                                    contextMenuPosition,
-                                )
+                      contextItemCount === 1
+                          ? kind === "issues"
+                              ? () =>
+                                    openLabelPicker(
+                                        contextIssues[0],
+                                        contextMenuPosition,
+                                    )
+                              : () =>
+                                    openLabelPicker(
+                                        contextPullRequests[0],
+                                        contextMenuPosition,
+                                    )
                           : null,
                   onOpen:
                       kind === "issues"
@@ -835,24 +864,39 @@ export function SidebarGitHubPanel({
             }),
         [selectedItemNumbers, visiblePullRequests, visibleItemNumbers],
     );
-    const handleSaveIssueLabels = useCallback(
+    const handleSaveLabels = useCallback(
         async (labelNames: readonly string[]) => {
-            if (!repoRef || !activeLabelPickerIssue || !canWriteIssues) {
+            if (!repoRef || !activeLabelPickerItem || !canEditLabels) {
                 return;
             }
 
             try {
-                await setIssueLabels(
-                    repoRef,
-                    activeLabelPickerIssue.number,
-                    labelNames,
-                );
+                if (kind === "issues") {
+                    await setIssueLabels(
+                        repoRef,
+                        activeLabelPickerItem.number,
+                        labelNames,
+                    );
+                } else {
+                    await setPullRequestLabels(
+                        repoRef,
+                        activeLabelPickerItem.number,
+                        labelNames,
+                    );
+                }
                 setLabelPicker(null);
             } catch {
                 // The store exposes the mutation error while the picker remains open.
             }
         },
-        [activeLabelPickerIssue, canWriteIssues, repoRef, setIssueLabels],
+        [
+            activeLabelPickerItem,
+            canEditLabels,
+            kind,
+            repoRef,
+            setIssueLabels,
+            setPullRequestLabels,
+        ],
     );
 
     const handleRefresh = useCallback(async () => {
@@ -1176,16 +1220,17 @@ export function SidebarGitHubPanel({
                     onClose={() => setGitHubContextMenu(null)}
                 />
             ) : null}
-            {activeLabelPickerIssue && labelPicker ? (
-                <SidebarGitHubLabelPicker
+            {activeLabelPickerItem && labelPicker ? (
+                <GitHubLabelPicker
                     anchor={{ x: labelPicker.x, y: labelPicker.y }}
                     error={labelPickerMutationError ?? labelsError}
                     isLoading={isLoadingLabels}
-                    isSaving={isUpdatingLabelPickerIssue}
-                    issue={activeLabelPickerIssue}
+                    isSaving={isUpdatingLabelPicker}
+                    item={activeLabelPickerItem}
+                    key={`${kind}:${activeLabelPickerItem.number}`}
                     labels={labels}
                     onClose={() => setLabelPicker(null)}
-                    onSave={(labelNames) => void handleSaveIssueLabels(labelNames)}
+                    onSave={(labelNames) => void handleSaveLabels(labelNames)}
                 />
             ) : null}
         </div>
@@ -1342,6 +1387,17 @@ function SidebarGitHubPullRequestRow({
                     #{pullRequest.number}
                 </span>
             </div>
+            {pullRequest.labels.length > 0 ? (
+                <div className="mt-1 flex min-w-0 flex-wrap gap-1">
+                    {pullRequest.labels.slice(0, 3).map((label) => (
+                        <GitHubLabelPill
+                            className="sidebar-github-label-pill"
+                            key={label.id}
+                            label={label}
+                        />
+                    ))}
+                </div>
+            ) : null}
             <div className="sidebar-github-branch mt-1 flex w-full min-w-0 items-center gap-1.5 font-mono text-text-secondary">
                 <span className="min-w-0 truncate">{pullRequest.head.label}</span>
                 <span aria-hidden="true" className="shrink-0">
@@ -1371,40 +1427,6 @@ function SidebarGitHubPullRequestRow({
                 ) : null}
             </div>
         </SidebarGitHubDraggableRow>
-    );
-}
-
-function SidebarGitHubLabelPicker({
-    anchor,
-    error,
-    issue,
-    isLoading,
-    isSaving,
-    labels,
-    onClose,
-    onSave,
-}: {
-    readonly anchor: { readonly x: number; readonly y: number };
-    readonly error: string | null;
-    readonly issue: GitHubIssueSummary;
-    readonly isLoading: boolean;
-    readonly isSaving: boolean;
-    readonly labels: readonly GitHubLabelSummary[];
-    readonly onClose: () => void;
-    readonly onSave: (labelNames: readonly string[]) => void;
-}) {
-    return (
-        <GitHubLabelPicker
-            anchor={anchor}
-            error={error}
-            isLoading={isLoading}
-            isSaving={isSaving}
-            item={issue}
-            key={issue.number}
-            labels={labels}
-            onClose={onClose}
-            onSave={onSave}
-        />
     );
 }
 
@@ -1971,7 +1993,7 @@ export function getSidebarGitHubAddToChatLabel({
 }
 
 function buildSidebarGitHubContextMenuEntries({
-    canWriteIssues,
+    canEditLabels,
     count,
     kind,
     onAddToChat,
@@ -1980,7 +2002,7 @@ function buildSidebarGitHubContextMenuEntries({
     onOpen,
     onOpenInGitHub,
 }: {
-    readonly canWriteIssues: boolean;
+    readonly canEditLabels: boolean;
     readonly count: number;
     readonly kind: SidebarGitHubPanelKind;
     readonly onAddToChat: () => void;
@@ -2019,13 +2041,13 @@ function buildSidebarGitHubContextMenuEntries({
         },
     ];
 
-    if (kind === "issues" && count === 1 && onEditLabels) {
+    if (count === 1 && onEditLabels) {
         entries.push(
             { type: "separator" },
             {
                 label: "Edit Labels...",
                 action: onEditLabels,
-                disabled: !canWriteIssues,
+                disabled: !canEditLabels,
             },
         );
     }

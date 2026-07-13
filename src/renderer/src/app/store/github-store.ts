@@ -179,6 +179,11 @@ export interface GitHubStoreState {
         number: number,
         labels: readonly string[],
     ) => Promise<readonly GitHubLabelSummary[]>;
+    setPullRequestLabels: (
+        ref: GitHubRepositoryRef,
+        number: number,
+        labels: readonly string[],
+    ) => Promise<readonly GitHubLabelSummary[]>;
     createPullRequest: (
         ref: GitHubRepositoryRef,
         input: GitHubCreatePullRequestOptions,
@@ -511,6 +516,23 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
                     repository: ref,
                 });
                 setIssueLabelsInCache(set, ref, number, result.labels);
+                return result.labels;
+            },
+        ),
+
+    setPullRequestLabels: async (ref, number, labels) =>
+        dedupeMutation(
+            set,
+            getRepoKey(ref),
+            `pr:${number}:labels`,
+            async (clientRequestId) => {
+                const result = await getComandoApi().setGitHubIssueLabels({
+                    clientRequestId,
+                    labels,
+                    number,
+                    repository: ref,
+                });
+                setPullRequestLabelsInCache(set, ref, number, result.labels);
                 return result.labels;
             },
         ),
@@ -1412,6 +1434,46 @@ function setPullRequestDetail(
             detail,
         ),
     }));
+}
+
+function setPullRequestLabelsInCache(
+    set: SetGitHubState,
+    ref: GitHubRepositoryRef,
+    number: number,
+    labels: readonly GitHubLabelSummary[],
+): void {
+    const repoKey = getRepoKey(ref);
+    set((state) => {
+        const detail = state.pullRequestDetailsByRepo[repoKey]?.[number];
+        const pullRequests = state.pullRequestsByRepo[repoKey];
+
+        return {
+            pullRequestDetailsByRepo: detail
+                ? {
+                      ...state.pullRequestDetailsByRepo,
+                      [repoKey]: {
+                          ...(state.pullRequestDetailsByRepo[repoKey] ?? {}),
+                          [number]: { ...detail, labels },
+                      },
+                  }
+                : state.pullRequestDetailsByRepo,
+            pullRequestsByRepo: pullRequests
+                ? {
+                      ...state.pullRequestsByRepo,
+                      [repoKey]: replaceLabelsByNumber(
+                          pullRequests,
+                          number,
+                          labels,
+                      ),
+                  }
+                : state.pullRequestsByRepo,
+            pullRequestsByRepoAndState: updatePullRequestStateCaches(
+                state.pullRequestsByRepoAndState,
+                repoKey,
+                (entries) => replaceLabelsByNumber(entries, number, labels),
+            ),
+        };
+    });
 }
 
 function appendPullRequestComment(
