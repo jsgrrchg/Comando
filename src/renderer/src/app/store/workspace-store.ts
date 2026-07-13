@@ -1814,6 +1814,18 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         worktreeId: string | null = null,
         invalidatedRelativePaths: readonly string[] | null = null,
     ) => {
+        set((state) => {
+            const contextsByKey = invalidateInactiveContextFileDocuments(
+                state,
+                projectId,
+                worktreeId,
+                invalidatedRelativePaths,
+            );
+            return contextsByKey === state.contextsByKey
+                ? state
+                : { contextsByKey };
+        });
+
         const fileTabs = Object.values(get().tabsById).filter(
             (tab): tab is RuntimeWorkspaceFileTab =>
                 tab.kind === "file" &&
@@ -2977,6 +2989,68 @@ function captureVisibleWorkspaceContext(
             },
         },
     };
+}
+
+function invalidateInactiveContextFileDocuments(
+    state: WorkspaceStore,
+    projectId: string,
+    worktreeId: string | null,
+    invalidatedRelativePaths: readonly string[] | null,
+): Record<string, RuntimeWorkspaceContext> {
+    let nextContextsByKey = state.contextsByKey;
+
+    for (const [contextKey, context] of Object.entries(state.contextsByKey)) {
+        if (contextKey === state.activeContextKey) {
+            continue;
+        }
+
+        let nextTabsById = context.workspace.tabsById;
+        for (const [tabId, tab] of Object.entries(
+            context.workspace.tabsById,
+        )) {
+            if (
+                tab.kind !== "file" ||
+                tab.projectId !== projectId ||
+                normalizeWorktreeId(tab.worktreeId) !==
+                    normalizeWorktreeId(worktreeId) ||
+                !isFileTabAffectedByProjectInvalidation(
+                    tab.relativePath,
+                    invalidatedRelativePaths,
+                ) ||
+                tab.isDirty ||
+                tab.isSaving ||
+                !tab.document
+            ) {
+                continue;
+            }
+
+            if (nextTabsById === context.workspace.tabsById) {
+                nextTabsById = { ...context.workspace.tabsById };
+            }
+            nextTabsById[tabId] = {
+                ...tab,
+                document: null,
+                isLoading: false,
+                loadError: null,
+            };
+        }
+
+        if (nextTabsById === context.workspace.tabsById) {
+            continue;
+        }
+        if (nextContextsByKey === state.contextsByKey) {
+            nextContextsByKey = { ...state.contextsByKey };
+        }
+        nextContextsByKey[contextKey] = {
+            ...context,
+            workspace: {
+                ...context.workspace,
+                tabsById: nextTabsById,
+            },
+        };
+    }
+
+    return nextContextsByKey;
 }
 
 function isWorkspaceNavigationSnapshot(

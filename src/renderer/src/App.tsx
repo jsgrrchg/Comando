@@ -341,6 +341,23 @@ export function App() {
             ),
         [closeWorkspaceTab],
     );
+    const requestCloseWorkspaceContext = useCallback((contextKey: string) => {
+        const workspaceState = useWorkspaceStore.getState();
+        const context = workspaceState.contextsByKey[contextKey];
+        if (!context) {
+            return Promise.resolve();
+        }
+
+        const tabsById =
+            workspaceState.activeContextKey === contextKey
+                ? workspaceState.tabsById
+                : context.workspace.tabsById;
+        return closeWorkspaceTabsWithConfirmation(
+            Object.keys(tabsById),
+            () => useWorkspaceStore.getState().closeContext(contextKey),
+            { tabsById },
+        );
+    }, []);
     const requestCloseActiveWorkspaceTab = useEffectEvent(() => {
         const workspaceState = useWorkspaceStore.getState();
         const activePane = findPaneById(
@@ -3558,16 +3575,14 @@ export function App() {
             }
 
             event.preventDefault();
-            void useWorkspaceStore
-                .getState()
-                .closeContext(workspaceActiveContextKey);
+            void requestCloseWorkspaceContext(workspaceActiveContextKey);
         };
 
         window.addEventListener("keydown", handleKeyDown, true);
         return () => {
             window.removeEventListener("keydown", handleKeyDown, true);
         };
-    }, [workspaceActiveContextKey]);
+    }, [requestCloseWorkspaceContext, workspaceActiveContextKey]);
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
@@ -4361,9 +4376,7 @@ export function App() {
                             return projectIds.length > 0;
                         }}
                         onCloseContext={(contextKey) => {
-                            void useWorkspaceStore
-                                .getState()
-                                .closeContext(contextKey);
+                            void requestCloseWorkspaceContext(contextKey);
                         }}
                         onOpenProject={(projectId) => {
                             void useWorkspaceStore

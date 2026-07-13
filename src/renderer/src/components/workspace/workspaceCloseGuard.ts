@@ -5,14 +5,40 @@ export function getWorkspaceTabCloseConfirmationMessage(input: {
     readonly tabsById: Record<string, RuntimeWorkspaceTab | undefined>;
     readonly sessions: Record<string, unknown>;
 }): string | null {
-    void input;
-    return null;
+    const dirtyFileCount = input.tabIds.reduce((count, tabId) => {
+        const tab = input.tabsById[tabId];
+        return count + (tab?.kind === "file" && tab.isDirty ? 1 : 0);
+    }, 0);
+
+    if (dirtyFileCount === 0) {
+        return null;
+    }
+
+    return dirtyFileCount === 1
+        ? "This workspace contains an unsaved file. Close it and discard the changes?"
+        : `This workspace contains ${dirtyFileCount} unsaved files. Close it and discard the changes?`;
 }
 
 export async function closeWorkspaceTabsWithConfirmation(
     tabIds: readonly string[],
     closeAction: () => Promise<void>,
+    options: {
+        readonly confirm?: (message: string) => boolean;
+        readonly sessions?: Record<string, unknown>;
+        readonly tabsById?: Record<string, RuntimeWorkspaceTab | undefined>;
+    } = {},
 ): Promise<void> {
-    void tabIds;
+    if (options.tabsById) {
+        const message = getWorkspaceTabCloseConfirmationMessage({
+            sessions: options.sessions ?? {},
+            tabIds,
+            tabsById: options.tabsById,
+        });
+        const confirm = options.confirm ?? globalThis.window?.confirm;
+        if (message && (!confirm || !confirm(message))) {
+            return;
+        }
+    }
+
     await closeAction();
 }

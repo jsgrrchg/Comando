@@ -2199,6 +2199,96 @@ describe("workspace file opening", () => {
         });
     });
 
+    it("invalidates clean files in inactive contexts and reloads them on activation", async () => {
+        const activeWorkspace = createDefaultWorkspaceState();
+        const inactiveTab = {
+            ...createWorkspaceFileTab("file-inactive", "src/inactive.ts"),
+            document: {
+                absolutePath: "/tmp/src/inactive.ts",
+                content: "export const stale = true;\n",
+                imageDataBase64: null,
+                isBinary: false,
+                isTooLarge: false,
+                kind: "text" as const,
+                languageId: "typescript",
+                languageLabel: "TypeScript",
+                mimeType: "text/typescript",
+                modifiedAtMs: 1,
+                name: "inactive.ts",
+                projectId: "project-2",
+                relativePath: "src/inactive.ts",
+                sizeBytes: 27,
+            },
+            draftContent: "export const stale = true;\n",
+            projectId: "project-2",
+            savedContent: "export const stale = true;\n",
+        };
+        const inactiveWorkspace: WorkspaceTreeState = {
+            activePaneId: "pane-inactive",
+            rootNode: {
+                activeTabId: inactiveTab.id,
+                id: "pane-inactive",
+                tabIds: [inactiveTab.id],
+                type: "pane",
+            },
+            tabsById: { [inactiveTab.id]: inactiveTab },
+        };
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            ...activeWorkspace,
+            activeContextKey: "project-1::__primary__",
+            contextsByKey: {
+                "project-1::__primary__": {
+                    key: "project-1::__primary__",
+                    lastActivatedAt: "2026-04-14T00:00:00.000Z",
+                    projectId: "project-1",
+                    workspace: activeWorkspace,
+                    worktreeId: null,
+                },
+                "project-2::__primary__": {
+                    key: "project-2::__primary__",
+                    lastActivatedAt: "2026-04-14T00:00:00.000Z",
+                    projectId: "project-2",
+                    workspace: inactiveWorkspace,
+                    worktreeId: null,
+                },
+            },
+            openContextKeys: [
+                "project-1::__primary__",
+                "project-2::__primary__",
+            ],
+        }));
+
+        await useWorkspaceStore
+            .getState()
+            .refreshProjectTabs("project-2", null, ["src/inactive.ts"]);
+
+        expect(openProjectFileMock).not.toHaveBeenCalled();
+        expect(
+            useWorkspaceStore.getState().contextsByKey[
+                "project-2::__primary__"
+            ]?.workspace.tabsById[inactiveTab.id],
+        ).toMatchObject({ document: null, isDirty: false });
+
+        await useWorkspaceStore
+            .getState()
+            .activateContext("project-2::__primary__");
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledWith({
+                projectId: "project-2",
+                relativePath: "src/inactive.ts",
+                worktreeId: null,
+            });
+            expect(
+                useWorkspaceStore.getState().tabsById[inactiveTab.id],
+            ).toMatchObject({
+                document: { content: "export const value = 1;\n" },
+                isLoading: false,
+            });
+        });
+    });
+
     it("preserves edits made while a file save is in flight", async () => {
         const originalDocument: ProjectFileDocument = {
             absolutePath: "/tmp/notes.md",
