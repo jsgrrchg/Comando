@@ -87,13 +87,15 @@ function groupDropdownOptions(
     options: readonly DropdownOption[],
 ): readonly DropdownOptionGroup[] {
     const groups: Array<{ label: string | null; options: DropdownOption[] }> = [];
+    const groupIndexes = new Map<string | null, number>();
 
     for (const option of options) {
         const label = option.groupLabel?.trim() || null;
-        const group = groups.find((candidate) => candidate.label === label);
-        if (group) {
-            group.options.push(option);
+        const groupIndex = groupIndexes.get(label);
+        if (groupIndex !== undefined) {
+            groups[groupIndex].options.push(option);
         } else {
+            groupIndexes.set(label, groups.length);
             groups.push({ label, options: [option] });
         }
     }
@@ -467,13 +469,13 @@ function DropdownField({
                                                             }`}
                                                             key={`${option.groupLabel ?? "default"}:${option.value}`}
                                                             onClick={() => {
-                                                                onChange(
-                                                                    option.value,
-                                                                );
                                                                 setIsOpen(false);
                                                                 setQuery("");
                                                                 setExpandedGroups(
                                                                     new Set(),
+                                                                );
+                                                                onChange(
+                                                                    option.value,
                                                                 );
                                                             }}
                                                             onMouseEnter={(e) => {
@@ -690,22 +692,28 @@ export function AIChatAgentControls({
         },
         [modelConfig, onConfigOptionChange, onModelChange],
     );
-    const visibleModes =
-        modeConfig?.type === "select"
-            ? mapConfigOption(modeConfig)
-            : modes.map((mode) => ({
-                  description: mode.description,
-                  label: formatFallbackLabel(mode.name),
-                  value: mode.id,
-              }));
-    const visibleModels =
-        modelConfig?.type === "select"
-            ? mapConfigOption(modelConfig, false)
-            : models.map((model) => ({
-                  description: model.description,
-                  label: formatFallbackLabel(model.name),
-                  value: model.id,
-              }));
+    const visibleModes = useMemo(
+        () =>
+            modeConfig?.type === "select"
+                ? mapConfigOption(modeConfig)
+                : modes.map((mode) => ({
+                      description: mode.description,
+                      label: formatFallbackLabel(mode.name),
+                      value: mode.id,
+                  })),
+        [modeConfig, modes],
+    );
+    const visibleModels = useMemo(
+        () =>
+            modelConfig?.type === "select"
+                ? mapConfigOption(modelConfig, false)
+                : models.map((model) => ({
+                      description: model.description,
+                      label: formatFallbackLabel(model.name),
+                      value: model.id,
+                  })),
+        [modelConfig, models],
+    );
     const extraConfigs = useMemo(
         () =>
             [...configOptions]
