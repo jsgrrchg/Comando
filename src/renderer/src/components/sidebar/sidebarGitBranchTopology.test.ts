@@ -5,7 +5,10 @@ import type {
     GitHistoryCommitSummary,
 } from "@shared/ipc";
 
-import { buildGitScopeBranchTopology } from "./sidebarGitBranchTopology";
+import {
+    buildGitScopeBranchTopology,
+    buildGitScopeBranchTopologyRequestKey,
+} from "./sidebarGitBranchTopology";
 
 function createBranch(
     name: string,
@@ -71,6 +74,7 @@ describe("buildGitScopeBranchTopology", () => {
                 createBranch("older", "older"),
             ],
             [createCommit("shared"), createCommit("older")],
+            "main",
         );
 
         expect(result.orderedBranchNames).toEqual(["main", "alias", "older"]);
@@ -93,6 +97,22 @@ describe("buildGitScopeBranchTopology", () => {
         expect(result.byBranchName.get("old")?.historyIndex).toBeNull();
     });
 
+    it("uses the contextual current branch instead of stale project-wide flags", () => {
+        const result = buildGitScopeBranchTopology(
+            [
+                createBranch("stale-current", "shared", true),
+                createBranch("worktree-current", "shared"),
+            ],
+            [createCommit("shared")],
+            "worktree-current",
+        );
+
+        expect(result.orderedBranchNames).toEqual([
+            "worktree-current",
+            "stale-current",
+        ]);
+    });
+
     it("ignores remote refs in the local topology", () => {
         const remote = {
             ...createBranch("origin/main", "main"),
@@ -106,5 +126,40 @@ describe("buildGitScopeBranchTopology", () => {
 
         expect(result.orderedBranchNames).toEqual(["main"]);
         expect(result.byBranchName.has("origin/main")).toBe(false);
+    });
+});
+
+describe("buildGitScopeBranchTopologyRequestKey", () => {
+    it("changes only when the context or a local branch tip changes", () => {
+        const local = createBranch("main", "commit-main", true);
+        const remote = {
+            ...createBranch("origin/main", "remote-main"),
+            isRemote: true,
+            kind: "remote" as const,
+        };
+
+        const initial = buildGitScopeBranchTopologyRequestKey("project:main", [
+            local,
+            remote,
+        ]);
+
+        expect(
+            buildGitScopeBranchTopologyRequestKey("project:main", [
+                { ...remote, commitSha: "updated-remote" },
+                local,
+            ]),
+        ).toBe(initial);
+        expect(
+            buildGitScopeBranchTopologyRequestKey("project:main", [
+                { ...local, commitSha: "updated-local" },
+                remote,
+            ]),
+        ).not.toBe(initial);
+        expect(
+            buildGitScopeBranchTopologyRequestKey("project:worktree", [
+                local,
+                remote,
+            ]),
+        ).not.toBe(initial);
     });
 });

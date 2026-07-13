@@ -50,7 +50,10 @@ import {
     type BranchCreationBaseOption,
     type BranchCreationDraft,
 } from "./sidebarGitBranchCreation";
-import { buildGitScopeBranchTopology } from "./sidebarGitBranchTopology";
+import {
+    buildGitScopeBranchTopology,
+    buildGitScopeBranchTopologyRequestKey,
+} from "./sidebarGitBranchTopology";
 
 type GitScopeTabId = "branches" | "worktrees";
 type GitScopeBranchNodePosition = "first" | "last" | "middle" | "only";
@@ -378,9 +381,11 @@ export function SidebarGitScopePicker({
         snapshot?.worktrees.find((entry) => entry.isPrimary) ??
         null;
     const canInitializeGit = snapshot?.repositoryState === "not_repo";
-    const activeBranchName =
+    const contextualActiveBranchName =
         activeWorktree?.branchName ??
-        snapshot?.branch?.name ??
+        (snapshot?.branch?.isDetached ? null : (snapshot?.branch?.name ?? null));
+    const activeBranchName =
+        contextualActiveBranchName ??
         (canInitializeGit ? "No Git Repository" : "Detached HEAD");
     const activeRootPath =
         activeWorktree?.rootPath ?? snapshot?.rootPath ?? null;
@@ -389,14 +394,8 @@ export function SidebarGitScopePicker({
     const availableWorktrees = worktrees.length;
     const deferredQuery = useDeferredValue(query);
     const topologyRequestKey = useMemo(
-        () =>
-            gitContextKey
-                ? `${gitContextKey}:${snapshot?.updatedAt ?? "pending"}:${branches
-                      .filter((branch) => !branch.isRemote)
-                      .map((branch) => `${branch.name}:${branch.commitSha ?? ""}`)
-                      .join("|")}`
-                : null,
-        [branches, gitContextKey, snapshot?.updatedAt],
+        () => buildGitScopeBranchTopologyRequestKey(gitContextKey, branches),
+        [branches, gitContextKey],
     );
     const topologyHistory =
         loadedTopologyHistory?.contextKey === gitContextKey &&
@@ -406,8 +405,13 @@ export function SidebarGitScopePicker({
               ? cachedHistory
               : EMPTY_HISTORY;
     const branchTopology = useMemo(
-        () => buildGitScopeBranchTopology(branches, topologyHistory),
-        [branches, topologyHistory],
+        () =>
+            buildGitScopeBranchTopology(
+                branches,
+                topologyHistory,
+                contextualActiveBranchName,
+            ),
+        [branches, contextualActiveBranchName, topologyHistory],
     );
     const branchCreationBaseOptions = useMemo(
         () => buildBranchCreationBaseOptions(branches),
@@ -517,15 +521,15 @@ export function SidebarGitScopePicker({
                 description,
                 isActive: branch.isRemote
                     ? snapshot?.branch?.upstreamName === branch.name
-                    : snapshot?.branch?.name === branch.name,
+                    : contextualActiveBranchName === branch.name,
                 remoteResolution,
                 searchText,
             } satisfies BranchListRow;
         });
     }, [
         branches,
+        contextualActiveBranchName,
         projectId,
-        snapshot?.branch?.name,
         snapshot?.branch?.upstreamName,
         worktreeId,
         worktrees,
@@ -920,12 +924,20 @@ export function SidebarGitScopePicker({
 
             try {
                 while (true) {
+                    if (cancelled) {
+                        return;
+                    }
+
                     const result = await getComandoApi().listGitHistory({
                         includeAllRefs: true,
                         limit,
                         projectId,
                         worktreeId,
                     });
+                    if (cancelled) {
+                        return;
+                    }
+
                     commits = result.commits;
                     const loadedShas = new Set(
                         commits.map((commit) => commit.sha),
@@ -2139,7 +2151,7 @@ export function SidebarGitScopePicker({
                                                 row.branch.name,
                                             )?.connected ?? false
                                         }
-                                        isCurrent={row.branch.isCurrent}
+                                        isCurrent={row.isActive}
                                     />
                                 )
                             }
