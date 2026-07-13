@@ -647,6 +647,27 @@ describe("ai-store queue", () => {
 
         await second;
 
+        const staleSnapshot =
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot ?? null;
+        if (!staleSnapshot) {
+            throw new Error("Expected the optimistic session snapshot.");
+        }
+        useAiStore.getState().applySessionSnapshot({
+            ...staleSnapshot,
+            configOptions: staleSnapshot.configOptions.map((option) =>
+                option.type === "select" &&
+                option.id === "reasoning_effort"
+                    ? { ...option, value: "low" }
+                    : option,
+            ),
+            reasoningEffort: "low",
+            updatedAt: "2026-04-14T00:00:01.000Z",
+        });
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.reasoningEffort,
+        ).toBe("high");
+
         const third = useAiStore.getState().setSessionConfigOption({
             optionId: "reasoning_effort",
             sessionId: TAB.sessionId,
@@ -663,6 +684,405 @@ describe("ai-store queue", () => {
 
         thirdMutation.resolve();
         await third;
+    });
+
+    it("restores the authoritative value when consecutive selections for one control both fail", async () => {
+        let rejectMediumMutation!: (reason: unknown) => void;
+        let rejectHighMutation!: (reason: unknown) => void;
+        const mediumMutation = new Promise<void>((_resolve, reject) => {
+            rejectMediumMutation = reject;
+        });
+        const highMutation = new Promise<void>((_resolve, reject) => {
+            rejectHighMutation = reject;
+        });
+        const setAiSessionConfigOption = vi
+            .fn()
+            .mockReturnValueOnce(mediumMutation)
+            .mockReturnValueOnce(highMutation);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: { comando: { setAiSessionConfigOption } },
+            writable: true,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                configOptions: [
+                    {
+                        category: "reasoning",
+                        description: null,
+                        id: "reasoning_effort",
+                        label: "Reasoning",
+                        options: [
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "Low",
+                                value: "low",
+                            },
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "Medium",
+                                value: "medium",
+                            },
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "High",
+                                value: "high",
+                            },
+                        ],
+                        type: "select",
+                        value: "low",
+                    },
+                ],
+                reasoningEffort: "low",
+            }),
+        );
+
+        const medium = useAiStore.getState().setSessionConfigOption({
+            optionId: "reasoning_effort",
+            sessionId: TAB.sessionId,
+            value: "medium",
+        });
+        const high = useAiStore.getState().setSessionConfigOption({
+            optionId: "reasoning_effort",
+            sessionId: TAB.sessionId,
+            value: "high",
+        });
+
+        rejectMediumMutation(new Error("Medium failed."));
+        await expect(medium).rejects.toThrow("Medium failed.");
+        rejectHighMutation(new Error("High failed."));
+        await expect(high).rejects.toThrow("High failed.");
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.reasoningEffort,
+        ).toBe("low");
+    });
+
+    it("rolls back a failed control without reverting a newer different control", async () => {
+        let rejectReasoningMutation!: (reason: unknown) => void;
+        const reasoningMutation = new Promise<void>((_resolve, reject) => {
+            rejectReasoningMutation = reject;
+        });
+        const fastMutation = createDeferred<void>();
+        const setAiSessionConfigOption = vi
+            .fn()
+            .mockReturnValueOnce(reasoningMutation)
+            .mockReturnValueOnce(fastMutation.promise);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    setAiSessionConfigOption,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                configOptions: [
+                    {
+                        category: "reasoning",
+                        description: null,
+                        id: "reasoning_effort",
+                        label: "Reasoning",
+                        options: [
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "Low",
+                                value: "low",
+                            },
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "High",
+                                value: "high",
+                            },
+                        ],
+                        type: "select",
+                        value: "low",
+                    },
+                    {
+                        category: "other",
+                        description: null,
+                        id: "fast",
+                        label: "Fast",
+                        type: "boolean",
+                        value: false,
+                    },
+                ],
+                reasoningEffort: "low",
+            }),
+        );
+
+        const reasoning = useAiStore.getState().setSessionConfigOption({
+            optionId: "reasoning_effort",
+            sessionId: TAB.sessionId,
+            value: "high",
+        });
+        const fast = useAiStore.getState().setSessionConfigOption({
+            optionId: "fast",
+            sessionId: TAB.sessionId,
+            value: true,
+        });
+
+        rejectReasoningMutation(new Error("Reasoning failed."));
+        await expect(reasoning).rejects.toThrow("Reasoning failed.");
+
+        const snapshot = useAiStore.getState().sessions[TAB.sessionId]?.snapshot;
+        expect(snapshot?.reasoningEffort).toBe("low");
+        expect(
+            snapshot?.configOptions.find((option) => option.id === "fast")
+                ?.value,
+        ).toBe(true);
+
+        fastMutation.resolve();
+        await fast;
+    });
+
+    it("keeps a cold-session selection visible while the provider is prepared", async () => {
+        const preparation = createDeferred<void>();
+        const setAiSessionConfigOption = vi.fn().mockResolvedValue(undefined);
+        const ensureLiveSession = vi.fn(() => preparation.promise);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    setAiSessionConfigOption,
+                },
+            },
+            writable: true,
+        });
+
+        const reasoningConfig = {
+            category: "reasoning" as const,
+            description: null,
+            id: "reasoning_effort",
+            label: "Reasoning",
+            options: [
+                {
+                    description: null,
+                    groupLabel: null,
+                    label: "Low",
+                    value: "low",
+                },
+                {
+                    description: null,
+                    groupLabel: null,
+                    label: "High",
+                    value: "high",
+                },
+            ],
+            type: "select" as const,
+            value: "low",
+        };
+        useAiStore.getState().applyRuntimeStatus(
+            createRuntimeStatus({ configOptions: [reasoningConfig] }),
+        );
+        useAiStore.getState().registerSessionTab(TAB);
+
+        const mutation = useAiStore.getState().setSessionConfigOption(
+            {
+                optionId: "reasoning_effort",
+                sessionId: TAB.sessionId,
+                value: "high",
+            },
+            { ensureLiveSession },
+        );
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.reasoningEffort,
+        ).toBe("high");
+        expect(setAiSessionConfigOption).not.toHaveBeenCalled();
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                configOptions: [reasoningConfig],
+                reasoningEffort: "low",
+                runtimeSessionId: "runtime-session-prepared",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.reasoningEffort,
+        ).toBe("high");
+
+        preparation.resolve();
+        await mutation;
+
+        expect(ensureLiveSession).toHaveBeenCalledWith(false);
+        expect(setAiSessionConfigOption).toHaveBeenCalledOnce();
+    });
+
+    it("does not publish a pending selection into the inherited runtime catalog", async () => {
+        let rejectMutation!: (reason: unknown) => void;
+        const remoteMutation = new Promise<void>((_resolve, reject) => {
+            rejectMutation = reject;
+        });
+        const setAiSessionConfigOption = vi.fn(() => remoteMutation);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    setAiSessionConfigOption,
+                },
+            },
+            writable: true,
+        });
+
+        const reasoningConfig = {
+            category: "reasoning" as const,
+            description: null,
+            id: "reasoning_effort",
+            label: "Reasoning",
+            options: [
+                {
+                    description: null,
+                    groupLabel: null,
+                    label: "Low",
+                    value: "low",
+                },
+                {
+                    description: null,
+                    groupLabel: null,
+                    label: "High",
+                    value: "high",
+                },
+            ],
+            type: "select" as const,
+            value: "low",
+        };
+        useAiStore.getState().applyRuntimeStatus(
+            createRuntimeStatus({ configOptions: [reasoningConfig] }),
+        );
+        useAiStore.getState().registerSessionTab(TAB);
+
+        const mutation = useAiStore.getState().setSessionConfigOption({
+            optionId: "reasoning_effort",
+            sessionId: TAB.sessionId,
+            value: "high",
+        });
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                configOptions: [reasoningConfig],
+                reasoningEffort: "low",
+                runtimeSessionId: "runtime-session-prepared",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+            }),
+        );
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.reasoningEffort,
+        ).toBe("high");
+        expect(
+            useAiStore
+                .getState()
+                .runtimeCatalogById.codex?.configOptions.find(
+                    (option) => option.id === "reasoning_effort",
+                )?.value,
+        ).toBe("low");
+
+        rejectMutation(new Error("Provider rejected the selection."));
+        await expect(mutation).rejects.toThrow(
+            "Provider rejected the selection.",
+        );
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.reasoningEffort,
+        ).toBe("low");
+        expect(
+            useAiStore
+                .getState()
+                .runtimeCatalogById.codex?.configOptions.find(
+                    (option) => option.id === "reasoning_effort",
+                )?.value,
+        ).toBe("low");
+    });
+
+    it("reprepares a retained session when its control target was evicted", async () => {
+        const setAiSessionConfigOption = vi
+            .fn()
+            .mockRejectedValueOnce(new Error("The AI session was not found."))
+            .mockResolvedValueOnce(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    setAiSessionConfigOption,
+                },
+            },
+            writable: true,
+        });
+
+        const reasoningConfig = {
+            category: "reasoning" as const,
+            description: null,
+            id: "reasoning_effort",
+            label: "Reasoning",
+            options: [
+                {
+                    description: null,
+                    groupLabel: null,
+                    label: "Low",
+                    value: "low",
+                },
+                {
+                    description: null,
+                    groupLabel: null,
+                    label: "High",
+                    value: "high",
+                },
+            ],
+            type: "select" as const,
+            value: "low",
+        };
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                configOptions: [reasoningConfig],
+                reasoningEffort: "low",
+            }),
+        );
+        const ensureLiveSession = vi.fn((force: boolean) => {
+            if (!force) {
+                return Promise.resolve();
+            }
+            useAiStore.getState().applySessionSnapshot(
+                createSnapshot({
+                    configOptions: [reasoningConfig],
+                    reasoningEffort: "low",
+                    runtimeSessionId: "runtime-session-reprepared",
+                    updatedAt: "2026-04-14T00:00:01.000Z",
+                }),
+            );
+            return Promise.resolve();
+        });
+
+        await useAiStore.getState().setSessionConfigOption(
+            {
+                optionId: "reasoning_effort",
+                sessionId: TAB.sessionId,
+                value: "high",
+            },
+            { ensureLiveSession },
+        );
+
+        expect(ensureLiveSession.mock.calls).toEqual([[false], [true]]);
+        expect(setAiSessionConfigOption).toHaveBeenCalledTimes(2);
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.reasoningEffort,
+        ).toBe("high");
     });
 
     it("applies inferred titles from status events", () => {

@@ -84,6 +84,7 @@ import {
     createEmptyAiSessionSnapshot,
     type AiPersistenceGateway,
     type PersistedRuntimeCatalogSnapshot,
+    type PersistedRuntimeSelectionPreferences,
 } from "./persistence";
 import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
 import { AiPromptQueue } from "./prompt-queue";
@@ -618,7 +619,7 @@ export class AiService {
     }
 
     handleNativeRuntimeStatus(status: AiRuntimeStatus): void {
-        this.#onRuntimeStatus(status);
+        this.#onRuntimeStatus(this.#withPersistedRuntimeCatalog(status));
     }
 
     handleNativeSessionClosed(payload: {
@@ -2201,7 +2202,9 @@ export class AiService {
             return null;
         }
 
-        return await nativeAi.saveRuntimeSettings(input);
+        return this.#withPersistedRuntimeCatalog(
+            await nativeAi.saveRuntimeSettings(input),
+        );
     }
 
     async #migrateNativeRuntimeSettingsIfNeeded(
@@ -4971,12 +4974,19 @@ export class AiService {
         const catalog = this.#persistence.loadLatestRuntimeCatalog(
             status.runtimeId,
         );
-
-        if (!catalog) {
-            return status;
+        const catalogMergedStatus = catalog
+            ? mergePersistedCatalogIntoRuntimeStatus(status, catalog)
+            : status;
+        const loadPreferences = (
+            this.#persistence as Partial<AiPersistenceGateway>
+        ).loadRuntimeSelectionPreferences;
+        if (!loadPreferences) {
+            return catalogMergedStatus;
         }
-
-        return mergePersistedCatalogIntoRuntimeStatus(status, catalog);
+        return applyRuntimeSelectionPreferencesToStatus(
+            catalogMergedStatus,
+            loadPreferences.call(this.#persistence, status.runtimeId),
+        );
     }
 
     #hydrateSnapshotRuntimeCatalog(snapshot: AiSessionSnapshot): AiSessionSnapshot {
@@ -5455,6 +5465,69 @@ function mergePersistedCatalogIntoRuntimeStatus(
                 ? status.models
                 : catalog.models,
     };
+}
+
+function applyRuntimeSelectionPreferencesToStatus(
+    status: AiRuntimeStatus,
+    preferences: PersistedRuntimeSelectionPreferences,
+): AiRuntimeStatus {
+    const configOptions = status.configOptions ?? [];
+    const preferredModeId = resolveAvailableRuntimeSelectionPreference(
+        preferences.modeId,
+        preferences.configOptions,
+        configOptions,
+        (status.modes ?? []).map((mode) => mode.id),
+        isModeConfigOption,
+    );
+    const preferredModelId = resolveAvailableRuntimeSelectionPreference(
+        preferences.modelId,
+        preferences.configOptions,
+        configOptions,
+        (status.models ?? []).map((model) => model.id),
+        isModelConfigOption,
+    );
+
+    return {
+        ...status,
+        configOptions: applyCapturedRuntimeDefaultsToConfigOptions(
+            configOptions,
+            preferences.configOptions,
+            preferredModeId,
+            preferredModelId,
+        ),
+        modeId: preferredModeId ?? status.modeId,
+        modelId: preferredModelId ?? status.modelId,
+    };
+}
+
+function resolveAvailableRuntimeSelectionPreference(
+    topLevelPreference: string | null,
+    configPreferences: Record<string, boolean | string>,
+    configOptions: readonly AiSessionConfigOption[],
+    availableIds: readonly string[],
+    matchesOption: (option: AiSessionConfigOption) => boolean,
+): string | null {
+    const configPreference = getPreferredConfigSelectionId(
+        configPreferences,
+        configOptions,
+        matchesOption,
+    );
+    const matchingConfig = configOptions.find(matchesOption) ?? null;
+
+    for (const candidate of [topLevelPreference, configPreference]) {
+        if (!candidate) {
+            continue;
+        }
+        if (
+            availableIds.includes(candidate) ||
+            (matchingConfig?.type === "select" &&
+                hasSelectConfigValue(matchingConfig, candidate))
+        ) {
+            return candidate;
+        }
+    }
+
+    return null;
 }
 
 function buildPersistedRuntimeCatalogPatch(
