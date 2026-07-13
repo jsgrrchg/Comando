@@ -78,11 +78,13 @@ import type {
     SecretStoreGateway,
 } from "@main/ai/secret-store";
 import { debugBenignError } from "@main/observability/logging";
+import { NativeBackendError } from "@main/native-backend/client";
 
 import {
     createEmptyAiSessionSnapshot,
     type AiPersistenceGateway,
     type PersistedRuntimeCatalogSnapshot,
+    type PersistedRuntimeSelectionPreferences,
 } from "./persistence";
 import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
 import { AiPromptQueue } from "./prompt-queue";
@@ -617,7 +619,7 @@ export class AiService {
     }
 
     handleNativeRuntimeStatus(status: AiRuntimeStatus): void {
-        this.#onRuntimeStatus(status);
+        this.#onRuntimeStatus(this.#withPersistedRuntimeCatalog(status));
     }
 
     handleNativeSessionClosed(payload: {
@@ -1553,7 +1555,9 @@ export class AiService {
             return;
         }
 
-        await this.#requireNativeAiGateway().setSessionMode(input);
+        await this.#runLiveSessionControlMutation(input.sessionId, () =>
+            this.#requireNativeAiGateway().setSessionMode(input),
+        );
         const snapshot = await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
@@ -1587,7 +1591,9 @@ export class AiService {
             return;
         }
 
-        await this.#requireNativeAiGateway().setSessionModel(input);
+        await this.#runLiveSessionControlMutation(input.sessionId, () =>
+            this.#requireNativeAiGateway().setSessionModel(input),
+        );
         const snapshot = await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
@@ -1659,7 +1665,9 @@ export class AiService {
             return;
         }
 
-        await this.#requireNativeAiGateway().setSessionConfigOption(input);
+        await this.#runLiveSessionControlMutation(input.sessionId, () =>
+            this.#requireNativeAiGateway().setSessionConfigOption(input),
+        );
         const snapshot = await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
@@ -1676,6 +1684,48 @@ export class AiService {
                 input.value,
             );
         }
+    }
+
+    async #runLiveSessionControlMutation(
+        sessionId: string,
+        mutation: () => Promise<void>,
+    ): Promise<void> {
+        try {
+            await mutation();
+            return;
+        } catch (error) {
+            if (!isNativeAiSessionNotFoundError(error)) {
+                throw error;
+            }
+
+            // The runtime can evict a session after the main process cached it.
+            // Recreate it once here so every renderer uses the same recovery path.
+            debugBenignError("ai.service.recoverSessionControl", error);
+            await this.#recoverMissingLiveSession(sessionId);
+        }
+
+        await mutation();
+    }
+
+    async #recoverMissingLiveSession(sessionId: string): Promise<void> {
+        const context = this.#liveSessionContexts.get(sessionId);
+        const snapshot = this.#liveSnapshots.get(sessionId);
+        if (!context || !snapshot) {
+            throw new Error("The AI session was not found.");
+        }
+
+        this.#cancelCapturedRuntimeDefaults(sessionId);
+        this.#nativeSessionIds.delete(sessionId);
+        await this.prepareSession(
+            {
+                projectId: snapshot.projectId,
+                runtimeId: snapshot.runtimeId,
+                sessionId,
+                title: snapshot.title,
+                worktreeId: snapshot.worktreeId ?? null,
+            },
+            context.ownerWindowId,
+        );
     }
 
     #rememberRuntimeModePreference(
@@ -2152,7 +2202,9 @@ export class AiService {
             return null;
         }
 
-        return await nativeAi.saveRuntimeSettings(input);
+        return this.#withPersistedRuntimeCatalog(
+            await nativeAi.saveRuntimeSettings(input),
+        );
     }
 
     async #migrateNativeRuntimeSettingsIfNeeded(
@@ -4922,12 +4974,19 @@ export class AiService {
         const catalog = this.#persistence.loadLatestRuntimeCatalog(
             status.runtimeId,
         );
-
-        if (!catalog) {
-            return status;
+        const catalogMergedStatus = catalog
+            ? mergePersistedCatalogIntoRuntimeStatus(status, catalog)
+            : status;
+        const loadPreferences = (
+            this.#persistence as Partial<AiPersistenceGateway>
+        ).loadRuntimeSelectionPreferences;
+        if (!loadPreferences) {
+            return catalogMergedStatus;
         }
-
-        return mergePersistedCatalogIntoRuntimeStatus(status, catalog);
+        return applyRuntimeSelectionPreferencesToStatus(
+            catalogMergedStatus,
+            loadPreferences.call(this.#persistence, status.runtimeId),
+        );
     }
 
     #hydrateSnapshotRuntimeCatalog(snapshot: AiSessionSnapshot): AiSessionSnapshot {
@@ -5408,6 +5467,69 @@ function mergePersistedCatalogIntoRuntimeStatus(
     };
 }
 
+function applyRuntimeSelectionPreferencesToStatus(
+    status: AiRuntimeStatus,
+    preferences: PersistedRuntimeSelectionPreferences,
+): AiRuntimeStatus {
+    const configOptions = status.configOptions ?? [];
+    const preferredModeId = resolveAvailableRuntimeSelectionPreference(
+        preferences.modeId,
+        preferences.configOptions,
+        configOptions,
+        (status.modes ?? []).map((mode) => mode.id),
+        isModeConfigOption,
+    );
+    const preferredModelId = resolveAvailableRuntimeSelectionPreference(
+        preferences.modelId,
+        preferences.configOptions,
+        configOptions,
+        (status.models ?? []).map((model) => model.id),
+        isModelConfigOption,
+    );
+
+    return {
+        ...status,
+        configOptions: applyCapturedRuntimeDefaultsToConfigOptions(
+            configOptions,
+            preferences.configOptions,
+            preferredModeId,
+            preferredModelId,
+        ),
+        modeId: preferredModeId ?? status.modeId,
+        modelId: preferredModelId ?? status.modelId,
+    };
+}
+
+function resolveAvailableRuntimeSelectionPreference(
+    topLevelPreference: string | null,
+    configPreferences: Record<string, boolean | string>,
+    configOptions: readonly AiSessionConfigOption[],
+    availableIds: readonly string[],
+    matchesOption: (option: AiSessionConfigOption) => boolean,
+): string | null {
+    const configPreference = getPreferredConfigSelectionId(
+        configPreferences,
+        configOptions,
+        matchesOption,
+    );
+    const matchingConfig = configOptions.find(matchesOption) ?? null;
+
+    for (const candidate of [topLevelPreference, configPreference]) {
+        if (!candidate) {
+            continue;
+        }
+        if (
+            availableIds.includes(candidate) ||
+            (matchingConfig?.type === "select" &&
+                hasSelectConfigValue(matchingConfig, candidate))
+        ) {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
 function buildPersistedRuntimeCatalogPatch(
     snapshot: AiSessionSnapshot,
     patch: NormalizedSessionCatalogPayload,
@@ -5861,6 +5983,13 @@ function isNativeTrackedFilesPatch(update: AiSessionUpdate): boolean {
             update.patch.changes,
             "trackedFiles",
         )
+    );
+}
+
+function isNativeAiSessionNotFoundError(error: unknown): boolean {
+    return (
+        error instanceof NativeBackendError &&
+        error.code === "ai_session_not_found"
     );
 }
 

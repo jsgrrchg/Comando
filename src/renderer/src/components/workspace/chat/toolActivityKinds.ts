@@ -17,7 +17,12 @@ import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
  */
 
 // Tool kinds that render as a terminal card (command + captured output).
-export const TERMINAL_TOOL_KINDS = new Set(["bash", "shell", "execute"]);
+export const TERMINAL_TOOL_KINDS = new Set([
+    "bash",
+    "exec",
+    "shell",
+    "execute",
+]);
 
 // Tool kinds that touch files and render as a file card.
 export const FILE_TOOL_KINDS = new Set([

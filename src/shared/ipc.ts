@@ -22,6 +22,7 @@ export const IPC_CHANNELS = {
     openGeneratedImage: "app:open-generated-image",
     revealGeneratedImage: "app:reveal-generated-image",
     openProjectWindow: "app:open-project-window",
+    confirmWorkspaceClose: "workspace:confirm-close",
     checkCommandAvailability: "app:check-command-availability",
     readClaudeCodeTranscript: "app:read-claude-code-transcript",
     getSettingsSnapshot: "settings:get-snapshot",
@@ -180,6 +181,8 @@ export const IPC_EVENTS = {
     projectSettingsUpdated: "settings:project-updated",
     workspaceCloseActiveTab: "workspace:close-active-tab",
     workspaceReopenLastClosedTab: "workspace:reopen-last-closed-tab",
+    workspaceFlushRequested: "workspace:flush-requested",
+    workspaceFlushAcknowledged: "workspace:flush-acknowledged",
     gitRepositoryInvalidated: "git:repository-invalidated",
     gitRepositorySnapshotUpdated: "git:repository-snapshot-updated",
     gitWorktreesUpdated: "git:worktrees-updated",
@@ -241,6 +244,7 @@ export interface AppAiChatSettings {
 export interface AppAppearanceSettings {
     readonly agentsSidebarScale: number;
     readonly boostCodeContrast: boolean;
+    readonly chromeTransparency: number;
     readonly fileTreeScale: number;
     readonly stickyFoldersEnabled: boolean;
     readonly themeMode: ThemeMode;
@@ -674,6 +678,7 @@ export interface OpenProjectWindowInput {
     readonly branchName?: string | null;
     readonly forceNewWindow?: boolean;
     readonly projectId: string;
+    readonly workspaceSnapshot?: WorkspaceNavigationSnapshot;
     readonly worktreeId?: string | null;
 }
 
@@ -2069,11 +2074,42 @@ export type WorkspaceTab =
     | WorkspaceReviewTab
     | WorkspaceTerminalTab;
 
-export interface WorkspaceSnapshot {
+export interface WorkspaceLayoutSnapshot {
     readonly activePaneId: string;
     readonly rootNode: WorkspaceNode;
     readonly tabs: readonly WorkspaceTab[];
 }
+
+// Kept as an alias while persisted v1 layouts are migrated to navigation v2.
+export type WorkspaceSnapshot = WorkspaceLayoutSnapshot;
+
+export type WorkspaceContextKey = string;
+
+export interface PersistedWorkspaceContext {
+    readonly key: WorkspaceContextKey;
+    readonly lastActivatedAt: string;
+    readonly projectId: string;
+    readonly workspace: WorkspaceLayoutSnapshot;
+    readonly worktreeId: string | null;
+}
+
+export interface WorkspaceNavigationSnapshot {
+    readonly activeContextKey: WorkspaceContextKey | null;
+    readonly contexts: readonly PersistedWorkspaceContext[];
+    readonly openContextKeys: readonly WorkspaceContextKey[];
+    readonly version: 2;
+}
+
+export interface WindowWorkspaceRestoreRecord {
+    readonly revision: number;
+    readonly schemaVersion: 1;
+    readonly snapshot: WorkspaceNavigationSnapshot;
+    readonly updatedAt: string;
+}
+
+export type PersistedWorkspaceSnapshot =
+    | WorkspaceLayoutSnapshot
+    | WorkspaceNavigationSnapshot;
 
 export interface PersistedChatSessionState {
     readonly draft: string;
@@ -2862,6 +2898,12 @@ export interface AiTrackedFileHunkMutationInput {
     readonly trackedFileId?: string | null;
 }
 
+export interface ConfirmWorkspaceCloseInput {
+    readonly activeAgentCount: number;
+    readonly dirtyFileCount: number;
+    readonly workspaceName: string;
+}
+
 export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
     getAppUpdateState: () => Promise<AppUpdateState>;
@@ -2878,6 +2920,9 @@ export interface ComandoApi {
     openGeneratedImage: (path: string) => Promise<void>;
     revealGeneratedImage: (path: string) => Promise<void>;
     openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
+    confirmWorkspaceClose: (
+        input: ConfirmWorkspaceCloseInput,
+    ) => Promise<boolean>;
     checkCommandAvailability: (
         input: CheckCommandAvailabilityInput,
     ) => Promise<CheckCommandAvailabilityResult>;
@@ -3118,8 +3163,10 @@ export interface ComandoApi {
         input: OpenProjectEntryExternallyInput,
     ) => Promise<void>;
     revealProjectEntry: (input: RevealProjectEntryInput) => Promise<void>;
-    getWorkspaceSnapshot: () => Promise<WorkspaceSnapshot>;
-    saveWorkspaceSnapshot: (snapshot: WorkspaceSnapshot) => Promise<void>;
+    getWorkspaceSnapshot: () => Promise<PersistedWorkspaceSnapshot>;
+    saveWorkspaceSnapshot: (
+        snapshot: WorkspaceNavigationSnapshot,
+    ) => Promise<void>;
     notifyFileBuffer: (input: FileBufferNotificationInput) => Promise<void>;
     getChatSessionState: (
         sessionId: string,
@@ -3244,6 +3291,9 @@ export interface ComandoApi {
     ) => () => void;
     onWorkspaceCloseActiveTab: (listener: () => void) => () => void;
     onWorkspaceReopenLastClosedTab: (listener: () => void) => () => void;
+    onWorkspaceFlushRequested: (
+        listener: () => Promise<void> | void,
+    ) => () => void;
     onTerminalData: (
         listener: (event: TerminalDataEvent) => void,
     ) => () => void;

@@ -268,6 +268,7 @@
 
 :root {
     color-scheme: light;
+    --chrome-background-opacity: calc(100% - var(--chrome-transparency, 45%));
     font-family: var(--font-sans);
     --sidebar-list-scale: 1;
     --agents-sidebar-scale: var(--sidebar-list-scale);
@@ -359,7 +360,7 @@
     --desktop-titlebar-height: 40px;
     --windows-acrylic-tint: color-mix(
         in srgb,
-        var(--color-bg-panel) 55%,
+        var(--color-bg-panel) var(--chrome-background-opacity),
         transparent
     );
     background: transparent;
@@ -373,6 +374,16 @@
 :root[data-platform="win32"] .desktop-titlebar,
 :root[data-platform="win32"] .settings-chrome {
     background: var(--windows-acrylic-tint);
+}
+
+:root[data-platform="darwin"] .app-sidebar,
+:root[data-platform="darwin"] .desktop-titlebar,
+:root[data-platform="darwin"] .settings-chrome {
+    background: color-mix(
+        in srgb,
+        var(--color-bg-panel) var(--chrome-background-opacity),
+        transparent
+    );
 }
 
 :root[data-transparency-enabled="false"],
@@ -393,6 +404,525 @@
 :root[data-platform="linux"] .desktop-titlebar {
     background: var(--color-bg-panel);
     border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.project-context-titlebar {
+    min-width: 0;
+    gap: 6px;
+    overflow: hidden;
+    border-bottom: 1px solid
+        color-mix(in srgb, var(--color-border) 42%, transparent);
+}
+
+.project-context-tabs {
+    display: flex;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    height: 28px;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.project-context-tabs::-webkit-scrollbar {
+    display: none;
+}
+
+.project-context-tab-shell {
+    position: relative;
+    display: flex;
+    min-width: 180px;
+    max-width: 364px;
+    height: 26px;
+    flex: 0 0 220px;
+    align-items: center;
+    overflow: hidden;
+    border: 1px solid
+        color-mix(in srgb, var(--color-border) 30%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--color-bg-elevated) 26%, transparent);
+    color: var(--color-text-secondary);
+    transition:
+        background-color 120ms ease,
+        border-color 120ms ease,
+        color 120ms ease;
+}
+
+.project-context-tab-shell:hover {
+    border-color: color-mix(
+        in srgb,
+        var(--color-border-strong) 44%,
+        transparent
+    );
+    background: color-mix(in srgb, var(--color-bg-elevated) 44%, transparent);
+    color: var(--color-text-primary);
+}
+
+.project-context-tab-shell[data-active] {
+    border-color: color-mix(in srgb, var(--color-accent) 48%, transparent);
+    background: color-mix(in srgb, var(--color-bg-elevated) 78%, transparent);
+    color: var(--color-text-primary);
+}
+
+.project-context-tab-shell[data-dragging="true"] {
+    cursor: grabbing;
+    opacity: 0.4;
+}
+
+.project-context-tab-shell[data-drop-position="before"] {
+    box-shadow: inset 2px 0 var(--color-accent);
+}
+
+.project-context-tab-shell[data-drop-position="after"] {
+    box-shadow: inset -2px 0 var(--color-accent);
+}
+
+:root[data-transparency-enabled="false"] .project-context-tab-shell[data-active] {
+    background: var(--color-bg-elevated);
+}
+
+:root[data-transparency-enabled="false"] .project-context-tab-shell:not([data-active]) {
+    background: var(--color-bg-panel);
+}
+
+.project-context-tab-icon {
+    display: grid;
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    place-items: center;
+    margin: 0 5px 0 6px;
+    border-radius: 5px;
+    color: #fff;
+    font-size: 9.5px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.project-context-tab {
+    display: flex;
+    min-width: 0;
+    height: 100%;
+    flex: 1;
+    align-items: center;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: default;
+    padding: 0 20px 0 0;
+    text-align: left;
+}
+
+.project-context-tab-copy {
+    display: block;
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.project-context-tab-title {
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.project-context-tab-subtitle {
+    margin-left: 5px;
+    color: var(--color-text-secondary);
+    font-size: 10px;
+    font-weight: 450;
+}
+
+.project-context-tab-subtitle::before {
+    margin-right: 5px;
+    color: color-mix(in srgb, var(--color-text-secondary) 60%, transparent);
+    content: "·";
+}
+
+.project-context-tab-close {
+    position: absolute;
+    right: 4px;
+    display: grid;
+    width: 16px;
+    height: 16px;
+    place-items: center;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: currentColor;
+    cursor: default;
+    opacity: 0;
+}
+
+.project-context-tab-shell:hover .project-context-tab-close,
+.project-context-tab-shell[data-active] .project-context-tab-close,
+.project-context-tab-close:focus-visible {
+    opacity: 0.72;
+}
+
+.project-context-tab-close:hover {
+    background: color-mix(in srgb, var(--color-text-primary) 10%, transparent);
+    opacity: 1;
+}
+
+.project-context-tab:focus-visible,
+.project-context-tab-close:focus-visible,
+.project-context-add:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+}
+
+.project-context-menu-root {
+    flex: 0 0 auto;
+}
+
+.project-context-add {
+    display: grid;
+    width: 24px;
+    height: 24px;
+    place-items: center;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: default;
+}
+
+.project-context-add:hover,
+.project-context-add[aria-expanded="true"] {
+    border-color: color-mix(in srgb, var(--color-border) 55%, transparent);
+    background: color-mix(in srgb, var(--color-bg-elevated) 56%, transparent);
+    color: var(--color-text-primary);
+}
+
+.project-context-menu-backdrop {
+    position: fixed;
+    z-index: 80;
+    inset: 0;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    background: color-mix(in srgb, var(--color-bg-primary) 72%, transparent);
+    padding: clamp(56px, 15vh, 160px) 16px 24px;
+    backdrop-filter: blur(10px);
+}
+
+.project-context-menu {
+    width: min(620px, 100%);
+    max-height: min(620px, calc(100vh - 80px));
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+    border-radius: 12px;
+    background: var(--color-bg-elevated);
+    box-shadow:
+        0 24px 80px rgb(0 0 0 / 0.22),
+        0 0 0 1px color-mix(in srgb, var(--color-border) 40%, transparent);
+    padding: 0;
+}
+
+:root[data-transparency-enabled="false"] .project-context-menu-backdrop {
+    backdrop-filter: none;
+}
+
+.project-context-search-shell {
+    display: flex;
+    width: 100%;
+    height: 42px;
+    align-items: center;
+    gap: 7px;
+    border: 0;
+    border-bottom: 1px solid var(--color-border-subtle);
+    border-radius: 0;
+    background: transparent;
+    color: var(--color-text-secondary);
+    padding: 0 14px;
+}
+
+.project-context-search-shell:focus-within {
+    border-bottom-color: color-mix(
+        in srgb,
+        var(--color-accent) 58%,
+        var(--color-border)
+    );
+    box-shadow: inset 0 -1px 0
+        color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.project-context-search-shell input {
+    min-width: 0;
+    height: 100%;
+    flex: 1;
+    border: 0;
+    background: transparent;
+    color: var(--color-text-primary);
+    font: inherit;
+    outline: none;
+}
+
+.project-context-search-shell > span {
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+}
+
+.project-context-project-list {
+    max-height: min(390px, calc(100vh - 220px));
+    min-height: 146px;
+    margin: 0;
+    padding: 8px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+}
+
+.project-context-project-group + .project-context-project-group {
+    margin-top: 1px;
+}
+
+.project-context-project-row {
+    display: flex;
+    align-items: stretch;
+}
+
+.project-context-project-main,
+.project-context-worktree-row,
+.project-context-menu-actions button {
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--color-text-primary);
+    cursor: default;
+    font: inherit;
+    text-align: left;
+}
+
+.project-context-project-main {
+    display: flex;
+    min-width: 0;
+    min-height: 32px;
+    flex: 1;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 5px 5px 7px;
+}
+
+.project-context-project-main:hover,
+.project-context-project-main:focus-visible,
+.project-context-project-main[data-selected="true"],
+.project-context-worktree-row:hover,
+.project-context-worktree-row:focus-visible,
+.project-context-worktree-row[data-selected="true"],
+.project-context-menu-actions button:hover,
+.project-context-menu-actions button:focus-visible {
+    background: var(--color-accent-soft);
+    outline: none;
+}
+
+.project-context-menu-hint,
+.project-context-open-label {
+    margin-left: auto;
+    flex: 0 0 auto;
+    color: var(--color-text-secondary);
+    font-size: 10px;
+}
+
+.project-context-worktree-list {
+    position: relative;
+    margin: 0 4px 2px 16px;
+    padding-left: 10px;
+}
+
+.project-context-worktree-list::before {
+    position: absolute;
+    top: 1px;
+    bottom: 4px;
+    left: 4px;
+    width: 1px;
+    background: color-mix(in srgb, var(--color-border) 72%, transparent);
+    content: "";
+}
+
+.project-context-worktree-row {
+    position: relative;
+    display: flex;
+    width: 100%;
+    min-height: 29px;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 7px;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+}
+
+.project-context-worktree-row:hover,
+.project-context-worktree-row:focus-visible {
+    color: var(--color-text-primary);
+}
+
+.project-context-new-worktree-trigger {
+    flex: 0 0 auto;
+    margin: 4px 5px 4px 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    cursor: default;
+    font: inherit;
+    font-size: 10px;
+    padding: 3px 5px;
+}
+
+.project-context-new-worktree-trigger:hover,
+.project-context-new-worktree-trigger:focus-visible {
+    background: var(--color-accent-soft);
+    color: var(--color-text-primary);
+    outline: none;
+}
+
+.project-context-branch-icon {
+    flex: 0 0 auto;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0.7;
+}
+
+.project-context-state-indicator {
+    position: relative;
+    display: grid;
+    width: 14px;
+    height: 14px;
+    flex: 0 0 14px;
+    place-items: center;
+    color: var(--color-accent);
+    font-size: 11px;
+    font-weight: 650;
+}
+
+.project-context-state-indicator[data-open]:not([data-active])::after {
+    width: 5px;
+    height: 5px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--color-accent);
+    content: "";
+    opacity: 0.72;
+}
+
+.project-context-menu-empty {
+    display: grid;
+    min-height: 130px;
+    place-items: center;
+    padding: 22px 12px;
+    color: var(--color-text-secondary);
+    font-size: 12px;
+    text-align: center;
+}
+
+.project-context-menu-separator {
+    height: 1px;
+    margin: 0;
+    background: var(--color-border-subtle);
+}
+
+.project-context-menu-actions {
+    display: flex;
+    gap: 2px;
+    padding: 7px 8px;
+}
+
+.project-context-menu-actions button {
+    display: flex;
+    min-height: 30px;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 9px;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+}
+
+.project-context-update-dot {
+    width: 6px;
+    height: 6px;
+    margin-left: auto;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: linear-gradient(180deg, #f97316, #ef4444);
+}
+
+.project-context-clone-form {
+    padding: 16px;
+}
+
+.project-context-worktree-form {
+    padding: 16px;
+}
+
+.project-context-worktree-project {
+    margin: -3px 0 10px;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+}
+
+.project-context-worktree-hint {
+    margin-top: 7px;
+    color: var(--color-text-secondary);
+    font-size: 11px;
+}
+
+.project-context-menu-heading {
+    margin-bottom: 8px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.project-context-clone-input {
+    width: 100%;
+    height: 30px;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    padding: 0 8px;
+    outline: none;
+}
+
+.project-context-clone-input:focus {
+    border-color: var(--color-accent);
+}
+
+.project-context-clone-error {
+    margin-top: 6px;
+    color: var(--diff-remove);
+    font-size: 11px;
+}
+
+.project-context-clone-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.project-context-clone-actions button {
+    min-height: 27px;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-bg-panel);
+    color: var(--color-text-primary);
+    padding: 0 10px;
+}
+
+.project-context-menu-footer {
+    display: flex;
+    justify-content: flex-end;
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+    padding: 6px 14px;
+    color: color-mix(in srgb, var(--color-text-secondary) 70%, transparent);
+    font-size: 11px;
 }
 
 * {
@@ -1251,7 +1781,7 @@ button {
     font-size: calc(11px * var(--sidebar-list-scale, 1));
     font-weight: 400;
     letter-spacing: 0.035em;
-    line-height: 1.3;
+    line-height: calc(16px * var(--sidebar-list-scale, 1));
 }
 
 .sidebar-agents-row[data-active="true"] .sidebar-agents-title,
@@ -1405,8 +1935,121 @@ button {
     letter-spacing: 0;
 }
 
+.sidebar-agents-folder {
+    border-block: 2px solid transparent;
+    outline: 1px solid transparent;
+    transition:
+        background-color 120ms ease,
+        opacity 120ms ease,
+        outline-color 120ms ease;
+}
+
+.sidebar-agents-folder[data-drop-target="true"] {
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+    outline-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
+.sidebar-agents-folder[data-reorder-position="before"] {
+    border-top-color: var(--color-accent);
+}
+
+.sidebar-agents-folder[data-reorder-position="after"] {
+    border-bottom-color: var(--color-accent);
+}
+
+.sidebar-agents-folder[data-dragging="true"] {
+    opacity: 0.55;
+}
+
+.sidebar-agents-folder-header {
+    align-items: center;
+    min-height: calc(22px * var(--sidebar-list-scale, 1));
+    padding-block: calc(3px * var(--sidebar-list-scale, 1));
+    font-size: calc(10px * var(--sidebar-list-scale, 1));
+    line-height: calc(16px * var(--sidebar-list-scale, 1));
+    letter-spacing: 0.07em;
+    border-radius: 5px;
+    cursor: grab;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.sidebar-agents-folder-chevron-slot {
+    width: calc(11px * var(--sidebar-list-scale, 1));
+    height: calc(16px * var(--sidebar-list-scale, 1));
+}
+
+.sidebar-agents-folder-icon-slot {
+    width: calc(13px * var(--sidebar-list-scale, 1));
+    height: calc(16px * var(--sidebar-list-scale, 1));
+}
+
+.sidebar-agents-folder-icon {
+    display: block;
+    width: calc(12px * var(--sidebar-list-scale, 1));
+    height: calc(12px * var(--sidebar-list-scale, 1));
+}
+
+.sidebar-agents-folder-title,
+.sidebar-agents-folder-count {
+    line-height: calc(16px * var(--sidebar-list-scale, 1));
+    transform: translateY(0.5px);
+}
+
+.sidebar-agents-folder-header:hover {
+    color: var(--color-text-primary);
+    background: color-mix(in srgb, var(--color-bg-tertiary) 45%, transparent);
+}
+
+.sidebar-agents-folder-header:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
+    outline-offset: 1px;
+}
+
+.sidebar-agents-folder-contents {
+    margin-left: calc(8px * var(--sidebar-list-scale, 1));
+}
+
+.sidebar-agents-folder-contents > .sidebar-agents-section {
+    margin-top: 0;
+}
+
+.sidebar-agents-folder-rename {
+    font-size: calc(10px * var(--sidebar-list-scale, 1));
+    line-height: 1.3;
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+.sidebar-agents-folder-empty {
+    font-size: calc(10.5px * var(--sidebar-list-scale, 1));
+}
+
+.sidebar-agents-unfiled-drop-zone {
+    outline: 1px solid transparent;
+    transition:
+        background-color 120ms ease,
+        outline-color 120ms ease;
+}
+
+.sidebar-agents-unfiled-drop-zone[data-drop-target="true"] {
+    background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+    outline-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+
 .sidebar-agents-main-line {
+    align-items: center;
     gap: calc(6px * var(--sidebar-list-scale, 1));
+}
+
+.sidebar-agents-provider-slot {
+    width: calc(14px * var(--sidebar-list-scale, 1));
+    height: calc(16px * var(--sidebar-list-scale, 1));
+}
+
+.sidebar-agents-provider-icon {
+    width: calc(13px * var(--sidebar-list-scale, 1));
+    height: calc(13px * var(--sidebar-list-scale, 1));
 }
 
 .sidebar-agents-rename {
@@ -1419,12 +2062,22 @@ button {
     -webkit-user-select: text;
 }
 
-.sidebar-agents-activity-dot {
-    font-size: calc(9px * var(--sidebar-list-scale, 1));
+.sidebar-agents-activity-label {
+    color: var(--color-text-secondary);
+    font-size: calc(10px * var(--sidebar-list-scale, 1));
+    line-height: calc(16px * var(--sidebar-list-scale, 1));
+    opacity: 0.8;
+}
+
+.sidebar-agents-activity-label[data-tone="working"] {
+    color: var(--diff-warn, #d97706);
+}
+
+.sidebar-agents-activity-label[data-tone="danger"] {
+    color: var(--diff-remove, #f43f5e);
 }
 
 .sidebar-agents-pin-button {
-    order: 1;
     width: calc(20px * var(--sidebar-list-scale, 1));
     height: calc(20px * var(--sidebar-list-scale, 1));
     opacity: 0;
@@ -1588,7 +2241,102 @@ button {
     color: var(--color-text-primary);
 }
 
+.sidebar-git-scope-picker--titlebar {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-self: stretch;
+}
+
+.sidebar-git-scope-trigger--titlebar {
+    min-width: 0;
+    height: 100%;
+    flex: 1;
+    gap: 4px;
+    border: 0;
+    border-radius: inherit;
+    background: transparent;
+    padding: 0 20px 0 0;
+    color: inherit;
+    text-align: left;
+    transform: none;
+}
+
+.sidebar-git-scope-trigger--titlebar:hover,
+.sidebar-git-scope-trigger--titlebar:active:not(:disabled),
+.sidebar-git-scope-trigger--titlebar.sidebar-git-scope-trigger--open {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    color: inherit;
+    transform: none;
+}
+
+.sidebar-git-scope-trigger__titlebar-copy {
+    display: block;
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.sidebar-git-scope-trigger__titlebar-project {
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.sidebar-git-scope-trigger__titlebar-branch {
+    margin-left: 5px;
+    color: var(--color-text-secondary);
+    font-size: 10px;
+    font-weight: 450;
+}
+
+.sidebar-git-scope-trigger__titlebar-branch::before {
+    margin-right: 5px;
+    color: color-mix(in srgb, var(--color-text-secondary) 60%, transparent);
+    content: "·";
+}
+
+/* Sized and boxed as its own hit target so the disclosure affordance reads
+   clearly at a glance instead of blending into the "· branch" label, without
+   growing the tab row (the pill is padding on the icon itself, not extra
+   height on the button). */
+.sidebar-git-scope-trigger--titlebar > svg {
+    box-sizing: content-box;
+    width: 12px;
+    height: 12px;
+    flex: 0 0 auto;
+    margin-right: 2px;
+    padding: 3px;
+    border-radius: 5px;
+    color: color-mix(in srgb, var(--color-text-secondary) 70%, var(--color-text-primary));
+    background: transparent;
+    transition:
+        background-color 120ms ease,
+        color 120ms ease,
+        transform 75ms ease;
+}
+
+.sidebar-git-scope-trigger--titlebar:hover > svg,
+.sidebar-git-scope-trigger--titlebar:focus-visible > svg,
+.sidebar-git-scope-trigger--titlebar.sidebar-git-scope-trigger--open > svg {
+    color: var(--color-text-primary);
+    background: color-mix(in srgb, var(--color-text-primary) 12%, transparent);
+}
+
+/* Same light "press" feedback the other icon buttons in this menu use
+   (see .sidebar-git-scope-menu__new-branch-button:active), scoped to the
+   pill instead of the whole tab so the rest of the tab stays still. */
+.sidebar-git-scope-trigger--titlebar:active > svg {
+    background: color-mix(in srgb, var(--color-text-primary) 16%, transparent);
+    transform: translateY(1px) scale(0.92);
+}
+
 .sidebar-git-scope-menu {
+    --git-scope-menu-enter-y: -4px;
+    --git-scope-menu-exit-y: -2px;
     position: fixed;
     display: flex;
     flex-direction: column;
@@ -1596,18 +2344,79 @@ button {
     min-height: 260px;
     z-index: 10010;
     overflow: hidden;
-    border: 1px solid var(--color-border);
+    border: 1px solid color-mix(in srgb, var(--color-border) 42%, transparent);
     border-radius: 12px;
-    background: color-mix(in srgb, var(--color-bg-secondary) 96%, black 4%);
+    background: color-mix(in srgb, var(--color-bg-elevated) 52%, transparent);
     box-shadow:
-        0 16px 40px rgba(0, 0, 0, 0.34),
-        inset 0 1px 0 color-mix(in srgb, white 6%, transparent);
-    backdrop-filter: blur(16px);
+        0 20px 48px rgba(0, 0, 0, 0.28),
+        inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+    backdrop-filter: blur(28px) saturate(1.85);
+}
+
+.sidebar-git-scope-menu[data-placement="above"] {
+    --git-scope-menu-enter-y: 4px;
+    --git-scope-menu-exit-y: 2px;
+}
+
+@keyframes sidebar-git-scope-menu-in {
+    from {
+        opacity: 0;
+        transform: translate3d(0, var(--git-scope-menu-enter-y), 0);
+    }
+
+    to {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+}
+
+@keyframes sidebar-git-scope-menu-out {
+    from {
+        opacity: 1;
+        transform: translate3d(0, 0, 0);
+    }
+
+    to {
+        opacity: 0;
+        transform: translate3d(0, var(--git-scope-menu-exit-y), 0);
+    }
+}
+
+.sidebar-git-scope-menu[data-animation-state="opening"] {
+    animation: sidebar-git-scope-menu-in 110ms cubic-bezier(0.2, 0.8, 0.2, 1)
+        both;
+    will-change: opacity, transform;
+}
+
+.sidebar-git-scope-menu[data-animation-state="closing"] {
+    pointer-events: none;
+    animation: sidebar-git-scope-menu-out 80ms cubic-bezier(0.4, 0, 1, 1) both;
+    will-change: opacity, transform;
+}
+
+/* Users who turn off window transparency get a fully opaque menu to match
+   the rest of the chrome (see .app-sidebar / .desktop-titlebar above). */
+:root[data-transparency-enabled="false"] .sidebar-git-scope-menu {
+    background: var(--color-bg-elevated);
+    backdrop-filter: none;
+}
+
+/* Every plain .ide-input inside this menu (the branch-form name field and
+   base select) gets the same glass treatment as the search field, instead of
+   the opaque box .ide-input draws by default elsewhere in the app. */
+.sidebar-git-scope-menu .ide-input {
+    border-color: color-mix(in srgb, var(--color-border) 42%, transparent);
+    background: color-mix(in srgb, var(--color-bg-tertiary) 30%, transparent);
+    padding: 0.4rem 0.6rem;
+}
+
+.sidebar-git-scope-menu .ide-input:focus {
+    background: color-mix(in srgb, var(--color-bg-tertiary) 46%, transparent);
+    border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
 }
 
 .sidebar-git-scope-menu__header {
-    border-bottom: 1px solid var(--color-border);
-    background: color-mix(in srgb, var(--color-bg-elevated) 22%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 38%, transparent);
 }
 
 .sidebar-git-scope-menu__title {
@@ -1630,12 +2439,12 @@ button {
 .sidebar-git-scope-menu__tabs {
     display: flex;
     gap: 3px;
-    margin: 0 12px 10px;
-    padding: 3px;
-    border-radius: 9px;
-    background: color-mix(in srgb, var(--color-bg-tertiary) 60%, transparent);
+    margin: 0 10px 8px;
+    padding: 2px;
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--color-bg-tertiary) 32%, transparent);
     box-shadow: inset 0 0 0 1px
-        color-mix(in srgb, var(--color-border) 60%, transparent);
+        color-mix(in srgb, var(--color-border) 32%, transparent);
 }
 
 .sidebar-git-scope-menu__tab {
@@ -1666,25 +2475,43 @@ button {
 }
 
 .sidebar-git-scope-menu__tab--active {
-    background: var(--color-bg-elevated);
-    box-shadow:
-        0 1px 3px rgba(0, 0, 0, 0.1),
-        inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 24%, transparent);
+    background: color-mix(in srgb, var(--color-bg-elevated) 45%, transparent);
+    box-shadow: inset 0 0 0 1px
+        color-mix(in srgb, var(--color-accent) 22%, transparent);
     color: var(--color-text-primary);
 }
 
 .sidebar-git-scope-menu__search-row {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin-bottom: 10px;
-    padding: 0 12px;
+    gap: 6px;
+    margin-bottom: 8px;
+    padding: 0 10px;
 }
 
+/* The shell (not the bare <input>) owns the border/background here, so the
+   field reads as one compact glass control instead of the taller, opaque
+   box the shared .ide-input draws everywhere else in the app. */
 .sidebar-git-scope-menu__search {
     position: relative;
+    display: flex;
+    align-items: center;
     min-width: 0;
     flex: 1;
+    height: 27px;
+    border: 1px solid color-mix(in srgb, var(--color-border) 42%, transparent);
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--color-bg-tertiary) 30%, transparent);
+    transition:
+        border-color 120ms ease,
+        background-color 120ms ease,
+        box-shadow 120ms ease;
+}
+
+.sidebar-git-scope-menu__search:focus-within {
+    border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+    background: color-mix(in srgb, var(--color-bg-tertiary) 46%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 12%, transparent);
 }
 
 .sidebar-git-scope-menu__search-icon {
@@ -1692,8 +2519,8 @@ button {
     left: 8px;
     top: 50%;
     transform: translateY(-50%);
-    width: 13px;
-    height: 13px;
+    width: 12px;
+    height: 12px;
     color: var(--color-text-secondary);
     pointer-events: none;
     opacity: 0.6;
@@ -1709,75 +2536,52 @@ button {
 }
 
 .sidebar-git-scope-menu__search .ide-input {
-    padding-left: 28px;
-    transition:
-        border-color 120ms ease,
-        background-color 120ms ease,
-        box-shadow 120ms ease;
+    height: 100%;
+    border: none;
+    border-radius: inherit;
+    background: transparent;
+    padding: 0 8px 0 25px;
 }
 
 .sidebar-git-scope-menu__search .ide-input:focus {
-    box-shadow: 0 0 0 3px
-        color-mix(in srgb, var(--color-accent) 16%, transparent);
+    background: transparent;
+    box-shadow: none;
 }
 
 .sidebar-git-scope-menu__new-branch-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    height: 26px;
-    width: 32px;
-    min-height: 26px;
+    height: 27px;
+    width: 27px;
+    min-height: 27px;
     flex-shrink: 0;
-    max-width: 100%;
-    border: 1px solid
-        color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
+    border: 1px solid color-mix(in srgb, var(--color-border) 42%, transparent);
     border-radius: 7px;
-    background: color-mix(
-        in srgb,
-        var(--color-accent) 11%,
-        var(--color-bg-elevated)
-    );
+    background: color-mix(in srgb, var(--color-bg-tertiary) 30%, transparent);
     padding: 0;
-    color: var(--color-text-primary);
-    font-size: 11px;
-    font-weight: 600;
-    line-height: normal;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+    color: var(--color-text-secondary);
     transition:
         background-color 120ms ease,
         border-color 120ms ease,
         color 120ms ease,
-        box-shadow 120ms ease,
         transform 75ms ease;
 }
 
 .sidebar-git-scope-menu__new-branch-button:hover:not(:disabled) {
-    border-color: color-mix(
-        in srgb,
-        var(--color-accent) 55%,
-        var(--color-border)
-    );
-    background: color-mix(
-        in srgb,
-        var(--color-accent) 17%,
-        var(--color-bg-elevated)
-    );
-    box-shadow: 0 2px 6px
-        color-mix(in srgb, var(--color-accent) 22%, transparent);
+    border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+    background: color-mix(in srgb, var(--color-bg-tertiary) 48%, transparent);
+    color: var(--color-text-primary);
 }
 
 /* Depress into the surface while held down */
 .sidebar-git-scope-menu__new-branch-button:active:not(:disabled) {
     transform: translateY(1px) scale(0.99);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.16);
 }
 
 .sidebar-git-scope-menu__new-branch-button:disabled {
     cursor: default;
-    opacity: 0.55;
-    box-shadow: none;
+    opacity: 0.5;
 }
 
 .sidebar-git-scope-menu__new-branch-button svg {
@@ -1791,8 +2595,8 @@ button {
     flex-direction: column;
     flex-shrink: 0;
     gap: 8px;
-    border-bottom: 1px solid var(--color-border);
-    background: color-mix(in srgb, var(--color-bg-elevated) 58%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 38%, transparent);
+    background: color-mix(in srgb, var(--color-bg-elevated) 30%, transparent);
     padding: 10px 12px 12px;
 }
 
@@ -1888,37 +2692,24 @@ button {
 }
 
 .sidebar-git-scope-menu__branch-form-primary {
-    border: 1px solid
-        color-mix(in srgb, var(--color-accent) 48%, var(--color-border));
-    background: color-mix(
-        in srgb,
-        var(--color-accent) 18%,
-        var(--color-bg-elevated)
-    );
+    border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 16%, transparent);
     color: var(--color-text-primary);
 }
 
 .sidebar-git-scope-menu__branch-form-primary:hover:not(:disabled) {
-    border-color: color-mix(
-        in srgb,
-        var(--color-accent) 68%,
-        var(--color-border)
-    );
-    background: color-mix(
-        in srgb,
-        var(--color-accent) 25%,
-        var(--color-bg-elevated)
-    );
+    border-color: color-mix(in srgb, var(--color-accent) 65%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 24%, transparent);
 }
 
 .sidebar-git-scope-menu__branch-form-secondary {
-    border: 1px solid var(--color-border);
-    background: color-mix(in srgb, var(--color-bg-tertiary) 55%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-border) 45%, transparent);
+    background: color-mix(in srgb, var(--color-bg-tertiary) 28%, transparent);
     color: var(--color-text-secondary);
 }
 
 .sidebar-git-scope-menu__branch-form-secondary:hover:not(:disabled) {
-    background: var(--color-bg-tertiary);
+    background: color-mix(in srgb, var(--color-bg-tertiary) 48%, transparent);
     color: var(--color-text-primary);
 }
 
@@ -1966,6 +2757,39 @@ button {
     font-size: 10px;
     color: var(--color-text-secondary);
     opacity: 0.7;
+}
+
+/* Connects consecutive local-branch rows with the same dashed rail used by
+   the chat activity tree (.activity-tree-branch), so the list reads as one
+   ordered commit timeline instead of a flat alphabetical list. The line sits
+   directly behind each row's leading bullet (see BranchTopologyBullet). */
+.sidebar-git-scope-menu__branch-node {
+    position: relative;
+}
+
+.sidebar-git-scope-menu__branch-node::before {
+    content: "";
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    left: 15px;
+    width: 1px;
+    background: repeating-linear-gradient(
+        to bottom,
+        color-mix(in srgb, var(--color-text-secondary) 32%, transparent) 0 2px,
+        transparent 2px 5px
+    );
+    pointer-events: none;
+}
+
+.sidebar-git-scope-menu__branch-node[data-branch-node-position="first"]::before,
+.sidebar-git-scope-menu__branch-node[data-branch-node-position="only"]::before {
+    top: 50%;
+}
+
+.sidebar-git-scope-menu__branch-node[data-branch-node-position="last"]::before,
+.sidebar-git-scope-menu__branch-node[data-branch-node-position="only"]::before {
+    bottom: 50%;
 }
 
 .sidebar-git-scope-menu__list {
@@ -2016,14 +2840,9 @@ button {
     width: 100%;
     min-height: 36px;
     min-width: 0;
-    border: 1px solid
-        color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+    border: 1px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
     border-radius: 7px;
-    background: color-mix(
-        in srgb,
-        var(--color-accent) 8%,
-        var(--color-bg-elevated)
-    );
+    background: color-mix(in srgb, var(--color-accent) 7%, transparent);
     margin-bottom: 6px;
     padding: 7px 9px;
     color: var(--color-text-primary);
@@ -2041,16 +2860,8 @@ button {
 
 .sidebar-git-scope-menu__create-query:hover:not(:disabled),
 .sidebar-git-scope-menu__create-query--selected {
-    border-color: color-mix(
-        in srgb,
-        var(--color-accent) 45%,
-        var(--color-border)
-    );
-    background: color-mix(
-        in srgb,
-        var(--color-accent) 14%,
-        var(--color-bg-elevated)
-    );
+    border-color: color-mix(in srgb, var(--color-accent) 42%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 13%, transparent);
 }
 
 .sidebar-git-scope-menu__create-query:disabled {
@@ -2110,40 +2921,25 @@ button {
     gap: 7px;
     width: 100%;
     min-height: 30px;
-    border: 1px solid
-        color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
+    border: 1px solid color-mix(in srgb, var(--color-accent) 32%, transparent);
     border-radius: 7px;
-    background: color-mix(
-        in srgb,
-        var(--color-accent) 14%,
-        var(--color-bg-elevated)
-    );
+    background: color-mix(in srgb, var(--color-accent) 12%, transparent);
     color: var(--color-text-primary);
     font-size: 11px;
     font-weight: 600;
     transition:
         border-color 120ms ease,
         background-color 120ms ease,
-        transform 75ms ease,
-        box-shadow 120ms ease;
+        transform 75ms ease;
 }
 
 .sidebar-git-scope-menu__init-button:active:not(:disabled) {
     transform: translateY(1px) scale(0.99);
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.14);
 }
 
 .sidebar-git-scope-menu__init-button:hover:not(:disabled) {
-    border-color: color-mix(
-        in srgb,
-        var(--color-accent) 60%,
-        var(--color-border)
-    );
-    background: color-mix(
-        in srgb,
-        var(--color-accent) 20%,
-        var(--color-bg-elevated)
-    );
+    border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
 }
 
 .sidebar-git-scope-menu__init-button:disabled {
@@ -2157,7 +2953,7 @@ button {
 }
 
 .sidebar-git-scope-menu__status {
-    border-top: 1px solid var(--color-border);
+    border-top: 1px solid color-mix(in srgb, var(--color-border) 38%, transparent);
     padding: 8px 12px;
     color: var(--color-text-secondary);
     font-size: 11px;
@@ -2241,176 +3037,9 @@ button {
     position: static;
     top: auto;
     right: auto;
-    width: 28px;
-    height: 28px;
+    width: 26px;
+    height: 26px;
     flex-shrink: 0;
-}
-
-.project-switcher-menu {
-    position: absolute;
-    bottom: 100%;
-    left: 0;
-    right: 0;
-    z-index: 9999;
-    margin-bottom: 4px;
-    border: 1px solid var(--color-border);
-    border-radius: 8px;
-    background: var(--color-bg-secondary);
-    padding: 4px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-}
-
-.project-switcher-search {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 4px;
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    background: var(--color-bg-primary);
-    padding: 5px 8px;
-}
-
-.project-switcher-search-input {
-    flex: 1;
-    min-width: 0;
-    border: none;
-    background: transparent;
-    color: var(--color-text-primary);
-    font-family: inherit;
-    font-size: 12px;
-    outline: none;
-}
-
-.project-switcher-search-count {
-    flex-shrink: 0;
-    color: var(--color-text-secondary);
-    font-family: monospace;
-    font-size: 10px;
-}
-
-.project-switcher-list {
-    max-height: 240px;
-    overflow-y: auto;
-}
-
-.project-switcher-empty {
-    padding: 6px 8px 8px;
-    color: var(--color-text-secondary);
-    font-size: 12px;
-}
-
-.project-switcher-menu-item {
-    display: flex;
-    width: 100%;
-    align-items: center;
-    gap: 8px;
-    border-radius: 4px;
-    padding: 5px 10px;
-    font-size: 12px;
-    text-align: left;
-    color: var(--color-text-primary);
-    transition: background-color 100ms ease;
-}
-
-.project-switcher-menu-item:hover {
-    background: var(--color-bg-tertiary);
-}
-
-.project-switcher-check {
-    width: 12px;
-    flex-shrink: 0;
-    color: var(--color-accent);
-}
-
-.project-switcher-update-dot {
-    width: 6px;
-    height: 6px;
-    flex-shrink: 0;
-    border-radius: 999px;
-    background: linear-gradient(180deg, #f97316, #ef4444);
-}
-
-.project-switcher-sep {
-    height: 1px;
-    margin: 4px 0;
-    background: var(--color-border);
-}
-
-.project-switcher-clone {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 6px;
-}
-
-.project-switcher-clone-label {
-    color: var(--color-text-secondary);
-    font-size: 11px;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-}
-
-.project-switcher-clone-input {
-    width: 100%;
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    background: var(--color-bg-primary);
-    padding: 6px 8px;
-    color: var(--color-text-primary);
-    font-family: inherit;
-    font-size: 12px;
-    outline: none;
-}
-
-.project-switcher-clone-input:focus {
-    border-color: var(--color-accent);
-}
-
-.project-switcher-clone-input:disabled {
-    opacity: 0.6;
-}
-
-.project-switcher-clone-error {
-    color: var(--color-danger, #f87171);
-    font-size: 11px;
-    line-height: 1.3;
-}
-
-.project-switcher-clone-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 6px;
-}
-
-.project-switcher-clone-btn {
-    border: 1px solid var(--color-border);
-    border-radius: 6px;
-    background: var(--color-bg-primary);
-    padding: 4px 10px;
-    color: var(--color-text-primary);
-    font-size: 11px;
-    transition: background-color 100ms ease;
-}
-
-.project-switcher-clone-btn:hover:not(:disabled) {
-    background: var(--color-bg-tertiary);
-}
-
-.project-switcher-clone-btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
-}
-
-.project-switcher-clone-btn-primary {
-    border-color: var(--color-accent);
-    background: var(--color-accent);
-    color: var(--color-accent-foreground, #fff);
-}
-
-.project-switcher-clone-btn-primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--color-accent) 85%, black);
 }
 
 .tree-row {
@@ -2636,6 +3265,11 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
+    .sidebar-git-scope-menu[data-animation-state="opening"],
+    .sidebar-git-scope-menu[data-animation-state="closing"] {
+        animation-duration: 1ms !important;
+    }
+
     [data-edge-peek-overlay] {
         animation-duration: 1ms !important;
     }
@@ -2935,6 +3569,12 @@ body.resizing-composer {
 @container (max-width: 360px) {
     [data-activity-rail-current="true"] {
         display: none;
+    }
+
+    /* The header becomes single-line here, so keep the rail prefix centered
+       with the title instead of pinned to the button's top edge. */
+    [data-activity-rail-prefix="true"] {
+        align-self: center;
     }
 }
 

@@ -441,6 +441,25 @@ describe("ToolActivityItem", () => {
         expect(markup).not.toContain("Reject");
     });
 
+    it("uses the review rail while a file edit is waiting for its diff", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    diffs: [],
+                    status: "in_progress",
+                    title: "Write src/app.ts",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain('data-change-review-pending="true"');
+        expect(markup).not.toContain("border-radius:0.5rem");
+    });
+
     it("keeps change review behind the compact rail disclosure", () => {
         const container = renderInteractiveToolActivityItem({
             activity: createActivity({

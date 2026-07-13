@@ -31,27 +31,37 @@ describe("ProviderIcon", () => {
         expect(markup).toContain('data-provider-icon="codex"');
     });
 
-    it("uses the compact Codex tab glyph", () => {
+    it("uses the official OpenAI mark for Codex", () => {
         const markup = renderToStaticMarkup(
             createElement(ProviderIcon, { runtimeId: "codex" }),
         );
 
+        expect(markup).toContain('viewBox="0 0 41 41"');
         expect(markup).toContain(
-            'points="8,2.3 13.4,5.4 13.4,10.6 8,13.7 2.6,10.6 2.6,5.4"',
+            'd="M37.5324 16.8707C37.9808 15.5241',
         );
-        expect(markup).not.toContain("--provider-icon-accent");
     });
 
-    it("uses the Grok tab glyph", () => {
+    it("uses the official Anthropic mark for Claude", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ProviderIcon, { runtimeId: "claude" }),
+        );
+
+        expect(markup).toContain('viewBox="0 0 35 24"');
+        expect(markup).toContain(
+            'd="M24.5475 0H19.3384L28.8374 24H34.0465L24.5475 0Z"',
+        );
+    });
+
+    it("uses the official Grok mark", () => {
         const markup = renderToStaticMarkup(
             createElement(ProviderIcon, { runtimeId: "grok" }),
         );
 
+        expect(markup).toContain('viewBox="0 0 512 512"');
         expect(markup).toContain(
-            'd="M3.25 8a4.75 4.75 0 1 1 4.75 4.75"',
+            'd="M210.484 312.759L343.465 210.383',
         );
-        expect(markup).toContain('d="M8 3.25v4.75h4.75"');
-        expect(markup).toContain('d="M4.4 11.6 11.6 4.4"');
     });
 
     it("uses the OpenCode tab glyph", () => {
@@ -64,5 +74,17 @@ describe("ProviderIcon", () => {
         expect(markup).toContain(
             'd="M210 60H90V240H210V60ZM270 300H30V0H270V300Z"',
         );
+    });
+
+    it("uses the official monochrome Kilo mark", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ProviderIcon, { runtimeId: "kilo" }),
+        );
+
+        expect(markup).toContain('viewBox="0 0 16 16"');
+        expect(markup).toContain(
+            'd="M16 16H0V0H16V16ZM10.09 10.09H8.7',
+        );
+        expect(markup).toContain('fill-rule="evenodd"');
     });
 });

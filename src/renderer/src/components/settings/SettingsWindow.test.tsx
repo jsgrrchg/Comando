@@ -50,6 +50,7 @@ function createSettingsWindowProps(
         },
         appAppearance: {
             boostCodeContrast: false,
+            chromeTransparency: 45,
             mode: "system",
             presetId: "default",
             presets: [],

@@ -489,6 +489,18 @@ export function SettingsApp() {
         void saveAppAppearanceSettings(nextAppearance);
     };
 
+    const handleAppChromeTransparencyChange = (
+        chromeTransparency: number,
+    ) => {
+        const nextAppearance = {
+            ...appAppearance,
+            chromeTransparency,
+        };
+
+        setAppAppearance(nextAppearance);
+        void saveAppAppearanceSettings(nextAppearance);
+    };
+
     const handleAppTransparencyEnabledChange = (
         transparencyEnabled: boolean,
     ) => {
@@ -862,11 +874,13 @@ export function SettingsApp() {
             appAppearance={{
                 agentsSidebarScale: appAppearance.agentsSidebarScale,
                 boostCodeContrast: appAppearance.boostCodeContrast,
+                chromeTransparency: appAppearance.chromeTransparency,
                 fileTreeScale: appAppearance.fileTreeScale,
                 mode: appAppearance.themeMode,
                 onAgentsSidebarScaleChange:
                     handleAppAgentsSidebarScaleChange,
                 onBoostCodeContrastChange: handleAppBoostCodeContrastChange,
+                onChromeTransparencyChange: handleAppChromeTransparencyChange,
                 onFileTreeScaleChange: handleAppFileTreeScaleChange,
                 onModeChange: handleAppThemeModeChange,
                 onPresetChange: handleAppThemePresetChange,

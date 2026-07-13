@@ -1,12 +1,16 @@
-import type { PersistedChatSessionState, WorkspaceSnapshot } from "@shared/ipc";
+import type {
+    PersistedChatSessionState,
+    WorkspaceNavigationSnapshot,
+    WindowWorkspaceRestoreRecord,
+} from "@shared/ipc";
 
 type Awaitable<T> = T | Promise<T>;
 
 export interface WorkspaceGateway {
-    loadSnapshot(workspaceId: string): Awaitable<WorkspaceSnapshot>;
+    loadSnapshot(workspaceId: string): Awaitable<WindowWorkspaceRestoreRecord>;
     saveSnapshot(
         workspaceId: string,
-        snapshot: WorkspaceSnapshot,
+        snapshot: WorkspaceNavigationSnapshot,
     ): Awaitable<void>;
     loadChatSessionState(
         sessionId: string,

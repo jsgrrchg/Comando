@@ -71,6 +71,10 @@ import {
     type ChatTimelineRow,
 } from "./chat/chatTimelineModel";
 import {
+    cacheChatTimeline,
+    getCachedChatTimeline,
+} from "./chat/chatTimelineCache";
+import {
     isActiveChatTurnStatus,
     isChatStreamingStatus,
 } from "./chat/chatTurnStatus";
@@ -119,6 +123,7 @@ import {
 /* ─── Types ─── */
 
 interface ChatTabViewProps {
+    readonly active: boolean;
     readonly onDraftChange: (tabId: string, draft: string) => void;
     readonly onOpenFile: (
         projectId: string,
@@ -130,6 +135,41 @@ interface ChatTabViewProps {
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenReview: () => Promise<void>;
     readonly tab: RuntimeWorkspaceChatTab;
+}
+
+type ChatSessionViewState = Pick<
+    ReturnType<typeof useAiStore.getState>["sessions"][string],
+    | "dismissedPlanUpdatedAt"
+    | "draftAttachments"
+    | "draftComposerParts"
+    | "draftFileContexts"
+    | "editingQueuedPrompt"
+    | "localError"
+    | "queue"
+    | "snapshot"
+    | "transcript"
+>;
+
+function selectChatSessionViewState(
+    state: ReturnType<typeof useAiStore.getState>,
+    sessionId: string,
+): ChatSessionViewState | null {
+    const session = state.sessions[sessionId];
+    if (!session) {
+        return null;
+    }
+
+    return {
+        dismissedPlanUpdatedAt: session.dismissedPlanUpdatedAt,
+        draftAttachments: session.draftAttachments,
+        draftComposerParts: session.draftComposerParts,
+        draftFileContexts: session.draftFileContexts,
+        editingQueuedPrompt: session.editingQueuedPrompt,
+        localError: session.localError,
+        queue: session.queue,
+        snapshot: session.snapshot,
+        transcript: session.transcript,
+    };
 }
 
 /* ─── Constants ─── */
@@ -167,9 +207,29 @@ type AiRuntimeCatalog = Pick<
     | "models"
 >;
 
+interface AgentControlDiscoveryAttempt {
+    readonly attemptCount: number;
+    readonly status: "completed" | "exhausted" | "idle" | "loading" | "retrying";
+}
+
+const MAX_AGENT_CONTROL_DISCOVERY_ATTEMPTS = 3;
+const AGENT_CONTROL_DISCOVERY_RETRY_DELAY_MS = 250;
+
+function hasAgentControlCatalog(
+    catalog: AiRuntimeCatalog | null | undefined,
+): boolean {
+    return Boolean(
+        catalog &&
+        (catalog.configOptions.length > 0 ||
+            catalog.models.length > 0 ||
+            catalog.modes.length > 0),
+    );
+}
+
 /* ─── Main component ─── */
 
 export const ChatTabView = memo(function ChatTabView({
+    active,
     onDraftChange,
     onOpenFile,
     onOpenImage,
@@ -181,6 +241,8 @@ export const ChatTabView = memo(function ChatTabView({
     const clearQueuedPrompts = useAiStore((s) => s.clearQueuedPrompts);
     const ensureSession = useAiStore((s) => s.ensureSession);
     const editQueuedPrompt = useAiStore((s) => s.editQueuedPrompt);
+    const refreshRuntimeStatus = useAiStore((s) => s.refreshRuntimeStatus);
+    const registerSessionTab = useAiStore((s) => s.registerSessionTab);
     const removeQueuedPrompt = useAiStore((s) => s.removeQueuedPrompt);
     const respondPermission = useAiStore((s) => s.respondPermission);
     const respondUserInput = useAiStore((s) => s.respondUserInput);
@@ -213,26 +275,21 @@ export const ChatTabView = memo(function ChatTabView({
     const runtimeCatalog = useAiStore(
         (s) => s.runtimeCatalogById[tab.runtimeId] ?? null,
     );
+    const frozenSessionStateRef = useRef<ChatSessionViewState | null>(null);
     const sessionState = useAiStore(
         useShallow((s) => {
-            const session = s.sessions[tab.sessionId];
-            if (!session) {
-                return null;
+            if (!active) {
+                return frozenSessionStateRef.current;
             }
 
-            return {
-                dismissedPlanUpdatedAt: session.dismissedPlanUpdatedAt,
-                draftAttachments: session.draftAttachments,
-                draftComposerParts: session.draftComposerParts,
-                draftFileContexts: session.draftFileContexts,
-                editingQueuedPrompt: session.editingQueuedPrompt,
-                localError: session.localError,
-                queue: session.queue,
-                snapshot: session.snapshot,
-                transcript: session.transcript,
-            };
+            return selectChatSessionViewState(s, tab.sessionId);
         }),
     );
+    useEffect(() => {
+        if (active) {
+            frozenSessionStateRef.current = sessionState;
+        }
+    }, [active, sessionState]);
     const projectSummary = useProjectsStore((state) =>
         tab.projectId
             ? (state.projects.find((project) => project.id === tab.projectId) ??
@@ -270,6 +327,7 @@ export const ChatTabView = memo(function ChatTabView({
     const scrollPersistTimerRef = useRef<number | null>(null);
     const pendingPersistedScrollTopRef = useRef<number | null>(null);
     const pendingPersistedNearBottomRef = useRef<boolean | null>(null);
+    const hasActivatedViewRef = useRef(false);
     const stableTimelineRef = useRef<{
         readonly model: ChatTimelineModel | null;
         readonly sessionId: string;
@@ -404,6 +462,13 @@ export const ChatTabView = memo(function ChatTabView({
     );
     const sessionPreparationKey = getChatSessionPreparationKey(sessionTab);
     const latestSessionTabRef = useRef(sessionTab);
+    const agentControlDiscoveryAttemptsRef = useRef(
+        new Map<string, AgentControlDiscoveryAttempt>(),
+    );
+    const agentControlDiscoveryMountedRef = useRef(true);
+    const agentControlDiscoveryRetryTimersRef = useRef(new Set<number>());
+    const [agentControlDiscoveryRetryNonce, setAgentControlDiscoveryRetryNonce] =
+        useState(0);
     const liveSessionTab = useMemo(
         () => ({
             ...sessionTab,
@@ -411,37 +476,36 @@ export const ChatTabView = memo(function ChatTabView({
         }),
         [sessionTab],
     );
-    const ensureLiveAgentSession = useCallback(async () => {
-        const currentSession = useAiStore.getState().sessions[tab.sessionId] ?? null;
-        if (currentSession?.snapshot?.runtimeSessionId) {
-            return;
-        }
-        await ensureSession(liveSessionTab, { force: true });
-    }, [ensureSession, liveSessionTab, tab.sessionId]);
+    const ensureLiveAgentSession = useCallback(
+        async (force: boolean) => {
+            const currentSession =
+                useAiStore.getState().sessions[tab.sessionId] ?? null;
+            if (
+                !force &&
+                currentSession?.runtimeState === "live" &&
+                currentSession.snapshot?.runtimeSessionId
+            ) {
+                return;
+            }
+
+            await ensureSession(liveSessionTab, { force: true });
+        },
+        [ensureSession, liveSessionTab, tab.sessionId],
+    );
+    const agentControlMutationOptions = useMemo(
+        () => ({ ensureLiveSession: ensureLiveAgentSession }),
+        [ensureLiveAgentSession],
+    );
     const runAgentControlMutation = useCallback(
         (mutation: () => Promise<void>) => {
-            void (async () => {
-                await ensureLiveAgentSession();
-
-                try {
-                    await mutation();
-                    return;
-                } catch (error) {
-                    await ensureLiveAgentSession();
-                    await mutation();
-                    console.warn(
-                        "[comando] Recovered AI session control update after live session prepare.",
-                        error,
-                    );
-                }
-            })().catch((error: unknown) => {
+            void mutation().catch((error: unknown) => {
                 console.warn(
                     "[comando] Failed to update AI session control.",
                     error,
                 );
             });
         },
-        [ensureLiveAgentSession],
+        [],
     );
 
     useEffect(() => {
@@ -449,8 +513,29 @@ export const ChatTabView = memo(function ChatTabView({
     }, [sessionTab]);
 
     useEffect(() => {
-        void ensureSession(latestSessionTabRef.current);
-    }, [ensureSession, sessionPreparationKey]);
+        agentControlDiscoveryMountedRef.current = true;
+        const retryTimers = agentControlDiscoveryRetryTimersRef.current;
+        return () => {
+            agentControlDiscoveryMountedRef.current = false;
+            for (const retryTimer of retryTimers) {
+                window.clearTimeout(retryTimer);
+            }
+            retryTimers.clear();
+        };
+    }, []);
+
+    useEffect(() => {
+        registerSessionTab(sessionTab);
+    }, [registerSessionTab, sessionTab]);
+
+    useEffect(() => {
+        if (
+            active &&
+            latestSessionTabRef.current.sessionOpenMode === "history"
+        ) {
+            void ensureSession(latestSessionTabRef.current);
+        }
+    }, [active, ensureSession, sessionPreparationKey]);
 
     const snapshot =
         sessionState?.snapshot ?? createEmptySnapshot(tab, runtimeCatalog);
@@ -597,6 +682,116 @@ export const ChatTabView = memo(function ChatTabView({
         agentConfigOptions.length > 0 ||
         agentModels.length > 0 ||
         agentModes.length > 0;
+
+    useEffect(() => {
+        const discoveryKey = `${tab.sessionId}:${tab.runtimeId}`;
+        const previousAttempt =
+            agentControlDiscoveryAttemptsRef.current.get(discoveryKey);
+        if (
+            !active ||
+            latestSessionTabRef.current.sessionOpenMode === "history" ||
+            hasAgentControls ||
+            previousAttempt?.status === "completed" ||
+            previousAttempt?.status === "exhausted" ||
+            previousAttempt?.status === "loading" ||
+            previousAttempt?.status === "retrying"
+        ) {
+            return;
+        }
+
+        const attemptCount = (previousAttempt?.attemptCount ?? 0) + 1;
+        agentControlDiscoveryAttemptsRef.current.set(discoveryKey, {
+            attemptCount,
+            status: "loading",
+        });
+        void (async () => {
+            try {
+                if (!runtimeCatalog) {
+                    await refreshRuntimeStatus(tab.runtimeId);
+                }
+
+                const state = useAiStore.getState();
+                const currentSnapshot =
+                    state.sessions[tab.sessionId]?.snapshot ?? null;
+                const currentCatalog =
+                    state.runtimeCatalogById[tab.runtimeId] ?? null;
+                if (
+                    hasAgentControlCatalog(currentSnapshot) ||
+                    hasAgentControlCatalog(currentCatalog)
+                ) {
+                    agentControlDiscoveryAttemptsRef.current.set(discoveryKey, {
+                        attemptCount,
+                        status: "completed",
+                    });
+                    return;
+                }
+
+                // A provider without a cached catalog must start once to
+                // discover its controls before the first prompt.
+                await ensureSession(liveSessionTab, { force: true });
+                agentControlDiscoveryAttemptsRef.current.set(discoveryKey, {
+                    attemptCount,
+                    status: "completed",
+                });
+            } catch (error) {
+                console.warn(
+                    "[comando] Failed to load AI session controls.",
+                    error,
+                );
+                if (!agentControlDiscoveryMountedRef.current) {
+                    return;
+                }
+
+                if (
+                    attemptCount >= MAX_AGENT_CONTROL_DISCOVERY_ATTEMPTS
+                ) {
+                    agentControlDiscoveryAttemptsRef.current.set(discoveryKey, {
+                        attemptCount,
+                        status: "exhausted",
+                    });
+                    return;
+                }
+
+                agentControlDiscoveryAttemptsRef.current.set(discoveryKey, {
+                    attemptCount,
+                    status: "retrying",
+                });
+                const retryTimer = window.setTimeout(() => {
+                    agentControlDiscoveryRetryTimersRef.current.delete(
+                        retryTimer,
+                    );
+                    const pendingAttempt =
+                        agentControlDiscoveryAttemptsRef.current.get(
+                            discoveryKey,
+                        );
+                    if (
+                        !agentControlDiscoveryMountedRef.current ||
+                        pendingAttempt?.attemptCount !== attemptCount ||
+                        pendingAttempt.status !== "retrying"
+                    ) {
+                        return;
+                    }
+
+                    agentControlDiscoveryAttemptsRef.current.set(discoveryKey, {
+                        attemptCount,
+                        status: "idle",
+                    });
+                    setAgentControlDiscoveryRetryNonce((nonce) => nonce + 1);
+                }, AGENT_CONTROL_DISCOVERY_RETRY_DELAY_MS * 2 ** (attemptCount - 1));
+                agentControlDiscoveryRetryTimersRef.current.add(retryTimer);
+            }
+        })();
+    }, [
+        active,
+        agentControlDiscoveryRetryNonce,
+        ensureSession,
+        hasAgentControls,
+        liveSessionTab,
+        refreshRuntimeStatus,
+        runtimeCatalog,
+        tab.runtimeId,
+        tab.sessionId,
+    ]);
 
     const canonicalTrackedFiles = useMemo(
         () =>
@@ -749,7 +944,7 @@ export const ChatTabView = memo(function ChatTabView({
         pendingReviewCount > 0;
 
     useEffect(() => {
-        if (activeTurnKey === null || activeTurnStartedAt === null) {
+        if (!active || activeTurnKey === null || activeTurnStartedAt === null) {
             streamStartTimeRef.current = null;
             let cancelled = false;
             queueMicrotask(() => {
@@ -792,7 +987,7 @@ export const ChatTabView = memo(function ChatTabView({
             cancelled = true;
             window.clearInterval(interval);
         };
-    }, [activeTurnKey, activeTurnStartedAt]);
+    }, [active, activeTurnKey, activeTurnStartedAt]);
 
     /* eslint-disable react-hooks/refs -- The timeline reconciler needs the last committed model to preserve row identity during render. */
     const attentionToolCallIds = useMemo(() => {
@@ -806,6 +1001,18 @@ export const ChatTabView = memo(function ChatTabView({
         return toolCallIds;
     }, [pendingPermission?.toolCallId, pendingUserInput?.toolCallId]);
     const timelineModel = useMemo(() => {
+        const cachedTimeline = getCachedChatTimeline({
+            activeTurnStartedAt,
+            attentionToolCallIds,
+            sessionId: tab.sessionId,
+            status: snapshot.status,
+            trackedFiles: canonicalTrackedFiles,
+            transcript,
+        });
+        if (cachedTimeline) {
+            return cachedTimeline;
+        }
+
         const previousTimelineState = stableTimelineRef.current;
         const previousTimelineModel =
             previousTimelineState.sessionId === tab.sessionId
@@ -834,7 +1041,24 @@ export const ChatTabView = memo(function ChatTabView({
             model: timelineModel,
             sessionId: tab.sessionId,
         };
-    }, [timelineModel, tab.sessionId]);
+        cacheChatTimeline({
+            activeTurnStartedAt,
+            attentionToolCallIds,
+            model: timelineModel,
+            sessionId: tab.sessionId,
+            status: snapshot.status,
+            trackedFiles: canonicalTrackedFiles,
+            transcript,
+        });
+    }, [
+        activeTurnStartedAt,
+        attentionToolCallIds,
+        canonicalTrackedFiles,
+        snapshot.status,
+        tab.sessionId,
+        timelineModel,
+        transcript,
+    ]);
     const persistedViewState = useMemo(
         () =>
             readPersistedChatViewState(
@@ -844,6 +1068,14 @@ export const ChatTabView = memo(function ChatTabView({
             ),
         [tab.projectId, tab.sessionId, tab.worktreeId],
     );
+    const persistedViewStateRef = useRef<{
+        readonly isNearBottom: boolean;
+        readonly scrollTop: number;
+    } | null>(persistedViewState);
+
+    useEffect(() => {
+        persistedViewStateRef.current = persistedViewState;
+    }, [persistedViewState]);
 
     useRenderProbe("ChatTabView", {
         composerPartCount: composerParts.length,
@@ -973,16 +1205,24 @@ export const ChatTabView = memo(function ChatTabView({
             readonly scrollTop?: number;
         }) => {
             const scrollEl = scrollRef.current;
+            const previousViewState = persistedViewStateRef.current;
             const scrollTop =
                 overrides?.scrollTop ??
                 scrollEl?.scrollTop ??
-                persistedViewState?.scrollTop ??
+                previousViewState?.scrollTop ??
                 0;
             const nextIsNearBottom =
                 overrides?.isNearBottom ??
                 (scrollEl
                     ? isNearBottom(scrollEl)
-                    : persistedViewState?.isNearBottom ?? true);
+                    : previousViewState?.isNearBottom ?? true);
+
+            // Retained chat views do not remount between tab switches, so keep
+            // the latest persisted position in memory for the next activation.
+            persistedViewStateRef.current = {
+                isNearBottom: nextIsNearBottom,
+                scrollTop,
+            };
 
             persistChatViewState(
                 tab.projectId,
@@ -996,8 +1236,6 @@ export const ChatTabView = memo(function ChatTabView({
         },
         [
             isNearBottom,
-            persistedViewState?.isNearBottom,
-            persistedViewState?.scrollTop,
             tab.projectId,
             tab.sessionId,
             tab.worktreeId,
@@ -1163,6 +1401,10 @@ export const ChatTabView = memo(function ChatTabView({
     ]);
 
     useLayoutEffect(() => {
+        if (!active) {
+            return;
+        }
+
         let cancelled = false;
         const setJumpToBottomVisibility = (visible: boolean) => {
             queueMicrotask(() => {
@@ -1172,8 +1414,9 @@ export const ChatTabView = memo(function ChatTabView({
             });
         };
         const scrollEl = scrollRef.current;
-        const restoreScrollTop = persistedViewState?.scrollTop ?? 0;
-        const shouldRestoreBottom = persistedViewState?.isNearBottom ?? true;
+        const restoreScrollTop = persistedViewStateRef.current?.scrollTop ?? 0;
+        const shouldRestoreBottom =
+            persistedViewStateRef.current?.isNearBottom ?? true;
 
         if (!scrollEl) {
             shouldAutoFollowRef.current = shouldRestoreBottom;
@@ -1181,6 +1424,35 @@ export const ChatTabView = memo(function ChatTabView({
             return () => {
                 cancelled = true;
             };
+        }
+
+        const wasPreviouslyActivated = hasActivatedViewRef.current;
+        hasActivatedViewRef.current = true;
+
+        const persistViewStateOnDeactivate = () => {
+            cancelled = true;
+            cancelPendingScrollToBottom();
+            cancelBottomFollowSettle();
+            if (restoreScrollFrameRef.current !== null) {
+                window.cancelAnimationFrame(restoreScrollFrameRef.current);
+                restoreScrollFrameRef.current = null;
+            }
+            const flushedState = flushScheduledScrollPersist();
+            persistCurrentViewState(
+                resolveChatScrollPersistenceState({
+                    currentScrollTop: scrollEl.scrollTop,
+                    pendingIsNearBottom: flushedState?.isNearBottom ?? null,
+                    pendingScrollTop: flushedState?.scrollTop ?? null,
+                    restoreScrollTop,
+                    shouldAutoFollow: shouldAutoFollowRef.current,
+                }),
+            );
+        };
+
+        // A retained view already owns the correct DOM scroll position. Avoid
+        // forcing layout and scheduling follow-up frames on every tab switch.
+        if (wasPreviouslyActivated) {
+            return persistViewStateOnDeactivate;
         }
 
         if (shouldRestoreBottom) {
@@ -1213,48 +1485,34 @@ export const ChatTabView = memo(function ChatTabView({
             setJumpToBottomVisibility(!isNearBottom(nextScrollEl));
         });
 
-        return () => {
-            cancelled = true;
-            cancelPendingScrollToBottom();
-            cancelBottomFollowSettle();
-            if (restoreScrollFrameRef.current !== null) {
-                window.cancelAnimationFrame(restoreScrollFrameRef.current);
-                restoreScrollFrameRef.current = null;
-            }
-            const flushedState = flushScheduledScrollPersist();
-            persistCurrentViewState(
-                resolveChatScrollPersistenceState({
-                    currentScrollTop: scrollEl.scrollTop,
-                    pendingIsNearBottom: flushedState?.isNearBottom ?? null,
-                    pendingScrollTop: flushedState?.scrollTop ?? null,
-                    restoreScrollTop,
-                    shouldAutoFollow: shouldAutoFollowRef.current,
-                }),
-            );
-        };
+        return persistViewStateOnDeactivate;
     }, [
         cancelBottomFollowSettle,
         cancelPendingScrollToBottom,
         flushScheduledScrollPersist,
         isNearBottom,
         persistCurrentViewState,
-        persistedViewState?.isNearBottom,
-        persistedViewState?.scrollTop,
         scheduleScrollToBottom,
         scrollToBottom,
+        active,
         tab.sessionId,
     ]);
 
     useLayoutEffect(() => {
-        if (shouldAutoFollowRef.current) {
+        if (active && shouldAutoFollowRef.current) {
             scheduleScrollToBottom();
         }
-    }, [scheduleScrollToBottom, snapshot.updatedAt]);
+    }, [active, scheduleScrollToBottom, snapshot.updatedAt]);
 
     useEffect(() => {
         const scrollEl = scrollRef.current;
         const contentEl = timelineContentRef.current;
-        if (!scrollEl || !contentEl || typeof ResizeObserver === "undefined") {
+        if (
+            !active ||
+            !scrollEl ||
+            !contentEl ||
+            typeof ResizeObserver === "undefined"
+        ) {
             return;
         }
 
@@ -1270,7 +1528,7 @@ export const ChatTabView = memo(function ChatTabView({
         return () => {
             observer.disconnect();
         };
-    }, [scheduleScrollToBottom, tab.sessionId]);
+    }, [active, scheduleScrollToBottom, tab.sessionId]);
 
     const handleScroll = useCallback(() => {
         const el = scrollRef.current;
@@ -1724,8 +1982,10 @@ export const ChatTabView = memo(function ChatTabView({
     );
 
     const handleChatFocus = useCallback(() => {
-        markChatTabFocused(tab.id);
-    }, [markChatTabFocused, tab.id]);
+        if (active) {
+            markChatTabFocused(tab.id);
+        }
+    }, [active, markChatTabFocused, tab.id]);
 
     return (
         <div
@@ -1834,6 +2094,7 @@ export const ChatTabView = memo(function ChatTabView({
                 ) : null}
 
                 <ChatTimeline
+                    active={active}
                     canRenderFileReference={canRenderFileReference}
                     chatFontFamily={chatFontFamily}
                     chatFontSize={aiChatSettings.chatFontSize}
@@ -1982,27 +2243,39 @@ export const ChatTabView = memo(function ChatTabView({
                                             value,
                                         ) => {
                                             runAgentControlMutation(() =>
-                                                setSessionConfigOption({
-                                                    optionId,
-                                                    sessionId: tab.sessionId,
-                                                    value,
-                                                }),
+                                                setSessionConfigOption(
+                                                    {
+                                                        optionId,
+                                                        sessionId:
+                                                            tab.sessionId,
+                                                        value,
+                                                    },
+                                                    agentControlMutationOptions,
+                                                ),
                                             );
                                         }}
                                         onModeChange={(modeId) => {
                                             runAgentControlMutation(() =>
-                                                setSessionMode({
-                                                    modeId,
-                                                    sessionId: tab.sessionId,
-                                                }),
+                                                setSessionMode(
+                                                    {
+                                                        modeId,
+                                                        sessionId:
+                                                            tab.sessionId,
+                                                    },
+                                                    agentControlMutationOptions,
+                                                ),
                                             );
                                         }}
                                         onModelChange={(modelId) => {
                                             runAgentControlMutation(() =>
-                                                setSessionModel({
-                                                    modelId,
-                                                    sessionId: tab.sessionId,
-                                                }),
+                                                setSessionModel(
+                                                    {
+                                                        modelId,
+                                                        sessionId:
+                                                            tab.sessionId,
+                                                    },
+                                                    agentControlMutationOptions,
+                                                ),
                                             );
                                         }}
                                         runtimeId={tab.runtimeId}
@@ -2310,6 +2583,7 @@ function ImageAttachmentChip(props: {
 }
 
 type ChatTimelineProps = {
+    readonly active: boolean;
     readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
@@ -2359,7 +2633,24 @@ type ChatTimelineProps = {
     readonly worktreeId: string | null;
 };
 
+function areChatTimelinePropsEqual(
+    previous: Readonly<ChatTimelineProps>,
+    next: Readonly<ChatTimelineProps>,
+): boolean {
+    // Hidden warm views should retain their last committed DOM until they are
+    // activated again. The next active render receives the latest timeline.
+    if (!previous.active && !next.active) {
+        return true;
+    }
+
+    const previousEntries = Object.entries(previous) as Array<
+        [keyof ChatTimelineProps, ChatTimelineProps[keyof ChatTimelineProps]]
+    >;
+    return previousEntries.every(([key, value]) => Object.is(value, next[key]));
+}
+
 const ChatTimeline = memo(function ChatTimeline({
+    active,
     canRenderFileReference,
     chatFontFamily,
     chatFontSize,
@@ -2392,6 +2683,7 @@ const ChatTimeline = memo(function ChatTimeline({
     worktreeId,
 }: ChatTimelineProps) {
     useRenderProbe("ChatTimeline", {
+        active,
         historyRows: historyRows.length,
         isStreaming,
         rows: historyRows.length + (liveTailRow ? 1 : 0),
@@ -2422,6 +2714,7 @@ const ChatTimeline = memo(function ChatTimeline({
                         }}
                     >
                         <ChatTimelineHistory
+                            active={active}
                             canRenderFileReference={
                                 canRenderFileReference
                             }
@@ -2447,6 +2740,7 @@ const ChatTimeline = memo(function ChatTimeline({
                             projectId={projectId}
                             resolveFileReference={resolveFileReference}
                             scrollRef={scrollRef}
+                            sessionId={sessionId}
                             shouldPreserveVirtualMeasureAnchor={
                                 shouldPreserveVirtualMeasureAnchor
                             }
@@ -2488,7 +2782,7 @@ const ChatTimeline = memo(function ChatTimeline({
             </div>
         </ToolExpansionStoreProvider>
     );
-});
+}, areChatTimelinePropsEqual);
 
 ChatTimeline.displayName = "ChatTimeline";
 
@@ -2537,6 +2831,7 @@ function ChatJumpToBottomButton(props: {
 }
 
 type ChatTimelineHistoryProps = {
+    readonly active: boolean;
     readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
@@ -2571,12 +2866,14 @@ type ChatTimelineHistoryProps = {
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
+    readonly sessionId: string;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly worktreeId: string | null;
 };
 
 const ChatTimelineHistory = memo(function ChatTimelineHistory({
+    active,
     canRenderFileReference,
     chatFontFamily,
     chatFontSize,
@@ -2594,6 +2891,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     projectId,
     resolveFileReference,
     scrollRef,
+    sessionId,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
     worktreeId,
@@ -2637,6 +2935,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
 
     return (
         <ChatTimelineHistoryRows
+            active={active}
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             historyRows={historyRows}
@@ -2646,6 +2945,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             onVirtualResizeStart={onVirtualResizeStart}
             renderRow={renderRow}
             scrollRef={scrollRef}
+            sessionId={sessionId}
             shouldPreserveVirtualMeasureAnchor={
                 shouldPreserveVirtualMeasureAnchor
             }

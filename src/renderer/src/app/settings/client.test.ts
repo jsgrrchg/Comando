@@ -37,6 +37,7 @@ function createAppearanceSettings(
     return {
         agentsSidebarScale: 1,
         boostCodeContrast: true,
+        chromeTransparency: 45,
         fileTreeScale: 1,
         stickyFoldersEnabled: true,
         themeMode: "system",

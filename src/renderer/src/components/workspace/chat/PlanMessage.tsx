@@ -4,10 +4,12 @@ import type { AiPlan, AiPlanEntry } from "@shared/ipc";
 
 /* ─── Status helpers ─── */
 
+const DONE_COLOR = "#84cc16";
+
 function getStatusDotColor(status: AiPlanEntry["status"]): string {
     switch (status) {
         case "completed":
-            return "#84cc16";
+            return DONE_COLOR;
         case "in_progress":
             return "var(--color-accent)";
         case "pending":
@@ -15,15 +17,28 @@ function getStatusDotColor(status: AiPlanEntry["status"]): string {
     }
 }
 
-function getPlanStatusLabel(entries: readonly AiPlanEntry[]): string {
+type PlanTone = "done" | "active" | "planned";
+
+function getPlanTone(entries: readonly AiPlanEntry[]): PlanTone {
     const completed = entries.filter((e) => e.status === "completed").length;
     const total = entries.length;
-    if (completed === total) return "All Done";
-    if (completed > 0) return "In Progress";
-    const hasInProgress = entries.some((e) => e.status === "in_progress");
-    if (hasInProgress) return "In Progress";
-    return "Planned";
+    if (total > 0 && completed === total) return "done";
+    if (completed > 0) return "active";
+    if (entries.some((e) => e.status === "in_progress")) return "active";
+    return "planned";
 }
+
+const PLAN_TONE_LABEL: Record<PlanTone, string> = {
+    done: "All Done",
+    active: "In Progress",
+    planned: "Planned",
+};
+
+const PLAN_TONE_COLOR: Record<PlanTone, string> = {
+    done: DONE_COLOR,
+    active: "var(--color-accent)",
+    planned: "var(--color-text-secondary)",
+};
 
 /* ─── Component ─── */
 
@@ -41,7 +56,8 @@ export function PlanMessage({
         (e) => e.status === "completed",
     ).length;
     const totalCount = plan.entries.length;
-    const statusLabel = getPlanStatusLabel(plan.entries);
+    const tone = getPlanTone(plan.entries);
+    const toneColor = PLAN_TONE_COLOR[tone];
     const title = plan.title ?? "Plan";
 
     return (
@@ -49,15 +65,15 @@ export function PlanMessage({
             className="min-w-0 max-w-full overflow-hidden rounded-xl"
             style={{
                 backgroundColor:
-                    "color-mix(in srgb, var(--color-bg-tertiary) 84%, transparent)",
-                border: "1px solid color-mix(in srgb, var(--color-border) 88%, transparent)",
+                    "color-mix(in srgb, var(--color-bg-tertiary) 78%, transparent)",
+                border: "1px solid color-mix(in srgb, var(--color-border) 76%, transparent)",
             }}
         >
             {/* Header */}
-            <div className="flex items-center gap-1 px-1 py-1">
+            <div className="flex items-center gap-1.5 px-2.5 py-2">
                 <button
                     aria-expanded={expanded}
-                    className="flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-1.5 py-0.5 text-left"
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
                     onClick={() => {
                         if (canExpand) {
                             setExpanded((current) => !current);
@@ -67,52 +83,87 @@ export function PlanMessage({
                         background: "none",
                         border: "none",
                         cursor: canExpand ? "pointer" : "default",
+                        padding: 0,
                     }}
                     type="button"
                 >
                     <span
-                        className="inline-flex shrink-0 items-center justify-center rounded-md px-1.5 py-0.5 text-xs"
-                        style={{
-                            backgroundColor:
-                                "color-mix(in srgb, var(--color-bg-secondary) 74%, transparent)",
-                            border: "1px solid color-mix(in srgb, var(--color-border) 82%, transparent)",
-                            color: "var(--color-text-secondary)",
-                            fontWeight: 500,
-                        }}
+                        className="inline-grid shrink-0 place-items-center"
+                        style={{ height: 16, width: 16 }}
                     >
-                        {canExpand ? (expanded ? "▾" : "▸") : "•"}
+                        {canExpand ? (
+                            <svg
+                                aria-hidden="true"
+                                fill="none"
+                                height="10"
+                                style={{
+                                    color: "var(--color-text-secondary)",
+                                    opacity: 0.75,
+                                    transform: expanded
+                                        ? "rotate(0deg)"
+                                        : "rotate(-90deg)",
+                                    transition: "transform 160ms ease",
+                                }}
+                                viewBox="0 0 16 16"
+                                width="10"
+                            >
+                                <path
+                                    d="M4.5 6.5 8 10l3.5-3.5"
+                                    stroke="currentColor"
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    strokeWidth="1.6"
+                                />
+                            </svg>
+                        ) : (
+                            <span
+                                style={{
+                                    background: "var(--color-text-secondary)",
+                                    borderRadius: "50%",
+                                    display: "block",
+                                    height: 4,
+                                    opacity: 0.6,
+                                    width: 4,
+                                }}
+                            />
+                        )}
                     </span>
                     <span
-                        className="min-w-0 flex-1 font-medium"
+                        className="min-w-0 flex-1 truncate"
                         style={{
-                            color: "var(--color-text-secondary)",
-                            fontSize: "0.875rem",
+                            color: "var(--color-text-primary)",
+                            fontSize: "0.8125rem",
+                            fontWeight: 600,
                         }}
                     >
                         {title}
                     </span>
                     <span
+                        className="shrink-0 rounded-full"
                         style={{
-                            color: "var(--color-text-secondary)",
-                            fontSize: "0.76em",
+                            background: `color-mix(in srgb, ${toneColor} 16%, transparent)`,
+                            color: toneColor,
+                            fontSize: "0.7em",
+                            fontWeight: 500,
+                            padding: "2px 8px",
                         }}
                     >
-                        {statusLabel}
+                        {PLAN_TONE_LABEL[tone]}
                     </span>
                 </button>
                 {onDismiss ? (
                     <button
                         aria-label="Dismiss plan banner"
-                        className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md"
+                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md"
                         onClick={onDismiss}
                         style={{
                             background: "transparent",
                             border: "none",
                             color: "var(--color-text-secondary)",
                             cursor: "pointer",
-                            fontSize: 14,
+                            fontSize: 13,
                             lineHeight: 1,
-                            opacity: 0.72,
+                            opacity: 0.6,
                             transition:
                                 "opacity 140ms ease, background-color 140ms ease",
                         }}
@@ -126,22 +177,11 @@ export function PlanMessage({
 
             {/* Entries */}
             {expanded ? (
-                <div
-                    style={{
-                        borderTop:
-                            "1px solid color-mix(in srgb, var(--color-border) 72%, transparent)",
-                    }}
-                >
+                <div className="flex flex-col gap-1 px-2.5 pb-2">
                     {plan.entries.map((entry, i) => (
                         <div
-                            className="flex min-w-0 items-start gap-2.5 px-2.5 py-1.5"
+                            className="flex min-w-0 items-start gap-2.5 py-0.5"
                             key={`${entry.content}-${i}`}
-                            style={{
-                                borderBottom:
-                                    i < plan.entries.length - 1
-                                        ? "1px solid color-mix(in srgb, var(--color-border) 72%, transparent)"
-                                        : undefined,
-                            }}
                         >
                             <span
                                 className="mt-1.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full"
@@ -151,7 +191,7 @@ export function PlanMessage({
                                     ),
                                     opacity:
                                         entry.status === "completed"
-                                            ? 0.9
+                                            ? 0.85
                                             : 0.8,
                                 }}
                             />
@@ -165,7 +205,7 @@ export function PlanMessage({
                                     fontSize: "12px",
                                     lineHeight: 1.45,
                                     opacity:
-                                        entry.status === "completed" ? 0.74 : 1,
+                                        entry.status === "completed" ? 0.7 : 1,
                                     textDecoration:
                                         entry.status === "completed"
                                             ? "line-through"
@@ -179,15 +219,17 @@ export function PlanMessage({
                     ))}
 
                     {/* Progress footer */}
-                    <div
-                        className="px-2.5 pb-1.5 pt-0.5"
-                        style={{
-                            color: "var(--color-text-secondary)",
-                            fontSize: "0.74em",
-                            opacity: 0.68,
-                        }}
-                    >
-                        {completedCount}/{totalCount}
+                    <div className="mt-1 flex justify-end">
+                        <span
+                            style={{
+                                color: "var(--color-text-secondary)",
+                                fontSize: "0.7em",
+                                fontVariantNumeric: "tabular-nums",
+                                opacity: 0.6,
+                            }}
+                        >
+                            {completedCount}/{totalCount}
+                        </span>
                     </div>
                 </div>
             ) : null}

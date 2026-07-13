@@ -4,7 +4,12 @@ import { PassThrough } from "node:stream";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { NativeBackendClient, NativeBackendError, type NativeBackendSpawn } from "./client";
+import {
+    isNativeBackendOperationCancelled,
+    NativeBackendClient,
+    NativeBackendError,
+    type NativeBackendSpawn,
+} from "./client";
 
 beforeEach(() => {
     vi.useRealTimers();
@@ -15,6 +20,22 @@ afterEach(() => {
 });
 
 describe("NativeBackendClient", () => {
+    it("identifies expected operation cancellations", () => {
+        expect(
+            isNativeBackendOperationCancelled(
+                new NativeBackendError({
+                    code: "operation_cancelled",
+                    details: null,
+                    message: "Native search operation was cancelled.",
+                    retryable: false,
+                }),
+            ),
+        ).toBe(true);
+        expect(isNativeBackendOperationCancelled(new Error("cancelled"))).toBe(
+            false,
+        );
+    });
+
     it("resolves requests from matching responses", async () => {
         const { child, client } = createClient();
         const linePromise = readStdinLine(child);

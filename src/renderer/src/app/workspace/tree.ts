@@ -354,6 +354,10 @@ export function selectPaneTab(
                 return node;
             }
 
+            if (node.activeTabId === tabId) {
+                return node;
+            }
+
             return {
                 ...node,
                 activeTabId: tabId,
@@ -1317,12 +1321,19 @@ function replaceNode(
         return node;
     }
 
-    return {
-        ...node,
-        children: node.children.map((child) =>
-            replaceNode(child, targetId, updater),
-        ),
-    };
+    for (let index = 0; index < node.children.length; index += 1) {
+        const child = node.children[index];
+        const nextChild = replaceNode(child, targetId, updater);
+        if (nextChild === child) {
+            continue;
+        }
+
+        const nextChildren = [...node.children];
+        nextChildren[index] = nextChild;
+        return { ...node, children: nextChildren };
+    }
+
+    return node;
 }
 
 function removePane(node: WorkspaceNode, paneId: string): WorkspaceNode | null {

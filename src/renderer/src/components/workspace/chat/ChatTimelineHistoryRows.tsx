@@ -39,9 +39,11 @@ import {
 const MIN_FREEZABLE_CHAT_TIMELINE_WIDTH_PX = 240;
 
 interface ChatTimelineHistoryRowsProps {
+    readonly active?: boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly historyRows: readonly ChatTimelineRow[];
+    readonly sessionId?: string;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onVirtualResizeEnd?: () => void;
     readonly onVirtualResizeAutoFollow?: () => void;
@@ -73,9 +75,11 @@ export function resolveChatTimelineFrozenContentWidth(input: {
 
 export const ChatTimelineHistoryRows = memo(
     function ChatTimelineHistoryRows({
+        active = true,
         chatFontFamily,
         chatFontSize,
         historyRows,
+        sessionId,
         onVirtualRangeChange,
         onVirtualResizeEnd,
         onVirtualResizeAutoFollow,
@@ -111,7 +115,9 @@ export const ChatTimelineHistoryRows = memo(
             number | null
         >(null);
         const isFreezeActiveRef = useRef(false);
+        const isActiveRef = useRef(active);
         isFreezeActiveRef.current = frozenContentWidth !== null;
+        isActiveRef.current = active;
         const virtualizationCost = calculateChatTimelineVirtualizationCost(
             historyRows,
         );
@@ -153,7 +159,7 @@ export const ChatTimelineHistoryRows = memo(
             // Frozen during an active splitter drag: skip every metric/anchor
             // update so the scroll stays put. The single re-sync happens when the
             // freeze lifts (see the freeze effects below).
-            if (isFreezeActiveRef.current) {
+            if (!isActiveRef.current || isFreezeActiveRef.current) {
                 return;
             }
 
@@ -211,15 +217,19 @@ export const ChatTimelineHistoryRows = memo(
         );
 
         useLayoutEffect(() => {
-            if (!shouldVirtualize) {
+            if (!active || !shouldVirtualize) {
                 return;
             }
 
             syncLayoutMetrics();
-        }, [historyRows.length, shouldVirtualize, syncLayoutMetrics]);
+        }, [active, historyRows.length, shouldVirtualize, syncLayoutMetrics]);
 
         useEffect(() => {
-            if (!shouldVirtualize || typeof ResizeObserver === "undefined") {
+            if (
+                !active ||
+                !shouldVirtualize ||
+                typeof ResizeObserver === "undefined"
+            ) {
                 return;
             }
 
@@ -243,7 +253,7 @@ export const ChatTimelineHistoryRows = memo(
                 observer.disconnect();
                 window.removeEventListener("resize", syncLayoutMetrics);
             };
-        }, [scrollRef, shouldVirtualize, syncLayoutMetrics]);
+        }, [active, scrollRef, shouldVirtualize, syncLayoutMetrics]);
 
         useLayoutEffect(() => {
             restorePendingResizeAnchor();
@@ -264,7 +274,7 @@ export const ChatTimelineHistoryRows = memo(
         // before the first width change lands (pointerdown precedes pointermove),
         // so the pinned width matches the pre-drag layout exactly.
         useLayoutEffect(() => {
-            if (!shouldVirtualize) {
+            if (!active || !shouldVirtualize) {
                 if (virtualResizeActiveRef.current) {
                     virtualResizeActiveRef.current = false;
                     pendingVirtualResizeEndRef.current = false;
@@ -296,6 +306,7 @@ export const ChatTimelineHistoryRows = memo(
                 setFrozenContentWidth(null);
             }
         }, [
+            active,
             isResizingPanel,
             onVirtualResizeEnd,
             onVirtualResizeStart,
@@ -306,7 +317,7 @@ export const ChatTimelineHistoryRows = memo(
         // Once the freeze lifts the DOM holds the real width again, so adopt it
         // and re-anchor exactly once — instead of on every drag frame.
         useLayoutEffect(() => {
-            if (!shouldVirtualize || frozenContentWidth !== null) {
+            if (!active || !shouldVirtualize || frozenContentWidth !== null) {
                 return;
             }
 
@@ -318,6 +329,7 @@ export const ChatTimelineHistoryRows = memo(
                 onVirtualResizeEnd?.();
             }
         }, [
+            active,
             frozenContentWidth,
             onVirtualResizeEnd,
             shouldVirtualize,
@@ -446,7 +458,21 @@ export const ChatTimelineHistoryRows = memo(
                     getItemKey={getChatTimelineRowKey}
                     getItemIdentityKey={getItemIdentityKey}
                     getItemMeasurementKey={getItemMeasurementKey}
+                    geometryCacheSignature={
+                        contentMeasurementWidth > 0
+                            ? [
+                                  chatFontFamily ?? "default",
+                                  chatFontSize ?? "default",
+                                  toolActivityDefaultExpansion,
+                                  contentMeasurementWidth,
+                              ].join(":")
+                            : null
+                    }
                     items={historyRows}
+                    observeMeasurements={active}
+                    measurementCacheKey={
+                        sessionId ? `chat-timeline:${sessionId}` : undefined
+                    }
                     onRangeChange={onVirtualRangeChange}
                     onReady={handleVirtualListReady}
                     overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}

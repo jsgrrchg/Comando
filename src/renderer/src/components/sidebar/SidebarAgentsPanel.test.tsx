@@ -26,6 +26,15 @@ import {
     clearSidebarAgentsHistoryCache,
     writeSidebarAgentsHistoryCache,
 } from "./sidebarAgentsHistoryCache";
+import {
+    persistSidebarAgentsFolderState,
+    readSidebarAgentsFolderState,
+    type SidebarAgentsFolderState,
+} from "./sidebarAgentsFolderState";
+import {
+    SIDEBAR_AGENT_DRAG_EVENT,
+    type SidebarAgentDragDetail,
+} from "./sidebarAgentDragEvents";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
@@ -120,6 +129,117 @@ function createSnapshot(
     };
 }
 
+async function mountSidebarAgentsPanel(
+    sessions: readonly AiHistorySessionSummary[],
+): Promise<HTMLDivElement> {
+    writeSidebarAgentsHistoryCache(
+        "project-1",
+        "worktree-1",
+        sessions,
+        100,
+    );
+    Object.defineProperty(window, "comando", {
+        configurable: true,
+        value: {
+            checkCommandAvailability: vi.fn().mockResolvedValue({
+                found: true,
+                path: "/usr/local/bin/claude",
+            }),
+            listAiSessionHistory: vi.fn().mockResolvedValue(sessions),
+            onAiSessionSnapshot: vi.fn(() => () => undefined),
+        } satisfies Partial<ComandoApi>,
+        writable: true,
+    });
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    mountedContainers.push(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+
+    await act(async () => {
+        root.render(
+            <SidebarAgentsPanel
+                projectId="project-1"
+                worktreeId="worktree-1"
+            />,
+        );
+        await Promise.resolve();
+    });
+
+    return container;
+}
+
+function persistFolderState(
+    sessionFolderIds: Readonly<Record<string, string>> = {},
+): SidebarAgentsFolderState {
+    return persistSidebarAgentsFolderState("project-1", "worktree-1", {
+        collapsedFolderIds: [],
+        folderOrder: ["research"],
+        folders: {
+            research: {
+                createdAt: 1,
+                id: "research",
+                name: "Research",
+            },
+        },
+        sessionFolderIds,
+    });
+}
+
+function getButtonByLabel(label: string): HTMLButtonElement {
+    const button = document.body.querySelector<HTMLButtonElement>(
+        `button[aria-label="${label}"]`,
+    );
+    if (!button) {
+        throw new Error(`Expected button labeled "${label}".`);
+    }
+    return button;
+}
+
+function getFolderNameInput(container: HTMLElement): HTMLInputElement {
+    const input = container.querySelector<HTMLInputElement>(
+        'input[aria-label="Folder name"]',
+    );
+    if (!input) {
+        throw new Error("Expected folder name input.");
+    }
+    return input;
+}
+
+function updateTextInput(input: HTMLInputElement, value: string): void {
+    Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+    )?.set?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function dispatchPointerEvent(
+    target: Element,
+    type: "pointerdown" | "pointermove" | "pointerup",
+    options: {
+        readonly buttons: number;
+        readonly clientX: number;
+        readonly clientY: number;
+        readonly pointerId?: number;
+    },
+): void {
+    const event = new MouseEvent(type, {
+        bubbles: true,
+        button: type === "pointerdown" ? 0 : -1,
+        buttons: options.buttons,
+        cancelable: true,
+        clientX: options.clientX,
+        clientY: options.clientY,
+    });
+    Object.defineProperty(event, "pointerId", {
+        configurable: true,
+        value: options.pointerId ?? 1,
+    });
+    target.dispatchEvent(event);
+}
+
 describe("SidebarAgentsPanel history cache", () => {
     beforeEach(() => {
         clearSidebarAgentsHistoryCache();
@@ -177,6 +297,7 @@ describe("SidebarAgentsPanel history cache", () => {
         expect(markup).not.toContain("Use compact thread rows");
         expect(markup).not.toContain("Show thread details");
         expect(markup).toContain('data-provider-icon="codex"');
+        expect(markup).toContain("sidebar-agents-provider-slot");
         expect(markup).toContain(fullTitle);
         expect(markup).not.toContain("Assistant returns a concise answer.");
         expect(markup).toContain("sidebar-agents-compact-relative-time");
@@ -242,7 +363,7 @@ describe("SidebarAgentsPanel history cache", () => {
         expect(markup).toContain('data-provider-icon="codex"');
     });
 
-    it("shows an activity dot only for working child agents", () => {
+    it("renders activity labels at the end of active child agent rows", () => {
         const sessions = [
             createSummary({
                 runtimeSessionId: "runtime-parent",
@@ -260,6 +381,24 @@ describe("SidebarAgentsPanel history cache", () => {
                 runtimeSessionId: "runtime-child-running",
                 sessionId: "child-running",
                 title: "Running Child",
+            }),
+            createSummary({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-error",
+                sessionId: "child-error",
+                title: "Errored Child",
+            }),
+            createSummary({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-permission",
+                sessionId: "child-permission",
+                title: "Permission Child",
+            }),
+            createSummary({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-input",
+                sessionId: "child-input",
+                title: "Input Child",
             }),
         ];
         writeSidebarAgentsHistoryCache(
@@ -284,6 +423,33 @@ describe("SidebarAgentsPanel history cache", () => {
                 sessionId: "child-running",
                 status: "streaming",
                 title: "Running Child",
+            }),
+        );
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-error",
+                sessionId: "child-error",
+                status: "error",
+                title: "Errored Child",
+            }),
+        );
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-permission",
+                sessionId: "child-permission",
+                status: "waiting_permission",
+                title: "Permission Child",
+            }),
+        );
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child-input",
+                sessionId: "child-input",
+                status: "waiting_user_input",
+                title: "Input Child",
             }),
         );
         Object.defineProperty(window, "comando", {
@@ -321,15 +487,61 @@ describe("SidebarAgentsPanel history cache", () => {
         const runningItem = items.find((item) =>
             item.textContent?.includes("Running Child"),
         );
+        const erroredItem = items.find((item) =>
+            item.textContent?.includes("Errored Child"),
+        );
+        const permissionItem = items.find((item) =>
+            item.textContent?.includes("Permission Child"),
+        );
+        const inputItem = items.find((item) =>
+            item.textContent?.includes("Input Child"),
+        );
 
         expect(
-            container.querySelectorAll(".sidebar-agents-activity-dot"),
-        ).toHaveLength(1);
+            container.querySelectorAll(".sidebar-agents-activity-label"),
+        ).toHaveLength(4);
         expect(
-            finishedItem?.querySelector(".sidebar-agents-activity-dot"),
+            container.querySelector(".sidebar-agents-activity-dot"),
         ).toBeNull();
         expect(
-            runningItem?.querySelector(".sidebar-agents-activity-dot"),
+            finishedItem?.querySelector(".sidebar-agents-activity-label"),
+        ).toBeNull();
+        expect(
+            runningItem?.querySelector(".sidebar-agents-activity-label")
+                ?.textContent,
+        ).toBe("Working…");
+        expect(
+            runningItem?.querySelector(
+                ".sidebar-agents-provider-slot .sidebar-agents-activity-label",
+            ),
+        ).toBeNull();
+        expect(
+            erroredItem?.querySelector(".sidebar-agents-activity-label")
+                ?.textContent,
+        ).toBe("Error");
+        expect(
+            permissionItem?.querySelector(".sidebar-agents-activity-label")
+                ?.textContent,
+        ).toBe("Waiting permission…");
+        expect(
+            inputItem?.querySelector(".sidebar-agents-activity-label")
+                ?.textContent,
+        ).toBe("Waiting input…");
+        expect(
+            runningItem?.querySelector(".sidebar-agents-main-line")
+                ?.lastElementChild?.classList.contains(
+                    "sidebar-agents-activity-label",
+                ),
+        ).toBe(true);
+        expect(
+            runningItem?.querySelector(
+                ".sidebar-agents-compact-relative-time",
+            ),
+        ).toBeNull();
+        expect(
+            finishedItem?.querySelector(
+                ".sidebar-agents-compact-relative-time",
+            ),
         ).not.toBeNull();
     });
 
@@ -367,6 +579,272 @@ describe("SidebarAgentsPanel history cache", () => {
         expect(markup).toContain("Claude Code 1");
         expect(markup).toContain("Claude Code");
         expect(markup).toContain('data-provider-icon="claude"');
+    });
+});
+
+describe("SidebarAgentsPanel folders", () => {
+    beforeEach(() => {
+        clearSidebarAgentsHistoryCache();
+        resetClaudeCodeSidebarSessionsForTests();
+        resetAiStoreRuntimeBuffersForTests();
+        useAiStore.setState((state) => ({
+            ...state,
+            runtimeCatalogById: {},
+            runtimeStatusById: {},
+            sessions: {},
+        }));
+        Object.defineProperty(globalThis, "localStorage", {
+            configurable: true,
+            value: new MemoryStorage(),
+            writable: true,
+        });
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+        globalThis.localStorage.clear();
+    });
+
+    it("creates a folder from the toolbar and renames it from its menu", async () => {
+        const container = await mountSidebarAgentsPanel([createSummary()]);
+
+        await act(async () => {
+            getButtonByLabel("New folder").click();
+            await Promise.resolve();
+        });
+
+        let input = getFolderNameInput(container);
+        expect(input.value).toBe("New Folder");
+        act(() => {
+            updateTextInput(input, "  Research   plans  ");
+        });
+        act(() => {
+            input.dispatchEvent(
+                new KeyboardEvent("keydown", {
+                    bubbles: true,
+                    key: "Enter",
+                }),
+            );
+        });
+
+        let folderHeader = container.querySelector<HTMLElement>(
+            "[data-agent-folder-header]",
+        );
+        expect(folderHeader?.textContent).toContain("Research plans");
+
+        await act(async () => {
+            folderHeader?.dispatchEvent(
+                new MouseEvent("contextmenu", {
+                    bubbles: true,
+                    clientX: 20,
+                    clientY: 20,
+                }),
+            );
+            await Promise.resolve();
+        });
+        await act(async () => {
+            getButtonByLabel("Rename Folder").click();
+            await Promise.resolve();
+        });
+
+        input = getFolderNameInput(container);
+        act(() => {
+            updateTextInput(input, "Planning");
+        });
+        act(() => {
+            input.dispatchEvent(
+                new KeyboardEvent("keydown", {
+                    bubbles: true,
+                    key: "Enter",
+                }),
+            );
+        });
+
+        folderHeader = container.querySelector<HTMLElement>(
+            "[data-agent-folder-header]",
+        );
+        expect(folderHeader?.textContent).toContain("Planning");
+        const persisted = readSidebarAgentsFolderState(
+            "project-1",
+            "worktree-1",
+        );
+        expect(persisted.folderOrder).toHaveLength(1);
+        expect(
+            persisted.folders[persisted.folderOrder[0] ?? ""]?.name,
+        ).toBe("Planning");
+    });
+
+    it("moves a root session and its hierarchy from the context submenu", async () => {
+        persistFolderState();
+        const sessions = [
+            createSummary({
+                runtimeSessionId: "runtime-parent",
+                sessionId: "parent-session",
+                title: "Parent Thread",
+            }),
+            createSummary({
+                parentSessionId: "runtime-parent",
+                runtimeSessionId: "runtime-child",
+                sessionId: "child-session",
+                title: "Child Agent",
+            }),
+        ];
+        const container = await mountSidebarAgentsPanel(sessions);
+        const parentRow = container.querySelector<HTMLElement>(
+            '.sidebar-agents-row[title="Parent Thread"]',
+        );
+        expect(parentRow).not.toBeNull();
+
+        await act(async () => {
+            parentRow?.dispatchEvent(
+                new MouseEvent("contextmenu", {
+                    bubbles: true,
+                    clientX: 20,
+                    clientY: 20,
+                }),
+            );
+            await Promise.resolve();
+        });
+        act(() => {
+            getButtonByLabel("Move to Folder").click();
+        });
+        await act(async () => {
+            getButtonByLabel("Research").click();
+            await Promise.resolve();
+        });
+
+        expect(
+            readSidebarAgentsFolderState("project-1", "worktree-1")
+                .sessionFolderIds,
+        ).toEqual({ "parent-session": "research" });
+        const folder = container.querySelector<HTMLElement>(
+            '[data-agent-folder-id="research"]',
+        );
+        expect(folder?.textContent).toContain("Parent Thread");
+        expect(folder?.textContent).toContain("Child Agent");
+    });
+
+    it("collapses a folder and deleting it returns its session to All", async () => {
+        persistFolderState({ "session-1": "research" });
+        const container = await mountSidebarAgentsPanel([createSummary()]);
+        const folderHeader = container.querySelector<HTMLElement>(
+            '[data-agent-folder-header="research"]',
+        );
+        expect(folderHeader?.getAttribute("aria-expanded")).toBe("true");
+
+        act(() => {
+            folderHeader?.click();
+        });
+        expect(folderHeader?.getAttribute("aria-expanded")).toBe("false");
+        expect(
+            container.querySelector(
+                '[data-agent-folder-id="research"] .sidebar-agents-row',
+            ),
+        ).toBeNull();
+
+        await act(async () => {
+            folderHeader?.dispatchEvent(
+                new MouseEvent("contextmenu", {
+                    bubbles: true,
+                    clientX: 20,
+                    clientY: 20,
+                }),
+            );
+            await Promise.resolve();
+        });
+        await act(async () => {
+            getButtonByLabel("Delete Folder").click();
+            await Promise.resolve();
+        });
+
+        expect(
+            container.querySelector('[data-agent-folder-id="research"]'),
+        ).toBeNull();
+        const allSection = container.querySelector<HTMLElement>(
+            "[data-agent-unfiled-drop-zone]",
+        );
+        expect(allSection?.textContent).toContain("Cached Session");
+        expect(
+            readSidebarAgentsFolderState("project-1", "worktree-1")
+                .sessionFolderIds,
+        ).toEqual({});
+    });
+
+    it("consumes an internal folder drop and emits drag cancel", async () => {
+        persistFolderState();
+        const container = await mountSidebarAgentsPanel([createSummary()]);
+        const folder = container.querySelector<HTMLElement>(
+            '[data-agent-folder-id="research"]',
+        );
+        const row = container.querySelector<HTMLElement>(
+            '.sidebar-agents-row[title="Cached Session"]',
+        );
+        if (!folder || !row) {
+            throw new Error("Expected folder and session row.");
+        }
+
+        const ownElementFromPointDescriptor = Object.getOwnPropertyDescriptor(
+            document,
+            "elementFromPoint",
+        );
+        Object.defineProperty(document, "elementFromPoint", {
+            configurable: true,
+            value: () => folder,
+        });
+        const phases: string[] = [];
+        const handleDrag = (event: Event) => {
+            phases.push(
+                (event as CustomEvent<SidebarAgentDragDetail>).detail.phase,
+            );
+        };
+        window.addEventListener(SIDEBAR_AGENT_DRAG_EVENT, handleDrag);
+
+        try {
+            act(() => {
+                dispatchPointerEvent(row, "pointerdown", {
+                    buttons: 1,
+                    clientX: 0,
+                    clientY: 0,
+                });
+            });
+            act(() => {
+                dispatchPointerEvent(row, "pointermove", {
+                    buttons: 1,
+                    clientX: 10,
+                    clientY: 0,
+                });
+            });
+            await act(async () => {
+                dispatchPointerEvent(row, "pointerup", {
+                    buttons: 0,
+                    clientX: 10,
+                    clientY: 0,
+                });
+                await Promise.resolve();
+            });
+        } finally {
+            window.removeEventListener(SIDEBAR_AGENT_DRAG_EVENT, handleDrag);
+            if (ownElementFromPointDescriptor) {
+                Object.defineProperty(
+                    document,
+                    "elementFromPoint",
+                    ownElementFromPointDescriptor,
+                );
+            } else {
+                Reflect.deleteProperty(document, "elementFromPoint");
+            }
+        }
+
+        expect(phases).toEqual(["start", "cancel"]);
+        expect(
+            container.querySelector(
+                '[data-agent-folder-id="research"] .sidebar-agents-row[title="Cached Session"]',
+            ),
+        ).not.toBeNull();
+        expect(
+            readSidebarAgentsFolderState("project-1", "worktree-1")
+                .sessionFolderIds,
+        ).toEqual({ "session-1": "research" });
     });
 });
 

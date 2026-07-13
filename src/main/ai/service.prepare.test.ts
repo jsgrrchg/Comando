@@ -9,6 +9,7 @@ import type {
 } from "@shared/ipc";
 
 import type { NativeAiGateway } from "./contracts";
+import { NativeBackendError } from "../native-backend/client";
 
 const readyStatus: AiRuntimeStatus = {
     authMethod: "chatgpt",
@@ -433,6 +434,79 @@ describe("AiService prepareSession", () => {
             configOptions: runtimeCatalog.configOptions,
             modelId: "gpt-5.5",
         });
+    });
+
+    it("projects saved selections over the persisted runtime catalog", async () => {
+        const runtimeCatalog = {
+            availableCommands: [],
+            configOptions: [
+                createModelConfig("gpt-5.4-mini"),
+                createReasoningConfig("low"),
+            ],
+            modeId: "default",
+            modes: [
+                {
+                    description: null,
+                    id: "default",
+                    name: "Default",
+                },
+                {
+                    description: null,
+                    id: "full-access",
+                    name: "Full Access",
+                },
+            ],
+            modelId: "gpt-5.4-mini",
+            models: [
+                {
+                    description: null,
+                    id: "gpt-5.4-mini",
+                    name: "GPT 5.4 Mini",
+                },
+                {
+                    description: null,
+                    id: "gpt-5.5",
+                    name: "GPT 5.5",
+                },
+            ],
+        };
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                getRuntimeStatus: vi.fn(() => Promise.resolve(readyStatus)),
+            }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => runtimeCatalog),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {
+                        model: "gpt-5.5",
+                        reasoning_effort: "high",
+                    },
+                    modeId: "full-access",
+                    modelId: "gpt-5.5",
+                })),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+        });
+
+        const status = await service.getRuntimeStatus("codex");
+
+        expect(status).toMatchObject({
+            modeId: "full-access",
+            modelId: "gpt-5.5",
+        });
+        expect(
+            status.configOptions?.find((option) => option.id === "model")
+                ?.value,
+        ).toBe("gpt-5.5");
+        expect(
+            status.configOptions?.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("high");
     });
 
     it("normalizes restored active snapshots before native startup", async () => {
@@ -982,6 +1056,108 @@ describe("AiService prepareSession", () => {
                 ?.value,
         ).toBe("gpt-5.5");
         expect(onSessionSnapshot.mock.lastCall?.[0]).toBe("window-1");
+    });
+
+    it("reprepares a live session once when a control mutation loses its runtime session", async () => {
+        const snapshot = createSnapshot({
+            configOptions: [createReasoningConfig("low")],
+            runtimeSessionId: "runtime-session-1",
+        });
+        const prepareSession = vi
+            .fn<NativeAiGateway["prepareSession"]>()
+            .mockResolvedValueOnce(snapshot)
+            .mockResolvedValueOnce({
+                ...snapshot,
+                runtimeSessionId: "runtime-session-2",
+            });
+        const setSessionConfigOption = vi
+            .fn<NativeAiGateway["setSessionConfigOption"]>()
+            .mockRejectedValueOnce(
+                new NativeBackendError({
+                    code: "ai_session_not_found",
+                    details: null,
+                    message: "The AI session was not found.",
+                    retryable: false,
+                }),
+            )
+            .mockResolvedValueOnce(undefined);
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession,
+                setSessionConfigOption,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        await service.setSessionConfigOption({
+            optionId: "reasoning_effort",
+            sessionId: "session-1",
+            value: "high",
+        });
+
+        expect(prepareSession).toHaveBeenCalledTimes(2);
+        expect(setSessionConfigOption).toHaveBeenCalledTimes(2);
+        expect(await service.getSessionSnapshot("session-1")).toMatchObject({
+            runtimeSessionId: "runtime-session-2",
+        });
+    });
+
+    it("does not reprepare a live session for another control mutation failure", async () => {
+        const snapshot = createSnapshot({
+            configOptions: [createReasoningConfig("low")],
+            runtimeSessionId: "runtime-session-1",
+        });
+        const prepareSession = vi
+            .fn<NativeAiGateway["prepareSession"]>()
+            .mockResolvedValue(snapshot);
+        const setSessionConfigOption = vi
+            .fn<NativeAiGateway["setSessionConfigOption"]>()
+            .mockRejectedValue(
+                new NativeBackendError({
+                    code: "ai_runtime_exited",
+                    details: null,
+                    message: "The runtime exited.",
+                    retryable: false,
+                }),
+            );
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession,
+                setSessionConfigOption,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        await expect(
+            service.setSessionConfigOption({
+                optionId: "reasoning_effort",
+                sessionId: "session-1",
+                value: "high",
+            }),
+        ).rejects.toThrow("The runtime exited.");
+
+        expect(prepareSession).toHaveBeenCalledTimes(1);
+        expect(setSessionConfigOption).toHaveBeenCalledTimes(1);
     });
 
     it("keeps live reasoning config option changes in the main snapshot", async () => {

@@ -13,6 +13,7 @@ const rootDir = fileURLToPath(new URL("../../", import.meta.url));
 const MIN_VISIBLE_RESTORE_OVERLAP = 80;
 
 export const DESKTOP_TITLE_BAR_HEIGHT = 40;
+export const MAC_MAIN_TRAFFIC_LIGHT_POSITION = { x: 14, y: 12 };
 
 type WindowKind = "main" | "settings";
 
@@ -118,6 +119,11 @@ function createBaseWindow(options: {
     const usesNativeTransparency = options.transparencyEnabled !== false;
     const isAcrylic = isWindows && usesNativeTransparency;
     const isMacVibrant = isMac && usesNativeTransparency;
+    const isMainWindow = options.kind === "main";
+    const trafficLightPosition = isMac
+        ? (options.trafficLightPosition ??
+          (isMainWindow ? MAC_MAIN_TRAFFIC_LIGHT_POSITION : { x: 14, y: 14 }))
+        : undefined;
 
     const titleBarOverlay = hasNativeTitleBarOverlay
         ? resolveDesktopTitleBarOverlay()
@@ -138,13 +144,11 @@ function createBaseWindow(options: {
         backgroundMaterial: isAcrylic ? "acrylic" : undefined,
         titleBarOverlay,
         titleBarStyle: isMac
-            ? "hiddenInset"
+            ? "hidden"
             : hasNativeTitleBarOverlay
               ? "hidden"
               : "default",
-        trafficLightPosition: isMac
-            ? (options.trafficLightPosition ?? { x: 18, y: 18 })
-            : undefined,
+        trafficLightPosition,
         vibrancy: isMacVibrant ? "sidebar" : undefined,
         visualEffectState: isMacVibrant ? "active" : undefined,
         webPreferences: {
@@ -165,6 +169,14 @@ function createBaseWindow(options: {
 
         return { action: "deny" };
     });
+
+    if (trafficLightPosition) {
+        window.webContents.on("did-finish-load", () => {
+            if (!window.isDestroyed()) {
+                window.setWindowButtonPosition(trafficLightPosition);
+            }
+        });
+    }
 
     if (process.env.ELECTRON_RENDERER_URL) {
         const url = new URL(process.env.ELECTRON_RENDERER_URL);
