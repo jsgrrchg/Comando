@@ -416,11 +416,11 @@
 
 .project-context-tabs {
     display: flex;
-    width: max-content;
+    width: auto;
     min-width: 0;
-    max-width: min(72vw, 980px, calc(100% - 40px));
+    max-width: none;
     height: 28px;
-    flex: 0 1 auto;
+    flex: 1 1 auto;
     align-items: center;
     gap: 4px;
     overflow-x: auto;
@@ -437,7 +437,7 @@
     min-width: 180px;
     max-width: 364px;
     height: 26px;
-    flex: 0 1 286px;
+    flex: 0 0 286px;
     align-items: center;
     overflow: hidden;
     border: 1px solid
