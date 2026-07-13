@@ -434,10 +434,10 @@
 .project-context-tab-shell {
     position: relative;
     display: flex;
-    min-width: 120px;
-    max-width: 280px;
+    min-width: 156px;
+    max-width: 364px;
     height: 26px;
-    flex: 0 1 220px;
+    flex: 0 1 286px;
     align-items: center;
     overflow: hidden;
     border: 1px solid
