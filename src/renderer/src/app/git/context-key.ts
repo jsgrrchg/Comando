@@ -7,6 +7,18 @@ export function getPrimaryWorktreeId(projectId: string): string {
     return `${projectId}:primary`;
 }
 
+export function resolveProjectContextWorktreeId(
+    projectId: string,
+    contextWorktreeId: string | null,
+    activeGitWorktreeId: string | null,
+): string {
+    return (
+        contextWorktreeId ??
+        activeGitWorktreeId ??
+        getPrimaryWorktreeId(projectId)
+    );
+}
+
 export function normalizeGitWorktreeIdForContext(
     projectId: string,
     worktreeId: string | null,

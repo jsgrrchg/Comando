@@ -41,11 +41,13 @@ import type {
     PersistedShellState,
     PersistedWindowState,
     PersistenceSnapshot,
+    PersistedWorkspaceSnapshot,
     ProjectSettingsSnapshot,
     SettingsSnapshot,
     ThemeMode,
     ThemePreset,
     WorkspaceNode,
+    WorkspaceNavigationSnapshot,
     WorkspaceSnapshot,
 } from "@shared/ipc";
 
@@ -721,7 +723,9 @@ class NativeWorkspaceClient implements WorkspaceGateway {
         this.#store = store;
     }
 
-    async loadSnapshot(workspaceId: string): Promise<WorkspaceSnapshot> {
+    async loadSnapshot(
+        workspaceId: string,
+    ): Promise<PersistedWorkspaceSnapshot> {
         return await this.#store.load(
             workspaceKey(workspaceId),
             createDefaultWorkspaceSnapshot(),
@@ -730,7 +734,7 @@ class NativeWorkspaceClient implements WorkspaceGateway {
 
     async saveSnapshot(
         workspaceId: string,
-        snapshot: WorkspaceSnapshot,
+        snapshot: WorkspaceNavigationSnapshot,
     ): Promise<void> {
         await this.#store.saveNow(workspaceKey(workspaceId), snapshot);
     }

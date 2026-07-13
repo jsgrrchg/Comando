@@ -86,6 +86,10 @@ describe("createNativeAppDataClient", () => {
         expect(windows[0]?.windowContext?.workspaceId).toBe("workspace-1");
 
         const workspace = await client.workspace.loadSnapshot("workspace-1");
+        expect("version" in workspace).toBe(false);
+        if ("version" in workspace) {
+            throw new Error("Expected the migrated legacy workspace layout.");
+        }
         expect(workspace.activePaneId).toBe("pane-1");
         expect(workspace.tabs).toHaveLength(1);
         expect(workspace.tabs[0]?.title).toBe("README.md");

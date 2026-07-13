@@ -2069,11 +2069,35 @@ export type WorkspaceTab =
     | WorkspaceReviewTab
     | WorkspaceTerminalTab;
 
-export interface WorkspaceSnapshot {
+export interface WorkspaceLayoutSnapshot {
     readonly activePaneId: string;
     readonly rootNode: WorkspaceNode;
     readonly tabs: readonly WorkspaceTab[];
 }
+
+// Kept as an alias while persisted v1 layouts are migrated to navigation v2.
+export type WorkspaceSnapshot = WorkspaceLayoutSnapshot;
+
+export type WorkspaceContextKey = string;
+
+export interface PersistedWorkspaceContext {
+    readonly key: WorkspaceContextKey;
+    readonly lastActivatedAt: string;
+    readonly projectId: string;
+    readonly workspace: WorkspaceLayoutSnapshot;
+    readonly worktreeId: string | null;
+}
+
+export interface WorkspaceNavigationSnapshot {
+    readonly activeContextKey: WorkspaceContextKey | null;
+    readonly contexts: readonly PersistedWorkspaceContext[];
+    readonly openContextKeys: readonly WorkspaceContextKey[];
+    readonly version: 2;
+}
+
+export type PersistedWorkspaceSnapshot =
+    | WorkspaceLayoutSnapshot
+    | WorkspaceNavigationSnapshot;
 
 export interface PersistedChatSessionState {
     readonly draft: string;
@@ -3118,8 +3142,10 @@ export interface ComandoApi {
         input: OpenProjectEntryExternallyInput,
     ) => Promise<void>;
     revealProjectEntry: (input: RevealProjectEntryInput) => Promise<void>;
-    getWorkspaceSnapshot: () => Promise<WorkspaceSnapshot>;
-    saveWorkspaceSnapshot: (snapshot: WorkspaceSnapshot) => Promise<void>;
+    getWorkspaceSnapshot: () => Promise<PersistedWorkspaceSnapshot>;
+    saveWorkspaceSnapshot: (
+        snapshot: WorkspaceNavigationSnapshot,
+    ) => Promise<void>;
     notifyFileBuffer: (input: FileBufferNotificationInput) => Promise<void>;
     getChatSessionState: (
         sessionId: string,

@@ -171,7 +171,8 @@ import {
     type TrashProjectEntryInput,
     type TsconfigResolutionSnapshot,
     type WriteTerminalInput,
-    type WorkspaceSnapshot,
+    type PersistedWorkspaceSnapshot,
+    type WorkspaceNavigationSnapshot,
 } from "@shared/ipc";
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -542,7 +543,7 @@ const comandoApi: ComandoApi = {
             await ipcRenderer.invoke(IPC_CHANNELS.getSystemTheme),
         ),
     getWorkspaceSnapshot: async () =>
-        assertIpcObject<WorkspaceSnapshot>(
+        assertIpcObject<PersistedWorkspaceSnapshot>(
             IPC_CHANNELS.getWorkspaceSnapshot,
             await ipcRenderer.invoke(IPC_CHANNELS.getWorkspaceSnapshot),
         ),
@@ -1265,7 +1266,7 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.removeProject, projectId),
     resizeTerminalSession: (input: ResizeTerminalSessionInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.resizeTerminalSession, input),
-    saveWorkspaceSnapshot: (snapshot: WorkspaceSnapshot) =>
+    saveWorkspaceSnapshot: (snapshot: WorkspaceNavigationSnapshot) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveWorkspaceSnapshot, snapshot),
     notifyFileBuffer: (input: FileBufferNotificationInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.notifyFileBuffer, input),

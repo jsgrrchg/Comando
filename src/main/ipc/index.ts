@@ -153,7 +153,7 @@ import {
     type TsconfigResolutionSnapshot,
     type WindowContextSnapshot,
     type WriteTerminalInput,
-    type WorkspaceSnapshot,
+    type WorkspaceNavigationSnapshot,
 } from "@shared/ipc";
 import { normalizePathKey as normalizeSharedPathKey } from "@shared/path-identity";
 
@@ -1645,7 +1645,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     });
     ipcMain.handle(
         IPC_CHANNELS.saveWorkspaceSnapshot,
-        (event, snapshot: WorkspaceSnapshot) => {
+        (event, snapshot: WorkspaceNavigationSnapshot) => {
             const context = requireWindowContext(event.sender, "main");
             return options.workspaceService.saveSnapshot(
                 context.workspaceId!,
