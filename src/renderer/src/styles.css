@@ -2297,12 +2297,39 @@ button {
     content: "·";
 }
 
+/* Sized and boxed as its own hit target so the disclosure affordance reads
+   clearly at a glance instead of blending into the "· branch" label, without
+   growing the tab row (the pill is padding on the icon itself, not extra
+   height on the button). */
 .sidebar-git-scope-trigger--titlebar > svg {
-    width: 10px;
-    height: 10px;
+    box-sizing: content-box;
+    width: 12px;
+    height: 12px;
     flex: 0 0 auto;
-    margin-right: 1px;
-    color: var(--color-text-secondary);
+    margin-right: 2px;
+    padding: 3px;
+    border-radius: 5px;
+    color: color-mix(in srgb, var(--color-text-secondary) 70%, var(--color-text-primary));
+    background: transparent;
+    transition:
+        background-color 120ms ease,
+        color 120ms ease,
+        transform 75ms ease;
+}
+
+.sidebar-git-scope-trigger--titlebar:hover > svg,
+.sidebar-git-scope-trigger--titlebar:focus-visible > svg,
+.sidebar-git-scope-trigger--titlebar.sidebar-git-scope-trigger--open > svg {
+    color: var(--color-text-primary);
+    background: color-mix(in srgb, var(--color-text-primary) 12%, transparent);
+}
+
+/* Same light "press" feedback the other icon buttons in this menu use
+   (see .sidebar-git-scope-menu__new-branch-button:active), scoped to the
+   pill instead of the whole tab so the rest of the tab stays still. */
+.sidebar-git-scope-trigger--titlebar:active > svg {
+    background: color-mix(in srgb, var(--color-text-primary) 16%, transparent);
+    transform: translateY(1px) scale(0.92);
 }
 
 .sidebar-git-scope-menu {
