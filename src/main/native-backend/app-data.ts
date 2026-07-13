@@ -1784,6 +1784,7 @@ function createDefaultSettingsSnapshot(): CompleteSettingsSnapshot {
         appearance: {
             agentsSidebarScale: AGENTS_SIDEBAR_SCALE_DEFAULT,
             boostCodeContrast: true,
+            chromeTransparency: 45,
             fileTreeScale: FILE_TREE_SCALE_DEFAULT,
             stickyFoldersEnabled: true,
             themeMode: "system",

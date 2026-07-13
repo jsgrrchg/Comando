@@ -268,6 +268,7 @@
 
 :root {
     color-scheme: light;
+    --chrome-background-opacity: calc(100% - var(--chrome-transparency, 45%));
     font-family: var(--font-sans);
     --sidebar-list-scale: 1;
     --agents-sidebar-scale: var(--sidebar-list-scale);
@@ -359,7 +360,7 @@
     --desktop-titlebar-height: 40px;
     --windows-acrylic-tint: color-mix(
         in srgb,
-        var(--color-bg-panel) 55%,
+        var(--color-bg-panel) var(--chrome-background-opacity),
         transparent
     );
     background: transparent;
@@ -373,6 +374,16 @@
 :root[data-platform="win32"] .desktop-titlebar,
 :root[data-platform="win32"] .settings-chrome {
     background: var(--windows-acrylic-tint);
+}
+
+:root[data-platform="darwin"] .app-sidebar,
+:root[data-platform="darwin"] .desktop-titlebar,
+:root[data-platform="darwin"] .settings-chrome {
+    background: color-mix(
+        in srgb,
+        var(--color-bg-panel) var(--chrome-background-opacity),
+        transparent
+    );
 }
 
 :root[data-transparency-enabled="false"],
