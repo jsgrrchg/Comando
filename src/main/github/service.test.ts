@@ -428,6 +428,104 @@ describe("GitHubService", () => {
         });
     });
 
+    it("sets labels through the shared issue endpoint", async () => {
+        const fetchMock = vi.fn<GitHubFetch>().mockResolvedValue(
+            jsonResponse([
+                rawLabel(),
+                rawLabel({
+                    color: "0052cc",
+                    description: "User interface",
+                    id: 2,
+                    name: "area/ui",
+                }),
+            ]),
+        );
+        const service = createService(fetchMock);
+
+        const result = await service.setIssueLabels({
+            clientRequestId: "set-labels",
+            labels: ["bug", "area/ui"],
+            number: 5,
+            repository,
+        });
+
+        expect(result).toEqual({
+            labels: [
+                {
+                    color: "d73a4a",
+                    description: "Something is not working",
+                    id: 208045946,
+                    name: "bug",
+                },
+                {
+                    color: "0052cc",
+                    description: "User interface",
+                    id: 2,
+                    name: "area/ui",
+                },
+            ],
+            number: 5,
+        });
+        expect(fetchMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                href: "https://api.github.com/repos/octocat/hello-world/issues/5/labels",
+            }),
+            expect.objectContaining({ method: "PUT" }),
+        );
+        const body = fetchMock.mock.calls[0]?.[1]?.body;
+        if (typeof body !== "string") {
+            throw new Error("Expected request body to be JSON.");
+        }
+        expect(JSON.parse(body)).toEqual({ labels: ["bug", "area/ui"] });
+    });
+
+    it("clears labels with an empty label set", async () => {
+        const fetchMock = vi.fn<GitHubFetch>().mockResolvedValue(jsonResponse([]));
+        const service = createService(fetchMock);
+
+        const result = await service.setIssueLabels({
+            labels: [],
+            number: 5,
+            repository,
+        });
+
+        expect(result).toEqual({ labels: [], number: 5 });
+        const body = fetchMock.mock.calls[0]?.[1]?.body;
+        if (typeof body !== "string") {
+            throw new Error("Expected request body to be JSON.");
+        }
+        expect(JSON.parse(body)).toEqual({ labels: [] });
+    });
+
+    it("deduplicates concurrent label assignments with the same request id", async () => {
+        const resolveFetchCalls: Array<(response: Response) => void> = [];
+        const fetchMock = vi.fn<GitHubFetch>().mockReturnValue(
+            new Promise<Response>((resolve) => {
+                resolveFetchCalls.push(resolve);
+            }),
+        );
+        const service = createService(fetchMock);
+        const input = {
+            clientRequestId: "same-label-save",
+            labels: ["bug"],
+            number: 5,
+            repository,
+        };
+
+        const first = service.setIssueLabels(input);
+        const second = service.setIssueLabels(input);
+        const resolveFetch = resolveFetchCalls[0];
+        if (!resolveFetch) {
+            throw new Error("Fetch resolver was not captured.");
+        }
+        resolveFetch(jsonResponse([rawLabel()]));
+
+        const [firstResult, secondResult] = await Promise.all([first, second]);
+
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(firstResult).toEqual(secondResult);
+    });
+
     it("creates pull requests and comments on PR conversations", async () => {
         const fetchMock = vi
             .fn<GitHubFetch>()
@@ -824,12 +922,19 @@ function rawIssue(
     };
 }
 
-function rawLabel() {
+function rawLabel(
+    overrides: Partial<{
+        readonly color: string;
+        readonly description: string | null;
+        readonly id: number;
+        readonly name: string;
+    }> = {},
+) {
     return {
-        color: "d73a4a",
-        description: "Something is not working",
-        id: 208045946,
-        name: "bug",
+        color: overrides.color ?? "d73a4a",
+        description: overrides.description ?? "Something is not working",
+        id: overrides.id ?? 208045946,
+        name: overrides.name ?? "bug",
     };
 }
 

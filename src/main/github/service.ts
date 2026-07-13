@@ -43,6 +43,8 @@ import type {
     GitHubReleaseSummary,
     GitHubRequestPullRequestReviewInput,
     GitHubSaveTokenInput,
+    GitHubSetIssueLabelsInput,
+    GitHubSetIssueLabelsResult,
     GitHubSetIssueStateInput,
     GitHubSetPullRequestDraftStateInput,
     GitHubUpdateCommentInput,
@@ -79,6 +81,9 @@ export interface GitHubGateway {
     ): Promise<GitHubPullRequestDetail>;
     createIssue(input: GitHubCreateIssueInput): Promise<GitHubIssueDetail>;
     updateIssue(input: GitHubUpdateIssueInput): Promise<GitHubIssueDetail>;
+    setIssueLabels(
+        input: GitHubSetIssueLabelsInput,
+    ): Promise<GitHubSetIssueLabelsResult>;
     createPullRequest(
         input: GitHubCreatePullRequestInput,
     ): Promise<GitHubPullRequestDetail>;
@@ -221,6 +226,16 @@ export class GitHubService implements GitHubGateway {
     ): Promise<GitHubIssueDetail> {
         return await this.#dedupeMutation(input.clientRequestId, async () =>
             (await this.#createClient(input.repository.host)).updateIssue(input),
+        );
+    }
+
+    async setIssueLabels(
+        input: GitHubSetIssueLabelsInput,
+    ): Promise<GitHubSetIssueLabelsResult> {
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (await this.#createClient(input.repository.host)).setIssueLabels(
+                input,
+            ),
         );
     }
 
