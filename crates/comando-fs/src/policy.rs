@@ -94,6 +94,7 @@ pub fn git_watch_invalidation_reason(relative_path: &str) -> Option<GitWatchInva
     }
 
     match path {
+        ".git/index" | ".git/index.lock" => Some(GitWatchInvalidationReason::Status),
         ".git/head" | ".git/packed-refs" => Some(GitWatchInvalidationReason::Branch),
         ".git/orig_head" | ".git/merge_head" | ".git/cherry_pick_head" | ".git/rebase_head" => {
             Some(GitWatchInvalidationReason::Status)
@@ -116,9 +117,17 @@ mod tests {
     };
 
     #[test]
-    fn ignores_noisy_git_index_paths() {
-        assert!(should_ignore_watch_path(".git/index"));
-        assert!(should_ignore_watch_path(".git/index.lock"));
+    fn keeps_git_index_paths_that_invalidate_status() {
+        assert_eq!(
+            git_watch_invalidation_reason(".git/index"),
+            Some(GitWatchInvalidationReason::Status),
+        );
+        assert_eq!(
+            git_watch_invalidation_reason(".git/index.lock"),
+            Some(GitWatchInvalidationReason::Status),
+        );
+        assert!(!should_ignore_watch_path(".git/index"));
+        assert!(!should_ignore_watch_path(".git/index.lock"));
     }
 
     #[test]

@@ -10,6 +10,11 @@ const ROOT_NODE_KEY = "__root__";
 
 type ParentKey = string;
 
+interface GitTreeStatuses {
+    readonly changedDirectories: ReadonlySet<string>;
+    readonly exact: ReadonlyMap<string, GitNodeStatus>;
+}
+
 export function buildGitTreeNodesFromProjectTree(
     rootNodes: readonly ProjectTreeNode[],
     nodesByParent: Record<ParentKey, readonly ProjectTreeNode[]>,
@@ -17,14 +22,14 @@ export function buildGitTreeNodesFromProjectTree(
     gitChanges: readonly GitChangeEntry[] = [],
 ): readonly GitTreeNode[] {
     const expandedPathSet = new Set(expandedPaths);
-    const gitStatusByPath = buildGitStatusByPath(gitChanges);
+    const gitStatuses = buildGitStatuses(gitChanges);
 
     return rootNodes.map((node) =>
         convertProjectTreeNode(
             node,
             nodesByParent,
             expandedPathSet,
-            gitStatusByPath,
+            gitStatuses,
         ),
     );
 }
@@ -51,7 +56,7 @@ export function buildHierarchicalGitTreeNodesFromProjectEntries(
     gitChanges: readonly GitChangeEntry[] = [],
 ): HierarchicalGitTreeFromEntries {
     const byPath = new Map<string, HierarchicalBuildNode>();
-    const gitStatusByPath = buildGitStatusByPath(gitChanges);
+    const gitStatuses = buildGitStatuses(gitChanges);
     const directoryMetadataByPath = new Map(
         metadataEntries
             .filter((entry) => entry.kind === "directory")
@@ -81,7 +86,7 @@ export function buildHierarchicalGitTreeNodesFromProjectEntries(
                 "directory",
                 path,
                 metadata?.gitStatus ?? null,
-                gitStatusByPath,
+                gitStatuses,
             ),
         };
         byPath.set(path, synthetic);
@@ -121,7 +126,7 @@ export function buildHierarchicalGitTreeNodesFromProjectEntries(
                 entry.kind,
                 entry.relativePath,
                 entry.gitStatus,
-                gitStatusByPath,
+                gitStatuses,
             ),
         });
     }
@@ -193,7 +198,7 @@ function buildGitTreeNodeChildren(
     node: ProjectTreeNode,
     nodesByParent: Record<ParentKey, readonly ProjectTreeNode[]>,
     expandedPaths: ReadonlySet<string>,
-    gitStatusByPath: ReadonlyMap<string, GitNodeStatus>,
+    gitStatuses: GitTreeStatuses,
 ): readonly GitTreeNode[] | undefined {
     if (node.kind !== "directory" || !expandedPaths.has(node.relativePath)) {
         return undefined;
@@ -209,7 +214,7 @@ function buildGitTreeNodeChildren(
             child,
             nodesByParent,
             expandedPaths,
-            gitStatusByPath,
+            gitStatuses,
         ),
     );
 }
@@ -218,14 +223,14 @@ function convertProjectTreeNode(
     node: ProjectTreeNode,
     nodesByParent: Record<ParentKey, readonly ProjectTreeNode[]>,
     expandedPaths: ReadonlySet<string>,
-    gitStatusByPath: ReadonlyMap<string, GitNodeStatus>,
+    gitStatuses: GitTreeStatuses,
 ): GitTreeNode {
     return {
         children: buildGitTreeNodeChildren(
             node,
             nodesByParent,
             expandedPaths,
-            gitStatusByPath,
+            gitStatuses,
         ),
         hasChildren: node.hasChildren,
         id: node.id,
@@ -237,50 +242,53 @@ function convertProjectTreeNode(
             node.kind,
             node.relativePath,
             node.gitStatus,
-            gitStatusByPath,
+            gitStatuses,
         ),
     };
 }
 
-function buildGitStatusByPath(
+function buildGitStatuses(
     changes: readonly GitChangeEntry[],
-): ReadonlyMap<string, GitNodeStatus> {
-    return new Map(
-        changes.map((change) => [
-            change.path,
-            mapGitChangeStatus(change),
-        ]),
-    );
+): GitTreeStatuses {
+    const exact = new Map<string, GitNodeStatus>();
+    const changedDirectories = new Set<string>();
+
+    for (const change of changes) {
+        const path = change.path.replace(/\/+$/, "");
+        if (!path) {
+            continue;
+        }
+
+        exact.set(path, mapGitChangeStatus(change));
+
+        let ancestor = path;
+        while (true) {
+            const separatorIndex = ancestor.lastIndexOf("/");
+            if (separatorIndex < 0) {
+                break;
+            }
+            ancestor = ancestor.slice(0, separatorIndex);
+            changedDirectories.add(ancestor);
+        }
+    }
+
+    return { changedDirectories, exact };
 }
 
 function resolveProjectTreeStatus(
     kind: ProjectTreeNode["kind"],
     relativePath: string,
     fallbackStatus: GitStatusBadge | null,
-    gitStatusByPath: ReadonlyMap<string, GitNodeStatus>,
+    gitStatuses: GitTreeStatuses,
 ): GitNodeStatus | null {
     if (kind === "directory") {
-        return hasChangedDescendant(relativePath, gitStatusByPath)
+        return gitStatuses.changedDirectories.has(relativePath)
             ? "mixed"
-            : (gitStatusByPath.get(relativePath) ??
+            : (gitStatuses.exact.get(relativePath) ??
                   mapGitNodeStatus(fallbackStatus));
     }
 
-    return gitStatusByPath.get(relativePath) ?? mapGitNodeStatus(fallbackStatus);
-}
-
-function hasChangedDescendant(
-    directoryPath: string,
-    gitStatusByPath: ReadonlyMap<string, GitNodeStatus>,
-): boolean {
-    const prefix = `${directoryPath}/`;
-    for (const path of gitStatusByPath.keys()) {
-        if (path.startsWith(prefix)) {
-            return true;
-        }
-    }
-
-    return false;
+    return gitStatuses.exact.get(relativePath) ?? mapGitNodeStatus(fallbackStatus);
 }
 
 function mapGitChangeStatus(change: GitChangeEntry): GitNodeStatus {
