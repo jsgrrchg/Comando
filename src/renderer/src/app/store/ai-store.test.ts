@@ -577,6 +577,94 @@ describe("ai-store queue", () => {
         expect(reasoningConfig).toMatchObject({ value: "low" });
     });
 
+    it("does not roll back a newer optimistic config selection when an older request fails", async () => {
+        let rejectFirstMutation!: (reason: unknown) => void;
+        const firstMutation = new Promise<void>((_resolve, reject) => {
+            rejectFirstMutation = reject;
+        });
+        const thirdMutation = createDeferred<void>();
+        const setAiSessionConfigOption = vi
+            .fn()
+            .mockReturnValueOnce(firstMutation)
+            .mockResolvedValueOnce(undefined)
+            .mockReturnValueOnce(thirdMutation.promise);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    setAiSessionConfigOption,
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                configOptions: [
+                    {
+                        category: "reasoning",
+                        description: null,
+                        id: "reasoning_effort",
+                        label: "Reasoning",
+                        options: [
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "Low",
+                                value: "low",
+                            },
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "Medium",
+                                value: "medium",
+                            },
+                            {
+                                description: null,
+                                groupLabel: null,
+                                label: "High",
+                                value: "high",
+                            },
+                        ],
+                        type: "select",
+                        value: "low",
+                    },
+                ],
+                reasoningEffort: "low",
+            }),
+        );
+
+        const first = useAiStore.getState().setSessionConfigOption({
+            optionId: "reasoning_effort",
+            sessionId: TAB.sessionId,
+            value: "medium",
+        });
+        const second = useAiStore.getState().setSessionConfigOption({
+            optionId: "reasoning_effort",
+            sessionId: TAB.sessionId,
+            value: "high",
+        });
+
+        await second;
+
+        const third = useAiStore.getState().setSessionConfigOption({
+            optionId: "reasoning_effort",
+            sessionId: TAB.sessionId,
+            value: "low",
+        });
+
+        rejectFirstMutation(new Error("The first mutation failed."));
+        await expect(first).rejects.toThrow("The first mutation failed.");
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.reasoningEffort,
+        ).toBe("low");
+
+        thirdMutation.resolve();
+        await third;
+    });
+
     it("applies inferred titles from status events", () => {
         useAiStore.getState().applySessionSnapshot(
             createSnapshot({ title: "Codex 1" }),

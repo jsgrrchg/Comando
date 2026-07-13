@@ -78,6 +78,7 @@ import type {
     SecretStoreGateway,
 } from "@main/ai/secret-store";
 import { debugBenignError } from "@main/observability/logging";
+import { NativeBackendError } from "@main/native-backend/client";
 
 import {
     createEmptyAiSessionSnapshot,
@@ -1553,7 +1554,9 @@ export class AiService {
             return;
         }
 
-        await this.#requireNativeAiGateway().setSessionMode(input);
+        await this.#runLiveSessionControlMutation(input.sessionId, () =>
+            this.#requireNativeAiGateway().setSessionMode(input),
+        );
         const snapshot = await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
@@ -1587,7 +1590,9 @@ export class AiService {
             return;
         }
 
-        await this.#requireNativeAiGateway().setSessionModel(input);
+        await this.#runLiveSessionControlMutation(input.sessionId, () =>
+            this.#requireNativeAiGateway().setSessionModel(input),
+        );
         const snapshot = await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
@@ -1659,7 +1664,9 @@ export class AiService {
             return;
         }
 
-        await this.#requireNativeAiGateway().setSessionConfigOption(input);
+        await this.#runLiveSessionControlMutation(input.sessionId, () =>
+            this.#requireNativeAiGateway().setSessionConfigOption(input),
+        );
         const snapshot = await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
@@ -1676,6 +1683,48 @@ export class AiService {
                 input.value,
             );
         }
+    }
+
+    async #runLiveSessionControlMutation(
+        sessionId: string,
+        mutation: () => Promise<void>,
+    ): Promise<void> {
+        try {
+            await mutation();
+            return;
+        } catch (error) {
+            if (!isNativeAiSessionNotFoundError(error)) {
+                throw error;
+            }
+
+            // The runtime can evict a session after the main process cached it.
+            // Recreate it once here so every renderer uses the same recovery path.
+            debugBenignError("ai.service.recoverSessionControl", error);
+            await this.#recoverMissingLiveSession(sessionId);
+        }
+
+        await mutation();
+    }
+
+    async #recoverMissingLiveSession(sessionId: string): Promise<void> {
+        const context = this.#liveSessionContexts.get(sessionId);
+        const snapshot = this.#liveSnapshots.get(sessionId);
+        if (!context || !snapshot) {
+            throw new Error("The AI session was not found.");
+        }
+
+        this.#cancelCapturedRuntimeDefaults(sessionId);
+        this.#nativeSessionIds.delete(sessionId);
+        await this.prepareSession(
+            {
+                projectId: snapshot.projectId,
+                runtimeId: snapshot.runtimeId,
+                sessionId,
+                title: snapshot.title,
+                worktreeId: snapshot.worktreeId ?? null,
+            },
+            context.ownerWindowId,
+        );
     }
 
     #rememberRuntimeModePreference(
@@ -5861,6 +5910,13 @@ function isNativeTrackedFilesPatch(update: AiSessionUpdate): boolean {
             update.patch.changes,
             "trackedFiles",
         )
+    );
+}
+
+function isNativeAiSessionNotFoundError(error: unknown): boolean {
+    return (
+        error instanceof NativeBackendError &&
+        error.code === "ai_session_not_found"
     );
 }
 

@@ -411,48 +411,16 @@ export const ChatTabView = memo(function ChatTabView({
     );
     const sessionPreparationKey = getChatSessionPreparationKey(sessionTab);
     const latestSessionTabRef = useRef(sessionTab);
-    const liveSessionTab = useMemo(
-        () => ({
-            ...sessionTab,
-            sessionOpenMode: "live" as const,
-        }),
-        [sessionTab],
-    );
-    const ensureLiveAgentSession = useCallback(async (force = false) => {
-        const currentSession = useAiStore.getState().sessions[tab.sessionId] ?? null;
-        if (
-            !force &&
-            currentSession?.runtimeState === "live" &&
-            currentSession.snapshot?.runtimeSessionId
-        ) {
-            return;
-        }
-        await ensureSession(liveSessionTab, { force: true });
-    }, [ensureSession, liveSessionTab, tab.sessionId]);
     const runAgentControlMutation = useCallback(
         (mutation: () => Promise<void>) => {
-            void (async () => {
-                try {
-                    await mutation();
-                    return;
-                } catch (error) {
-                    // A live snapshot can outlast its remote session. Recreate it
-                    // only after a mutation fails, then retry the stale RPC once.
-                    await ensureLiveAgentSession(true);
-                    await mutation();
-                    console.warn(
-                        "[comando] Recovered AI session control update after live session prepare.",
-                        error,
-                    );
-                }
-            })().catch((error: unknown) => {
+            void mutation().catch((error: unknown) => {
                 console.warn(
                     "[comando] Failed to update AI session control.",
                     error,
                 );
             });
         },
-        [ensureLiveAgentSession],
+        [],
     );
 
     useEffect(() => {

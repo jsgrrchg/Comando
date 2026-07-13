@@ -93,6 +93,14 @@ type RuntimeAiSessionTab = RuntimeWorkspaceChatTab | RuntimeWorkspaceReviewTab;
 type AiSessionRuntimeState = "history" | "live";
 
 const ensureSessionInFlight = new Map<string, Promise<void>>();
+const optimisticSnapshotMutationStates = new Map<
+    string,
+    {
+        latestVersion: number;
+        nextVersion: number;
+        pendingVersions: Set<number>;
+    }
+>();
 
 interface RegisteredSessionMeta {
     readonly projectId: string | null;
@@ -588,6 +596,7 @@ async function requestAiSessionResyncAfterSilence(
 export function resetAiStoreRuntimeBuffersForTests(): void {
     resetBufferedSessionDeltas();
     resetAiSessionResyncWatchdogs();
+    optimisticSnapshotMutationStates.clear();
 }
 
 export const useAiStore = create<AiStore>((set, get) => ({
@@ -3740,6 +3749,16 @@ async function runOptimisticSnapshotMutation(
     set: SetAiState,
     get: GetAiState,
 ): Promise<void> {
+    const mutationState = optimisticSnapshotMutationStates.get(sessionId) ?? {
+        latestVersion: 0,
+        nextVersion: 0,
+        pendingVersions: new Set<number>(),
+    };
+    const mutationVersion = mutationState.nextVersion + 1;
+    mutationState.latestVersion = mutationVersion;
+    mutationState.nextVersion = mutationVersion;
+    mutationState.pendingVersions.add(mutationVersion);
+    optimisticSnapshotMutationStates.set(sessionId, mutationState);
     const previousSession = get().sessions[sessionId] ?? null;
     const previousSnapshot = previousSession?.snapshot ?? null;
 
@@ -3758,7 +3777,11 @@ async function runOptimisticSnapshotMutation(
     try {
         await runRemote();
     } catch (error) {
-        if (previousSession) {
+        if (
+            previousSession &&
+            optimisticSnapshotMutationStates.get(sessionId)?.latestVersion ===
+                mutationVersion
+        ) {
             set((state) => ({
                 sessions: {
                     ...state.sessions,
@@ -3767,6 +3790,11 @@ async function runOptimisticSnapshotMutation(
             }));
         }
         throw error;
+    } finally {
+        mutationState.pendingVersions.delete(mutationVersion);
+        if (mutationState.pendingVersions.size === 0) {
+            optimisticSnapshotMutationStates.delete(sessionId);
+        }
     }
 }
 
