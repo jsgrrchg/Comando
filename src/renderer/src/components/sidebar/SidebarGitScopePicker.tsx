@@ -911,7 +911,7 @@ export function SidebarGitScopePicker({
         setFocusIndex(-1);
     }, [query]);
 
-    const handleSelectWorktree = useCallback(
+    const handleOpenWorktreeInNewTab = useCallback(
         async (nextWorktreeId: string | null) => {
             if (!projectId || isBusy) {
                 return;
@@ -948,7 +948,7 @@ export function SidebarGitScopePicker({
                 setActionError(
                     error instanceof Error
                         ? error.message
-                        : "Could not switch worktrees.",
+                        : "Could not open this worktree in a new tab.",
                 );
             } finally {
                 setIsBusy(false);
@@ -996,7 +996,7 @@ export function SidebarGitScopePicker({
                     worktreeId ?? snapshot?.currentWorktreeId ?? null,
                 )
             ) {
-                await handleSelectWorktree(linkedWorktree.id);
+                await handleOpenWorktreeInNewTab(linkedWorktree.id);
                 return;
             }
 
@@ -1054,7 +1054,7 @@ export function SidebarGitScopePicker({
         [
             branches,
             checkoutBranch,
-            handleSelectWorktree,
+            handleOpenWorktreeInNewTab,
             isBusy,
             projectId,
             refreshProjectTree,
@@ -1652,9 +1652,10 @@ export function SidebarGitScopePicker({
 
         return [
             {
-                action: () => void handleSelectWorktree(row.worktree.id),
+                action: () =>
+                    void handleOpenWorktreeInNewTab(row.worktree.id),
                 disabled: isBusy || row.isActive,
-                label: "Switch Here",
+                label: "Open in New Tab",
             },
             {
                 action: () =>
@@ -1688,7 +1689,7 @@ export function SidebarGitScopePicker({
         handleRemoveWorktree,
         handleRevealWorktreeInFinder,
         handleSelectBranch,
-        handleSelectWorktree,
+        handleOpenWorktreeInNewTab,
         isBusy,
         itemContextMenu,
         openBranchCreationForm,
@@ -1711,14 +1712,14 @@ export function SidebarGitScopePicker({
         } else if (item.kind === "branch") {
             void handleSelectBranch(item.branch);
         } else {
-            void handleSelectWorktree(item.worktree.id);
+            void handleOpenWorktreeInNewTab(item.worktree.id);
         }
     }, [
         defaultBranchCreationBase,
         flatItems,
         focusIndex,
         handleSelectBranch,
-        handleSelectWorktree,
+        handleOpenWorktreeInNewTab,
         openBranchCreationForm,
     ]);
 
@@ -1973,7 +1974,7 @@ export function SidebarGitScopePicker({
                             isBusy
                                 ? undefined
                                 : () =>
-                                      void handleSelectWorktree(
+                                      void handleOpenWorktreeInNewTab(
                                           row.worktree.id,
                                       )
                         }
@@ -1999,7 +2000,7 @@ export function SidebarGitScopePicker({
             handleBranchContextMenu,
             handleMenuTriggerClick,
             handleSelectBranch,
-            handleSelectWorktree,
+            handleOpenWorktreeInNewTab,
             handleWorktreeContextMenu,
             isBusy,
             toggleSection,
