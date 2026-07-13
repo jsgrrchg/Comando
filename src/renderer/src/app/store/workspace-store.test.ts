@@ -333,6 +333,40 @@ describe("workspace file opening", () => {
         ]);
     });
 
+    it("reorders workspace contexts without changing the active context", async () => {
+        await useWorkspaceStore
+            .getState()
+            .openContext("project-2", null, { emptyLayout: true });
+        await useWorkspaceStore
+            .getState()
+            .openContext("project-3", null, { emptyLayout: true });
+        await useWorkspaceStore
+            .getState()
+            .activateContext("project-1::__primary__");
+
+        await useWorkspaceStore
+            .getState()
+            .reorderContext("project-3::__primary__", 0);
+
+        expect(useWorkspaceStore.getState().activeContextKey).toBe(
+            "project-1::__primary__",
+        );
+        expect(useWorkspaceStore.getState().openContextKeys).toEqual([
+            "project-3::__primary__",
+            "project-1::__primary__",
+            "project-2::__primary__",
+        ]);
+
+        await flushWorkspacePersistenceForTests();
+        expect(saveWorkspaceSnapshotMock.mock.calls.at(-1)?.[0]).toMatchObject({
+            openContextKeys: [
+                "project-3::__primary__",
+                "project-1::__primary__",
+                "project-2::__primary__",
+            ],
+        });
+    });
+
     it("hydrates and prewarms each active restored chat session", async () => {
         const snapshot: WorkspaceSnapshot = {
             activePaneId: "pane-left",

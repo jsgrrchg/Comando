@@ -471,6 +471,19 @@
     color: var(--color-text-primary);
 }
 
+.project-context-tab-shell[data-dragging="true"] {
+    cursor: grabbing;
+    opacity: 0.4;
+}
+
+.project-context-tab-shell[data-drop-position="before"] {
+    box-shadow: inset 2px 0 var(--color-accent);
+}
+
+.project-context-tab-shell[data-drop-position="after"] {
+    box-shadow: inset -2px 0 var(--color-accent);
+}
+
 :root[data-transparency-enabled="false"] .project-context-tab-shell[data-active] {
     background: var(--color-bg-elevated);
 }

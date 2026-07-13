@@ -298,6 +298,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
         tabId: string,
         targetIndex: number,
     ) => Promise<void>;
+    reorderContext: (contextKey: string, targetIndex: number) => Promise<void>;
     closeTabsForProjectPath: (
         projectId: string,
         worktreeId: string | null,
@@ -1895,6 +1896,36 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ...reorderTabInPane(state, paneId, tabId, targetIndex),
             error: null,
         }));
+        await persistWorkspaceState(get);
+    },
+
+    reorderContext: async (contextKey, targetIndex) => {
+        const state = get();
+        const sourceIndex = state.openContextKeys.indexOf(contextKey);
+        if (sourceIndex < 0 || state.openContextKeys.length < 2) {
+            return;
+        }
+
+        const normalizedTargetIndex = Math.max(
+            0,
+            Math.min(
+                state.openContextKeys.length - 1,
+                Number.isFinite(targetIndex)
+                    ? Math.trunc(targetIndex)
+                    : sourceIndex,
+            ),
+        );
+        if (normalizedTargetIndex === sourceIndex) {
+            return;
+        }
+
+        const openContextKeys = [...state.openContextKeys];
+        openContextKeys.splice(sourceIndex, 1);
+        openContextKeys.splice(normalizedTargetIndex, 0, contextKey);
+        set({
+            contextsByKey: captureVisibleWorkspaceContext(state),
+            openContextKeys,
+        });
         await persistWorkspaceState(get);
     },
 

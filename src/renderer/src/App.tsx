@@ -4399,6 +4399,11 @@ export function App() {
                                 .getState()
                                 .openContext(projectId, worktreeId);
                         }}
+                        onReorderContext={(contextKey, targetIndex) => {
+                            void useWorkspaceStore
+                                .getState()
+                                .reorderContext(contextKey, targetIndex);
+                        }}
                         onToggleLeftSidebar={() => {
                             toggleLeftCollapsed();
                             hideSidebarOverlayImmediately();

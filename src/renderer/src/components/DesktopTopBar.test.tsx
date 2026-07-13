@@ -33,6 +33,7 @@ describe("DesktopTopBar", () => {
                 onOpenProjects={vi.fn()}
                 onOpenSettings={vi.fn()}
                 onOpenWorktree={vi.fn()}
+                onReorderContext={vi.fn()}
                 onToggleLeftSidebar={vi.fn()}
                 platform="darwin"
             />,
@@ -45,5 +46,7 @@ describe("DesktopTopBar", () => {
         expect(markup).toContain("feature/navigation");
         expect(markup).toContain("sidebar-git-scope-trigger--titlebar");
         expect(markup).toContain("app-no-drag");
+        expect(markup).toContain("data-project-context-tab-key");
+        expect(markup).toContain("data-project-context-tab-action");
     });
 });

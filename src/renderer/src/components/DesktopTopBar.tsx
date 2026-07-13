@@ -11,6 +11,7 @@ import {
     type ProjectContextMenuProject,
 } from "./ProjectContextMenu";
 import { SidebarGitScopePicker } from "./sidebar/SidebarGitScopePicker";
+import { useProjectContextTabDrag } from "./useProjectContextTabDrag";
 
 export type { ProjectContextMenuProject } from "./ProjectContextMenu";
 
@@ -49,6 +50,10 @@ interface DesktopTopBarProps {
     readonly onOpenProjects: () => void;
     readonly onOpenSettings: () => void;
     readonly onOpenWorktree: (projectId: string, worktreeId: string) => void;
+    readonly onReorderContext: (
+        contextKey: string,
+        targetIndex: number,
+    ) => Promise<void> | void;
     readonly onToggleLeftSidebar: () => void;
     readonly platform: string | null;
 }
@@ -65,12 +70,18 @@ export function DesktopTopBar({
     onOpenProjects,
     onOpenSettings,
     onOpenWorktree,
+    onReorderContext,
     onToggleLeftSidebar,
     platform,
 }: DesktopTopBarProps) {
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRootRef = useRef<HTMLDivElement | null>(null);
     const tabsRef = useRef<HTMLDivElement | null>(null);
+    const contextTabDrag = useProjectContextTabDrag({
+        contextKeys: contexts.map((context) => context.key),
+        onReorder: onReorderContext,
+        stripRef: tabsRef,
+    });
 
     useEffect(() => {
         if (!menuOpen) {
@@ -189,7 +200,25 @@ export function DesktopTopBar({
                         <div
                             className="project-context-tab-shell"
                             data-active={isActive || undefined}
+                            data-dragging={
+                                contextTabDrag.isDragging &&
+                                contextTabDrag.draggedContextKey === context.key
+                                    ? "true"
+                                    : undefined
+                            }
+                            data-drop-position={
+                                contextTabDrag.target?.contextKey === context.key
+                                    ? contextTabDrag.target.position
+                                    : undefined
+                            }
+                            data-project-context-tab-key={context.key}
                             key={context.key}
+                            onPointerDown={(event) =>
+                                contextTabDrag.beginTabPointerDown(
+                                    context.key,
+                                    event,
+                                )
+                            }
                         >
                             <span
                                 aria-hidden="true"
@@ -246,6 +275,7 @@ export function DesktopTopBar({
                             <button
                                 aria-label={`Close ${context.projectName}`}
                                 className="project-context-tab-close"
+                                data-project-context-tab-action="true"
                                 onClick={(event) => {
                                     event.stopPropagation();
                                     onCloseContext(context.key);
