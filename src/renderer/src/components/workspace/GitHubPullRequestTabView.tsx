@@ -539,7 +539,7 @@ export function GitHubPullRequestTabView({
                         {pullRequestDiff ? (
                             <>
                                 {detail ? (
-                                    <h1 className="pb-2 text-[20px] font-bold leading-7 text-text-primary">
+                                    <h1 className="github-document-title pb-2">
                                         {detail.title}
                                     </h1>
                                 ) : null}
