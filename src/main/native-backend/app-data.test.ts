@@ -50,10 +50,29 @@ describe("createNativeAppDataClient", () => {
         if (!firstWorkspaceId || !secondWorkspaceId) {
             throw new Error("Expected workspace ids for both windows.");
         }
-        await firstClient.workspace.saveSnapshot(
-            firstWorkspaceId,
-            workspaceNavigation("project-1", null, "pane-a"),
-        );
+        const firstSnapshot = workspaceNavigation("project-1", null, "pane-a");
+        await firstClient.workspace.saveSnapshot(firstWorkspaceId, {
+            ...firstSnapshot,
+            contexts: [
+                ...firstSnapshot.contexts,
+                {
+                    key: "project-1::worktree-closed",
+                    lastActivatedAt: "2026-01-02T00:00:00.000Z",
+                    projectId: "project-1",
+                    workspace: {
+                        activePaneId: "pane-cached",
+                        rootNode: {
+                            activeTabId: null,
+                            id: "pane-cached",
+                            tabIds: [],
+                            type: "pane",
+                        },
+                        tabs: [],
+                    },
+                    worktreeId: "worktree-closed",
+                },
+            ],
+        });
         await firstClient.workspace.saveSnapshot(
             secondWorkspaceId,
             workspaceNavigation("project-2", "worktree-2", "pane-b"),
@@ -69,6 +88,14 @@ describe("createNativeAppDataClient", () => {
 
         expect(firstRestore.revision).toBe(1);
         expect(firstRestore.snapshot.contexts[0]?.workspace.activePaneId).toBe("pane-a");
+        expect(firstRestore.snapshot.openContextKeys).toEqual([
+            "project-1::__primary__",
+        ]);
+        expect(
+            firstRestore.snapshot.contexts.find(
+                (context) => context.key === "project-1::worktree-closed",
+            )?.workspace.activePaneId,
+        ).toBe("pane-cached");
         expect(secondRestore.snapshot.contexts[0]).toMatchObject({
             projectId: "project-2",
             worktreeId: "worktree-2",
@@ -81,7 +108,7 @@ describe("createNativeAppDataClient", () => {
             activeContextKey: null,
             contexts: [],
             openContextKeys: [],
-            version: 2,
+            version: 3,
         });
         const firstWindowId = firstWindow.windowContext?.windowId;
         if (!firstWindowId) {
@@ -160,7 +187,7 @@ describe("createNativeAppDataClient", () => {
 
         const workspace = await client.workspace.loadSnapshot("workspace-1");
         expect(workspace.schemaVersion).toBe(1);
-        expect(workspace.snapshot.version).toBe(2);
+        expect(workspace.snapshot.version).toBe(3);
         const restoredLayout = workspace.snapshot.contexts[0]?.workspace;
         expect(restoredLayout?.activePaneId).toBe("pane-1");
         expect(restoredLayout?.tabs).toHaveLength(1);
@@ -408,7 +435,7 @@ function workspaceNavigation(
             },
         ],
         openContextKeys: [key],
-        version: 2,
+        version: 3,
     };
 }
 

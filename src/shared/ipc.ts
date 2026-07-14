@@ -2136,7 +2136,7 @@ export interface WorkspaceNavigationSnapshot {
     readonly activeContextKey: WorkspaceContextKey | null;
     readonly contexts: readonly PersistedWorkspaceContext[];
     readonly openContextKeys: readonly WorkspaceContextKey[];
-    readonly version: 2;
+    readonly version: 3;
 }
 
 export interface WindowWorkspaceRestoreRecord {

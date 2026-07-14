@@ -21,6 +21,7 @@ import {
     getPaneRuntimeId,
     getWorkspaceChatTabId,
     getWorkspaceTabRuntimeId,
+    pruneClosedWorkspaceContexts,
     resetWorkspacePersistenceForTests,
     useWorkspaceStore,
 } from "./workspace-store";
@@ -274,7 +275,7 @@ describe("workspace file opening", () => {
         vi.unstubAllGlobals();
     });
 
-    it("keeps independent layouts for open project contexts", async () => {
+    it("restores a closed project context layout without reopening other contexts", async () => {
         const firstTab = createWorkspaceFileTab("file-project-1", "README.md");
         useWorkspaceStore.setState((state) => ({
             ...state,
@@ -339,12 +340,23 @@ describe("workspace file opening", () => {
         expect(persistedSnapshot).toMatchObject({
             activeContextKey: "project-1::__primary__",
             openContextKeys: ["project-1::__primary__"],
-            version: 2,
+            version: 3,
         });
-        expect(persistedSnapshot?.contexts).toHaveLength(1);
-        expect(persistedSnapshot?.contexts[0]?.workspace.tabs).toEqual([
+        expect(persistedSnapshot?.contexts).toHaveLength(2);
+        expect(
+            persistedSnapshot?.contexts.find(
+                (context) => context.key === "project-1::__primary__",
+            )?.workspace.tabs,
+        ).toEqual([
             expect.objectContaining({ id: firstTab.id }),
         ]);
+
+        await useWorkspaceStore.getState().openContext("project-2");
+        expect(useWorkspaceStore.getState().openContextKeys).toEqual([
+            "project-1::__primary__",
+            "project-2::__primary__",
+        ]);
+        expect(useWorkspaceStore.getState().tabsById[secondTab.id]).toBeTruthy();
     });
 
     it("exports one context as a self-contained navigation snapshot", () => {
@@ -368,7 +380,7 @@ describe("workspace file opening", () => {
         expect(snapshot).toMatchObject({
             activeContextKey: "project-1::__primary__",
             openContextKeys: ["project-1::__primary__"],
-            version: 2,
+            version: 3,
         });
         expect(snapshot?.contexts).toHaveLength(1);
         expect(snapshot?.contexts[0]).toMatchObject({
@@ -385,6 +397,68 @@ describe("workspace file opening", () => {
                 }),
             ],
         });
+    });
+
+    it("keeps open contexts while expiring the oldest closed layout", () => {
+        const workspace = createDefaultWorkspaceState();
+        const contextsByKey = Object.fromEntries(
+            Array.from({ length: 31 }, (_, index) => [
+                `closed-${index}`,
+                {
+                    key: `closed-${index}`,
+                    lastActivatedAt: `2026-01-${String(index + 1).padStart(2, "0")}T00:00:00.000Z`,
+                    projectId: `project-${index}`,
+                    workspace,
+                    worktreeId: null,
+                },
+            ]),
+        );
+        contextsByKey.open = {
+            key: "open",
+            lastActivatedAt: "2020-01-01T00:00:00.000Z",
+            projectId: "open-project",
+            workspace,
+            worktreeId: null,
+        };
+
+        const pruned = pruneClosedWorkspaceContexts(contextsByKey, ["open"]);
+
+        expect(pruned.open).toBeTruthy();
+        expect(pruned["closed-0"]).toBeUndefined();
+        expect(Object.keys(pruned)).toHaveLength(31);
+    });
+
+    it("removes cached layouts when a project is removed", async () => {
+        const workspace = createDefaultWorkspaceState();
+        const remainingContext = {
+            key: "project-2::__primary__",
+            lastActivatedAt: "2026-04-15T00:00:00.000Z",
+            projectId: "project-2",
+            workspace,
+            worktreeId: null,
+        };
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            contextsByKey: {
+                ...state.contextsByKey,
+                [remainingContext.key]: remainingContext,
+                "project-1::worktree-1": {
+                    key: "project-1::worktree-1",
+                    lastActivatedAt: "2026-04-16T00:00:00.000Z",
+                    projectId: "project-1",
+                    workspace,
+                    worktreeId: "worktree-1",
+                },
+            },
+            openContextKeys: ["project-1::__primary__", remainingContext.key],
+        }));
+
+        await useWorkspaceStore.getState().removeProjectTabs("project-1");
+
+        expect(useWorkspaceStore.getState().contextsByKey).toEqual({
+            [remainingContext.key]: remainingContext,
+        });
+        expect(useWorkspaceStore.getState().activeContextKey).toBe(remainingContext.key);
     });
 
     it("reorders workspace contexts without changing the active context", async () => {

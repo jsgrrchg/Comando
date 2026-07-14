@@ -123,6 +123,27 @@ describe("terminalRuntimeStore", () => {
         });
     });
 
+    it("creates a new session when a closed workspace terminal is reopened", async () => {
+        createTerminalSessionMock
+            .mockResolvedValueOnce(createSession("closed-session"))
+            .mockResolvedValueOnce(createSession("reopened-session"));
+
+        const tab = createTerminalTab();
+        useTerminalRuntimeStore.getState().ensureTerminal(tab);
+        await flushPromises();
+        await useTerminalRuntimeStore.getState().closeTerminal(tab.terminalId);
+
+        useTerminalRuntimeStore.getState().ensureTerminal(tab);
+        await flushPromises();
+
+        expect(closeTerminalSessionMock).toHaveBeenCalledWith("closed-session");
+        expect(createTerminalSessionMock).toHaveBeenCalledTimes(2);
+        expect(
+            useTerminalRuntimeStore.getState().runtimesById[tab.terminalId]
+                ?.sessionId,
+        ).toBe("reopened-session");
+    });
+
     it("passes the Claude Code no-flicker env flag for optimized terminals", async () => {
         useSettingsStore.setState({
             terminal: {

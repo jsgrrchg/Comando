@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import type { WorkspaceNode } from "@shared/ipc";
 
-import { getReadyActiveWorkspaceTabIds } from "./WorkspaceTerminalHost";
+import {
+    getOpenContextTerminalIds,
+    getReadyActiveWorkspaceTabIds,
+} from "./WorkspaceTerminalHost";
 
 describe("getReadyActiveWorkspaceTabIds", () => {
     it("excludes active tabs whose pane is still deferred", () => {
@@ -48,5 +51,37 @@ describe("getReadyActiveWorkspaceTabIds", () => {
                 "pane-focused",
             ),
         ).toEqual(new Set(["terminal-focused", "terminal-background"]));
+    });
+});
+
+describe("getOpenContextTerminalIds", () => {
+    it("does not retain terminals from cached closed contexts", () => {
+        const contextsByKey = {
+            active: {
+                workspace: {
+                    tabsById: {
+                        active: { kind: "terminal", terminalId: "terminal-active" },
+                    },
+                },
+            },
+            open: {
+                workspace: {
+                    tabsById: {
+                        open: { kind: "terminal", terminalId: "terminal-open" },
+                    },
+                },
+            },
+            closed: {
+                workspace: {
+                    tabsById: {
+                        closed: { kind: "terminal", terminalId: "terminal-closed" },
+                    },
+                },
+            },
+        };
+
+        expect(getOpenContextTerminalIds(contextsByKey, ["active", "open"], "active")).toEqual([
+            "terminal-open",
+        ]);
     });
 });

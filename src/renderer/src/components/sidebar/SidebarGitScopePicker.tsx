@@ -372,6 +372,9 @@ export function SidebarGitScopePicker({
     const refreshGitProject = useGitStore((state) => state.refreshProject);
     const removeWorktree = useGitStore((state) => state.removeWorktree);
     const openContext = useWorkspaceStore((state) => state.openContext);
+    const removeWorktreeTabs = useWorkspaceStore(
+        (state) => state.removeWorktreeTabs,
+    );
 
     const worktrees = projectWorktrees ?? snapshot?.worktrees ?? EMPTY_WORKTREES;
     const activeWorktree =
@@ -1637,6 +1640,7 @@ export function SidebarGitScopePicker({
                     targetWorktree.rootPath,
                     worktreeId ?? snapshot?.currentWorktreeId ?? null,
                 );
+                await removeWorktreeTabs(projectId, targetWorktree.id);
                 await Promise.all([
                     refreshGitProject(
                         projectId,
@@ -1669,6 +1673,7 @@ export function SidebarGitScopePicker({
             refreshGitHistory,
             refreshGitProject,
             refreshProjectTree,
+            removeWorktreeTabs,
             removeWorktree,
             snapshot?.currentWorktreeId,
             worktreeId,

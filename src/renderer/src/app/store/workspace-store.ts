@@ -297,6 +297,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     ) => Promise<void>;
     reopenLastClosedTab: () => Promise<void>;
     removeProjectTabs: (projectId: string) => Promise<void>;
+    removeWorktreeTabs: (projectId: string, worktreeId: string | null) => Promise<void>;
     pinPaneTab: (paneId: string, tabId: string) => Promise<void>;
     reorderTab: (
         paneId: string,
@@ -420,7 +421,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 },
             ],
             openContextKeys: [context.key],
-            version: 2,
+            version: 3,
         };
     },
 
@@ -500,12 +501,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ),
         );
 
-        const nextContextsByKey = { ...contextsByKey };
-        delete nextContextsByKey[contextKey];
-        const closedIndex = state.openContextKeys.indexOf(contextKey);
-        const openContextKeys = state.openContextKeys.filter(
-            (key) => key !== contextKey,
+        const nextContextsByKey = pruneClosedWorkspaceContexts(
+            contextsByKey,
+            state.openContextKeys.filter((key) => key !== contextKey),
         );
+        const closedIndex = state.openContextKeys.indexOf(contextKey);
+        const openContextKeys = state.openContextKeys.filter((key) => key !== contextKey);
 
         if (state.activeContextKey !== contextKey) {
             set({ contextsByKey: nextContextsByKey, openContextKeys });
@@ -1196,14 +1197,22 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             input.target,
         ),
 
-    openContext: async (projectId, worktreeId = null) => {
+    openContext: async (projectId, worktreeId = null, options = {}) => {
         const normalizedWorktreeId =
             worktreeId === `${projectId}:primary` ? null : worktreeId;
         const contextKey = getProjectContextKey(
             projectId,
             normalizedWorktreeId,
         );
-        if (get().contextsByKey[contextKey]) {
+        const currentState = get();
+        const existingContext = captureVisibleWorkspaceContext(currentState)[contextKey];
+        if (existingContext && !options.emptyLayout) {
+            if (!currentState.openContextKeys.includes(contextKey)) {
+                set((state) => ({
+                    contextsByKey: captureVisibleWorkspaceContext(state),
+                    openContextKeys: [...state.openContextKeys, contextKey],
+                }));
+            }
             await get().activateContext(contextKey);
             return;
         }
@@ -1215,12 +1224,44 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             workspace: createDefaultWorkspaceState(),
             worktreeId: normalizedWorktreeId,
         };
+
+        if (existingContext && currentState.activeContextKey === contextKey) {
+            await Promise.all(
+                Object.values(existingContext.workspace.tabsById).map(closeTabSideEffects),
+            );
+            const workspace = context.workspace;
+            const scopeEpoch = currentState.scopeEpoch + 1;
+            set((state) => ({
+                ...workspace,
+                activeContextKey: contextKey,
+                contextsByKey: {
+                    ...captureVisibleWorkspaceContext(state),
+                    [contextKey]: context,
+                },
+                deferredPaneIds: getDeferredWorkspacePaneIds(workspace),
+                error: null,
+                lastFocusedChatTabId: null,
+                lastFocusedRuntimeId: "codex",
+                openContextKeys: state.openContextKeys.includes(contextKey)
+                    ? state.openContextKeys
+                    : [...state.openContextKeys, contextKey],
+                recentActiveTabIds: [],
+                recentClosedTabs: [],
+                recentFocusedChatTabIds: [],
+                scopeEpoch,
+            }));
+            await persistWorkspaceState(get);
+            return;
+        }
+
         set((state) => ({
             contextsByKey: {
                 ...captureVisibleWorkspaceContext(state),
                 [contextKey]: context,
             },
-            openContextKeys: [...state.openContextKeys, contextKey],
+            openContextKeys: state.openContextKeys.includes(contextKey)
+                ? state.openContextKeys
+                : [...state.openContextKeys, contextKey],
         }));
         await get().activateContext(contextKey);
     },
@@ -1906,10 +1947,17 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 
     removeProjectTabs: async (projectId) => {
-        const tabIdsToClose = Object.values(get().tabsById)
-            .filter((tab) => tab.projectId === projectId)
-            .map((tab) => tab.id);
-        await closeTabsWithSideEffects(get, set, tabIdsToClose);
+        await removeWorkspaceContexts(get, set, (context) => context.projectId === projectId);
+    },
+
+    removeWorktreeTabs: async (projectId, worktreeId) => {
+        await removeWorkspaceContexts(
+            get,
+            set,
+            (context) =>
+                context.projectId === projectId &&
+                normalizeWorktreeId(context.worktreeId) === normalizeWorktreeId(worktreeId),
+        );
     },
 
     pinPaneTab: async (paneId, tabId) => {
@@ -3084,6 +3132,89 @@ function captureVisibleWorkspaceContext(
     };
 }
 
+const MAX_CLOSED_WORKSPACE_CONTEXTS = 30;
+
+export function pruneClosedWorkspaceContexts(
+    contextsByKey: Record<string, RuntimeWorkspaceContext>,
+    openContextKeys: readonly string[],
+): Record<string, RuntimeWorkspaceContext> {
+    const openContextKeySet = new Set(openContextKeys);
+    const retainedClosedContextKeys = new Set(
+        Object.values(contextsByKey)
+            .filter((context) => !openContextKeySet.has(context.key))
+            .sort((left, right) =>
+                Date.parse(right.lastActivatedAt) - Date.parse(left.lastActivatedAt),
+            )
+            .slice(0, MAX_CLOSED_WORKSPACE_CONTEXTS)
+            .map((context) => context.key),
+    );
+
+    return Object.fromEntries(
+        Object.entries(contextsByKey).filter(
+            ([key]) => openContextKeySet.has(key) || retainedClosedContextKeys.has(key),
+        ),
+    );
+}
+
+async function removeWorkspaceContexts(
+    get: GetWorkspaceState,
+    set: WorkspaceSetState,
+    shouldRemove: (context: RuntimeWorkspaceContext) => boolean,
+): Promise<void> {
+    const state = get();
+    const capturedContexts = captureVisibleWorkspaceContext(state);
+    const removedContexts = Object.values(capturedContexts).filter(shouldRemove);
+    if (removedContexts.length === 0) {
+        return;
+    }
+
+    await Promise.all(
+        removedContexts.flatMap((context) =>
+            Object.values(context.workspace.tabsById).map(closeTabSideEffects),
+        ),
+    );
+
+    const contextsByKey = Object.fromEntries(
+        Object.entries(capturedContexts).filter(([, context]) => !shouldRemove(context)),
+    );
+    const openContextKeys = state.openContextKeys.filter((key) => Boolean(contextsByKey[key]));
+    const activeContextKey = state.activeContextKey && contextsByKey[state.activeContextKey]
+        ? state.activeContextKey
+        : (openContextKeys[0] ?? null);
+    const activeContext = activeContextKey ? contextsByKey[activeContextKey] : null;
+    const workspace = activeContext?.workspace ?? createDefaultWorkspaceState();
+    const scopeEpoch = state.scopeEpoch + 1;
+
+    set({
+        ...workspace,
+        activeContextKey,
+        contextsByKey,
+        deferredPaneIds: getDeferredWorkspacePaneIds(workspace),
+        error: null,
+        lastFocusedChatTabId: getPaneChatTabId(workspace, workspace.activePaneId),
+        lastFocusedRuntimeId: getPaneRuntimeId(workspace, workspace.activePaneId) ?? "codex",
+        openContextKeys,
+        recentActiveTabIds: recordRecentTabActivation(
+            [],
+            getPaneActiveTabId(workspace, workspace.activePaneId),
+        ),
+        recentClosedTabs: [],
+        recentFocusedChatTabIds: recordRecentChatFocus(
+            [],
+            getPaneChatTabId(workspace, workspace.activePaneId),
+        ),
+        scopeEpoch,
+    });
+
+    if (activeContextKey) {
+        void activateWorkspaceRuntimePanes(workspace, get, set, {
+            contextKey: activeContextKey,
+            scopeEpoch,
+        });
+    }
+    await persistWorkspaceState(get);
+}
+
 function invalidateInactiveContextFileDocuments(
     state: WorkspaceStore,
     projectId: string,
@@ -3149,7 +3280,7 @@ function invalidateInactiveContextFileDocuments(
 function isWorkspaceNavigationSnapshot(
     snapshot: PersistedWorkspaceSnapshot,
 ): snapshot is WorkspaceNavigationSnapshot {
-    return "version" in snapshot && snapshot.version === 2;
+    return "version" in snapshot && snapshot.version === 3;
 }
 
 function resolveWorkspaceNavigationSnapshot(
@@ -3167,22 +3298,14 @@ function workspaceStoreToNavigationSnapshot(
     state: WorkspaceStore,
 ): WorkspaceNavigationSnapshot {
     const contextsByKey = captureVisibleWorkspaceContext(state);
-    const contexts = state.openContextKeys.flatMap((key) => {
-        const context = contextsByKey[key];
-        if (!context) {
-            return [];
-        }
-
-        return [
-            {
-                key: context.key,
-                lastActivatedAt: context.lastActivatedAt,
-                projectId: context.projectId,
-                workspace: workspaceStateToSnapshot(context.workspace),
-                worktreeId: context.worktreeId,
-            },
-        ];
-    });
+    const contexts = Object.values(contextsByKey).map((context) => ({
+        key: context.key,
+        lastActivatedAt: context.lastActivatedAt,
+        projectId: context.projectId,
+        workspace: workspaceStateToSnapshot(context.workspace),
+        worktreeId: context.worktreeId,
+    }));
+    const openContextKeys = state.openContextKeys.filter((key) => Boolean(contextsByKey[key]));
 
     return {
         activeContextKey:
@@ -3190,8 +3313,8 @@ function workspaceStoreToNavigationSnapshot(
                 ? state.activeContextKey
                 : null,
         contexts,
-        openContextKeys: contexts.map((context) => context.key),
-        version: 2,
+        openContextKeys,
+        version: 3,
     };
 }
 

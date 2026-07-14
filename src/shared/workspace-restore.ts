@@ -36,7 +36,7 @@ export function normalizeWorkspaceNavigationSnapshot(
     value: unknown,
     fallbackScope: { readonly projectId?: string | null; readonly worktreeId?: string | null } = {},
 ): WorkspaceRestoreNormalizationResult {
-    if (!isRecord(value) || value.version !== 2) {
+    if (!isRecord(value) || (value.version !== 2 && value.version !== 3)) {
         const legacy = normalizeLayout(value);
         const projectId = fallbackScope.projectId ?? firstTabProjectId(legacy);
         if (!legacy || !projectId) {
@@ -54,7 +54,7 @@ export function normalizeWorkspaceNavigationSnapshot(
                 activeContextKey: key,
                 contexts: [{ key, lastActivatedAt: new Date().toISOString(), projectId, workspace: legacy, worktreeId }],
                 openContextKeys: [key],
-                version: 2,
+                version: 3,
             },
         };
     }
@@ -80,8 +80,10 @@ export function normalizeWorkspaceNavigationSnapshot(
     const openContextKeys = requestedKeys.filter(
         (key, index) => seen.has(key) && requestedKeys.indexOf(key) === index,
     );
-    for (const context of contexts) {
-        if (!openContextKeys.includes(context.key)) openContextKeys.push(context.key);
+    if (value.version === 2) {
+        for (const context of contexts) {
+            if (!openContextKeys.includes(context.key)) openContextKeys.push(context.key);
+        }
     }
     const requestedActive = typeof value.activeContextKey === "string" ? value.activeContextKey : null;
     const activeContextKey = requestedActive && openContextKeys.includes(requestedActive)
@@ -91,7 +93,7 @@ export function normalizeWorkspaceNavigationSnapshot(
     return {
         droppedContextCount: rawContexts.length - contexts.length,
         repaired,
-        snapshot: { activeContextKey, contexts, openContextKeys, version: 2 },
+        snapshot: { activeContextKey, contexts, openContextKeys, version: 3 },
     };
 }
 
@@ -235,7 +237,7 @@ function normalizePrimaryWorktree(projectId: string, worktreeId: string | null):
 }
 
 function emptyNavigation(): WorkspaceNavigationSnapshot {
-    return { activeContextKey: null, contexts: [], openContextKeys: [], version: 2 };
+    return { activeContextKey: null, contexts: [], openContextKeys: [], version: 3 };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

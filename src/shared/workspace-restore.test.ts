@@ -67,6 +67,7 @@ describe("workspace restore normalization", () => {
         expect(result.snapshot.openContextKeys).toEqual([
             "project-1::__primary__",
         ]);
+        expect(result.snapshot.version).toBe(3);
         expect(result.snapshot.contexts[0]?.workspace).toMatchObject({
             activePaneId: "pane-root",
             rootNode: { activeTabId: null, pinnedTabIds: [], tabIds: [] },
@@ -81,12 +82,58 @@ describe("workspace restore normalization", () => {
                 activeContextKey: null,
                 contexts: [],
                 openContextKeys: [],
-                version: 2,
+                version: 3,
             },
             updatedAt: "2026-01-01T00:00:00.000Z",
         });
 
         expect(record.revision).toBe(4);
         expect(record.schemaVersion).toBe(1);
+    });
+
+    it("keeps closed v3 contexts out of the open context keys", () => {
+        const result = normalizeWorkspaceNavigationSnapshot({
+            activeContextKey: "project-1::__primary__",
+            contexts: [
+                {
+                    key: "project-1::__primary__",
+                    lastActivatedAt: "2026-01-02T00:00:00.000Z",
+                    projectId: "project-1",
+                    workspace: {
+                        activePaneId: "pane-root",
+                        rootNode: { activeTabId: null, id: "pane-root", tabIds: [], type: "pane" },
+                        tabs: [],
+                    },
+                    worktreeId: null,
+                },
+                {
+                    key: "project-2::__primary__",
+                    lastActivatedAt: "2026-01-01T00:00:00.000Z",
+                    projectId: "project-2",
+                    workspace: {
+                        activePaneId: "pane-root",
+                        rootNode: { activeTabId: null, id: "pane-root", tabIds: [], type: "pane" },
+                        tabs: [],
+                    },
+                    worktreeId: null,
+                },
+            ],
+            openContextKeys: ["project-1::__primary__", "missing", "project-1::__primary__"],
+            version: 3,
+        });
+
+        expect(result.snapshot.openContextKeys).toEqual(["project-1::__primary__"]);
+        expect(result.snapshot.activeContextKey).toBe("project-1::__primary__");
+    });
+
+    it("clears an active v3 context that is no longer open", () => {
+        const result = normalizeWorkspaceNavigationSnapshot({
+            activeContextKey: "project-2::__primary__",
+            contexts: [],
+            openContextKeys: [],
+            version: 3,
+        });
+
+        expect(result.snapshot.activeContextKey).toBeNull();
     });
 });
