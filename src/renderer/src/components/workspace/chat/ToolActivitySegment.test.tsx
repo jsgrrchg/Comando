@@ -215,6 +215,34 @@ describe("ToolActivitySegment", () => {
         expect(container.textContent).toContain("Thinking");
     });
 
+    it("forwards the transcript search query to thinking content", () => {
+        const container = document.createElement("div");
+        document.body.appendChild(container);
+        const root = createRoot(container);
+        mountedRoots.push(root);
+        act(() => {
+            root.render(
+                <ToolActivitySegment
+                    {...DEFAULT_PROPS}
+                    highlightQuery="activity"
+                    segment={createThinkingSegment()}
+                />,
+            );
+        });
+        act(() => {
+            container
+                .querySelector("button")
+                ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        act(() => {
+            container
+                .querySelectorAll("button")[1]
+                ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+
+        expect(container.querySelector("mark")?.textContent).toBe("activity");
+    });
+
     it("keeps a single action compact while naming it in the summary", () => {
         const segment = createSegment(
             [

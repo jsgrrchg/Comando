@@ -35,6 +35,7 @@ type ToolActivitySegmentProps = Pick<
         ThinkingMessageProps,
         | "chatFontFamily"
         | "chatFontSize"
+        | "highlightQuery"
         | "onAddFileReferenceToChat"
         | "onRevealFileReference"
     >;
@@ -135,6 +136,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     canRenderFileReference,
     chatFontFamily,
     chatFontSize,
+    highlightQuery,
     onAddFileReferenceToChat,
     onOpenFile,
     onOpenFileReference,
@@ -323,6 +325,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                                                 chatFontFamily={chatFontFamily}
                                                 chatFontSize={chatFontSize}
                                                 content={item.message.content}
+                                                highlightQuery={highlightQuery}
                                                 inProgress={
                                                     item.message.status ===
                                                     "streaming"
