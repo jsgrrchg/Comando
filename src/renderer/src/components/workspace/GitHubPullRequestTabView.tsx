@@ -536,7 +536,28 @@ export function GitHubPullRequestTabView({
                         <GitHubAuthNotice authStatus={authStatus} />
                         {isLoadingChanges ? <div className="py-6 text-[12px] text-text-secondary">Loading pull request changes...</div> : null}
                         {changesError ? <div className="space-y-3 py-3"><GitHubErrorState>{changesError}</GitHubErrorState><IdeActionButton onClick={() => void ensurePullRequestDiff(repo, pullRequestNumber, { force: true })}>Retry</IdeActionButton></div> : null}
-                        {pullRequestDiff ? <><div className="py-2 text-[11px] text-text-secondary">{pullRequestDiff.incompleteReason ?? "Reviewing the net change in this pull request."}</div><GitRevisionDiffView additions={pullRequestDiff.additions} collapseStorageKey={`github-pr-diff:${repoKey}:${pullRequestDiff.number}:${pullRequestDiff.baseSha}:${pullRequestDiff.headSha}`} deletions={pullRequestDiff.deletions} files={pullRequestDiff.files} key={`${pullRequestDiff.baseSha}:${pullRequestDiff.headSha}`} scrollContainerRef={scrollContainerRef} totalFileCount={pullRequestDiff.totalFileCount} /></> : null}
+                        {pullRequestDiff ? (
+                            <>
+                                {detail ? (
+                                    <h1 className="pb-2 text-[20px] font-bold leading-7 text-text-primary">
+                                        {detail.title}
+                                    </h1>
+                                ) : null}
+                                <div className="py-2 text-[11px] text-text-secondary">
+                                    {pullRequestDiff.incompleteReason ??
+                                        "Reviewing the net change in this pull request."}
+                                </div>
+                                <GitRevisionDiffView
+                                    additions={pullRequestDiff.additions}
+                                    collapseStorageKey={`github-pr-diff:${repoKey}:${pullRequestDiff.number}:${pullRequestDiff.baseSha}:${pullRequestDiff.headSha}`}
+                                    deletions={pullRequestDiff.deletions}
+                                    files={pullRequestDiff.files}
+                                    key={`${pullRequestDiff.baseSha}:${pullRequestDiff.headSha}`}
+                                    scrollContainerRef={scrollContainerRef}
+                                    totalFileCount={pullRequestDiff.totalFileCount}
+                                />
+                            </>
+                        ) : null}
                     </div>
                 )}
             </GitHubTabShell>
