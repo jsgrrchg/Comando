@@ -2346,11 +2346,11 @@ button {
     overflow: hidden;
     border: 1px solid color-mix(in srgb, var(--color-border) 42%, transparent);
     border-radius: 12px;
-    background: color-mix(in srgb, var(--color-bg-elevated) 52%, transparent);
+    background: color-mix(in srgb, var(--color-bg-elevated) 32%, transparent);
     box-shadow:
         0 20px 48px rgba(0, 0, 0, 0.28),
         inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
-    backdrop-filter: blur(28px) saturate(1.85);
+    backdrop-filter: blur(28px) saturate(0.85);
 }
 
 .sidebar-git-scope-menu[data-placement="above"] {
