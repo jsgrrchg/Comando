@@ -1490,6 +1490,7 @@ export function App() {
                 );
                 return [
                     {
+                        fullPath: worktree?.rootPath ?? project?.rootPath ?? null,
                         key: context.key,
                         projectId: context.projectId,
                         projectName: project?.name ?? "Missing project",

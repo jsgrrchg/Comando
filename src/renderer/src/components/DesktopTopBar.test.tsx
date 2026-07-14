@@ -10,6 +10,7 @@ describe("DesktopTopBar", () => {
                 activeContextKey="project-1::__primary__"
                 contexts={[
                     {
+                        fullPath: "/projects/comando",
                         key: "project-1::__primary__",
                         projectId: "project-1",
                         projectName: "Comando",
@@ -17,6 +18,7 @@ describe("DesktopTopBar", () => {
                         worktreeLabel: "main",
                     },
                     {
+                        fullPath: "/projects/comando-navigation",
                         key: "project-1::worktree-1",
                         projectId: "project-1",
                         projectName: "Comando",
