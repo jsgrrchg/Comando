@@ -156,7 +156,7 @@ export function DesktopTopBar({
                 aria-pressed={leftSidebarCollapsed}
                 className="sidebar-collapse-toggle sidebar-collapse-toggle--inline app-no-drag"
                 onClick={onToggleLeftSidebar}
-                style={{ marginRight: 8 }}
+                style={{ marginRight: 4 }}
                 title={leftSidebarCollapsed ? "Show sidebar" : "Hide sidebar"}
                 type="button"
             >
