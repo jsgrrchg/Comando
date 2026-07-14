@@ -80,6 +80,7 @@ export const IPC_CHANNELS = {
     reopenGitHubIssue: "github:reopen-issue",
     listGitHubPullRequests: "github:list-pull-requests",
     getGitHubPullRequest: "github:get-pull-request",
+    getGitHubPullRequestDiff: "github:get-pull-request-diff",
     listGitHubPullRequestChecks: "github:list-pull-request-checks",
     createGitHubPullRequest: "github:create-pull-request",
     updateGitHubPullRequest: "github:update-pull-request",
@@ -1314,6 +1315,19 @@ export interface GitHubPullRequestDetail extends GitHubPullRequestSummary {
     readonly mergeable: boolean | null;
 }
 
+export interface GitHubPullRequestDiffResult {
+    readonly additions: number;
+    readonly baseSha: string;
+    readonly contentComplete: boolean;
+    readonly deletions: number;
+    readonly fileListComplete: boolean;
+    readonly files: readonly GitRevisionFileDiff[];
+    readonly headSha: string;
+    readonly incompleteReason: string | null;
+    readonly number: number;
+    readonly totalFileCount: number;
+}
+
 export type GitHubPullRequestChecksState =
     | "failure"
     | "pending"
@@ -1379,6 +1393,11 @@ export interface GitHubListPullRequestsResult {
 }
 
 export interface GitHubGetPullRequestInput extends GitHubRepositoryInput {
+    readonly number: number;
+}
+
+export interface GitHubGetPullRequestDiffInput
+    extends GitHubRepositoryInput {
     readonly number: number;
 }
 
@@ -3068,6 +3087,9 @@ export interface ComandoApi {
     getGitHubPullRequest: (
         input: GitHubGetPullRequestInput,
     ) => Promise<GitHubPullRequestDetail | null>;
+    getGitHubPullRequestDiff: (
+        input: GitHubGetPullRequestDiffInput,
+    ) => Promise<GitHubPullRequestDiffResult>;
     listGitHubPullRequestChecks: (
         input: GitHubPullRequestChecksInput,
     ) => Promise<GitHubPullRequestChecksResult>;

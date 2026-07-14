@@ -64,6 +64,7 @@ import {
     type GitHubCreatePullRequestInput,
     type GitHubGetIssueInput,
     type GitHubGetPullRequestInput,
+    type GitHubGetPullRequestDiffInput,
     type GitHubIssueDetail,
     type GitHubListLabelsInput,
     type GitHubListLabelsResult,
@@ -80,6 +81,7 @@ import {
     type GitHubPullRequestChecksInput,
     type GitHubPullRequestChecksResult,
     type GitHubPullRequestDetail,
+    type GitHubPullRequestDiffResult,
     type GitHubCreateReleaseInput,
     type GitHubGeneratedReleaseNotes,
     type GitHubGenerateReleaseNotesInput,
@@ -298,6 +300,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.reopenGitHubIssue);
     ipcMain.removeHandler(IPC_CHANNELS.listGitHubPullRequests);
     ipcMain.removeHandler(IPC_CHANNELS.getGitHubPullRequest);
+    ipcMain.removeHandler(IPC_CHANNELS.getGitHubPullRequestDiff);
     ipcMain.removeHandler(IPC_CHANNELS.listGitHubPullRequestChecks);
     ipcMain.removeHandler(IPC_CHANNELS.createGitHubPullRequest);
     ipcMain.removeHandler(IPC_CHANNELS.commentGitHubPullRequest);
@@ -1225,6 +1228,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             input: GitHubGetPullRequestInput,
         ): Promise<GitHubPullRequestDetail | null> =>
             options.githubService.getPullRequest(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getGitHubPullRequestDiff,
+        async (
+            _event,
+            input: GitHubGetPullRequestDiffInput,
+        ): Promise<GitHubPullRequestDiffResult> =>
+            options.githubService.getPullRequestDiff(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.listGitHubPullRequestChecks,

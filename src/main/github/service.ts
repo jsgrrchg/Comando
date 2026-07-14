@@ -20,6 +20,7 @@ import type {
     GitHubCreatePullRequestInput,
     GitHubGetIssueInput,
     GitHubGetPullRequestInput,
+    GitHubGetPullRequestDiffInput,
     GitHubIssueDetail,
     GitHubListLabelsInput,
     GitHubListLabelsResult,
@@ -36,6 +37,7 @@ import type {
     GitHubPullRequestChecksInput,
     GitHubPullRequestChecksResult,
     GitHubPullRequestDetail,
+    GitHubPullRequestDiffResult,
     GitHubCreateReleaseInput,
     GitHubGeneratedReleaseNotes,
     GitHubGenerateReleaseNotesInput,
@@ -95,6 +97,9 @@ export interface GitHubGateway {
     getPullRequest(
         input: GitHubGetPullRequestInput,
     ): Promise<GitHubPullRequestDetail | null>;
+    getPullRequestDiff(
+        input: GitHubGetPullRequestDiffInput,
+    ): Promise<GitHubPullRequestDiffResult>;
     listIssues(input: GitHubListIssuesInput): Promise<GitHubListIssuesResult>;
     listLabels(input: GitHubListLabelsInput): Promise<GitHubListLabelsResult>;
     listPullRequests(
@@ -283,6 +288,14 @@ export class GitHubService implements GitHubGateway {
         return await (
             await this.#createClient(input.repository.host)
         ).getPullRequest(input);
+    }
+
+    async getPullRequestDiff(
+        input: GitHubGetPullRequestDiffInput,
+    ): Promise<GitHubPullRequestDiffResult> {
+        return await (
+            await this.#createClient(input.repository.host)
+        ).getPullRequestDiff(input);
     }
 
     async listPullRequestChecks(
