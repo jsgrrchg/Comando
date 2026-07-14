@@ -29,11 +29,11 @@ describe("git-store history", () => {
         );
     });
 
-    it("keeps the newest project worktree inventory across cached contexts", () => {
+    it("keeps the newest submillisecond worktree inventory across cached contexts", () => {
         useGitStore.getState().ingestSnapshot(
             createSnapshot({
                 currentWorktreeId: "worktree-1",
-                updatedAt: "2026-07-14T12:01:00.000Z",
+                updatedAt: "2026-07-14T12:01:00.123456700Z",
                 worktrees: [
                     createWorktree("project-1:primary", "main", true),
                     createWorktree("worktree-1", "feature/current"),
@@ -43,7 +43,7 @@ describe("git-store history", () => {
         useGitStore.getState().ingestSnapshot(
             createSnapshot({
                 currentWorktreeId: "worktree-2",
-                updatedAt: "2026-07-14T12:02:00.000Z",
+                updatedAt: "2026-07-14T12:01:00.123789900Z",
                 worktrees: [
                     createWorktree("project-1:primary", "main", true),
                     createWorktree("worktree-2", "feature/new"),
@@ -53,7 +53,7 @@ describe("git-store history", () => {
         useGitStore.getState().ingestSnapshot(
             createSnapshot({
                 currentWorktreeId: "worktree-1",
-                updatedAt: "2026-07-14T12:01:00.000Z",
+                updatedAt: "2026-07-14T12:01:00.123456700Z",
                 worktrees: [
                     createWorktree("project-1:primary", "main", true),
                     createWorktree("worktree-1", "feature/stale"),

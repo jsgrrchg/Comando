@@ -1395,7 +1395,56 @@ function isSnapshotNewerThanWorktreeInventory(
         return true;
     }
 
-    return Date.parse(snapshot.updatedAt) > Date.parse(currentUpdatedAt);
+    const snapshotTimestamp = rfc3339TimestampToNanoseconds(snapshot.updatedAt);
+    const currentTimestamp = rfc3339TimestampToNanoseconds(currentUpdatedAt);
+    if (snapshotTimestamp === null || currentTimestamp === null) {
+        return snapshot.updatedAt > currentUpdatedAt;
+    }
+
+    return snapshotTimestamp > currentTimestamp;
+}
+
+function rfc3339TimestampToNanoseconds(timestamp: string): bigint | null {
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/.exec(
+        timestamp,
+    );
+    if (!match) {
+        return null;
+    }
+
+    const [
+        ,
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        fraction = "",
+        timezone,
+    ] = match;
+    const timezoneOffsetMinutes =
+        timezone === "Z"
+            ? 0
+            : (Number(timezone.slice(1, 3)) * 60 +
+                  Number(timezone.slice(4, 6))) *
+              (timezone.startsWith("+") ? 1 : -1);
+    const milliseconds =
+        Date.UTC(
+            Number(year),
+            Number(month) - 1,
+            Number(day),
+            Number(hour),
+            Number(minute),
+            Number(second),
+        ) -
+        timezoneOffsetMinutes * 60_000;
+    if (!Number.isFinite(milliseconds)) {
+        return null;
+    }
+
+    const nanoseconds = BigInt(`${fraction}000000000`.slice(0, 9));
+    return BigInt(milliseconds) * 1_000_000n + nanoseconds;
 }
 
 function clearCleanWorktreeDiffState(
