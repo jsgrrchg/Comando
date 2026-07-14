@@ -1,6 +1,6 @@
 import type {
     GitCommitDetail,
-    GitCommitFileDiff,
+    GitRevisionFileDiff,
     GitHistoryCommitSummary,
 } from "@shared/ipc";
 
@@ -295,10 +295,12 @@ export function buildGitHistoryGraphRows(
 }
 
 export function convertCommitFilesToDiffFiles(
-    files: readonly GitCommitFileDiff[],
+    files: readonly GitRevisionFileDiff[],
 ): readonly GitDiffFile[] {
-    return files.map((file) => convertCommitFileToDiffFile(file));
+    return files.map((file) => convertRevisionFileToDiffFile(file));
 }
+
+export const convertRevisionFilesToDiffFiles = convertCommitFilesToDiffFiles;
 
 export function getTemporalGroupLabel(dateStr: string): string {
     const date = new Date(dateStr);
@@ -416,7 +418,7 @@ export function getRefPillStyle(kind: string): GitRefPillTone {
     }
 }
 
-function convertCommitFileToDiffFile(file: GitCommitFileDiff): GitDiffFile {
+function convertRevisionFileToDiffFile(file: GitRevisionFileDiff): GitDiffFile {
     return {
         hunks: file.hunks.map((hunk) => {
             let oldLine = hunk.oldStart;
@@ -469,6 +471,10 @@ function convertCommitFileToDiffFile(file: GitCommitFileDiff): GitDiffFile {
         previousPath: file.previousPath,
         reversible: file.reversible,
         statusLabel: file.statusLabel,
+        emptyState:
+            file.contentState === "unavailable"
+                ? "Diff content is unavailable from GitHub."
+                : undefined,
         summary: formatGitCountLabel(file.additions, file.deletions),
     };
 }
