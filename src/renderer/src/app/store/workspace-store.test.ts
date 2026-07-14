@@ -339,7 +339,7 @@ describe("workspace file opening", () => {
         expect(persistedSnapshot).toMatchObject({
             activeContextKey: "project-1::__primary__",
             openContextKeys: ["project-1::__primary__"],
-            version: 2,
+            version: 3,
         });
         expect(persistedSnapshot?.contexts).toHaveLength(1);
         expect(persistedSnapshot?.contexts[0]?.workspace.tabs).toEqual([
@@ -368,7 +368,7 @@ describe("workspace file opening", () => {
         expect(snapshot).toMatchObject({
             activeContextKey: "project-1::__primary__",
             openContextKeys: ["project-1::__primary__"],
-            version: 2,
+            version: 3,
         });
         expect(snapshot?.contexts).toHaveLength(1);
         expect(snapshot?.contexts[0]).toMatchObject({

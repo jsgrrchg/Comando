@@ -420,7 +420,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 },
             ],
             openContextKeys: [context.key],
-            version: 2,
+            version: 3,
         };
     },
 
@@ -3149,7 +3149,7 @@ function invalidateInactiveContextFileDocuments(
 function isWorkspaceNavigationSnapshot(
     snapshot: PersistedWorkspaceSnapshot,
 ): snapshot is WorkspaceNavigationSnapshot {
-    return "version" in snapshot && snapshot.version === 2;
+    return "version" in snapshot && snapshot.version === 3;
 }
 
 function resolveWorkspaceNavigationSnapshot(
@@ -3191,7 +3191,7 @@ function workspaceStoreToNavigationSnapshot(
                 : null,
         contexts,
         openContextKeys: contexts.map((context) => context.key),
-        version: 2,
+        version: 3,
     };
 }
 

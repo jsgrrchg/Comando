@@ -81,7 +81,7 @@ describe("createNativeAppDataClient", () => {
             activeContextKey: null,
             contexts: [],
             openContextKeys: [],
-            version: 2,
+            version: 3,
         });
         const firstWindowId = firstWindow.windowContext?.windowId;
         if (!firstWindowId) {
@@ -408,7 +408,7 @@ function workspaceNavigation(
             },
         ],
         openContextKeys: [key],
-        version: 2,
+        version: 3,
     };
 }
 
