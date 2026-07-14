@@ -1841,12 +1841,16 @@ function mapPullRequestDiffFile(
                 : "update";
     const path = file.filename ?? `unknown-file-${index}`;
     const patch = file.patch?.trim() ?? "";
+    const hunks = patch
+        ? parseUnifiedDiffHunks(patch, `github-pr:${index}:${path}`)
+        : [];
+    const contentState = hunks.length > 0 ? "available" : "unavailable";
     return {
         additions: file.additions ?? null,
-        contentState: patch ? "available" : "unavailable",
+        contentState,
         deletions: file.deletions ?? null,
-        hunks: patch ? parseUnifiedDiffHunks(patch, `github-pr:${index}:${path}`) : [],
-        isText: Boolean(patch),
+        hunks,
+        isText: contentState === "available",
         kind,
         newText: null,
         oldText: null,

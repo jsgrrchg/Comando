@@ -13,9 +13,14 @@ import { buildEditorFontFamily } from "@renderer/app/settings/theme";
 import { GitDiffsView } from "@renderer/components/git";
 
 import { IdeActionButton } from "./ide-bar";
+import {
+    persistGitCommitDiffCollapseState,
+    readPersistedGitCommitDiffCollapseState,
+} from "./gitCommitDiffCollapsePersistence";
 
 export function GitRevisionDiffView({
     additions,
+    collapseStorageKey,
     deletions,
     files,
     leadingContent,
@@ -23,6 +28,7 @@ export function GitRevisionDiffView({
     totalFileCount,
 }: {
     readonly additions: number;
+    readonly collapseStorageKey?: string;
     readonly deletions: number;
     readonly files: readonly GitRevisionFileDiff[];
     readonly leadingContent?: ReactNode;
@@ -35,7 +41,11 @@ export function GitRevisionDiffView({
         [files],
     );
     const [collapsedFileIds, setCollapsedFileIds] = useState<readonly string[]>(
-        [],
+        () =>
+            collapseStorageKey
+                ? (readPersistedGitCommitDiffCollapseState(collapseStorageKey)
+                      ?.collapsedFileIds ?? [])
+                : [],
     );
     const collapsedFileIdSet = useMemo(
         () => new Set(collapsedFileIds),
@@ -44,18 +54,26 @@ export function GitRevisionDiffView({
     const allCollapsed =
         diffFiles.length > 0 &&
         diffFiles.every((file) => collapsedFileIdSet.has(file.id));
+    const setAndPersistCollapsedFileIds = useCallback((next: readonly string[]) => {
+        setCollapsedFileIds(next);
+        if (collapseStorageKey) {
+            persistGitCommitDiffCollapseState(collapseStorageKey, next);
+        }
+    }, [collapseStorageKey]);
     const toggleFile = useCallback((fileId: string) => {
-        setCollapsedFileIds((current) =>
-            current.includes(fileId)
+        setCollapsedFileIds((current) => {
+            const next = current.includes(fileId)
                 ? current.filter((id) => id !== fileId)
-                : [...current, fileId],
-        );
-    }, []);
+                : [...current, fileId];
+            if (collapseStorageKey) {
+                persistGitCommitDiffCollapseState(collapseStorageKey, next);
+            }
+            return next;
+        });
+    }, [collapseStorageKey]);
     const toggleAll = useCallback(() => {
-        setCollapsedFileIds(
-            allCollapsed ? [] : diffFiles.map((file) => file.id),
-        );
-    }, [allCollapsed, diffFiles]);
+        setAndPersistCollapsedFileIds(allCollapsed ? [] : diffFiles.map((file) => file.id));
+    }, [allCollapsed, diffFiles, setAndPersistCollapsedFileIds]);
 
     return (
         <div className="flex min-h-0 flex-1 flex-col">

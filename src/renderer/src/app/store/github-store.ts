@@ -105,7 +105,7 @@ export interface GitHubStoreState {
     >;
     readonly pullRequestDiffsByRepo: Record<
         string,
-        Record<number, GitHubPullRequestDiffResult | null>
+        Record<string, GitHubPullRequestDiffResult | null>
     >;
     readonly pullRequestsByRepo: Record<
         string,
@@ -631,7 +631,14 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
 
     ensurePullRequestDiff: async (ref, number, options = {}) => {
         const repoKey = getRepoKey(ref);
-        const cached = get().pullRequestDiffsByRepo[repoKey]?.[number];
+        const detail = get().pullRequestDetailsByRepo[repoKey]?.[number];
+        const snapshotKey = getPullRequestDiffKey(
+            repoKey,
+            number,
+            detail?.base.sha ?? "",
+            detail?.head.sha ?? "",
+        );
+        const cached = get().pullRequestDiffsByRepo[repoKey]?.[snapshotKey];
         if (!options.force && cached !== undefined) return cached;
         return await withLoading(set, `${repoKey}:pr:${number}:diff`, async () => {
             const diff = await getComandoApi().getGitHubPullRequestDiff({
@@ -643,7 +650,12 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
                     ...state.pullRequestDiffsByRepo,
                     [repoKey]: {
                         ...(state.pullRequestDiffsByRepo[repoKey] ?? {}),
-                        [number]: diff,
+                        [getPullRequestDiffKey(
+                            repoKey,
+                            number,
+                            diff.baseSha,
+                            diff.headSha,
+                        )]: diff,
                     },
                 },
             }));
@@ -1159,6 +1171,15 @@ export function getGitHubPullRequestChecksKey(
     headSha: string,
 ): string {
     return getPullRequestChecksKey(getRepoKey(ref), headSha);
+}
+
+export function getGitHubPullRequestDiffKey(
+    ref: GitHubRepositoryRef,
+    number: number,
+    baseSha: string,
+    headSha: string,
+): string {
+    return getPullRequestDiffKey(getRepoKey(ref), number, baseSha, headSha);
 }
 
 export function getGitHubWorkflowRunsKey(
@@ -1839,6 +1860,15 @@ function getRepoKey(ref: GitHubRepositoryRef): string {
 
 function getPullRequestChecksKey(repoKey: string, headSha: string): string {
     return `${repoKey}:pr-checks:${headSha}`;
+}
+
+function getPullRequestDiffKey(
+    repoKey: string,
+    number: number,
+    baseSha: string,
+    headSha: string,
+): string {
+    return `${repoKey}:pr:${number}:diff:${baseSha || "unknown"}:${headSha || "unknown"}`;
 }
 
 function getWorkflowRunsKey(repoKey: string, headSha: string): string {

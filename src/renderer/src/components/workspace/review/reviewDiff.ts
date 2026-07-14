@@ -1,4 +1,5 @@
 import type { AiDiffHunk, AiFileDiff, AiTrackedFile } from "@shared/ipc";
+import { parseUnifiedDiffHunks as parseSharedUnifiedDiffHunks } from "@shared/diff/unified-diff";
 
 export interface DiffLine {
     readonly type: "add" | "context" | "remove" | "separator";
@@ -45,9 +46,6 @@ export const DIFF_CONTEXT_LINES = 5;
 export const DIFF_PANEL_MAX_HEIGHT = 520;
 export const DIFF_ZOOM_MIN = 0.64;
 export const DIFF_ZOOM_MAX = 0.96;
-
-const UNIFIED_DIFF_HUNK_HEADER_REGEX =
-    /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
 interface DiffOp {
     readonly type: "add" | "context" | "remove";
@@ -511,73 +509,7 @@ export function computeApproximateDiffLines(
 }
 
 export function parseUnifiedDiffHunks(text: string): AiDiffHunk[] {
-    const hunks: AiDiffHunk[] = [];
-    let currentHunk: {
-        id: string;
-        lines: Array<{
-            id: string;
-            text: string;
-            type: "add" | "context" | "remove";
-        }>;
-        oldCount: number;
-        oldStart: number;
-        newCount: number;
-        newStart: number;
-    } | null = null;
-    let lineIndex = 0;
-
-    for (const rawLine of text.split("\n")) {
-        const headerMatch = UNIFIED_DIFF_HUNK_HEADER_REGEX.exec(rawLine);
-        if (headerMatch) {
-            currentHunk = {
-                id: `unified-hunk:${hunks.length}`,
-                oldStart: Number.parseInt(headerMatch[1] ?? "0", 10),
-                oldCount: Number.parseInt(headerMatch[2] ?? "1", 10),
-                newStart: Number.parseInt(headerMatch[3] ?? "0", 10),
-                newCount: Number.parseInt(headerMatch[4] ?? "1", 10),
-                lines: [],
-            };
-            hunks.push(currentHunk);
-            continue;
-        }
-
-        if (!currentHunk || rawLine === "\\ No newline at end of file") {
-            continue;
-        }
-
-        const marker = rawLine[0];
-        const textContent = rawLine.slice(1);
-        if (marker === " ") {
-            currentHunk.lines.push({
-                id: `unified-line:${lineIndex}`,
-                text: textContent,
-                type: "context",
-            });
-            lineIndex += 1;
-            continue;
-        }
-
-        if (marker === "-") {
-            currentHunk.lines.push({
-                id: `unified-line:${lineIndex}`,
-                text: textContent,
-                type: "remove",
-            });
-            lineIndex += 1;
-            continue;
-        }
-
-        if (marker === "+") {
-            currentHunk.lines.push({
-                id: `unified-line:${lineIndex}`,
-                text: textContent,
-                type: "add",
-            });
-            lineIndex += 1;
-        }
-    }
-
-    return hunks.filter((hunk) => hunk.lines.length > 0);
+    return parseSharedUnifiedDiffHunks(text) as AiDiffHunk[];
 }
 
 export function computeUnifiedDiffLines(text: string): readonly DiffLine[] {
