@@ -513,7 +513,7 @@ export function GitHubCommentList({
     }
 
     return (
-        <div className="space-y-3">
+        <div className="divide-y divide-[color-mix(in_srgb,var(--color-border)_55%,transparent)]">
             {comments.map((comment) => {
                 const commentId = String(comment.id);
                 const isCopied = copiedCommentId === commentId;
@@ -531,11 +531,11 @@ export function GitHubCommentList({
 
                 return (
                     <article
-                        className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary"
+                        className="py-5 first:pt-0 last:pb-0"
                         key={comment.id}
                     >
-                        <div className="flex items-center justify-between gap-3 border-b border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-3 py-2">
-                            <div className="min-w-0 text-[11px] font-medium">
+                        <div className="flex items-center justify-between gap-3">
+                            <div className="min-w-0 text-[12px] font-semibold text-text-primary">
                                 {comment.author?.login ?? "ghost"}
                             </div>
                             <div className="flex shrink-0 items-center gap-2">
@@ -571,7 +571,7 @@ export function GitHubCommentList({
                             </div>
                         </div>
                         {isEditing ? (
-                            <div className="space-y-3 px-3 py-3">
+                            <div className="space-y-3 pt-3">
                                 <textarea
                                     className="min-h-32 w-full resize-y rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
                                     disabled={isUpdating}
@@ -588,14 +588,15 @@ export function GitHubCommentList({
                                         {updateError}
                                     </div>
                                 ) : null}
-                                <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2">
+                                <div className="border-t border-[color-mix(in_srgb,var(--color-border)_55%,transparent)] pt-3">
                                     <GitHubSectionLabel>
                                         Preview
                                     </GitHubSectionLabel>
-                                    <div className="mt-2 max-h-48 overflow-y-auto text-[12px] leading-5 text-text-secondary">
-                                            <MarkdownContent
-                                                content={
-                                                    commentDraft.trim() ||
+                                    <div className="github-document-markdown mt-3 max-h-48 overflow-y-auto">
+                                        <MarkdownContent
+                                            chatFontSize={14}
+                                            content={
+                                                commentDraft.trim() ||
                                                 "_No body._"
                                             }
                                         />
@@ -619,8 +620,9 @@ export function GitHubCommentList({
                                 </div>
                             </div>
                         ) : (
-                            <div className="px-3 py-3 text-[12px] leading-6 text-text-secondary">
+                            <div className="github-document-markdown pt-3">
                                 <MarkdownContent
+                                    chatFontSize={14}
                                     content={comment.body || "_No body._"}
                                 />
                             </div>
@@ -690,7 +692,7 @@ export function GitHubCommentComposer({
     }, [initialPreviewExpanded, trimmed.length]);
 
     return (
-        <div className="rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary p-3">
+        <div className="border-t border-[color-mix(in_srgb,var(--color-border)_55%,transparent)] pt-4">
             <textarea
                 className="min-h-28 w-full resize-y rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
                 disabled={disabled || isSubmitting}
@@ -742,7 +744,7 @@ export function GitHubCommentComposer({
                 </div>
             </div>
             {trimmed ? (
-                <div className="mt-3 rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2">
+                <div className="mt-4 border-t border-[color-mix(in_srgb,var(--color-border)_55%,transparent)] pt-3">
                     <div className="flex items-center justify-between gap-3">
                         <GitHubSectionLabel>
                             Preview before publishing
@@ -759,8 +761,11 @@ export function GitHubCommentComposer({
                         </button>
                     </div>
                     {isPreviewExpanded ? (
-                        <div className="mt-2 max-h-48 overflow-y-auto text-[12px] leading-5 text-text-secondary">
-                            <MarkdownContent content={trimmed} />
+                        <div className="github-document-markdown mt-3 max-h-48 overflow-y-auto">
+                            <MarkdownContent
+                                chatFontSize={14}
+                                content={trimmed}
+                            />
                         </div>
                     ) : null}
                 </div>
@@ -880,16 +885,6 @@ export type GitHubSectionTone =
     | "success"
     | "warn";
 
-const GITHUB_SECTION_TONE_BAR: Record<GitHubSectionTone, string> = {
-    accent: "var(--color-accent)",
-    danger: "var(--diff-remove)",
-    info: "color-mix(in srgb, var(--color-accent) 60%, var(--color-text-secondary))",
-    neutral:
-        "color-mix(in srgb, var(--color-text-secondary) 55%, transparent)",
-    success: "var(--diff-add)",
-    warn: "var(--diff-warn, #d99a3a)",
-};
-
 export function GitHubSection({
     actions,
     bodyClassName,
@@ -908,21 +903,14 @@ export function GitHubSection({
     readonly tone?: GitHubSectionTone;
 }) {
     return (
-        <section className="overflow-hidden rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary">
-            <header className="flex select-none flex-wrap items-center justify-between gap-2 border-b border-[color-mix(in_srgb,var(--color-border)_45%,transparent)] bg-[color-mix(in_srgb,var(--color-bg-tertiary)_55%,transparent)] px-3 py-2">
+        <section className="github-document-section" data-tone={tone}>
+            <header className="github-document-section__header flex select-none flex-wrap items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-2">
-                    <span
-                        aria-hidden="true"
-                        className="inline-block h-3.5 w-[3px] shrink-0 rounded-full"
-                        style={{
-                            background: GITHUB_SECTION_TONE_BAR[tone],
-                        }}
-                    />
-                    <span className="truncate text-[12px] font-semibold text-text-primary">
+                    <h2 className="github-document-section__title truncate">
                         {title}
-                    </span>
+                    </h2>
                     {count != null ? (
-                        <span className="shrink-0 rounded-full bg-bg-tertiary px-1.5 py-[1px] font-mono text-[10px] text-text-secondary">
+                        <span className="shrink-0 font-mono text-[11px] text-text-secondary">
                             {count}
                         </span>
                     ) : null}
@@ -934,7 +922,7 @@ export function GitHubSection({
                     </div>
                 ) : null}
             </header>
-            <div className={bodyClassName ?? "px-4 py-3"}>{children}</div>
+            <div className={bodyClassName ?? "pt-4"}>{children}</div>
         </section>
     );
 }
