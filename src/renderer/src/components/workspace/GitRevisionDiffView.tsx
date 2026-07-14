@@ -26,7 +26,7 @@ export function GitRevisionDiffView({
     readonly deletions: number;
     readonly files: readonly GitRevisionFileDiff[];
     readonly leadingContent?: ReactNode;
-    readonly scrollContainerRef: RefObject<HTMLElement | null>;
+    readonly scrollContainerRef?: RefObject<HTMLElement | null>;
     readonly totalFileCount: number;
 }) {
     const settings = useResolvedEditorSettings();

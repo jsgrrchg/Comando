@@ -19,6 +19,7 @@ import type {
     GitHubReleaseSummary,
     GitHubPullRequestChecksResult,
     GitHubPullRequestDetail,
+    GitHubPullRequestDiffResult,
     GitHubPullRequestSummary,
     GitHubRequestPullRequestReviewInput,
     GitHubRepositoryRef,
@@ -101,6 +102,10 @@ export interface GitHubStoreState {
     readonly pullRequestChecksByRepo: Record<
         string,
         Record<string, GitHubPullRequestChecksResult | null>
+    >;
+    readonly pullRequestDiffsByRepo: Record<
+        string,
+        Record<number, GitHubPullRequestDiffResult | null>
     >;
     readonly pullRequestsByRepo: Record<
         string,
@@ -198,6 +203,11 @@ export interface GitHubStoreState {
         number: number,
         options?: { readonly force?: boolean },
     ) => Promise<GitHubPullRequestDetail | null>;
+    ensurePullRequestDiff: (
+        ref: GitHubRepositoryRef,
+        number: number,
+        options?: { readonly force?: boolean },
+    ) => Promise<GitHubPullRequestDiffResult | null>;
     markPullRequestReady: (
         ref: GitHubRepositoryRef,
         number: number,
@@ -325,6 +335,7 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
     mutatingKeys: {},
     pullRequestDetailsByRepo: {},
     pullRequestChecksByRepo: {},
+    pullRequestDiffsByRepo: {},
     pullRequestListStateByRepo: {},
     pullRequestsByRepo: {},
     pullRequestsByRepoAndState: {},
@@ -361,6 +372,10 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
             ),
             pullRequestChecksByRepo: omitKey(
                 state.pullRequestChecksByRepo,
+                repoKey,
+            ),
+            pullRequestDiffsByRepo: omitKey(
+                state.pullRequestDiffsByRepo,
                 repoKey,
             ),
             pullRequestListStateByRepo: omitKey(
@@ -611,6 +626,28 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
                 upsertPullRequest(set, ref, detail);
             }
             return detail;
+        });
+    },
+
+    ensurePullRequestDiff: async (ref, number, options = {}) => {
+        const repoKey = getRepoKey(ref);
+        const cached = get().pullRequestDiffsByRepo[repoKey]?.[number];
+        if (!options.force && cached !== undefined) return cached;
+        return await withLoading(set, `${repoKey}:pr:${number}:diff`, async () => {
+            const diff = await getComandoApi().getGitHubPullRequestDiff({
+                number,
+                repository: ref,
+            });
+            set((state) => ({
+                pullRequestDiffsByRepo: {
+                    ...state.pullRequestDiffsByRepo,
+                    [repoKey]: {
+                        ...(state.pullRequestDiffsByRepo[repoKey] ?? {}),
+                        [number]: diff,
+                    },
+                },
+            }));
+            return diff;
         });
     },
 
@@ -1100,6 +1137,7 @@ export function resetGitHubStoreForTests(): void {
         mutatingKeys: {},
         pullRequestDetailsByRepo: {},
         pullRequestChecksByRepo: {},
+        pullRequestDiffsByRepo: {},
         pullRequestListStateByRepo: {},
         pullRequestsByRepo: {},
         pullRequestsByRepoAndState: {},
