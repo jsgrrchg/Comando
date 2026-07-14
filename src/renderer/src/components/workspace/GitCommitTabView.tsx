@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildGitRemoteCommitLink } from "@renderer/app/git/remote-link";
 import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
-import { buildEditorFontFamily } from "@renderer/app/settings/theme";
 import { openExternalUrl } from "@renderer/app/utils/external-url";
 import {
     convertCommitFilesToDiffFiles,
@@ -15,7 +14,6 @@ import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import type { RuntimeWorkspaceGitCommitTab } from "@renderer/app/workspace/tree";
 import {
     GitAuthorAvatar,
-    GitDiffsView,
     GitEmptyState,
 } from "@renderer/components/git";
 import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/usePersistedWorkspaceScroll";
@@ -25,6 +23,7 @@ import {
     readPersistedGitCommitDiffCollapseState,
 } from "./gitCommitDiffCollapsePersistence";
 import { MarkdownContent } from "./MarkdownContent";
+import { GitRevisionDiffView } from "./GitRevisionDiffView";
 import { IdeActionButton } from "./ide-bar";
 
 const EMPTY_LOADING_SHAS: readonly string[] = [];
@@ -81,9 +80,7 @@ export function GitCommitTabView({
         snapshot?.remotes ?? [],
         tab.commitSha,
     );
-    const codeFontFamily = buildEditorFontFamily(editorSettings.fontFamily);
     const codeFontSize = editorSettings.fontSize;
-    const codeLineHeight = editorSettings.lineHeight;
     const authorFontSize = Math.max(13, Math.round(codeFontSize * 0.92));
     const metadataFontSize = Math.max(11, Math.round(codeFontSize * 0.82));
     const refFontSize = Math.max(10, Math.round(codeFontSize * 0.76));
@@ -94,10 +91,6 @@ export function GitCommitTabView({
 
     const diffFileIdsKey = useMemo(
         () => diffFiles.map((file) => file.id).join("|"),
-        [diffFiles],
-    );
-    const diffFileIdSet = useMemo(
-        () => new Set(diffFiles.map((file) => file.id)),
         [diffFiles],
     );
     const diffCollapseStorageKey = useMemo(
@@ -154,26 +147,6 @@ export function GitCommitTabView({
     const allCollapsed =
         diffFiles.length > 0 &&
         diffFiles.every((file) => collapsedFileIdSet.has(file.id));
-
-    const handleToggleFileCollapse = useCallback(
-        (fileId: string) => {
-            const visibleCollapsedFileIds = collapsedFileIds.filter((id) =>
-                diffFileIdSet.has(id),
-            );
-            const nextIds = collapsedFileIdSet.has(fileId)
-                ? visibleCollapsedFileIds.filter((id) => id !== fileId)
-                : [...visibleCollapsedFileIds, fileId];
-
-            setCollapsedFileIds(nextIds);
-            persistGitCommitDiffCollapseState(diffCollapseStorageKey, nextIds);
-        },
-        [
-            collapsedFileIds,
-            collapsedFileIdSet,
-            diffCollapseStorageKey,
-            diffFileIdSet,
-        ],
-    );
 
     const handleToggleAllFiles = useCallback(() => {
         const nextIds = allCollapsed ? [] : diffFiles.map((file) => file.id);
@@ -416,18 +389,13 @@ export function GitCommitTabView({
                 onScroll={handleCommitScroll}
                 ref={setCommitScrollContainer}
             >
-                <GitDiffsView
-                    codeFontFamily={codeFontFamily}
-                    codeFontSize={codeFontSize}
-                    codeLineHeight={codeLineHeight}
-                    collapsedFileIds={collapsedFileIds}
-                    displayMode="stack"
-                    files={diffFiles}
-                    lineWrapping={false}
-                    onToggleFileCollapse={handleToggleFileCollapse}
+                <GitRevisionDiffView
+                    additions={detail.insertions}
+                    collapseStorageKey={diffCollapseStorageKey}
+                    deletions={detail.deletions}
+                    files={detail.files}
                     scrollContainerRef={commitScrollContainerRef}
-                    showFileSelector={false}
-                    surfaceVariant="flat"
+                    totalFileCount={detail.changedFileCount}
                 />
             </section>
         </div>

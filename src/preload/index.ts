@@ -101,6 +101,7 @@ import {
     type GitHubCreatePullRequestInput,
     type GitHubGetIssueInput,
     type GitHubGetPullRequestInput,
+    type GitHubGetPullRequestDiffInput,
     type GitHubIssueDetail,
     type GitHubListLabelsInput,
     type GitHubListLabelsResult,
@@ -117,6 +118,7 @@ import {
     type GitHubPullRequestChecksInput,
     type GitHubPullRequestChecksResult,
     type GitHubPullRequestDetail,
+    type GitHubPullRequestDiffResult,
     type GitHubCreateReleaseInput,
     type GitHubGeneratedReleaseNotes,
     type GitHubGenerateReleaseNotesInput,
@@ -1143,6 +1145,14 @@ const comandoApi: ComandoApi = {
         assertIpcObjectOrNull<GitHubPullRequestDetail>(
             IPC_CHANNELS.getGitHubPullRequest,
             await ipcRenderer.invoke(IPC_CHANNELS.getGitHubPullRequest, input),
+        ),
+    getGitHubPullRequestDiff: async (input: GitHubGetPullRequestDiffInput) =>
+        assertIpcObject<GitHubPullRequestDiffResult>(
+            IPC_CHANNELS.getGitHubPullRequestDiff,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.getGitHubPullRequestDiff,
+                input,
+            ),
         ),
     listGitHubPullRequestChecks: async (
         input: GitHubPullRequestChecksInput,

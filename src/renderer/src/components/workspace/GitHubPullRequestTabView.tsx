@@ -15,6 +15,7 @@ import type {
 import {
     EMPTY_GITHUB_LIST,
     getGitHubPullRequestChecksKey,
+    getGitHubPullRequestDiffKey,
     getGitHubRepoKey,
     useGitHubStore,
 } from "@renderer/app/store/github-store";
@@ -43,6 +44,7 @@ import {
     hasGitHubWritePermission,
     openGitHubWebUrl,
 } from "./GitHubWorkspacePrimitives";
+import { GitRevisionDiffView } from "./GitRevisionDiffView";
 import { GitHubActionsPanel } from "./GitHubActionsPanel";
 import { GitHubLabelPicker } from "./GitHubLabelPicker";
 import { MarkdownContent } from "./MarkdownContent";
@@ -64,6 +66,7 @@ export function GitHubPullRequestTabView({
     const repoKey = getGitHubRepoKey(repo);
     const [commentDraft, setCommentDraft] = useState("");
     const [showAllCommits, setShowAllCommits] = useState(false);
+    const [showChanges, setShowChanges] = useState(false);
     const [isEditingDescription, setIsEditingDescription] = useState(false);
     const [titleDraft, setTitleDraft] = useState("");
     const [descriptionDraft, setDescriptionDraft] = useState("");
@@ -84,6 +87,19 @@ export function GitHubPullRequestTabView({
                 ? state.pullRequestChecksByRepo[repoKey]?.[detail.head.sha]
                 : undefined,
     );
+    const pullRequestDiff = useGitHubStore(
+        (state) =>
+            detail
+                ? (state.pullRequestDiffsByRepo[repoKey]?.[
+                      getGitHubPullRequestDiffKey(
+                          repo,
+                          pullRequestNumber,
+                          detail.base.sha,
+                          detail.head.sha,
+                      )
+                  ] ?? null)
+                : null,
+    );
     const authStatus = useGitHubStore(
         (state) => state.authStatusByHost[repo.host] ?? null,
     );
@@ -97,7 +113,7 @@ export function GitHubPullRequestTabView({
         ? getGitHubPullRequestChecksKey(repo, detail.head.sha)
         : null;
 
-    const { isLoading, isLoadingChecks, isLoadingLabels } = useGitHubStore(
+    const { isLoading, isLoadingChanges, isLoadingChecks, isLoadingLabels } = useGitHubStore(
         useShallow((state) => ({
             isLoading:
                 state.loadingKeys[
@@ -106,6 +122,8 @@ export function GitHubPullRequestTabView({
             isLoadingChecks: checksKey
                 ? (state.loadingKeys[checksKey] ?? false)
                 : false,
+            isLoadingChanges:
+                state.loadingKeys[`${repoKey}:pr:${pullRequestNumber}:diff`] ?? false,
             isLoadingLabels: state.loadingKeys[`${repoKey}:labels`] ?? false,
         })),
     );
@@ -156,6 +174,7 @@ export function GitHubPullRequestTabView({
         updateError,
         labelMutationError,
         labelsError,
+        changesError,
     } = useGitHubStore(
         useShallow((state) => ({
             checksError: checksKey ? (state.errors[checksKey] ?? null) : null,
@@ -186,6 +205,8 @@ export function GitHubPullRequestTabView({
                     `${repoKey}:pr:${pullRequestNumber}:labels`
                 ] ?? null,
             labelsError: state.errors[`${repoKey}:labels`] ?? null,
+            changesError:
+                state.errors[`${repoKey}:pr:${pullRequestNumber}:diff`] ?? null,
         })),
     );
 
@@ -194,6 +215,9 @@ export function GitHubPullRequestTabView({
     );
     const ensurePullRequestDetail = useGitHubStore(
         (state) => state.ensurePullRequestDetail,
+    );
+    const ensurePullRequestDiff = useGitHubStore(
+        (state) => state.ensurePullRequestDiff,
     );
     const refreshPullRequestChecks = useGitHubStore(
         (state) => state.refreshPullRequestChecks,
@@ -271,6 +295,18 @@ export function GitHubPullRequestTabView({
     ]);
 
     useEffect(() => {
+        if (!showChanges || pullRequestDiff || isLoadingChanges) return;
+        void ensurePullRequestDiff(repo, pullRequestNumber).catch(() => undefined);
+    }, [
+        ensurePullRequestDiff,
+        isLoadingChanges,
+        pullRequestDiff,
+        pullRequestNumber,
+        repo,
+        showChanges,
+    ]);
+
+    useEffect(() => {
         if (
             authStatus?.state !== "authenticated" ||
             !detail?.head.sha ||
@@ -318,6 +354,11 @@ export function GitHubPullRequestTabView({
                         force: true,
                     },
                 ).catch(() => undefined);
+            }
+            if (showChanges || pullRequestDiff) {
+                await ensurePullRequestDiff(repo, pullRequestNumber, {
+                    force: true,
+                }).catch(() => undefined);
             }
         }
     };
@@ -463,12 +504,79 @@ export function GitHubPullRequestTabView({
         commits.length - COMMITS_PREVIEW_LIMIT,
     );
 
+    if (showChanges) {
+        return (
+            <GitHubTabShell
+                header={
+                    <GitHubTabHeader
+                        actions={
+                            <>
+                                <IdeActionButton onClick={() => setShowChanges(false)}>
+                                    Overview
+                                </IdeActionButton>
+                                <IdeActionButton onClick={() => void handleRefresh()}>
+                                    Refresh
+                                </IdeActionButton>
+                            </>
+                        }
+                        meta={detail ? <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-text-primary">{detail.title}</span> : null}
+                        repo={repo}
+                        title={`PR #${pullRequestNumber}`}
+                    />
+                }
+                scrollScope={{
+                    entityId: `${repoKey}/pulls/${pullRequestNumber}:changes`,
+                    projectId,
+                    surface: "github_pull_request_changes",
+                    worktreeId: worktreeId ?? null,
+                }}
+            >
+                {({ scrollContainerRef }) => (
+                    <div className="github-document flex min-h-full flex-col">
+                        <GitHubAuthNotice authStatus={authStatus} />
+                        {isLoadingChanges ? <div className="py-6 text-[12px] text-text-secondary">Loading pull request changes...</div> : null}
+                        {changesError ? <div className="space-y-3 py-3"><GitHubErrorState>{changesError}</GitHubErrorState><IdeActionButton onClick={() => void ensurePullRequestDiff(repo, pullRequestNumber, { force: true })}>Retry</IdeActionButton></div> : null}
+                        {pullRequestDiff ? (
+                            <>
+                                {detail ? (
+                                    <h1 className="github-document-title pb-2">
+                                        {detail.title}
+                                    </h1>
+                                ) : null}
+                                <div className="py-2 text-[11px] text-text-secondary">
+                                    {pullRequestDiff.incompleteReason ??
+                                        "Reviewing the net change in this pull request."}
+                                </div>
+                                <GitRevisionDiffView
+                                    additions={pullRequestDiff.additions}
+                                    collapseStorageKey={`github-pr-diff:${repoKey}:${pullRequestDiff.number}:${pullRequestDiff.baseSha}:${pullRequestDiff.headSha}`}
+                                    deletions={pullRequestDiff.deletions}
+                                    files={pullRequestDiff.files}
+                                    key={`${pullRequestDiff.baseSha}:${pullRequestDiff.headSha}`}
+                                    scrollContainerRef={scrollContainerRef}
+                                    totalFileCount={pullRequestDiff.totalFileCount}
+                                />
+                            </>
+                        ) : null}
+                    </div>
+                )}
+            </GitHubTabShell>
+        );
+    }
+
     return (
         <GitHubTabShell
             header={
                 <GitHubTabHeader
                     actions={
                         <>
+                            <IdeActionButton
+                                onClick={() => setShowChanges((current) => !current)}
+                            >
+                                {showChanges
+                                    ? "Overview"
+                                    : "View Changes"}
+                            </IdeActionButton>
                             <IdeActionButton
                                 onClick={() =>
                                     openGitHubWebUrl(
@@ -685,6 +793,50 @@ export function GitHubPullRequestTabView({
                                 </div>
                             ) : null}
                         </section>
+
+                        {showChanges ? (
+                            <GitHubSection
+                                title="Changes"
+                                tone="info"
+                            >
+                                {isLoadingChanges ? (
+                                    <div className="py-6 text-[12px] text-text-secondary">
+                                        Loading pull request changes...
+                                    </div>
+                                ) : changesError ? (
+                                    <div className="space-y-3 py-3">
+                                        <GitHubErrorState>
+                                            {changesError}
+                                        </GitHubErrorState>
+                                        <IdeActionButton
+                                            onClick={() =>
+                                                void ensurePullRequestDiff(
+                                                    repo,
+                                                    pullRequestNumber,
+                                                    { force: true },
+                                                )
+                                            }
+                                        >
+                                            Retry
+                                        </IdeActionButton>
+                                    </div>
+                                ) : pullRequestDiff ? (
+                                    <div className="-mx-5 flex min-h-[360px] flex-col">
+                                        {pullRequestDiff.incompleteReason ? (
+                                            <div className="px-5 py-2 text-[11px] text-[color:var(--diff-warn)]">
+                                                {pullRequestDiff.incompleteReason}
+                                            </div>
+                                        ) : null}
+                                        <GitRevisionDiffView
+                                            additions={pullRequestDiff.additions}
+                                            deletions={pullRequestDiff.deletions}
+                                            files={pullRequestDiff.files}
+                                            totalFileCount={pullRequestDiff.totalFileCount}
+                                        />
+                                    </div>
+                                ) : null}
+                            </GitHubSection>
+                        ) : null}
 
                         <GitHubSection
                             actions={

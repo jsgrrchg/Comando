@@ -80,6 +80,7 @@ export const IPC_CHANNELS = {
     reopenGitHubIssue: "github:reopen-issue",
     listGitHubPullRequests: "github:list-pull-requests",
     getGitHubPullRequest: "github:get-pull-request",
+    getGitHubPullRequestDiff: "github:get-pull-request-diff",
     listGitHubPullRequestChecks: "github:list-pull-request-checks",
     createGitHubPullRequest: "github:create-pull-request",
     updateGitHubPullRequest: "github:update-pull-request",
@@ -845,11 +846,15 @@ export interface GitFileDiff {
     readonly reversible: boolean;
 }
 
-export interface GitCommitFileDiff extends GitFileDiff {
+export interface GitRevisionFileDiff extends GitFileDiff {
     readonly additions: number | null;
+    /** Missing only when the value came from an older native backend. */
+    readonly contentState?: "available" | "unavailable";
     readonly deletions: number | null;
     readonly statusLabel: string | null;
 }
+
+export type GitCommitFileDiff = GitRevisionFileDiff;
 
 export interface GitRepositoryStatusSummary {
     readonly conflictedCount: number;
@@ -1310,6 +1315,19 @@ export interface GitHubPullRequestDetail extends GitHubPullRequestSummary {
     readonly mergeable: boolean | null;
 }
 
+export interface GitHubPullRequestDiffResult {
+    readonly additions: number;
+    readonly baseSha: string;
+    readonly contentComplete: boolean;
+    readonly deletions: number;
+    readonly fileListComplete: boolean;
+    readonly files: readonly GitRevisionFileDiff[];
+    readonly headSha: string;
+    readonly incompleteReason: string | null;
+    readonly number: number;
+    readonly totalFileCount: number;
+}
+
 export type GitHubPullRequestChecksState =
     | "failure"
     | "pending"
@@ -1375,6 +1393,11 @@ export interface GitHubListPullRequestsResult {
 }
 
 export interface GitHubGetPullRequestInput extends GitHubRepositoryInput {
+    readonly number: number;
+}
+
+export interface GitHubGetPullRequestDiffInput
+    extends GitHubRepositoryInput {
     readonly number: number;
 }
 
@@ -3064,6 +3087,9 @@ export interface ComandoApi {
     getGitHubPullRequest: (
         input: GitHubGetPullRequestInput,
     ) => Promise<GitHubPullRequestDetail | null>;
+    getGitHubPullRequestDiff: (
+        input: GitHubGetPullRequestDiffInput,
+    ) => Promise<GitHubPullRequestDiffResult>;
     listGitHubPullRequestChecks: (
         input: GitHubPullRequestChecksInput,
     ) => Promise<GitHubPullRequestChecksResult>;
