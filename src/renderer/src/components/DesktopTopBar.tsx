@@ -24,6 +24,7 @@ import { useProjectContextTabDrag } from "./useProjectContextTabDrag";
 export type { ProjectContextMenuProject } from "./ProjectContextMenu";
 
 export interface ProjectContextTabItem {
+    readonly fullPath: string | null;
     readonly key: string;
     readonly projectId: string;
     readonly projectName: string;
@@ -356,6 +357,28 @@ export function DesktopTopBar({
             {contextMenu ? (
                 <ContextMenu
                     entries={[
+                        {
+                            action: () => {
+                                const fullPath = contextMenu.payload.fullPath;
+                                if (!fullPath) {
+                                    return;
+                                }
+                                void (async () => {
+                                    try {
+                                        await navigator.clipboard.writeText(
+                                            fullPath,
+                                        );
+                                    } catch {
+                                        window.alert(
+                                            "Could not copy the project path.",
+                                        );
+                                    }
+                                })();
+                            },
+                            disabled: !contextMenu.payload.fullPath,
+                            label: "Copy Full Path",
+                        },
+                        { type: "separator" },
                         {
                             action: () =>
                                 onMoveContextToNewWindow(

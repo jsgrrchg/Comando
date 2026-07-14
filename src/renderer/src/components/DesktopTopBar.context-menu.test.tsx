@@ -12,6 +12,7 @@ const mountedRoots: Root[] = [];
 const mountedContainers: HTMLDivElement[] = [];
 
 afterEach(() => {
+    vi.unstubAllGlobals();
     for (const root of mountedRoots.splice(0)) {
         act(() => root.unmount());
     }
@@ -35,6 +36,7 @@ function renderTopBar() {
                 activeContextKey: "project-1::__primary__",
                 contexts: [
                     {
+                        fullPath: "/projects/comando",
                         key: "project-1::__primary__",
                         projectId: "project-1",
                         projectName: "Comando",
@@ -42,6 +44,7 @@ function renderTopBar() {
                         worktreeLabel: "main",
                     },
                     {
+                        fullPath: "/projects/sandbox",
                         key: "project-2::__primary__",
                         projectId: "project-2",
                         projectName: "Sandbox",
@@ -82,6 +85,11 @@ function getContextMenuButton(label: string): HTMLButtonElement {
 
 describe("DesktopTopBar context menu", () => {
     it("offers move and close actions for the context clicked with the secondary button", async () => {
+        const writeText = vi.fn(() => Promise.resolve());
+        vi.stubGlobal("navigator", {
+            ...navigator,
+            clipboard: { writeText },
+        });
         const { container, onCloseContext, onMoveContextToNewWindow } =
             renderTopBar();
         const tab = container.querySelector<HTMLElement>(
@@ -100,8 +108,26 @@ describe("DesktopTopBar context menu", () => {
             );
         });
 
+        expect(getContextMenuButton("Copy Full Path")).toBeTruthy();
         expect(getContextMenuButton("Move to New Window")).toBeTruthy();
         expect(getContextMenuButton("Close")).toBeTruthy();
+
+        await act(async () => {
+            getContextMenuButton("Copy Full Path").click();
+            await Promise.resolve();
+        });
+        expect(writeText).toHaveBeenCalledWith("/projects/sandbox");
+
+        act(() => {
+            tab?.dispatchEvent(
+                new MouseEvent("contextmenu", {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: 120,
+                    clientY: 40,
+                }),
+            );
+        });
 
         await act(async () => {
             getContextMenuButton("Move to New Window").click();
