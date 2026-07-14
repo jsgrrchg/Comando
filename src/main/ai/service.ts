@@ -227,6 +227,7 @@ const DEFAULT_AI_SESSION_RETENTION_CONFIG: AiSessionRetentionConfig = {
     maxHotSessionsPerWindow: 6,
 };
 const RECENT_NATIVE_REVIEW_CONTEXT_TTL_MS = 60_000;
+const RETENTION_CLOSE_EVENT_GRACE_MS = 60_000;
 
 function isResyncEligibleAiSessionStatus(
     status: AiSessionSnapshot["status"],
@@ -275,6 +276,15 @@ interface AiSessionRetentionSkippedRecord {
     readonly sessionId: string;
     readonly skippedAtMs: number;
     readonly skippedReason: AiSessionFreezeSkippedReason;
+}
+
+interface AiSessionRetentionCandidate {
+    readonly reason: AiSessionFreezeReason;
+    readonly sessionId: string;
+    readonly touch: {
+        readonly lastUsedAtMs: number;
+        readonly order: number;
+    };
 }
 
 interface AiSchedulerTask<T> {
@@ -439,6 +449,14 @@ interface PendingNativeCatalogPatch {
 export class AiService {
     readonly #deletedSessionIds = new Set<string>();
     readonly #freezingSessionIds = new Set<string>();
+    readonly #frozenSessionIds = new Set<string>();
+    readonly #retentionCloseEventSessionIds = new Set<string>();
+    readonly #retentionCloseRuntimeSessionIds = new Map<string, Set<string>>();
+    readonly #retentionCloseRuntimeSessionTimers = new Map<
+        string,
+        ReturnType<typeof setTimeout>
+    >();
+    readonly #retentionFreezePromises = new Map<string, Promise<void>>();
     readonly #lastRetentionCloseRecords: AiSessionRetentionCloseRecord[] = [];
     readonly #lastRetentionSkippedRecords: AiSessionRetentionSkippedRecord[] = [];
     readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
@@ -545,6 +563,9 @@ export class AiService {
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
         this.#liveSessionTouches.clear();
+        for (const sessionId of this.#retentionCloseRuntimeSessionIds.keys()) {
+            this.#forgetRetentionCloseRuntimeSessions(sessionId);
+        }
     }
 
     getSchedulerDiagnostics(): AiSchedulerDiagnostics {
@@ -679,6 +700,14 @@ export class AiService {
         event: AiSessionDomainEvent,
     ): void {
         if (this.#deletedSessionIds.has(event.sessionId)) {
+            return;
+        }
+
+        // The runtime can deliver its close event after a retained session has
+        // already been prepared again. Consume the close for the specific old
+        // runtime session before it reaches snapshots, the renderer, or the
+        // prompt queue.
+        if (this.#consumeRetentionCloseEvent(event)) {
             return;
         }
 
@@ -1319,6 +1348,10 @@ export class AiService {
         input: EnqueueAiPromptInput,
         ownerWindowId: string,
     ): AiPromptQueueSnapshot {
+        // Count the user's action before the asynchronous queue dispatcher
+        // starts. This prevents a stale retention candidate from closing the
+        // session just as a new prompt is being queued.
+        this.#touchLiveSession(input.sessionId);
         return this.#promptQueue.enqueue(input, ownerWindowId);
     }
 
@@ -1381,6 +1414,7 @@ export class AiService {
         ownerWindowId: string,
     ): Promise<AiPromptResult> {
         await this.#waitForReviewMutations(input.sessionId);
+        await this.#waitForRetentionFreeze(input.sessionId);
         const launch = await this.#buildNativeSessionLaunchInput(
             input,
             ownerWindowId,
@@ -1480,10 +1514,27 @@ export class AiService {
                                 input.messageId,
                             );
                     }
-                    const promptResult = await nativeAi.sendPrompt({
-                        input,
-                        launch,
-                    });
+                    let promptResult: AiPromptResult;
+                    try {
+                        promptResult = await nativeAi.sendPrompt({
+                            input,
+                            launch,
+                        });
+                    } catch (error) {
+                        if (!isNativeAiSessionNotFoundError(error)) {
+                            throw error;
+                        }
+
+                        // A runtime can evict an otherwise live session. The
+                        // not-found response is definitive, so recreate once
+                        // and retry this exact prompt without duplicating it.
+                        debugBenignError("ai.service.recoverPrompt", error);
+                        await this.#recoverMissingLiveSession(input.sessionId);
+                        promptResult = await nativeAi.sendPrompt({
+                            input,
+                            launch,
+                        });
+                    }
                     if (promptResult.stopReason === "accepted") {
                         const terminalStatusAlreadySeen =
                             this.#markNativeReviewPromptAccepted(
@@ -1840,8 +1891,14 @@ export class AiService {
     }
 
     async deleteSession(sessionId: string): Promise<void> {
+        this.#frozenSessionIds.delete(sessionId);
+        this.#retentionCloseEventSessionIds.delete(sessionId);
+        this.#forgetRetentionCloseRuntimeSessions(sessionId);
         const subtreeSessionIds = await this.#collectSessionSubtreeIds(sessionId);
         for (const subtreeSessionId of subtreeSessionIds) {
+            this.#frozenSessionIds.delete(subtreeSessionId);
+            this.#retentionCloseEventSessionIds.delete(subtreeSessionId);
+            this.#forgetRetentionCloseRuntimeSessions(subtreeSessionId);
             this.#deletedSessionIds.add(subtreeSessionId);
         }
         try {
@@ -2526,23 +2583,21 @@ export class AiService {
     async #runSessionRetentionSweep(): Promise<void> {
         const candidates = this.#selectRetentionCandidates();
         for (const candidate of candidates) {
-            await this.#freezeSessionForRetention(
-                candidate.sessionId,
-                candidate.reason,
-            );
+            await this.#freezeSessionForRetention(candidate);
         }
     }
 
-    #selectRetentionCandidates(): readonly {
-        readonly reason: AiSessionFreezeReason;
-        readonly sessionId: string;
-    }[] {
-        const candidates = new Map<string, AiSessionFreezeReason>();
+    #selectRetentionCandidates(): readonly AiSessionRetentionCandidate[] {
+        const candidates = new Map<string, AiSessionRetentionCandidate>();
         const now = Date.now();
         if (this.#retentionConfig.idleTtlMs >= 0) {
             for (const [sessionId, touch] of this.#liveSessionTouches) {
                 if (now - touch.lastUsedAtMs >= this.#retentionConfig.idleTtlMs) {
-                    candidates.set(sessionId, "ttl");
+                    candidates.set(sessionId, {
+                        reason: "ttl",
+                        sessionId,
+                        touch,
+                    });
                 }
             }
         }
@@ -2567,22 +2622,25 @@ export class AiService {
                 index < ordered.length;
                 index += 1
             ) {
-                if (!candidates.has(ordered[index].sessionId)) {
-                    candidates.set(ordered[index].sessionId, "budget");
+                const session = ordered[index];
+                const touch = this.#liveSessionTouches.get(session.sessionId);
+                if (!candidates.has(session.sessionId) && touch) {
+                    candidates.set(session.sessionId, {
+                        reason: "budget",
+                        sessionId: session.sessionId,
+                        touch,
+                    });
                 }
             }
         }
 
-        return [...candidates.entries()].map(([sessionId, reason]) => ({
-            reason,
-            sessionId,
-        }));
+        return [...candidates.values()];
     }
 
     async #freezeSessionForRetention(
-        sessionId: string,
-        reason: AiSessionFreezeReason,
+        candidate: AiSessionRetentionCandidate,
     ): Promise<void> {
+        const { reason, sessionId, touch: selectedTouch } = candidate;
         if (
             this.#freezingSessionIds.has(sessionId) ||
             !this.#liveSessionContexts.has(sessionId)
@@ -2590,7 +2648,17 @@ export class AiService {
             return;
         }
 
+        const currentTouch = this.#liveSessionTouches.get(sessionId);
+        if (
+            !currentTouch ||
+            currentTouch.lastUsedAtMs !== selectedTouch.lastUsedAtMs ||
+            currentTouch.order !== selectedTouch.order
+        ) {
+            return;
+        }
+
         const snapshot = this.#liveSnapshots.get(sessionId) ?? null;
+        const retentionRuntimeSessionId = snapshot?.runtimeSessionId ?? null;
         const localSkippedReason = snapshot
             ? getRetentionSkippedReasonFromSnapshot(snapshot)
             : null;
@@ -2599,15 +2667,132 @@ export class AiService {
             return;
         }
 
+        let resolveFreeze: () => void = () => undefined;
+        const freezeComplete = new Promise<void>((resolve) => {
+            resolveFreeze = resolve;
+        });
         this.#freezingSessionIds.add(sessionId);
+        this.#frozenSessionIds.add(sessionId);
+        if (retentionRuntimeSessionId) {
+            this.#rememberRetentionCloseRuntimeSession(
+                sessionId,
+                retentionRuntimeSessionId,
+            );
+        }
+        this.#retentionFreezePromises.set(sessionId, freezeComplete);
         try {
             await this.closeSession(sessionId);
             this.#recordRetentionClose(sessionId, reason);
         } catch (error) {
+            this.#frozenSessionIds.delete(sessionId);
+            if (retentionRuntimeSessionId) {
+                this.#forgetRetentionCloseRuntimeSession(
+                    sessionId,
+                    retentionRuntimeSessionId,
+                );
+            }
             this.#deferSessionRetentionRetry(sessionId);
             debugBenignError("ai.service.freezeNativeSession", error);
         } finally {
             this.#freezingSessionIds.delete(sessionId);
+            if (this.#retentionCloseEventSessionIds.delete(sessionId)) {
+                this.#frozenSessionIds.delete(sessionId);
+            }
+            if (this.#retentionFreezePromises.get(sessionId) === freezeComplete) {
+                this.#retentionFreezePromises.delete(sessionId);
+            }
+            resolveFreeze();
+        }
+    }
+
+    async #waitForRetentionFreeze(sessionId: string): Promise<void> {
+        await this.#retentionFreezePromises.get(sessionId);
+    }
+
+    #consumeRetentionCloseEvent(event: AiSessionDomainEvent): boolean {
+        if (event.kind !== "session-closed") {
+            return false;
+        }
+
+        const expectedRuntimeSessionIds =
+            this.#retentionCloseRuntimeSessionIds.get(event.sessionId) ?? null;
+        const matchesRetainedRuntime =
+            expectedRuntimeSessionIds !== null &&
+            event.runtimeSessionId !== null &&
+            expectedRuntimeSessionIds.has(event.runtimeSessionId);
+        const closingWithoutRuntimeIdentity =
+            event.runtimeSessionId === null &&
+            (this.#freezingSessionIds.has(event.sessionId) ||
+                this.#frozenSessionIds.has(event.sessionId));
+        if (!matchesRetainedRuntime && !closingWithoutRuntimeIdentity) {
+            return false;
+        }
+
+        if (
+            matchesRetainedRuntime &&
+            expectedRuntimeSessionIds &&
+            event.runtimeSessionId !== null
+        ) {
+            this.#forgetRetentionCloseRuntimeSession(
+                event.sessionId,
+                event.runtimeSessionId,
+            );
+        } else if (closingWithoutRuntimeIdentity) {
+            this.#forgetRetentionCloseRuntimeSessions(event.sessionId);
+        }
+        if (this.#freezingSessionIds.has(event.sessionId)) {
+            this.#retentionCloseEventSessionIds.add(event.sessionId);
+        } else {
+            this.#frozenSessionIds.delete(event.sessionId);
+        }
+        return true;
+    }
+
+    #rememberRetentionCloseRuntimeSession(
+        sessionId: string,
+        runtimeSessionId: string,
+    ): void {
+        const runtimeSessionIds =
+            this.#retentionCloseRuntimeSessionIds.get(sessionId) ??
+            new Set<string>();
+        runtimeSessionIds.add(runtimeSessionId);
+        this.#retentionCloseRuntimeSessionIds.set(sessionId, runtimeSessionIds);
+
+        const previousTimer =
+            this.#retentionCloseRuntimeSessionTimers.get(sessionId);
+        if (previousTimer) {
+            clearTimeout(previousTimer);
+        }
+        const timer = setTimeout(() => {
+            this.#retentionCloseRuntimeSessionTimers.delete(sessionId);
+            this.#retentionCloseRuntimeSessionIds.delete(sessionId);
+        }, RETENTION_CLOSE_EVENT_GRACE_MS);
+        unrefTimer(timer);
+        this.#retentionCloseRuntimeSessionTimers.set(sessionId, timer);
+    }
+
+    #forgetRetentionCloseRuntimeSessions(sessionId: string): void {
+        this.#retentionCloseRuntimeSessionIds.delete(sessionId);
+        const timer = this.#retentionCloseRuntimeSessionTimers.get(sessionId);
+        if (timer) {
+            clearTimeout(timer);
+            this.#retentionCloseRuntimeSessionTimers.delete(sessionId);
+        }
+    }
+
+    #forgetRetentionCloseRuntimeSession(
+        sessionId: string,
+        runtimeSessionId: string,
+    ): void {
+        const runtimeSessionIds =
+            this.#retentionCloseRuntimeSessionIds.get(sessionId);
+        if (!runtimeSessionIds) {
+            return;
+        }
+
+        runtimeSessionIds.delete(runtimeSessionId);
+        if (runtimeSessionIds.size === 0) {
+            this.#forgetRetentionCloseRuntimeSessions(sessionId);
         }
     }
 
@@ -2769,6 +2954,7 @@ export class AiService {
             this.#persistence.saveSessionSnapshot(cachedSnapshot);
         }
         this.#promptQueue.handleSessionSnapshot(cachedSnapshot);
+        this.#frozenSessionIds.delete(cachedSnapshot.sessionId);
         return cachedSnapshot;
     }
 
