@@ -317,7 +317,13 @@ fn handle_notify_event(context: NotifyEventContext<'_>, event: Event) {
             }
         }
 
-        record_pending_invalidation(context.key, context.root, &relative_path, context.pending);
+        record_external_watch_path(
+            context.key,
+            context.root,
+            &relative_path,
+            context.pending,
+            context.pending_git_invalidations,
+        );
         context.fs_events.lock().expect("watch events lock").push((
             event_name.to_string(),
             NativeFsWatchEvent {
@@ -330,6 +336,22 @@ fn handle_notify_event(context: NotifyEventContext<'_>, event: Event) {
             },
         ));
     }
+}
+
+fn record_external_watch_path(
+    key: &str,
+    root: &ProjectRoot,
+    relative_path: &str,
+    pending: &Arc<Mutex<HashMap<String, PendingInvalidation>>>,
+    pending_git_invalidations: &Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
+) {
+    record_pending_invalidation(key, root, relative_path, pending);
+    record_pending_git_invalidation(
+        key,
+        root,
+        GitWatchInvalidationReason::Filesystem,
+        pending_git_invalidations,
+    );
 }
 
 fn record_pending_git_invalidation(
@@ -372,7 +394,7 @@ fn record_test_watch_path(
         return;
     }
 
-    record_pending_invalidation(key, root, relative_path, pending);
+    record_external_watch_path(key, root, relative_path, pending, pending_git_invalidations);
 }
 
 fn merge_git_invalidation_reason(
@@ -456,6 +478,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use comando_types::ids::{ProjectId, WorktreeId};
     use tempfile::TempDir;
 
     use super::*;
@@ -491,6 +514,45 @@ mod tests {
     }
 
     #[test]
+    fn coalesces_external_worktree_changes_into_a_git_invalidation() {
+        let temp = TempDir::new().expect("temp");
+        let root = ProjectRoot {
+            project_id: ProjectId("project_1".to_string()),
+            worktree_id: Some(WorktreeId("worktree_2".to_string())),
+            root_path: temp.path().to_path_buf(),
+        };
+        let mut watchers = WatcherRegistry::new();
+
+        record_external_watch_path(
+            "project_1:worktree_2",
+            &root,
+            "src/a.ts",
+            &watchers.pending,
+            &watchers.pending_git_invalidations,
+        );
+        record_external_watch_path(
+            "project_1:worktree_2",
+            &root,
+            "src/b.ts",
+            &watchers.pending,
+            &watchers.pending_git_invalidations,
+        );
+        thread::sleep(Duration::from_millis(160));
+
+        let drain = watchers.drain(false);
+        assert_eq!(drain.git_invalidations.len(), 1);
+        assert_eq!(drain.git_invalidations[0].reason, "filesystem");
+        assert_eq!(
+            drain.git_invalidations[0]
+                .worktree_id
+                .as_ref()
+                .map(|worktree_id| worktree_id.0.as_str()),
+            Some("worktree_2"),
+        );
+        assert_eq!(drain.invalidations.len(), 1);
+    }
+
+    #[test]
     fn write_tracker_suppresses_own_writes() {
         let temp = TempDir::new().expect("temp");
         let path = temp.path().join("owned.txt");
@@ -507,6 +569,7 @@ mod tests {
 
         let drain = watchers.drain(true);
         assert!(drain.invalidations.is_empty());
+        assert!(drain.git_invalidations.is_empty());
     }
 
     #[test]
