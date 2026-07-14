@@ -1036,6 +1036,13 @@ export function App() {
     const activeGitContextKey = activeProjectId
         ? getGitContextKey(activeProjectId, activeWorktreeId)
         : null;
+    const activeGitChanges = useMemo(
+        () =>
+            activeGitContextKey
+                ? (gitSnapshots[activeGitContextKey]?.changes ?? [])
+                : [],
+        [activeGitContextKey, gitSnapshots],
+    );
 
     useEffect(() => {
         if (!activeWorkspaceContext) {
@@ -1719,8 +1726,9 @@ export function App() {
             buildHierarchicalGitTreeNodesFromProjectEntries(
                 fileTreeFilterMatches,
                 fileTreeFilterEntries,
+                activeGitChanges,
             ),
-        [fileTreeFilterEntries, fileTreeFilterMatches],
+        [activeGitChanges, fileTreeFilterEntries, fileTreeFilterMatches],
     );
     const fileTreeSearchNodes = fileTreeSearchTree.nodes;
     const fileTreeSearchExpandedPaths = fileTreeSearchTree.expandedDirectoryPaths;
@@ -2667,8 +2675,14 @@ export function App() {
                 activeProjectTree,
                 activeTreeNodesByParent,
                 activeExpandedDirectories,
+                activeGitChanges,
             ),
-        [activeExpandedDirectories, activeProjectTree, activeTreeNodesByParent],
+        [
+            activeExpandedDirectories,
+            activeGitChanges,
+            activeProjectTree,
+            activeTreeNodesByParent,
+        ],
     );
 
     const sidebarTreeNodes = useMemo(() => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { ProjectTreeNode } from "@shared/ipc";
+import type { GitChangeEntry, ProjectTreeNode } from "@shared/ipc";
 
 import {
     buildGitTreeNodesFromProjectTree,
@@ -24,6 +24,26 @@ function makeNode(
         name: relativePath.split("/").at(-1) ?? relativePath,
         parentRelativePath,
         relativePath,
+    };
+}
+
+function makeChange(
+    path: string,
+    overrides: Partial<GitChangeEntry> = {},
+): GitChangeEntry {
+    return {
+        additions: null,
+        deletions: null,
+        hasChildren: false,
+        isBinary: false,
+        isConflicted: false,
+        isRenamed: false,
+        kind: "modified",
+        path,
+        previousPath: null,
+        scope: "unstaged",
+        worktreeId: null,
+        ...overrides,
     };
 }
 
@@ -93,6 +113,36 @@ describe("buildGitTreeNodesFromProjectTree", () => {
             }),
         );
     });
+
+    it("uses the Git snapshot to color changed files and their ancestors", () => {
+        const srcDirectory = makeNode("src", "directory", null);
+        const fileNode = makeNode("src/new.ts", "file", "src");
+
+        const nodes = buildGitTreeNodesFromProjectTree(
+            [srcDirectory],
+            {
+                __root__: [srcDirectory],
+                src: [fileNode],
+            },
+            ["src"],
+            [
+                makeChange("src/new.ts", {
+                    kind: "untracked",
+                    scope: "untracked",
+                }),
+            ],
+        );
+
+        expect(nodes[0]).toEqual(
+            expect.objectContaining({ path: "src", status: "mixed" }),
+        );
+        expect(nodes[0]?.children?.[0]).toEqual(
+            expect.objectContaining({
+                path: "src/new.ts",
+                status: "untracked",
+            }),
+        );
+    });
 });
 
 describe("findProjectTreeNodeByPath", () => {
@@ -154,6 +204,24 @@ describe("buildHierarchicalGitTreeNodesFromProjectEntries", () => {
             "docs",
             "README.md",
         ]);
+    });
+
+    it("applies Git snapshot statuses while showing filtered results", () => {
+        const { nodes } = buildHierarchicalGitTreeNodesFromProjectEntries(
+            [makeNode("src/App.tsx", "file", "src")],
+            [],
+            [makeChange("src/App.tsx", { kind: "modified" })],
+        );
+
+        expect(nodes[0]).toEqual(
+            expect.objectContaining({ path: "src", status: "mixed" }),
+        );
+        expect(nodes[0]?.children?.[0]).toEqual(
+            expect.objectContaining({
+                path: "src/App.tsx",
+                status: "modified",
+            }),
+        );
     });
 
     it("keeps real directory metadata when the search returns both the folder and its file", () => {
