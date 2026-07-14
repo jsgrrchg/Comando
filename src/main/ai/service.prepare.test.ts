@@ -535,6 +535,92 @@ describe("AiService prepareSession", () => {
         ).toEqual(["message-retry-1", "message-retry-1"]);
     });
 
+    it("reprepares the root before retrying an evicted subagent prompt", async () => {
+        const parentSnapshot = createSnapshot({
+            runtimeSessionId: "runtime-parent-1",
+            sessionId: "session-parent",
+            title: "Parent chat",
+        });
+        const childSnapshot = createSnapshot({
+            parentSessionId: "session-parent",
+            runtimeSessionId: "runtime-child-1",
+            sessionId: "session-child",
+            title: "Child chat",
+        });
+        const loadSessionSnapshot = vi.fn<NativeAiGateway["loadSessionSnapshot"]>(
+            (sessionId) =>
+                Promise.resolve(
+                    sessionId === "session-child"
+                        ? childSnapshot
+                        : parentSnapshot,
+                ),
+        );
+        const prepareSession = vi
+            .fn<NativeAiGateway["prepareSession"]>()
+            .mockResolvedValueOnce(parentSnapshot)
+            .mockResolvedValueOnce({
+                ...parentSnapshot,
+                runtimeSessionId: "runtime-parent-2",
+            });
+        const sendPrompt = vi
+            .fn<NativeAiGateway["sendPrompt"]>()
+            .mockRejectedValueOnce(
+                new NativeBackendError({
+                    code: "ai_session_not_found",
+                    details: null,
+                    message: "The AI session was not found.",
+                    retryable: false,
+                }),
+            )
+            .mockResolvedValueOnce({
+                sessionId: "session-child",
+                stopReason: "accepted",
+            });
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                loadSessionSnapshot,
+                prepareSession,
+                sendPrompt,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-child",
+                title: "Child chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.sendPrompt(
+            {
+                attachments: [],
+                composerParts: [{ text: "Continue.", type: "text" }],
+                messageId: "message-child-retry-1",
+                projectId: null,
+                prompt: "Continue.",
+                runtimeId: "codex",
+                sessionId: "session-child",
+                title: "Child chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        expect(prepareSession).toHaveBeenCalledTimes(2);
+        expect(
+            prepareSession.mock.calls.map(
+                ([request]) => request.input.sessionId,
+            ),
+        ).toEqual(["session-parent", "session-parent"]);
+        expect(sendPrompt).toHaveBeenCalledTimes(2);
+        expect(
+            sendPrompt.mock.calls[1]?.[0].launch.persistedSnapshot.sessionId,
+        ).toBe("session-child");
+    });
+
     it("hydrates newly prepared native sessions with persisted ACP catalog controls", async () => {
         const nativeSnapshot: AiSessionSnapshot = {
             availableCommands: [],

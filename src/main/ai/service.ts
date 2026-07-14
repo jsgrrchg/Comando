@@ -1530,9 +1530,14 @@ export class AiService {
                         // and retry this exact prompt without duplicating it.
                         debugBenignError("ai.service.recoverPrompt", error);
                         await this.#recoverMissingLiveSession(input.sessionId);
+                        const recoveredLaunch =
+                            await this.#buildNativeSessionLaunchInput(
+                                input,
+                                ownerWindowId,
+                            );
                         promptResult = await nativeAi.sendPrompt({
                             input,
-                            launch,
+                            launch: recoveredLaunch,
                         });
                     }
                     if (promptResult.stopReason === "accepted") {
@@ -1766,7 +1771,11 @@ export class AiService {
         }
 
         this.#cancelCapturedRuntimeDefaults(sessionId);
+        const rootSnapshot = await this.#resolveNativeRootSessionSnapshot(
+            snapshot,
+        );
         this.#nativeSessionIds.delete(sessionId);
+        this.#nativeSessionIds.delete(rootSnapshot.sessionId);
         await this.prepareSession(
             {
                 projectId: snapshot.projectId,
@@ -3883,29 +3892,11 @@ export class AiService {
         readonly input: SessionDescriptor;
         readonly launch: AiSessionLaunchInput;
     }> {
-        let rootSnapshot = launch.persistedSnapshot;
-        if (!rootSnapshot.parentSessionId) {
+        const rootSnapshot = await this.#resolveNativeRootSessionSnapshot(
+            launch.persistedSnapshot,
+        );
+        if (rootSnapshot.sessionId === launch.persistedSnapshot.sessionId) {
             return { input, launch };
-        }
-
-        const visitedSessionIds = new Set([rootSnapshot.sessionId]);
-        while (rootSnapshot.parentSessionId) {
-            const parentSessionId = rootSnapshot.parentSessionId;
-            if (visitedSessionIds.has(parentSessionId)) {
-                throw new Error(
-                    "The subagent hierarchy contains a parent cycle.",
-                );
-            }
-            visitedSessionIds.add(parentSessionId);
-            const parentSnapshot =
-                this.#liveSnapshots.get(parentSessionId) ??
-                (await this.#loadPersistedSessionSnapshot(parentSessionId));
-            if (!parentSnapshot) {
-                throw new Error(
-                    "An ancestor session could not be loaded for this subagent.",
-                );
-            }
-            rootSnapshot = parentSnapshot;
         }
 
         const rootInput: SessionDescriptor = {
@@ -3925,6 +3916,32 @@ export class AiService {
                 rootSnapshot,
             ),
         };
+    }
+
+    async #resolveNativeRootSessionSnapshot(
+        snapshot: AiSessionSnapshot,
+    ): Promise<AiSessionSnapshot> {
+        let rootSnapshot = snapshot;
+        const visitedSessionIds = new Set([snapshot.sessionId]);
+        while (rootSnapshot.parentSessionId) {
+            const parentSessionId = rootSnapshot.parentSessionId;
+            if (visitedSessionIds.has(parentSessionId)) {
+                throw new Error(
+                    "The subagent hierarchy contains a parent cycle.",
+                );
+            }
+            visitedSessionIds.add(parentSessionId);
+            const parentSnapshot =
+                this.#liveSnapshots.get(parentSessionId) ??
+                (await this.#loadPersistedSessionSnapshot(parentSessionId));
+            if (!parentSnapshot) {
+                throw new Error(
+                    "An ancestor session could not be loaded for this subagent.",
+                );
+            }
+            rootSnapshot = parentSnapshot;
+        }
+        return rootSnapshot;
     }
 
     #adoptNativeSubagentSnapshot(
