@@ -845,11 +845,15 @@ export interface GitFileDiff {
     readonly reversible: boolean;
 }
 
-export interface GitCommitFileDiff extends GitFileDiff {
+export interface GitRevisionFileDiff extends GitFileDiff {
     readonly additions: number | null;
+    /** Missing only when the value came from an older native backend. */
+    readonly contentState?: "available" | "unavailable";
     readonly deletions: number | null;
     readonly statusLabel: string | null;
 }
+
+export type GitCommitFileDiff = GitRevisionFileDiff;
 
 export interface GitRepositoryStatusSummary {
     readonly conflictedCount: number;
