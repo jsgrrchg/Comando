@@ -61,8 +61,11 @@ export function ProjectContextMenu({
     const [worktreeSubmitting, setWorktreeSubmitting] = useState(false);
     const normalizedQuery = query.trim().toLowerCase();
     const searchRef = useRef<HTMLInputElement | null>(null);
+    const hasRevalidatedInventoryRef = useRef(false);
     const projectSummaries = useProjectsStore((state) => state.projects);
     const gitSnapshots = useGitStore((state) => state.snapshots);
+    const refreshGitProject = useGitStore((state) => state.refreshProject);
+    const worktreesByProject = useGitStore((state) => state.worktreesByProject);
     const createWorktree = useGitStore((state) => state.createWorktree);
     const openContext = useWorkspaceStore((state) => state.openContext);
     const filteredProjects = useMemo(
@@ -111,6 +114,18 @@ export function ProjectContextMenu({
     useEffect(() => {
         searchRef.current?.focus();
     }, []);
+
+    useEffect(() => {
+        if (hasRevalidatedInventoryRef.current) {
+            return;
+        }
+
+        hasRevalidatedInventoryRef.current = true;
+        // Keep the visible inventory responsive while refreshing stale Git state.
+        for (const project of projects) {
+            void refreshGitProject(project.id);
+        }
+    }, [projects, refreshGitProject]);
 
     useEffect(() => {
         setSelectedIndex((currentIndex) =>
@@ -205,6 +220,9 @@ export function ProjectContextMenu({
     const worktreeSnapshot = worktreeProject
         ? findProjectSnapshot(gitSnapshots, worktreeProject.id)
         : null;
+    const worktreeInventory = worktreeProject
+        ? worktreesByProject[worktreeProject.id]
+        : undefined;
     const worktreeBaseBranch = resolveWorktreeBaseBranch(worktreeSnapshot);
 
     const handleCreateWorktree = async () => {
@@ -226,7 +244,7 @@ export function ProjectContextMenu({
                 path: buildSuggestedWorktreePath(
                     worktreeProjectSummary.rootPath,
                     branchName,
-                    worktreeSnapshot.worktrees,
+                    worktreeInventory ?? worktreeSnapshot.worktrees,
                 ),
                 projectId: worktreeProject.id,
                 startPoint: worktreeBaseBranch,

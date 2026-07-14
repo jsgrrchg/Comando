@@ -13,6 +13,7 @@ import type {
 } from "@shared/ipc";
 
 import {
+    EMPTY_GITHUB_LIST,
     getGitHubPullRequestChecksKey,
     getGitHubRepoKey,
     useGitHubStore,
@@ -87,7 +88,7 @@ export function GitHubPullRequestTabView({
         (state) => state.authStatusByHost[repo.host] ?? null,
     );
     const labels = useGitHubStore(
-        (state) => state.labelsByRepo[repoKey] ?? [],
+        (state) => state.labelsByRepo[repoKey] ?? EMPTY_GITHUB_LIST,
     );
     const commentMutatingKeys = useGitHubStore((state) => state.mutatingKeys);
     const commentErrors = useGitHubStore((state) => state.errors);
