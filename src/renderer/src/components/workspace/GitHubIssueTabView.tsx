@@ -16,6 +16,7 @@ import {
     GitHubEmptyState,
     GitHubErrorState,
     GitHubLabelPill,
+    GitHubSection,
     GitHubSectionLabel,
     GitHubStatePill,
     GitHubTabHeader,
@@ -360,7 +361,7 @@ export function GitHubIssueTabView({
                 worktreeId: tab.worktreeId ?? null,
             }}
         >
-            <div className="space-y-4 p-4">
+            <div className="github-document space-y-8">
                 <GitHubAuthNotice authStatus={authStatus} />
                 {pageError ? (
                     <GitHubErrorState>{pageError}</GitHubErrorState>
@@ -377,11 +378,11 @@ export function GitHubIssueTabView({
                 ) : null}
                 {detail ? (
                     <>
-                        <article className="rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary">
-                            <div className="border-b border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-4 py-3">
+                        <section className="space-y-4">
+                            <div>
                                 {isEditingIssue ? (
                                     <input
-                                        className="h-9 w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 text-[18px] font-semibold leading-7 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
+                                        className="h-11 w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 text-[22px] font-bold leading-7 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
                                         disabled={isUpdatingIssue}
                                         onChange={(event) =>
                                             setIssueTitleDraft(
@@ -392,11 +393,11 @@ export function GitHubIssueTabView({
                                         value={issueTitleDraft}
                                     />
                                 ) : (
-                                    <h1 className="text-[18px] font-semibold leading-7 text-text-primary">
+                                    <h1 className="github-document-title">
                                         {detail.title}
                                     </h1>
                                 )}
-                                <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-text-secondary">
+                                <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-text-secondary">
                                     <span>
                                         by {detail.author?.login ?? "ghost"}
                                     </span>
@@ -412,8 +413,39 @@ export function GitHubIssueTabView({
                                     ))}
                                 </div>
                             </div>
+                            <div className="flex justify-end gap-2">
+                                {detail.state === "open" ? (
+                                    <IdeActionButton
+                                        disabled={!canWriteIssues || isClosing}
+                                        onClick={() => void handleClose()}
+                                        title={
+                                            canWriteIssues
+                                                ? undefined
+                                                : writePermissionLabel
+                                        }
+                                    >
+                                        {isClosing ? "Closing..." : "Close Issue"}
+                                    </IdeActionButton>
+                                ) : (
+                                    <IdeActionButton
+                                        disabled={!canWriteIssues || isReopening}
+                                        onClick={() => void handleReopen()}
+                                        title={
+                                            canWriteIssues
+                                                ? undefined
+                                                : writePermissionLabel
+                                        }
+                                    >
+                                        {isReopening
+                                            ? "Reopening..."
+                                            : "Reopen Issue"}
+                                    </IdeActionButton>
+                                )}
+                            </div>
+                        </section>
+                        <GitHubSection title="Description" tone="accent">
                             {isEditingIssue ? (
-                                <div className="space-y-3 px-4 py-4">
+                                <div className="space-y-3 pt-4">
                                     <textarea
                                         className="min-h-48 w-full resize-y rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
                                         disabled={isUpdatingIssue}
@@ -430,12 +462,13 @@ export function GitHubIssueTabView({
                                             {updateIssueError}
                                         </div>
                                     ) : null}
-                                    <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2">
+                                    <div className="border-t border-[color-mix(in_srgb,var(--color-border)_55%,transparent)] pt-3">
                                         <GitHubSectionLabel>
                                             Preview
                                         </GitHubSectionLabel>
-                                        <div className="mt-2 max-h-72 overflow-y-auto text-[12px] leading-5 text-text-secondary">
+                                        <div className="github-document-markdown mt-3 max-h-72 overflow-y-auto">
                                             <MarkdownContent
+                                                chatFontSize={14}
                                                 content={
                                                     issueBodyDraft.trim() ||
                                                     "_No description._"
@@ -468,96 +501,68 @@ export function GitHubIssueTabView({
                                     </div>
                                 </div>
                             ) : (
-                                <div className="px-4 py-4 text-[13px] leading-6 text-text-secondary">
+                                <div className="github-document-markdown pt-4">
                                     <MarkdownContent
+                                        chatFontSize={14}
                                         content={
                                             detail.body || "_No description._"
                                         }
                                     />
                                 </div>
                             )}
-                            <div className="flex justify-end gap-2 border-t border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-4 py-3">
-                                {detail.state === "open" ? (
-                                    <IdeActionButton
-                                        disabled={
-                                            !canWriteIssues || isClosing
-                                        }
-                                        onClick={() => void handleClose()}
-                                        title={
-                                            canWriteIssues
-                                                ? undefined
-                                                : writePermissionLabel
-                                        }
-                                    >
-                                        {isClosing ? "Closing..." : "Close Issue"}
-                                    </IdeActionButton>
-                                ) : (
-                                    <IdeActionButton
-                                        disabled={
-                                            !canWriteIssues || isReopening
-                                        }
-                                        onClick={() => void handleReopen()}
-                                        title={
-                                            canWriteIssues
-                                                ? undefined
-                                                : writePermissionLabel
-                                        }
-                                    >
-                                        {isReopening
-                                            ? "Reopening..."
-                                            : "Reopen Issue"}
-                                    </IdeActionButton>
-                                )}
+                        </GitHubSection>
+                        <GitHubSection
+                            count={detail.comments.length}
+                            title="Conversation"
+                        >
+                            <div className="space-y-5">
+                                <GitHubCommentList
+                                    canEdit={canWriteIssues}
+                                    comments={detail.comments}
+                                    getUpdateError={(comment) =>
+                                        commentErrors[
+                                            `${repoKey}:comment:${comment.id}:update`
+                                        ] ?? null
+                                    }
+                                    isUpdatingComment={(comment) =>
+                                        commentMutatingKeys[
+                                            `${repoKey}:comment:${comment.id}:update`
+                                        ] ?? false
+                                    }
+                                    onUpdateComment={(comment, body) =>
+                                        handleUpdateComment(comment, body)
+                                    }
+                                    permissionLabel={writePermissionLabel}
+                                />
+                                <GitHubCommentComposer
+                                    disabled={!canWriteIssues}
+                                    error={commentError}
+                                    initialPreviewExpanded={false}
+                                    isSubmitting={isCommenting || isClosing}
+                                    onChange={setCommentDraft}
+                                    onSubmit={() => void handleComment()}
+                                    permissionLabel={writePermissionLabel}
+                                    secondaryAction={
+                                        detail.state === "open"
+                                            ? {
+                                                  armedLabel:
+                                                      "Click again to comment and close",
+                                                  disabled: !canWriteIssues,
+                                                  isSubmitting: isClosing,
+                                                  label: "Close issue with comment",
+                                                  loadingLabel: "Closing...",
+                                                  onConfirm: () =>
+                                                      void handleCommentAndClose(),
+                                                  title: canWriteIssues
+                                                      ? undefined
+                                                      : writePermissionLabel,
+                                              }
+                                            : undefined
+                                    }
+                                    value={commentDraft}
+                                />
                             </div>
-                        </article>
-                        <section className="space-y-3">
-                            <GitHubSectionLabel>Comments</GitHubSectionLabel>
-                            <GitHubCommentList
-                                canEdit={canWriteIssues}
-                                comments={detail.comments}
-                                getUpdateError={(comment) =>
-                                    commentErrors[
-                                        `${repoKey}:comment:${comment.id}:update`
-                                    ] ?? null
-                                }
-                                isUpdatingComment={(comment) =>
-                                    commentMutatingKeys[
-                                        `${repoKey}:comment:${comment.id}:update`
-                                    ] ?? false
-                                }
-                                onUpdateComment={(comment, body) =>
-                                    handleUpdateComment(comment, body)
-                                }
-                                permissionLabel={writePermissionLabel}
-                            />
-                            <GitHubCommentComposer
-                                disabled={!canWriteIssues}
-                                error={commentError}
-                                initialPreviewExpanded={false}
-                                isSubmitting={isCommenting || isClosing}
-                                onChange={setCommentDraft}
-                                onSubmit={() => void handleComment()}
-                                permissionLabel={writePermissionLabel}
-                                secondaryAction={
-                                    detail.state === "open"
-                                        ? {
-                                              armedLabel:
-                                                  "Click again to comment and close",
-                                              disabled: !canWriteIssues,
-                                              isSubmitting: isClosing,
-                                              label: "Close issue with comment",
-                                              loadingLabel: "Closing...",
-                                              onConfirm: () =>
-                                                  void handleCommentAndClose(),
-                                              title: canWriteIssues
-                                                  ? undefined
-                                                  : writePermissionLabel,
-                                          }
-                                        : undefined
-                                }
-                                value={commentDraft}
-                            />
-                        </section>
+                        </GitHubSection>
                     </>
                 ) : null}
             </div>
