@@ -348,6 +348,9 @@ export function SidebarGitScopePicker({
             ? (state.branchesByProject[projectId] ?? EMPTY_BRANCHES)
             : EMPTY_BRANCHES,
     );
+    const projectWorktrees = useGitStore((state) =>
+        projectId ? state.worktreesByProject[projectId] : undefined,
+    );
     const gitContextKey = projectId
         ? getGitContextKey(projectId, worktreeId)
         : null;
@@ -370,15 +373,16 @@ export function SidebarGitScopePicker({
     const removeWorktree = useGitStore((state) => state.removeWorktree);
     const openContext = useWorkspaceStore((state) => state.openContext);
 
+    const worktrees = projectWorktrees ?? snapshot?.worktrees ?? EMPTY_WORKTREES;
     const activeWorktree =
-        snapshot?.worktrees.find(
+        worktrees.find(
             (entry) =>
                 projectId
                     ? isGitScopeWorktreeActive(projectId, worktreeId, entry)
                     : entry.id === worktreeId,
         ) ??
-        snapshot?.worktrees.find((entry) => entry.isCurrent) ??
-        snapshot?.worktrees.find((entry) => entry.isPrimary) ??
+        worktrees.find((entry) => entry.isCurrent) ??
+        worktrees.find((entry) => entry.isPrimary) ??
         null;
     const canInitializeGit = snapshot?.repositoryState === "not_repo";
     const contextualActiveBranchName =
@@ -390,7 +394,6 @@ export function SidebarGitScopePicker({
     const activeRootPath =
         activeWorktree?.rootPath ?? snapshot?.rootPath ?? null;
     const availableBranches = branches.length;
-    const worktrees = snapshot?.worktrees ?? EMPTY_WORKTREES;
     const availableWorktrees = worktrees.length;
     const deferredQuery = useDeferredValue(query);
     const topologyRequestKey = useMemo(

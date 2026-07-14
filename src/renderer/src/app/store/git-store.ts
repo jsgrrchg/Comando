@@ -100,6 +100,11 @@ interface GitStoreState {
     readonly selectedDiffPaths: Record<string, string | null>;
     readonly selectedWorktreeDiffFileIds: Record<string, string | null>;
     readonly snapshots: Record<string, GitRepositorySnapshot | null>;
+    readonly worktreeInventoryUpdatedAtByProject: Record<string, string>;
+    readonly worktreesByProject: Record<
+        string,
+        readonly GitWorktreeSummary[]
+    >;
     readonly worktreeDiffRequestKeysByContext: Record<string, string>;
     readonly worktreeDiffsByContext: Record<
         string,
@@ -301,6 +306,8 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
     selectedDiffPaths: {},
     selectedWorktreeDiffFileIds: {},
     snapshots: {},
+    worktreeInventoryUpdatedAtByProject: {},
+    worktreesByProject: {},
     worktreeDiffRequestKeysByContext: {},
     worktreeDiffsByContext: {},
     collapsedWorktreeDiffFileIds: {},
@@ -523,6 +530,10 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             const nextSelectedBranchesByContext = {
                 ...state.selectedBranchNamesByContext,
             };
+            const nextWorktreeInventoryUpdatedAtByProject = {
+                ...state.worktreeInventoryUpdatedAtByProject,
+            };
+            const nextWorktreesByProject = { ...state.worktreesByProject };
 
             for (const [projectId, snapshot] of snapshots) {
                 const snapshotWorktreeId =
@@ -551,6 +562,17 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
                     snapshot?.branch?.name ?? null;
                 nextSelectedBranchesByContext[contextKey] =
                     snapshot?.branch?.name ?? null;
+                if (
+                    snapshot &&
+                    isSnapshotNewerThanWorktreeInventory(
+                        snapshot,
+                        nextWorktreeInventoryUpdatedAtByProject[projectId],
+                    )
+                ) {
+                    nextWorktreeInventoryUpdatedAtByProject[projectId] =
+                        snapshot.updatedAt;
+                    nextWorktreesByProject[projectId] = snapshot.worktrees;
+                }
             }
 
             return {
@@ -562,6 +584,9 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
                 selectedBranchNames: nextSelectedBranches,
                 selectedBranchNamesByContext: nextSelectedBranchesByContext,
                 snapshots: nextSnapshots,
+                worktreeInventoryUpdatedAtByProject:
+                    nextWorktreeInventoryUpdatedAtByProject,
+                worktreesByProject: nextWorktreesByProject,
             };
         });
 
@@ -1274,71 +1299,103 @@ function applySnapshotState(
     const contextKey = getContextKey(projectId, snapshot.currentWorktreeId);
     const hasWorktreeChanges = snapshot.changedPaths.length > 0;
 
-    set((state) => ({
-        activeWorktreeIds: {
-            ...state.activeWorktreeIds,
-            [projectId]: resolveSnapshotWorktreeId(
+    set((state) => {
+        const shouldUpdateWorktreeInventory =
+            isSnapshotNewerThanWorktreeInventory(
                 snapshot,
-                state.activeWorktreeIds[projectId] ?? null,
-            ),
-        },
-        branchesByProject: {
-            ...state.branchesByProject,
-            [projectId]: snapshot.branches,
-        },
-        errors: {
-            ...state.errors,
-            [contextKey]: null,
-        },
-        expandedChangeGroups: {
-            ...state.expandedChangeGroups,
-            [contextKey]:
-                state.expandedChangeGroups[contextKey] ?? DEFAULT_CHANGE_GROUPS,
-        },
-        expandedProjects: {
-            ...state.expandedProjects,
-            [projectId]: state.expandedProjects[projectId] ?? true,
-        },
-        expandedBranchSections: {
-            ...state.expandedBranchSections,
-            [projectId]: state.expandedBranchSections[projectId] ?? true,
-        },
-        expandedWorktreeSections: {
-            ...state.expandedWorktreeSections,
-            [projectId]: state.expandedWorktreeSections[projectId] ?? true,
-        },
-        loadingContexts: {
-            ...state.loadingContexts,
-            [contextKey]: false,
-        },
-        panelTabs: {
-            ...state.panelTabs,
-            [contextKey]: state.panelTabs[contextKey] ?? "changes",
-        },
-        selectedBranchNames: {
-            ...state.selectedBranchNames,
-            [projectId]: snapshot.branch?.name ?? null,
-        },
-        selectedBranchNamesByContext: {
-            ...state.selectedBranchNamesByContext,
-            [contextKey]: snapshot.branch?.name ?? null,
-        },
-        selectedDiffPaths: {
-            ...state.selectedDiffPaths,
-            [contextKey]: snapshot.changedPaths.includes(
-                state.selectedDiffPaths[contextKey] ?? "",
-            )
-                ? (state.selectedDiffPaths[contextKey] ?? null)
-                : (snapshot.changedPaths[0] ?? null),
-        },
-        snapshots: {
-            ...state.snapshots,
-            [contextKey]: snapshot,
-        },
-        ...(hasWorktreeChanges
-            ? {}
-            : clearCleanWorktreeDiffState(state, contextKey)),
-    }));
+                state.worktreeInventoryUpdatedAtByProject[projectId],
+            );
+
+        return {
+            activeWorktreeIds: {
+                ...state.activeWorktreeIds,
+                [projectId]: resolveSnapshotWorktreeId(
+                    snapshot,
+                    state.activeWorktreeIds[projectId] ?? null,
+                ),
+            },
+            branchesByProject: {
+                ...state.branchesByProject,
+                [projectId]: snapshot.branches,
+            },
+            errors: {
+                ...state.errors,
+                [contextKey]: null,
+            },
+            expandedChangeGroups: {
+                ...state.expandedChangeGroups,
+                [contextKey]:
+                    state.expandedChangeGroups[contextKey] ??
+                    DEFAULT_CHANGE_GROUPS,
+            },
+            expandedProjects: {
+                ...state.expandedProjects,
+                [projectId]: state.expandedProjects[projectId] ?? true,
+            },
+            expandedBranchSections: {
+                ...state.expandedBranchSections,
+                [projectId]: state.expandedBranchSections[projectId] ?? true,
+            },
+            expandedWorktreeSections: {
+                ...state.expandedWorktreeSections,
+                [projectId]: state.expandedWorktreeSections[projectId] ?? true,
+            },
+            loadingContexts: {
+                ...state.loadingContexts,
+                [contextKey]: false,
+            },
+            panelTabs: {
+                ...state.panelTabs,
+                [contextKey]: state.panelTabs[contextKey] ?? "changes",
+            },
+            selectedBranchNames: {
+                ...state.selectedBranchNames,
+                [projectId]: snapshot.branch?.name ?? null,
+            },
+            selectedBranchNamesByContext: {
+                ...state.selectedBranchNamesByContext,
+                [contextKey]: snapshot.branch?.name ?? null,
+            },
+            selectedDiffPaths: {
+                ...state.selectedDiffPaths,
+                [contextKey]: snapshot.changedPaths.includes(
+                    state.selectedDiffPaths[contextKey] ?? "",
+                )
+                    ? (state.selectedDiffPaths[contextKey] ?? null)
+                    : (snapshot.changedPaths[0] ?? null),
+            },
+            snapshots: {
+                ...state.snapshots,
+                [contextKey]: snapshot,
+            },
+            ...(shouldUpdateWorktreeInventory
+                ? {
+                      worktreeInventoryUpdatedAtByProject: {
+                          ...state.worktreeInventoryUpdatedAtByProject,
+                          [projectId]: snapshot.updatedAt,
+                      },
+                      worktreesByProject: {
+                          ...state.worktreesByProject,
+                          [projectId]: snapshot.worktrees,
+                      },
+                  }
+                : {}),
+            ...(hasWorktreeChanges
+                ? {}
+                : clearCleanWorktreeDiffState(state, contextKey)),
+        };
+    });
+}
+
+function isSnapshotNewerThanWorktreeInventory(
+    snapshot: GitRepositorySnapshot,
+    currentUpdatedAt: string | undefined,
+): boolean {
+    if (!currentUpdatedAt) {
+        return true;
+    }
+
+    return Date.parse(snapshot.updatedAt) > Date.parse(currentUpdatedAt);
 }
 
 function clearCleanWorktreeDiffState(
