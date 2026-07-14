@@ -30,10 +30,10 @@ Current scope in Comando:
     - `vendor/codex-acp/src/thread.rs`
     - `vendor/codex-acp/vendor/codex-utils-pty`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.42.0`
-  - synced against upstream commit `d877ee713383332267492a95425523eda65a9735`
-  - uses `@agentclientprotocol/sdk` `0.24.0` and `@anthropic-ai/claude-agent-sdk` `0.3.165`
-  - includes upstream fixes for stable message IDs, cancellation backstops, per-session tool cache pruning, refusal handling, permission-denied tool updates, context usage after compaction, `availableModels` allowlists, real `Write` overwrite diffs, task-notification result origins, SDK settings defaults, task-hook mirroring and local command stdout rendering
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.59.0`
+  - synced against upstream commit `30b7c06f7640fb6a0530ba18f85e26fe2bc08882`
+  - uses `@agentclientprotocol/sdk` `1.2.1` and `@anthropic-ai/claude-agent-sdk` `0.3.207`
+  - matches the upstream source snapshot without Comando-specific source changes
 
 ## Current Codex Delta
 
@@ -84,31 +84,14 @@ runtime payload.
 ## Current Claude Delta
 
 The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp`
-`0.42.0`.
+`0.59.0` with no Comando-specific source delta. Claude PostToolUse structured
+patch responses are translated inside Comando's internal review adapter, which
+keeps review behavior out of the vendored runtime and allows future updates to
+remain direct upstream syncs.
 
-Comando currently carries one source-level Claude ACP delta in:
-
-- `vendor/Claude-agent-acp-upstream/src/acp-agent.ts`
-- `vendor/Claude-agent-acp-upstream/src/tests/acp-agent.test.ts`
-
-The delta suppresses provisional live `usage_update` notifications while
-Claude ACP still only knows the generic `200000` token context-window fallback.
-Claude can emit those updates during `stream_event` before the later
-`result.modelUsage` message reports the real model context window, such as a
-1M-token Opus window. Publishing the provisional value makes Comando's context
-usage bar appear artificially inflated during the turn, then snap back when the
-final result arrives.
-
-The local patch tracks whether `contextWindowSize` came from the default
-placeholder, a model-name heuristic, or authoritative `modelUsage`. Streaming
-usage updates are only published once the size is no longer the default
-placeholder; final result usage updates still publish normally with cost and
-the modelUsage window.
-
-When updating Claude again, check upstream for an equivalent fix before
-carrying this delta forward. As of upstream `v0.48.0`, upstream still emits the
-streaming `usage_update` with `session.contextWindowSize` and has no equivalent
-`contextWindowSizeSource` guard.
+When updating Claude again, compare against upstream commit
+`30b7c06f7640fb6a0530ba18f85e26fe2bc08882` and review any ACP event-shape or
+Claude Agent SDK changes before replacing the vendor snapshot.
 
 ## Updating Vendored Runtimes
 

@@ -739,6 +739,19 @@ export function shouldAutoFocusComposerForKeyChange(
 
 type ComposerSubmitKeyboardAction = "submit" | "stop" | null;
 
+export type ComposerPrimaryAction = "queue" | "send" | "stop";
+
+export function getComposerPrimaryAction(input: {
+    readonly hasDraft: boolean;
+    readonly isSessionBusy: boolean;
+}): ComposerPrimaryAction {
+    if (input.isSessionBusy) {
+        return input.hasDraft ? "queue" : "stop";
+    }
+
+    return "send";
+}
+
 export function getComposerSubmitKeyboardAction(input: {
     readonly key: string;
     readonly shiftKey: boolean;
@@ -845,7 +858,18 @@ export function AIChatComposer({
         draftAttachments.length > 0 ||
         draftFileContexts.length > 0;
     const canSubmit = !disabled && hasDraft;
-    const submitLabel = isSessionBusy ? "Queue" : "Send";
+    const primaryAction = getComposerPrimaryAction({
+        hasDraft,
+        isSessionBusy,
+    });
+    const primaryActionLabel =
+        primaryAction === "queue"
+            ? "Queue"
+            : primaryAction === "stop"
+              ? "Stop"
+              : "Send";
+    const canRunPrimaryAction =
+        !disabled && (primaryAction === "stop" || canSubmit);
     const shouldShowDisabledReason =
         disabled &&
         typeof disabledReason === "string" &&
@@ -860,7 +884,7 @@ export function AIChatComposer({
         mentionOpen: mentionState.open,
         parts: parts.length,
         slashOpen: slashState.open,
-        submitLabel,
+        primaryAction,
     });
 
     useEffect(() => {
@@ -1743,86 +1767,57 @@ export function AIChatComposer({
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
                     <button
-                        aria-label={submitLabel}
+                        aria-label={primaryActionLabel}
                         className={[
                             "app-no-drag flex shrink-0 items-center justify-center rounded-full",
-                            canSubmit ? "active:scale-90" : "",
+                            canRunPrimaryAction ? "active:scale-90" : "",
                         ]
                             .filter(Boolean)
                             .join(" ")}
                         onClick={() => {
-                            if (canSubmit) onSubmit();
+                            if (!canRunPrimaryAction) return;
+                            if (primaryAction === "stop") {
+                                onStop();
+                                return;
+                            }
+                            onSubmit();
                         }}
                         onMouseEnter={(e) => {
-                            if (canSubmit) {
+                            if (canRunPrimaryAction) {
                                 e.currentTarget.style.filter =
-                                    "brightness(1.15)";
+                                    primaryAction === "stop"
+                                        ? "brightness(1.2)"
+                                        : "brightness(1.15)";
                             }
                         }}
                         onMouseLeave={(e) => {
                             e.currentTarget.style.filter = "brightness(1)";
                         }}
                         style={{
-                            backgroundColor: canSubmit
-                                ? "var(--color-accent)"
+                            backgroundColor: canRunPrimaryAction
+                                ? primaryAction === "stop"
+                                    ? "#b91c1c"
+                                    : "var(--color-accent)"
                                 : "transparent",
                             border: "none",
                             borderRadius: "50%",
-                            color: canSubmit
+                            color: canRunPrimaryAction
                                 ? "#fff"
                                 : "var(--color-text-secondary)",
-                            cursor: canSubmit ? "pointer" : "default",
+                            cursor: canRunPrimaryAction
+                                ? "pointer"
+                                : "default",
                             filter: "brightness(1)",
                             height: 28,
-                            opacity: canSubmit ? 1 : 0.4,
+                            opacity: canRunPrimaryAction ? 1 : 0.4,
                             transition:
                                 "background-color 100ms ease, filter 100ms ease, opacity 100ms ease, transform 75ms ease",
                             width: 28,
                         }}
-                        title={submitLabel}
+                        title={primaryActionLabel}
                         type="button"
                     >
-                        <svg
-                            fill="none"
-                            height="16"
-                            stroke="currentColor"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth="2"
-                            viewBox="0 0 24 24"
-                            width="16"
-                        >
-                            <line x1="12" x2="12" y1="19" y2="5" />
-                            <polyline points="5 12 12 5 19 12" />
-                        </svg>
-                    </button>
-                    {isSessionBusy ? (
-                        <button
-                            aria-label="Stop"
-                            className="app-no-drag flex shrink-0 items-center justify-center rounded-full active:scale-90"
-                            onClick={onStop}
-                            onMouseEnter={(e) => {
-                                e.currentTarget.style.filter =
-                                    "brightness(1.2)";
-                            }}
-                            onMouseLeave={(e) => {
-                                e.currentTarget.style.filter = "brightness(1)";
-                            }}
-                            style={{
-                                backgroundColor: "#b91c1c",
-                                border: "none",
-                                borderRadius: "50%",
-                                color: "#fff",
-                                cursor: "pointer",
-                                filter: "brightness(1)",
-                                height: 28,
-                                transition:
-                                    "filter 100ms ease, transform 75ms ease",
-                                width: 28,
-                            }}
-                            title="Stop"
-                            type="button"
-                        >
+                        {primaryAction === "stop" ? (
                             <svg
                                 fill="currentColor"
                                 height="10"
@@ -1831,8 +1826,22 @@ export function AIChatComposer({
                             >
                                 <rect height="10" rx="1.5" width="10" />
                             </svg>
-                        </button>
-                    ) : null}
+                        ) : (
+                            <svg
+                                fill="none"
+                                height="16"
+                                stroke="currentColor"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth="2"
+                                viewBox="0 0 24 24"
+                                width="16"
+                            >
+                                <line x1="12" x2="12" y1="19" y2="5" />
+                                <polyline points="5 12 12 5 19 12" />
+                            </svg>
+                        )}
+                    </button>
                 </div>
             </div>
 
