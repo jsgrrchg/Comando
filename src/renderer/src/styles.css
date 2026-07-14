@@ -1176,6 +1176,12 @@ body {
     background: color-mix(in srgb, var(--color-bg-tertiary) 68%, transparent);
 }
 
+/* Keep chat code fences readable without letting short snippets span the pane. */
+.chat-assistant-content > .markdown-code-frame {
+    inline-size: min(100%, 68ch);
+    margin-inline: auto;
+}
+
 .markdown-code-header {
     display: flex;
     min-height: 2.45em;

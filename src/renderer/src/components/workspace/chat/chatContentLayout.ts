@@ -1,1 +1,1 @@
-export const CHAT_CONTENT_MAX_WIDTH_PX = 740;
+export const CHAT_CONTENT_MAX_WIDTH_PX = 600;
