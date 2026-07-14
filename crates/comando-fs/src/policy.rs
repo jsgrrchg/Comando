@@ -103,6 +103,7 @@ pub fn git_watch_invalidation_reason(relative_path: &str) -> Option<GitWatchInva
         _ if path == ".git/logs/head" || path.starts_with(".git/logs/refs/") => {
             Some(GitWatchInvalidationReason::Branch)
         }
+        _ if path.starts_with(".git/worktrees/") => Some(GitWatchInvalidationReason::Worktree),
         _ if path.starts_with(".git/rebase-merge/") || path.starts_with(".git/rebase-apply/") => {
             Some(GitWatchInvalidationReason::Status)
         }
@@ -151,6 +152,15 @@ mod tests {
 
         assert!(!should_ignore_watch_path(".git/HEAD"));
         assert!(!should_ignore_watch_path(".git/refs/heads/main"));
+    }
+
+    #[test]
+    fn keeps_linked_worktree_metadata_that_invalidates_the_inventory() {
+        assert_eq!(
+            git_watch_invalidation_reason(".git/worktrees/feature/gitdir"),
+            Some(GitWatchInvalidationReason::Worktree),
+        );
+        assert!(!should_ignore_watch_path(".git/worktrees/feature/gitdir"));
     }
 
     #[test]

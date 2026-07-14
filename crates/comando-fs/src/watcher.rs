@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -38,6 +38,7 @@ pub struct WatcherDrain {
 pub struct WatcherRegistry {
     watchers: HashMap<String, RecommendedWatcher>,
     roots: HashMap<String, ProjectRoot>,
+    git_metadata_routes: Arc<Mutex<Vec<GitMetadataRoute>>>,
     write_tracker: WriteTracker,
     pending: Arc<Mutex<HashMap<String, PendingInvalidation>>>,
     pending_git_invalidations: Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
@@ -61,11 +62,18 @@ struct PendingGitInvalidation {
     last_event_at: Instant,
 }
 
+#[derive(Debug, Clone)]
+struct GitMetadataRoute {
+    metadata_path: PathBuf,
+    root: ProjectRoot,
+}
+
 impl WatcherRegistry {
     pub fn new() -> Self {
         Self {
             watchers: HashMap::new(),
             roots: HashMap::new(),
+            git_metadata_routes: Arc::new(Mutex::new(Vec::new())),
             write_tracker: WriteTracker::new(),
             pending: Arc::new(Mutex::new(HashMap::new())),
             pending_git_invalidations: Arc::new(Mutex::new(HashMap::new())),
@@ -83,6 +91,22 @@ impl WatcherRegistry {
             .filter(|root| root.root_path.is_dir())
             .map(|root| (watch_key(&root), root))
             .collect::<HashMap<_, _>>();
+
+        let mut metadata_routes = desired
+            .values()
+            .filter_map(git_metadata_route_for_root)
+            .collect::<Vec<_>>();
+        metadata_routes.sort_by(|left, right| {
+            right
+                .metadata_path
+                .components()
+                .count()
+                .cmp(&left.metadata_path.components().count())
+        });
+        *self
+            .git_metadata_routes
+            .lock()
+            .expect("git metadata routes lock") = metadata_routes;
 
         let current_keys = self.watchers.keys().cloned().collect::<Vec<_>>();
         for key in current_keys {
@@ -109,6 +133,7 @@ impl WatcherRegistry {
         if self.watchers.contains_key(&key) {
             return Ok(());
         }
+        self.register_git_metadata_route(&root);
         self.start_root(key, root)
     }
 
@@ -116,6 +141,29 @@ impl WatcherRegistry {
         let key = watch_key(root);
         self.watchers.remove(&key);
         self.roots.remove(&key);
+        self.git_metadata_routes
+            .lock()
+            .expect("git metadata routes lock")
+            .retain(|route| watch_key(&route.root) != key);
+    }
+
+    fn register_git_metadata_route(&self, root: &ProjectRoot) {
+        let Some(route) = git_metadata_route_for_root(root) else {
+            return;
+        };
+        let mut routes = self
+            .git_metadata_routes
+            .lock()
+            .expect("git metadata routes lock");
+        routes.retain(|existing| watch_key(&existing.root) != watch_key(root));
+        routes.push(route);
+        routes.sort_by(|left, right| {
+            right
+                .metadata_path
+                .components()
+                .count()
+                .cmp(&left.metadata_path.components().count())
+        });
     }
 
     pub fn drain(&mut self, force: bool) -> WatcherDrain {
@@ -188,10 +236,10 @@ impl WatcherRegistry {
         let watch_root = root.root_path.clone();
         let pending = Arc::clone(&self.pending);
         let pending_git_invalidations = Arc::clone(&self.pending_git_invalidations);
+        let git_metadata_routes = Arc::clone(&self.git_metadata_routes);
         let fs_events = Arc::clone(&self.fs_events);
         let write_tracker = self.write_tracker.clone();
         let root_for_callback = root.clone();
-        let key_for_callback = key.clone();
 
         let mut watcher =
             notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
@@ -201,18 +249,21 @@ impl WatcherRegistry {
 
                 handle_notify_event(
                     NotifyEventContext {
-                        key: &key_for_callback,
                         root: &root_for_callback,
                         watch_root: &watch_root,
                         write_tracker: &write_tracker,
                         pending: &pending,
                         pending_git_invalidations: &pending_git_invalidations,
+                        git_metadata_routes: &git_metadata_routes,
                         fs_events: &fs_events,
                     },
                     event,
                 );
             })?;
         watcher.watch(&root.root_path, RecursiveMode::Recursive)?;
+        if let Some(route) = git_metadata_route_for_root(&root) {
+            watcher.watch(&route.metadata_path, RecursiveMode::Recursive)?;
+        }
 
         self.roots.insert(key.clone(), root);
         self.watchers.insert(key, watcher);
@@ -249,12 +300,12 @@ impl Default for WatcherRegistry {
 }
 
 struct NotifyEventContext<'a> {
-    key: &'a str,
     root: &'a ProjectRoot,
     watch_root: &'a Path,
     write_tracker: &'a WriteTracker,
     pending: &'a Arc<Mutex<HashMap<String, PendingInvalidation>>>,
     pending_git_invalidations: &'a Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
+    git_metadata_routes: &'a Arc<Mutex<Vec<GitMetadataRoute>>>,
     fs_events: &'a Arc<Mutex<Vec<(String, NativeFsWatchEvent)>>>,
 }
 
@@ -273,17 +324,23 @@ fn handle_notify_event(context: NotifyEventContext<'_>, event: Event) {
             continue;
         }
 
-        let Some(relative_path) = normalize_watched_path(context.watch_root, &absolute_path) else {
+        let Some((event_root, relative_path)) = resolve_watched_event_path(
+            context.root,
+            context.watch_root,
+            &absolute_path,
+            context.git_metadata_routes,
+        ) else {
             continue;
         };
+        let event_key = watch_key(&event_root);
         if should_ignore_watch_path(&relative_path) {
             continue;
         }
 
         if let Some(reason) = git_watch_invalidation_reason(&relative_path) {
             record_pending_git_invalidation(
-                context.key,
-                context.root,
+                &event_key,
+                &event_root,
                 reason,
                 context.pending_git_invalidations,
             );
@@ -318,8 +375,8 @@ fn handle_notify_event(context: NotifyEventContext<'_>, event: Event) {
         }
 
         record_external_watch_path(
-            context.key,
-            context.root,
+            &event_key,
+            &event_root,
             &relative_path,
             context.pending,
             context.pending_git_invalidations,
@@ -327,8 +384,8 @@ fn handle_notify_event(context: NotifyEventContext<'_>, event: Event) {
         context.fs_events.lock().expect("watch events lock").push((
             event_name.to_string(),
             NativeFsWatchEvent {
-                project_id: context.root.project_id.clone(),
-                worktree_id: context.root.worktree_id.clone(),
+                project_id: event_root.project_id.clone(),
+                worktree_id: event_root.worktree_id.clone(),
                 relative_path: Some(RelativePath(relative_path)),
                 kind: event_kind.to_string(),
                 origin: NativeFsMutationOrigin::External,
@@ -336,6 +393,45 @@ fn handle_notify_event(context: NotifyEventContext<'_>, event: Event) {
             },
         ));
     }
+}
+
+fn git_metadata_route_for_root(root: &ProjectRoot) -> Option<GitMetadataRoute> {
+    let git_file = root.root_path.join(".git");
+    let git_dir = std::fs::read_to_string(&git_file).ok()?;
+    let metadata_path = git_dir.trim().strip_prefix("gitdir: ")?;
+    let metadata_path = PathBuf::from(metadata_path);
+    let metadata_path = if metadata_path.is_absolute() {
+        metadata_path
+    } else {
+        git_file.parent()?.join(metadata_path)
+    };
+
+    metadata_path.is_dir().then_some(GitMetadataRoute {
+        metadata_path,
+        root: root.clone(),
+    })
+}
+
+fn resolve_watched_event_path(
+    watched_root: &ProjectRoot,
+    watch_root: &Path,
+    absolute_path: &Path,
+    git_metadata_routes: &Arc<Mutex<Vec<GitMetadataRoute>>>,
+) -> Option<(ProjectRoot, String)> {
+    let metadata_routes = git_metadata_routes
+        .lock()
+        .expect("git metadata routes lock");
+    if let Some(route) = metadata_routes
+        .iter()
+        .find(|route| absolute_path.starts_with(&route.metadata_path))
+    {
+        let relative_path = normalize_watched_path(&route.metadata_path, absolute_path)?;
+        return Some((route.root.clone(), format!(".git/{relative_path}")));
+    }
+    drop(metadata_routes);
+
+    normalize_watched_path(watch_root, absolute_path)
+        .map(|relative_path| (watched_root.clone(), relative_path))
 }
 
 fn record_external_watch_path(
@@ -550,6 +646,191 @@ mod tests {
             Some("worktree_2"),
         );
         assert_eq!(drain.invalidations.len(), 1);
+    }
+
+    #[test]
+    fn routes_linked_worktree_metadata_to_its_owner() {
+        let temp = TempDir::new().expect("temp");
+        let primary_path = temp.path().join("repository");
+        let linked_path = temp.path().join("feature-worktree");
+        let metadata_path = primary_path.join(".git/worktrees/feature");
+        fs::create_dir_all(&metadata_path).expect("metadata directory");
+        fs::create_dir_all(&linked_path).expect("linked worktree directory");
+        fs::write(
+            linked_path.join(".git"),
+            format!("gitdir: {}\n", metadata_path.display()),
+        )
+        .expect("linked gitdir file");
+
+        let primary_root = ProjectRoot {
+            project_id: ProjectId("project_1".to_string()),
+            worktree_id: Some(WorktreeId("project_1:primary".to_string())),
+            root_path: primary_path,
+        };
+        let linked_root = ProjectRoot {
+            project_id: ProjectId("project_1".to_string()),
+            worktree_id: Some(WorktreeId("worktree_2".to_string())),
+            root_path: linked_path,
+        };
+        let route = git_metadata_route_for_root(&linked_root).expect("metadata route");
+        let routes = Arc::new(Mutex::new(vec![route]));
+
+        for (relative_path, expected_reason) in [
+            ("index", GitWatchInvalidationReason::Status),
+            ("HEAD", GitWatchInvalidationReason::Branch),
+            ("refs/heads/feature", GitWatchInvalidationReason::Branch),
+            ("rebase-merge/head-name", GitWatchInvalidationReason::Status),
+        ] {
+            let absolute_path = metadata_path.join(relative_path);
+            let (event_root, projected_path) = resolve_watched_event_path(
+                &primary_root,
+                &primary_root.root_path,
+                &absolute_path,
+                &routes,
+            )
+            .expect("routed metadata path");
+
+            assert_eq!(event_root.worktree_id, linked_root.worktree_id);
+            assert_eq!(
+                git_watch_invalidation_reason(&projected_path),
+                Some(expected_reason),
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_unmapped_worktree_metadata_on_the_primary_context() {
+        let temp = TempDir::new().expect("temp");
+        let primary_path = temp.path().join("repository");
+        let metadata_path = primary_path.join(".git/worktrees/new-worktree/gitdir");
+        fs::create_dir_all(metadata_path.parent().expect("metadata parent"))
+            .expect("metadata directory");
+        let primary_root = ProjectRoot {
+            project_id: ProjectId("project_1".to_string()),
+            worktree_id: Some(WorktreeId("project_1:primary".to_string())),
+            root_path: primary_path,
+        };
+        let routes = Arc::new(Mutex::new(Vec::new()));
+
+        let (event_root, relative_path) = resolve_watched_event_path(
+            &primary_root,
+            &primary_root.root_path,
+            &metadata_path,
+            &routes,
+        )
+        .expect("primary metadata path");
+
+        assert_eq!(event_root.worktree_id, primary_root.worktree_id);
+        assert_eq!(
+            git_watch_invalidation_reason(&relative_path),
+            Some(GitWatchInvalidationReason::Worktree),
+        );
+    }
+
+    #[test]
+    fn synchronizing_roots_updates_linked_metadata_routes() {
+        let temp = TempDir::new().expect("temp");
+        let primary_path = temp.path().join("repository");
+        let linked_path = temp.path().join("feature-worktree");
+        let metadata_path = primary_path.join(".git/worktrees/feature");
+        fs::create_dir_all(&metadata_path).expect("metadata directory");
+        fs::create_dir_all(&linked_path).expect("linked worktree directory");
+        fs::write(
+            linked_path.join(".git"),
+            format!("gitdir: {}\n", metadata_path.display()),
+        )
+        .expect("linked gitdir file");
+
+        let primary_root = ProjectRoot {
+            project_id: ProjectId("project_1".to_string()),
+            worktree_id: Some(WorktreeId("project_1:primary".to_string())),
+            root_path: primary_path,
+        };
+        let linked_root = ProjectRoot {
+            project_id: ProjectId("project_1".to_string()),
+            worktree_id: Some(WorktreeId("worktree_2".to_string())),
+            root_path: linked_path,
+        };
+        let mut watchers = WatcherRegistry::new();
+
+        watchers
+            .sync_roots(vec![primary_root.clone(), linked_root])
+            .expect("sync roots");
+        assert_eq!(
+            watchers
+                .git_metadata_routes
+                .lock()
+                .expect("metadata routes lock")
+                .len(),
+            1,
+        );
+
+        watchers
+            .sync_roots(vec![primary_root])
+            .expect("remove linked worktree root");
+        assert_eq!(watchers.roots.len(), 1);
+        assert!(!watchers.watchers.contains_key("project_1:worktree_2"));
+        assert!(
+            watchers
+                .git_metadata_routes
+                .lock()
+                .expect("metadata routes lock")
+                .is_empty(),
+        );
+    }
+
+    #[test]
+    fn routes_linked_worktree_metadata_events_with_the_linked_context() {
+        let temp = TempDir::new().expect("temp");
+        let primary_path = temp.path().join("repository");
+        let linked_path = temp.path().join("feature-worktree");
+        let metadata_path = primary_path.join(".git/worktrees/feature");
+        fs::create_dir_all(&metadata_path).expect("metadata directory");
+        fs::create_dir_all(&linked_path).expect("linked worktree directory");
+        fs::write(
+            linked_path.join(".git"),
+            format!("gitdir: {}\n", metadata_path.display()),
+        )
+        .expect("linked gitdir file");
+
+        let primary_root = ProjectRoot {
+            project_id: ProjectId("project_1".to_string()),
+            worktree_id: Some(WorktreeId("project_1:primary".to_string())),
+            root_path: primary_path,
+        };
+        let linked_root = ProjectRoot {
+            project_id: ProjectId("project_1".to_string()),
+            worktree_id: Some(WorktreeId("worktree_2".to_string())),
+            root_path: linked_path,
+        };
+        let mut watchers = WatcherRegistry::new();
+        let routes = Arc::new(Mutex::new(vec![
+            git_metadata_route_for_root(&linked_root).expect("metadata route"),
+        ]));
+        let write_tracker = watchers.write_tracker();
+        handle_notify_event(
+            NotifyEventContext {
+                root: &primary_root,
+                watch_root: &primary_root.root_path,
+                write_tracker: &write_tracker,
+                pending: &watchers.pending,
+                pending_git_invalidations: &watchers.pending_git_invalidations,
+                git_metadata_routes: &routes,
+                fs_events: &watchers.fs_events,
+            },
+            Event::new(EventKind::Modify(ModifyKind::Any)).add_path(metadata_path.join("index")),
+        );
+
+        let drain = watchers.drain(true);
+        assert_eq!(drain.git_invalidations.len(), 1);
+        assert_eq!(drain.git_invalidations[0].reason, "status");
+        assert_eq!(
+            drain.git_invalidations[0]
+                .worktree_id
+                .as_ref()
+                .map(|worktree_id| worktree_id.0.as_str()),
+            Some("worktree_2"),
+        );
     }
 
     #[test]
