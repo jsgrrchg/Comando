@@ -575,7 +575,7 @@ export function GitHubPullRequestTabView({
                             >
                                 {showChanges
                                     ? "Overview"
-                                    : `Changes ${detail?.changedFileCount ?? ""}`.trim()}
+                                    : "View Changes"}
                             </IdeActionButton>
                             <IdeActionButton
                                 onClick={() =>
