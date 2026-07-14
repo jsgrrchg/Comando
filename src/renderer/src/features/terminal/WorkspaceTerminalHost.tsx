@@ -32,12 +32,36 @@ export function getReadyActiveWorkspaceTabIds(
     );
 }
 
+export function getOpenContextTerminalIds(
+    contextsByKey: Readonly<Record<string, { readonly workspace: { readonly tabsById: Record<string, unknown> } }>>,
+    openContextKeys: readonly string[],
+    activeContextKey: string | null,
+): readonly string[] {
+    return openContextKeys.flatMap((contextKey) => {
+        if (contextKey === activeContextKey) {
+            return [];
+        }
+        const context = contextsByKey[contextKey];
+        if (!context) {
+            return [];
+        }
+        return Object.values(context.workspace.tabsById).flatMap((tab) =>
+            typeof tab === "object" && tab !== null &&
+            "kind" in tab && tab.kind === "terminal" &&
+            "terminalId" in tab && typeof tab.terminalId === "string"
+                ? [tab.terminalId]
+                : [],
+        );
+    });
+}
+
 export function WorkspaceTerminalHost() {
     const {
         activeContextKey,
         activePaneId,
         contextsByKey,
         deferredPaneIds,
+        openContextKeys,
         rootNode,
         tabsById,
     } = useWorkspaceStore(
@@ -46,6 +70,7 @@ export function WorkspaceTerminalHost() {
             activePaneId: state.activePaneId,
             contextsByKey: state.contextsByKey,
             deferredPaneIds: state.deferredPaneIds,
+            openContextKeys: state.openContextKeys,
             rootNode: state.rootNode,
             tabsById: state.tabsById,
         })),
@@ -68,22 +93,17 @@ export function WorkspaceTerminalHost() {
         return visibleTerminalTabs.filter((tab) => activeTabIds.has(tab.id));
     }, [activePaneId, deferredPaneIds, rootNode, visibleTerminalTabs]);
     const liveTerminalIds = useMemo(() => {
-        const inactiveTerminalIds = Object.values(contextsByKey)
-            .filter((context) => context.key !== activeContextKey)
-            .flatMap((context) =>
-                Object.values(context.workspace.tabsById)
-                    .filter(
-                        (tab): tab is RuntimeWorkspaceTerminalTab =>
-                            tab.kind === "terminal",
-                    )
-                    .map((tab) => tab.terminalId),
-            );
+        const inactiveTerminalIds = getOpenContextTerminalIds(
+            contextsByKey,
+            openContextKeys,
+            activeContextKey,
+        );
 
         return [
             ...visibleTerminalTabs.map((tab) => tab.terminalId),
             ...inactiveTerminalIds,
         ];
-    }, [activeContextKey, contextsByKey, visibleTerminalTabs]);
+    }, [activeContextKey, contextsByKey, openContextKeys, visibleTerminalTabs]);
     const ensureTerminal = useTerminalRuntimeStore(
         (state) => state.ensureTerminal,
     );
