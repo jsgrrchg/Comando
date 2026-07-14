@@ -52,6 +52,8 @@ import type {
     GitHubPublishReleaseInput,
     GitHubReleaseSummary,
     GitHubSetIssueStateInput,
+    GitHubSetIssueLabelsInput,
+    GitHubSetIssueLabelsResult,
     GitHubSetPullRequestDraftStateInput,
     GitHubUpdateCommentInput,
     GitHubUpdateIssueInput,
@@ -572,6 +574,24 @@ export class GitHubApiClient {
         }
 
         return updated;
+    }
+
+    async setIssueLabels(
+        input: GitHubSetIssueLabelsInput,
+    ): Promise<GitHubSetIssueLabelsResult> {
+        const response = await this.#requestJson<readonly RawGitHubLabel[]>(
+            input.repository.host,
+            repoPath(input.repository, `/issues/${input.number}/labels`),
+            {
+                body: { labels: input.labels },
+                method: "PUT",
+            },
+        );
+
+        return {
+            labels: response.data.map(mapLabel),
+            number: input.number,
+        };
     }
 
     async commentIssue(input: {

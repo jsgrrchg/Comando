@@ -73,6 +73,7 @@ export const IPC_CHANNELS = {
     getGitHubIssue: "github:get-issue",
     createGitHubIssue: "github:create-issue",
     updateGitHubIssue: "github:update-issue",
+    setGitHubIssueLabels: "github:set-issue-labels",
     commentGitHubIssue: "github:comment-issue",
     updateGitHubComment: "github:update-comment",
     closeGitHubIssue: "github:close-issue",
@@ -1219,6 +1220,21 @@ export interface GitHubUpdateIssueInput
     readonly labels?: readonly string[] | null;
     readonly number: number;
     readonly title?: string | null;
+}
+
+/**
+ * Uses GitHub's issue-label endpoint, which also manages labels on pull requests.
+ */
+export interface GitHubSetIssueLabelsInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly labels: readonly string[];
+    readonly number: number;
+}
+
+export interface GitHubSetIssueLabelsResult {
+    readonly labels: readonly GitHubLabelSummary[];
+    readonly number: number;
 }
 
 export interface GitHubCommentIssueInput
@@ -3027,6 +3043,9 @@ export interface ComandoApi {
     updateGitHubIssue: (
         input: GitHubUpdateIssueInput,
     ) => Promise<GitHubIssueDetail>;
+    setGitHubIssueLabels: (
+        input: GitHubSetIssueLabelsInput,
+    ) => Promise<GitHubSetIssueLabelsResult>;
     commentGitHubIssue: (
         input: GitHubCommentIssueInput,
     ) => Promise<GitHubCommentSummary>;
