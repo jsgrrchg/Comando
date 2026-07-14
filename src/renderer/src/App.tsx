@@ -165,22 +165,6 @@ const ROOT_NODE_KEY = "__root__";
 const PROJECT_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
 const WORKSPACE_RECENT_PROJECTS_LIMIT = 6;
 
-function collectProjectWorktrees(
-    snapshots: Readonly<Record<string, GitRepositorySnapshot | null>>,
-    projectId: string,
-): readonly GitWorktreeSummary[] {
-    const worktreesById = new Map<string, GitWorktreeSummary>();
-    for (const snapshot of Object.values(snapshots)) {
-        if (snapshot?.projectId !== projectId) {
-            continue;
-        }
-        for (const worktree of snapshot.worktrees) {
-            worktreesById.set(worktree.id, worktree);
-        }
-    }
-    return [...worktreesById.values()];
-}
-
 function getWorktreeDisplayLabel(worktree: GitWorktreeSummary): string {
     if (worktree.branchName) {
         return worktree.branchName;
@@ -324,6 +308,9 @@ export function App() {
     const refreshGitProject = useGitStore((state) => state.refreshProject);
     const ingestGitSnapshot = useGitStore((state) => state.ingestSnapshot);
     const gitSnapshots = useGitStore((state) => state.snapshots);
+    const gitWorktreesByProject = useGitStore(
+        (state) => state.worktreesByProject,
+    );
     const setActiveWorktree = useGitStore((state) => state.setActiveWorktree);
     const selectGitBranch = useGitStore((state) => state.selectBranch);
 
@@ -1492,10 +1479,8 @@ export function App() {
                     return [];
                 }
 
-                const worktrees = collectProjectWorktrees(
-                    gitSnapshots,
-                    context.projectId,
-                );
+                const worktrees =
+                    gitWorktreesByProject[context.projectId] ?? [];
                 const worktree = worktrees.find((entry) =>
                     areGitWorktreeIdsEquivalent(
                         context.projectId,
@@ -1518,7 +1503,7 @@ export function App() {
                 ];
             }),
         [
-            gitSnapshots,
+            gitWorktreesByProject,
             openWorkspaceContextKeys,
             projects,
             workspaceContextsByKey,
@@ -1562,7 +1547,7 @@ export function App() {
                         null,
                     ),
             );
-            const worktrees = collectProjectWorktrees(gitSnapshots, project.id)
+            const worktrees = (gitWorktreesByProject[project.id] ?? [])
                 .filter((worktree) => !worktree.isPrimary)
                 .map((worktree) => ({
                     id: worktree.id,
@@ -1601,7 +1586,7 @@ export function App() {
         });
     }, [
         activeWorkspaceContext,
-        gitSnapshots,
+        gitWorktreesByProject,
         openWorkspaceContextKeys,
         projects,
         workspaceContextsByKey,
