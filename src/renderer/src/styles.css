@@ -956,6 +956,51 @@ body {
     overflow-wrap: anywhere;
 }
 
+.github-document {
+    width: min(100%, 900px);
+    min-height: 100%;
+    margin: 0 auto;
+    padding: clamp(18px, 4vw, 42px);
+    color: var(--color-text-primary);
+    line-height: 1.62;
+    overflow-wrap: anywhere;
+}
+
+.github-document-title {
+    margin: 0;
+    color: var(--code-color-markup);
+    font-size: clamp(21px, 2.4vw, 25px);
+    font-weight: 700;
+    letter-spacing: 0;
+    line-height: 1.22;
+}
+
+.github-document-section__header {
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid
+        color-mix(in srgb, var(--color-border) 72%, transparent);
+}
+
+.github-document-section__title {
+    margin: 0;
+    color: var(--code-color-markup);
+    font-size: 1.16rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    line-height: 1.3;
+}
+
+.github-document-markdown {
+    color: var(--color-text-primary);
+    font-size: 14px;
+    line-height: 1.62;
+}
+
+.github-document-markdown .chat-assistant-content {
+    color: inherit;
+    line-height: inherit;
+}
+
 .markdown-file-preview > *:first-child {
     margin-top: 0;
 }
@@ -1254,6 +1299,7 @@ body {
 }
 
 @media (max-width: 720px) {
+    .github-document,
     .markdown-file-preview {
         padding: 18px;
     }
@@ -3564,6 +3610,81 @@ body.resizing-composer {
 
 .activity-tree-branch:last-child::before {
     bottom: calc(100% - 1rem);
+}
+
+/* CI reuses the activity-tree language with row-specific geometry. Workflow
+   rows contain two text lines, so the chat rail's fixed 1rem node position
+   would connect below the status icon. */
+.ci-activity-tree {
+    --ci-activity-gap: 4px;
+    --ci-activity-node-y: 25px;
+    --ci-activity-first-lead: -32px;
+}
+
+.ci-activity-tree[data-ci-activity-rail="jobs"] {
+    --ci-activity-node-y: 16px;
+    --ci-activity-first-lead: -16px;
+}
+
+.ci-activity-tree[data-ci-activity-rail="details"] {
+    --ci-activity-gap: 8px;
+    --ci-activity-node-y: 16px;
+    --ci-activity-first-lead: -12px;
+}
+
+.ci-activity-tree[data-ci-activity-rail="steps"] {
+    --ci-activity-gap: 2px;
+    --ci-activity-node-y: 10px;
+    --ci-activity-first-lead: -10px;
+}
+
+.ci-activity-branch {
+    --ci-activity-tree-color: color-mix(
+        in srgb,
+        var(--color-text-secondary) 34%,
+        transparent
+    );
+    position: relative;
+    padding-left: 44px;
+}
+
+.ci-activity-branch::before,
+.ci-activity-branch::after {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+}
+
+.ci-activity-branch::before {
+    background: repeating-linear-gradient(
+        to bottom,
+        var(--ci-activity-tree-color) 0 2px,
+        transparent 2px 5px
+    );
+    bottom: calc(-1 * var(--ci-activity-gap));
+    left: 16px;
+    top: 0;
+    width: 1px;
+}
+
+.ci-activity-branch::after {
+    background: repeating-linear-gradient(
+        to right,
+        var(--ci-activity-tree-color) 0 2px,
+        transparent 2px 5px
+    );
+    height: 1px;
+    left: 16px;
+    top: var(--ci-activity-node-y);
+    width: 28px;
+}
+
+.ci-activity-branch:first-child::before {
+    top: var(--ci-activity-first-lead);
+}
+
+.ci-activity-branch:last-child::before {
+    bottom: calc(100% - var(--ci-activity-node-y));
 }
 
 @container (max-width: 360px) {

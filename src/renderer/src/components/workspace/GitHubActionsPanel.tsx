@@ -27,7 +27,6 @@ import {
 import {
     formatGitHubDateTime,
     formatGitHubRelativeTime,
-    GitHubChecksPill,
     GitHubEmptyState,
     GitHubErrorState,
     GitHubSection,
@@ -38,6 +37,12 @@ import {
 import { IdeActionButton } from "./ide-bar";
 
 type ActionTone = "failure" | "neutral" | "pending" | "skipped" | "success";
+
+interface ChecksSummaryPresentation {
+    readonly detail: string;
+    readonly title: string;
+    readonly tone: ActionTone;
+}
 
 function deriveActionTone(
     conclusion: GitHubWorkflowConclusion | null,
@@ -68,6 +73,105 @@ function formatActionLabel(
     status: GitHubWorkflowRunStatus,
 ): string {
     return (conclusion ?? status).replaceAll("_", " ");
+}
+
+export function getChecksSummaryPresentation(
+    state: GitHubPullRequestChecksState | "loading" | undefined,
+    checksCount: number | null | undefined,
+): ChecksSummaryPresentation {
+    const countLabel =
+        checksCount == null
+            ? "Check details are loading"
+            : `${checksCount} ${checksCount === 1 ? "check" : "checks"}`;
+
+    switch (state) {
+        case "success":
+            return {
+                detail:
+                    checksCount == null
+                        ? "All reported checks succeeded"
+                        : `${checksCount} successful ${checksCount === 1 ? "check" : "checks"}`,
+                title: "All checks have passed",
+                tone: "success",
+            };
+        case "failure":
+            return {
+                detail: countLabel,
+                title: "Some checks have failed",
+                tone: "failure",
+            };
+        case "pending":
+            return {
+                detail: countLabel,
+                title: "Checks are still running",
+                tone: "pending",
+            };
+        case "loading":
+            return {
+                detail: "Refreshing the latest status",
+                title: "Loading checks",
+                tone: "pending",
+            };
+        default:
+            return {
+                detail: countLabel,
+                title: "Check status is unavailable",
+                tone: "neutral",
+            };
+    }
+}
+
+function formatActionDuration(
+    startedAt: string | null | undefined,
+    completedAt: string | null | undefined,
+): string | null {
+    if (!startedAt || !completedAt) {
+        return null;
+    }
+
+    const durationMs = Date.parse(completedAt) - Date.parse(startedAt);
+    if (!Number.isFinite(durationMs) || durationMs < 0) {
+        return null;
+    }
+
+    const seconds = Math.max(1, Math.round(durationMs / 1_000));
+    if (seconds < 60) {
+        return `${seconds}s`;
+    }
+
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) {
+        return `${minutes}m`;
+    }
+
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    return remainingMinutes > 0
+        ? `${hours}h ${remainingMinutes}m`
+        : `${hours}h`;
+}
+
+function formatActionResult(
+    conclusion: GitHubWorkflowConclusion | null,
+    status: GitHubWorkflowRunStatus,
+    startedAt?: string | null,
+    completedAt?: string | null,
+): string {
+    const tone = deriveActionTone(conclusion, status);
+    const duration = formatActionDuration(startedAt, completedAt);
+
+    if (tone === "success") {
+        return duration ? `Successful in ${duration}` : "Successful";
+    }
+    if (tone === "failure") {
+        return duration ? `Failed after ${duration}` : "Failed";
+    }
+    if (tone === "skipped") {
+        return "Skipped";
+    }
+
+    const label = formatActionLabel(conclusion, status);
+    return `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
 }
 
 function cleanRunnerName(name: string | null | undefined): string | null {
@@ -144,7 +248,7 @@ export function GitHubActionsPanel({
     );
     const runsKey = getGitHubWorkflowRunsKey(repo, headSha);
     const selectedRun = useMemo(
-        () => runs.find((run) => run.id === selectedRunId) ?? runs[0] ?? null,
+        () => runs.find((run) => run.id === selectedRunId) ?? null,
         [runs, selectedRunId],
     );
     const jobs = useMemo(
@@ -153,10 +257,7 @@ export function GitHubActionsPanel({
     );
     const selectedJob = useMemo(
         () =>
-            jobs.find((job) => job.id === selectedJobId) ??
-            jobs.find((job) => job.conclusion === "failure") ??
-            jobs[0] ??
-            null,
+            jobs.find((job) => job.id === selectedJobId) ?? null,
         [jobs, selectedJobId],
     );
     const artifacts = selectedRun
@@ -314,6 +415,10 @@ export function GitHubActionsPanel({
     const sectionTone: GitHubSectionTone = checksState
         ? deriveChecksSectionTone(checksState)
         : "accent";
+    const checksSummary = getChecksSummaryPresentation(
+        checksState,
+        checksCount,
+    );
 
     return (
         <GitHubSection
@@ -334,18 +439,7 @@ export function GitHubActionsPanel({
                     </IdeActionButton>
                 </>
             }
-            bodyClassName="space-y-3 px-3 py-3"
-            count={checksCount ?? null}
-            eyebrow={
-                <span className="flex items-center gap-2">
-                    <span className="font-mono text-[10px] text-text-secondary">
-                        {headSha.slice(0, 7)}
-                    </span>
-                    {checksState ? (
-                        <GitHubChecksPill state={checksState} />
-                    ) : null}
-                </span>
-            }
+            bodyClassName="space-y-3 pt-4"
             title="CI Actions"
             tone={sectionTone}
         >
@@ -379,79 +473,149 @@ export function GitHubActionsPanel({
                 </GitHubEmptyState>
             ) : null}
             {runs.length > 0 ? (
-                <div className="space-y-3">
-                    {runs.length > 1 ? (
-                        <div className="flex flex-wrap gap-1.5">
-                            {runs.map((run) => (
-                                <button
-                                    className={[
-                                        "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition",
-                                        selectedRun?.id === run.id
-                                            ? "border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] text-text-primary"
-                                            : "border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary text-text-secondary hover:border-[color-mix(in_srgb,var(--color-accent)_50%,transparent)] hover:text-text-primary",
-                                    ].join(" ")}
-                                    key={run.id}
-                                    onClick={() => {
-                                        setSelectedRunId(run.id);
-                                        setSelectedJobId(null);
-                                    }}
-                                    title={`${run.event} · ${formatGitHubDateTime(run.updatedAt)}`}
-                                    type="button"
-                                >
-                                    <ActionStatusDot
-                                        tone={deriveActionTone(
-                                            run.conclusion,
-                                            run.status,
-                                        )}
-                                    />
-                                    <span className="truncate">{run.name}</span>
-                                    <ActionStatusPill
-                                        conclusion={run.conclusion}
-                                        status={run.status}
-                                    />
-                                </button>
-                            ))}
-                        </div>
-                    ) : null}
-                    {selectedRun ? (
-                        <RunDetail
-                            artifacts={artifacts}
-                            canMutateActions={canWriteActions}
-                            cancelRun={() => void handleCancelRun(selectedRun)}
-                            compact={runs.length === 1}
-                            isCanceling={
-                                mutatingKeys[
-                                    `${repoKey}:actions:${selectedRun.id}:cancel`
-                                ] ?? false
-                            }
-                            isLoadingArtifacts={
-                                artifactsKey
-                                    ? (loadingKeys[artifactsKey] ?? false)
-                                    : false
-                            }
-                            isLoadingJobs={
-                                jobsKey ? (loadingKeys[jobsKey] ?? false) : false
-                            }
-                            isLoadingLogs={
-                                logsKey ? (loadingKeys[logsKey] ?? false) : false
-                            }
-                            isRerunning={
-                                mutatingKeys[
-                                    `${repoKey}:actions:${selectedRun.id}:rerun-failed`
-                                ] ?? false
-                            }
-                            jobs={jobs}
-                            loadLogs={(job) => void handleLoadLogs(job)}
-                            logs={logs}
-                            annotations={annotations}
-                            rerunFailedJobs={() =>
-                                void handleRerunFailedJobs(selectedRun)
-                            }
-                            run={selectedRun}
-                            selectedJob={selectedJob}
-                            selectJob={setSelectedJobId}
+                <div>
+                    <div className="flex items-center gap-3 pb-4">
+                        <ActionStatusIcon
+                            size="large"
+                            tone={checksSummary.tone}
                         />
-                    ) : null}
+                        <div className="min-w-0">
+                            <div className="text-[15px] font-semibold text-text-primary">
+                                {checksSummary.title}
+                            </div>
+                            <div className="mt-0.5 text-[12px] text-text-secondary">
+                                {checksSummary.detail}
+                            </div>
+                        </div>
+                    </div>
+                    <div
+                        className="ci-activity-tree flex min-w-0 flex-col gap-1"
+                        data-ci-activity-rail="workflows"
+                        role="list"
+                    >
+                        {runs.map((run) => {
+                            const expanded = selectedRun?.id === run.id;
+                            const runTone = deriveActionTone(
+                                run.conclusion,
+                                run.status,
+                            );
+
+                            return (
+                                <div
+                                    className="ci-activity-branch min-w-0"
+                                    data-activity-rail-decoration="branch"
+                                    data-ci-workflow-id={run.id}
+                                    key={run.id}
+                                    role="listitem"
+                                >
+                                    <button
+                                        aria-expanded={expanded}
+                                        className="flex w-full items-center gap-3 rounded-md px-1 py-2 text-left transition hover:bg-[color-mix(in_srgb,var(--color-bg-tertiary)_45%,transparent)]"
+                                        onClick={() => {
+                                            setSelectedRunId((current) =>
+                                                current === run.id
+                                                    ? null
+                                                    : run.id,
+                                            );
+                                            setSelectedJobId(null);
+                                        }}
+                                        title={`${run.event} · ${formatGitHubDateTime(run.updatedAt)}`}
+                                        type="button"
+                                    >
+                                        <ActionStatusIcon tone={runTone} />
+                                        <div className="min-w-0 flex-1">
+                                            <div className="truncate text-[13px] font-medium text-text-primary">
+                                                {run.name}
+                                            </div>
+                                            <div className="mt-0.5 truncate text-[11px] text-text-secondary">
+                                                {run.workflowName !== run.name
+                                                    ? `${run.workflowName} · `
+                                                    : ""}
+                                                {run.event}
+                                            </div>
+                                        </div>
+                                        <span
+                                            className="shrink-0 text-[11px] text-text-secondary"
+                                            title={formatGitHubDateTime(
+                                                run.updatedAt,
+                                            )}
+                                        >
+                                            {formatActionResult(
+                                                run.conclusion,
+                                                run.status,
+                                                run.createdAt,
+                                                run.updatedAt,
+                                            )}
+                                        </span>
+                                        <span
+                                            aria-hidden="true"
+                                            className="w-4 shrink-0 text-center text-[14px] text-text-secondary"
+                                        >
+                                            {expanded ? "⌃" : "⌄"}
+                                        </span>
+                                    </button>
+                                    {expanded && selectedRun ? (
+                                        <RunDetail
+                                            artifacts={artifacts}
+                                            canMutateActions={canWriteActions}
+                                            cancelRun={() =>
+                                                void handleCancelRun(selectedRun)
+                                            }
+                                            isCanceling={
+                                                mutatingKeys[
+                                                    `${repoKey}:actions:${selectedRun.id}:cancel`
+                                                ] ?? false
+                                            }
+                                            isLoadingArtifacts={
+                                                artifactsKey
+                                                    ? (loadingKeys[
+                                                          artifactsKey
+                                                      ] ?? false)
+                                                    : false
+                                            }
+                                            isLoadingJobs={
+                                                jobsKey
+                                                    ? (loadingKeys[jobsKey] ??
+                                                      false)
+                                                    : false
+                                            }
+                                            isLoadingLogs={
+                                                logsKey
+                                                    ? (loadingKeys[logsKey] ??
+                                                      false)
+                                                    : false
+                                            }
+                                            isRerunning={
+                                                mutatingKeys[
+                                                    `${repoKey}:actions:${selectedRun.id}:rerun-failed`
+                                                ] ?? false
+                                            }
+                                            jobs={jobs}
+                                            loadLogs={(job) =>
+                                                void handleLoadLogs(job)
+                                            }
+                                            logs={logs}
+                                            annotations={annotations}
+                                            rerunFailedJobs={() =>
+                                                void handleRerunFailedJobs(
+                                                    selectedRun,
+                                                )
+                                            }
+                                            run={selectedRun}
+                                            selectedJob={selectedJob}
+                                            selectJob={(jobId) =>
+                                                setSelectedJobId((current) =>
+                                                    current === jobId
+                                                        ? null
+                                                        : jobId,
+                                                )
+                                            }
+                                        />
+                                    ) : null}
+                                </div>
+                            );
+                        })}
+                    </div>
                 </div>
             ) : null}
         </GitHubSection>
@@ -463,7 +627,6 @@ function RunDetail({
     artifacts,
     canMutateActions,
     cancelRun,
-    compact,
     isCanceling,
     isLoadingArtifacts,
     isLoadingJobs,
@@ -481,7 +644,6 @@ function RunDetail({
     readonly artifacts: readonly GitHubWorkflowArtifactSummary[];
     readonly canMutateActions: boolean;
     readonly cancelRun: () => void;
-    readonly compact: boolean;
     readonly isCanceling: boolean;
     readonly isLoadingArtifacts: boolean;
     readonly isLoadingJobs: boolean;
@@ -512,45 +674,21 @@ function RunDetail({
         : null;
 
     return (
-        <div className="space-y-3 rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-                {compact ? (
-                    <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[10px] text-text-secondary">
-                        <span>{run.event}</span>
-                        <span aria-hidden="true">·</span>
-                        <span title={formatGitHubDateTime(run.updatedAt)}>
-                            updated{" "}
-                            {formatGitHubRelativeTime(run.updatedAt)}
-                        </span>
-                    </div>
-                ) : (
-                    <div className="flex min-w-0 flex-1 items-center gap-2">
-                        <ActionStatusDot
-                            tone={deriveActionTone(run.conclusion, run.status)}
-                        />
-                        <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                                <span className="truncate text-[12px] font-semibold text-text-primary">
-                                    {run.name}
-                                </span>
-                                <ActionStatusPill
-                                    conclusion={run.conclusion}
-                                    status={run.status}
-                                />
-                            </div>
-                            <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10px] text-text-secondary">
-                                <span>{run.event}</span>
-                                <span aria-hidden="true">·</span>
-                                <span
-                                    title={formatGitHubDateTime(run.updatedAt)}
-                                >
-                                    updated{" "}
-                                    {formatGitHubRelativeTime(run.updatedAt)}
-                                </span>
-                            </div>
-                        </div>
-                    </div>
-                )}
+        <div className="space-y-4 pb-2 pt-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex min-w-0 flex-1 items-center gap-1.5 text-[11px] text-text-secondary">
+                    <span>Run #{run.runNumber}</span>
+                    {run.runAttempt > 1 ? (
+                        <>
+                            <span aria-hidden="true">·</span>
+                            <span>attempt {run.runAttempt}</span>
+                        </>
+                    ) : null}
+                    <span aria-hidden="true">·</span>
+                    <span title={formatGitHubDateTime(run.updatedAt)}>
+                        updated {formatGitHubRelativeTime(run.updatedAt)}
+                    </span>
+                </div>
                 <div className="flex flex-wrap gap-2">
                     <IdeActionButton onClick={() => openGitHubWebUrl(run.url)}>
                         Open Run
@@ -580,86 +718,141 @@ function RunDetail({
                 </div>
             </div>
             {isLoadingJobs && jobs.length === 0 ? (
-                <div className="text-[11px] text-text-secondary">
+                <div className="py-2 text-[12px] text-text-secondary">
                     Loading jobs...
                 </div>
             ) : null}
             {jobs.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5">
+                <div
+                    className="ci-activity-tree flex min-w-0 flex-col gap-1"
+                    data-ci-activity-rail="jobs"
+                    role="list"
+                >
                     {jobs.map((job) => (
-                        <button
-                            className={[
-                                "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition",
-                                selectedJob?.id === job.id
-                                    ? "border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] text-text-primary"
-                                    : "border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary text-text-secondary hover:border-[color-mix(in_srgb,var(--color-accent)_50%,transparent)] hover:text-text-primary",
-                            ].join(" ")}
+                        <div
+                            className="ci-activity-branch min-w-0"
+                            data-activity-rail-decoration="branch"
+                            data-ci-job-id={job.id}
                             key={job.id}
-                            onClick={() => selectJob(job.id)}
-                            type="button"
+                            role="listitem"
                         >
-                            <ActionStatusDot
-                                tone={deriveActionTone(
-                                    job.conclusion,
-                                    job.status,
-                                )}
-                            />
-                            <span className="truncate">{job.name}</span>
-                            <ActionStatusPill
-                                conclusion={job.conclusion}
-                                status={job.status}
-                            />
-                        </button>
+                            <button
+                                aria-expanded={selectedJob?.id === job.id}
+                                className="flex w-full items-center gap-3 rounded-md py-1.5 pl-1 text-left transition hover:bg-[color-mix(in_srgb,var(--color-bg-tertiary)_45%,transparent)]"
+                                onClick={() => selectJob(job.id)}
+                                type="button"
+                            >
+                                <ActionStatusIcon
+                                    tone={deriveActionTone(
+                                        job.conclusion,
+                                        job.status,
+                                    )}
+                                />
+                                <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-text-primary">
+                                    {job.name}
+                                </span>
+                                <span className="shrink-0 text-[11px] text-text-secondary">
+                                    {formatActionResult(
+                                        job.conclusion,
+                                        job.status,
+                                        job.startedAt,
+                                        job.completedAt,
+                                    )}
+                                </span>
+                                <span
+                                    aria-hidden="true"
+                                    className="w-4 shrink-0 text-center text-[13px] text-text-secondary"
+                                >
+                                    {selectedJob?.id === job.id ? "⌃" : "⌄"}
+                                </span>
+                            </button>
+                        </div>
                     ))}
                 </div>
             ) : null}
             {jobs.length === 0 && !isLoadingJobs ? (
-                <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] px-3 py-2 text-[11px] text-text-secondary">
+                <div className="py-2 text-[12px] text-text-secondary">
                     No jobs available for this run.
                 </div>
             ) : null}
-            <div className="space-y-3">
+            <div
+                className="ci-activity-tree flex min-w-0 flex-col gap-2"
+                data-ci-activity-rail="details"
+                role="list"
+            >
                 {selectedJob ? (
                     <>
-                        <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary p-2">
-                            <div className="flex items-center justify-between gap-2">
-                                <div className="flex min-w-0 items-center gap-2">
-                                    <GitHubSectionLabel>Logs</GitHubSectionLabel>
-                                    {selectedJobRunner ? (
-                                        <span className="truncate text-[10px] text-text-secondary">
-                                            {selectedJobRunner}
-                                        </span>
-                                    ) : null}
+                        <div
+                            className="ci-activity-branch min-w-0"
+                            data-activity-rail-decoration="branch"
+                            role="listitem"
+                        >
+                            <div className="py-1">
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="flex min-w-0 items-center gap-2">
+                                        <GitHubSectionLabel>
+                                            Logs
+                                        </GitHubSectionLabel>
+                                        {selectedJobRunner ? (
+                                            <span className="truncate text-[10px] text-text-secondary">
+                                                {selectedJobRunner}
+                                            </span>
+                                        ) : null}
+                                    </div>
+                                    <IdeActionButton
+                                        disabled={isLoadingLogs}
+                                        onClick={() => loadLogs(selectedJob)}
+                                    >
+                                        {isLoadingLogs
+                                            ? "Loading..."
+                                            : logs
+                                              ? "Reload"
+                                              : "Load"}
+                                    </IdeActionButton>
                                 </div>
-                                <IdeActionButton
-                                    disabled={isLoadingLogs}
-                                    onClick={() => loadLogs(selectedJob)}
-                                >
-                                    {isLoadingLogs
-                                        ? "Loading..."
-                                        : logs
-                                          ? "Reload"
-                                          : "Load"}
-                                </IdeActionButton>
+                                {logs ? (
+                                    <div className="mt-2 max-h-72 select-text overflow-y-auto rounded-md bg-editor p-2 font-mono text-[10px] leading-4 text-text-secondary">
+                                        {logs}
+                                    </div>
+                                ) : (
+                                    <div className="mt-2 text-[11px] text-text-secondary">
+                                        Logs load on demand.
+                                    </div>
+                                )}
                             </div>
-                            {logs ? (
-                                <div className="mt-2 max-h-72 select-text overflow-y-auto rounded-md bg-editor p-2 font-mono text-[10px] leading-4 text-text-secondary">
-                                    {logs}
-                                </div>
-                            ) : (
-                                <div className="mt-2 rounded-md border border-dashed border-[color-mix(in_srgb,var(--color-border)_50%,transparent)] px-3 py-3 text-center text-[10px] text-text-secondary">
-                                    Logs load on demand.
-                                </div>
-                            )}
                         </div>
-                        <AnnotationsList annotations={annotations} />
-                        <StepsList steps={selectedJob.steps} />
+                        {annotations.length > 0 ? (
+                            <div
+                                className="ci-activity-branch min-w-0"
+                                data-activity-rail-decoration="branch"
+                                role="listitem"
+                            >
+                                <AnnotationsList annotations={annotations} />
+                            </div>
+                        ) : null}
+                        {selectedJob.steps.length > 0 ? (
+                            <div
+                                className="ci-activity-branch min-w-0"
+                                data-activity-rail-decoration="branch"
+                                role="listitem"
+                            >
+                                <StepsList steps={selectedJob.steps} />
+                            </div>
+                        ) : null}
                     </>
                 ) : null}
-                <ArtifactsList
-                    artifacts={artifacts}
-                    isLoading={isLoadingArtifacts}
-                />
+                {isLoadingArtifacts || artifacts.length > 0 ? (
+                    <div
+                        className="ci-activity-branch min-w-0"
+                        data-activity-rail-decoration="branch"
+                        role="listitem"
+                    >
+                        <ArtifactsList
+                            artifacts={artifacts}
+                            isLoading={isLoadingArtifacts}
+                        />
+                    </div>
+                ) : null}
             </div>
         </div>
     );
@@ -680,10 +873,8 @@ function StepsList({
     const skippedCount = steps.filter(
         (step) => deriveActionTone(step.conclusion, step.status) === "skipped",
     ).length;
-    const useTwoColumns = steps.length > 8;
-
     return (
-        <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary p-2">
+        <div className="py-1">
             <div className="mb-2 flex items-center gap-2">
                 <GitHubSectionLabel>Steps</GitHubSectionLabel>
                 <span className="text-[10px] text-text-secondary">
@@ -701,11 +892,9 @@ function StepsList({
                 ) : null}
             </div>
             <div
-                className={
-                    useTwoColumns
-                        ? "grid gap-x-3 gap-y-0.5 sm:grid-cols-2"
-                        : "space-y-0.5"
-                }
+                className="ci-activity-tree flex min-w-0 flex-col gap-0.5"
+                data-ci-activity-rail="steps"
+                role="list"
             >
                 {steps.map((step) => {
                     const tone = deriveActionTone(
@@ -714,27 +903,31 @@ function StepsList({
                     );
                     return (
                         <div
-                            className="flex items-center gap-2 px-1 py-0.5 text-[11px]"
+                            className="ci-activity-branch min-w-0"
+                            data-activity-rail-decoration="branch"
                             key={`${step.number}:${step.name}`}
+                            role="listitem"
                         >
-                            <ActionStatusDot tone={tone} />
-                            <span
-                                className={
-                                    tone === "skipped"
-                                        ? "min-w-0 flex-1 truncate text-text-secondary line-through decoration-text-secondary/40"
-                                        : "min-w-0 flex-1 truncate text-text-primary"
-                                }
-                            >
-                                {step.name}
-                            </span>
-                            {tone !== "success" && tone !== "skipped" ? (
-                                <span className="shrink-0 font-mono text-[10px] text-text-secondary">
-                                    {formatActionLabel(
-                                        step.conclusion,
-                                        step.status,
-                                    )}
+                            <div className="flex items-center gap-2 px-1 py-0.5 text-[11px]">
+                                <ActionStatusDot tone={tone} />
+                                <span
+                                    className={
+                                        tone === "skipped"
+                                            ? "min-w-0 flex-1 truncate text-text-secondary line-through decoration-text-secondary/40"
+                                            : "min-w-0 flex-1 truncate text-text-primary"
+                                    }
+                                >
+                                    {step.name}
                                 </span>
-                            ) : null}
+                                {tone !== "success" && tone !== "skipped" ? (
+                                    <span className="shrink-0 font-mono text-[10px] text-text-secondary">
+                                        {formatActionLabel(
+                                            step.conclusion,
+                                            step.status,
+                                        )}
+                                    </span>
+                                ) : null}
+                            </div>
                         </div>
                     );
                 })}
@@ -756,7 +949,7 @@ function AnnotationsList({
     const hidden = annotations.length - visible.length;
 
     return (
-        <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary p-2">
+        <div className="py-1">
             <div className="mb-2 flex items-center gap-2">
                 <GitHubSectionLabel>Annotations</GitHubSectionLabel>
                 <span className="text-[10px] text-text-secondary">
@@ -766,7 +959,7 @@ function AnnotationsList({
             <div className="space-y-1.5">
                 {visible.map((annotation, index) => (
                     <div
-                        className="rounded-md border-l-[2px] border-l-[color-mix(in_srgb,var(--diff-warn)_60%,transparent)] bg-bg-primary px-2 py-1 text-[10px] leading-4"
+                        className="border-l-[2px] border-l-[color-mix(in_srgb,var(--diff-warn)_60%,transparent)] py-1 pl-3 text-[10px] leading-4"
                         key={`${annotation.path}:${annotation.startLine}:${index}`}
                     >
                         <div className="font-mono text-text-primary">
@@ -809,7 +1002,7 @@ function ArtifactsList({
     }
 
     return (
-        <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary p-2">
+        <div className="py-1">
             <div className="mb-2">
                 <GitHubSectionLabel>Artifacts</GitHubSectionLabel>
             </div>
@@ -833,32 +1026,51 @@ function ArtifactsList({
     );
 }
 
-function ActionStatusPill({
-    conclusion,
-    status,
+function ActionStatusIcon({
+    size = "small",
+    tone,
 }: {
-    readonly conclusion: GitHubWorkflowConclusion | null;
-    readonly status: GitHubWorkflowRunStatus;
+    readonly size?: "large" | "small";
+    readonly tone: ActionTone;
 }) {
-    const tone = deriveActionTone(conclusion, status);
     const colors: Record<ActionTone, string> = {
-        failure:
-            "border-[color-mix(in_srgb,var(--diff-remove)_35%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-remove)_8%,transparent)] text-[color-mix(in_srgb,var(--diff-remove)_84%,var(--color-text-primary))]",
-        neutral:
-            "border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-tertiary text-text-secondary",
-        pending:
-            "border-[color-mix(in_srgb,var(--color-accent)_35%,var(--color-border))] bg-[color-mix(in_srgb,var(--color-accent)_10%,transparent)] text-text-primary",
-        skipped:
-            "border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-tertiary text-text-secondary",
-        success:
-            "border-[color-mix(in_srgb,var(--diff-add)_35%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-add)_8%,transparent)] text-[color-mix(in_srgb,var(--diff-add)_78%,var(--color-text-primary))]",
+        failure: "var(--diff-remove)",
+        neutral: "var(--color-text-secondary)",
+        pending: "var(--color-accent)",
+        skipped: "var(--color-text-secondary)",
+        success: "var(--diff-add)",
+    };
+    const labels: Record<ActionTone, string> = {
+        failure: "Failed",
+        neutral: "Unknown",
+        pending: "In progress",
+        skipped: "Skipped",
+        success: "Passed",
+    };
+    const symbols: Record<ActionTone, string> = {
+        failure: "×",
+        neutral: "?",
+        pending: "•",
+        skipped: "–",
+        success: "✓",
     };
 
     return (
         <span
-            className={`shrink-0 rounded-md border px-1.5 py-0.5 font-mono text-[9.5px] font-medium ${colors[tone]}`}
+            aria-label={labels[tone]}
+            className={[
+                "inline-flex shrink-0 items-center justify-center rounded-full border font-semibold",
+                size === "large"
+                    ? "h-8 w-8 text-[16px]"
+                    : "h-5 w-5 text-[11px]",
+            ].join(" ")}
+            role="img"
+            style={{
+                borderColor: `color-mix(in srgb, ${colors[tone]} 48%, transparent)`,
+                color: colors[tone],
+            }}
         >
-            {formatActionLabel(conclusion, status)}
+            {symbols[tone]}
         </span>
     );
 }

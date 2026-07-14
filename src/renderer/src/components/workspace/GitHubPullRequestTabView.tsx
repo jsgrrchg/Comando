@@ -511,7 +511,7 @@ export function GitHubPullRequestTabView({
                 worktreeId: worktreeId ?? null,
             }}
         >
-            <div className="space-y-4 p-4">
+            <div className="github-document space-y-8">
                 <GitHubAuthNotice authStatus={authStatus} />
                 {detailError ? (
                     <GitHubErrorState>{detailError}</GitHubErrorState>
@@ -524,26 +524,47 @@ export function GitHubPullRequestTabView({
                 ) : null}
                 {detail ? (
                     <>
-                        <section
-                            className="space-y-3 rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary px-4 py-3"
-                        >
-                            {isEditingDescription ? (
-                                <input
-                                    className="h-9 w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 text-[18px] font-semibold leading-7 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
-                                    disabled={isUpdatingPullRequest}
-                                    onChange={(event) =>
-                                        setTitleDraft(
-                                            event.currentTarget.value,
-                                        )
-                                    }
-                                    placeholder="Pull request title"
-                                    value={titleDraft}
-                                />
-                            ) : (
-                                <h1 className="text-[18px] font-semibold leading-7 text-text-primary">
-                                    {detail.title}
-                                </h1>
-                            )}
+                        <section className="space-y-4">
+                            <div className="flex min-w-0 items-start gap-1.5">
+                                <div className="min-w-0 flex-1">
+                                    {isEditingDescription ? (
+                                        <input
+                                            className="h-11 w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 text-[22px] font-bold leading-7 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
+                                            disabled={isUpdatingPullRequest}
+                                            onChange={(event) =>
+                                                setTitleDraft(
+                                                    event.currentTarget.value,
+                                                )
+                                            }
+                                            placeholder="Pull request title"
+                                            value={titleDraft}
+                                        />
+                                    ) : (
+                                        <h1 className="github-document-title">
+                                            {detail.title}
+                                        </h1>
+                                    )}
+                                </div>
+                                <span
+                                    className="shrink-0"
+                                    ref={labelPickerTriggerRef}
+                                >
+                                    <button
+                                        aria-label="Edit labels"
+                                        className="review-icon-btn"
+                                        disabled={!canEditLabels}
+                                        onClick={handleOpenLabelPicker}
+                                        title={
+                                            canEditLabels
+                                                ? "Edit labels"
+                                                : labelPermissionLabel
+                                        }
+                                        type="button"
+                                    >
+                                        <PencilIcon />
+                                    </button>
+                                </span>
+                            </div>
                             <div className="flex flex-wrap items-center gap-2">
                                 <GitHubStatePill tone={stateTone}>
                                     {stateLabel}
@@ -564,27 +585,16 @@ export function GitHubPullRequestTabView({
                                     {formatGitHubDateTime(detail.updatedAt)}
                                 </span>
                             </div>
-                            <div className="flex flex-wrap items-center gap-1.5">
-                                {detail.labels.map((label) => (
-                                    <GitHubLabelPill
-                                        key={label.id}
-                                        label={label}
-                                    />
-                                ))}
-                                <span ref={labelPickerTriggerRef}>
-                                    <IdeActionButton
-                                        disabled={!canEditLabels}
-                                        onClick={handleOpenLabelPicker}
-                                        title={
-                                            canEditLabels
-                                                ? undefined
-                                                : labelPermissionLabel
-                                        }
-                                    >
-                                        Edit labels
-                                    </IdeActionButton>
-                                </span>
-                            </div>
+                            {detail.labels.length > 0 ? (
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                    {detail.labels.map((label) => (
+                                        <GitHubLabelPill
+                                            key={label.id}
+                                            label={label}
+                                        />
+                                    ))}
+                                </div>
+                            ) : null}
                             <div className="flex flex-wrap items-center gap-2 text-[11px]">
                                 <BranchChip>{detail.head.label}</BranchChip>
                                 <span className="text-text-secondary">
@@ -694,8 +704,8 @@ export function GitHubPullRequestTabView({
                             }
                             bodyClassName={
                                 isEditingDescription
-                                    ? "space-y-3 px-4 py-4"
-                                    : "px-4 py-4 text-[13px] leading-6 text-text-secondary"
+                                    ? "space-y-3 pt-4"
+                                    : "github-document-markdown pt-4"
                             }
                             title="Description"
                             tone="accent"
@@ -718,12 +728,13 @@ export function GitHubPullRequestTabView({
                                             {updateError}
                                         </div>
                                     ) : null}
-                                    <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2">
+                                    <div className="border-t border-[color-mix(in_srgb,var(--color-border)_55%,transparent)] pt-3">
                                         <GitHubSectionLabel>
                                             Preview
                                         </GitHubSectionLabel>
-                                        <div className="mt-2 max-h-72 overflow-y-auto text-[12px] leading-5 text-text-secondary">
+                                        <div className="github-document-markdown mt-3 max-h-72 overflow-y-auto">
                                             <MarkdownContent
+                                                chatFontSize={14}
                                                 content={
                                                     descriptionDraft.trim() ||
                                                     "_No description._"
@@ -759,6 +770,7 @@ export function GitHubPullRequestTabView({
                                 </>
                             ) : (
                                 <MarkdownContent
+                                    chatFontSize={14}
                                     content={
                                         detail.body || "_No description._"
                                     }
@@ -780,73 +792,88 @@ export function GitHubPullRequestTabView({
                                     </IdeActionButton>
                                 ) : null
                             }
-                            bodyClassName="space-y-1 px-2 py-2"
+                            bodyClassName="divide-y divide-[color-mix(in_srgb,var(--color-border)_55%,transparent)] pt-2"
                             count={commits.length}
                             title="Commits"
                             tone="info"
                         >
                             <>
-                                {visibleCommits.map((commit) => (
-                                    <button
-                                        className="flex w-full items-center justify-between gap-3 rounded-md border-l-[3px] border-l-transparent px-2 py-1 text-left text-[11px] transition hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-tertiary"
-                                        key={commit.sha}
-                                        onClick={() =>
-                                            void openGitCommitTab({
-                                                commitSha: commit.sha,
-                                                projectId,
-                                                subject:
-                                                    commit.message.split(
-                                                        "\n",
-                                                    )[0] ?? commit.shortSha,
-                                                worktreeId:
-                                                    worktreeId ?? null,
-                                            })
-                                        }
-                                        type="button"
-                                    >
-                                        <span className="min-w-0 flex-1 truncate text-text-primary">
-                                            {commit.message.split("\n")[0]}
-                                        </span>
-                                        {commit.additions != null ||
-                                        commit.deletions != null ? (
-                                            <span
-                                                className="shrink-0 text-[10.5px]"
-                                                style={{
-                                                    fontFamily:
-                                                        "var(--font-mono)",
-                                                }}
+                                {visibleCommits.map((commit) => {
+                                    const subject =
+                                        commit.message.split("\n")[0] ??
+                                        commit.shortSha;
+                                    const handleOpenCommit = () =>
+                                        void openGitCommitTab({
+                                            commitSha: commit.sha,
+                                            projectId,
+                                            subject,
+                                            worktreeId: worktreeId ?? null,
+                                        });
+
+                                    return (
+                                        <div
+                                            className="group/commit -mx-2 flex items-center rounded-md px-2 transition-colors hover:bg-[color-mix(in_srgb,var(--color-bg-tertiary)_55%,transparent)] focus-within:bg-[color-mix(in_srgb,var(--color-bg-tertiary)_55%,transparent)]"
+                                            key={commit.sha}
+                                        >
+                                            <button
+                                                className="flex min-w-0 flex-1 items-center justify-between gap-3 py-2.5 text-left text-[12px]"
+                                                onClick={handleOpenCommit}
+                                                title={`Open commit ${commit.shortSha}`}
+                                                type="button"
                                             >
-                                                {commit.additions != null ? (
-                                                    <span
-                                                        style={{
-                                                            color: "var(--diff-add)",
-                                                        }}
-                                                    >
-                                                        +{commit.additions}
-                                                    </span>
-                                                ) : null}
-                                                {commit.additions != null &&
+                                                <span className="min-w-0 flex-1 truncate text-text-primary">
+                                                    {subject}
+                                                </span>
+                                                {commit.additions != null ||
                                                 commit.deletions != null ? (
-                                                    <span> </span>
-                                                ) : null}
-                                                {commit.deletions != null ? (
                                                     <span
+                                                        className="shrink-0 text-[10.5px]"
                                                         style={{
-                                                            color: "var(--diff-remove)",
+                                                            fontFamily:
+                                                                "var(--font-mono)",
                                                         }}
                                                     >
-                                                        -{commit.deletions}
+                                                        {commit.additions != null ? (
+                                                            <span
+                                                                style={{
+                                                                    color: "var(--diff-add)",
+                                                                }}
+                                                            >
+                                                                +{commit.additions}
+                                                            </span>
+                                                        ) : null}
+                                                        {commit.additions != null &&
+                                                        commit.deletions != null ? (
+                                                            <span> </span>
+                                                        ) : null}
+                                                        {commit.deletions != null ? (
+                                                            <span
+                                                                style={{
+                                                                    color: "var(--diff-remove)",
+                                                                }}
+                                                            >
+                                                                -{commit.deletions}
+                                                            </span>
+                                                        ) : null}
                                                     </span>
                                                 ) : null}
-                                            </span>
-                                        ) : null}
-                                        <span className="shrink-0 font-mono text-text-secondary">
-                                            {commit.shortSha}
-                                        </span>
-                                    </button>
-                                ))}
+                                                <span className="shrink-0 font-mono text-text-secondary">
+                                                    {commit.shortSha}
+                                                </span>
+                                            </button>
+                                            <div className="ml-3 shrink-0">
+                                                <IdeActionButton
+                                                    onClick={handleOpenCommit}
+                                                    title={`Open commit ${commit.shortSha}`}
+                                                >
+                                                    Open
+                                                </IdeActionButton>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
                                 {commits.length === 0 ? (
-                                    <div className="px-2 py-3 text-[11px] text-text-secondary">
+                                    <div className="py-3 text-[12px] text-text-secondary">
                                         No commit details available yet.
                                     </div>
                                 ) : null}
@@ -858,7 +885,7 @@ export function GitHubPullRequestTabView({
                             title="Conversation"
                             tone="neutral"
                         >
-                            <div className="space-y-3">
+                            <div className="space-y-5">
                                 <GitHubCommentList
                                     canEdit={canCommentPullRequests}
                                     comments={detail.comments}
@@ -934,9 +961,28 @@ function BranchChip({ children }: { readonly children: ReactNode }) {
     );
 }
 
+function PencilIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="14"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.7"
+            viewBox="0 0 24 24"
+            width="14"
+        >
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+        </svg>
+    );
+}
+
 function PullRequestOverviewSkeleton() {
     return (
-        <div className="animate-pulse space-y-3 rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary px-4 py-3">
+        <div className="animate-pulse space-y-3 py-2">
             <div className="flex gap-2">
                 <div className="h-4 w-16 rounded bg-bg-tertiary" />
                 <div className="h-4 w-24 rounded bg-bg-tertiary" />
