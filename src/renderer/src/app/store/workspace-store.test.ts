@@ -274,7 +274,7 @@ describe("workspace file opening", () => {
         vi.unstubAllGlobals();
     });
 
-    it("keeps independent layouts for open project contexts", async () => {
+    it("restores a closed project context layout without reopening other contexts", async () => {
         const firstTab = createWorkspaceFileTab("file-project-1", "README.md");
         useWorkspaceStore.setState((state) => ({
             ...state,
@@ -341,10 +341,21 @@ describe("workspace file opening", () => {
             openContextKeys: ["project-1::__primary__"],
             version: 3,
         });
-        expect(persistedSnapshot?.contexts).toHaveLength(1);
-        expect(persistedSnapshot?.contexts[0]?.workspace.tabs).toEqual([
+        expect(persistedSnapshot?.contexts).toHaveLength(2);
+        expect(
+            persistedSnapshot?.contexts.find(
+                (context) => context.key === "project-1::__primary__",
+            )?.workspace.tabs,
+        ).toEqual([
             expect.objectContaining({ id: firstTab.id }),
         ]);
+
+        await useWorkspaceStore.getState().openContext("project-2");
+        expect(useWorkspaceStore.getState().openContextKeys).toEqual([
+            "project-1::__primary__",
+            "project-2::__primary__",
+        ]);
+        expect(useWorkspaceStore.getState().tabsById[secondTab.id]).toBeTruthy();
     });
 
     it("exports one context as a self-contained navigation snapshot", () => {

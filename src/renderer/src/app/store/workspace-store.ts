@@ -501,7 +501,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         );
 
         const nextContextsByKey = { ...contextsByKey };
-        delete nextContextsByKey[contextKey];
         const closedIndex = state.openContextKeys.indexOf(contextKey);
         const openContextKeys = state.openContextKeys.filter(
             (key) => key !== contextKey,
@@ -1196,14 +1195,22 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             input.target,
         ),
 
-    openContext: async (projectId, worktreeId = null) => {
+    openContext: async (projectId, worktreeId = null, options = {}) => {
         const normalizedWorktreeId =
             worktreeId === `${projectId}:primary` ? null : worktreeId;
         const contextKey = getProjectContextKey(
             projectId,
             normalizedWorktreeId,
         );
-        if (get().contextsByKey[contextKey]) {
+        const currentState = get();
+        const existingContext = captureVisibleWorkspaceContext(currentState)[contextKey];
+        if (existingContext && !options.emptyLayout) {
+            if (!currentState.openContextKeys.includes(contextKey)) {
+                set((state) => ({
+                    contextsByKey: captureVisibleWorkspaceContext(state),
+                    openContextKeys: [...state.openContextKeys, contextKey],
+                }));
+            }
             await get().activateContext(contextKey);
             return;
         }
@@ -1215,12 +1222,44 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             workspace: createDefaultWorkspaceState(),
             worktreeId: normalizedWorktreeId,
         };
+
+        if (existingContext && currentState.activeContextKey === contextKey) {
+            await Promise.all(
+                Object.values(existingContext.workspace.tabsById).map(closeTabSideEffects),
+            );
+            const workspace = context.workspace;
+            const scopeEpoch = currentState.scopeEpoch + 1;
+            set((state) => ({
+                ...workspace,
+                activeContextKey: contextKey,
+                contextsByKey: {
+                    ...captureVisibleWorkspaceContext(state),
+                    [contextKey]: context,
+                },
+                deferredPaneIds: getDeferredWorkspacePaneIds(workspace),
+                error: null,
+                lastFocusedChatTabId: null,
+                lastFocusedRuntimeId: "codex",
+                openContextKeys: state.openContextKeys.includes(contextKey)
+                    ? state.openContextKeys
+                    : [...state.openContextKeys, contextKey],
+                recentActiveTabIds: [],
+                recentClosedTabs: [],
+                recentFocusedChatTabIds: [],
+                scopeEpoch,
+            }));
+            await persistWorkspaceState(get);
+            return;
+        }
+
         set((state) => ({
             contextsByKey: {
                 ...captureVisibleWorkspaceContext(state),
                 [contextKey]: context,
             },
-            openContextKeys: [...state.openContextKeys, contextKey],
+            openContextKeys: state.openContextKeys.includes(contextKey)
+                ? state.openContextKeys
+                : [...state.openContextKeys, contextKey],
         }));
         await get().activateContext(contextKey);
     },
@@ -3167,22 +3206,14 @@ function workspaceStoreToNavigationSnapshot(
     state: WorkspaceStore,
 ): WorkspaceNavigationSnapshot {
     const contextsByKey = captureVisibleWorkspaceContext(state);
-    const contexts = state.openContextKeys.flatMap((key) => {
-        const context = contextsByKey[key];
-        if (!context) {
-            return [];
-        }
-
-        return [
-            {
-                key: context.key,
-                lastActivatedAt: context.lastActivatedAt,
-                projectId: context.projectId,
-                workspace: workspaceStateToSnapshot(context.workspace),
-                worktreeId: context.worktreeId,
-            },
-        ];
-    });
+    const contexts = Object.values(contextsByKey).map((context) => ({
+        key: context.key,
+        lastActivatedAt: context.lastActivatedAt,
+        projectId: context.projectId,
+        workspace: workspaceStateToSnapshot(context.workspace),
+        worktreeId: context.worktreeId,
+    }));
+    const openContextKeys = state.openContextKeys.filter((key) => Boolean(contextsByKey[key]));
 
     return {
         activeContextKey:
@@ -3190,7 +3221,7 @@ function workspaceStoreToNavigationSnapshot(
                 ? state.activeContextKey
                 : null,
         contexts,
-        openContextKeys: contexts.map((context) => context.key),
+        openContextKeys,
         version: 3,
     };
 }
