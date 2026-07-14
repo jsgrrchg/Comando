@@ -124,6 +124,8 @@ import {
     type GitHubReleaseSummary,
     type GitHubRequestPullRequestReviewInput,
     type GitHubSaveTokenInput,
+    type GitHubSetIssueLabelsInput,
+    type GitHubSetIssueLabelsResult,
     type GitHubSetIssueStateInput,
     type GitHubSetPullRequestDraftStateInput,
     type GitHubUpdateCommentInput,
@@ -1100,6 +1102,14 @@ const comandoApi: ComandoApi = {
         assertIpcObject<GitHubIssueDetail>(
             IPC_CHANNELS.updateGitHubIssue,
             await ipcRenderer.invoke(IPC_CHANNELS.updateGitHubIssue, input),
+        ),
+    setGitHubIssueLabels: async (input: GitHubSetIssueLabelsInput) =>
+        assertIpcObject<GitHubSetIssueLabelsResult>(
+            IPC_CHANNELS.setGitHubIssueLabels,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.setGitHubIssueLabels,
+                input,
+            ),
         ),
     commentGitHubIssue: async (input: GitHubCommentIssueInput) =>
         assertIpcObject<GitHubCommentSummary>(
