@@ -15,6 +15,7 @@ import type { RuntimeWorkspaceGitWorktreeDiffTab } from "@renderer/app/workspace
 import type { GitWorktreeDiffFile, GitWorktreeDiffResult } from "@shared/ipc";
 import { GitDiffsView, GitEmptyState } from "@renderer/components/git";
 import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/usePersistedWorkspaceScroll";
+import { useGitWorkspaceTabRevalidation } from "@renderer/components/workspace/useGitWorkspaceTabRevalidation";
 import { IdeActionButton } from "./ide-bar";
 
 const EMPTY_COLLAPSED_FILE_IDS: readonly string[] = [];
@@ -60,9 +61,6 @@ export function GitWorktreeDiffTabView({
             state.collapsedWorktreeDiffFileIds[contextKey] ??
             EMPTY_COLLAPSED_FILE_IDS,
     );
-    const ensureWorktreeDiff = useGitStore(
-        (state) => state.ensureWorktreeDiff,
-    );
     const refreshProject = useGitStore((state) => state.refreshProject);
     const refreshWorktreeDiff = useGitStore(
         (state) => state.refreshWorktreeDiff,
@@ -80,6 +78,12 @@ export function GitWorktreeDiffTabView({
     const unstagePaths = useGitStore((state) => state.unstagePaths);
     const discardPaths = useGitStore((state) => state.discardPaths);
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
+    useGitWorkspaceTabRevalidation({
+        isLoading,
+        projectId,
+        revalidate: refreshWorktreeDiff,
+        worktreeId,
+    });
 
     const codeFontFamily = buildEditorFontFamily(editorSettings.fontFamily);
     const codeFontSize = editorSettings.fontSize;
@@ -267,8 +271,7 @@ export function GitWorktreeDiffTabView({
             void refreshProject(projectId, worktreeId);
         }
 
-        void ensureWorktreeDiff(projectId, worktreeId);
-    }, [ensureWorktreeDiff, projectId, refreshProject, snapshot, worktreeId]);
+    }, [projectId, refreshProject, snapshot, worktreeId]);
 
     if (!result && !isLoading && error) {
         return (

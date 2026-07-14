@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
+    GitHistoryCommitSummary,
     GitRepositorySnapshot,
     GitWorktreeDiffResult,
 } from "@shared/ipc";
@@ -66,7 +67,104 @@ describe("git-store history", () => {
             worktreeId: "worktree-1",
         });
     });
+
+    it("keeps the newest history response when refreshes resolve out of order", async () => {
+        const first = createDeferred<{
+            readonly commits: readonly GitHistoryCommitSummary[];
+            readonly matchedCount: number;
+            readonly totalCount: number;
+        }>();
+        const second = createDeferred<{
+            readonly commits: readonly GitHistoryCommitSummary[];
+            readonly matchedCount: number;
+            readonly totalCount: number;
+        }>();
+        stubComando({
+            listGitHistory: vi
+                .fn()
+                .mockReturnValueOnce(first.promise)
+                .mockReturnValueOnce(second.promise),
+        });
+
+        const firstRefresh = useGitStore
+            .getState()
+            .refreshHistory("project-1", null);
+        const secondRefresh = useGitStore
+            .getState()
+            .refreshHistory("project-1", null);
+
+        second.resolve({
+            commits: [createCommit("newest")],
+            matchedCount: 1,
+            totalCount: 1,
+        });
+        await secondRefresh;
+        first.resolve({
+            commits: [createCommit("stale")],
+            matchedCount: 1,
+            totalCount: 1,
+        });
+        await firstRefresh;
+
+        expect(
+            useGitStore.getState().historyByContext["project-1::primary"],
+        ).toEqual([createCommit("newest")]);
+    });
+
+    it("keeps the newest worktree diff when refreshes resolve out of order", async () => {
+        const first = createDeferred<GitWorktreeDiffResult>();
+        const second = createDeferred<GitWorktreeDiffResult>();
+        stubComando({
+            listGitWorktreeDiff: vi
+                .fn()
+                .mockReturnValueOnce(first.promise)
+                .mockReturnValueOnce(second.promise),
+        });
+
+        const firstRefresh = useGitStore
+            .getState()
+            .refreshWorktreeDiff("project-1", null);
+        const secondRefresh = useGitStore
+            .getState()
+            .refreshWorktreeDiff("project-1", null);
+
+        second.resolve(createWorktreeDiff("newest"));
+        await secondRefresh;
+        first.resolve(createWorktreeDiff("stale"));
+        await firstRefresh;
+
+        expect(
+            useGitStore.getState().worktreeDiffsByContext[
+                "project-1::primary"
+            ],
+        ).toEqual(createWorktreeDiff("newest"));
+    });
 });
+
+function createCommit(subject: string): GitHistoryCommitSummary {
+    return {
+        authorEmail: "author@example.com",
+        authorName: "Author",
+        authoredAt: "2026-07-14T12:00:00.000Z",
+        body: "",
+        parentShas: [],
+        refs: [],
+        sha: `${subject}-sha`,
+        shortSha: subject,
+        subject,
+    };
+}
+
+function createDeferred<T>(): {
+    readonly promise: Promise<T>;
+    readonly resolve: (value: T) => void;
+} {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((resolvePromise) => {
+        resolve = resolvePromise;
+    });
+    return { promise, resolve };
+}
 
 function createSnapshot(): GitRepositorySnapshot {
     return {
@@ -95,6 +193,15 @@ function createSnapshot(): GitRepositorySnapshot {
         syncStatus: "in_sync",
         updatedAt: "2026-07-14T12:00:00.000Z",
         worktrees: [],
+    };
+}
+
+function createWorktreeDiff(updatedAt: string): GitWorktreeDiffResult {
+    return {
+        projectId: "project-1",
+        sections: [],
+        updatedAt,
+        worktreeId: null,
     };
 }
 

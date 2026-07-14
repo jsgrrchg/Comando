@@ -1,4 +1,6 @@
-import { createElement } from "react";
+/** @vitest-environment jsdom */
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -37,6 +39,9 @@ const mockWorkspaceStoreState = vi.hoisted(() => ({
     },
 }));
 
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
+
 vi.mock("@renderer/app/hooks/use-resolved-editor-settings", () => ({
     useResolvedEditorSettings: () => ({
         autoSaveDelayMs: 1000,
@@ -66,6 +71,13 @@ vi.mock("@renderer/app/store/workspace-store", () => ({
     useWorkspaceStore: (
         selector: (state: typeof mockWorkspaceStoreState.current) => unknown,
     ) => selector(mockWorkspaceStoreState.current),
+}));
+
+vi.mock("@renderer/components/workspace/usePersistedWorkspaceScroll", () => ({
+    usePersistedWorkspaceScroll: () => ({
+        handleScroll: vi.fn(),
+        scrollRef: vi.fn(),
+    }),
 }));
 
 import { GitWorktreeDiffTabView } from "./GitWorktreeDiffTabView";
@@ -150,5 +162,22 @@ describe("GitWorktreeDiffTabView", () => {
         );
         expect(markup).toContain('class="min-h-0 flex-1 px-2 py-2"');
         expect(markup).toContain("worktree-file.ts");
+    });
+
+    it("revalidates a cached diff when the tab mounts", () => {
+        const container = document.createElement("div");
+        const root = createRoot(container);
+
+        act(() => {
+            root.render(createElement(GitWorktreeDiffTabView, { tab: TAB }));
+        });
+
+        expect(
+            mockGitStoreState.current.refreshWorktreeDiff,
+        ).toHaveBeenCalledWith(TAB.projectId, TAB.worktreeId);
+
+        act(() => {
+            root.unmount();
+        });
     });
 });

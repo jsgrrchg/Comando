@@ -46,6 +46,7 @@ import {
     type MeasuredVirtualRange,
 } from "@renderer/components/virtual/MeasuredVirtualList";
 import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/usePersistedWorkspaceScroll";
+import { useGitWorkspaceTabRevalidation } from "@renderer/components/workspace/useGitWorkspaceTabRevalidation";
 
 import {
     IdeActionButton,
@@ -181,6 +182,12 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
         (state) => state.openGitCommitTab,
     );
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
+    useGitWorkspaceTabRevalidation({
+        isLoading: isHistoryLoading,
+        projectId,
+        revalidate: refreshHistory,
+        worktreeId,
+    });
     useEffect(() => {
         if (!projectId || snapshot) {
             return;
@@ -211,9 +218,7 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
 
         if (lastHistorySearchKeyRef.current === null) {
             lastHistorySearchKeyRef.current = searchKey;
-            if (!query && history.length > 0) {
-                return;
-            }
+            return;
         } else if (lastHistorySearchKeyRef.current === searchKey) {
             return;
         } else {
@@ -226,7 +231,6 @@ export function GitTabView({ tab }: { readonly tab: RuntimeWorkspaceGitTab }) {
             resetLimit: true,
         });
     }, [
-        history.length,
         isCaseSensitive,
         isHistoryLoading,
         projectId,

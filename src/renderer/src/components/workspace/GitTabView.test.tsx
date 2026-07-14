@@ -1,4 +1,6 @@
-import { createElement, type ReactNode } from "react";
+/** @vitest-environment jsdom */
+import { act, createElement, type ReactNode } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -34,6 +36,9 @@ const mockWorkspaceStoreState = vi.hoisted(() => ({
 }));
 const mockScrollToIndex = vi.hoisted(() => vi.fn());
 
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
+
 vi.mock("@renderer/app/store/git-store", () => ({
     useGitStore: (
         selector: (state: typeof mockGitStoreState.current) => unknown,
@@ -44,6 +49,13 @@ vi.mock("@renderer/app/store/workspace-store", () => ({
     useWorkspaceStore: (
         selector: (state: typeof mockWorkspaceStoreState.current) => unknown,
     ) => selector(mockWorkspaceStoreState.current),
+}));
+
+vi.mock("@renderer/components/workspace/usePersistedWorkspaceScroll", () => ({
+    usePersistedWorkspaceScroll: () => ({
+        handleScroll: vi.fn(),
+        scrollRef: vi.fn(),
+    }),
 }));
 
 vi.mock("@renderer/components/virtual/MeasuredVirtualList", () => ({
@@ -194,6 +206,25 @@ function createCommitDetail(
 }
 
 describe("GitTabView", () => {
+    it("revalidates cached history when the tab mounts", () => {
+        resetStoreState();
+        const container = document.createElement("div");
+        const root = createRoot(container);
+
+        act(() => {
+            root.render(createElement(GitTabView, { tab: TAB }));
+        });
+
+        expect(mockGitStoreState.current.refreshHistory).toHaveBeenCalledWith(
+            TAB.projectId,
+            TAB.worktreeId,
+        );
+
+        act(() => {
+            root.unmount();
+        });
+    });
+
     it("shows a load more button when the current page is full", () => {
         resetStoreState();
         mockGitStoreState.current.historyByContext = {
