@@ -175,18 +175,20 @@ function createSegmentRow(entryCount = 1): ChatTimelineRow {
     );
     const firstActivity = activities[0];
     const latestActivity = activities.at(-1)!;
+    const entries = activities.map((activity) => ({
+        policy: "groupable" as const,
+        reviewEntry: {
+            activity,
+            hasPendingTrackedFiles: false,
+            pendingTrackedFiles: [],
+            trackedFiles: [],
+        },
+    }));
 
     return {
-        entries: activities.map((activity) => ({
-            policy: "groupable",
-            reviewEntry: {
-                activity,
-                hasPendingTrackedFiles: false,
-                pendingTrackedFiles: [],
-                trackedFiles: [],
-            },
-        })),
+        entries,
         id: "activity-segment:session-1:read-1",
+        items: entries.map((entry) => ({ entry, kind: "tool" })),
         kind: "activity-segment",
         summary: {
             actionCount: entryCount,

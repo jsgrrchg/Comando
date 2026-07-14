@@ -663,6 +663,104 @@ describe("chatTimelineModel", () => {
 });
 
 describe("chatTimelineModel activity segments", () => {
+    it("keeps thinking and surrounding tools in one chronological segment", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    content: "I should inspect the implementation.",
+                    createdAt: "2026-04-14T00:00:02.000Z",
+                    id: "thinking-1",
+                    kind: "thinking",
+                }),
+            ],
+            status: "idle",
+            toolActivity: [
+                createReadActivity("read-1", "2026-04-14T00:00:01.000Z"),
+                createReadActivity("read-2", "2026-04-14T00:00:03.000Z"),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(model.orderedRows).toHaveLength(1);
+        const segment = model.orderedRows[0];
+        expect(segment?.kind).toBe("activity-segment");
+        if (segment?.kind !== "activity-segment") {
+            throw new Error("Expected an activity segment row.");
+        }
+        expect(segment.items.map((item) => item.kind)).toEqual([
+            "tool",
+            "thinking",
+            "tool",
+        ]);
+        expect(segment.entries).toHaveLength(2);
+        expect(segment.summary.actionCount).toBe(2);
+    });
+
+    it("keeps a thinking-first segment stable when the first tool arrives", () => {
+        const thinking = createMessage({
+            content: "Inspecting the project.",
+            createdAt: "2026-04-14T00:00:01.000Z",
+            id: "thinking-1",
+            kind: "thinking",
+            status: "streaming",
+        });
+        const initialModel = reconcileChatTimelineModel(null, {
+            messages: [thinking],
+            status: "streaming",
+            toolActivity: [],
+            trackedFiles: [],
+        });
+        const nextModel = reconcileChatTimelineModel(initialModel, {
+            messages: [{ ...thinking, status: "completed" }],
+            status: "streaming",
+            toolActivity: [
+                createReadActivity("read-1", "2026-04-14T00:00:02.000Z"),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(initialModel.orderedRowIds).toEqual([
+            "activity-segment:thinking:thinking-1",
+        ]);
+        expect(nextModel.orderedRowIds).toEqual(initialModel.orderedRowIds);
+        expect(nextModel.liveTailRowId).toBe(
+            "activity-segment:thinking:thinking-1",
+        );
+        const segment = nextModel.orderedRows[0];
+        expect(segment?.kind).toBe("activity-segment");
+        if (segment?.kind === "activity-segment") {
+            expect(segment.items.map((item) => item.kind)).toEqual([
+                "thinking",
+                "tool",
+            ]);
+            expect(segment.summary.actionCount).toBe(1);
+        }
+    });
+
+    it("still uses assistant messages as activity boundaries", () => {
+        const model = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    content: "I will inspect the next file.",
+                    createdAt: "2026-04-14T00:00:02.000Z",
+                    id: "assistant-1",
+                }),
+            ],
+            status: "idle",
+            toolActivity: [
+                createReadActivity("read-1", "2026-04-14T00:00:01.000Z"),
+                createReadActivity("read-2", "2026-04-14T00:00:03.000Z"),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(model.orderedRowIds).toEqual([
+            "activity-segment:session-1:read-1",
+            "message:assistant-1",
+            "activity-segment:session-1:read-2",
+        ]);
+    });
+
     it("compacts a burst of fifty observations into one presentation row", () => {
         const activities = Array.from({ length: 50 }, (_, index) =>
             createReadActivity(

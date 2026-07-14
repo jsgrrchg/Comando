@@ -3106,10 +3106,14 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
             <div className="min-w-0 w-full">
                 <ToolActivitySegment
                     canRenderFileReference={canRenderFileReference}
+                    chatFontFamily={chatFontFamily}
+                    chatFontSize={chatFontSize}
                     isCurrentTurnTail={isCurrentTurnTail}
+                    onAddFileReferenceToChat={onAddFileReferenceToChat}
                     onOpenFile={onOpenFile}
                     onOpenFileReference={onOpenResolvedFileReference}
                     onOpenSession={onOpenSession}
+                    onRevealFileReference={onRevealFileReference}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
                     segment={row}

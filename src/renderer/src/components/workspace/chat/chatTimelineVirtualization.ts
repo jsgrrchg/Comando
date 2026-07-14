@@ -84,14 +84,14 @@ function getChatTimelineRowLayoutBase(
     ].join(":");
 }
 
-// Only message rows reflow their height with the available width; tool cards
-// lay out at width-invariant heights (fixed-height summaries, internally
-// scrolled diffs). So only messages fold the width bucket into their
-// measurement key — tool rows keep a stable key across a resize and never have
-// their measurement invalidated, which is what let the scroll settle during a
-// drag instead of collapsing the whole cache to rough estimates.
+// Message rows and activity rails containing expandable thinking can reflow
+// with the available width. Tool-only rails remain width-invariant.
 export function isWidthSensitiveChatTimelineRow(row: ChatTimelineRow): boolean {
-    return row.kind === "message";
+    return (
+        row.kind === "message" ||
+        (row.kind === "activity-segment" &&
+            row.items.some((item) => item.kind === "thinking"))
+    );
 }
 
 export function getChatTimelineRowMeasurementKey(
@@ -231,12 +231,12 @@ export function estimateChatTimelineRowHeight(
             return Math.ceil(CHAT_ACTIVITY_RAIL_HEADER_HEIGHT_PX + gapPx);
         }
 
-        const activityHeight = row.entries.reduce(
-            (height, _entry, index) =>
+        const activityHeight = row.items.reduce(
+            (height, item, index) =>
                 height +
-                // Every entry is now a collapsed rail row. Change previews are
-                // mounted only after the row's own disclosure is opened.
-                CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX +
+                (item.kind === "thinking"
+                    ? Math.ceil(28 * getFontScale(context.chatFontSize))
+                    : CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX) +
                 CHAT_ACTIVITY_RAIL_ENTRY_PADDING_Y_PX +
                 (index > 0 ? CHAT_ACTIVITY_RAIL_ENTRY_GAP_PX : 0),
             0,

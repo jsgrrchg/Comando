@@ -43,6 +43,16 @@ export interface ToolActivitySegmentEntry {
     readonly reviewEntry: ToolActivityReviewEntry;
 }
 
+export type ActivitySegmentItem =
+    | {
+          readonly entry: ToolActivitySegmentEntry;
+          readonly kind: "tool";
+      }
+    | {
+          readonly kind: "thinking";
+          readonly message: AiSessionSnapshot["messages"][number];
+      };
+
 export interface ToolActivitySegmentSummary {
     readonly actionCount: number;
     readonly changeCount: number;
@@ -62,6 +72,7 @@ export interface ToolActivitySegmentSummary {
 export interface ChatTimelineActivitySegmentRow {
     readonly entries: readonly ToolActivitySegmentEntry[];
     readonly id: string;
+    readonly items: readonly ActivitySegmentItem[];
     readonly kind: "activity-segment";
     readonly summary: ToolActivitySegmentSummary;
 }
@@ -512,12 +523,35 @@ function addPath(paths: string[], path: string | null | undefined): void {
 }
 
 function buildToolActivitySegmentSummary(
-    entries: readonly ToolActivitySegmentEntry[],
+    items: readonly ActivitySegmentItem[],
 ): ToolActivitySegmentSummary {
-    const latestEntry = entries.at(-1);
-    if (!latestEntry) {
+    const latestItem = items.at(-1);
+    if (!latestItem) {
         throw new Error("Tool activity segments require at least one entry.");
     }
+
+    const entries = items.flatMap((item) =>
+        item.kind === "tool" ? [item.entry] : [],
+    );
+    const latestTitle =
+        latestItem.kind === "thinking"
+            ? latestItem.message.status === "streaming"
+                ? "Thinking..."
+                : "Thinking"
+            : latestItem.entry.reviewEntry.activity.title;
+    const latestActivityId =
+        latestItem.kind === "thinking"
+            ? latestItem.message.id
+            : latestItem.entry.reviewEntry.activity.id;
+    const firstItem = items[0] ?? latestItem;
+    const firstCreatedAt =
+        firstItem.kind === "thinking"
+            ? firstItem.message.createdAt
+            : firstItem.entry.reviewEntry.activity.createdAt;
+    const latestUpdatedAt =
+        latestItem.kind === "thinking"
+            ? latestItem.message.createdAt
+            : latestItem.entry.reviewEntry.activity.updatedAt;
 
     const fileTargets: string[] = [];
     const changedFileTargets: string[] = [];
@@ -525,9 +559,7 @@ function buildToolActivitySegmentSummary(
     let commandCount = 0;
     let failureCount = 0;
     let searchCount = 0;
-    let updatedAt =
-        entries[0]?.reviewEntry.activity.updatedAt ??
-        latestEntry.reviewEntry.activity.updatedAt;
+    let updatedAt = latestUpdatedAt;
 
     for (const entry of entries) {
         const { activity, trackedFiles } = entry.reviewEntry;
@@ -581,17 +613,16 @@ function buildToolActivitySegmentSummary(
         failureCount,
         fileCount: fileTargets.length,
         hiddenActivityCount: entries.length,
-        isInProgress: entries.some(
-            (entry) =>
-                entry.reviewEntry.activity.status === "pending" ||
-                entry.reviewEntry.activity.status === "in_progress",
+        isInProgress: items.some((item) =>
+            item.kind === "thinking"
+                ? item.message.status === "streaming"
+                : item.entry.reviewEntry.activity.status === "pending" ||
+                  item.entry.reviewEntry.activity.status === "in_progress",
         ),
-        latestActivityId: latestEntry.reviewEntry.activity.id,
-        latestTitle: latestEntry.reviewEntry.activity.title,
+        latestActivityId,
+        latestTitle,
         searchCount,
-        startedAt:
-            entries[0]?.reviewEntry.activity.createdAt ??
-            latestEntry.reviewEntry.activity.createdAt,
+        startedAt: firstCreatedAt,
         updatedAt,
     };
 }
@@ -620,19 +651,39 @@ function areToolActivitySegmentSummariesEquivalent(
 function reuseToolActivitySegmentRow(
     previousRowById: ReadonlyMap<string, ChatTimelinePresentationRow> | null,
     id: string,
-    entries: readonly ToolActivitySegmentEntry[],
+    items: readonly ActivitySegmentItem[],
 ): ChatTimelineActivitySegmentRow {
-    const summary = buildToolActivitySegmentSummary(entries);
+    const entries = items.flatMap((item) =>
+        item.kind === "tool" ? [item.entry] : [],
+    );
+    const summary = buildToolActivitySegmentSummary(items);
     const previousRow = previousRowById?.get(id);
 
     if (
         previousRow?.kind === "activity-segment" &&
-        previousRow.entries.length === entries.length &&
-        previousRow.entries.every(
-            (entry, index) =>
-                entry.policy === entries[index]?.policy &&
-                entry.reviewEntry === entries[index]?.reviewEntry,
-        ) &&
+        previousRow.items.length === items.length &&
+        previousRow.items.every((item, index) => {
+            const nextItem = items[index];
+            if (!nextItem || item.kind !== nextItem.kind) {
+                return false;
+            }
+            return item.kind === "thinking"
+                ? item.message ===
+                      (nextItem as Extract<
+                          ActivitySegmentItem,
+                          { readonly kind: "thinking" }
+                      >).message
+                : item.entry.policy ===
+                      (nextItem as Extract<
+                          ActivitySegmentItem,
+                          { readonly kind: "tool" }
+                      >).entry.policy &&
+                      item.entry.reviewEntry ===
+                          (nextItem as Extract<
+                              ActivitySegmentItem,
+                              { readonly kind: "tool" }
+                          >).entry.reviewEntry;
+        }) &&
         areToolActivitySegmentSummariesEquivalent(previousRow.summary, summary)
     ) {
         return previousRow;
@@ -641,6 +692,7 @@ function reuseToolActivitySegmentRow(
     return {
         entries,
         id,
+        items,
         kind: "activity-segment",
         summary,
     };
@@ -652,27 +704,35 @@ export function buildChatTimelinePresentationRows(
     previousRowById: ReadonlyMap<string, ChatTimelinePresentationRow> | null = null,
 ): ChatTimelinePresentationRow[] {
     const presentationRows: ChatTimelinePresentationRow[] = [];
-    let segmentEntries: ToolActivitySegmentEntry[] = [];
+    let segmentItems: ActivitySegmentItem[] = [];
     let segmentSessionId: string | null = null;
 
     const flushSegment = () => {
-        const firstEntry = segmentEntries[0];
-        if (!firstEntry || segmentSessionId === null) {
-            segmentEntries = [];
+        const firstItem = segmentItems[0];
+        if (!firstItem) {
+            segmentItems = [];
             segmentSessionId = null;
             return;
         }
 
-        const id = `activity-segment:${segmentSessionId}:${firstEntry.reviewEntry.activity.id}`;
+        const firstItemKey =
+            firstItem.kind === "thinking"
+                ? `thinking:${firstItem.message.id}`
+                : `${firstItem.entry.reviewEntry.activity.sessionId}:${firstItem.entry.reviewEntry.activity.id}`;
+        const id = `activity-segment:${firstItemKey}`;
         presentationRows.push(
-            reuseToolActivitySegmentRow(previousRowById, id, segmentEntries),
+            reuseToolActivitySegmentRow(previousRowById, id, segmentItems),
         );
-        segmentEntries = [];
+        segmentItems = [];
         segmentSessionId = null;
     };
 
     for (const row of atomicRows) {
         if (row.kind === "message") {
+            if (row.message.kind === "thinking") {
+                segmentItems.push({ kind: "thinking", message: row.message });
+                continue;
+            }
             flushSegment();
             presentationRows.push(row);
             continue;
@@ -696,7 +756,8 @@ export function buildChatTimelinePresentationRows(
             flushSegment();
         }
         segmentSessionId = sessionId;
-        segmentEntries.push({ policy, reviewEntry: row.reviewEntry });
+        const entry = { policy, reviewEntry: row.reviewEntry };
+        segmentItems.push({ entry, kind: "tool" });
     }
 
     flushSegment();
@@ -723,13 +784,15 @@ export function findPresentationRowContaining(
         }
         if (
             row.kind === "activity-segment" &&
-            atomicRow.kind === "tool" &&
-            row.entries.some(
-                (entry) =>
-                    entry.reviewEntry.activity.sessionId ===
-                        atomicRow.reviewEntry.activity.sessionId &&
-                    entry.reviewEntry.activity.id ===
-                        atomicRow.reviewEntry.activity.id,
+            row.items.some((item) =>
+                atomicRow.kind === "tool" && item.kind === "tool"
+                    ? item.entry.reviewEntry.activity.sessionId ===
+                          atomicRow.reviewEntry.activity.sessionId &&
+                      item.entry.reviewEntry.activity.id ===
+                          atomicRow.reviewEntry.activity.id
+                    : atomicRow.kind === "message" && item.kind === "thinking"
+                      ? item.message.id === atomicRow.message.id
+                      : false,
             )
         ) {
             return row;
