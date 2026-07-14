@@ -2395,6 +2395,7 @@ function createNativeAi(
 ): NativeAiGateway {
     return {
         cancelSession: vi.fn(),
+        captureReviewBaseline: vi.fn(),
         close: vi.fn(),
         closeOwnedByWindow: vi.fn(),
         closeSession: vi.fn(),
