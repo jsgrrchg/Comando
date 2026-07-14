@@ -280,6 +280,347 @@ describe("AiService prepareSession", () => {
         });
     });
 
+    it("reopens a session frozen by retention and dispatches its first queued prompt", async () => {
+        const persistedSnapshot = createSnapshot({
+            runtimeSessionId: "runtime-session-retained",
+            sessionId: "session-retained",
+            title: "Retained chat",
+        });
+        let releaseClose!: () => void;
+        const closeSession = vi.fn<NativeAiGateway["closeSession"]>(() =>
+            new Promise<void>((resolve) => {
+                releaseClose = resolve;
+            }),
+        );
+        const prepareSession = vi
+            .fn<NativeAiGateway["prepareSession"]>()
+            .mockImplementation(({ launch }) =>
+                Promise.resolve({
+                    ...launch.persistedSnapshot,
+                    runtimeSessionId: `runtime-${prepareSession.mock.calls.length}`,
+                    status:
+                        prepareSession.mock.calls.length === 1
+                            ? "idle"
+                            : "streaming",
+                }),
+            );
+        const sendPrompt = vi.fn<NativeAiGateway["sendPrompt"]>(
+            ({ input }) =>
+                Promise.resolve({
+                    sessionId: input.sessionId,
+                    stopReason: "accepted",
+                }),
+        );
+        const service = createPrepareService({
+            aiSessionRetention: {
+                idleTtlMs: -1,
+                maxHotSessionsPerWindow: 0,
+            },
+            nativeAi: createNativeAi({
+                closeSession,
+                loadSessionSnapshot: vi.fn(() =>
+                    Promise.resolve(persistedSnapshot),
+                ),
+                prepareSession,
+                sendPrompt,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-retained",
+                title: "Retained chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await vi.waitFor(() => expect(closeSession).toHaveBeenCalledTimes(1));
+
+        // Retention's close event used to terminalize this existing queue.
+        service.getPromptQueue("session-retained", "window-1");
+        service.handleNativeSessionEvent("window-1", {
+            closedAt: "2026-07-13T00:00:01.000Z",
+            kind: "session-closed",
+            origin: "live",
+            parentSessionId: null,
+            runtimeId: "codex",
+            runtimeSessionId: "runtime-1",
+            sessionId: "session-retained",
+            updatedAt: "2026-07-13T00:00:01.000Z",
+        });
+        releaseClose();
+
+        service.enqueuePrompt(
+            {
+                attachments: [],
+                composerParts: [{ text: "Continue.", type: "text" }],
+                fileContextsSnapshot: [],
+                messageId: "message-retained-1",
+                projectId: null,
+                prompt: "Continue.",
+                runtimeId: "codex",
+                sessionId: "session-retained",
+                title: "Retained chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
+        expect(prepareSession).toHaveBeenCalledTimes(2);
+        expect(sendPrompt.mock.calls[0]?.[0].input).toMatchObject({
+            messageId: "message-retained-1",
+            sessionId: "session-retained",
+        });
+    });
+
+    it("ignores a retained runtime close event that arrives after reopening", async () => {
+        const persistedSnapshot = createSnapshot({
+            runtimeSessionId: "runtime-session-retained",
+            sessionId: "session-retained-late-close",
+            title: "Retained chat",
+        });
+        const closeSession = vi.fn<NativeAiGateway["closeSession"]>(() =>
+            Promise.resolve(),
+        );
+        const prepareSession = vi
+            .fn<NativeAiGateway["prepareSession"]>()
+            .mockImplementation(({ launch }) =>
+                Promise.resolve({
+                    ...launch.persistedSnapshot,
+                    runtimeSessionId: `runtime-${prepareSession.mock.calls.length}`,
+                    status:
+                        prepareSession.mock.calls.length === 1
+                            ? "idle"
+                            : "streaming",
+                }),
+            );
+        const sendPrompt = vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
+            Promise.resolve({
+                sessionId: input.sessionId,
+                stopReason: "accepted",
+            }),
+        );
+        const service = createPrepareService({
+            aiSessionRetention: {
+                idleTtlMs: -1,
+                maxHotSessionsPerWindow: 0,
+            },
+            nativeAi: createNativeAi({
+                closeSession,
+                loadSessionSnapshot: vi.fn(() =>
+                    Promise.resolve(persistedSnapshot),
+                ),
+                prepareSession,
+                sendPrompt,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-retained-late-close",
+                title: "Retained chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await vi.waitFor(() => expect(closeSession).toHaveBeenCalledTimes(1));
+
+        service.enqueuePrompt(
+            {
+                attachments: [],
+                composerParts: [{ text: "Continue.", type: "text" }],
+                fileContextsSnapshot: [],
+                messageId: "message-retained-late-close-1",
+                projectId: null,
+                prompt: "Continue.",
+                runtimeId: "codex",
+                sessionId: "session-retained-late-close",
+                title: "Retained chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
+
+        service.handleNativeSessionEvent("window-1", {
+            closedAt: "2026-07-13T00:00:01.000Z",
+            kind: "session-closed",
+            origin: "live",
+            parentSessionId: null,
+            runtimeId: "codex",
+            runtimeSessionId: "runtime-1",
+            sessionId: "session-retained-late-close",
+            updatedAt: "2026-07-13T00:00:01.000Z",
+        });
+
+        expect(
+            service.getPromptQueue("session-retained-late-close", "window-1"),
+        ).toMatchObject({
+            activeItem: {
+                messageId: "message-retained-late-close-1",
+                status: "running",
+            },
+            items: [],
+            paused: false,
+        });
+    });
+
+    it("reprepares and retries a prompt once when the runtime evicts its session", async () => {
+        const snapshot = createSnapshot({
+            runtimeSessionId: "runtime-session-1",
+            sessionId: "session-retry",
+            title: "Retry chat",
+        });
+        const prepareSession = vi
+            .fn<NativeAiGateway["prepareSession"]>()
+            .mockResolvedValueOnce(snapshot)
+            .mockResolvedValueOnce({
+                ...snapshot,
+                runtimeSessionId: "runtime-session-2",
+            });
+        const sendPrompt = vi
+            .fn<NativeAiGateway["sendPrompt"]>()
+            .mockRejectedValueOnce(
+                new NativeBackendError({
+                    code: "ai_session_not_found",
+                    details: null,
+                    message: "The AI session was not found.",
+                    retryable: false,
+                }),
+            )
+            .mockResolvedValueOnce({
+                sessionId: "session-retry",
+                stopReason: "accepted",
+            });
+        const service = createPrepareService({
+            nativeAi: createNativeAi({ prepareSession, sendPrompt }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-retry",
+                title: "Retry chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.sendPrompt(
+            {
+                attachments: [],
+                composerParts: [{ text: "Retry this.", type: "text" }],
+                messageId: "message-retry-1",
+                projectId: null,
+                prompt: "Retry this.",
+                runtimeId: "codex",
+                sessionId: "session-retry",
+                title: "Retry chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        expect(prepareSession).toHaveBeenCalledTimes(2);
+        expect(sendPrompt).toHaveBeenCalledTimes(2);
+        expect(
+            sendPrompt.mock.calls.map(
+                ([request]) => request.input.messageId,
+            ),
+        ).toEqual(["message-retry-1", "message-retry-1"]);
+    });
+
+    it("reprepares the root before retrying an evicted subagent prompt", async () => {
+        const parentSnapshot = createSnapshot({
+            runtimeSessionId: "runtime-parent-1",
+            sessionId: "session-parent",
+            title: "Parent chat",
+        });
+        const childSnapshot = createSnapshot({
+            parentSessionId: "session-parent",
+            runtimeSessionId: "runtime-child-1",
+            sessionId: "session-child",
+            title: "Child chat",
+        });
+        const loadSessionSnapshot = vi.fn<NativeAiGateway["loadSessionSnapshot"]>(
+            (sessionId) =>
+                Promise.resolve(
+                    sessionId === "session-child"
+                        ? childSnapshot
+                        : parentSnapshot,
+                ),
+        );
+        const prepareSession = vi
+            .fn<NativeAiGateway["prepareSession"]>()
+            .mockResolvedValueOnce(parentSnapshot)
+            .mockResolvedValueOnce({
+                ...parentSnapshot,
+                runtimeSessionId: "runtime-parent-2",
+            });
+        const sendPrompt = vi
+            .fn<NativeAiGateway["sendPrompt"]>()
+            .mockRejectedValueOnce(
+                new NativeBackendError({
+                    code: "ai_session_not_found",
+                    details: null,
+                    message: "The AI session was not found.",
+                    retryable: false,
+                }),
+            )
+            .mockResolvedValueOnce({
+                sessionId: "session-child",
+                stopReason: "accepted",
+            });
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                loadSessionSnapshot,
+                prepareSession,
+                sendPrompt,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-child",
+                title: "Child chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.sendPrompt(
+            {
+                attachments: [],
+                composerParts: [{ text: "Continue.", type: "text" }],
+                messageId: "message-child-retry-1",
+                projectId: null,
+                prompt: "Continue.",
+                runtimeId: "codex",
+                sessionId: "session-child",
+                title: "Child chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        expect(prepareSession).toHaveBeenCalledTimes(2);
+        expect(
+            prepareSession.mock.calls.map(
+                ([request]) => request.input.sessionId,
+            ),
+        ).toEqual(["session-parent", "session-parent"]);
+        expect(sendPrompt).toHaveBeenCalledTimes(2);
+        expect(
+            sendPrompt.mock.calls[1]?.[0].launch.persistedSnapshot.sessionId,
+        ).toBe("session-child");
+    });
+
     it("hydrates newly prepared native sessions with persisted ACP catalog controls", async () => {
         const nativeSnapshot: AiSessionSnapshot = {
             availableCommands: [],
@@ -2140,6 +2481,7 @@ function createNativeAi(
 ): NativeAiGateway {
     return {
         cancelSession: vi.fn(),
+        captureReviewBaseline: vi.fn(),
         close: vi.fn(),
         closeOwnedByWindow: vi.fn(),
         closeSession: vi.fn(),
@@ -2253,6 +2595,9 @@ function createReasoningConfig(value: string): AiSessionConfigOption {
 
 function createPrepareService(
     options: {
+        readonly aiSessionRetention?: ConstructorParameters<
+            typeof AiService
+        >[0]["aiSessionRetention"];
         readonly nativeAi?: NativeAiGateway;
         readonly onSessionSnapshot?: (
             ownerWindowId: string,
@@ -2264,6 +2609,7 @@ function createPrepareService(
     } = {},
 ): InstanceType<typeof AiService> {
     return new AiService({
+        aiSessionRetention: options.aiSessionRetention,
         nativeAi: options.nativeAi ?? createNativeAi(),
         onRuntimeStatus: vi.fn(),
         onSessionSnapshot: options.onSessionSnapshot ?? vi.fn(),

@@ -727,6 +727,12 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 return;
             }
 
+            // A close from an older runtime generation must not tear down the
+            // ownership and routing state of a session that was reopened.
+            if (this.#isStaleSessionCloseEvent(converted)) {
+                return;
+            }
+
             this.#rememberRuntimeSession(converted);
             if (converted.kind === "subagent-created") {
                 this.#sessionOwners.set(converted.childSessionId, ownerWindowId);
@@ -811,10 +817,12 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         launch: NativeAiPrepareSessionRpcInput["launch"],
     ): void {
         this.#rememberOwnerIdentity(sessionId, launch);
-        this.#runtimeSessionIds.set(
-            sessionId,
-            launch.persistedSnapshot.runtimeSessionId ?? null,
-        );
+        if (!this.#runtimeSessionIds.has(sessionId)) {
+            this.#runtimeSessionIds.set(
+                sessionId,
+                launch.persistedSnapshot.runtimeSessionId ?? null,
+            );
+        }
     }
 
     #rememberOwnerIdentity(
@@ -924,6 +932,21 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             ...event,
             parentSessionId,
         };
+    }
+
+    #isStaleSessionCloseEvent(event: AiSessionDomainEvent): boolean {
+        if (event.kind !== "session-closed" || !event.runtimeSessionId) {
+            return false;
+        }
+
+        const currentRuntimeSessionId = this.#runtimeSessionIds.get(
+            event.sessionId,
+        );
+        return (
+            currentRuntimeSessionId !== undefined &&
+            currentRuntimeSessionId !== null &&
+            currentRuntimeSessionId !== event.runtimeSessionId
+        );
     }
 
     #restoreOwner(sessionId: string, previousOwner: string | undefined): void {

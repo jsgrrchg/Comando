@@ -240,6 +240,68 @@ describe("NativeAiGateway", () => {
         );
     });
 
+    it("ignores a stale close without forgetting the reopened session owner", async () => {
+        const client = createClient();
+        const onSessionEvent = vi.fn<NativeAiGatewayOptions["onSessionEvent"]>();
+        const gateway = createGateway(client, { onSessionEvent });
+        const launch = createLaunch();
+
+        await gateway.prepareSession({
+            input: createPrepareInput(),
+            launch,
+        });
+        client.request.mockResolvedValueOnce({
+            projectId: "project-1",
+            runtimeId: "opencode",
+            runtimeSessionId: "runtime-session-2",
+            sessionId: "session-1",
+            status: "streaming",
+            title: "Native session",
+            updatedAt: "2026-06-20T00:00:02.000Z",
+            worktreeId: "worktree-1",
+        });
+        await gateway.prepareSession({
+            input: createPrepareInput(),
+            launch,
+        });
+        onSessionEvent.mockClear();
+
+        client.emit({
+            eventName: "ai://session-closed",
+            payload: {
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-session-1",
+                sessionId: "session-1",
+                updatedAt: "2026-06-20T00:00:03.000Z",
+            },
+            type: "event",
+        });
+        client.emit({
+            eventName: "ai://message-delta",
+            payload: {
+                content: "Still streaming",
+                delta: "Still streaming",
+                messageId: "assistant-1",
+                messageKind: "assistant",
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-session-2",
+                sessionId: "session-1",
+                updatedAt: "2026-06-20T00:00:04.000Z",
+            },
+            type: "event",
+        });
+
+        expect(onSessionEvent).toHaveBeenCalledTimes(1);
+        expect(onSessionEvent).toHaveBeenCalledWith(
+            "window-1",
+            expect.objectContaining({
+                content: "Still streaming",
+                kind: "message-delta",
+                runtimeSessionId: "runtime-session-2",
+            }),
+        );
+    });
+
     it("projects native catalog updates through the owning window", async () => {
         const client = createClient();
         const onSessionCatalogPatch = vi.fn();
