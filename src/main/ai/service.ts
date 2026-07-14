@@ -2728,11 +2728,7 @@ export class AiService {
             return false;
         }
 
-        if (
-            matchesRetainedRuntime &&
-            expectedRuntimeSessionIds &&
-            event.runtimeSessionId !== null
-        ) {
+        if (matchesRetainedRuntime) {
             this.#forgetRetentionCloseRuntimeSession(
                 event.sessionId,
                 event.runtimeSessionId,

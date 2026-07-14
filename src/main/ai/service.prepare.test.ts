@@ -286,8 +286,7 @@ describe("AiService prepareSession", () => {
             sessionId: "session-retained",
             title: "Retained chat",
         });
-        let service: InstanceType<typeof AiService>;
-        let releaseClose: (() => void) | null = null;
+        let releaseClose!: () => void;
         const closeSession = vi.fn<NativeAiGateway["closeSession"]>(() =>
             new Promise<void>((resolve) => {
                 releaseClose = resolve;
@@ -312,7 +311,7 @@ describe("AiService prepareSession", () => {
                     stopReason: "accepted",
                 }),
         );
-        service = createPrepareService({
+        const service = createPrepareService({
             aiSessionRetention: {
                 idleTtlMs: -1,
                 maxHotSessionsPerWindow: 0,
@@ -351,7 +350,7 @@ describe("AiService prepareSession", () => {
             sessionId: "session-retained",
             updatedAt: "2026-07-13T00:00:01.000Z",
         });
-        releaseClose?.();
+        releaseClose();
 
         service.enqueuePrompt(
             {
@@ -371,14 +370,10 @@ describe("AiService prepareSession", () => {
 
         await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
         expect(prepareSession).toHaveBeenCalledTimes(2);
-        expect(sendPrompt).toHaveBeenCalledWith(
-            expect.objectContaining({
-                input: expect.objectContaining({
-                    messageId: "message-retained-1",
-                    sessionId: "session-retained",
-                }),
-            }),
-        );
+        expect(sendPrompt.mock.calls[0]?.[0].input).toMatchObject({
+            messageId: "message-retained-1",
+            sessionId: "session-retained",
+        });
     });
 
     it("ignores a retained runtime close event that arrives after reopening", async () => {
