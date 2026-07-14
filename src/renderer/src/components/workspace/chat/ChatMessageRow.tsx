@@ -920,18 +920,7 @@ function UserInputRequestMessage({
     );
 }
 
-function ThinkingMessage({
-    canRenderFileReference,
-    chatFontFamily,
-    chatFontSize,
-    content,
-    highlightQuery,
-    inProgress,
-    onAddFileReferenceToChat,
-    onOpenFile,
-    onRevealFileReference,
-    resolveFileReference,
-}: {
+export interface ThinkingMessageProps {
     readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
@@ -951,7 +940,20 @@ function ThinkingMessage({
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
-}) {
+}
+
+export function ThinkingMessage({
+    canRenderFileReference,
+    chatFontFamily,
+    chatFontSize,
+    content,
+    highlightQuery,
+    inProgress,
+    onAddFileReferenceToChat,
+    onOpenFile,
+    onRevealFileReference,
+    resolveFileReference,
+}: ThinkingMessageProps) {
     const [expanded, setExpanded] = useState(false);
     return (
         <div className="min-w-0 max-w-full">

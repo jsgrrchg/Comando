@@ -1989,6 +1989,9 @@ function HistoryTimelineRow({
         return (
             <ToolActivitySegment
                 canRenderFileReference={handlers.canRenderFileReference}
+                chatFontFamily={handlers.chatFontFamily}
+                chatFontSize={handlers.chatFontSize}
+                highlightQuery={handlers.highlightQuery}
                 onOpenFile={handlers.onOpenFile}
                 onOpenFileReference={handlers.onOpenResolvedFileReference}
                 onOpenSession={handlers.onOpenSession}

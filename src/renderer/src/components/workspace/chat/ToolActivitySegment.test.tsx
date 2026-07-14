@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { AiToolActivity } from "@shared/ipc";
+import type { AiMessage, AiToolActivity } from "@shared/ipc";
 import {
     resetSettingsStoreForTests,
     useSettingsStore,
@@ -105,6 +105,7 @@ function createSegment(
     return {
         entries,
         id: `activity-segment:session-1:${first.id}`,
+        items: entries.map((entry) => ({ entry, kind: "tool" as const })),
         kind: "activity-segment",
         summary: {
             actionCount: entries.length,
@@ -138,9 +139,45 @@ function createEntry(
     };
 }
 
+function createThinkingSegment(
+    status: AiMessage["status"] = "completed",
+): ChatTimelineActivitySegmentRow {
+    const message: AiMessage = {
+        attachments: [],
+        content: "Inspect the activity model before changing it.",
+        createdAt: "2026-07-10T00:00:01.000Z",
+        id: "thinking-1",
+        kind: "thinking",
+        status,
+    };
+    return {
+        entries: [],
+        id: "activity-segment:thinking:thinking-1",
+        items: [{ kind: "thinking", message }],
+        kind: "activity-segment",
+        summary: {
+            actionCount: 0,
+            changeCount: 0,
+            changedFileCount: 0,
+            commandCount: 0,
+            failureCount: 0,
+            fileCount: 0,
+            hiddenActivityCount: 0,
+            isInProgress: status === "streaming",
+            latestActivityId: message.id,
+            latestTitle: status === "streaming" ? "Thinking..." : "Thinking",
+            searchCount: 0,
+            startedAt: message.createdAt,
+            updatedAt: message.createdAt,
+        },
+    };
+}
+
 const DEFAULT_PROPS = {
     onOpenFile: async () => {},
+    onOpenFileReference: () => {},
     projectId: "project-1",
+    resolveFileReference: () => null,
     worktreeId: null,
 };
 
@@ -161,6 +198,51 @@ function renderInteractive(segment: ChatTimelineActivitySegmentRow) {
 }
 
 describe("ToolActivitySegment", () => {
+    it("renders thinking-only work as an expandable activity rail", () => {
+        const container = renderInteractive(createThinkingSegment());
+        expect(container.textContent).toContain("Thought");
+        expect(container.querySelector("[data-thinking-message-id]")).toBeNull();
+
+        const railButton = container.querySelector("button");
+        act(() => {
+            railButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        expect(
+            container
+                .querySelector("[data-thinking-message-id]")
+                ?.getAttribute("data-thinking-message-id"),
+        ).toBe("thinking-1");
+        expect(container.textContent).toContain("Thinking");
+    });
+
+    it("forwards the transcript search query to thinking content", () => {
+        const container = document.createElement("div");
+        document.body.appendChild(container);
+        const root = createRoot(container);
+        mountedRoots.push(root);
+        act(() => {
+            root.render(
+                <ToolActivitySegment
+                    {...DEFAULT_PROPS}
+                    highlightQuery="activity"
+                    segment={createThinkingSegment()}
+                />,
+            );
+        });
+        act(() => {
+            container
+                .querySelector("button")
+                ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        act(() => {
+            container
+                .querySelectorAll("button")[1]
+                ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+
+        expect(container.querySelector("mark")?.textContent).toBe("activity");
+    });
+
     it("keeps a single action compact while naming it in the summary", () => {
         const segment = createSegment(
             [
@@ -288,7 +370,7 @@ describe("ToolActivitySegment", () => {
             container
                 .querySelector('[role="region"]')
                 ?.getAttribute("aria-label"),
-        ).toBe("Full tool activity");
+        ).toBe("Full activity");
     });
 
     it("keeps a large safe burst DOM-bounded while collapsed", () => {
@@ -328,7 +410,7 @@ describe("ToolActivitySegment", () => {
             container
                 .querySelector('[role="region"]')
                 ?.getAttribute("aria-label"),
-        ).toBe("Full tool activity");
+        ).toBe("Full activity");
     });
 
     it("uses the AI setting as the initial state without overriding manual changes", () => {

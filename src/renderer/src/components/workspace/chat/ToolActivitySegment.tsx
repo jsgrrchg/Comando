@@ -12,6 +12,10 @@ import {
     ToolActivityItem,
     type ToolActivityItemProps,
 } from "./ToolActivityItem";
+import {
+    ThinkingMessage,
+    type ThinkingMessageProps,
+} from "./ChatMessageRow";
 import { usePersistentToolExpansion } from "./toolExpansionStore";
 
 type ToolActivitySegmentProps = Pick<
@@ -27,7 +31,14 @@ type ToolActivitySegmentProps = Pick<
     /** True only while this segment is the trailing activity of an active turn. */
     readonly isCurrentTurnTail?: boolean;
     readonly segment: ChatTimelineActivitySegmentRow;
-};
+} & Pick<
+        ThinkingMessageProps,
+        | "chatFontFamily"
+        | "chatFontSize"
+        | "highlightQuery"
+        | "onAddFileReferenceToChat"
+        | "onRevealFileReference"
+    >;
 
 function pluralize(count: number, singular: string, plural = `${singular}s`) {
     return `${count} ${count === 1 ? singular : plural}`;
@@ -38,6 +49,9 @@ function getSegmentHeadline(
     isCurrentTurnTail: boolean,
 ): string {
     const { summary } = segment;
+    if (summary.actionCount === 0) {
+        return isCurrentTurnTail ? "Thinking..." : "Thought";
+    }
     const details = [
         pluralize(summary.actionCount, "action"),
         summary.changedFileCount > 0
@@ -79,7 +93,13 @@ function getSegmentHeadline(
 function getLatestActivityLabel(
     segment: ChatTimelineActivitySegmentRow,
 ): string {
-    const latestActivity = segment.entries.at(-1)?.reviewEntry.activity;
+    const latestItem = segment.items.at(-1);
+    if (latestItem?.kind === "thinking") {
+        return latestItem.message.status === "streaming"
+            ? "Thinking..."
+            : "Thinking";
+    }
+    const latestActivity = latestItem?.entry.reviewEntry.activity;
     if (!latestActivity) {
         return segment.summary.latestTitle;
     }
@@ -114,9 +134,14 @@ function Chevron({ expanded }: { readonly expanded: boolean }) {
 
 export const ToolActivitySegment = memo(function ToolActivitySegment({
     canRenderFileReference,
+    chatFontFamily,
+    chatFontSize,
+    highlightQuery,
+    onAddFileReferenceToChat,
     onOpenFile,
     onOpenFileReference,
     onOpenSession,
+    onRevealFileReference,
     projectId,
     resolveFileReference,
     isCurrentTurnTail = false,
@@ -131,7 +156,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
         `${segment.id}:full-activity:${defaultExpansion}`,
         defaultExpanded,
     );
-    const canExpand = segment.entries.length > 0;
+    const canExpand = segment.items.length > 0;
     const contentId = `${segment.id}:activity`;
     const headline = getSegmentHeadline(segment, isCurrentTurnTail);
     const isWorkedSegment = headline.startsWith("Worked ·");
@@ -141,7 +166,11 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
         [segment.entries],
     );
     const hasChanges = segment.summary.changeCount > 0;
-    const visibleEntries = expanded ? segment.entries : [];
+    const visibleItems = expanded ? segment.items : [];
+    const openThinkingFileReference =
+        onOpenFileReference ?? (() => undefined);
+    const resolveThinkingFileReference =
+        resolveFileReference ?? (() => null);
     const activityState = isCurrentTurnTail
         ? "In progress"
         : "Completed";
@@ -249,9 +278,9 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                 </div>
             )}
 
-            {visibleEntries.length > 0 ? (
+            {visibleItems.length > 0 ? (
                 <div
-                    aria-label="Full tool activity"
+                    aria-label="Full activity"
                     className="pt-1"
                     id={contentId}
                     role="region"
@@ -260,16 +289,29 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                         className="activity-tree flex min-w-0 flex-col gap-1.5"
                         role="list"
                     >
-                        {visibleEntries.map(({ policy, reviewEntry }) => {
-                            const atomicRowId = `tool:${reviewEntry.activity.sessionId}:${reviewEntry.activity.id}`;
+                        {visibleItems.map((item) => {
+                            const atomicRowId =
+                                item.kind === "thinking"
+                                    ? `thinking:${item.message.id}`
+                                    : `tool:${item.entry.reviewEntry.activity.sessionId}:${item.entry.reviewEntry.activity.id}`;
                             return (
                                 <div
                                     className="activity-tree-branch min-w-0 pl-10"
                                     data-activity-rail-decoration="branch"
                                     data-activity-rail-indent="child"
-                                    data-tool-activity-id={reviewEntry.activity.id}
+                                    data-thinking-message-id={
+                                        item.kind === "thinking"
+                                            ? item.message.id
+                                            : undefined
+                                    }
+                                    data-tool-activity-id={
+                                        item.kind === "tool"
+                                            ? item.entry.reviewEntry.activity.id
+                                            : undefined
+                                    }
                                     data-tool-activity-visibility={
-                                        policy === "groupable"
+                                        item.kind === "tool" &&
+                                        item.entry.policy === "groupable"
                                             ? "expanded-only"
                                             : "always"
                                     }
@@ -277,23 +319,48 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                                     role="listitem"
                                 >
                                     <div className="min-w-0 py-0.5">
-                                        <ToolActivityItem
-                                            activity={reviewEntry.activity}
-                                            canRenderFileReference={canRenderFileReference}
-                                            compactTerminal
-                                            onOpenFile={onOpenFile}
-                                            onOpenFileReference={onOpenFileReference}
-                                            onOpenSession={onOpenSession}
-                                            projectId={projectId}
-                                            resolveFileReference={resolveFileReference}
-                                            surface={
-                                                policy === "standalone-change"
-                                                    ? "card"
-                                                    : "rail-row"
-                                            }
-                                            trackedFiles={reviewEntry.trackedFiles}
-                                            worktreeId={worktreeId}
-                                        />
+                                        {item.kind === "thinking" ? (
+                                            <ThinkingMessage
+                                                canRenderFileReference={canRenderFileReference}
+                                                chatFontFamily={chatFontFamily}
+                                                chatFontSize={chatFontSize}
+                                                content={item.message.content}
+                                                highlightQuery={highlightQuery}
+                                                inProgress={
+                                                    item.message.status ===
+                                                    "streaming"
+                                                }
+                                                onAddFileReferenceToChat={onAddFileReferenceToChat}
+                                                onOpenFile={openThinkingFileReference}
+                                                onRevealFileReference={onRevealFileReference}
+                                                resolveFileReference={resolveThinkingFileReference}
+                                            />
+                                        ) : (
+                                            <ToolActivityItem
+                                                activity={
+                                                    item.entry.reviewEntry
+                                                        .activity
+                                                }
+                                                canRenderFileReference={canRenderFileReference}
+                                                compactTerminal
+                                                onOpenFile={onOpenFile}
+                                                onOpenFileReference={onOpenFileReference}
+                                                onOpenSession={onOpenSession}
+                                                projectId={projectId}
+                                                resolveFileReference={resolveFileReference}
+                                                surface={
+                                                    item.entry.policy ===
+                                                    "standalone-change"
+                                                        ? "card"
+                                                        : "rail-row"
+                                                }
+                                                trackedFiles={
+                                                    item.entry.reviewEntry
+                                                        .trackedFiles
+                                                }
+                                                worktreeId={worktreeId}
+                                            />
+                                        )}
                                     </div>
                                 </div>
                             );

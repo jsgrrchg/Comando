@@ -546,7 +546,7 @@ describe("chatTimelineVirtualization", () => {
         ).not.toBe(base);
     });
 
-    it("keys tool rows independent of width but messages by width bucket", () => {
+    it("keys tool rows independent of width but messages and thinking rails by width bucket", () => {
         const baseContext = {
             chatFontFamily: "Inter",
             chatFontSize: 13,
@@ -554,9 +554,26 @@ describe("chatTimelineVirtualization", () => {
         };
         const toolRow = createToolRow();
         const messageRow = createMessageRow({ content: "hello" });
+        const thinkingModel = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    content: "A long thought that can reflow when expanded.",
+                    id: "thinking-1",
+                    kind: "thinking",
+                }),
+            ],
+            status: "idle",
+            toolActivity: [],
+            trackedFiles: [],
+        });
+        const thinkingRail = thinkingModel.orderedRows[0];
+        if (!thinkingRail) {
+            throw new Error("Expected a thinking activity rail.");
+        }
 
         expect(isWidthSensitiveChatTimelineRow(toolRow)).toBe(false);
         expect(isWidthSensitiveChatTimelineRow(messageRow)).toBe(true);
+        expect(isWidthSensitiveChatTimelineRow(thinkingRail)).toBe(true);
 
         // A tool card lays out at a width-invariant height, so crossing a width
         // bucket must NOT churn its measurement key — that is what kept the whole
@@ -568,6 +585,17 @@ describe("chatTimelineVirtualization", () => {
             }),
         ).toBe(
             getChatTimelineRowMeasurementKey(toolRow, {
+                ...baseContext,
+                width: 960,
+            }),
+        );
+        expect(
+            getChatTimelineRowMeasurementKey(thinkingRail, {
+                ...baseContext,
+                width: 640,
+            }),
+        ).not.toBe(
+            getChatTimelineRowMeasurementKey(thinkingRail, {
                 ...baseContext,
                 width: 960,
             }),
