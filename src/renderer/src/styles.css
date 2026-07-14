@@ -408,12 +408,13 @@
 
 .project-context-titlebar {
     min-width: 0;
-    gap: 6px;
+    gap: 4px;
     overflow: hidden;
     border-bottom: 1px solid
-        color-mix(in srgb, var(--color-border) 42%, transparent);
+        color-mix(in srgb, var(--color-border) 34%, transparent);
 }
 
+/* Soft segmented project switcher — lighter than pane tabs, denser in the titlebar. */
 .project-context-tabs {
     display: flex;
     width: auto;
@@ -422,7 +423,7 @@
     height: 28px;
     flex: 0 1 auto;
     align-items: center;
-    gap: 4px;
+    gap: 2px;
     overflow-x: auto;
     scrollbar-width: none;
 }
@@ -434,36 +435,32 @@
 .project-context-tab-shell {
     position: relative;
     display: flex;
-    min-width: 180px;
-    max-width: 364px;
-    height: 26px;
-    flex: 0 0 220px;
+    min-width: 96px;
+    max-width: 200px;
+    height: 24px;
+    flex: 0 1 auto;
     align-items: center;
     overflow: hidden;
-    border: 1px solid
-        color-mix(in srgb, var(--color-border) 30%, transparent);
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--color-bg-elevated) 26%, transparent);
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: transparent;
     color: var(--color-text-secondary);
     transition:
         background-color 120ms ease,
         border-color 120ms ease,
-        color 120ms ease;
+        color 120ms ease,
+        box-shadow 120ms ease;
 }
 
 .project-context-tab-shell:hover {
-    border-color: color-mix(
-        in srgb,
-        var(--color-border-strong) 44%,
-        transparent
-    );
-    background: color-mix(in srgb, var(--color-bg-elevated) 44%, transparent);
+    background: color-mix(in srgb, var(--color-text-primary) 6%, transparent);
     color: var(--color-text-primary);
 }
 
 .project-context-tab-shell[data-active] {
-    border-color: color-mix(in srgb, var(--color-accent) 48%, transparent);
-    background: color-mix(in srgb, var(--color-bg-elevated) 78%, transparent);
+    background: color-mix(in srgb, var(--color-bg-elevated) 72%, transparent);
+    box-shadow: inset 0 0 0 1px
+        color-mix(in srgb, var(--color-border) 38%, transparent);
     color: var(--color-text-primary);
 }
 
@@ -473,33 +470,41 @@
 }
 
 .project-context-tab-shell[data-drop-position="before"] {
-    box-shadow: inset 2px 0 var(--color-accent);
+    box-shadow: inset 2px 0 0 0 var(--color-accent);
 }
 
 .project-context-tab-shell[data-drop-position="after"] {
-    box-shadow: inset -2px 0 var(--color-accent);
+    box-shadow: inset -2px 0 0 0 var(--color-accent);
 }
 
 :root[data-transparency-enabled="false"] .project-context-tab-shell[data-active] {
     background: var(--color-bg-elevated);
+    box-shadow: inset 0 0 0 1px
+        color-mix(in srgb, var(--color-border) 55%, transparent);
 }
 
-:root[data-transparency-enabled="false"] .project-context-tab-shell:not([data-active]) {
-    background: var(--color-bg-panel);
+:root[data-transparency-enabled="false"] .project-context-tab-shell:not([data-active]):hover {
+    background: color-mix(in srgb, var(--color-bg-panel) 88%, var(--color-text-primary));
 }
 
 .project-context-tab-icon {
     display: grid;
-    width: 16px;
-    height: 16px;
+    width: 14px;
+    height: 14px;
     flex: 0 0 auto;
     place-items: center;
-    margin: 0 5px 0 6px;
-    border-radius: 5px;
+    margin: 0 5px 0 5px;
+    border-radius: 4px;
     color: #fff;
-    font-size: 9.5px;
+    font-size: 8.5px;
     font-weight: 700;
     line-height: 1;
+    opacity: 0.88;
+    box-shadow: 0 0 0 1px color-mix(in srgb, #000 12%, transparent);
+}
+
+.project-context-tab-shell[data-active] .project-context-tab-icon {
+    opacity: 1;
 }
 
 .project-context-tab {
@@ -512,7 +517,7 @@
     background: transparent;
     color: inherit;
     cursor: default;
-    padding: 0 20px 0 0;
+    padding: 0 2px 0 0;
     text-align: left;
 }
 
@@ -527,41 +532,51 @@
 
 .project-context-tab-title {
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 550;
+    letter-spacing: 0.01em;
 }
 
+/* Worktree / branch as a quiet inline badge (shared with titlebar scope trigger). */
 .project-context-tab-subtitle {
-    margin-left: 5px;
+    display: inline;
+    margin-left: 6px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--color-text-primary) 7%, transparent);
     color: var(--color-text-secondary);
-    font-size: 10px;
-    font-weight: 450;
+    font-size: 9.5px;
+    font-weight: 500;
+    letter-spacing: 0;
 }
 
-.project-context-tab-subtitle::before {
-    margin-right: 5px;
-    color: color-mix(in srgb, var(--color-text-secondary) 60%, transparent);
-    content: "·";
+.project-context-tab-shell[data-active] .project-context-tab-subtitle {
+    background: color-mix(in srgb, var(--color-text-primary) 9%, transparent);
 }
 
 .project-context-tab-close {
-    position: absolute;
-    right: 4px;
+    position: relative;
+    right: auto;
     display: grid;
     width: 16px;
     height: 16px;
+    flex: 0 0 16px;
     place-items: center;
+    margin-right: 3px;
     border: 0;
     border-radius: 4px;
     background: transparent;
     color: currentColor;
     cursor: default;
     opacity: 0;
+    transition:
+        background-color 100ms ease,
+        opacity 100ms ease;
 }
 
 .project-context-tab-shell:hover .project-context-tab-close,
 .project-context-tab-shell[data-active] .project-context-tab-close,
 .project-context-tab-close:focus-visible {
-    opacity: 0.72;
+    opacity: 0.55;
 }
 
 .project-context-tab-close:hover {
@@ -590,12 +605,16 @@
     background: transparent;
     color: var(--color-text-secondary);
     cursor: default;
+    transition:
+        background-color 120ms ease,
+        border-color 120ms ease,
+        color 120ms ease;
 }
 
 .project-context-add:hover,
 .project-context-add[aria-expanded="true"] {
-    border-color: color-mix(in srgb, var(--color-border) 55%, transparent);
-    background: color-mix(in srgb, var(--color-bg-elevated) 56%, transparent);
+    border-color: transparent;
+    background: color-mix(in srgb, var(--color-text-primary) 7%, transparent);
     color: var(--color-text-primary);
 }
 
@@ -2304,11 +2323,11 @@ button {
     min-width: 0;
     height: 100%;
     flex: 1;
-    gap: 4px;
+    gap: 2px;
     border: 0;
     border-radius: inherit;
     background: transparent;
-    padding: 0 20px 0 0;
+    padding: 0 2px 0 0;
     color: inherit;
     text-align: left;
     transform: none;
@@ -2335,35 +2354,35 @@ button {
 
 .sidebar-git-scope-trigger__titlebar-project {
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 550;
+    letter-spacing: 0.01em;
 }
 
+/* Match inactive project-context-tab-subtitle badge treatment. */
 .sidebar-git-scope-trigger__titlebar-branch {
-    margin-left: 5px;
+    display: inline;
+    margin-left: 6px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--color-text-primary) 9%, transparent);
     color: var(--color-text-secondary);
-    font-size: 10px;
-    font-weight: 450;
-}
-
-.sidebar-git-scope-trigger__titlebar-branch::before {
-    margin-right: 5px;
-    color: color-mix(in srgb, var(--color-text-secondary) 60%, transparent);
-    content: "·";
+    font-size: 9.5px;
+    font-weight: 500;
 }
 
 /* Sized and boxed as its own hit target so the disclosure affordance reads
-   clearly at a glance instead of blending into the "· branch" label, without
+   clearly at a glance instead of blending into the branch badge, without
    growing the tab row (the pill is padding on the icon itself, not extra
    height on the button). */
 .sidebar-git-scope-trigger--titlebar > svg {
     box-sizing: content-box;
-    width: 12px;
-    height: 12px;
+    width: 11px;
+    height: 11px;
     flex: 0 0 auto;
-    margin-right: 2px;
-    padding: 3px;
-    border-radius: 5px;
-    color: color-mix(in srgb, var(--color-text-secondary) 70%, var(--color-text-primary));
+    margin-right: 0;
+    padding: 2px;
+    border-radius: 4px;
+    color: color-mix(in srgb, var(--color-text-secondary) 72%, var(--color-text-primary));
     background: transparent;
     transition:
         background-color 120ms ease,
@@ -2375,14 +2394,14 @@ button {
 .sidebar-git-scope-trigger--titlebar:focus-visible > svg,
 .sidebar-git-scope-trigger--titlebar.sidebar-git-scope-trigger--open > svg {
     color: var(--color-text-primary);
-    background: color-mix(in srgb, var(--color-text-primary) 12%, transparent);
+    background: color-mix(in srgb, var(--color-text-primary) 11%, transparent);
 }
 
 /* Same light "press" feedback the other icon buttons in this menu use
    (see .sidebar-git-scope-menu__new-branch-button:active), scoped to the
    pill instead of the whole tab so the rest of the tab stays still. */
 .sidebar-git-scope-trigger--titlebar:active > svg {
-    background: color-mix(in srgb, var(--color-text-primary) 16%, transparent);
+    background: color-mix(in srgb, var(--color-text-primary) 15%, transparent);
     transform: translateY(1px) scale(0.92);
 }
 
