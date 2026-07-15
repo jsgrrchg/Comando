@@ -129,6 +129,7 @@ export const IPC_CHANNELS = {
     saveWorkspaceSnapshot: "workspace:save-snapshot",
     initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
     activateWorkspaceSurface: "workspace:activate-surface",
+    requestWorkspaceSurfaceContext: "workspace:request-surface-context",
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
     openWorkspaceSurfaceProjectMenu: "workspace:open-surface-project-menu",
     setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
@@ -192,6 +193,7 @@ export const IPC_EVENTS = {
     workspaceFlushRequested: "workspace:flush-requested",
     workspaceFlushAcknowledged: "workspace:flush-acknowledged",
     workspaceSurfaceSnapshotUpdated: "workspace:surface-snapshot-updated",
+    workspaceSurfaceContextRequested: "workspace:surface-context-requested",
     workspaceSurfaceGitScopeMenuRequested:
         "workspace:surface-git-scope-menu-requested",
     workspaceSurfaceProjectMenuRequested: "workspace:surface-project-menu-requested",
@@ -2151,6 +2153,12 @@ export interface WorkspaceNavigationSnapshot {
     readonly version: 3;
 }
 
+export interface WorkspaceSurfaceContextRequest {
+    readonly emptyLayout?: boolean;
+    readonly projectId: string;
+    readonly worktreeId?: string | null;
+}
+
 export interface WindowWorkspaceRestoreRecord {
     readonly revision: number;
     readonly schemaVersion: 1;
@@ -2995,6 +3003,9 @@ export interface ComandoApi {
         snapshot: WorkspaceNavigationSnapshot,
     ) => Promise<void>;
     activateWorkspaceSurface: (contextKey: string) => Promise<void>;
+    requestWorkspaceSurfaceContext: (
+        input: WorkspaceSurfaceContextRequest,
+    ) => Promise<void>;
     openWorkspaceSurfaceGitScopeMenu: (anchor: {
         readonly width: number;
         readonly x: number;
@@ -3364,6 +3375,9 @@ export interface ComandoApi {
     ) => () => void;
     onWorkspaceSurfaceSnapshotUpdated: (
         listener: (snapshot: WorkspaceNavigationSnapshot) => void,
+    ) => () => void;
+    onWorkspaceSurfaceContextRequested: (
+        listener: (input: WorkspaceSurfaceContextRequest) => void,
     ) => () => void;
     onWorkspaceSurfaceGitScopeMenuRequested: (
         listener: (anchor: { readonly width: number; readonly x: number }) => void,

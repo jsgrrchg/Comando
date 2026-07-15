@@ -159,6 +159,7 @@ import {
     type WindowContextSnapshot,
     type WriteTerminalInput,
     type WorkspaceNavigationSnapshot,
+    type WorkspaceSurfaceContextRequest,
 } from "@shared/ipc";
 import { normalizePathKey as normalizeSharedPathKey } from "@shared/path-identity";
 import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
@@ -347,6 +348,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.initializeWorkspaceSurfaces);
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
+    ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
@@ -1856,6 +1858,32 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     ),
                 );
             }
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.requestWorkspaceSurfaceContext,
+        (event, input: WorkspaceSurfaceContextRequest) => {
+            requireWindowContext(event.sender, "main");
+            const surfaceContext = workspaceSurfaceManager.getSurfaceContext(
+                event.sender,
+            );
+            if (
+                !surfaceContext ||
+                !surfaceContext.hostWindowId ||
+                !input ||
+                typeof input.projectId !== "string" ||
+                input.projectId.length === 0 ||
+                (input.worktreeId !== undefined &&
+                    input.worktreeId !== null &&
+                    typeof input.worktreeId !== "string") ||
+                (input.emptyLayout !== undefined &&
+                    typeof input.emptyLayout !== "boolean")
+            ) {
+                return;
+            }
+            workspaceSurfaceManager
+                .getHostWebContents(surfaceContext.hostWindowId)
+                ?.send(IPC_EVENTS.workspaceSurfaceContextRequested, input);
         },
     );
     ipcMain.handle(

@@ -105,6 +105,11 @@ const isWorkspaceSurfaceHost =
     new URLSearchParams(window.location.search).get("window") ===
         "workspace-host";
 
+const isWorkspaceSurfaceRenderer =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("window") ===
+        "workspace-surface";
+
 export type WorkspaceOpenTarget =
     | {
           readonly insertIndex?: number;
@@ -1254,6 +1259,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         ),
 
     openContext: async (projectId, worktreeId = null, options = {}) => {
+        if (isWorkspaceSurfaceRenderer) {
+            await getComandoApi().requestWorkspaceSurfaceContext({
+                emptyLayout: options.emptyLayout,
+                projectId,
+                worktreeId,
+            });
+            return;
+        }
         const normalizedWorktreeId =
             worktreeId === `${projectId}:primary` ? null : worktreeId;
         const contextKey = getProjectContextKey(

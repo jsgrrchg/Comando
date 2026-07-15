@@ -768,6 +768,19 @@ export function App() {
     }, []);
 
     useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceContextRequested((input) => {
+            void useWorkspaceStore
+                .getState()
+                .openContext(input.projectId, input.worktreeId, {
+                    emptyLayout: input.emptyLayout,
+                });
+        });
+    }, []);
+
+    useEffect(() => {
         if (!isWorkspaceSurfaceRenderer) {
             return;
         }

@@ -178,6 +178,7 @@ import {
     type WriteTerminalInput,
     type PersistedWorkspaceSnapshot,
     type WorkspaceNavigationSnapshot,
+    type WorkspaceSurfaceContextRequest,
 } from "@shared/ipc";
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -872,6 +873,19 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceSurfaceContextRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            input: WorkspaceSurfaceContextRequest,
+        ) => listener(input);
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceContextRequested, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceContextRequested,
+                handleEvent,
+            );
+        };
+    },
     onWorkspaceSurfaceGitScopeMenuRequested: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -986,6 +1000,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.initializeWorkspaceSurfaces, snapshot),
     activateWorkspaceSurface: (contextKey: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceSurface, contextKey),
+    requestWorkspaceSurfaceContext: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.requestWorkspaceSurfaceContext, input),
     openWorkspaceSurfaceGitScopeMenu: (anchor) =>
         ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu, anchor),
     openWorkspaceSurfaceProjectMenu: () =>
