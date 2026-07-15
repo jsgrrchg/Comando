@@ -1985,6 +1985,135 @@ describe("ai-store queue", () => {
         );
     });
 
+    it("coalesces streaming deltas for a session on the next animation frame", () => {
+        const frameCallbacks = new Map<number, FrameRequestCallback>();
+        let nextFrameId = 0;
+        const requestAnimationFrame = vi.fn(
+            (callback: FrameRequestCallback) => {
+                nextFrameId += 1;
+                frameCallbacks.set(nextFrameId, callback);
+                return nextFrameId;
+            },
+        );
+        vi.stubGlobal("requestAnimationFrame", requestAnimationFrame);
+        vi.stubGlobal("cancelAnimationFrame", (frameId: number) => {
+            frameCallbacks.delete(frameId);
+        });
+
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "message-started",
+                message: createMessage({ content: "", id: "msg-1" }),
+                messageKind: "assistant",
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                content: "Hel",
+                delta: "Hel",
+                kind: "message-delta",
+                messageId: "msg-1",
+                messageKind: "assistant",
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                content: "Hello",
+                delta: "lo",
+                kind: "message-delta",
+                messageId: "msg-1",
+                messageKind: "assistant",
+            }),
+        );
+
+        expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.messages[0]
+                ?.content,
+        ).toBe("");
+
+        frameCallbacks.get(1)?.(0);
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.messages[0]
+                ?.content,
+        ).toBe("Hello");
+    });
+
+    it("flushes structural events without draining another session's frame", () => {
+        const frameCallbacks = new Map<number, FrameRequestCallback>();
+        let nextFrameId = 0;
+        vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+            nextFrameId += 1;
+            frameCallbacks.set(nextFrameId, callback);
+            return nextFrameId;
+        });
+        vi.stubGlobal("cancelAnimationFrame", (frameId: number) => {
+            frameCallbacks.delete(frameId);
+        });
+
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "message-started",
+                message: createMessage({ content: "", id: "msg-1" }),
+                messageKind: "assistant",
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                content: "First",
+                delta: "First",
+                kind: "message-delta",
+                messageId: "msg-1",
+                messageKind: "assistant",
+            }),
+        );
+
+        const secondSessionId = "session-2";
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "message-started",
+                message: createMessage({ content: "", id: "msg-2" }),
+                messageKind: "assistant",
+                sessionId: secondSessionId,
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                content: "Second",
+                delta: "Second",
+                kind: "message-delta",
+                messageId: "msg-2",
+                messageKind: "assistant",
+                sessionId: secondSessionId,
+            }),
+        );
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "message-completed",
+                messageId: "msg-2",
+                messageKind: "assistant",
+                sessionId: secondSessionId,
+            }),
+        );
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.messages[0]
+                ?.content,
+        ).toBe("");
+        expect(
+            useAiStore.getState().sessions[secondSessionId]?.snapshot?.messages[0]
+                ?.content,
+        ).toBe("Second");
+
+        frameCallbacks.get(1)?.(0);
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.messages[0]
+                ?.content,
+        ).toBe("First");
+    });
+
     it("preserves closed subagent status from incoming snapshots", () => {
         useAiStore.getState().applySessionSnapshot(
             createSnapshot({
