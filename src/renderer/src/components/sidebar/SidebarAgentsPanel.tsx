@@ -21,6 +21,7 @@ import {
 } from "@shared/ai-runtimes";
 
 import { useAiStore } from "@renderer/app/store/ai-store";
+import { areGitWorktreeIdsEquivalent } from "@renderer/app/git/context-key";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import { collectPaneNodes } from "@renderer/app/workspace/tree";
 import {
@@ -188,6 +189,11 @@ export function SidebarAgentsPanel({
         () => getSidebarAgentsHistoryCacheKey(projectId, worktreeId),
         [projectId, worktreeId],
     );
+    const historyQueryWorktreeId =
+        projectId &&
+        areGitWorktreeIdsEquivalent(projectId, worktreeId ?? null, null)
+            ? null
+            : (worktreeId ?? null);
     const folderScopeKey = useMemo(
         () => getSidebarAgentsFolderStorageKey(projectId, worktreeId),
         [projectId, worktreeId],
@@ -280,7 +286,14 @@ export function SidebarAgentsPanel({
             terminalAgentSessions.filter(
                 (session) =>
                     session.projectId === projectId &&
-                    (session.worktreeId ?? null) === (worktreeId ?? null),
+                    (projectId
+                        ? areGitWorktreeIdsEquivalent(
+                              projectId,
+                              session.worktreeId ?? null,
+                              worktreeId ?? null,
+                          )
+                        : (session.worktreeId ?? null) ===
+                          (worktreeId ?? null)),
         ),
         [projectId, terminalAgentSessions, worktreeId],
     );
@@ -375,7 +388,7 @@ export function SidebarAgentsPanel({
             const nextSessions = await api.listAiSessionHistory({
                 limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
                 projectId,
-                worktreeId: worktreeId ?? null,
+                worktreeId: historyQueryWorktreeId,
             });
             if (requestIdRef.current !== requestId) {
                 return;
@@ -397,7 +410,7 @@ export function SidebarAgentsPanel({
                 setIsLoading(false);
             }
         }
-    }, [historyScopeKey, projectId, worktreeId]);
+    }, [historyQueryWorktreeId, historyScopeKey, projectId, worktreeId]);
 
     const clearRefreshTimer = useCallback(() => {
         if (refreshTimerRef.current !== null) {

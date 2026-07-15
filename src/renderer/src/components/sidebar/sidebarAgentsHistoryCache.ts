@@ -1,4 +1,5 @@
 import type { AiHistorySessionSummary } from "@shared/ipc";
+import { getGitContextKey } from "@renderer/app/git/context-key";
 
 export interface SidebarAgentsHistoryCacheEntry {
     readonly loadedAt: number;
@@ -15,7 +16,9 @@ export function getSidebarAgentsHistoryCacheKey(
     projectId: string | null,
     worktreeId: string | null | undefined,
 ): string {
-    return JSON.stringify([projectId ?? "", worktreeId ?? ""]);
+    return projectId
+        ? getGitContextKey(projectId, worktreeId ?? null)
+        : JSON.stringify(["", worktreeId ?? ""]);
 }
 
 export function readSidebarAgentsHistoryCache(

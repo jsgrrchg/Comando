@@ -6,6 +6,7 @@ import type {
     AiSessionSnapshot,
     AiSessionUpdate,
 } from "@shared/ipc";
+import { areGitWorktreeIdsEquivalent } from "@renderer/app/git/context-key";
 
 export interface SidebarAgentsHistoryScope {
     readonly projectId: string | null;
@@ -348,7 +349,13 @@ function isHistorySummaryVisibleInScope(
 ): boolean {
     return (
         session.projectId === scope.projectId &&
-        (session.worktreeId ?? null) === scope.worktreeId
+        (scope.projectId
+            ? areGitWorktreeIdsEquivalent(
+                  scope.projectId,
+                  session.worktreeId ?? null,
+                  scope.worktreeId,
+              )
+            : (session.worktreeId ?? null) === scope.worktreeId)
     );
 }
 
