@@ -5,6 +5,7 @@ import type {
 } from "@shared/ipc";
 import {
     getAiSessionTranscriptMessages,
+    getAiSessionTranscriptMutation,
     getAiSessionTranscriptToolActivity,
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
@@ -12,6 +13,7 @@ import { areTrackedFilePathReferencesEquivalent } from "@renderer/app/ai/tracked
 
 import {
     createToolActivityReviewIndex,
+    deriveToolActivityReviewEntry,
     deriveToolActivityReviewEntriesFromIndex,
     type ToolActivityReviewEntry,
 } from "./toolActivityReviewModel";
@@ -975,15 +977,37 @@ export function reconcileChatTimelineModel(
     };
 }
 
+export interface ChatTimelineTranscriptInput {
+    readonly activeTurnStartedAt?: string | null;
+    readonly attentionToolCallIds?: ReadonlySet<string>;
+    readonly status: AiSessionSnapshot["status"];
+    readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
+    readonly transcript: AiSessionTranscriptModel;
+}
+
+interface ChatTimelineReconciliationDiagnostics {
+    readonly fallbackCount: number;
+    readonly incrementalCount: number;
+}
+
+let chatTimelineFallbackCount = 0;
+let chatTimelineIncrementalCount = 0;
+
+export function getChatTimelineReconciliationDiagnostics(): ChatTimelineReconciliationDiagnostics {
+    return {
+        fallbackCount: chatTimelineFallbackCount,
+        incrementalCount: chatTimelineIncrementalCount,
+    };
+}
+
+export function resetChatTimelineReconciliationDiagnosticsForTests(): void {
+    chatTimelineFallbackCount = 0;
+    chatTimelineIncrementalCount = 0;
+}
+
 export function reconcileChatTimelineModelFromTranscript(
     previous: ChatTimelineModel | null,
-    input: {
-        readonly activeTurnStartedAt?: string | null;
-        readonly attentionToolCallIds?: ReadonlySet<string>;
-        readonly status: AiSessionSnapshot["status"];
-        readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
-        readonly transcript: AiSessionTranscriptModel;
-    },
+    input: ChatTimelineTranscriptInput,
 ): ChatTimelineModel {
     return reconcileChatTimelineModel(previous, {
         messages: getAiSessionTranscriptMessages(input.transcript),
@@ -993,4 +1017,267 @@ export function reconcileChatTimelineModelFromTranscript(
         toolActivity: getAiSessionTranscriptToolActivity(input.transcript),
         trackedFiles: input.trackedFiles,
     });
+}
+
+export function reconcileChatTimelineModelIncrementallyFromTranscript(
+    previous: ChatTimelineModel | null,
+    previousTranscript: AiSessionTranscriptModel | null,
+    input: ChatTimelineTranscriptInput,
+): ChatTimelineModel {
+    if (!previous || !previousTranscript) {
+        return reconcileChatTimelineModelFromTranscript(previous, input);
+    }
+
+    const mutation = getAiSessionTranscriptMutation(input.transcript);
+    const incrementalModel =
+        mutation.kind === "patch"
+            ? reconcileLiveTailPatch(
+                  previous,
+                  input,
+                  mutation.entryId,
+              )
+            : mutation.kind === "append"
+              ? reconcileLiveTailAppend(
+                    previous,
+                    input,
+                    mutation.entryId,
+                )
+              : null;
+    if (incrementalModel) {
+        chatTimelineIncrementalCount += 1;
+        return incrementalModel;
+    }
+
+    chatTimelineFallbackCount += 1;
+    return reconcileChatTimelineModelFromTranscript(previous, input);
+}
+
+function reconcileLiveTailPatch(
+    previous: ChatTimelineModel,
+    input: ChatTimelineTranscriptInput,
+    entryId: string,
+): ChatTimelineModel | null {
+    const nextAtomicRow = getTranscriptAtomicRow(input, entryId);
+    const previousAtomicRow = previous.atomicLiveTailRow;
+    if (
+        !nextAtomicRow ||
+        !previousAtomicRow ||
+        previousAtomicRow.id !== nextAtomicRow.id ||
+        previous.orderedAtomicRows.at(-1) !== previousAtomicRow
+    ) {
+        return null;
+    }
+
+    const presentation = replaceLiveTailPresentationRow(
+        previous,
+        nextAtomicRow,
+        input.attentionToolCallIds ?? EMPTY_ATTENTION_TOOL_CALL_IDS,
+    );
+    if (!presentation) {
+        return null;
+    }
+
+    const atomicRowById = new Map(previous.atomicRowById);
+    atomicRowById.set(nextAtomicRow.id, nextAtomicRow);
+    const presentationRowById = new Map(previous.presentationRowById);
+    presentationRowById.set(presentation.liveTailRow.id, presentation.liveTailRow);
+
+    return {
+        ...previous,
+        atomicLiveTailRow: nextAtomicRow,
+        atomicRowById,
+        liveTailRow: presentation.liveTailRow,
+        liveTailRowId: presentation.liveTailRow.id,
+        orderedAtomicRows: replaceLastTimelineRow(
+            previous.orderedAtomicRows,
+            nextAtomicRow,
+        ),
+        orderedRows: presentation.orderedRows,
+        presentationRowById,
+    };
+}
+
+function reconcileLiveTailAppend(
+    previous: ChatTimelineModel,
+    input: ChatTimelineTranscriptInput,
+    entryId: string,
+): ChatTimelineModel | null {
+    const nextAtomicRow = getTranscriptAtomicRow(input, entryId);
+    if (
+        !nextAtomicRow ||
+        nextAtomicRow.kind !== "message" ||
+        nextAtomicRow.message.kind === "thinking" ||
+        nextAtomicRow.message.kind === "user" ||
+        !isStreamingStatus(input.status) ||
+        (previous.liveTailRow !== null &&
+            previous.orderedRows.at(-1) !== previous.liveTailRow)
+    ) {
+        return null;
+    }
+
+    const previousAtomicTail = previous.orderedAtomicRows.at(-1) ?? null;
+    if (
+        previousAtomicTail &&
+        getRowCreatedAt(previousAtomicTail) > getRowCreatedAt(nextAtomicRow)
+    ) {
+        return null;
+    }
+
+    const atomicRowById = new Map(previous.atomicRowById);
+    atomicRowById.set(nextAtomicRow.id, nextAtomicRow);
+    const presentationRowById = new Map(previous.presentationRowById);
+    presentationRowById.set(nextAtomicRow.id, nextAtomicRow);
+    const atomicHistoryRows = previous.atomicLiveTailRow
+        ? [...previous.atomicHistoryRows, previous.atomicLiveTailRow]
+        : previous.atomicHistoryRows;
+    const historyRows = previous.liveTailRow
+        ? [...previous.historyRows, previous.liveTailRow]
+        : previous.historyRows;
+
+    return {
+        ...previous,
+        atomicHistoryRowIds: previous.atomicLiveTailRow
+            ? [...previous.atomicHistoryRowIds, previous.atomicLiveTailRow.id]
+            : previous.atomicHistoryRowIds,
+        atomicHistoryRows,
+        atomicLiveTailRow: nextAtomicRow,
+        atomicLiveTailRowId: nextAtomicRow.id,
+        atomicRowById,
+        historyRowIds: previous.liveTailRow
+            ? [...previous.historyRowIds, previous.liveTailRow.id]
+            : previous.historyRowIds,
+        historyRows,
+        liveTailRow: nextAtomicRow,
+        liveTailRowId: nextAtomicRow.id,
+        orderedAtomicRowIds: [...previous.orderedAtomicRowIds, nextAtomicRow.id],
+        orderedAtomicRows: [...previous.orderedAtomicRows, nextAtomicRow],
+        orderedRowIds: [...previous.orderedRowIds, nextAtomicRow.id],
+        orderedRows: [...previous.orderedRows, nextAtomicRow],
+        presentationRowById,
+    };
+}
+
+function getTranscriptAtomicRow(
+    input: ChatTimelineTranscriptInput,
+    entryId: string,
+): ChatTimelineAtomicRow | null {
+    const entry = input.transcript.entriesById[entryId];
+    if (!entry) {
+        return null;
+    }
+
+    if (entry.kind === "message") {
+        return {
+            id: getMessageRowId(entry.message),
+            kind: "message",
+            message: entry.message,
+        };
+    }
+
+    if (entry.kind === "tool") {
+        const reviewEntry = deriveToolActivityReviewEntry(
+            entry.activity,
+            createToolActivityReviewIndex(input.trackedFiles),
+        );
+        return {
+            id: getToolRowId(reviewEntry),
+            kind: "tool",
+            reviewEntry,
+        };
+    }
+
+    return null;
+}
+
+function replaceLiveTailPresentationRow(
+    previous: ChatTimelineModel,
+    nextAtomicRow: ChatTimelineAtomicRow,
+    attentionToolCallIds: ReadonlySet<string>,
+): {
+    readonly liveTailRow: ChatTimelinePresentationRow;
+    readonly orderedRows: readonly ChatTimelinePresentationRow[];
+} | null {
+    const previousLiveTailRow = previous.liveTailRow;
+    if (!previousLiveTailRow || previous.orderedRows.at(-1) !== previousLiveTailRow) {
+        return null;
+    }
+
+    if (
+        previousLiveTailRow.kind === "message" &&
+        nextAtomicRow.kind === "message" &&
+        nextAtomicRow.message.kind !== "thinking" &&
+        previousLiveTailRow.id === nextAtomicRow.id
+    ) {
+        return {
+            liveTailRow: nextAtomicRow,
+            orderedRows: replaceLastTimelineRow(
+                previous.orderedRows,
+                nextAtomicRow,
+            ),
+        };
+    }
+
+    if (previousLiveTailRow.kind !== "activity-segment") {
+        return null;
+    }
+
+    let replaced = false;
+    const items = previousLiveTailRow.items.map((item) => {
+        if (
+            item.kind === "thinking" &&
+            nextAtomicRow.kind === "message" &&
+            nextAtomicRow.message.kind === "thinking" &&
+            item.message.id === nextAtomicRow.message.id
+        ) {
+            replaced = true;
+            return { kind: "thinking" as const, message: nextAtomicRow.message };
+        }
+
+        if (
+            item.kind === "tool" &&
+            nextAtomicRow.kind === "tool" &&
+            item.entry.reviewEntry.activity.id ===
+                nextAtomicRow.reviewEntry.activity.id &&
+            item.entry.reviewEntry.activity.sessionId ===
+                nextAtomicRow.reviewEntry.activity.sessionId
+        ) {
+            const policy = getToolActivityPresentationPolicy(
+                nextAtomicRow.reviewEntry,
+                { attentionToolCallIds },
+            );
+            if (policy === "structural") {
+                return item;
+            }
+            replaced = true;
+            return {
+                entry: { policy, reviewEntry: nextAtomicRow.reviewEntry },
+                kind: "tool" as const,
+            };
+        }
+
+        return item;
+    });
+    if (!replaced) {
+        return null;
+    }
+
+    const nextLiveTailRow = reuseToolActivitySegmentRow(
+        new Map([[previousLiveTailRow.id, previousLiveTailRow]]),
+        previousLiveTailRow.id,
+        items,
+    );
+    return {
+        liveTailRow: nextLiveTailRow,
+        orderedRows: replaceLastTimelineRow(
+            previous.orderedRows,
+            nextLiveTailRow,
+        ),
+    };
+}
+
+function replaceLastTimelineRow<T>(
+    rows: readonly T[],
+    nextRow: T,
+): readonly T[] {
+    return [...rows.slice(0, -1), nextRow];
 }

@@ -60,6 +60,23 @@ export interface AiSessionTranscriptModel {
     >;
 }
 
+export type AiSessionTranscriptMutation =
+    | {
+          readonly entryId: string;
+          readonly kind: "append";
+      }
+    | {
+          readonly entryId: string;
+          readonly kind: "patch";
+      }
+    | {
+          readonly entryId: string;
+          readonly kind: "remove";
+      }
+    | {
+          readonly kind: "rebuild";
+      };
+
 interface TranscriptBuildInput {
     readonly activeTurnStartedAt?: string | null;
     readonly messages: readonly AiMessage[];
@@ -79,6 +96,16 @@ interface TranscriptMergeOptions {
 const PLAN_ENTRY_ID = "plan:active";
 const STATUS_ENTRY_ID = "status:active-turn";
 const OPAQUE_ENCRYPTED_MESSAGE_PATTERN = /^gAAAAA[A-Za-z0-9_-]{40,}={0,2}$/;
+const transcriptMutationByModel = new WeakMap<
+    AiSessionTranscriptModel,
+    AiSessionTranscriptMutation
+>();
+
+export function getAiSessionTranscriptMutation(
+    transcript: AiSessionTranscriptModel,
+): AiSessionTranscriptMutation {
+    return transcriptMutationByModel.get(transcript) ?? { kind: "rebuild" };
+}
 
 export function createEmptyAiSessionTranscriptModel(): AiSessionTranscriptModel {
     return buildAiSessionTranscriptModel({
@@ -444,21 +471,24 @@ function buildAiSessionTranscriptModelFromOrderedEntries(
         }
     }
 
-    return {
-        activePlanMessageId,
-        entriesById,
-        lastAssistantMessageId,
-        lastThinkingMessageId,
-        lastTurnStartedMessageId,
-        messageIndexById,
-        messageProjectionIndexByEntryId,
-        messageOrder: orderedEntryIds,
-        messagesById: entriesById,
-        messages,
-        orderedEntryIds,
-        toolActivity,
-        toolActivityProjectionIndexByEntryId,
-    };
+    return markAiSessionTranscriptMutation(
+        {
+            activePlanMessageId,
+            entriesById,
+            lastAssistantMessageId,
+            lastThinkingMessageId,
+            lastTurnStartedMessageId,
+            messageIndexById,
+            messageProjectionIndexByEntryId,
+            messageOrder: orderedEntryIds,
+            messagesById: entriesById,
+            messages,
+            orderedEntryIds,
+            toolActivity,
+            toolActivityProjectionIndexByEntryId,
+        },
+        { kind: "rebuild" },
+    );
 }
 
 function upsertAiSessionTranscriptEntry(
@@ -577,42 +607,45 @@ function appendAiSessionTranscriptEntry(
               }
             : transcript.toolActivityProjectionIndexByEntryId;
 
-    return {
-        ...transcript,
-        activePlanMessageId:
-            entry.kind === "plan"
-                ? isIncompletePlan(entry.plan)
+    return markAiSessionTranscriptMutation(
+        {
+            ...transcript,
+            activePlanMessageId:
+                entry.kind === "plan"
+                    ? isIncompletePlan(entry.plan)
+                        ? entry.id
+                        : transcript.activePlanMessageId
+                    : transcript.activePlanMessageId,
+            entriesById,
+            lastAssistantMessageId:
+                entry.kind === "message" && entry.message.kind === "assistant"
                     ? entry.id
-                    : transcript.activePlanMessageId
-                : transcript.activePlanMessageId,
-        entriesById,
-        lastAssistantMessageId:
-            entry.kind === "message" && entry.message.kind === "assistant"
-                ? entry.id
-                : transcript.lastAssistantMessageId,
-        lastThinkingMessageId:
-            entry.kind === "message" && entry.message.kind === "thinking"
-                ? entry.id
-                : transcript.lastThinkingMessageId,
-        lastTurnStartedMessageId:
-            entry.kind === "status"
-                ? entry.id
-                : transcript.lastTurnStartedMessageId,
-        messageIndexById,
-        messageOrder: orderedEntryIds,
-        messageProjectionIndexByEntryId,
-        messagesById: entriesById,
-        messages:
-            entry.kind === "message"
-                ? [...transcript.messages, entry.message]
-                : transcript.messages,
-        orderedEntryIds,
-        toolActivity:
-            entry.kind === "tool"
-                ? [...transcript.toolActivity, entry.activity]
-                : transcript.toolActivity,
-        toolActivityProjectionIndexByEntryId,
-    };
+                    : transcript.lastAssistantMessageId,
+            lastThinkingMessageId:
+                entry.kind === "message" && entry.message.kind === "thinking"
+                    ? entry.id
+                    : transcript.lastThinkingMessageId,
+            lastTurnStartedMessageId:
+                entry.kind === "status"
+                    ? entry.id
+                    : transcript.lastTurnStartedMessageId,
+            messageIndexById,
+            messageOrder: orderedEntryIds,
+            messageProjectionIndexByEntryId,
+            messagesById: entriesById,
+            messages:
+                entry.kind === "message"
+                    ? [...transcript.messages, entry.message]
+                    : transcript.messages,
+            orderedEntryIds,
+            toolActivity:
+                entry.kind === "tool"
+                    ? [...transcript.toolActivity, entry.activity]
+                    : transcript.toolActivity,
+            toolActivityProjectionIndexByEntryId,
+        },
+        { entryId: entry.id, kind: "append" },
+    );
 }
 
 function updateAiSessionTranscriptEntry(
@@ -668,19 +701,30 @@ function updateAiSessionTranscriptEntry(
         );
     }
 
-    return {
-        ...transcript,
-        activePlanMessageId:
-            nextEntry.kind === "plan"
-                ? isIncompletePlan(nextEntry.plan)
-                    ? nextEntry.id
-                    : null
-                : transcript.activePlanMessageId,
-        entriesById,
-        messages,
-        messagesById: entriesById,
-        toolActivity,
-    };
+    return markAiSessionTranscriptMutation(
+        {
+            ...transcript,
+            activePlanMessageId:
+                nextEntry.kind === "plan"
+                    ? isIncompletePlan(nextEntry.plan)
+                        ? nextEntry.id
+                        : null
+                    : transcript.activePlanMessageId,
+            entriesById,
+            messages,
+            messagesById: entriesById,
+            toolActivity,
+        },
+        { entryId: nextEntry.id, kind: "patch" },
+    );
+}
+
+function markAiSessionTranscriptMutation(
+    transcript: AiSessionTranscriptModel,
+    mutation: AiSessionTranscriptMutation,
+): AiSessionTranscriptModel {
+    transcriptMutationByModel.set(transcript, mutation);
+    return transcript;
 }
 
 function updateMessagePresentation(

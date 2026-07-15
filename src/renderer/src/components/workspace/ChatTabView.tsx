@@ -66,7 +66,7 @@ import { ToolExpansionStoreProvider } from "./chat/toolExpansionStore";
 import { ChatMessageRow } from "./chat/ChatMessageRow";
 import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
 import {
-    reconcileChatTimelineModelFromTranscript,
+    reconcileChatTimelineModelIncrementallyFromTranscript,
     type ChatTimelineModel,
     type ChatTimelineRow,
 } from "./chat/chatTimelineModel";
@@ -329,11 +329,21 @@ export const ChatTabView = memo(function ChatTabView({
     const pendingPersistedNearBottomRef = useRef<boolean | null>(null);
     const hasActivatedViewRef = useRef(false);
     const stableTimelineRef = useRef<{
+        readonly activeTurnStartedAt: string | null;
+        readonly attentionToolCallIds: ReadonlySet<string>;
         readonly model: ChatTimelineModel | null;
         readonly sessionId: string;
+        readonly status: AiSessionSnapshot["status"] | null;
+        readonly trackedFiles: AiSessionSnapshot["trackedFiles"] | null;
+        readonly transcript: AiSessionTranscriptModel | null;
     }>({
+        activeTurnStartedAt: null,
+        attentionToolCallIds: new Set(),
         model: null,
         sessionId: tab.sessionId,
+        status: null,
+        trackedFiles: null,
+        transcript: null,
     });
     const initialComposerParts = readInitialComposerPartsForTab(tab);
     const composerPartsRef = useRef<AIComposerPart[]>(initialComposerParts);
@@ -1018,13 +1028,25 @@ export const ChatTabView = memo(function ChatTabView({
             previousTimelineState.sessionId === tab.sessionId
                 ? previousTimelineState.model
                 : null;
-        return reconcileChatTimelineModelFromTranscript(previousTimelineModel, {
+        const canReconcileIncrementally =
+            previousTimelineState.sessionId === tab.sessionId &&
+            previousTimelineState.activeTurnStartedAt === activeTurnStartedAt &&
+            previousTimelineState.attentionToolCallIds === attentionToolCallIds &&
+            previousTimelineState.status === snapshot.status &&
+            previousTimelineState.trackedFiles === canonicalTrackedFiles;
+        return reconcileChatTimelineModelIncrementallyFromTranscript(
+            previousTimelineModel,
+            canReconcileIncrementally
+                ? previousTimelineState.transcript
+                : null,
+            {
             activeTurnStartedAt,
             attentionToolCallIds,
             status: snapshot.status,
             trackedFiles: canonicalTrackedFiles,
             transcript,
-        });
+            },
+        );
     }, [
         activeTurnStartedAt,
         attentionToolCallIds,
@@ -1038,8 +1060,13 @@ export const ChatTabView = memo(function ChatTabView({
     // double-render cannot leave a stale/discarded model written during memo.
     useEffect(() => {
         stableTimelineRef.current = {
+            activeTurnStartedAt,
+            attentionToolCallIds,
             model: timelineModel,
             sessionId: tab.sessionId,
+            status: snapshot.status,
+            trackedFiles: canonicalTrackedFiles,
+            transcript,
         };
         cacheChatTimeline({
             activeTurnStartedAt,
