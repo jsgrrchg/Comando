@@ -96,6 +96,21 @@ describe("sidebarAgentsHistoryCache", () => {
         expect(readSidebarAgentsHistoryCache("", "")?.sessions).toHaveLength(1);
     });
 
+    it("shares the primary checkout cache between null and canonical ids", () => {
+        const sessions = [createSummary({ worktreeId: null })];
+        writeSidebarAgentsHistoryCache("project-1", null, sessions, 100);
+
+        expect(
+            getSidebarAgentsHistoryCacheKey("project-1", null),
+        ).toBe(
+            getSidebarAgentsHistoryCacheKey("project-1", "project-1:primary"),
+        );
+        expect(
+            readSidebarAgentsHistoryCache("project-1", "project-1:primary")
+                ?.sessions,
+        ).toEqual(sessions);
+    });
+
     it("returns copied arrays so callers cannot mutate cached references", () => {
         const sessions = [createSummary({ sessionId: "session-a" })];
 

@@ -2513,7 +2513,11 @@ export function App() {
                 (tab) =>
                     tab.kind === "chat" &&
                     tab.projectId === activeProjectId &&
-                    (tab.worktreeId ?? null) === worktreeId,
+                    areGitWorktreeIdsEquivalent(
+                        activeProjectId,
+                        tab.worktreeId ?? null,
+                        worktreeId,
+                    ),
             );
 
             const attachContext = (sessionId: string) => {
@@ -2561,7 +2565,11 @@ export function App() {
                 (tab) =>
                     tab.kind === "chat" &&
                     tab.projectId === activeProjectId &&
-                    (tab.worktreeId ?? null) === worktreeId &&
+                    areGitWorktreeIdsEquivalent(
+                        activeProjectId,
+                        tab.worktreeId ?? null,
+                        worktreeId,
+                    ) &&
                     !existingTabIds.has(tab.id),
             );
 

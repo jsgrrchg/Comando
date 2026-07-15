@@ -3749,6 +3749,35 @@ describe("workspace runtime focus helpers", () => {
         ).toBe("chat-worktree");
     });
 
+    it("matches a primary workspace chat when the active scope is canonical", () => {
+        const state: WorkspaceTreeState = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "chat-primary",
+                id: "pane-root",
+                tabIds: ["chat-primary"],
+                type: "pane",
+            },
+            tabsById: {
+                "chat-primary": createWorkspaceChatTab(
+                    "chat-primary",
+                    "session-primary",
+                    "codex",
+                ),
+            },
+        };
+
+        expect(
+            getBestMatchingChatTabId(state, {
+                currentPaneId: "pane-root",
+                lastFocusedChatTabId: "chat-primary",
+                projectId: "project-1",
+                recentFocusedChatTabIds: [],
+                worktreeId: "project-1:primary",
+            }),
+        ).toBe("chat-primary");
+    });
+
     it("tracks chat focus recency without overwriting it when a file tab is selected", async () => {
         useWorkspaceStore.setState((state) => ({
             ...state,

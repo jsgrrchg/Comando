@@ -1123,6 +1123,24 @@ describe("workspace tree helpers", () => {
         expect(Object.keys(closed.tabsById).sort()).toEqual(["tab-3"]);
     });
 
+    it("matches primary file tabs when an operation uses the canonical worktree id", () => {
+        const withReadme = attachTabToPane(
+            createDefaultWorkspaceState(),
+            "pane-root",
+            makeFileTab("tab-primary", "docs/readme.md"),
+        );
+
+        const closed = closeWorkspaceTabsForProjectPath(
+            withReadme,
+            "project-1",
+            "project-1:primary",
+            "docs/readme.md",
+            "file",
+        );
+
+        expect(closed.tabsById).toEqual({});
+    });
+
     it("renames every matching open tab when a directory moves", () => {
         const withReadme = attachTabToPane(
             createDefaultWorkspaceState(),
