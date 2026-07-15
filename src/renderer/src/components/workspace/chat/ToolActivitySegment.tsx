@@ -8,6 +8,7 @@ import {
 } from "react";
 
 import { useSettingsStore } from "@renderer/app/store/settings-store";
+import { useShellStore } from "@renderer/app/store/shell-store";
 import { MeasuredVirtualList } from "@renderer/components/virtual/MeasuredVirtualList";
 
 import type {
@@ -304,6 +305,7 @@ function ExpandedActivitySegmentItems({
     readonly scrollContainerRef?: RefObject<HTMLElement | null>;
     readonly segmentId: string;
 }) {
+    const isResizingPanel = useShellStore((state) => state.isResizingPanel);
     const contentRef = useRef<HTMLDivElement | null>(null);
     const [isVirtualListReady, setIsVirtualListReady] = useState(false);
     const [fallbackRenderLimit, setFallbackRenderLimit] = useState(
@@ -321,6 +323,9 @@ function ExpandedActivitySegmentItems({
 
         const scrollContainer = scrollContainerRef.current;
         const syncScrollMarginTop = () => {
+            if (isResizingPanel) {
+                return;
+            }
             const nextScrollMarginTop =
                 calculateChatTimelineVirtualScrollMarginTop({
                     historyElement: contentRef.current,
@@ -347,28 +352,13 @@ function ExpandedActivitySegmentItems({
             resizeObserver?.observe(layoutRoot);
         }
         resizeObserver?.observe(scrollContainer);
-
-        const virtualRow = contentRef.current?.closest<HTMLElement>(
-            "[data-list-key]",
-        );
-        const mutationObserver =
-            virtualRow && typeof MutationObserver !== "undefined"
-                ? new MutationObserver(syncScrollMarginTop)
-                : null;
-        if (virtualRow) {
-            mutationObserver?.observe(virtualRow, {
-                attributeFilter: ["style"],
-                attributes: true,
-            });
-        }
         window.addEventListener("resize", syncScrollMarginTop);
 
         return () => {
             resizeObserver?.disconnect();
-            mutationObserver?.disconnect();
             window.removeEventListener("resize", syncScrollMarginTop);
         };
-    }, [scrollContainerRef, shouldVirtualize]);
+    }, [isResizingPanel, scrollContainerRef, shouldVirtualize]);
 
     const visibleItems =
         shouldVirtualize && !isVirtualListReady
@@ -397,6 +387,7 @@ function ExpandedActivitySegmentItems({
                         getItemMeasurementKey={getActivitySegmentItemMeasurementKey}
                         items={items}
                         measurementCacheKey={`activity-segment:${segmentId}`}
+                        observeMeasurements={!isResizingPanel}
                         overscan={ACTIVITY_SEGMENT_VIRTUALIZATION_OVERSCAN}
                         preserveScrollAnchorOnItemsChange={false}
                         preserveScrollAnchorOnMeasure={false}

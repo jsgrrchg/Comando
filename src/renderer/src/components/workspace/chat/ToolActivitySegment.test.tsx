@@ -9,6 +9,7 @@ import {
     resetSettingsStoreForTests,
     useSettingsStore,
 } from "@renderer/app/store/settings-store";
+import { useShellStore } from "@renderer/app/store/shell-store";
 
 import type {
     ChatTimelineActivitySegmentRow,
@@ -54,7 +55,9 @@ afterEach(() => {
         }
     }
     resetSettingsStoreForTests();
+    useShellStore.setState({ isResizingPanel: false });
     resetScopedToolUiStateStoresForTests();
+    vi.unstubAllGlobals();
 });
 
 function createActivity(
@@ -479,6 +482,19 @@ describe("ToolActivitySegment", () => {
             container.querySelector<HTMLElement>("[data-child-activity]")
                 ?.dataset.childActivity,
         ).not.toBe("read-1");
+    });
+
+    it("does not observe parent transform mutations while scrolling", () => {
+        const mutationObserver = vi.fn();
+        vi.stubGlobal("MutationObserver", mutationObserver);
+        const entries = Array.from({ length: 200 }, (_, index) =>
+            createEntry(`read-${index + 1}`),
+        );
+        const container = renderInteractive(createSegment(entries));
+
+        act(() => container.querySelector<HTMLButtonElement>("button")?.click());
+
+        expect(mutationObserver).not.toHaveBeenCalled();
     });
 
     it("uses the AI setting as the initial state without overriding manual changes", () => {
