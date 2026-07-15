@@ -345,6 +345,8 @@ function ExpandedActivitySegmentItems({
         >
             <div className="activity-tree min-w-0" role="list">
                 {shouldVirtualize && isVirtualListReady && scrollContainerRef ? (
+                    // The parent chat timeline owns scrolling. This nested list
+                    // only owns the expanded segment's DOM and measurements.
                     <MeasuredVirtualList
                         defaultViewportHeight={720}
                         enabled

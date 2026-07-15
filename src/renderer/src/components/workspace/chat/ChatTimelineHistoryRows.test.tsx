@@ -8,7 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiSessionSnapshot, AiToolActivity } from "@shared/ipc";
 import { useShellStore } from "@renderer/app/store/shell-store";
 
-import type { ChatTimelineRow } from "./chatTimelineModel";
+import {
+    reconcileChatTimelineModel,
+    type ChatTimelineRow,
+} from "./chatTimelineModel";
+import { createChatPerformanceFixtureById } from "./chatPerformanceFixtures";
 import {
     CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
     CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
@@ -380,6 +384,20 @@ describe("ChatTimelineHistoryRows", () => {
             `message:message-${CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1}`,
         );
         expect(markup.match(/padding-bottom:8px/g)).toHaveLength(1);
+    });
+
+    it("keeps the ten-thousand-message fixture DOM-bounded in the main timeline", () => {
+        const fixture = createChatPerformanceFixtureById("chat-long");
+        const timeline = reconcileChatTimelineModel(null, fixture.snapshot);
+        const markup = renderHistoryRows(timeline.historyRows);
+
+        expect(timeline.historyRows).toHaveLength(10_000);
+        expect(measuredVirtualListMock).toHaveBeenCalledWith(
+            expect.objectContaining({ itemCount: 10_000 }),
+        );
+        expect(markup).toContain("message:message-1");
+        expect(markup).toContain("message:message-10000");
+        expect(markup.match(/data-row-id=/g)).toHaveLength(2);
     });
 
     it("keeps virtual layout but stops row measurements while retained and hidden", () => {

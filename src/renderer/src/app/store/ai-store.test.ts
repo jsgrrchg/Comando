@@ -2040,6 +2040,61 @@ describe("ai-store queue", () => {
         ).toBe("Hello");
     });
 
+    it("preserves canonical state for concurrent pane streams", () => {
+        const frameCallbacks = new Map<number, FrameRequestCallback>();
+        let nextFrameId = 0;
+        vi.stubGlobal(
+            "requestAnimationFrame",
+            (callback: FrameRequestCallback) => {
+                nextFrameId += 1;
+                frameCallbacks.set(nextFrameId, callback);
+                return nextFrameId;
+            },
+        );
+        vi.stubGlobal("cancelAnimationFrame", (frameId: number) => {
+            frameCallbacks.delete(frameId);
+        });
+        const backgroundSessionId = "session-background-pane";
+
+        for (const [sessionId, messageId, content] of [
+            [TAB.sessionId, "message-focused", "Focused result"],
+            [backgroundSessionId, "message-background", "Background result"],
+        ] as const) {
+            useAiStore.getState().applySessionEvent(
+                createSessionEvent({
+                    kind: "message-started",
+                    message: createMessage({ content: "", id: messageId }),
+                    messageKind: "assistant",
+                    sessionId,
+                }),
+            );
+            useAiStore.getState().applySessionEvent(
+                createSessionEvent({
+                    content,
+                    delta: content,
+                    kind: "message-delta",
+                    messageId,
+                    messageKind: "assistant",
+                    sessionId,
+                }),
+            );
+        }
+
+        expect(frameCallbacks).toHaveLength(2);
+        for (const callback of frameCallbacks.values()) {
+            callback(0);
+        }
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.messages[0]
+                ?.content,
+        ).toBe("Focused result");
+        expect(
+            useAiStore.getState().sessions[backgroundSessionId]?.snapshot
+                ?.messages[0]?.content,
+        ).toBe("Background result");
+    });
+
     it("flushes structural events without draining another session's frame", () => {
         const frameCallbacks = new Map<number, FrameRequestCallback>();
         let nextFrameId = 0;

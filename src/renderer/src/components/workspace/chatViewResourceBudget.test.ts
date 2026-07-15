@@ -4,8 +4,33 @@ import {
     MAX_ADDITIONAL_HOT_CHAT_TAB_VIEWS,
     resolveHotChatTabIds,
 } from "./chatViewResourceBudget";
+import { createChatPerformanceWorkspaceFixture } from "./chat/chatPerformanceFixtures";
 
 describe("resolveHotChatTabIds", () => {
+    it("cools the retained tabs from the four-pane performance fixture", () => {
+        const fixture = createChatPerformanceWorkspaceFixture();
+        const chatTabIds = new Set(
+            fixture.panes.flatMap((pane) => pane.retainedSessionIds),
+        );
+        const hotTabIds = resolveHotChatTabIds({
+            chatTabIds,
+            focusedPaneId: fixture.panes[0]?.id ?? "",
+            panes: fixture.panes.map((pane) => ({
+                activeTabId: pane.activeSessionId,
+                id: pane.id,
+                visible: true,
+            })),
+            recentActiveTabIds: fixture.panes.flatMap(
+                (pane) => pane.retainedSessionIds,
+            ),
+        });
+
+        expect(hotTabIds.size).toBe(4 + MAX_ADDITIONAL_HOT_CHAT_TAB_VIEWS);
+        expect(
+            fixture.panes.every((pane) => hotTabIds.has(pane.activeSessionId)),
+        ).toBe(true);
+    });
+
     it("shares retained views across panes instead of multiplying the local limit", () => {
         const chatTabIds = new Set(
             Array.from({ length: 16 }, (_, index) => `chat-${index + 1}`),
