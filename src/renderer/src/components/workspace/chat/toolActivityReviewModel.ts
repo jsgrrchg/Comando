@@ -1,5 +1,6 @@
 import type { AiFileDiff, AiToolActivity, AiTrackedFile } from "@shared/ipc";
 import { isAiTrackedFileUnresolved } from "@shared/ai-tracked-file";
+import { normalizePathKey } from "@shared/path-identity";
 
 import {
     areTrackedFilePathReferencesEquivalent,
@@ -31,6 +32,22 @@ export interface ToolActivityReviewEntry {
     readonly trackedFiles: readonly AiTrackedFile[];
 }
 
+export interface ToolActivityReviewIndex {
+    readonly fallbackTrackedFilesBySessionPath: ReadonlyMap<
+        string,
+        readonly AiTrackedFile[]
+    >;
+    readonly revision: string;
+    readonly trackedFilesBySessionId: ReadonlyMap<
+        string,
+        readonly AiTrackedFile[]
+    >;
+    readonly trackedFilesByToolCallId: ReadonlyMap<
+        string,
+        readonly AiTrackedFile[]
+    >;
+}
+
 export interface ChangeReviewItem {
     readonly canKeep: boolean;
     readonly canReject: boolean;
@@ -52,40 +69,169 @@ export interface ChangeReviewSummary {
     readonly partialCount: number;
 }
 
+const reviewIndexByTrackedFiles = new WeakMap<
+    readonly AiTrackedFile[],
+    ToolActivityReviewIndex
+>();
+const reviewEntryCacheByIndex = new WeakMap<
+    ToolActivityReviewIndex,
+    WeakMap<AiToolActivity, ToolActivityReviewEntry>
+>();
+
+export function createToolActivityReviewIndex(
+    trackedFiles: readonly AiTrackedFile[],
+): ToolActivityReviewIndex {
+    const cached = reviewIndexByTrackedFiles.get(trackedFiles);
+    if (cached) {
+        return cached;
+    }
+
+    const trackedFilesBySessionId = new Map<string, AiTrackedFile[]>();
+    const trackedFilesByToolCallId = new Map<string, AiTrackedFile[]>();
+    const fallbackTrackedFilesBySessionPath = new Map<
+        string,
+        AiTrackedFile[]
+    >();
+
+    for (const trackedFile of trackedFiles) {
+        appendToReviewIndex(
+            trackedFilesBySessionId,
+            trackedFile.sessionId,
+            trackedFile,
+        );
+
+        if (trackedFile.toolCallId !== null) {
+            appendToReviewIndex(
+                trackedFilesByToolCallId,
+                getSessionToolCallKey(
+                    trackedFile.sessionId,
+                    trackedFile.toolCallId,
+                ),
+                trackedFile,
+            );
+            continue;
+        }
+
+        for (const path of getTrackedFilePathReferences(trackedFile)) {
+            for (const pathKey of getPathLookupKeys(path)) {
+                appendToReviewIndex(
+                    fallbackTrackedFilesBySessionPath,
+                    getSessionPathKey(trackedFile.sessionId, pathKey),
+                    trackedFile,
+                );
+            }
+        }
+    }
+
+    const index: ToolActivityReviewIndex = {
+        fallbackTrackedFilesBySessionPath,
+        revision: getTrackedFilesRevision(trackedFiles),
+        trackedFilesBySessionId,
+        trackedFilesByToolCallId,
+    };
+    reviewIndexByTrackedFiles.set(trackedFiles, index);
+    return index;
+}
+
 export function deriveToolActivityReviewEntries(
     activities: readonly AiToolActivity[],
     trackedFiles: readonly AiTrackedFile[],
 ): ToolActivityReviewEntry[] {
-    return activities.map((activity) => {
-        const activityTrackedFiles = deriveTrackedFilesForToolActivity(
-            activity,
-            trackedFiles,
-        );
-        const pendingTrackedFiles = activityTrackedFiles.filter(
-            isAiTrackedFileUnresolved,
-        );
+    return deriveToolActivityReviewEntriesFromIndex(
+        activities,
+        createToolActivityReviewIndex(trackedFiles),
+    );
+}
 
-        return {
-            activity,
-            hasPendingTrackedFiles: pendingTrackedFiles.length > 0,
-            pendingTrackedFiles,
-            trackedFiles: activityTrackedFiles,
-        };
+export function deriveToolActivityReviewEntriesFromIndex(
+    activities: readonly AiToolActivity[],
+    index: ToolActivityReviewIndex,
+    previousEntries: readonly ToolActivityReviewEntry[] = [],
+): ToolActivityReviewEntry[] {
+    const previousEntriesByActivityId = new Map(
+        previousEntries.map((entry) => [
+            getSessionToolCallKey(entry.activity.sessionId, entry.activity.id),
+            entry,
+        ]),
+    );
+    const entriesByActivity = getReviewEntryCache(index);
+
+    return activities.map((activity) => {
+        const entry = deriveToolActivityReviewEntry(activity, index);
+        const previousEntry = previousEntriesByActivityId.get(
+            getSessionToolCallKey(activity.sessionId, activity.id),
+        );
+        if (
+            previousEntry?.activity === activity &&
+            areTrackedFileReferencesEqual(
+                previousEntry.trackedFiles,
+                entry.trackedFiles,
+            )
+        ) {
+            entriesByActivity.set(activity, previousEntry);
+            return previousEntry;
+        }
+
+        return entry;
     });
+}
+
+export function deriveToolActivityReviewEntry(
+    activity: AiToolActivity,
+    index: ToolActivityReviewIndex,
+): ToolActivityReviewEntry {
+    const entriesByActivity = getReviewEntryCache(index);
+
+    const cached = entriesByActivity.get(activity);
+    if (cached) {
+        return cached;
+    }
+
+    const trackedFiles = deriveTrackedFilesForToolActivityFromIndex(
+        activity,
+        index,
+    );
+    const pendingTrackedFiles = trackedFiles.filter(isAiTrackedFileUnresolved);
+    const entry = {
+        activity,
+        hasPendingTrackedFiles: pendingTrackedFiles.length > 0,
+        pendingTrackedFiles,
+        trackedFiles,
+    };
+    entriesByActivity.set(activity, entry);
+    return entry;
+}
+
+function getReviewEntryCache(
+    index: ToolActivityReviewIndex,
+): WeakMap<AiToolActivity, ToolActivityReviewEntry> {
+    let entriesByActivity = reviewEntryCacheByIndex.get(index);
+    if (!entriesByActivity) {
+        entriesByActivity = new WeakMap();
+        reviewEntryCacheByIndex.set(index, entriesByActivity);
+    }
+    return entriesByActivity;
 }
 
 export function deriveTrackedFilesForToolActivity(
     activity: AiToolActivity,
     trackedFiles: readonly AiTrackedFile[],
 ): AiTrackedFile[] {
-    const sessionTrackedFiles = trackedFiles.filter(
-        (trackedFile) => trackedFile.sessionId === activity.sessionId,
+    return deriveTrackedFilesForToolActivityFromIndex(
+        activity,
+        createToolActivityReviewIndex(trackedFiles),
     );
-    const explicitMatches = sessionTrackedFiles.filter(
-        (trackedFile) => trackedFile.toolCallId === activity.id,
+}
+
+export function deriveTrackedFilesForToolActivityFromIndex(
+    activity: AiToolActivity,
+    index: ToolActivityReviewIndex,
+): AiTrackedFile[] {
+    const explicitMatches = index.trackedFilesByToolCallId.get(
+        getSessionToolCallKey(activity.sessionId, activity.id),
     );
 
-    if (explicitMatches.length > 0) {
+    if (explicitMatches && explicitMatches.length > 0) {
         return sortTrackedFiles(explicitMatches);
     }
 
@@ -96,10 +242,12 @@ export function deriveTrackedFilesForToolActivity(
 
     const matchedByPath = new Map<string, AiTrackedFile>();
     for (const candidatePath of candidatePaths) {
-        const pathMatches = sessionTrackedFiles.filter(
-            (trackedFile) =>
-                trackedFile.toolCallId === null &&
-                matchesTrackedFilePathReference(trackedFile, candidatePath),
+        const pathMatches = getPathCandidates(
+            index,
+            activity.sessionId,
+            candidatePath,
+        ).filter((trackedFile) =>
+            matchesTrackedFilePathReference(trackedFile, candidatePath),
         );
 
         if (pathMatches.length === 1) {
@@ -201,6 +349,106 @@ function sortTrackedFiles(
     return [...trackedFiles].sort((left, right) =>
         right.updatedAt.localeCompare(left.updatedAt),
     );
+}
+
+function areTrackedFileReferencesEqual(
+    previous: readonly AiTrackedFile[],
+    next: readonly AiTrackedFile[],
+): boolean {
+    return (
+        previous.length === next.length &&
+        previous.every((trackedFile, index) => trackedFile === next[index])
+    );
+}
+
+function appendToReviewIndex(
+    index: Map<string, AiTrackedFile[]>,
+    key: string,
+    trackedFile: AiTrackedFile,
+): void {
+    const entries = index.get(key);
+    if (entries) {
+        entries.push(trackedFile);
+        return;
+    }
+
+    index.set(key, [trackedFile]);
+}
+
+function getSessionToolCallKey(sessionId: string, toolCallId: string): string {
+    return `${sessionId}\u{1f}${toolCallId}`;
+}
+
+function getSessionPathKey(sessionId: string, pathKey: string): string {
+    return `${sessionId}\u{1f}${pathKey}`;
+}
+
+function getTrackedFilePathReferences(
+    trackedFile: AiTrackedFile,
+): readonly string[] {
+    return trackedFile.previousPath
+        ? [trackedFile.path, trackedFile.previousPath]
+        : [trackedFile.path];
+}
+
+function getPathLookupKeys(path: string): readonly string[] {
+    const normalizedPath = path.trim();
+    if (!normalizedPath) {
+        return [];
+    }
+
+    const normalizedPosixPath = normalizePathKey(normalizedPath, {
+        platform: "posix",
+    });
+    const normalizedWindowsPath = normalizePathKey(normalizedPath, {
+        platform: "win32",
+    });
+    const baseName = normalizedWindowsPath
+        .split("/")
+        .at(-1)
+        ?.toLowerCase();
+
+    return [
+        `path:${normalizedPosixPath}`,
+        `path:${normalizedWindowsPath}`,
+        ...(baseName ? [`name:${baseName}`] : []),
+    ];
+}
+
+function getPathCandidates(
+    index: ToolActivityReviewIndex,
+    sessionId: string,
+    candidatePath: string,
+): AiTrackedFile[] {
+    const candidatesByIdentityKey = new Map<string, AiTrackedFile>();
+    for (const pathKey of getPathLookupKeys(candidatePath)) {
+        const candidates = index.fallbackTrackedFilesBySessionPath.get(
+            getSessionPathKey(sessionId, pathKey),
+        );
+        for (const trackedFile of candidates ?? []) {
+            candidatesByIdentityKey.set(trackedFile.identityKey, trackedFile);
+        }
+    }
+
+    return [...candidatesByIdentityKey.values()];
+}
+
+function getTrackedFilesRevision(
+    trackedFiles: readonly AiTrackedFile[],
+): string {
+    return trackedFiles
+        .map((trackedFile) =>
+            [
+                trackedFile.identityKey,
+                trackedFile.sessionId,
+                trackedFile.toolCallId ?? "",
+                trackedFile.path,
+                trackedFile.previousPath ?? "",
+                trackedFile.reviewState,
+                trackedFile.updatedAt,
+            ].join("\u{1e}"),
+        )
+        .join("\u{1f}");
 }
 
 function createChangeReviewItem(

@@ -11,7 +11,8 @@ import {
 import { areTrackedFilePathReferencesEquivalent } from "@renderer/app/ai/trackedFilePath";
 
 import {
-    deriveToolActivityReviewEntries,
+    createToolActivityReviewIndex,
+    deriveToolActivityReviewEntriesFromIndex,
     type ToolActivityReviewEntry,
 } from "./toolActivityReviewModel";
 import { getToolActivityDescriptor } from "./toolActivityDescriptor";
@@ -873,6 +874,18 @@ function getStreamingLiveTailRow(
     return tailCandidate;
 }
 
+function getPreviousToolReviewEntries(
+    previous: ChatTimelineModel | null,
+): readonly ToolActivityReviewEntry[] {
+    if (!previous) {
+        return [];
+    }
+
+    return [...previous.atomicRowById.values()].flatMap((row) =>
+        row.kind === "tool" ? [row.reviewEntry] : [],
+    );
+}
+
 export function reconcileChatTimelineModel(
     previous: ChatTimelineModel | null,
     snapshot: Pick<
@@ -883,9 +896,11 @@ export function reconcileChatTimelineModel(
         readonly attentionToolCallIds?: ReadonlySet<string>;
     },
 ): ChatTimelineModel {
-    const toolEntries = deriveToolActivityReviewEntries(
+    const reviewIndex = createToolActivityReviewIndex(snapshot.trackedFiles);
+    const toolEntries = deriveToolActivityReviewEntriesFromIndex(
         prepareTimelineToolActivity(snapshot),
-        snapshot.trackedFiles,
+        reviewIndex,
+        getPreviousToolReviewEntries(previous),
     );
     const atomicRowById = createRowById(
         previous,
