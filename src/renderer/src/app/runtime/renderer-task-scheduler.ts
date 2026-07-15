@@ -43,11 +43,15 @@ export class RendererTaskScheduler {
     private readonly tasks: ScheduledTask<unknown>[] = [];
     private readonly tasksByKey = new Map<string, ScheduledTask<unknown>>();
     private scheduled = false;
+    private suspended = false;
 
     schedule<T>(
         options: RendererTaskOptions,
         run: (context: RendererTaskContext) => Promise<T> | T,
     ): Promise<T | undefined> {
+        if (this.suspended) {
+            return Promise.resolve(undefined);
+        }
         this.cancel(options.key);
 
         const controller = new AbortController();
@@ -94,6 +98,15 @@ export class RendererTaskScheduler {
         }
         this.tasks.length = 0;
         this.tasksByKey.clear();
+    }
+
+    suspend(): void {
+        this.suspended = true;
+        this.dispose();
+    }
+
+    resume(): void {
+        this.suspended = false;
     }
 
     private requestFlush(): void {

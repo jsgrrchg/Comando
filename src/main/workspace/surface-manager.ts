@@ -10,6 +10,7 @@ import { IPC_EVENTS } from "@shared/ipc";
 import type {
     WindowContextSnapshot,
     WorkspaceNavigationSnapshot,
+    WorkspaceSurfaceLifecycleState,
 } from "@shared/ipc";
 
 import {
@@ -26,6 +27,8 @@ interface WorkspaceSurfaceRecord {
     readonly hostWindowId: string;
     readonly id: string;
     isVisible: boolean;
+    lifecycleGeneration: number;
+    lifecycleState: WorkspaceSurfaceLifecycleState;
     snapshot: WorkspaceNavigationSnapshot;
     readonly view: WebContentsView;
     readonly webContents: WebContents;
@@ -424,6 +427,8 @@ class WorkspaceSurfaceManager {
             hostWindowId: host.hostWindowId,
             id,
             isVisible: false,
+            lifecycleGeneration: 0,
+            lifecycleState: "suspended",
             snapshot: toSurfaceSnapshot(hostSnapshot, contextKey),
             view,
             webContents,
@@ -459,6 +464,11 @@ class WorkspaceSurfaceManager {
             if (!webContents.isDestroyed()) {
                 this.#lifecycleHandlers.onSurfaceCreated?.(webContents, id);
                 this.#applyVisibility(host);
+                this.#setSurfaceLifecycle(
+                    surface,
+                    surface.isVisible ? "visible" : "suspended",
+                    { force: true },
+                );
             }
         });
         webContents.once("destroyed", () => {
@@ -475,6 +485,7 @@ class WorkspaceSurfaceManager {
         }
 
         host.surfaceIdsByContextKey.delete(surface.contextKey);
+        this.#setSurfaceLifecycle(surface, "disposing");
         this.#surfacesById.delete(surface.id);
         this.#surfaceIdsByWebContentsId.delete(surface.webContentsId);
         windowRegistry.unregisterEmbeddedRenderer(surface.webContents);
@@ -510,6 +521,7 @@ class WorkspaceSurfaceManager {
                 surface.view.setVisible(false);
                 surface.isVisible = false;
             }
+            this.#setSurfaceLifecycle(surface, "suspended");
         }
 
         const activeSurface = activeSurfaceId
@@ -528,6 +540,7 @@ class WorkspaceSurfaceManager {
             activeSurface.view.setVisible(true);
             activeSurface.isVisible = true;
         }
+        this.#setSurfaceLifecycle(activeSurface, "visible");
         if (options.focusActive) {
             activeSurface.webContents.focus();
         }
@@ -553,6 +566,25 @@ class WorkspaceSurfaceManager {
             host.pendingLayoutTimer = null;
             this.#applyVisibility(host);
         }, 16);
+    }
+
+    #setSurfaceLifecycle(
+        surface: WorkspaceSurfaceRecord,
+        state: WorkspaceSurfaceLifecycleState,
+        options: { readonly force?: boolean } = {},
+    ): void {
+        if (
+            (!options.force && surface.lifecycleState === state) ||
+            surface.webContents.isDestroyed()
+        ) {
+            return;
+        }
+        surface.lifecycleState = state;
+        surface.lifecycleGeneration += 1;
+        surface.webContents.send(IPC_EVENTS.workspaceSurfaceLifecycleChanged, {
+            generation: surface.lifecycleGeneration,
+            state,
+        });
     }
 
     #mergeKnownSurfaceSnapshots(

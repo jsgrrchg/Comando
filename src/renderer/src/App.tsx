@@ -86,6 +86,8 @@ import { useGitHubStore } from "./app/store/github-store";
 import { useProjectsStore } from "./app/store/projects-store";
 import { useSettingsStore } from "./app/store/settings-store";
 import { useShellStore } from "./app/store/shell-store";
+import { getRendererTaskScheduler } from "./app/runtime/renderer-task-scheduler";
+import { useWorkspaceSurfaceLifecycleStore } from "./app/runtime/workspace-surface-lifecycle";
 import {
     flushWorkspacePersistenceNow,
     getBestMatchingChatTabId,
@@ -256,6 +258,7 @@ export function App() {
     useSystemTheme();
 
     const bootstrap = useAppStore((state) => state.bootstrap);
+    const surfaceLifecycle = useWorkspaceSurfaceLifecycleStore();
     const bootstrapError = useAppStore((state) => state.error);
     const hydrateBootstrap = useAppStore((state) => state.hydrate);
 
@@ -815,6 +818,37 @@ export function App() {
             useWorkspaceStore.getState().getNavigationSnapshot(),
         );
     }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceLifecycleChanged((event) => {
+            useWorkspaceSurfaceLifecycleStore.getState().apply(event);
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        const scheduler = getRendererTaskScheduler();
+        if (surfaceLifecycle.state !== "visible") {
+            scheduler.suspend();
+            return;
+        }
+        scheduler.resume();
+        if (!surfaceLifecycle.needsReconcile) {
+            return;
+        }
+        const generation = surfaceLifecycle.generation;
+        const frame = requestAnimationFrame(() => {
+            useWorkspaceSurfaceLifecycleStore
+                .getState()
+                .markReconciled(generation);
+        });
+        return () => cancelAnimationFrame(frame);
+    }, [surfaceLifecycle]);
 
     useEffect(() => {
         if (!isWorkspaceSurfaceRenderer) {
