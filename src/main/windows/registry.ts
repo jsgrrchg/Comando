@@ -12,6 +12,11 @@ class WindowRegistry {
         number,
         RegisteredWindowEntry
     >();
+    readonly #embeddedContextsByWebContentsId = new Map<
+        number,
+        WindowContextSnapshot
+    >();
+    readonly #embeddedWebContentsById = new Map<number, WebContents>();
     #lastFocusedMainWindowId: string | null = null;
 
     register(window: BrowserWindow, context: WindowContextSnapshot): void {
@@ -43,8 +48,60 @@ class WindowRegistry {
     getContextByWebContents(
         webContents: WebContents,
     ): WindowContextSnapshot | null {
+        const embeddedContext = this.#embeddedContextsByWebContentsId.get(
+            webContents.id,
+        );
+        if (embeddedContext) {
+            return embeddedContext;
+        }
         const window = BrowserWindow.fromWebContents(webContents);
         return window ? this.getContextByBrowserWindow(window) : null;
+    }
+
+    registerEmbeddedRenderer(
+        webContents: WebContents,
+        context: WindowContextSnapshot,
+    ): void {
+        this.#embeddedContextsByWebContentsId.set(webContents.id, context);
+        this.#embeddedWebContentsById.set(webContents.id, webContents);
+    }
+
+    unregisterEmbeddedRenderer(webContents: WebContents): void {
+        this.#embeddedContextsByWebContentsId.delete(webContents.id);
+        this.#embeddedWebContentsById.delete(webContents.id);
+    }
+
+    getWebContentsByOwnerId(ownerId: string): WebContents | null {
+        for (const webContents of this.#embeddedWebContentsById.values()) {
+            const context = this.#embeddedContextsByWebContentsId.get(
+                webContents.id,
+            );
+            if (context?.windowId === ownerId && !webContents.isDestroyed()) {
+                return webContents;
+            }
+        }
+
+        const window = this.getWindowByStableId(ownerId);
+        return window && !window.webContents.isDestroyed()
+            ? window.webContents
+            : null;
+    }
+
+    forEachLiveWebContents(
+        callback: (webContents: WebContents) => void,
+    ): void {
+        const seen = new Set<number>();
+        for (const entry of this.#entriesByBrowserWindowId.values()) {
+            if (!entry.window.webContents.isDestroyed()) {
+                seen.add(entry.window.webContents.id);
+                callback(entry.window.webContents);
+            }
+        }
+        for (const webContents of this.#embeddedWebContentsById.values()) {
+            if (!webContents.isDestroyed() && !seen.has(webContents.id)) {
+                callback(webContents);
+            }
+        }
     }
 
     getContextByBrowserWindow(

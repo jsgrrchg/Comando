@@ -175,7 +175,6 @@ import {
 } from "electron";
 
 import {
-    forEachLiveWindow,
     MAC_MAIN_TRAFFIC_LIGHT_POSITION,
     refreshWindowsTitleBarOverlays,
 } from "@main/window";
@@ -219,6 +218,7 @@ import {
 } from "@main/privacy-access";
 import type { WorkspaceGateway } from "@main/workspace/service";
 import { windowRegistry } from "@main/windows/registry";
+import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
 
 interface RegisterIpcHandlersOptions {
     readonly aiService: AiService;
@@ -345,6 +345,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.searchProjectEntries);
     ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSnapshot);
+    ipcMain.removeHandler(IPC_CHANNELS.initializeWorkspaceSurfaces);
+    ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
+    ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
+    ipcMain.removeHandler(IPC_CHANNELS.toggleWorkspaceSurfaceSidebar);
     ipcMain.removeHandler(IPC_CHANNELS.notifyFileBuffer);
     ipcMain.removeHandler(IPC_CHANNELS.getChatSessionState);
     ipcMain.removeHandler(IPC_CHANNELS.createTerminalSession);
@@ -422,7 +426,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             if (!context) {
                 return null;
             }
-            return options.persistenceService.loadSnapshot(context.windowId);
+            const snapshot = options.persistenceService.loadSnapshot(
+                getPersistenceOwnerId(context),
+            );
+            if (!workspaceSurfaceManager.isSurface(event.sender)) {
+                return snapshot;
+            }
+            return {
+                ...snapshot,
+                activeProjectId: context.projectId,
+                activeWorktreeId: context.worktreeId ?? null,
+                windowContext: context,
+            };
         },
     );
     ipcMain.handle(
@@ -558,9 +573,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             if (effects.broadcastSettingsUpdated) {
                 const persisted = options.settingsService.loadSnapshot();
                 if (effects.applyAppZoom) {
-                    applyAppZoomToAllWindows(
-                        persisted.appearance?.zoomFactor ?? 1,
-                    );
+                    const zoomFactor = persisted.appearance?.zoomFactor ?? 1;
+                    applyAppZoomToAllWindows(zoomFactor);
+                    workspaceSurfaceManager.setZoomFactor(zoomFactor);
                 }
                 if (effects.applyWindowTransparency) {
                     applyWindowTransparencyToAllWindows(
@@ -600,12 +615,15 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.saveActiveProjectId,
         (event, projectId: string | null) => {
             const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
             options.persistenceService.saveActiveProjectId(
-                context.windowId,
+                getPersistenceOwnerId(context),
                 projectId,
             );
             windowRegistry.updateMainWindowProjectId(
-                context.windowId,
+                getPersistenceOwnerId(context),
                 projectId,
             );
             const ownerWindow = BrowserWindow.fromWebContents(event.sender);
@@ -620,16 +638,19 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.saveActiveWorktreeId,
         (event, worktreeId: string | null) => {
             const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
             const activeProjectId = context.projectId ?? null;
             const nextWorktreeId = activeProjectId ? worktreeId : null;
 
             options.persistenceService.saveActiveProjectId(
-                context.windowId,
+                getPersistenceOwnerId(context),
                 activeProjectId,
                 nextWorktreeId,
             );
             windowRegistry.updateMainWindowProjectId(
-                context.windowId,
+                getPersistenceOwnerId(context),
                 activeProjectId,
                 nextWorktreeId,
             );
@@ -639,8 +660,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.saveShellState,
         (event, shellState: PersistedShellState | null) => {
             const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
             options.persistenceService.saveShellState(
-                context.windowId,
+                getPersistenceOwnerId(context),
                 shellState,
             );
         },
@@ -1406,14 +1430,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
 
         refreshWindowsTitleBarOverlays();
 
-        forEachLiveWindow((window) => {
-            window.webContents.send(IPC_EVENTS.themeUpdated, theme);
+        windowRegistry.forEachLiveWebContents((webContents) => {
+            webContents.send(IPC_EVENTS.themeUpdated, theme);
         });
     });
     const broadcastProjectsUpdated = () => {
         const projects = options.projectService.listProjects();
-        forEachLiveWindow((window) => {
-            window.webContents.send(IPC_EVENTS.projectsUpdated, projects);
+        windowRegistry.forEachLiveWebContents((webContents) => {
+            webContents.send(IPC_EVENTS.projectsUpdated, projects);
         });
         return projects;
     };
@@ -1517,8 +1541,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const result = await options.projectService.clearProjectAppData(
                 input.projectId,
             );
-            forEachLiveWindow((window) => {
-                window.webContents.send(
+            windowRegistry.forEachLiveWebContents((webContents) => {
+                webContents.send(
                     IPC_EVENTS.projectAppDataCleared,
                     input.projectId,
                 );
@@ -1717,6 +1741,12 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(IPC_CHANNELS.getWorkspaceSnapshot, (event) => {
         const context = requireWindowContext(event.sender, "main");
+        const surfaceSnapshot = workspaceSurfaceManager.getSurfaceSnapshot(
+            event.sender,
+        );
+        if (surfaceSnapshot) {
+            return surfaceSnapshot;
+        }
         return Promise.resolve(
             options.workspaceService.loadSnapshot(context.workspaceId!),
         )
@@ -1729,6 +1759,26 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const normalizedSnapshot = normalizeWorkspaceNavigationSnapshot(
                 snapshot,
             ).snapshot;
+            const surfaceUpdate = workspaceSurfaceManager.mergeSurfaceSnapshot(
+                event.sender,
+                normalizedSnapshot,
+            );
+            if (surfaceUpdate) {
+                await options.workspaceService.saveSnapshot(
+                    context.workspaceId!,
+                    surfaceUpdate.snapshot,
+                );
+                workspaceSurfaceManager
+                    .getHostWebContents(surfaceUpdate.hostWindowId)
+                    ?.send(
+                        IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
+                        surfaceUpdate.snapshot,
+                    );
+                return;
+            }
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
             await options.workspaceService.saveSnapshot(
                 context.workspaceId!,
                 normalizedSnapshot,
@@ -1752,6 +1802,75 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             }
         },
     );
+    ipcMain.handle(
+        IPC_CHANNELS.initializeWorkspaceSurfaces,
+        async (event, snapshot: WorkspaceNavigationSnapshot) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
+            const hostWindow = BrowserWindow.fromWebContents(event.sender);
+            if (!hostWindow) {
+                throw new Error("The workspace host window is unavailable.");
+            }
+            const normalizedSnapshot = normalizeWorkspaceNavigationSnapshot(
+                snapshot,
+            ).snapshot;
+            const mergedSnapshot = workspaceSurfaceManager.syncHost(
+                hostWindow,
+                context,
+                normalizedSnapshot,
+            );
+            await options.workspaceService.saveSnapshot(
+                context.workspaceId!,
+                mergedSnapshot,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.activateWorkspaceSurface,
+        (event, contextKey: string) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
+            if (!workspaceSurfaceManager.activate(context.windowId, contextKey)) {
+                return;
+            }
+            const activeContext = workspaceSurfaceManager.getActiveContext(
+                context.windowId,
+            );
+            windowRegistry.updateMainWindowProjectId(
+                context.windowId,
+                activeContext?.projectId ?? null,
+                activeContext?.worktreeId ?? null,
+            );
+            const hostWindow = BrowserWindow.fromWebContents(event.sender);
+            if (hostWindow) {
+                hostWindow.setTitle(
+                    buildMainWindowTitle(
+                        options.projectService,
+                        activeContext?.projectId ?? null,
+                    ),
+                );
+            }
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.setWorkspaceSurfaceContentInset,
+        (event, height: number) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (!workspaceSurfaceManager.isSurface(event.sender)) {
+                workspaceSurfaceManager.setContentInset(context.windowId, height);
+            }
+        },
+    );
+    ipcMain.handle(IPC_CHANNELS.toggleWorkspaceSurfaceSidebar, (event) => {
+        const context = requireWindowContext(event.sender, "main");
+        if (!workspaceSurfaceManager.isSurface(event.sender)) {
+            workspaceSurfaceManager.toggleSidebar(context.windowId);
+        }
+    });
     ipcMain.handle(
         IPC_CHANNELS.notifyFileBuffer,
         (_event, input: FileBufferNotificationInput) => {
@@ -2067,14 +2186,14 @@ async function resolveGeneratedImageIpcPath(imagePath: string): Promise<string> 
 function broadcastProjectSettingsUpdated(
     payload: ProjectSettingsUpdatedEvent,
 ): void {
-    forEachLiveWindow((window) => {
-        window.webContents.send(IPC_EVENTS.projectSettingsUpdated, payload);
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(IPC_EVENTS.projectSettingsUpdated, payload);
     });
 }
 
 function broadcastGitHubAuthUpdated(payload: GitHubAuthStatus): void {
-    forEachLiveWindow((window) => {
-        window.webContents.send(IPC_EVENTS.githubAuthUpdated, payload);
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(IPC_EVENTS.githubAuthUpdated, payload);
     });
 }
 
@@ -2090,6 +2209,10 @@ function requireWindowContext(
     }
 
     return context;
+}
+
+function getPersistenceOwnerId(context: WindowContextSnapshot): string {
+    return context.hostWindowId ?? context.windowId;
 }
 
 function buildMainWindowTitle(
@@ -2761,17 +2884,17 @@ function notifyGitSnapshot(
         worktreeId: snapshot.currentWorktreeId,
     };
 
-    forEachLiveWindow((window) => {
-        window.webContents.send(
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(
             IPC_EVENTS.gitRepositoryInvalidated,
             invalidation,
         );
-        window.webContents.send(
+        webContents.send(
             IPC_EVENTS.gitRepositorySnapshotUpdated,
             snapshot,
         );
         if (reason === "worktree") {
-            window.webContents.send(
+            webContents.send(
                 IPC_EVENTS.gitWorktreesUpdated,
                 invalidation,
             );

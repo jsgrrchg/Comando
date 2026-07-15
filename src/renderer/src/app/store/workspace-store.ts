@@ -100,6 +100,11 @@ export type WorkspaceQuickCreateAction =
     | "file"
     | "terminal";
 
+const isWorkspaceSurfaceHost =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("window") ===
+        "workspace-host";
+
 export type WorkspaceOpenTarget =
     | {
           readonly insertIndex?: number;
@@ -128,6 +133,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
     getContextNavigationSnapshot: (
         contextKey: string,
     ) => WorkspaceNavigationSnapshot | null;
+    getNavigationSnapshot: () => WorkspaceNavigationSnapshot;
+    applySurfaceNavigationSnapshot: (
+        snapshot: WorkspaceNavigationSnapshot,
+    ) => void;
     readonly openContextKeys: readonly string[];
     readonly scopeEpoch: number;
     activateContext: (contextKey: string) => Promise<void>;
@@ -425,6 +434,45 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         };
     },
 
+    getNavigationSnapshot: () => workspaceStoreToNavigationSnapshot(get()),
+
+    applySurfaceNavigationSnapshot: (snapshot) => {
+        const navigation = normalizeWorkspaceNavigationSnapshot(snapshot).snapshot;
+        const contextsByKey = Object.fromEntries(
+            navigation.contexts.map((context) => [
+                context.key,
+                {
+                    ...context,
+                    workspace: workspaceStateFromSnapshot(
+                        context.workspace,
+                        createHydratedRuntimeTabs(context.workspace),
+                    ),
+                } satisfies RuntimeWorkspaceContext,
+            ]),
+        );
+        const openContextKeys = navigation.openContextKeys.filter((key) =>
+            Boolean(contextsByKey[key]),
+        );
+        const activeContextKey =
+            navigation.activeContextKey &&
+            openContextKeys.includes(navigation.activeContextKey)
+                ? navigation.activeContextKey
+                : (openContextKeys[0] ?? null);
+        const activeContext = activeContextKey
+            ? contextsByKey[activeContextKey]
+            : null;
+        const workspace = activeContext?.workspace ?? createDefaultWorkspaceState();
+
+        set((state) => ({
+            ...workspace,
+            activeContextKey,
+            contextsByKey,
+            deferredPaneIds: getDeferredWorkspacePaneIds(workspace),
+            openContextKeys,
+            scopeEpoch: state.scopeEpoch + 1,
+        }));
+    },
+
     activateContext: async (contextKey) => {
         const currentState = get();
         if (currentState.activeContextKey === contextKey) {
@@ -478,12 +526,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             scopeEpoch,
         });
 
-        void activateWorkspaceRuntimePanes(
-            targetWorkspace,
-            get,
-            set,
-            { contextKey, scopeEpoch },
-        );
+        if (!isWorkspaceSurfaceHost) {
+            void activateWorkspaceRuntimePanes(
+                targetWorkspace,
+                get,
+                set,
+                { contextKey, scopeEpoch },
+            );
+        }
         await persistWorkspaceState(get);
     },
 
@@ -556,7 +606,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             scopeEpoch: state.scopeEpoch + 1,
         });
 
-        if (nextContextKey) {
+        if (nextContextKey && !isWorkspaceSurfaceHost) {
             void activateWorkspaceRuntimePanes(
                 nextWorkspace,
                 get,
@@ -1340,7 +1390,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 ),
                 scopeEpoch,
             });
-            if (activeContextKey) {
+            if (activeContextKey && !isWorkspaceSurfaceHost) {
                 void activateWorkspaceRuntimePanes(
                     hydratedState,
                     get,
@@ -3222,7 +3272,7 @@ async function removeWorkspaceContexts(
         scopeEpoch,
     });
 
-    if (activeContextKey) {
+    if (activeContextKey && !isWorkspaceSurfaceHost) {
         void activateWorkspaceRuntimePanes(workspace, get, set, {
             contextKey: activeContextKey,
             scopeEpoch,

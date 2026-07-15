@@ -859,6 +859,29 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceSurfaceToggleSidebar: (listener) => {
+        const handleEvent = () => listener();
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceToggleSidebar, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceToggleSidebar,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceSnapshotUpdated: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            snapshot: WorkspaceNavigationSnapshot,
+        ) => listener(snapshot);
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceSnapshotUpdated, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
+                handleEvent,
+            );
+        };
+    },
     onTerminalData: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -940,6 +963,14 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.saveActiveWorktreeId, worktreeId),
     saveShellState: (snapshot) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveShellState, snapshot),
+    initializeWorkspaceSurfaces: (snapshot: WorkspaceNavigationSnapshot) =>
+        ipcRenderer.invoke(IPC_CHANNELS.initializeWorkspaceSurfaces, snapshot),
+    activateWorkspaceSurface: (contextKey: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceSurface, contextKey),
+    setWorkspaceSurfaceContentInset: (height: number) =>
+        ipcRenderer.invoke(IPC_CHANNELS.setWorkspaceSurfaceContentInset, height),
+    toggleWorkspaceSurfaceSidebar: () =>
+        ipcRenderer.invoke(IPC_CHANNELS.toggleWorkspaceSurfaceSidebar),
     setTrafficLightVisibility: (visible: boolean) =>
         ipcRenderer.invoke(IPC_CHANNELS.setTrafficLightVisibility, visible),
     setNativeAppearance: (mode: ThemeMode) =>

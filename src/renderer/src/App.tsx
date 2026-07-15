@@ -2,6 +2,7 @@ import {
     useCallback,
     useEffect,
     useEffectEvent,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -165,6 +166,12 @@ type SidebarView = "files" | "git" | "agents" | "issues" | "pull_requests";
 const ROOT_NODE_KEY = "__root__";
 const PROJECT_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
 const WORKSPACE_RECENT_PROJECTS_LIMIT = 6;
+const rendererWindowMode = new URLSearchParams(window.location.search).get(
+    "window",
+);
+const isWorkspaceHostRenderer = rendererWindowMode === "workspace-host";
+const isWorkspaceSurfaceRenderer =
+    rendererWindowMode === "workspace-surface";
 
 function getWorktreeDisplayLabel(worktree: GitWorktreeSummary): string {
     if (worktree.branchName) {
@@ -618,6 +625,7 @@ export function App() {
     const sidebarScrollPositionsRef = useRef<SidebarScrollPositionStore>(
         new Map(),
     );
+    const workspaceHostTitleBarRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
         let isDisposed = false;
@@ -692,6 +700,59 @@ export function App() {
         refreshProjectTree,
         workspaceHydrate,
     ]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer || !workspaceNavigationHydrated) {
+            return;
+        }
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+        void comandoApi.initializeWorkspaceSurfaces(
+            useWorkspaceStore.getState().getNavigationSnapshot(),
+        );
+    }, [
+        openWorkspaceContextKeys,
+        workspaceActiveContextKey,
+        workspaceContextsByKey,
+        workspaceNavigationHydrated,
+    ]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+        return comandoApi.onWorkspaceSurfaceSnapshotUpdated((snapshot) => {
+            useWorkspaceStore
+                .getState()
+                .applySurfaceNavigationSnapshot(snapshot);
+        });
+    }, []);
+
+    useLayoutEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        const element = workspaceHostTitleBarRef.current;
+        const comandoApi = getComandoApi();
+        if (!element || !comandoApi) {
+            return;
+        }
+        const updateInset = () => {
+            void comandoApi.setWorkspaceSurfaceContentInset(
+                element.getBoundingClientRect().height,
+            );
+        };
+        updateInset();
+        const observer = new ResizeObserver(updateInset);
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, []);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -1318,6 +1379,20 @@ export function App() {
         cancelSidebarOverlayClose();
         setSidebarOverlayVisible(true);
     }, [cancelSidebarOverlayClose]);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+        return comandoApi.onWorkspaceSurfaceToggleSidebar(() => {
+            toggleLeftCollapsed();
+            hideSidebarOverlayImmediately();
+        });
+    }, [hideSidebarOverlayImmediately, toggleLeftCollapsed]);
 
     const finishSidebarOriginDrag = useCallback(() => {
         if (!sidebarDragActiveRef.current) {
@@ -4533,6 +4608,71 @@ export function App() {
         })();
     };
 
+    const activateWorkspaceContext = (contextKey: string) => {
+        if (isWorkspaceHostRenderer) {
+            void getComandoApi()?.activateWorkspaceSurface(contextKey);
+        }
+        void useWorkspaceStore.getState().activateContext(contextKey);
+    };
+
+    const desktopTopBar = (
+        <DesktopTopBar
+            activeContextKey={workspaceActiveContextKey}
+            contexts={projectContextTabs}
+            leftSidebarCollapsed={leftCollapsed}
+            menuProjects={projectContextMenuProjects}
+            onActivateContext={activateWorkspaceContext}
+            onCloneRepository={async (repositoryUrl) => {
+                const projectIds = await cloneRepository(repositoryUrl);
+                for (const projectId of projectIds) {
+                    await useWorkspaceStore.getState().openContext(projectId);
+                }
+                return projectIds.length > 0;
+            }}
+            onCloseContext={(contextKey) => {
+                void requestCloseWorkspaceContext(contextKey);
+            }}
+            onMoveContextToNewWindow={(contextKey) => {
+                void requestMoveWorkspaceContextToNewWindow(contextKey);
+            }}
+            onOpenProject={handleOpenProject}
+            onOpenProjects={handleOpenProjects}
+            onOpenSettings={(initialCategory) =>
+                openSettingsWindow(initialCategory)
+            }
+            onOpenWorktree={(projectId, worktreeId) => {
+                void useWorkspaceStore
+                    .getState()
+                    .openContext(projectId, worktreeId);
+            }}
+            onReorderContext={(contextKey, targetIndex) => {
+                void useWorkspaceStore
+                    .getState()
+                    .reorderContext(contextKey, targetIndex);
+            }}
+            onToggleLeftSidebar={() => {
+                toggleLeftCollapsed();
+                hideSidebarOverlayImmediately();
+                if (isWorkspaceHostRenderer) {
+                    void getComandoApi()?.toggleWorkspaceSurfaceSidebar();
+                }
+            }}
+            platform={bootstrap?.platform ?? null}
+            settingsLabel={getSettingsUpdateMenuLabel(appUpdateState)}
+        />
+    );
+
+    if (isWorkspaceHostRenderer) {
+        return (
+            <div
+                className="min-h-screen text-text-primary"
+                data-platform={bootstrap?.platform ?? undefined}
+            >
+                <div ref={workspaceHostTitleBarRef}>{desktopTopBar}</div>
+            </div>
+        );
+    }
+
     return (
         <div
             className="min-h-screen text-text-primary"
@@ -4540,58 +4680,7 @@ export function App() {
         >
             <div className="relative h-screen">
                 <div className="flex h-full flex-col overflow-hidden">
-                    <DesktopTopBar
-                        activeContextKey={workspaceActiveContextKey}
-                        contexts={projectContextTabs}
-                        leftSidebarCollapsed={leftCollapsed}
-                        menuProjects={projectContextMenuProjects}
-                        onActivateContext={(contextKey) => {
-                            void useWorkspaceStore
-                                .getState()
-                                .activateContext(contextKey);
-                        }}
-                        onCloneRepository={async (repositoryUrl) => {
-                            const projectIds =
-                                await cloneRepository(repositoryUrl);
-                            for (const projectId of projectIds) {
-                                await useWorkspaceStore
-                                    .getState()
-                                    .openContext(projectId);
-                            }
-                            return projectIds.length > 0;
-                        }}
-                        onCloseContext={(contextKey) => {
-                            void requestCloseWorkspaceContext(contextKey);
-                        }}
-                        onMoveContextToNewWindow={(contextKey) => {
-                            void requestMoveWorkspaceContextToNewWindow(
-                                contextKey,
-                            );
-                        }}
-                        onOpenProject={handleOpenProject}
-                        onOpenProjects={handleOpenProjects}
-                        onOpenSettings={(initialCategory) =>
-                            openSettingsWindow(initialCategory)
-                        }
-                        onOpenWorktree={(projectId, worktreeId) => {
-                            void useWorkspaceStore
-                                .getState()
-                                .openContext(projectId, worktreeId);
-                        }}
-                        onReorderContext={(contextKey, targetIndex) => {
-                            void useWorkspaceStore
-                                .getState()
-                                .reorderContext(contextKey, targetIndex);
-                        }}
-                        onToggleLeftSidebar={() => {
-                            toggleLeftCollapsed();
-                            hideSidebarOverlayImmediately();
-                        }}
-                        platform={bootstrap?.platform ?? null}
-                        settingsLabel={getSettingsUpdateMenuLabel(
-                            appUpdateState,
-                        )}
-                    />
+                    {!isWorkspaceSurfaceRenderer && desktopTopBar}
                     <div
                         className="grid min-h-0 flex-1"
                         style={{

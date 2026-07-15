@@ -127,6 +127,10 @@ export const IPC_CHANNELS = {
     searchProjectEntries: "projects:search-entries",
     getWorkspaceSnapshot: "workspace:get-snapshot",
     saveWorkspaceSnapshot: "workspace:save-snapshot",
+    initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
+    activateWorkspaceSurface: "workspace:activate-surface",
+    setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
+    toggleWorkspaceSurfaceSidebar: "workspace:toggle-surface-sidebar",
     notifyFileBuffer: "workspace:notify-file-buffer",
     getChatSessionState: "workspace:get-chat-session-state",
     createTerminalSession: "terminals:create-session",
@@ -185,6 +189,8 @@ export const IPC_EVENTS = {
     workspaceReopenLastClosedTab: "workspace:reopen-last-closed-tab",
     workspaceFlushRequested: "workspace:flush-requested",
     workspaceFlushAcknowledged: "workspace:flush-acknowledged",
+    workspaceSurfaceToggleSidebar: "workspace:surface-toggle-sidebar",
+    workspaceSurfaceSnapshotUpdated: "workspace:surface-snapshot-updated",
     gitRepositoryInvalidated: "git:repository-invalidated",
     gitRepositorySnapshotUpdated: "git:repository-snapshot-updated",
     gitWorktreesUpdated: "git:worktrees-updated",
@@ -581,6 +587,8 @@ export interface PersistedWindowState {
 export type AppWindowKind = "main" | "settings";
 
 export interface WindowContextSnapshot {
+    /** The physical BrowserWindow that hosts an embedded workspace surface. */
+    readonly hostWindowId?: string | null;
     readonly projectId: string | null;
     readonly windowId: string;
     readonly windowKind: AppWindowKind;
@@ -2979,6 +2987,12 @@ export interface ComandoApi {
     saveActiveProjectId: (projectId: string | null) => Promise<void>;
     saveActiveWorktreeId: (worktreeId: string | null) => Promise<void>;
     saveShellState: (snapshot: PersistedShellState | null) => Promise<void>;
+    initializeWorkspaceSurfaces: (
+        snapshot: WorkspaceNavigationSnapshot,
+    ) => Promise<void>;
+    activateWorkspaceSurface: (contextKey: string) => Promise<void>;
+    setWorkspaceSurfaceContentInset: (height: number) => Promise<void>;
+    toggleWorkspaceSurfaceSidebar: () => Promise<void>;
     setTrafficLightVisibility: (visible: boolean) => Promise<void>;
     setNativeAppearance: (mode: ThemeMode) => Promise<void>;
     resolveTsconfigForPath: (
@@ -3338,6 +3352,10 @@ export interface ComandoApi {
     onWorkspaceReopenLastClosedTab: (listener: () => void) => () => void;
     onWorkspaceFlushRequested: (
         listener: () => Promise<void> | void,
+    ) => () => void;
+    onWorkspaceSurfaceToggleSidebar: (listener: () => void) => () => void;
+    onWorkspaceSurfaceSnapshotUpdated: (
+        listener: (snapshot: WorkspaceNavigationSnapshot) => void,
     ) => () => void;
     onTerminalData: (
         listener: (event: TerminalDataEvent) => void,
