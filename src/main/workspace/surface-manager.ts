@@ -28,6 +28,8 @@ interface WorkspaceSurfaceRecord {
     isVisible: boolean;
     snapshot: WorkspaceNavigationSnapshot;
     readonly view: WebContentsView;
+    readonly webContents: WebContents;
+    readonly webContentsId: number;
 }
 
 interface WorkspaceSurfaceBounds {
@@ -153,11 +155,11 @@ class WorkspaceSurfaceManager {
             ? host.surfaceIdsByContextKey.get(host.activeContextKey)
             : null;
         const surface = surfaceId ? this.#surfacesById.get(surfaceId) : null;
-        if (!surface || surface.view.webContents.isDestroyed()) {
+        if (!surface || surface.webContents.isDestroyed()) {
             return;
         }
 
-        surface.view.webContents.send(
+        surface.webContents.send(
             IPC_EVENTS.workspaceSurfaceGitScopeMenuRequested,
             anchor,
         );
@@ -169,11 +171,11 @@ class WorkspaceSurfaceManager {
             ? host.surfaceIdsByContextKey.get(host.activeContextKey)
             : null;
         const surface = surfaceId ? this.#surfacesById.get(surfaceId) : null;
-        if (!surface || surface.view.webContents.isDestroyed()) {
+        if (!surface || surface.webContents.isDestroyed()) {
             return;
         }
 
-        surface.view.webContents.send(
+        surface.webContents.send(
             IPC_EVENTS.workspaceSurfaceProjectMenuRequested,
         );
     }
@@ -210,8 +212,8 @@ class WorkspaceSurfaceManager {
 
     setZoomFactor(zoomFactor: number): void {
         for (const surface of this.#surfacesById.values()) {
-            if (!surface.view.webContents.isDestroyed()) {
-                surface.view.webContents.setZoomFactor(zoomFactor);
+            if (!surface.webContents.isDestroyed()) {
+                surface.webContents.setZoomFactor(zoomFactor);
             }
         }
     }
@@ -291,8 +293,8 @@ class WorkspaceSurfaceManager {
             ? host.surfaceIdsByContextKey.get(host.activeContextKey)
             : null;
         const surface = surfaceId ? this.#surfacesById.get(surfaceId) : null;
-        return surface && !surface.view.webContents.isDestroyed()
-            ? surface.view.webContents
+        return surface && !surface.webContents.isDestroyed()
+            ? surface.webContents
             : null;
     }
 
@@ -303,8 +305,8 @@ class WorkspaceSurfaceManager {
         }
         return [...host.surfaceIdsByContextKey.values()].flatMap((surfaceId) => {
             const surface = this.#surfacesById.get(surfaceId);
-            return surface && !surface.view.webContents.isDestroyed()
-                ? [surface.view.webContents]
+            return surface && !surface.webContents.isDestroyed()
+                ? [surface.webContents]
                 : [];
         });
     }
@@ -375,8 +377,10 @@ class WorkspaceSurfaceManager {
                 preload: getRendererPreloadPath(),
             },
         });
+        const webContents = view.webContents;
+        const webContentsId = webContents.id;
         view.setVisible(false);
-        view.webContents.setZoomFactor(
+        webContents.setZoomFactor(
             host.hostWindow.webContents.getZoomFactor(),
         );
         host.hostWindow.contentView.addChildView(view);
@@ -399,12 +403,14 @@ class WorkspaceSurfaceManager {
             isVisible: false,
             snapshot: toSurfaceSnapshot(hostSnapshot, contextKey),
             view,
+            webContents,
+            webContentsId,
         };
         this.#surfacesById.set(id, surface);
-        this.#surfaceIdsByWebContentsId.set(view.webContents.id, id);
+        this.#surfaceIdsByWebContentsId.set(webContentsId, id);
         host.surfaceIdsByContextKey.set(contextKey, id);
-        windowRegistry.registerEmbeddedRenderer(view.webContents, context);
-        view.webContents.on("before-input-event", (event, input) => {
+        windowRegistry.registerEmbeddedRenderer(webContents, context);
+        webContents.on("before-input-event", (event, input) => {
             const direction = resolveWorkspaceSurfaceSwitchDirection(input);
             if (!direction) {
                 return;
@@ -426,17 +432,17 @@ class WorkspaceSurfaceManager {
                 host.snapshot,
             );
         });
-        view.webContents.once("did-finish-load", () => {
-            if (!view.webContents.isDestroyed()) {
-                this.#lifecycleHandlers.onSurfaceCreated?.(view.webContents, id);
+        webContents.once("did-finish-load", () => {
+            if (!webContents.isDestroyed()) {
+                this.#lifecycleHandlers.onSurfaceCreated?.(webContents, id);
                 this.#applyVisibility(host);
             }
         });
-        view.webContents.once("destroyed", () => {
-            windowRegistry.unregisterEmbeddedRenderer(view.webContents);
-            this.#surfaceIdsByWebContentsId.delete(view.webContents.id);
+        webContents.once("destroyed", () => {
+            windowRegistry.unregisterEmbeddedRenderer(webContents);
+            this.#surfaceIdsByWebContentsId.delete(webContentsId);
         });
-        loadRendererContents(view.webContents, `window=workspace-surface&surface=${id}`);
+        loadRendererContents(webContents, `window=workspace-surface&surface=${id}`);
     }
 
     #destroySurface(host: WorkspaceSurfaceHostRecord, surfaceId: string): void {
@@ -447,14 +453,14 @@ class WorkspaceSurfaceManager {
 
         host.surfaceIdsByContextKey.delete(surface.contextKey);
         this.#surfacesById.delete(surface.id);
-        this.#surfaceIdsByWebContentsId.delete(surface.view.webContents.id);
-        windowRegistry.unregisterEmbeddedRenderer(surface.view.webContents);
+        this.#surfaceIdsByWebContentsId.delete(surface.webContentsId);
+        windowRegistry.unregisterEmbeddedRenderer(surface.webContents);
         this.#lifecycleHandlers.onSurfaceDestroyed?.(surface.id);
         if (!host.hostWindow.isDestroyed()) {
             host.hostWindow.contentView.removeChildView(surface.view);
         }
-        if (!surface.view.webContents.isDestroyed()) {
-            surface.view.webContents.close();
+        if (!surface.webContents.isDestroyed()) {
+            surface.webContents.close();
         }
     }
 
@@ -468,7 +474,7 @@ class WorkspaceSurfaceManager {
         const bounds = host.hostWindow.getContentBounds();
         for (const [contextKey, surfaceId] of host.surfaceIdsByContextKey) {
             const surface = this.#surfacesById.get(surfaceId);
-            if (!surface || surface.view.webContents.isDestroyed()) {
+            if (!surface || surface.webContents.isDestroyed()) {
                 continue;
             }
             const isActive = contextKey === host.activeContextKey;
@@ -487,7 +493,7 @@ class WorkspaceSurfaceManager {
                 surface.isVisible = isActive;
             }
             if (isActive && options.focusActive) {
-                surface.view.webContents.focus();
+                surface.webContents.focus();
             }
         }
     }
