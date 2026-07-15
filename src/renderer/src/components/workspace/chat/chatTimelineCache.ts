@@ -1,6 +1,7 @@
 import type { AiSessionSnapshot } from "@shared/ipc";
 import type { AiSessionTranscriptModel } from "@renderer/app/ai/transcriptModel";
-import { workspaceArtifactBudget } from "@renderer/app/workspace/resource-budget";
+import { rendererArtifactCache } from "@renderer/app/workspace/resource-budget";
+import { isChatStreamingStatus } from "./chatTurnStatus";
 
 import type { ChatTimelineModel } from "./chatTimelineModel";
 
@@ -27,7 +28,10 @@ export function getCachedChatTimeline(input: {
     readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
     readonly transcript: AiSessionTranscriptModel;
 }): ChatTimelineModel | null {
-    const cached = workspaceArtifactBudget.get<CachedTimeline>(
+    if (isChatStreamingStatus(input.status)) {
+        return null;
+    }
+    const cached = rendererArtifactCache.get<CachedTimeline>(
         CHAT_TIMELINE_CACHE_SCOPE,
         input.sessionId,
     );
@@ -55,7 +59,10 @@ export function cacheChatTimeline(input: {
     readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
     readonly transcript: AiSessionTranscriptModel;
 }): void {
-    workspaceArtifactBudget.set(CHAT_TIMELINE_CACHE_SCOPE, input.sessionId, {
+    if (isChatStreamingStatus(input.status)) {
+        return;
+    }
+    rendererArtifactCache.set(CHAT_TIMELINE_CACHE_SCOPE, input.sessionId, {
         ...input,
         attentionToolCallIdsKey: getAttentionToolCallIdsKey(
             input.attentionToolCallIds,
@@ -65,9 +72,9 @@ export function cacheChatTimeline(input: {
 }
 
 export function releaseCachedChatTimeline(sessionId: string): void {
-    workspaceArtifactBudget.delete(CHAT_TIMELINE_CACHE_SCOPE, sessionId);
+    rendererArtifactCache.delete(CHAT_TIMELINE_CACHE_SCOPE, sessionId);
 }
 
 export function resetCachedChatTimelinesForTests(): void {
-    workspaceArtifactBudget.deleteScope(CHAT_TIMELINE_CACHE_SCOPE);
+    rendererArtifactCache.deleteScope(CHAT_TIMELINE_CACHE_SCOPE);
 }
