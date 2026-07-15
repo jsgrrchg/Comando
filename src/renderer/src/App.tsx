@@ -152,6 +152,7 @@ import {
     type ProjectContextMenuProject,
     type ProjectContextTabItem,
 } from "./components/DesktopTopBar";
+import { SidebarGitScopePicker } from "./components/sidebar/SidebarGitScopePicker";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 
@@ -518,6 +519,12 @@ export function App() {
         useState(0);
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
+    const [workspaceSurfaceGitScopeMenuRequest, setWorkspaceSurfaceGitScopeMenuRequest] =
+        useState<{
+            readonly id: number;
+            readonly width: number;
+            readonly x: number;
+        } | null>(null);
     const [sidebarOverlayClosing, setSidebarOverlayClosing] = useState(false);
     const pendingContextTreeRefreshesRef = useRef(
         new Map<string, Promise<void>>(),
@@ -971,6 +978,20 @@ export function App() {
                 },
             }));
         });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceGitScopeMenuRequested(
+            (anchor) => {
+                setWorkspaceSurfaceGitScopeMenuRequest((current) => ({
+                    ...anchor,
+                    id: (current?.id ?? 0) + 1,
+                }));
+            },
+        );
     }, []);
 
     useEffect(() => {
@@ -4623,6 +4644,18 @@ export function App() {
         }
         void useWorkspaceStore.getState().activateContext(contextKey);
     };
+    const workspaceSurfaceContentLeftInset = leftCollapsed
+        ? (sidebarOverlayVisible ? leftWidth : edgePeekConfig.hotspotWidth)
+        : leftWidth + shellLayoutConstraints.handleWidth;
+    const openWorkspaceSurfaceGitScopeMenu = useCallback(
+        (anchor: { readonly width: number; readonly x: number }) => {
+            void getComandoApi()?.openWorkspaceSurfaceGitScopeMenu({
+                width: anchor.width,
+                x: Math.max(0, anchor.x - workspaceSurfaceContentLeftInset),
+            });
+        },
+        [workspaceSurfaceContentLeftInset],
+    );
 
     const desktopTopBar = (
         <DesktopTopBar
@@ -4630,6 +4663,11 @@ export function App() {
             contexts={projectContextTabs}
             leftSidebarCollapsed={leftCollapsed}
             menuProjects={projectContextMenuProjects}
+            onOpenGitScopeMenu={
+                isWorkspaceHostRenderer
+                    ? openWorkspaceSurfaceGitScopeMenu
+                    : undefined
+            }
             onActivateContext={activateWorkspaceContext}
             onCloneRepository={async (repositoryUrl) => {
                 const projectIds = await cloneRepository(repositoryUrl);
@@ -4805,6 +4843,12 @@ export function App() {
                 className="h-screen min-h-0 text-text-primary"
                 data-platform={bootstrap?.platform ?? undefined}
             >
+                <SidebarGitScopePicker
+                    externalMenuRequest={workspaceSurfaceGitScopeMenuRequest}
+                    projectId={activeProjectId}
+                    triggerHidden
+                    worktreeId={activeWorktreeId}
+                />
                 <main
                     className="surface-focus h-full min-h-0 bg-bg-primary"
                     data-active={activeSurface === "workspace"}

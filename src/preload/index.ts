@@ -872,6 +872,22 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceSurfaceGitScopeMenuRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            anchor: { readonly width: number; readonly x: number },
+        ) => listener(anchor);
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceGitScopeMenuRequested,
+            handleEvent,
+        );
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceGitScopeMenuRequested,
+                handleEvent,
+            );
+        };
+    },
     onTerminalData: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -957,6 +973,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.initializeWorkspaceSurfaces, snapshot),
     activateWorkspaceSurface: (contextKey: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceSurface, contextKey),
+    openWorkspaceSurfaceGitScopeMenu: (anchor) =>
+        ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu, anchor),
     setWorkspaceSurfaceContentInset: (height: number) =>
         ipcRenderer.invoke(IPC_CHANNELS.setWorkspaceSurfaceContentInset, height),
     setWorkspaceSurfaceContentLeftInset: (width: number) =>

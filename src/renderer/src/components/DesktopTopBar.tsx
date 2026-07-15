@@ -37,6 +37,10 @@ interface DesktopTopBarProps {
     readonly contexts: readonly ProjectContextTabItem[];
     readonly leftSidebarCollapsed: boolean;
     readonly menuProjects: readonly ProjectContextMenuProject[];
+    readonly onOpenGitScopeMenu?: (anchor: {
+        readonly width: number;
+        readonly x: number;
+    }) => void;
     readonly onActivateContext: (contextKey: string) => void;
     readonly onCloneRepository: (repositoryUrl: string) => Promise<boolean>;
     readonly onCloseContext: (contextKey: string) => void;
@@ -59,6 +63,7 @@ export function DesktopTopBar({
     contexts,
     leftSidebarCollapsed,
     menuProjects,
+    onOpenGitScopeMenu,
     onActivateContext,
     onCloneRepository,
     onCloseContext,
@@ -245,6 +250,7 @@ export function DesktopTopBar({
                                     onTitlebarKeyDown={(event) =>
                                         handleTabKeyDown(event, index)
                                     }
+                                    onTitlebarMenuRequest={onOpenGitScopeMenu}
                                     projectId={context.projectId}
                                     title={context.projectName}
                                     titlebarContextKey={context.key}

@@ -128,6 +128,25 @@ class WorkspaceSurfaceManager {
         return true;
     }
 
+    requestActiveGitScopeMenu(
+        hostWindowId: string,
+        anchor: { readonly width: number; readonly x: number },
+    ): void {
+        const host = this.#hostsByWindowId.get(hostWindowId);
+        const surfaceId = host?.activeContextKey
+            ? host.surfaceIdsByContextKey.get(host.activeContextKey)
+            : null;
+        const surface = surfaceId ? this.#surfacesById.get(surfaceId) : null;
+        if (!surface || surface.view.webContents.isDestroyed()) {
+            return;
+        }
+
+        surface.view.webContents.send(
+            IPC_EVENTS.workspaceSurfaceGitScopeMenuRequested,
+            anchor,
+        );
+    }
+
     setContentInset(hostWindowId: string, height: number): void {
         const host = this.#hostsByWindowId.get(hostWindowId);
         if (!host || !Number.isFinite(height)) {
