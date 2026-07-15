@@ -319,14 +319,55 @@ function ExpandedActivitySegmentItems({
             return;
         }
 
+        const scrollContainer = scrollContainerRef.current;
+        const syncScrollMarginTop = () => {
+            const nextScrollMarginTop =
+                calculateChatTimelineVirtualScrollMarginTop({
+                    historyElement: contentRef.current,
+                    scrollContainer,
+                });
+            setScrollMarginTop((current) =>
+                current === nextScrollMarginTop
+                    ? current
+                    : nextScrollMarginTop,
+            );
+        };
+
         setIsVirtualListReady(true);
-        const nextScrollMarginTop = calculateChatTimelineVirtualScrollMarginTop({
-            historyElement: contentRef.current,
-            scrollContainer: scrollContainerRef.current,
-        });
-        setScrollMarginTop((current) =>
-            current === nextScrollMarginTop ? current : nextScrollMarginTop,
+        syncScrollMarginTop();
+
+        const resizeObserver =
+            typeof ResizeObserver === "undefined"
+                ? null
+                : new ResizeObserver(syncScrollMarginTop);
+        const layoutRoot = contentRef.current?.closest<HTMLElement>(
+            '[data-chat-content-column="true"]',
         );
+        if (layoutRoot) {
+            resizeObserver?.observe(layoutRoot);
+        }
+        resizeObserver?.observe(scrollContainer);
+
+        const virtualRow = contentRef.current?.closest<HTMLElement>(
+            "[data-list-key]",
+        );
+        const mutationObserver =
+            virtualRow && typeof MutationObserver !== "undefined"
+                ? new MutationObserver(syncScrollMarginTop)
+                : null;
+        if (virtualRow) {
+            mutationObserver?.observe(virtualRow, {
+                attributeFilter: ["style"],
+                attributes: true,
+            });
+        }
+        window.addEventListener("resize", syncScrollMarginTop);
+
+        return () => {
+            resizeObserver?.disconnect();
+            mutationObserver?.disconnect();
+            window.removeEventListener("resize", syncScrollMarginTop);
+        };
     }, [scrollContainerRef, shouldVirtualize]);
 
     const visibleItems =

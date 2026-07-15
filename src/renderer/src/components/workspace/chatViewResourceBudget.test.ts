@@ -9,14 +9,11 @@ import { createChatPerformanceWorkspaceFixture } from "./chat/chatPerformanceFix
 describe("resolveHotChatTabIds", () => {
     it("cools the retained tabs from the four-pane performance fixture", () => {
         const fixture = createChatPerformanceWorkspaceFixture();
-        const chatTabIds = new Set(
-            fixture.panes.flatMap((pane) => pane.retainedSessionIds),
-        );
         const hotTabIds = resolveHotChatTabIds({
-            chatTabIds,
             focusedPaneId: fixture.panes[0]?.id ?? "",
             panes: fixture.panes.map((pane) => ({
                 activeTabId: pane.activeSessionId,
+                chatTabIds: pane.retainedSessionIds,
                 id: pane.id,
                 visible: true,
             })),
@@ -32,17 +29,20 @@ describe("resolveHotChatTabIds", () => {
     });
 
     it("shares retained views across panes instead of multiplying the local limit", () => {
-        const chatTabIds = new Set(
-            Array.from({ length: 16 }, (_, index) => `chat-${index + 1}`),
-        );
         const panes = Array.from({ length: 4 }, (_, index) => ({
             activeTabId: `chat-${index + 1}`,
+            chatTabIds: [
+                `chat-${index + 1}`,
+                ...Array.from(
+                    { length: 3 },
+                    (_, tabIndex) => `chat-${index * 3 + tabIndex + 5}`,
+                ),
+            ],
             id: `pane-${index + 1}`,
             visible: true,
         }));
 
         const hotTabIds = resolveHotChatTabIds({
-            chatTabIds,
             focusedPaneId: "pane-1",
             panes,
             recentActiveTabIds: Array.from(
@@ -75,27 +75,39 @@ describe("resolveHotChatTabIds", () => {
             { length: MAX_ADDITIONAL_HOT_CHAT_TAB_VIEWS - 1 },
             (_, index) => `recent-${index + 1}`,
         );
-        const chatTabIds = new Set([
-            "focused",
-            "new-active",
-            ...recentlyVisited,
-            "old",
-        ]);
         const initial = resolveHotChatTabIds({
-            chatTabIds,
             focusedPaneId: "pane-a",
             panes: [
-                { activeTabId: "focused", id: "pane-a", visible: true },
-                { activeTabId: null, id: "pane-b", visible: true },
+                {
+                    activeTabId: "focused",
+                    chatTabIds: ["focused", ...recentlyVisited, "old"],
+                    id: "pane-a",
+                    visible: true,
+                },
+                {
+                    activeTabId: null,
+                    chatTabIds: [],
+                    id: "pane-b",
+                    visible: true,
+                },
             ],
             recentActiveTabIds: ["focused", ...recentlyVisited, "old"],
         });
         const afterActivation = resolveHotChatTabIds({
-            chatTabIds,
             focusedPaneId: "pane-b",
             panes: [
-                { activeTabId: "focused", id: "pane-a", visible: true },
-                { activeTabId: "new-active", id: "pane-b", visible: true },
+                {
+                    activeTabId: "focused",
+                    chatTabIds: ["focused", ...recentlyVisited, "old"],
+                    id: "pane-a",
+                    visible: true,
+                },
+                {
+                    activeTabId: "new-active",
+                    chatTabIds: ["new-active"],
+                    id: "pane-b",
+                    visible: true,
+                },
             ],
             recentActiveTabIds: ["new-active", "focused", ...recentlyVisited],
         });
@@ -111,13 +123,22 @@ describe("resolveHotChatTabIds", () => {
 
     it("does not heat a chat whose pane is still deferred", () => {
         const hotTabIds = resolveHotChatTabIds({
-            chatTabIds: new Set(["visible", "deferred"]),
             focusedPaneId: "pane-visible",
             panes: [
-                { activeTabId: "visible", id: "pane-visible", visible: true },
-                { activeTabId: "deferred", id: "pane-deferred", visible: false },
+                {
+                    activeTabId: "visible",
+                    chatTabIds: ["visible"],
+                    id: "pane-visible",
+                    visible: true,
+                },
+                {
+                    activeTabId: "deferred",
+                    chatTabIds: ["deferred"],
+                    id: "pane-deferred",
+                    visible: false,
+                },
             ],
-            recentActiveTabIds: ["visible"],
+            recentActiveTabIds: ["deferred", "visible"],
         });
 
         expect(hotTabIds).toEqual(new Set(["visible"]));

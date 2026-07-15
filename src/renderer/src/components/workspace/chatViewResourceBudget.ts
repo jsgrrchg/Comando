@@ -10,12 +10,12 @@ export const MAX_CACHED_CHAT_VIEW_ARTIFACTS = 12;
 
 export interface ChatViewResourceBudgetPane {
     readonly activeTabId: string | null;
+    readonly chatTabIds: readonly string[];
     readonly id: string;
     readonly visible: boolean;
 }
 
 export interface ChatViewResourceBudgetInput {
-    readonly chatTabIds: ReadonlySet<string>;
     readonly focusedPaneId: string;
     readonly panes: readonly ChatViewResourceBudgetPane[];
     /** Most recent first. */
@@ -28,18 +28,20 @@ export interface ChatViewResourceBudgetInput {
  * all panes and assigned by global recency.
  */
 export function resolveHotChatTabIds({
-    chatTabIds,
     focusedPaneId,
     panes,
     recentActiveTabIds,
 }: ChatViewResourceBudgetInput): ReadonlySet<string> {
     const hotTabIds = new Set<string>();
+    const renderableChatTabIds = new Set(
+        panes.flatMap((pane) => (pane.visible ? pane.chatTabIds : [])),
+    );
 
     const retainVisibleActiveChat = (pane: ChatViewResourceBudgetPane) => {
         if (
             pane.visible &&
             pane.activeTabId !== null &&
-            chatTabIds.has(pane.activeTabId)
+            renderableChatTabIds.has(pane.activeTabId)
         ) {
             hotTabIds.add(pane.activeTabId);
         }
@@ -61,7 +63,7 @@ export function resolveHotChatTabIds({
         if (
             additionalViews >= MAX_ADDITIONAL_HOT_CHAT_TAB_VIEWS ||
             hotTabIds.has(tabId) ||
-            !chatTabIds.has(tabId)
+            !renderableChatTabIds.has(tabId)
         ) {
             continue;
         }

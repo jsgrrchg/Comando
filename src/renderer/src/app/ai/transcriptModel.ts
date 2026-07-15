@@ -100,11 +100,24 @@ const transcriptMutationByModel = new WeakMap<
     AiSessionTranscriptModel,
     AiSessionTranscriptMutation
 >();
+const transcriptMutationParentByModel = new WeakMap<
+    AiSessionTranscriptModel,
+    AiSessionTranscriptModel
+>();
 
 export function getAiSessionTranscriptMutation(
     transcript: AiSessionTranscriptModel,
 ): AiSessionTranscriptMutation {
     return transcriptMutationByModel.get(transcript) ?? { kind: "rebuild" };
+}
+
+export function isAiSessionTranscriptMutationFrom(
+    transcript: AiSessionTranscriptModel,
+    previousTranscript: AiSessionTranscriptModel,
+): boolean {
+    return (
+        transcriptMutationParentByModel.get(transcript) === previousTranscript
+    );
 }
 
 export function createEmptyAiSessionTranscriptModel(): AiSessionTranscriptModel {
@@ -645,6 +658,7 @@ function appendAiSessionTranscriptEntry(
             toolActivityProjectionIndexByEntryId,
         },
         { entryId: entry.id, kind: "append" },
+        transcript,
     );
 }
 
@@ -716,14 +730,19 @@ function updateAiSessionTranscriptEntry(
             toolActivity,
         },
         { entryId: nextEntry.id, kind: "patch" },
+        transcript,
     );
 }
 
 function markAiSessionTranscriptMutation(
     transcript: AiSessionTranscriptModel,
     mutation: AiSessionTranscriptMutation,
+    previousTranscript?: AiSessionTranscriptModel,
 ): AiSessionTranscriptModel {
     transcriptMutationByModel.set(transcript, mutation);
+    if (previousTranscript) {
+        transcriptMutationParentByModel.set(transcript, previousTranscript);
+    }
     return transcript;
 }
 

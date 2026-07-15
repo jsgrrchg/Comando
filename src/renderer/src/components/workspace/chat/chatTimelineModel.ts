@@ -7,6 +7,7 @@ import {
     getAiSessionTranscriptMessages,
     getAiSessionTranscriptMutation,
     getAiSessionTranscriptToolActivity,
+    isAiSessionTranscriptMutationFrom,
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
 import { areTrackedFilePathReferencesEquivalent } from "@renderer/app/ai/trackedFilePath";
@@ -1025,6 +1026,15 @@ export function reconcileChatTimelineModelIncrementallyFromTranscript(
     input: ChatTimelineTranscriptInput,
 ): ChatTimelineModel {
     if (!previous || !previousTranscript) {
+        return reconcileChatTimelineModelFromTranscript(previous, input);
+    }
+    if (
+        !isAiSessionTranscriptMutationFrom(
+            input.transcript,
+            previousTranscript,
+        )
+    ) {
+        chatTimelineFallbackCount += 1;
         return reconcileChatTimelineModelFromTranscript(previous, input);
     }
 

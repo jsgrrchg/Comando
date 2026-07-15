@@ -226,6 +226,79 @@ describe("chatTimelineModel", () => {
         });
     });
 
+    it("rebuilds when multiple appends arrive before the previous model commits", () => {
+        const trackedFiles: AiTrackedFile[] = [];
+        const initialTranscript = buildAiSessionTranscriptModel({
+            messages: [
+                createMessage({
+                    content: "Generate two outputs",
+                    id: "user-1",
+                    kind: "user",
+                }),
+            ],
+            toolActivity: [],
+        });
+        const initialModel = reconcileChatTimelineModelFromTranscript(null, {
+            status: "streaming",
+            trackedFiles,
+            transcript: initialTranscript,
+        });
+        const transcriptWithAssistant = applyAiSessionDomainEventToTranscript(
+            initialTranscript,
+            createSessionEvent({
+                kind: "message-started",
+                message: createMessage({
+                    content: "Preparing image",
+                    createdAt: "2026-04-14T00:00:01.000Z",
+                    id: "assistant-1",
+                    status: "streaming",
+                }),
+                messageKind: "assistant",
+            }),
+        );
+        const updatedTranscript = applyAiSessionDomainEventToTranscript(
+            transcriptWithAssistant,
+            createSessionEvent({
+                kind: "image-generation",
+                message: createMessage({
+                    content: "Generated image",
+                    createdAt: "2026-04-14T00:00:02.000Z",
+                    id: "image-1",
+                    kind: "image",
+                    status: "streaming",
+                }),
+            }),
+        );
+
+        resetChatTimelineReconciliationDiagnosticsForTests();
+        const reconciled =
+            reconcileChatTimelineModelIncrementallyFromTranscript(
+                initialModel,
+                initialTranscript,
+                {
+                    status: "streaming",
+                    trackedFiles,
+                    transcript: updatedTranscript,
+                },
+            );
+        const rebuilt = reconcileChatTimelineModelFromTranscript(initialModel, {
+            status: "streaming",
+            trackedFiles,
+            transcript: updatedTranscript,
+        });
+
+        expect(reconciled.orderedRowIds).toEqual(rebuilt.orderedRowIds);
+        expect(reconciled.orderedRowIds).toEqual([
+            "message:user-1",
+            "message:assistant-1",
+            "message:image-1",
+        ]);
+        expect(getChatTimelineReconciliationDiagnostics()).toEqual({
+            fallbackCount: 1,
+            incrementalCount: 0,
+        });
+    });
+
     it("keeps history by reference across one thousand live-tail deltas", () => {
         const trackedFiles: AiTrackedFile[] = [];
         let transcript = buildAiSessionTranscriptModel({

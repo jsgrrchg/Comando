@@ -727,23 +727,16 @@ export function WorkspaceView({
         );
         const panes = workspacePanes.map((pane) => ({
             activeTabId: pane.activeTabId,
-            id: pane.id,
-            visible: !chatViewBudgetWorkspaceState.deferredPaneIds.has(
-                pane.id,
+            chatTabIds: pane.tabIds.filter(
+                (tabId) => tabsById[tabId]?.kind === "chat",
             ),
+            id: pane.id,
+            visible:
+                pane.id === chatViewBudgetWorkspaceState.activePaneId ||
+                !chatViewBudgetWorkspaceState.deferredPaneIds.has(pane.id),
         }));
-        const chatTabIds = new Set<string>();
-
-        for (const pane of workspacePanes) {
-            for (const tabId of pane.tabIds) {
-                if (tabsById[tabId]?.kind === "chat") {
-                    chatTabIds.add(tabId);
-                }
-            }
-        }
 
         return resolveHotChatTabIds({
-            chatTabIds,
             focusedPaneId: chatViewBudgetWorkspaceState.activePaneId,
             panes,
             recentActiveTabIds:
