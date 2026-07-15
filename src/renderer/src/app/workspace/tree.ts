@@ -22,6 +22,7 @@ import type {
     WorkspaceTerminalTab,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
+import { areGitWorktreeIdsEquivalent } from "../git/context-key";
 
 export type SplitDirection = "down" | "left" | "right" | "up";
 export type MoveDirection = "next" | "previous";
@@ -867,8 +868,11 @@ export function closeWorkspaceTabsForProjectPath(
             (tab): tab is RuntimeWorkspaceFileTab =>
                 tab.kind === "file" &&
                 tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
-                    normalizeWorktreeId(worktreeId) &&
+                areGitWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId ?? null,
+                    worktreeId,
+                ) &&
                 matchesProjectPath(tab.relativePath, relativePath, kind),
         )
         .map((tab) => tab.id);
@@ -892,8 +896,11 @@ export function renameWorkspaceTabsForProjectPath(
             if (
                 tab.kind !== "file" ||
                 tab.projectId !== projectId ||
-                normalizeWorktreeId(tab.worktreeId) !==
-                    normalizeWorktreeId(worktreeId) ||
+                !areGitWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId ?? null,
+                    worktreeId,
+                ) ||
                 !matchesProjectPath(
                     tab.relativePath,
                     previousRelativePath,
@@ -1616,16 +1623,13 @@ function matchesSameWorkspaceFile(
 ): boolean {
     return (
         left.projectId === right.projectId &&
-        normalizeWorktreeId(left.worktreeId) ===
-            normalizeWorktreeId(right.worktreeId) &&
+        areGitWorktreeIdsEquivalent(
+            left.projectId,
+            left.worktreeId ?? null,
+            right.worktreeId ?? null,
+        ) &&
         left.relativePath === right.relativePath
     );
-}
-
-function normalizeWorktreeId(
-    worktreeId: string | null | undefined,
-): string | null {
-    return worktreeId ?? null;
 }
 
 function rebaseAbsolutePath(

@@ -617,8 +617,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
             if (
                 tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
-                    normalizeWorktreeId(worktreeId) &&
+                areWorkspaceWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId ?? null,
+                    worktreeId,
+                ) &&
                 matchesRelativePath
             ) {
                 fileTabsToClose.push(tab);
@@ -647,8 +650,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 if (
                     tab.kind !== "file" ||
                     tab.projectId !== projectId ||
-                    normalizeWorktreeId(tab.worktreeId) !==
-                        normalizeWorktreeId(worktreeId)
+                    !areWorkspaceWorktreeIdsEquivalent(
+                        projectId,
+                        tab.worktreeId,
+                        worktreeId,
+                    )
                 ) {
                     return false;
                 }
@@ -1901,8 +1907,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             (tab): tab is RuntimeWorkspaceFileTab =>
                 tab.kind === "file" &&
                 tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
-                    normalizeWorktreeId(worktreeId),
+                areWorkspaceWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId ?? null,
+                    worktreeId,
+                ),
         );
 
         if (fileTabs.length === 0) {
@@ -1956,7 +1965,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             set,
             (context) =>
                 context.projectId === projectId &&
-                normalizeWorktreeId(context.worktreeId) === normalizeWorktreeId(worktreeId),
+                areGitWorktreeIdsEquivalent(
+                    projectId,
+                    context.worktreeId,
+                    worktreeId,
+                ),
         );
     },
 
@@ -2534,8 +2547,11 @@ export function getBestMatchingChatTabId(
         return (
             tab?.kind === "chat" &&
             tab.projectId === input.projectId &&
-            normalizeWorktreeId(tab.worktreeId) ===
-                normalizeWorktreeId(input.worktreeId)
+            areWorkspaceWorktreeIdsEquivalent(
+                input.projectId,
+                tab.worktreeId,
+                input.worktreeId,
+            )
         );
     };
 
@@ -3235,8 +3251,11 @@ function invalidateInactiveContextFileDocuments(
             if (
                 tab.kind !== "file" ||
                 tab.projectId !== projectId ||
-                normalizeWorktreeId(tab.worktreeId) !==
-                    normalizeWorktreeId(worktreeId) ||
+                !areWorkspaceWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId ?? null,
+                    worktreeId,
+                ) ||
                 !isFileTabAffectedByProjectInvalidation(
                     tab.relativePath,
                     invalidatedRelativePaths,
@@ -3811,7 +3830,7 @@ function getOrCreateFileDocumentLoad(
 function getWorkspaceFileLoadKey(tab: RuntimeWorkspaceFileTab): string {
     return [
         tab.projectId,
-        normalizeWorktreeId(tab.worktreeId) ?? "__primary__",
+        getWorkspaceWorktreeScopeKey(tab.projectId, tab.worktreeId),
         tab.relativePath,
     ].join("\u0000");
 }
@@ -4088,8 +4107,11 @@ function findExistingFileTabs(
         (tab): tab is RuntimeWorkspaceFileTab =>
             tab.kind === "file" &&
             tab.projectId === projectId &&
-            normalizeWorktreeId(tab.worktreeId) ===
-                normalizeWorktreeId(worktreeId) &&
+            areGitWorktreeIdsEquivalent(
+                projectId,
+                tab.worktreeId ?? null,
+                worktreeId,
+            ) &&
             tab.relativePath === relativePath,
     );
 }
@@ -4128,8 +4150,11 @@ function findExistingGitTab(
             (tab): tab is RuntimeWorkspaceGitTab =>
                 tab.kind === "git" &&
                 tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
-                    normalizeWorktreeId(worktreeId),
+                areGitWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId ?? null,
+                    worktreeId,
+                ),
         ) ?? null
     );
 }
@@ -4144,8 +4169,11 @@ function findExistingChatHistoryTab(
             (tab): tab is RuntimeWorkspaceChatHistoryTab =>
                 tab.kind === "chat_history" &&
                 tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
-                    normalizeWorktreeId(worktreeId),
+                areWorkspaceWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId,
+                    worktreeId,
+                ),
         ) ?? null
     );
 }
@@ -4161,8 +4189,11 @@ function findExistingGitCommitTab(
             (tab): tab is RuntimeWorkspaceGitCommitTab =>
                 tab.kind === "git_commit" &&
                 tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
-                    normalizeWorktreeId(worktreeId) &&
+                areWorkspaceWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId,
+                    worktreeId,
+                ) &&
                 tab.commitSha === commitSha,
         ) ?? null
     );
@@ -4180,8 +4211,8 @@ function findExistingGitWorktreeDiffTab(
                 tab.projectId === projectId &&
                 areGitWorktreeIdsEquivalent(
                     projectId,
-                    normalizeWorktreeId(tab.worktreeId),
-                    normalizeWorktreeId(worktreeId),
+                    tab.worktreeId ?? null,
+                    worktreeId,
                 ),
         ) ?? null
     );
@@ -4206,8 +4237,11 @@ function findExistingGitHubTab(
                 tab.kind !== input.kind ||
                 !isGitHubTabKind(tab.kind) ||
                 tab.projectId !== input.projectId ||
-                normalizeWorktreeId(tab.worktreeId) !==
-                    normalizeWorktreeId(input.worktreeId) ||
+                !areWorkspaceWorktreeIdsEquivalent(
+                    input.projectId,
+                    tab.worktreeId ?? null,
+                    input.worktreeId,
+                ) ||
                 !matchesGitHubRepositoryRef(tab.ref, input.ref)
             ) {
                 return false;
@@ -4294,10 +4328,23 @@ function getComandoApi() {
     return comandoWindow.comando;
 }
 
-function normalizeWorktreeId(
+function areWorkspaceWorktreeIdsEquivalent(
+    projectId: string | null,
+    left: string | null | undefined,
+    right: string | null | undefined,
+): boolean {
+    return projectId
+        ? areGitWorktreeIdsEquivalent(projectId, left ?? null, right ?? null)
+        : (left ?? null) === (right ?? null);
+}
+
+function getWorkspaceWorktreeScopeKey(
+    projectId: string,
     worktreeId: string | null | undefined,
-): string | null {
-    return worktreeId ?? null;
+): string {
+    return areGitWorktreeIdsEquivalent(projectId, worktreeId ?? null, null)
+        ? "__primary__"
+        : (worktreeId ?? "__primary__");
 }
 
 function isFileTabAffectedByProjectInvalidation(
