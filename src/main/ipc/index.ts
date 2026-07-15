@@ -348,6 +348,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.initializeWorkspaceSurfaces);
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
+    ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset);
     ipcMain.removeHandler(IPC_CHANNELS.notifyFileBuffer);
@@ -1873,6 +1874,13 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             );
         },
     );
+    ipcMain.handle(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu, (event) => {
+        const context = requireWindowContext(event.sender, "main");
+        if (workspaceSurfaceManager.isSurface(event.sender)) {
+            return;
+        }
+        workspaceSurfaceManager.requestActiveProjectMenu(context.windowId);
+    });
     ipcMain.handle(
         IPC_CHANNELS.setWorkspaceSurfaceContentInset,
         (event, height: number) => {

@@ -130,6 +130,7 @@ export const IPC_CHANNELS = {
     initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
     activateWorkspaceSurface: "workspace:activate-surface",
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
+    openWorkspaceSurfaceProjectMenu: "workspace:open-surface-project-menu",
     setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
     setWorkspaceSurfaceContentLeftInset: "workspace:set-surface-content-left-inset",
     notifyFileBuffer: "workspace:notify-file-buffer",
@@ -193,6 +194,7 @@ export const IPC_EVENTS = {
     workspaceSurfaceSnapshotUpdated: "workspace:surface-snapshot-updated",
     workspaceSurfaceGitScopeMenuRequested:
         "workspace:surface-git-scope-menu-requested",
+    workspaceSurfaceProjectMenuRequested: "workspace:surface-project-menu-requested",
     gitRepositoryInvalidated: "git:repository-invalidated",
     gitRepositorySnapshotUpdated: "git:repository-snapshot-updated",
     gitWorktreesUpdated: "git:worktrees-updated",
@@ -2997,6 +2999,7 @@ export interface ComandoApi {
         readonly width: number;
         readonly x: number;
     }) => Promise<void>;
+    openWorkspaceSurfaceProjectMenu: () => Promise<void>;
     setWorkspaceSurfaceContentInset: (height: number) => Promise<void>;
     setWorkspaceSurfaceContentLeftInset: (width: number) => Promise<void>;
     setTrafficLightVisibility: (visible: boolean) => Promise<void>;
@@ -3365,6 +3368,7 @@ export interface ComandoApi {
     onWorkspaceSurfaceGitScopeMenuRequested: (
         listener: (anchor: { readonly width: number; readonly x: number }) => void,
     ) => () => void;
+    onWorkspaceSurfaceProjectMenuRequested: (listener: () => void) => () => void;
     onTerminalData: (
         listener: (event: TerminalDataEvent) => void,
     ) => () => void;

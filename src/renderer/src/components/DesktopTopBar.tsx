@@ -41,6 +41,7 @@ interface DesktopTopBarProps {
         readonly width: number;
         readonly x: number;
     }) => void;
+    readonly onOpenProjectMenu?: () => void;
     readonly onActivateContext: (contextKey: string) => void;
     readonly onCloneRepository: (repositoryUrl: string) => Promise<boolean>;
     readonly onCloseContext: (contextKey: string) => void;
@@ -64,6 +65,7 @@ export function DesktopTopBar({
     leftSidebarCollapsed,
     menuProjects,
     onOpenGitScopeMenu,
+    onOpenProjectMenu,
     onActivateContext,
     onCloneRepository,
     onCloseContext,
@@ -326,6 +328,10 @@ export function DesktopTopBar({
                     aria-label="Open project or worktree"
                     className="project-context-add"
                     onClick={() => {
+                        if (onOpenProjectMenu) {
+                            onOpenProjectMenu();
+                            return;
+                        }
                         setMenuOpen((open) => !open);
                     }}
                     title="Open project or worktree"

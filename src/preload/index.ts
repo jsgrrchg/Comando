@@ -888,6 +888,19 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceSurfaceProjectMenuRequested: (listener) => {
+        const handleEvent = () => listener();
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceProjectMenuRequested,
+            handleEvent,
+        );
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceProjectMenuRequested,
+                handleEvent,
+            );
+        };
+    },
     onTerminalData: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -975,6 +988,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceSurface, contextKey),
     openWorkspaceSurfaceGitScopeMenu: (anchor) =>
         ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu, anchor),
+    openWorkspaceSurfaceProjectMenu: () =>
+        ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu),
     setWorkspaceSurfaceContentInset: (height: number) =>
         ipcRenderer.invoke(IPC_CHANNELS.setWorkspaceSurfaceContentInset, height),
     setWorkspaceSurfaceContentLeftInset: (width: number) =>

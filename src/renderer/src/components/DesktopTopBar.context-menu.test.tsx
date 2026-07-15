@@ -28,6 +28,7 @@ function renderTopBar() {
 
     const onCloseContext = vi.fn();
     const onMoveContextToNewWindow = vi.fn();
+    const onOpenProject = vi.fn();
     const root = createRoot(container);
     mountedRoots.push(root);
     act(() => {
@@ -53,12 +54,20 @@ function renderTopBar() {
                     },
                 ],
                 leftSidebarCollapsed: false,
-                menuProjects: [],
+                menuProjects: [
+                    {
+                        id: "project-1",
+                        mainIsActive: true,
+                        mainIsOpen: true,
+                        name: "Comando",
+                        worktrees: [],
+                    },
+                ],
                 onActivateContext: vi.fn(),
                 onCloneRepository: vi.fn(() => Promise.resolve(true)),
                 onCloseContext,
                 onMoveContextToNewWindow,
-                onOpenProject: vi.fn(),
+                onOpenProject,
                 onOpenProjects: vi.fn(),
                 onOpenSettings: vi.fn(),
                 onOpenWorktree: vi.fn(),
@@ -70,7 +79,12 @@ function renderTopBar() {
         );
     });
 
-    return { container, onCloseContext, onMoveContextToNewWindow };
+    return {
+        container,
+        onCloseContext,
+        onMoveContextToNewWindow,
+        onOpenProject,
+    };
 }
 
 function getContextMenuButton(label: string): HTMLButtonElement {
@@ -137,5 +151,32 @@ describe("DesktopTopBar context menu", () => {
             "project-2::__primary__",
         );
         expect(onCloseContext).not.toHaveBeenCalled();
+    });
+
+    it("opens a project from the portaled project menu", async () => {
+        const { container, onOpenProject } = renderTopBar();
+        const trigger = container.querySelector<HTMLButtonElement>(
+            '[aria-label="Open project or worktree"]',
+        );
+        expect(trigger).toBeTruthy();
+
+        act(() => {
+            trigger?.click();
+        });
+
+        const project = document.body.querySelector<HTMLButtonElement>(
+            ".project-context-project-main",
+        );
+        expect(project).toBeTruthy();
+
+        await act(async () => {
+            project?.dispatchEvent(
+                new MouseEvent("mousedown", { bubbles: true }),
+            );
+            project?.click();
+            await Promise.resolve();
+        });
+
+        expect(onOpenProject).toHaveBeenCalledWith("project-1");
     });
 });

@@ -153,6 +153,7 @@ import {
     type ProjectContextTabItem,
 } from "./components/DesktopTopBar";
 import { SidebarGitScopePicker } from "./components/sidebar/SidebarGitScopePicker";
+import { WorkspaceSurfaceProjectContextMenu } from "./components/ProjectContextMenu";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 
@@ -525,6 +526,8 @@ export function App() {
             readonly width: number;
             readonly x: number;
         } | null>(null);
+    const [workspaceSurfaceProjectMenuRequest, setWorkspaceSurfaceProjectMenuRequest] =
+        useState<{ readonly id: number } | null>(null);
     const [sidebarOverlayClosing, setSidebarOverlayClosing] = useState(false);
     const pendingContextTreeRefreshesRef = useRef(
         new Map<string, Promise<void>>(),
@@ -748,6 +751,17 @@ export function App() {
             useWorkspaceStore
                 .getState()
                 .applySurfaceNavigationSnapshot(snapshot);
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceProjectMenuRequested(() => {
+            setWorkspaceSurfaceProjectMenuRequest((current) => ({
+                id: (current?.id ?? 0) + 1,
+            }));
         });
     }, []);
 
@@ -4668,6 +4682,13 @@ export function App() {
                     ? openWorkspaceSurfaceGitScopeMenu
                     : undefined
             }
+            onOpenProjectMenu={
+                isWorkspaceHostRenderer && workspaceActiveContextKey
+                    ? () => {
+                          void getComandoApi()?.openWorkspaceSurfaceProjectMenu();
+                      }
+                    : undefined
+            }
             onActivateContext={activateWorkspaceContext}
             onCloneRepository={async (repositoryUrl) => {
                 const projectIds = await cloneRepository(repositoryUrl);
@@ -4848,6 +4869,30 @@ export function App() {
                     projectId={activeProjectId}
                     triggerHidden
                     worktreeId={activeWorktreeId}
+                />
+                <WorkspaceSurfaceProjectContextMenu
+                    externalMenuRequest={workspaceSurfaceProjectMenuRequest}
+                    onCloneRepository={async (repositoryUrl) => {
+                        const projectIds = await cloneRepository(repositoryUrl);
+                        for (const projectId of projectIds) {
+                            await useWorkspaceStore
+                                .getState()
+                                .openContext(projectId);
+                        }
+                        return projectIds.length > 0;
+                    }}
+                    onOpenProject={handleOpenProject}
+                    onOpenProjects={handleOpenProjects}
+                    onOpenSettings={(initialCategory) =>
+                        openSettingsWindow(initialCategory)
+                    }
+                    onOpenWorktree={(projectId, worktreeId) => {
+                        void useWorkspaceStore
+                            .getState()
+                            .openContext(projectId, worktreeId);
+                    }}
+                    projects={projectContextMenuProjects}
+                    settingsLabel={getSettingsUpdateMenuLabel(appUpdateState)}
                 />
                 <main
                     className="surface-focus h-full min-h-0 bg-bg-primary"
