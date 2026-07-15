@@ -42,12 +42,22 @@ export type AiSessionTranscriptEntry =
 
 export interface AiSessionTranscriptModel {
     readonly activePlanMessageId: string | null;
+    readonly entriesById: Readonly<Record<string, AiSessionTranscriptEntry>>;
     readonly lastAssistantMessageId: string | null;
     readonly lastThinkingMessageId: string | null;
     readonly lastTurnStartedMessageId: string | null;
     readonly messageIndexById: Readonly<Record<string, number>>;
+    readonly messageProjectionIndexByEntryId: Readonly<
+        Record<string, number>
+    >;
     readonly messageOrder: readonly string[];
     readonly messagesById: Readonly<Record<string, AiSessionTranscriptEntry>>;
+    readonly messages: readonly AiMessage[];
+    readonly orderedEntryIds: readonly string[];
+    readonly toolActivity: readonly AiToolActivity[];
+    readonly toolActivityProjectionIndexByEntryId: Readonly<
+        Record<string, number>
+    >;
 }
 
 interface TranscriptBuildInput {
@@ -69,19 +79,6 @@ interface TranscriptMergeOptions {
 const PLAN_ENTRY_ID = "plan:active";
 const STATUS_ENTRY_ID = "status:active-turn";
 const OPAQUE_ENCRYPTED_MESSAGE_PATTERN = /^gAAAAA[A-Za-z0-9_-]{40,}={0,2}$/;
-
-interface TranscriptPresentationCache {
-    readonly messages: readonly AiMessage[];
-    readonly toolActivity: readonly AiToolActivity[];
-}
-
-// Transcript models are immutable. Cache their projected arrays so remounting
-// a chat does not scan the complete ordered entry list twice before timeline
-// reconciliation even begins.
-const transcriptPresentationCache = new WeakMap<
-    AiSessionTranscriptModel,
-    TranscriptPresentationCache
->();
 
 export function createEmptyAiSessionTranscriptModel(): AiSessionTranscriptModel {
     return buildAiSessionTranscriptModel({
@@ -256,37 +253,13 @@ export function writeAiSessionTranscriptToSnapshot(
 export function getAiSessionTranscriptMessages(
     transcript: AiSessionTranscriptModel,
 ): readonly AiMessage[] {
-    return getTranscriptPresentationCache(transcript).messages;
+    return transcript.messages;
 }
 
 export function getAiSessionTranscriptToolActivity(
     transcript: AiSessionTranscriptModel,
 ): readonly AiToolActivity[] {
-    return getTranscriptPresentationCache(transcript).toolActivity;
-}
-
-function getTranscriptPresentationCache(
-    transcript: AiSessionTranscriptModel,
-): TranscriptPresentationCache {
-    const cached = transcriptPresentationCache.get(transcript);
-    if (cached) {
-        return cached;
-    }
-
-    const messages: AiMessage[] = [];
-    const toolActivity: AiToolActivity[] = [];
-    for (const entryId of transcript.messageOrder) {
-        const entry = transcript.messagesById[entryId];
-        if (entry?.kind === "message") {
-            messages.push(entry.message);
-        } else if (entry?.kind === "tool") {
-            toolActivity.push(entry.activity);
-        }
-    }
-
-    const presentation = { messages, toolActivity };
-    transcriptPresentationCache.set(transcript, presentation);
-    return presentation;
+    return transcript.toolActivity;
 }
 
 export function mergeAiSessionTranscriptSources(
@@ -414,48 +387,77 @@ function buildAiSessionTranscriptModelFromEntries(
     entries: readonly AiSessionTranscriptEntry[],
 ): AiSessionTranscriptModel {
     const sortedEntries = [...entries].sort(compareTranscriptEntries);
-    const messageOrder: string[] = [];
-    const messagesById: Record<string, AiSessionTranscriptEntry> = {};
+    const entriesById: Record<string, AiSessionTranscriptEntry> = {};
+    const orderedEntryIds: string[] = [];
+
+    for (const entry of sortedEntries) {
+        if (entriesById[entry.id]) {
+            continue;
+        }
+        entriesById[entry.id] = entry;
+        orderedEntryIds.push(entry.id);
+    }
+
+    return buildAiSessionTranscriptModelFromOrderedEntries(
+        orderedEntryIds,
+        entriesById,
+    );
+}
+
+function buildAiSessionTranscriptModelFromOrderedEntries(
+    orderedEntryIds: readonly string[],
+    entriesById: Readonly<Record<string, AiSessionTranscriptEntry>>,
+): AiSessionTranscriptModel {
     const messageIndexById: Record<string, number> = {};
+    const messageProjectionIndexByEntryId: Record<string, number> = {};
+    const messages: AiMessage[] = [];
+    const toolActivity: AiToolActivity[] = [];
+    const toolActivityProjectionIndexByEntryId: Record<string, number> = {};
     let lastAssistantMessageId: string | null = null;
     let lastThinkingMessageId: string | null = null;
     let lastTurnStartedMessageId: string | null = null;
     let activePlanMessageId: string | null = null;
 
-    for (const entry of sortedEntries) {
-        if (messagesById[entry.id]) {
+    for (const [index, entryId] of orderedEntryIds.entries()) {
+        const entry = entriesById[entryId];
+        if (!entry) {
             continue;
         }
 
-        messageIndexById[entry.id] = messageOrder.length;
-        messageOrder.push(entry.id);
-        messagesById[entry.id] = entry;
-
-        if (entry.kind === "message" && entry.message.kind === "assistant") {
-            lastAssistantMessageId = entry.id;
-        }
-
-        if (entry.kind === "message" && entry.message.kind === "thinking") {
-            lastThinkingMessageId = entry.id;
-        }
-
-        if (entry.kind === "status") {
-            lastTurnStartedMessageId = entry.id;
-        }
-
-        if (entry.kind === "plan" && isIncompletePlan(entry.plan)) {
-            activePlanMessageId = entry.id;
+        messageIndexById[entryId] = index;
+        if (entry.kind === "message") {
+            messageProjectionIndexByEntryId[entryId] = messages.length;
+            messages.push(entry.message);
+            if (entry.message.kind === "assistant") {
+                lastAssistantMessageId = entryId;
+            }
+            if (entry.message.kind === "thinking") {
+                lastThinkingMessageId = entryId;
+            }
+        } else if (entry.kind === "tool") {
+            toolActivityProjectionIndexByEntryId[entryId] = toolActivity.length;
+            toolActivity.push(entry.activity);
+        } else if (entry.kind === "status") {
+            lastTurnStartedMessageId = entryId;
+        } else if (entry.kind === "plan" && isIncompletePlan(entry.plan)) {
+            activePlanMessageId = entryId;
         }
     }
 
     return {
         activePlanMessageId,
+        entriesById,
         lastAssistantMessageId,
         lastThinkingMessageId,
         lastTurnStartedMessageId,
         messageIndexById,
-        messageOrder,
-        messagesById,
+        messageProjectionIndexByEntryId,
+        messageOrder: orderedEntryIds,
+        messagesById: entriesById,
+        messages,
+        orderedEntryIds,
+        toolActivity,
+        toolActivityProjectionIndexByEntryId,
     };
 }
 
@@ -466,23 +468,16 @@ function upsertAiSessionTranscriptEntry(
         readonly preserveCreatedAt?: boolean;
     } = {},
 ): AiSessionTranscriptModel {
-    const existing = transcript.messagesById[entry.id];
-    const entries = transcript.messageOrder
-        .map((entryId) => transcript.messagesById[entryId])
-        .filter((candidate): candidate is AiSessionTranscriptEntry =>
-            Boolean(candidate),
-        );
+    const existing = transcript.entriesById[entry.id];
 
     if (!existing) {
-        return buildAiSessionTranscriptModelFromEntries([...entries, entry]);
+        return insertAiSessionTranscriptEntry(transcript, entry);
     }
 
-    return buildAiSessionTranscriptModelFromEntries(
-        entries.map((candidate) =>
-            candidate.id === entry.id
-                ? mergeTranscriptEntry(existing, entry, options)
-                : candidate,
-        ),
+    return updateAiSessionTranscriptEntry(
+        transcript,
+        existing,
+        mergeTranscriptEntry(existing, entry, options),
     );
 }
 
@@ -491,7 +486,7 @@ function replaceAiSessionTranscriptEntry(
     entryId: string,
     updater: (entry: AiSessionTranscriptEntry) => AiSessionTranscriptEntry,
 ): AiSessionTranscriptModel {
-    const existing = transcript.messagesById[entryId];
+    const existing = transcript.entriesById[entryId];
     if (!existing) {
         return transcript;
     }
@@ -501,31 +496,256 @@ function replaceAiSessionTranscriptEntry(
         return transcript;
     }
 
-    return buildAiSessionTranscriptModelFromEntries(
-        transcript.messageOrder.flatMap((candidateId) => {
-            const candidate = transcript.messagesById[candidateId];
-            if (!candidate) {
-                return [];
-            }
-            return candidateId === entryId ? [nextEntry] : [candidate];
-        }),
-    );
+    return updateAiSessionTranscriptEntry(transcript, existing, nextEntry);
 }
 
 function removeAiSessionTranscriptEntry(
     transcript: AiSessionTranscriptModel,
     entryId: string,
 ): AiSessionTranscriptModel {
-    if (!transcript.messagesById[entryId]) {
+    if (!transcript.entriesById[entryId]) {
         return transcript;
     }
 
-    return buildAiSessionTranscriptModelFromEntries(
-        transcript.messageOrder.flatMap((candidateId) => {
-            const candidate = transcript.messagesById[candidateId];
-            return candidate && candidateId !== entryId ? [candidate] : [];
-        }),
+    const entriesById = { ...transcript.entriesById };
+    delete entriesById[entryId];
+    return buildAiSessionTranscriptModelFromOrderedEntries(
+        transcript.orderedEntryIds.filter((candidateId) => candidateId !== entryId),
+        entriesById,
     );
+}
+
+function insertAiSessionTranscriptEntry(
+    transcript: AiSessionTranscriptModel,
+    entry: AiSessionTranscriptEntry,
+): AiSessionTranscriptModel {
+    const entriesById = {
+        ...transcript.entriesById,
+        [entry.id]: entry,
+    };
+    const orderedEntryIds = transcript.orderedEntryIds;
+    const lastEntryId = orderedEntryIds[orderedEntryIds.length - 1];
+    const lastEntry = lastEntryId
+        ? transcript.entriesById[lastEntryId]
+        : undefined;
+
+    if (!lastEntry || compareTranscriptEntries(lastEntry, entry) <= 0) {
+        return appendAiSessionTranscriptEntry(
+            transcript,
+            entry,
+            entriesById,
+        );
+    }
+
+    const insertAt = findTranscriptEntryInsertIndex(
+        orderedEntryIds,
+        transcript.entriesById,
+        entry,
+    );
+    return buildAiSessionTranscriptModelFromOrderedEntries(
+        [
+            ...orderedEntryIds.slice(0, insertAt),
+            entry.id,
+            ...orderedEntryIds.slice(insertAt),
+        ],
+        entriesById,
+    );
+}
+
+function appendAiSessionTranscriptEntry(
+    transcript: AiSessionTranscriptModel,
+    entry: AiSessionTranscriptEntry,
+    entriesById: Readonly<Record<string, AiSessionTranscriptEntry>>,
+): AiSessionTranscriptModel {
+    const orderedEntryIds = [...transcript.orderedEntryIds, entry.id];
+    const messageIndexById = {
+        ...transcript.messageIndexById,
+        [entry.id]: transcript.orderedEntryIds.length,
+    };
+    const messageProjectionIndexByEntryId =
+        entry.kind === "message"
+            ? {
+                  ...transcript.messageProjectionIndexByEntryId,
+                  [entry.id]: transcript.messages.length,
+              }
+            : transcript.messageProjectionIndexByEntryId;
+    const toolActivityProjectionIndexByEntryId =
+        entry.kind === "tool"
+            ? {
+                  ...transcript.toolActivityProjectionIndexByEntryId,
+                  [entry.id]: transcript.toolActivity.length,
+              }
+            : transcript.toolActivityProjectionIndexByEntryId;
+
+    return {
+        ...transcript,
+        activePlanMessageId:
+            entry.kind === "plan"
+                ? isIncompletePlan(entry.plan)
+                    ? entry.id
+                    : transcript.activePlanMessageId
+                : transcript.activePlanMessageId,
+        entriesById,
+        lastAssistantMessageId:
+            entry.kind === "message" && entry.message.kind === "assistant"
+                ? entry.id
+                : transcript.lastAssistantMessageId,
+        lastThinkingMessageId:
+            entry.kind === "message" && entry.message.kind === "thinking"
+                ? entry.id
+                : transcript.lastThinkingMessageId,
+        lastTurnStartedMessageId:
+            entry.kind === "status"
+                ? entry.id
+                : transcript.lastTurnStartedMessageId,
+        messageIndexById,
+        messageOrder: orderedEntryIds,
+        messageProjectionIndexByEntryId,
+        messagesById: entriesById,
+        messages:
+            entry.kind === "message"
+                ? [...transcript.messages, entry.message]
+                : transcript.messages,
+        orderedEntryIds,
+        toolActivity:
+            entry.kind === "tool"
+                ? [...transcript.toolActivity, entry.activity]
+                : transcript.toolActivity,
+        toolActivityProjectionIndexByEntryId,
+    };
+}
+
+function updateAiSessionTranscriptEntry(
+    transcript: AiSessionTranscriptModel,
+    existing: AiSessionTranscriptEntry,
+    nextEntry: AiSessionTranscriptEntry,
+): AiSessionTranscriptModel {
+    if (existing.createdAt !== nextEntry.createdAt || existing.kind !== nextEntry.kind) {
+        const entriesById = { ...transcript.entriesById };
+        delete entriesById[existing.id];
+        const orderedEntryIds = transcript.orderedEntryIds.filter(
+            (entryId) => entryId !== existing.id,
+        );
+        entriesById[nextEntry.id] = nextEntry;
+        const insertAt = findTranscriptEntryInsertIndex(
+            orderedEntryIds,
+            entriesById,
+            nextEntry,
+        );
+        return buildAiSessionTranscriptModelFromOrderedEntries(
+            [
+                ...orderedEntryIds.slice(0, insertAt),
+                nextEntry.id,
+                ...orderedEntryIds.slice(insertAt),
+            ],
+            entriesById,
+        );
+    }
+
+    const entriesById = {
+        ...transcript.entriesById,
+        [nextEntry.id]: nextEntry,
+    };
+    const messages = updateMessagePresentation(
+        transcript,
+        existing,
+        nextEntry,
+    );
+    const toolActivity = updateToolActivityPresentation(
+        transcript,
+        existing,
+        nextEntry,
+    );
+
+    if (
+        existing.kind === "message" &&
+        nextEntry.kind === "message" &&
+        existing.message.kind !== nextEntry.message.kind
+    ) {
+        return buildAiSessionTranscriptModelFromOrderedEntries(
+            transcript.orderedEntryIds,
+            entriesById,
+        );
+    }
+
+    return {
+        ...transcript,
+        activePlanMessageId:
+            nextEntry.kind === "plan"
+                ? isIncompletePlan(nextEntry.plan)
+                    ? nextEntry.id
+                    : null
+                : transcript.activePlanMessageId,
+        entriesById,
+        messages,
+        messagesById: entriesById,
+        toolActivity,
+    };
+}
+
+function updateMessagePresentation(
+    transcript: AiSessionTranscriptModel,
+    existing: AiSessionTranscriptEntry,
+    nextEntry: AiSessionTranscriptEntry,
+): readonly AiMessage[] {
+    if (existing.kind !== "message" || nextEntry.kind !== "message") {
+        return transcript.messages;
+    }
+
+    const index = transcript.messageProjectionIndexByEntryId[existing.id];
+    return replaceTranscriptPresentationItem(
+        transcript.messages,
+        index,
+        nextEntry.message,
+    );
+}
+
+function updateToolActivityPresentation(
+    transcript: AiSessionTranscriptModel,
+    existing: AiSessionTranscriptEntry,
+    nextEntry: AiSessionTranscriptEntry,
+): readonly AiToolActivity[] {
+    if (existing.kind !== "tool" || nextEntry.kind !== "tool") {
+        return transcript.toolActivity;
+    }
+
+    const index = transcript.toolActivityProjectionIndexByEntryId[existing.id];
+    return replaceTranscriptPresentationItem(
+        transcript.toolActivity,
+        index,
+        nextEntry.activity,
+    );
+}
+
+function replaceTranscriptPresentationItem<T>(
+    items: readonly T[],
+    index: number | undefined,
+    nextItem: T,
+): readonly T[] {
+    if (index === undefined || items[index] === nextItem) {
+        return items;
+    }
+
+    return [...items.slice(0, index), nextItem, ...items.slice(index + 1)];
+}
+
+function findTranscriptEntryInsertIndex(
+    orderedEntryIds: readonly string[],
+    entriesById: Readonly<Record<string, AiSessionTranscriptEntry>>,
+    entry: AiSessionTranscriptEntry,
+): number {
+    let low = 0;
+    let high = orderedEntryIds.length;
+    while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        const candidate = entriesById[orderedEntryIds[middle]];
+        if (candidate && compareTranscriptEntries(candidate, entry) <= 0) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    return low;
 }
 
 function applyMessageDeltaToTranscript(
