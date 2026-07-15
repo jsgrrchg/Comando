@@ -226,6 +226,10 @@ interface RegisterIpcHandlersOptions {
     readonly gitService: GitGateway;
     readonly githubService: GitHubGateway;
     readonly getSnapshot: () => AppBootstrapSnapshot;
+    readonly captureWorkspaceSurfaceContext: (
+        hostWindowId: string,
+        contextKey: string,
+    ) => Promise<WorkspaceNavigationSnapshot | null>;
     readonly openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
     readonly persistenceService: PersistenceGateway;
     readonly projectService: ProjectService;
@@ -348,6 +352,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.initializeWorkspaceSurfaces);
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
+    ipcMain.removeHandler(IPC_CHANNELS.captureWorkspaceSurfaceContext);
+    ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceFocused);
     ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu);
@@ -1831,6 +1837,40 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             );
         },
     );
+    ipcMain.handle(
+        IPC_CHANNELS.captureWorkspaceSurfaceContext,
+        async (event, contextKey: unknown) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return null;
+            }
+            if (typeof contextKey !== "string" || contextKey.length === 0) {
+                throw new Error("A workspace context key is required.");
+            }
+            const snapshot = await options.captureWorkspaceSurfaceContext(
+                context.windowId,
+                contextKey,
+            );
+            if (snapshot) {
+                await options.workspaceService.saveSnapshot(
+                    context.workspaceId!,
+                    snapshot,
+                );
+            }
+            return snapshot;
+        },
+    );
+    ipcMain.handle(IPC_CHANNELS.notifyWorkspaceSurfaceFocused, (event) => {
+        const surfaceContext = workspaceSurfaceManager.getSurfaceContext(
+            event.sender,
+        );
+        if (!surfaceContext) {
+            return;
+        }
+        workspaceSurfaceManager
+            .getHostWebContents(surfaceContext.hostWindowId)
+            ?.send(IPC_EVENTS.workspaceSurfaceFocused);
+    });
     ipcMain.handle(
         IPC_CHANNELS.activateWorkspaceSurface,
         (event, contextKey: string) => {

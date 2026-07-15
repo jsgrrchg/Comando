@@ -359,46 +359,73 @@ export function App() {
             ),
         [closeWorkspaceTab],
     );
-    const requestCloseWorkspaceContext = useCallback((contextKey: string) => {
-        const workspaceState = useWorkspaceStore.getState();
-        const context = workspaceState.contextsByKey[contextKey];
-        if (!context) {
-            return Promise.resolve();
-        }
+    const requestCloseWorkspaceContext = useCallback(
+        async (contextKey: string) => {
+            const comandoApi = getComandoApi();
+            const flushSurfaceContext = async (): Promise<boolean> => {
+                if (!isWorkspaceHostRenderer || !comandoApi) {
+                    return true;
+                }
+                const snapshot = await comandoApi.captureWorkspaceSurfaceContext(
+                    contextKey,
+                );
+                if (snapshot) {
+                    useWorkspaceStore
+                        .getState()
+                        .applySurfaceNavigationSnapshot(snapshot);
+                }
+                return true;
+            };
 
-        const tabsById =
-            workspaceState.activeContextKey === contextKey
-                ? workspaceState.tabsById
-                : context.workspace.tabsById;
-        const workspaceName =
-            useProjectsStore
-                .getState()
-                .projects.find((project) => project.id === context.projectId)
-                ?.name ?? "this workspace";
-        return closeWorkspaceContextWithConfirmation(
-            {
-                projectId: context.projectId,
-                sessions: useAiStore.getState().sessions,
-                tabsById,
-                worktreeId: context.worktreeId,
-            },
-            () => useWorkspaceStore.getState().closeContext(contextKey),
-            {
-                confirm: async (summary) => {
-                    const comandoApi = getComandoApi();
-                    if (!comandoApi) {
-                        return false;
-                    }
+            if (!(await flushSurfaceContext())) {
+                return;
+            }
 
-                    return comandoApi.confirmWorkspaceClose({
-                        activeAgentCount: summary.activeAgentCount,
-                        dirtyFileCount: summary.dirtyFileCount,
-                        workspaceName,
-                    });
+            const workspaceState = useWorkspaceStore.getState();
+            const context = workspaceState.contextsByKey[contextKey];
+            if (!context) {
+                return;
+            }
+
+            const tabsById =
+                workspaceState.activeContextKey === contextKey
+                    ? workspaceState.tabsById
+                    : context.workspace.tabsById;
+            const workspaceName =
+                useProjectsStore
+                    .getState()
+                    .projects.find((project) => project.id === context.projectId)
+                    ?.name ?? "this workspace";
+            return closeWorkspaceContextWithConfirmation(
+                {
+                    projectId: context.projectId,
+                    sessions: useAiStore.getState().sessions,
+                    tabsById,
+                    worktreeId: context.worktreeId,
                 },
-            },
-        );
-    }, []);
+                async () => {
+                    if (!(await flushSurfaceContext())) {
+                        return;
+                    }
+                    await useWorkspaceStore.getState().closeContext(contextKey);
+                },
+                {
+                    confirm: async (summary) => {
+                        if (!comandoApi) {
+                            return false;
+                        }
+
+                        return comandoApi.confirmWorkspaceClose({
+                            activeAgentCount: summary.activeAgentCount,
+                            dirtyFileCount: summary.dirtyFileCount,
+                            workspaceName,
+                        });
+                    },
+                },
+            );
+        },
+        [],
+    );
     const requestMoveWorkspaceContextToNewWindow = useCallback(
         (contextKey: string) => {
             const workspaceState = useWorkspaceStore.getState();
@@ -778,6 +805,15 @@ export function App() {
                     emptyLayout: input.emptyLayout,
                 });
         });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceSnapshotRequested(() =>
+            useWorkspaceStore.getState().getNavigationSnapshot(),
+        );
     }, []);
 
     useEffect(() => {
@@ -2000,6 +2036,22 @@ export function App() {
         setGitHubSidebarSelectionResetSignal((signal) => signal + 1);
         setFileTreeContextMenu(null);
     }, [clearFileTreeSelection, focusSurface]);
+
+    const handleWorkspaceSurfacePointerDown = useCallback(() => {
+        focusWorkspaceSurface();
+        if (isWorkspaceSurfaceRenderer) {
+            void getComandoApi()?.notifyWorkspaceSurfaceFocused();
+        }
+    }, [focusWorkspaceSurface]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceFocused(
+            focusWorkspaceSurface,
+        );
+    }, [focusWorkspaceSurface]);
 
     const closeFileTreeContextMenu = useCallback(() => {
         const transientSelectionPath =
@@ -4924,7 +4976,7 @@ export function App() {
                     className="surface-focus h-full min-h-0 bg-bg-primary"
                     data-active={activeSurface === "workspace"}
                     onFocus={focusWorkspaceSurface}
-                    onPointerDown={focusWorkspaceSurface}
+                    onPointerDown={handleWorkspaceSurfacePointerDown}
                     tabIndex={0}
                 >
                     <WorkspaceTerminalHost />

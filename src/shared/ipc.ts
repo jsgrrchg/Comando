@@ -129,6 +129,8 @@ export const IPC_CHANNELS = {
     saveWorkspaceSnapshot: "workspace:save-snapshot",
     initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
     activateWorkspaceSurface: "workspace:activate-surface",
+    captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
+    notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
     requestWorkspaceSurfaceContext: "workspace:request-surface-context",
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
     openWorkspaceSurfaceProjectMenu: "workspace:open-surface-project-menu",
@@ -192,7 +194,10 @@ export const IPC_EVENTS = {
     workspaceReopenLastClosedTab: "workspace:reopen-last-closed-tab",
     workspaceFlushRequested: "workspace:flush-requested",
     workspaceFlushAcknowledged: "workspace:flush-acknowledged",
+    workspaceSurfaceSnapshotRequested: "workspace:surface-snapshot-requested",
+    workspaceSurfaceSnapshotCaptured: "workspace:surface-snapshot-captured",
     workspaceSurfaceSnapshotUpdated: "workspace:surface-snapshot-updated",
+    workspaceSurfaceFocused: "workspace:surface-focused",
     workspaceSurfaceContextRequested: "workspace:surface-context-requested",
     workspaceSurfaceGitScopeMenuRequested:
         "workspace:surface-git-scope-menu-requested",
@@ -3246,6 +3251,13 @@ export interface ComandoApi {
     saveWorkspaceSnapshot: (
         snapshot: WorkspaceNavigationSnapshot,
     ) => Promise<void>;
+    captureWorkspaceSurfaceContext: (
+        contextKey: WorkspaceContextKey,
+    ) => Promise<WorkspaceNavigationSnapshot | null>;
+    notifyWorkspaceSurfaceFocused: () => Promise<void>;
+    onWorkspaceSurfaceSnapshotRequested: (
+        listener: () => WorkspaceNavigationSnapshot,
+    ) => () => void;
     notifyFileBuffer: (input: FileBufferNotificationInput) => Promise<void>;
     getChatSessionState: (
         sessionId: string,
@@ -3376,6 +3388,7 @@ export interface ComandoApi {
     onWorkspaceSurfaceSnapshotUpdated: (
         listener: (snapshot: WorkspaceNavigationSnapshot) => void,
     ) => () => void;
+    onWorkspaceSurfaceFocused: (listener: () => void) => () => void;
     onWorkspaceSurfaceContextRequested: (
         listener: (input: WorkspaceSurfaceContextRequest) => void,
     ) => () => void;

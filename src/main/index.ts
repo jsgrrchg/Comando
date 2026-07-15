@@ -131,6 +131,13 @@ const pendingWorkspaceFlushes = new Map<
     string,
     { readonly senderId: number; readonly resolve: () => void }
 >();
+const pendingWorkspaceSurfaceCaptures = new Map<
+    string,
+    {
+        readonly resolve: (snapshot: WorkspaceNavigationSnapshot | null) => void;
+        readonly senderId: number;
+    }
+>();
 
 ipcMain.on(
     IPC_EVENTS.workspaceFlushAcknowledged,
@@ -144,6 +151,25 @@ ipcMain.on(
         }
         pendingWorkspaceFlushes.delete(requestId);
         pending.resolve();
+    },
+);
+
+ipcMain.on(
+    IPC_EVENTS.workspaceSurfaceSnapshotCaptured,
+    (event, requestId: unknown, snapshot: unknown) => {
+        if (typeof requestId !== "string") {
+            return;
+        }
+        const pending = pendingWorkspaceSurfaceCaptures.get(requestId);
+        if (!pending || pending.senderId !== event.sender.id) {
+            return;
+        }
+        pendingWorkspaceSurfaceCaptures.delete(requestId);
+        pending.resolve(
+            snapshot && typeof snapshot === "object"
+                ? (snapshot as WorkspaceNavigationSnapshot)
+                : null,
+        );
     },
 );
 
@@ -321,6 +347,8 @@ if (!hasSingleInstanceLock) {
 
             registerIpcHandlers({
                 aiService,
+                captureWorkspaceSurfaceContext:
+                    requestWorkspaceSurfaceContextCapture,
                 getSnapshot: () => {
                     if (!bootstrapSnapshot) {
                         throw new Error(
@@ -1045,6 +1073,47 @@ async function requestWorkspaceFlushesForHost(
         requestWorkspaceFlush(window.webContents),
         ...surfaces.map((webContents) => requestWorkspaceFlush(webContents)),
     ]);
+}
+
+async function requestWorkspaceSurfaceContextCapture(
+    hostWindowId: string,
+    contextKey: string,
+): Promise<WorkspaceNavigationSnapshot | null> {
+    const surface = workspaceSurfaceManager.getSurfaceWebContents(
+        hostWindowId,
+        contextKey,
+    );
+    if (!surface) {
+        return workspaceSurfaceManager.getHostSnapshotForWindow(hostWindowId);
+    }
+    const snapshot = await requestWorkspaceSurfaceSnapshot(surface);
+    if (!snapshot) {
+        return null;
+    }
+    return workspaceSurfaceManager.mergeSurfaceSnapshot(surface, snapshot)?.snapshot ?? null;
+}
+
+async function requestWorkspaceSurfaceSnapshot(
+    webContents: WebContents,
+): Promise<WorkspaceNavigationSnapshot | null> {
+    const requestId = `snapshot:${webContents.id}:${++nextWorkspaceFlushRequestId}`;
+    return await new Promise<WorkspaceNavigationSnapshot | null>((resolve) => {
+        const timer = setTimeout(() => {
+            pendingWorkspaceSurfaceCaptures.delete(requestId);
+            resolve(null);
+        }, 500);
+        pendingWorkspaceSurfaceCaptures.set(requestId, {
+            resolve: (snapshot) => {
+                clearTimeout(timer);
+                resolve(snapshot);
+            },
+            senderId: webContents.id,
+        });
+        webContents.send(
+            IPC_EVENTS.workspaceSurfaceSnapshotRequested,
+            requestId,
+        );
+    });
 }
 
 async function flushAllWorkspaceWindowsForQuit(): Promise<void> {

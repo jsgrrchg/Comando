@@ -860,6 +860,37 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceSurfaceSnapshotRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            requestId: string,
+        ) => {
+            try {
+                ipcRenderer.send(
+                    IPC_EVENTS.workspaceSurfaceSnapshotCaptured,
+                    requestId,
+                    listener(),
+                );
+            } catch {
+                ipcRenderer.send(
+                    IPC_EVENTS.workspaceSurfaceSnapshotCaptured,
+                    requestId,
+                    null,
+                );
+            }
+        };
+
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceSnapshotRequested,
+            handleEvent,
+        );
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceSnapshotRequested,
+                handleEvent,
+            );
+        };
+    },
     onWorkspaceSurfaceSnapshotUpdated: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -869,6 +900,16 @@ const comandoApi: ComandoApi = {
         return () => {
             ipcRenderer.removeListener(
                 IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceFocused: (listener) => {
+        const handleEvent = () => listener();
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceFocused, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceFocused,
                 handleEvent,
             );
         };
@@ -1000,6 +1041,13 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.initializeWorkspaceSurfaces, snapshot),
     activateWorkspaceSurface: (contextKey: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceSurface, contextKey),
+    captureWorkspaceSurfaceContext: (contextKey: string) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.captureWorkspaceSurfaceContext,
+            contextKey,
+        ),
+    notifyWorkspaceSurfaceFocused: () =>
+        ipcRenderer.invoke(IPC_CHANNELS.notifyWorkspaceSurfaceFocused),
     requestWorkspaceSurfaceContext: (input) =>
         ipcRenderer.invoke(IPC_CHANNELS.requestWorkspaceSurfaceContext, input),
     openWorkspaceSurfaceGitScopeMenu: (anchor) =>

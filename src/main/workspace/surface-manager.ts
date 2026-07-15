@@ -236,6 +236,24 @@ class WorkspaceSurfaceManager {
         return this.#hostsByWindowId.get(surface.hostWindowId)?.snapshot ?? null;
     }
 
+    getHostSnapshotForWindow(
+        hostWindowId: string,
+    ): WorkspaceNavigationSnapshot | null {
+        return this.#hostsByWindowId.get(hostWindowId)?.snapshot ?? null;
+    }
+
+    getSurfaceWebContents(
+        hostWindowId: string,
+        contextKey: string,
+    ): WebContents | null {
+        const host = this.#hostsByWindowId.get(hostWindowId);
+        const surfaceId = host?.surfaceIdsByContextKey.get(contextKey);
+        const surface = surfaceId ? this.#surfacesById.get(surfaceId) : null;
+        return surface && !surface.webContents.isDestroyed()
+            ? surface.webContents
+            : null;
+    }
+
     mergeSurfaceSnapshot(
         webContents: WebContents,
         snapshot: WorkspaceNavigationSnapshot,
