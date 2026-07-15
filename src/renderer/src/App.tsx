@@ -764,6 +764,19 @@ export function App() {
         return () => observer.disconnect();
     }, []);
 
+    useLayoutEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        void getComandoApi()?.setWorkspaceSurfaceContentLeftInset(
+            leftCollapsed
+                ? (sidebarOverlayVisible
+                  ? leftWidth
+                  : edgePeekConfig.hotspotWidth)
+                : leftWidth + shellLayoutConstraints.handleWidth,
+        );
+    }, [leftCollapsed, leftWidth, sidebarOverlayVisible]);
+
     useEffect(() => {
         const comandoApi = getComandoApi();
         if (!comandoApi) {
@@ -1389,20 +1402,6 @@ export function App() {
         cancelSidebarOverlayClose();
         setSidebarOverlayVisible(true);
     }, [cancelSidebarOverlayClose]);
-
-    useEffect(() => {
-        if (!isWorkspaceSurfaceRenderer) {
-            return;
-        }
-        const comandoApi = getComandoApi();
-        if (!comandoApi) {
-            return;
-        }
-        return comandoApi.onWorkspaceSurfaceToggleSidebar(() => {
-            toggleLeftCollapsed();
-            hideSidebarOverlayImmediately();
-        });
-    }, [hideSidebarOverlayImmediately, toggleLeftCollapsed]);
 
     const finishSidebarOriginDrag = useCallback(() => {
         if (!sidebarDragActiveRef.current) {
@@ -4663,9 +4662,6 @@ export function App() {
             onToggleLeftSidebar={() => {
                 toggleLeftCollapsed();
                 hideSidebarOverlayImmediately();
-                if (isWorkspaceHostRenderer) {
-                    void getComandoApi()?.toggleWorkspaceSurfaceSidebar();
-                }
             }}
             platform={bootstrap?.platform ?? null}
             settingsLabel={getSettingsUpdateMenuLabel(appUpdateState)}
@@ -4675,10 +4671,159 @@ export function App() {
     if (isWorkspaceHostRenderer) {
         return (
             <div
-                className="min-h-screen text-text-primary"
+                className="relative flex h-screen min-h-0 flex-col text-text-primary"
                 data-platform={bootstrap?.platform ?? undefined}
             >
                 <div ref={workspaceHostTitleBarRef}>{desktopTopBar}</div>
+                <div
+                    className="grid min-h-0 flex-1"
+                    style={{ gridTemplateColumns }}
+                >
+                    <aside
+                        className="app-sidebar flex min-h-0 flex-col"
+                        style={
+                            leftCollapsed ? { overflow: "hidden" } : undefined
+                        }
+                        data-active={activeSurface === "projects"}
+                        onClick={() => focusSurface("projects")}
+                        onFocus={() => focusSurface("projects")}
+                        tabIndex={0}
+                    >
+                        {!leftCollapsed && sidebarContent}
+                    </aside>
+
+                    <div
+                        style={
+                            leftCollapsed
+                                ? {
+                                      overflow: "hidden",
+                                      pointerEvents: "none",
+                                  }
+                                : undefined
+                        }
+                    >
+                        <SplitHandle
+                            label="Resize project sidebar"
+                            onPointerDown={(event) =>
+                                startDragging(
+                                    "left",
+                                    event,
+                                    leftWidth,
+                                    setDragState,
+                                )
+                            }
+                            onStepBackward={() =>
+                                nudgePanel(
+                                    "left",
+                                    -shellLayoutConstraints.keyboardStep,
+                                )
+                            }
+                            onStepForward={() =>
+                                nudgePanel(
+                                    "left",
+                                    shellLayoutConstraints.keyboardStep,
+                                )
+                            }
+                        />
+                    </div>
+                    <div className="min-h-0" />
+                </div>
+
+                {leftCollapsed && (
+                    <div
+                        style={{
+                            position: "absolute",
+                            left: 0,
+                            top: "var(--desktop-titlebar-height, 40px)",
+                            bottom: 0,
+                            width: sidebarOverlayVisible
+                                ? 0
+                                : edgePeekConfig.hotspotWidth,
+                            zIndex: 10,
+                        }}
+                        onMouseEnter={showSidebarOverlay}
+                    />
+                )}
+
+                {leftCollapsed && sidebarOverlayVisible && (
+                    <div
+                        ref={sidebarOverlayRef}
+                        className="app-sidebar flex min-h-0 flex-col"
+                        data-edge-peek-overlay="left"
+                        data-edge-peek-state={
+                            sidebarOverlayClosing ? "closing" : "opening"
+                        }
+                        style={{
+                            position: "absolute",
+                            left: 0,
+                            top: "var(--desktop-titlebar-height, 40px)",
+                            bottom: 0,
+                            width: leftWidth,
+                            zIndex: 10,
+                            boxShadow: "var(--shadow-soft)",
+                            borderRight: "1px solid var(--color-border)",
+                        }}
+                        onMouseEnter={(event) => {
+                            rememberSidebarPointer(event);
+                            cancelSidebarOverlayClose();
+                        }}
+                        onMouseMove={rememberSidebarPointer}
+                        onMouseLeave={(event) => {
+                            rememberSidebarPointer(event);
+                            hideSidebarOverlayWithAnimation();
+                        }}
+                        onDragStartCapture={startSidebarOriginDrag}
+                        onDragEndCapture={(event) => {
+                            sidebarPointerRef.current = {
+                                x: event.clientX,
+                                y: event.clientY,
+                            };
+                            finishSidebarOriginDrag();
+                        }}
+                        onAnimationEnd={(event) => {
+                            if (
+                                event.currentTarget !== event.target ||
+                                !sidebarOverlayClosing
+                            ) {
+                                return;
+                            }
+
+                            setSidebarOverlayClosing(false);
+                            setSidebarOverlayVisible(false);
+                        }}
+                    >
+                        {sidebarContent}
+                    </div>
+                )}
+            </div>
+        );
+    }
+
+    if (isWorkspaceSurfaceRenderer) {
+        return (
+            <div
+                className="h-screen min-h-0 text-text-primary"
+                data-platform={bootstrap?.platform ?? undefined}
+            >
+                <main
+                    className="surface-focus h-full min-h-0 bg-bg-primary"
+                    data-active={activeSurface === "workspace"}
+                    onFocus={focusWorkspaceSurface}
+                    onPointerDown={focusWorkspaceSurface}
+                    tabIndex={0}
+                >
+                    <WorkspaceTerminalHost />
+                    <WorkspaceView
+                        defaultProjectId={activeProjectId}
+                        defaultWorktreeId={activeWorktreeId}
+                        onOpenProject={handleOpenProject}
+                        onOpenProjects={handleOpenProjects}
+                        onRequestCreateFile={() => {
+                            void handleCreateTreeEntry("file", null);
+                        }}
+                        recentProjects={workspaceRecentProjects}
+                    />
+                </main>
             </div>
         );
     }
@@ -4690,7 +4835,7 @@ export function App() {
         >
             <div className="relative h-screen">
                 <div className="flex h-full flex-col overflow-hidden">
-                    {!isWorkspaceSurfaceRenderer && desktopTopBar}
+                    {desktopTopBar}
                     <div
                         className="grid min-h-0 flex-1"
                         style={{

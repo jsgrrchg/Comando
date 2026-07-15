@@ -130,7 +130,7 @@ export const IPC_CHANNELS = {
     initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
     activateWorkspaceSurface: "workspace:activate-surface",
     setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
-    toggleWorkspaceSurfaceSidebar: "workspace:toggle-surface-sidebar",
+    setWorkspaceSurfaceContentLeftInset: "workspace:set-surface-content-left-inset",
     notifyFileBuffer: "workspace:notify-file-buffer",
     getChatSessionState: "workspace:get-chat-session-state",
     createTerminalSession: "terminals:create-session",
@@ -189,7 +189,6 @@ export const IPC_EVENTS = {
     workspaceReopenLastClosedTab: "workspace:reopen-last-closed-tab",
     workspaceFlushRequested: "workspace:flush-requested",
     workspaceFlushAcknowledged: "workspace:flush-acknowledged",
-    workspaceSurfaceToggleSidebar: "workspace:surface-toggle-sidebar",
     workspaceSurfaceSnapshotUpdated: "workspace:surface-snapshot-updated",
     gitRepositoryInvalidated: "git:repository-invalidated",
     gitRepositorySnapshotUpdated: "git:repository-snapshot-updated",
@@ -2992,7 +2991,7 @@ export interface ComandoApi {
     ) => Promise<void>;
     activateWorkspaceSurface: (contextKey: string) => Promise<void>;
     setWorkspaceSurfaceContentInset: (height: number) => Promise<void>;
-    toggleWorkspaceSurfaceSidebar: () => Promise<void>;
+    setWorkspaceSurfaceContentLeftInset: (width: number) => Promise<void>;
     setTrafficLightVisibility: (visible: boolean) => Promise<void>;
     setNativeAppearance: (mode: ThemeMode) => Promise<void>;
     resolveTsconfigForPath: (
@@ -3353,7 +3352,6 @@ export interface ComandoApi {
     onWorkspaceFlushRequested: (
         listener: () => Promise<void> | void,
     ) => () => void;
-    onWorkspaceSurfaceToggleSidebar: (listener: () => void) => () => void;
     onWorkspaceSurfaceSnapshotUpdated: (
         listener: (snapshot: WorkspaceNavigationSnapshot) => void,
     ) => () => void;

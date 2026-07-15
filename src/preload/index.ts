@@ -859,16 +859,6 @@ const comandoApi: ComandoApi = {
             );
         };
     },
-    onWorkspaceSurfaceToggleSidebar: (listener) => {
-        const handleEvent = () => listener();
-        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceToggleSidebar, handleEvent);
-        return () => {
-            ipcRenderer.removeListener(
-                IPC_EVENTS.workspaceSurfaceToggleSidebar,
-                handleEvent,
-            );
-        };
-    },
     onWorkspaceSurfaceSnapshotUpdated: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -969,8 +959,11 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceSurface, contextKey),
     setWorkspaceSurfaceContentInset: (height: number) =>
         ipcRenderer.invoke(IPC_CHANNELS.setWorkspaceSurfaceContentInset, height),
-    toggleWorkspaceSurfaceSidebar: () =>
-        ipcRenderer.invoke(IPC_CHANNELS.toggleWorkspaceSurfaceSidebar),
+    setWorkspaceSurfaceContentLeftInset: (width: number) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset,
+            width,
+        ),
     setTrafficLightVisibility: (visible: boolean) =>
         ipcRenderer.invoke(IPC_CHANNELS.setTrafficLightVisibility, visible),
     setNativeAppearance: (mode: ThemeMode) =>

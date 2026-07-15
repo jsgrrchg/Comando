@@ -31,6 +31,7 @@ interface WorkspaceSurfaceRecord {
 interface WorkspaceSurfaceHostRecord {
     activeContextKey: string | null;
     contentInset: number;
+    contentLeftInset: number;
     readonly hostWindow: BrowserWindow;
     readonly hostWindowId: string;
     snapshot: WorkspaceNavigationSnapshot;
@@ -69,6 +70,7 @@ class WorkspaceSurfaceManager {
             host = {
                 activeContextKey: null,
                 contentInset: DESKTOP_TITLE_BAR_HEIGHT,
+                contentLeftInset: 0,
                 hostWindow,
                 hostWindowId: hostContext.windowId,
                 snapshot,
@@ -133,6 +135,16 @@ class WorkspaceSurfaceManager {
         }
 
         host.contentInset = Math.max(0, Math.round(height));
+        this.#applyVisibility(host);
+    }
+
+    setContentLeftInset(hostWindowId: string, width: number): void {
+        const host = this.#hostsByWindowId.get(hostWindowId);
+        if (!host || !Number.isFinite(width)) {
+            return;
+        }
+
+        host.contentLeftInset = Math.max(0, Math.round(width));
         this.#applyVisibility(host);
     }
 
@@ -235,12 +247,6 @@ class WorkspaceSurfaceManager {
                 ? [surface.view.webContents]
                 : [];
         });
-    }
-
-    toggleSidebar(hostWindowId: string): void {
-        for (const webContents of this.getWebContentsForHost(hostWindowId)) {
-            webContents.send(IPC_EVENTS.workspaceSurfaceToggleSidebar);
-        }
     }
 
     getHostWebContents(hostWindowId: string): WebContents | null {
@@ -403,8 +409,8 @@ class WorkspaceSurfaceManager {
             const isActive = contextKey === host.activeContextKey;
             surface.view.setBounds({
                 height: Math.max(0, bounds.height - host.contentInset),
-                width: bounds.width,
-                x: 0,
+                width: Math.max(0, bounds.width - host.contentLeftInset),
+                x: host.contentLeftInset,
                 y: host.contentInset,
             });
             surface.view.setVisible(isActive);

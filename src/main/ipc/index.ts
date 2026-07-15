@@ -348,7 +348,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.initializeWorkspaceSurfaces);
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
-    ipcMain.removeHandler(IPC_CHANNELS.toggleWorkspaceSurfaceSidebar);
+    ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset);
     ipcMain.removeHandler(IPC_CHANNELS.notifyFileBuffer);
     ipcMain.removeHandler(IPC_CHANNELS.getChatSessionState);
     ipcMain.removeHandler(IPC_CHANNELS.createTerminalSession);
@@ -1865,12 +1865,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             }
         },
     );
-    ipcMain.handle(IPC_CHANNELS.toggleWorkspaceSurfaceSidebar, (event) => {
-        const context = requireWindowContext(event.sender, "main");
-        if (!workspaceSurfaceManager.isSurface(event.sender)) {
-            workspaceSurfaceManager.toggleSidebar(context.windowId);
-        }
-    });
+    ipcMain.handle(
+        IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset,
+        (event, width: number) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (!workspaceSurfaceManager.isSurface(event.sender)) {
+                workspaceSurfaceManager.setContentLeftInset(
+                    context.windowId,
+                    width,
+                );
+            }
+        },
+    );
     ipcMain.handle(
         IPC_CHANNELS.notifyFileBuffer,
         (_event, input: FileBufferNotificationInput) => {
