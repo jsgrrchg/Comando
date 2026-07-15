@@ -1660,6 +1660,7 @@ function WorkspacePaneView({
         openChatImageTab,
         openFileTab,
         openGitTab,
+        openGitWorktreeDiffTab,
         openReviewTab,
         paneCount,
         recentActiveTabIds,
@@ -1699,6 +1700,7 @@ function WorkspacePaneView({
                         openChatImageTab: state.openChatImageTab,
                         openFileTab: state.openFileTab,
                         openGitTab: state.openGitTab,
+                        openGitWorktreeDiffTab: state.openGitWorktreeDiffTab,
                         openReviewTab: state.openReviewTab,
                         paneCount: getIndexedWorkspacePaneCount(state.rootNode),
                         recentActiveTabIds: state.recentActiveTabIds,
@@ -2442,6 +2444,7 @@ function WorkspacePaneView({
         handleCreateFile,
         openChatHistoryTab,
         openGitTab,
+        openGitWorktreeDiffTab,
         paneNodeId,
         selectAdjacentTab: handleSelectAdjacentTab,
     });
@@ -2454,6 +2457,7 @@ function WorkspacePaneView({
             handleCreateFile,
             openChatHistoryTab,
             openGitTab,
+            openGitWorktreeDiffTab,
             paneNodeId,
             selectAdjacentTab: handleSelectAdjacentTab,
         };
@@ -2465,6 +2469,7 @@ function WorkspacePaneView({
         handleCreateFile,
         openChatHistoryTab,
         openGitTab,
+        openGitWorktreeDiffTab,
         paneNodeId,
         handleSelectAdjacentTab,
     ]);
@@ -2568,6 +2573,20 @@ function WorkspacePaneView({
                 event.preventDefault();
                 event.stopPropagation();
                 void handlers.openGitTab(
+                    handlers.defaultProjectId,
+                    handlers.defaultWorktreeId ?? null,
+                );
+                return;
+            }
+
+            if (event.shiftKey && key === "m") {
+                if (!handlers.defaultProjectId) {
+                    return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+                void handlers.openGitWorktreeDiffTab(
                     handlers.defaultProjectId,
                     handlers.defaultWorktreeId ?? null,
                 );

@@ -19,6 +19,7 @@ export interface ShortcutDefinition {
         | "open_current_project_in_new_window"
         | "open_file_picker"
         | "open_settings"
+        | "open_uncommitted_changes"
         | "previous_pane_tab"
         | "previous_workspace"
         | "reload_window"
@@ -253,6 +254,17 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         keys: {
             mac: "Cmd+Shift+G",
             windows: "Ctrl+Shift+G",
+        },
+        section: "Git",
+    },
+    {
+        id: "open_uncommitted_changes",
+        label: "Open uncommitted changes",
+        description:
+            "Open the singleton uncommitted changes tab for the active project.",
+        keys: {
+            mac: "Cmd+Shift+M",
+            windows: "Ctrl+Shift+M",
         },
         section: "Git",
     },
