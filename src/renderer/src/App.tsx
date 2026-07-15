@@ -274,6 +274,20 @@ export function App() {
     const openWorkspaceContextKeys = useWorkspaceStore(
         (state) => state.openContextKeys,
     );
+    const workspaceSurfaceTopologyKey = useMemo(
+        () =>
+            JSON.stringify(
+                openWorkspaceContextKeys.map((contextKey) => {
+                    const context = workspaceContextsByKey[contextKey];
+                    return [
+                        contextKey,
+                        context?.projectId ?? null,
+                        context?.worktreeId ?? null,
+                    ];
+                }),
+            ),
+        [openWorkspaceContextKeys, workspaceContextsByKey],
+    );
     const activeWorkspaceContext = useWorkspaceStore((state) =>
         state.activeContextKey
             ? (state.contextsByKey[state.activeContextKey] ?? null)
@@ -723,10 +737,9 @@ export function App() {
             useWorkspaceStore.getState().getNavigationSnapshot(),
         );
     }, [
-        openWorkspaceContextKeys,
         workspaceActiveContextKey,
-        workspaceContextsByKey,
         workspaceNavigationHydrated,
+        workspaceSurfaceTopologyKey,
     ]);
 
     useEffect(() => {

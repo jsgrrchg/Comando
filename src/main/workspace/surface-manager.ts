@@ -20,12 +20,21 @@ import {
 import { windowRegistry } from "@main/windows/registry";
 
 interface WorkspaceSurfaceRecord {
+    bounds: WorkspaceSurfaceBounds | null;
     readonly context: WindowContextSnapshot;
     readonly contextKey: string;
     readonly hostWindowId: string;
     readonly id: string;
+    isVisible: boolean;
     snapshot: WorkspaceNavigationSnapshot;
     readonly view: WebContentsView;
+}
+
+interface WorkspaceSurfaceBounds {
+    readonly height: number;
+    readonly width: number;
+    readonly x: number;
+    readonly y: number;
 }
 
 interface WorkspaceSurfaceHostRecord {
@@ -104,12 +113,15 @@ class WorkspaceSurfaceManager {
             }
         }
 
-        host.activeContextKey =
+        const nextActiveContextKey =
             snapshot.activeContextKey && openContextKeys.has(snapshot.activeContextKey)
                 ? snapshot.activeContextKey
                 : (snapshot.openContextKeys[0] ?? null);
+        const activeContextChanged =
+            host.activeContextKey !== nextActiveContextKey;
+        host.activeContextKey = nextActiveContextKey;
         host.snapshot = this.#mergeKnownSurfaceSnapshots(host, snapshot);
-        this.#applyVisibility(host);
+        this.#applyVisibility(host, { focusActive: activeContextChanged });
         return host.snapshot;
     }
 
@@ -119,12 +131,16 @@ class WorkspaceSurfaceManager {
             return false;
         }
 
+        if (host.activeContextKey === contextKey) {
+            return true;
+        }
+
         host.activeContextKey = contextKey;
         host.snapshot = {
             ...host.snapshot,
             activeContextKey: contextKey,
         };
-        this.#applyVisibility(host);
+        this.#applyVisibility(host, { focusActive: true });
         return true;
     }
 
@@ -168,7 +184,12 @@ class WorkspaceSurfaceManager {
             return;
         }
 
-        host.contentInset = Math.max(0, Math.round(height));
+        const nextContentInset = Math.max(0, Math.round(height));
+        if (host.contentInset === nextContentInset) {
+            return;
+        }
+
+        host.contentInset = nextContentInset;
         this.#applyVisibility(host);
     }
 
@@ -178,7 +199,12 @@ class WorkspaceSurfaceManager {
             return;
         }
 
-        host.contentLeftInset = Math.max(0, Math.round(width));
+        const nextContentLeftInset = Math.max(0, Math.round(width));
+        if (host.contentLeftInset === nextContentLeftInset) {
+            return;
+        }
+
+        host.contentLeftInset = nextContentLeftInset;
         this.#applyVisibility(host);
     }
 
@@ -365,10 +391,12 @@ class WorkspaceSurfaceManager {
             worktreeId: workspaceContext.worktreeId,
         };
         const surface: WorkspaceSurfaceRecord = {
+            bounds: null,
             context,
             contextKey,
             hostWindowId: host.hostWindowId,
             id,
+            isVisible: false,
             snapshot: toSurfaceSnapshot(hostSnapshot, contextKey),
             view,
         };
@@ -430,7 +458,10 @@ class WorkspaceSurfaceManager {
         }
     }
 
-    #applyVisibility(host: WorkspaceSurfaceHostRecord): void {
+    #applyVisibility(
+        host: WorkspaceSurfaceHostRecord,
+        options: { readonly focusActive?: boolean } = {},
+    ): void {
         if (host.hostWindow.isDestroyed()) {
             return;
         }
@@ -441,14 +472,21 @@ class WorkspaceSurfaceManager {
                 continue;
             }
             const isActive = contextKey === host.activeContextKey;
-            surface.view.setBounds({
+            const nextBounds: WorkspaceSurfaceBounds = {
                 height: Math.max(0, bounds.height - host.contentInset),
                 width: Math.max(0, bounds.width - host.contentLeftInset),
                 x: host.contentLeftInset,
                 y: host.contentInset,
-            });
-            surface.view.setVisible(isActive);
-            if (isActive) {
+            };
+            if (!areWorkspaceSurfaceBoundsEqual(surface.bounds, nextBounds)) {
+                surface.view.setBounds(nextBounds);
+                surface.bounds = nextBounds;
+            }
+            if (surface.isVisible !== isActive) {
+                surface.view.setVisible(isActive);
+                surface.isVisible = isActive;
+            }
+            if (isActive && options.focusActive) {
                 surface.view.webContents.focus();
             }
         }
@@ -479,6 +517,18 @@ class WorkspaceSurfaceManager {
         const surfaceId = this.#surfaceIdsByWebContentsId.get(webContents.id);
         return surfaceId ? (this.#surfacesById.get(surfaceId) ?? null) : null;
     }
+}
+
+function areWorkspaceSurfaceBoundsEqual(
+    left: WorkspaceSurfaceBounds | null,
+    right: WorkspaceSurfaceBounds,
+): boolean {
+    return (
+        left?.height === right.height &&
+        left.width === right.width &&
+        left.x === right.x &&
+        left.y === right.y
+    );
 }
 
 function resolveWorkspaceSurfaceSwitchDirection(
