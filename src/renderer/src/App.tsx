@@ -728,6 +728,16 @@ export function App() {
             return;
         }
         return comandoApi.onWorkspaceSurfaceSnapshotUpdated((snapshot) => {
+            const currentContextKey =
+                useWorkspaceStore.getState().activeContextKey;
+            if (
+                snapshot.activeContextKey &&
+                snapshot.activeContextKey !== currentContextKey
+            ) {
+                void comandoApi.activateWorkspaceSurface(
+                    snapshot.activeContextKey,
+                );
+            }
             useWorkspaceStore
                 .getState()
                 .applySurfaceNavigationSnapshot(snapshot);

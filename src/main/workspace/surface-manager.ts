@@ -336,6 +336,28 @@ class WorkspaceSurfaceManager {
         this.#surfaceIdsByWebContentsId.set(view.webContents.id, id);
         host.surfaceIdsByContextKey.set(contextKey, id);
         windowRegistry.registerEmbeddedRenderer(view.webContents, context);
+        view.webContents.on("before-input-event", (event, input) => {
+            const direction = resolveWorkspaceSurfaceSwitchDirection(input);
+            if (!direction) {
+                return;
+            }
+
+            const nextContextKey = getAdjacentContextKey(
+                host.snapshot.openContextKeys,
+                host.activeContextKey,
+                direction,
+            );
+            if (!nextContextKey) {
+                return;
+            }
+
+            event.preventDefault();
+            this.activate(host.hostWindowId, nextContextKey);
+            host.hostWindow.webContents.send(
+                IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
+                host.snapshot,
+            );
+        });
         view.webContents.once("did-finish-load", () => {
             if (!view.webContents.isDestroyed()) {
                 this.#lifecycleHandlers.onSurfaceCreated?.(view.webContents, id);
@@ -417,6 +439,48 @@ class WorkspaceSurfaceManager {
         const surfaceId = this.#surfaceIdsByWebContentsId.get(webContents.id);
         return surfaceId ? (this.#surfacesById.get(surfaceId) ?? null) : null;
     }
+}
+
+function resolveWorkspaceSurfaceSwitchDirection(
+    input: Electron.Input,
+): "next" | "previous" | null {
+    if (
+        input.type !== "keyDown" ||
+        input.shift ||
+        !input.alt ||
+        (process.platform === "darwin"
+            ? !input.meta || input.control
+            : !input.control || input.meta)
+    ) {
+        return null;
+    }
+
+    if (input.code === "BracketRight" || input.key === "]") {
+        return "next";
+    }
+    if (input.code === "BracketLeft" || input.key === "[") {
+        return "previous";
+    }
+    return null;
+}
+
+function getAdjacentContextKey(
+    contextKeys: readonly string[],
+    activeContextKey: string | null,
+    direction: "next" | "previous",
+): string | null {
+    if (contextKeys.length < 2 || !activeContextKey) {
+        return null;
+    }
+    const activeIndex = contextKeys.indexOf(activeContextKey);
+    if (activeIndex < 0) {
+        return null;
+    }
+    const targetIndex =
+        direction === "next"
+            ? (activeIndex + 1) % contextKeys.length
+            : (activeIndex - 1 + contextKeys.length) % contextKeys.length;
+    return contextKeys[targetIndex] ?? null;
 }
 
 function toSurfaceSnapshot(
