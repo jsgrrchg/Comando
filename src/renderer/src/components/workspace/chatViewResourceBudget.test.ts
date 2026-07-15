@@ -7,7 +7,7 @@ import {
 import { createChatPerformanceWorkspaceFixture } from "./chat/chatPerformanceFixtures";
 
 describe("resolveHotChatTabIds", () => {
-    it("cools the retained tabs from the four-pane performance fixture", () => {
+    it("keeps only visible active chats mounted from the four-pane fixture", () => {
         const fixture = createChatPerformanceWorkspaceFixture();
         const hotTabIds = resolveHotChatTabIds({
             focusedPaneId: fixture.panes[0]?.id ?? "",
@@ -28,7 +28,7 @@ describe("resolveHotChatTabIds", () => {
         ).toBe(true);
     });
 
-    it("shares retained views across panes instead of multiplying the local limit", () => {
+    it("does not retain inactive transcript trees across panes", () => {
         const panes = Array.from({ length: 4 }, (_, index) => ({
             activeTabId: `chat-${index + 1}`,
             chatTabIds: [
@@ -52,29 +52,13 @@ describe("resolveHotChatTabIds", () => {
         });
 
         expect(hotTabIds).toEqual(
-            new Set([
-                "chat-1",
-                "chat-2",
-                "chat-3",
-                "chat-4",
-                "chat-5",
-                "chat-6",
-                "chat-7",
-                "chat-8",
-                "chat-9",
-                "chat-10",
-                "chat-11",
-                "chat-12",
-            ]),
+            new Set(["chat-1", "chat-2", "chat-3", "chat-4"]),
         );
         expect(hotTabIds.size).toBe(4 + MAX_ADDITIONAL_HOT_CHAT_TAB_VIEWS);
     });
 
-    it("protects visible active chats and ejects the least recent hidden view", () => {
-        const recentlyVisited = Array.from(
-            { length: MAX_ADDITIONAL_HOT_CHAT_TAB_VIEWS - 1 },
-            (_, index) => `recent-${index + 1}`,
-        );
+    it("keeps recent inactive chats warm without mounting them", () => {
+        const recentlyVisited = ["recent-1", "recent-2"];
         const initial = resolveHotChatTabIds({
             focusedPaneId: "pane-a",
             panes: [
@@ -112,12 +96,8 @@ describe("resolveHotChatTabIds", () => {
             recentActiveTabIds: ["new-active", "focused", ...recentlyVisited],
         });
 
-        expect(initial).toEqual(
-            new Set(["focused", ...recentlyVisited, "old"]),
-        );
-        expect(afterActivation).toEqual(
-            new Set(["new-active", "focused", ...recentlyVisited]),
-        );
+        expect(initial).toEqual(new Set(["focused"]));
+        expect(afterActivation).toEqual(new Set(["new-active", "focused"]));
         expect(afterActivation.has("old")).toBe(false);
     });
 

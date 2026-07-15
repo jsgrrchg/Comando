@@ -50,6 +50,7 @@ import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexS
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
+import { getRendererTaskScheduler } from "@renderer/app/runtime/renderer-task-scheduler";
 import {
     isChatPerformanceProbeEnabled,
     measureChatPerformance,
@@ -1967,6 +1968,7 @@ export const ChatTabView = memo(function ChatTabView({
         Array<(entries: readonly ProjectTreeNode[]) => void>
     >([]);
     const projectSearchAbortRef = useRef<AbortController | null>(null);
+    const projectSearchScheduler = getRendererTaskScheduler();
 
     useEffect(() => {
         return () => {
@@ -1977,12 +1979,23 @@ export const ChatTabView = memo(function ChatTabView({
 
             projectSearchAbortRef.current?.abort();
             projectSearchAbortRef.current = null;
+            projectSearchScheduler.cancelWorkspace(tab.sessionId);
 
             const pendingResolversRef = pendingProjectSearchResolversRef;
             const pendingResolvers = pendingResolversRef.current.splice(0);
             pendingResolvers.forEach((resolve) => resolve([]));
         };
-    }, []);
+    }, [projectSearchScheduler, tab.sessionId]);
+
+    useEffect(() => {
+        if (active) {
+            return;
+        }
+
+        projectSearchAbortRef.current?.abort();
+        projectSearchAbortRef.current = null;
+        projectSearchScheduler.cancelWorkspace(tab.sessionId);
+    }, [active, projectSearchScheduler, tab.projectId, tab.sessionId]);
 
     const handleSearchProjectEntries = useCallback(
         (query: string) => {
@@ -2009,21 +2022,31 @@ export const ChatTabView = memo(function ChatTabView({
                     const controller = new AbortController();
                     projectSearchAbortRef.current = controller;
 
-                    void window.comando
-                        .searchProjectEntries({
-                            limit: 12,
-                            projectId,
-                            query: searchQuery,
-                            searchContext: "chat-file-search",
-                            worktreeId: tab.worktreeId ?? null,
-                        })
+                    void projectSearchScheduler
+                        .schedule(
+                            {
+                                key: `chat-file-search:${tab.sessionId}`,
+                                priority: "visible",
+                                workspaceId: tab.sessionId,
+                            },
+                            async ({ signal }) => {
+                                const entries = await window.comando.searchProjectEntries({
+                                    limit: 12,
+                                    projectId,
+                                    query: searchQuery,
+                                    searchContext: "chat-file-search",
+                                    worktreeId: tab.worktreeId ?? null,
+                                });
+                                return signal.aborted ? [] : entries;
+                            },
+                        )
                         .then((entries) => {
                             if (projectSearchAbortRef.current === controller) {
                                 projectSearchAbortRef.current = null;
                             }
                             const resolved = controller.signal.aborted
                                 ? []
-                                : entries;
+                                : (entries ?? []);
                             pendingResolvers.forEach((callback) =>
                                 callback(resolved),
                             );
@@ -2053,7 +2076,7 @@ export const ChatTabView = memo(function ChatTabView({
                 );
             });
         },
-        [tab.projectId, tab.worktreeId],
+        [projectSearchScheduler, tab.projectId, tab.sessionId, tab.worktreeId],
     );
 
     const handleChatFocus = useCallback(() => {

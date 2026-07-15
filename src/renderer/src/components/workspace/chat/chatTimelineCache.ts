@@ -1,6 +1,6 @@
 import type { AiSessionSnapshot } from "@shared/ipc";
 import type { AiSessionTranscriptModel } from "@renderer/app/ai/transcriptModel";
-import { MAX_CACHED_CHAT_VIEW_ARTIFACTS } from "@renderer/components/workspace/chatViewResourceBudget";
+import { workspaceArtifactBudget } from "@renderer/app/workspace/resource-budget";
 
 import type { ChatTimelineModel } from "./chatTimelineModel";
 
@@ -13,7 +13,7 @@ interface CachedTimeline {
     readonly transcript: AiSessionTranscriptModel;
 }
 
-const cachedTimelines = new Map<string, CachedTimeline>();
+const CHAT_TIMELINE_CACHE_SCOPE = "chat-timeline";
 
 function getAttentionToolCallIdsKey(ids: ReadonlySet<string>): string {
     return [...ids].sort().join("\u0000");
@@ -27,7 +27,10 @@ export function getCachedChatTimeline(input: {
     readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
     readonly transcript: AiSessionTranscriptModel;
 }): ChatTimelineModel | null {
-    const cached = cachedTimelines.get(input.sessionId);
+    const cached = workspaceArtifactBudget.get<CachedTimeline>(
+        CHAT_TIMELINE_CACHE_SCOPE,
+        input.sessionId,
+    );
     if (
         !cached ||
         cached.activeTurnStartedAt !== input.activeTurnStartedAt ||
@@ -40,9 +43,6 @@ export function getCachedChatTimeline(input: {
         return null;
     }
 
-    // Touch the entry so recently visited chats retain their derived model.
-    cachedTimelines.delete(input.sessionId);
-    cachedTimelines.set(input.sessionId, cached);
     return cached.model;
 }
 
@@ -55,27 +55,19 @@ export function cacheChatTimeline(input: {
     readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
     readonly transcript: AiSessionTranscriptModel;
 }): void {
-    cachedTimelines.delete(input.sessionId);
-    cachedTimelines.set(input.sessionId, {
+    workspaceArtifactBudget.set(CHAT_TIMELINE_CACHE_SCOPE, input.sessionId, {
         ...input,
         attentionToolCallIdsKey: getAttentionToolCallIdsKey(
             input.attentionToolCallIds,
         ),
     });
 
-    while (cachedTimelines.size > MAX_CACHED_CHAT_VIEW_ARTIFACTS) {
-        const oldestSessionId = cachedTimelines.keys().next().value;
-        if (!oldestSessionId) {
-            return;
-        }
-        cachedTimelines.delete(oldestSessionId);
-    }
 }
 
 export function releaseCachedChatTimeline(sessionId: string): void {
-    cachedTimelines.delete(sessionId);
+    workspaceArtifactBudget.delete(CHAT_TIMELINE_CACHE_SCOPE, sessionId);
 }
 
 export function resetCachedChatTimelinesForTests(): void {
-    cachedTimelines.clear();
+    workspaceArtifactBudget.deleteScope(CHAT_TIMELINE_CACHE_SCOPE);
 }

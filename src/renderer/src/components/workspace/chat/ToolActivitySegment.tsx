@@ -1,15 +1,11 @@
 import {
     memo,
-    useLayoutEffect,
     useMemo,
-    useRef,
     useState,
     type RefObject,
 } from "react";
 
 import { useSettingsStore } from "@renderer/app/store/settings-store";
-import { useShellStore } from "@renderer/app/store/shell-store";
-import { MeasuredVirtualList } from "@renderer/components/virtual/MeasuredVirtualList";
 
 import type {
     ChatTimelineActivitySegmentRow,
@@ -26,14 +22,9 @@ import {
     type ThinkingMessageProps,
 } from "./ChatMessageRow";
 import { usePersistentToolExpansion } from "./toolExpansionStore";
-import { calculateChatTimelineVirtualScrollMarginTop } from "./chatTimelineVirtualization";
 
-const ACTIVITY_SEGMENT_VIRTUALIZATION_THRESHOLD = 80;
-const ACTIVITY_SEGMENT_VIRTUALIZATION_OVERSCAN = 6;
 const ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT = 80;
 const ACTIVITY_SEGMENT_FALLBACK_RENDER_INCREMENT = 80;
-let nextActivitySegmentItemRevisionToken = 0;
-const activitySegmentItemRevisionTokens = new WeakMap<object, number>();
 
 type ToolActivitySegmentProps = Pick<
     ToolActivityItemProps,
@@ -174,58 +165,6 @@ function getActivitySegmentItemId(
         : `tool:${item.entry.reviewEntry.activity.sessionId}:${item.entry.reviewEntry.activity.id}`;
 }
 
-function getActivitySegmentItemMeasurementKey(
-    item: ChatTimelineActivitySegmentRow["items"][number],
-): string {
-    const source =
-        item.kind === "thinking"
-            ? item.message
-            : item.entry.reviewEntry.activity;
-    const revisionToken = getActivitySegmentItemRevisionToken(source);
-    if (item.kind === "thinking") {
-        return `${getActivitySegmentItemId(item)}:${revisionToken}`;
-    }
-
-    const { trackedFiles } = item.entry.reviewEntry;
-    return [
-        getActivitySegmentItemId(item),
-        revisionToken,
-        ...trackedFiles.map(
-            (trackedFile) =>
-                `${trackedFile.identityKey}:${trackedFile.updatedAt}`,
-        ),
-    ].join(":");
-}
-
-function getActivitySegmentItemRevisionToken(source: object): number {
-    const existing = activitySegmentItemRevisionTokens.get(source);
-    if (existing !== undefined) {
-        return existing;
-    }
-
-    const token = nextActivitySegmentItemRevisionToken;
-    nextActivitySegmentItemRevisionToken += 1;
-    activitySegmentItemRevisionTokens.set(source, token);
-    return token;
-}
-
-function estimateActivitySegmentItemHeight(
-    item: ChatTimelineActivitySegmentRow["items"][number],
-): number {
-    if (item.kind === "thinking") {
-        return 52;
-    }
-
-    const activity = item.entry.reviewEntry.activity;
-    if (item.entry.policy === "standalone-change") {
-        return 88;
-    }
-    if (activity.status === "failed" || activity.terminalOutput) {
-        return 64;
-    }
-    return 36;
-}
-
 function ActivitySegmentItemRow({
     item,
     ...props
@@ -296,8 +235,6 @@ function ActivitySegmentItemRow({
 function ExpandedActivitySegmentItems({
     contentId,
     items,
-    scrollContainerRef,
-    segmentId,
     ...itemRendererProps
 }: ActivitySegmentItemRendererProps & {
     readonly contentId: string;
@@ -305,65 +242,10 @@ function ExpandedActivitySegmentItems({
     readonly scrollContainerRef?: RefObject<HTMLElement | null>;
     readonly segmentId: string;
 }) {
-    const isResizingPanel = useShellStore((state) => state.isResizingPanel);
-    const contentRef = useRef<HTMLDivElement | null>(null);
-    const [isVirtualListReady, setIsVirtualListReady] = useState(false);
     const [fallbackRenderLimit, setFallbackRenderLimit] = useState(
         ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT,
     );
-    const [scrollMarginTop, setScrollMarginTop] = useState(0);
-    const shouldVirtualize =
-        items.length >= ACTIVITY_SEGMENT_VIRTUALIZATION_THRESHOLD;
-
-    useLayoutEffect(() => {
-        if (!shouldVirtualize || !scrollContainerRef?.current) {
-            setIsVirtualListReady(false);
-            return;
-        }
-
-        const scrollContainer = scrollContainerRef.current;
-        const syncScrollMarginTop = () => {
-            if (isResizingPanel) {
-                return;
-            }
-            const nextScrollMarginTop =
-                calculateChatTimelineVirtualScrollMarginTop({
-                    historyElement: contentRef.current,
-                    scrollContainer,
-                });
-            setScrollMarginTop((current) =>
-                current === nextScrollMarginTop
-                    ? current
-                    : nextScrollMarginTop,
-            );
-        };
-
-        setIsVirtualListReady(true);
-        syncScrollMarginTop();
-
-        const resizeObserver =
-            typeof ResizeObserver === "undefined"
-                ? null
-                : new ResizeObserver(syncScrollMarginTop);
-        const layoutRoot = contentRef.current?.closest<HTMLElement>(
-            '[data-chat-content-column="true"]',
-        );
-        if (layoutRoot) {
-            resizeObserver?.observe(layoutRoot);
-        }
-        resizeObserver?.observe(scrollContainer);
-        window.addEventListener("resize", syncScrollMarginTop);
-
-        return () => {
-            resizeObserver?.disconnect();
-            window.removeEventListener("resize", syncScrollMarginTop);
-        };
-    }, [isResizingPanel, scrollContainerRef, shouldVirtualize]);
-
-    const visibleItems =
-        shouldVirtualize && !isVirtualListReady
-            ? items.slice(0, fallbackRenderLimit)
-            : items;
+    const visibleItems = items.slice(0, fallbackRenderLimit);
     const hasMoreFallbackItems = visibleItems.length < items.length;
 
     return (
@@ -371,46 +253,18 @@ function ExpandedActivitySegmentItems({
             aria-label="Full activity"
             className="pt-1"
             id={contentId}
-            ref={contentRef}
             role="region"
         >
             <div className="activity-tree min-w-0" role="list">
-                {shouldVirtualize && isVirtualListReady && scrollContainerRef ? (
-                    // The parent chat timeline owns scrolling. This nested list
-                    // only owns the expanded segment's DOM and measurements.
-                    <MeasuredVirtualList
-                        defaultViewportHeight={720}
-                        enabled
-                        estimateSize={estimateActivitySegmentItemHeight}
-                        getItemIdentityKey={getActivitySegmentItemMeasurementKey}
-                        getItemKey={getActivitySegmentItemId}
-                        getItemMeasurementKey={getActivitySegmentItemMeasurementKey}
-                        items={items}
-                        measurementCacheKey={`activity-segment:${segmentId}`}
-                        observeMeasurements={!isResizingPanel}
-                        overscan={ACTIVITY_SEGMENT_VIRTUALIZATION_OVERSCAN}
-                        preserveScrollAnchorOnItemsChange={false}
-                        preserveScrollAnchorOnMeasure={false}
-                        renderItem={({ item }) => (
-                            <ActivitySegmentItemRow
-                                {...itemRendererProps}
-                                item={item}
-                            />
-                        )}
-                        scrollContainerRef={scrollContainerRef}
-                        scrollMarginTop={scrollMarginTop}
-                    />
-                ) : (
-                    <div className="flex min-w-0 flex-col gap-1.5">
-                        {visibleItems.map((item) => (
-                            <ActivitySegmentItemRow
-                                {...itemRendererProps}
-                                item={item}
-                                key={getActivitySegmentItemId(item)}
-                            />
-                        ))}
-                    </div>
-                )}
+                <div className="flex min-w-0 flex-col gap-1.5">
+                    {visibleItems.map((item) => (
+                        <ActivitySegmentItemRow
+                            {...itemRendererProps}
+                            item={item}
+                            key={getActivitySegmentItemId(item)}
+                        />
+                    ))}
+                </div>
             </div>
             {hasMoreFallbackItems ? (
                 <button

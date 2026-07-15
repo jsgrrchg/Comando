@@ -55,6 +55,7 @@ import {
     type ProjectQuickOpenMatch,
 } from "./app/projects/quick-open";
 import { filterProjectEntriesForTreeFilter } from "./app/projects/tree-filter";
+import { filterProjectEntriesInWorker } from "./app/projects/tree-filter-worker-client";
 import { getProjectContextKey } from "./app/projects/context-key";
 import {
     resolveWorkspaceContextRefreshPlan,
@@ -1690,7 +1691,14 @@ export function App() {
         fileTreeBackendSearchResults,
         fileTreeFilterSource,
     ]);
-    const fileTreeFilterMatches = useMemo(() => {
+    const shouldFilterTreeInWorker =
+        fileTreeFilterSource?.kind === "full" &&
+        fileTreeFilterEntries.length >= 2_000 &&
+        typeof Worker !== "undefined";
+    const synchronousFileTreeFilterMatches = useMemo(() => {
+        if (shouldFilterTreeInWorker) {
+            return [];
+        }
         if (!fileTreeFilterSource) {
             return [];
         }
@@ -1706,7 +1714,56 @@ export function App() {
         fileTreeFilterEntries,
         fileTreeFilterSource,
         normalizedFileTreeFilter,
+        shouldFilterTreeInWorker,
     ]);
+    const [workerFileTreeFilterMatches, setWorkerFileTreeFilterMatches] =
+        useState<{
+            readonly entries: readonly ProjectTreeNode[];
+            readonly matches: readonly ProjectTreeNode[];
+            readonly query: string;
+        } | null>(null);
+    useEffect(() => {
+        if (!shouldFilterTreeInWorker || !fileTreeFilterSource) {
+            return;
+        }
+        const controller = new AbortController();
+        void filterProjectEntriesInWorker({
+            entries: fileTreeFilterEntries,
+            query: normalizedFileTreeFilter,
+            signal: controller.signal,
+            strategy: "substring",
+        }).then((matches) => {
+            if (!controller.signal.aborted) {
+                setWorkerFileTreeFilterMatches({
+                    entries: fileTreeFilterEntries,
+                    matches,
+                    query: normalizedFileTreeFilter,
+                });
+            }
+        });
+        return () => controller.abort();
+    }, [
+        fileTreeFilterEntries,
+        fileTreeFilterSource,
+        normalizedFileTreeFilter,
+        shouldFilterTreeInWorker,
+    ]);
+    const fileTreeFilterMatches = useMemo(
+        () =>
+            shouldFilterTreeInWorker
+                ? (workerFileTreeFilterMatches?.entries === fileTreeFilterEntries &&
+                  workerFileTreeFilterMatches.query === normalizedFileTreeFilter
+                      ? workerFileTreeFilterMatches.matches
+                      : [])
+                : synchronousFileTreeFilterMatches,
+        [
+            fileTreeFilterEntries,
+            normalizedFileTreeFilter,
+            shouldFilterTreeInWorker,
+            synchronousFileTreeFilterMatches,
+            workerFileTreeFilterMatches,
+        ],
+    );
     const fileTreeSearchTree = useMemo(
         () =>
             buildHierarchicalGitTreeNodesFromProjectEntries(

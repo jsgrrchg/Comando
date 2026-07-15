@@ -2,7 +2,10 @@
  * A workspace may have an arbitrary number of panes, so per-pane retention is
  * not sufficient to bound the number of mounted chat presentation trees.
  */
-export const MAX_ADDITIONAL_HOT_CHAT_TAB_VIEWS = 8;
+// Warm tabs retain only serializable state and cached geometry. Keeping an
+// additional transcript tree mounted turns every inactive tab into background
+// layout and observer work, which defeats the workspace-wide resource budget.
+export const MAX_ADDITIONAL_HOT_CHAT_TAB_VIEWS = 0;
 
 // Timeline and measurement caches share this cap so a cooled view can resume
 // quickly without allowing cached presentation artifacts to grow with panes.

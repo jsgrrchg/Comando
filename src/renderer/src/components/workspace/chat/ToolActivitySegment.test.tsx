@@ -421,7 +421,7 @@ describe("ToolActivitySegment", () => {
         ).toBe("Full activity");
     });
 
-    it("mounts only a virtual window for twenty thousand expanded tools", () => {
+    it("mounts a compact incremental window for twenty thousand expanded tools", () => {
         const entries = Array.from({ length: 20_000 }, (_, index) =>
             createEntry(`read-${index + 1}`),
         );
@@ -438,13 +438,13 @@ describe("ToolActivitySegment", () => {
             Array.from(container.querySelectorAll("button")).some(
                 (button) => button.textContent === "Show more activity",
             ),
-        ).toBe(false);
+        ).toBe(true);
         expect(
             container.querySelector('[role="region"]')?.getAttribute("aria-label"),
         ).toBe("Full activity");
     });
 
-    it("updates the virtual window when its layout offset changes", () => {
+    it("does not remount activity rows when the parent layout changes", () => {
         const entries = Array.from({ length: 200 }, (_, index) =>
             createEntry(`read-${index + 1}`),
         );
@@ -458,22 +458,6 @@ describe("ToolActivitySegment", () => {
                 ?.dataset.childActivity,
         ).toBe("read-1");
 
-        const content = container.querySelector<HTMLElement>('[role="region"]');
-        if (!content) {
-            throw new Error("Expected expanded activity content.");
-        }
-        vi.spyOn(content, "getBoundingClientRect").mockReturnValue({
-            bottom: 0,
-            height: 0,
-            left: 0,
-            right: 0,
-            toJSON: () => ({}),
-            top: -4_000,
-            width: 0,
-            x: 0,
-            y: -4_000,
-        });
-
         act(() => {
             window.dispatchEvent(new Event("resize"));
         });
@@ -481,7 +465,7 @@ describe("ToolActivitySegment", () => {
         expect(
             container.querySelector<HTMLElement>("[data-child-activity]")
                 ?.dataset.childActivity,
-        ).not.toBe("read-1");
+        ).toBe("read-1");
     });
 
     it("does not observe parent transform mutations while scrolling", () => {
