@@ -3,12 +3,15 @@ import { describe, expect, it } from "vitest";
 import { shortcutDefinitions } from "./registry";
 
 describe("shortcutDefinitions", () => {
-    it("includes chat history and git history shortcuts for macOS and Windows", () => {
+    it("includes chat history and git shortcuts for macOS and Windows", () => {
         const chatHistoryShortcut = shortcutDefinitions.find(
             (shortcut) => shortcut.id === "open_chat_history",
         );
         const gitHistoryShortcut = shortcutDefinitions.find(
             (shortcut) => shortcut.id === "open_git_history",
+        );
+        const uncommittedChangesShortcut = shortcutDefinitions.find(
+            (shortcut) => shortcut.id === "open_uncommitted_changes",
         );
 
         expect(chatHistoryShortcut).toMatchObject({
@@ -28,6 +31,16 @@ describe("shortcutDefinitions", () => {
                 windows: "Ctrl+Shift+G",
             },
             label: "Open git history",
+            section: "Git",
+        });
+        expect(uncommittedChangesShortcut).toMatchObject({
+            description:
+                "Open the singleton uncommitted changes tab for the active project.",
+            keys: {
+                mac: "Cmd+Shift+M",
+                windows: "Ctrl+Shift+M",
+            },
+            label: "Open uncommitted changes",
             section: "Git",
         });
     });
