@@ -8,10 +8,10 @@ import {
     type ReactNode,
     type RefObject,
 } from "react";
+import { MAX_CACHED_CHAT_VIEW_ARTIFACTS } from "@renderer/components/workspace/chatViewResourceBudget";
 
 const DEFAULT_OVERSCAN = 4;
 const DEFAULT_VIEWPORT_HEIGHT = 720;
-const MAX_CACHED_MEASUREMENT_SETS = 12;
 const MAX_DYNAMIC_OVERSCAN_ROWS = 64;
 const SCROLL_OVERSCAN_ROW_HEIGHT_PX = 72;
 
@@ -52,7 +52,7 @@ function cacheMeasurements(
     cachedMeasurementsByKey.delete(cacheKey);
     cachedMeasurementsByKey.set(cacheKey, measurements);
 
-    while (cachedMeasurementsByKey.size > MAX_CACHED_MEASUREMENT_SETS) {
+    while (cachedMeasurementsByKey.size > MAX_CACHED_CHAT_VIEW_ARTIFACTS) {
         const oldestKey = cachedMeasurementsByKey.keys().next().value;
         if (!oldestKey) {
             return;

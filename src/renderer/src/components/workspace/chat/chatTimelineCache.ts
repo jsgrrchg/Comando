@@ -1,9 +1,8 @@
 import type { AiSessionSnapshot } from "@shared/ipc";
 import type { AiSessionTranscriptModel } from "@renderer/app/ai/transcriptModel";
+import { MAX_CACHED_CHAT_VIEW_ARTIFACTS } from "@renderer/components/workspace/chatViewResourceBudget";
 
 import type { ChatTimelineModel } from "./chatTimelineModel";
-
-const MAX_CACHED_TIMELINES = 12;
 
 interface CachedTimeline {
     readonly activeTurnStartedAt: string | null;
@@ -64,7 +63,7 @@ export function cacheChatTimeline(input: {
         ),
     });
 
-    while (cachedTimelines.size > MAX_CACHED_TIMELINES) {
+    while (cachedTimelines.size > MAX_CACHED_CHAT_VIEW_ARTIFACTS) {
         const oldestSessionId = cachedTimelines.keys().next().value;
         if (!oldestSessionId) {
             return;

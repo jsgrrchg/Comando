@@ -1,0 +1,74 @@
+/**
+ * A workspace may have an arbitrary number of panes, so per-pane retention is
+ * not sufficient to bound the number of mounted chat presentation trees.
+ */
+export const MAX_ADDITIONAL_HOT_CHAT_TAB_VIEWS = 8;
+
+// Timeline and measurement caches share this cap so a cooled view can resume
+// quickly without allowing cached presentation artifacts to grow with panes.
+export const MAX_CACHED_CHAT_VIEW_ARTIFACTS = 12;
+
+export interface ChatViewResourceBudgetPane {
+    readonly activeTabId: string | null;
+    readonly id: string;
+    readonly visible: boolean;
+}
+
+export interface ChatViewResourceBudgetInput {
+    readonly chatTabIds: ReadonlySet<string>;
+    readonly focusedPaneId: string;
+    readonly panes: readonly ChatViewResourceBudgetPane[];
+    /** Most recent first. */
+    readonly recentActiveTabIds: readonly string[];
+}
+
+/**
+ * Resolves the chat views that are allowed to keep a mounted presentation.
+ * Visible panes are always protected; the remaining capacity is shared across
+ * all panes and assigned by global recency.
+ */
+export function resolveHotChatTabIds({
+    chatTabIds,
+    focusedPaneId,
+    panes,
+    recentActiveTabIds,
+}: ChatViewResourceBudgetInput): ReadonlySet<string> {
+    const hotTabIds = new Set<string>();
+
+    const retainVisibleActiveChat = (pane: ChatViewResourceBudgetPane) => {
+        if (
+            pane.visible &&
+            pane.activeTabId !== null &&
+            chatTabIds.has(pane.activeTabId)
+        ) {
+            hotTabIds.add(pane.activeTabId);
+        }
+    };
+
+    const focusedPane = panes.find((pane) => pane.id === focusedPaneId);
+    if (focusedPane) {
+        retainVisibleActiveChat(focusedPane);
+    }
+
+    for (const pane of panes) {
+        if (pane.id !== focusedPaneId) {
+            retainVisibleActiveChat(pane);
+        }
+    }
+
+    let additionalViews = 0;
+    for (const tabId of recentActiveTabIds) {
+        if (
+            additionalViews >= MAX_ADDITIONAL_HOT_CHAT_TAB_VIEWS ||
+            hotTabIds.has(tabId) ||
+            !chatTabIds.has(tabId)
+        ) {
+            continue;
+        }
+
+        hotTabIds.add(tabId);
+        additionalViews += 1;
+    }
+
+    return hotTabIds;
+}

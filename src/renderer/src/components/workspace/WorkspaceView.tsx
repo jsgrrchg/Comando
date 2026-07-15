@@ -2,12 +2,14 @@ import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 import type { editor as MonacoEditor } from "monaco-editor";
 import {
     useCallback,
+    createContext,
     useEffect,
     useEffectEvent,
     useLayoutEffect,
     useMemo,
     useRef,
     useState,
+    useContext,
     type DragEvent as ReactDragEvent,
     type MouseEvent as ReactMouseEvent,
     type ReactNode,
@@ -141,6 +143,7 @@ import {
 } from "@renderer/components/workspace/WorkspacePaneEmptyState";
 import { MarkdownFilePreview } from "@renderer/components/workspace/MarkdownFilePreview";
 import { persistChatDraftForTab } from "@renderer/components/workspace/chatDraftPersistence";
+import { resolveHotChatTabIds } from "@renderer/components/workspace/chatViewResourceBudget";
 import {
     GIT_GUTTER_LINE_DECORATIONS_WIDTH,
     GitGutterDecorator,
@@ -257,6 +260,10 @@ const CLAUDE_CODE_NOT_FOUND_MESSAGE =
     "The claude command was not found in Comando's PATH. Your shell may still resolve it.";
 const GIT_GUTTER_LIVE_DIFF_DEBOUNCE_MS = 200;
 const MAX_RETAINED_CHAT_TAB_VIEWS = 4;
+const EMPTY_HOT_CHAT_TAB_IDS: ReadonlySet<string> = new Set();
+const ChatViewResourceBudgetContext = createContext<ReadonlySet<string>>(
+    EMPTY_HOT_CHAT_TAB_IDS,
+);
 
 type GitGutterLiveDiffState =
     | {
@@ -685,6 +692,14 @@ export function WorkspaceView({
     onRequestCreateFile,
 }: WorkspaceViewProps) {
     const closeTab = useWorkspaceStore((state) => state.closeTab);
+    const chatViewBudgetWorkspaceState = useWorkspaceStore(
+        useShallow((state) => ({
+            activePaneId: state.activePaneId,
+            deferredPaneIds: state.deferredPaneIds,
+            recentActiveTabIds: state.recentActiveTabIds,
+            rootNode: state.rootNode,
+        })),
+    );
     const dropTabToSplit = useWorkspaceStore((state) => state.dropTabToSplit);
     const moveTabToPane = useWorkspaceStore((state) => state.moveTabToPane);
     const openChatSessionTabAtTarget = useWorkspaceStore(
@@ -705,6 +720,36 @@ export function WorkspaceView({
     );
     const reorderTab = useWorkspaceStore((state) => state.reorderTab);
     const rootNodeId = useWorkspaceStore((state) => state.rootNode.id);
+    const hotChatTabIds = useMemo(() => {
+        const tabsById = useWorkspaceStore.getState().tabsById;
+        const workspacePanes = collectPaneNodes(
+            chatViewBudgetWorkspaceState.rootNode,
+        );
+        const panes = workspacePanes.map((pane) => ({
+            activeTabId: pane.activeTabId,
+            id: pane.id,
+            visible: !chatViewBudgetWorkspaceState.deferredPaneIds.has(
+                pane.id,
+            ),
+        }));
+        const chatTabIds = new Set<string>();
+
+        for (const pane of workspacePanes) {
+            for (const tabId of pane.tabIds) {
+                if (tabsById[tabId]?.kind === "chat") {
+                    chatTabIds.add(tabId);
+                }
+            }
+        }
+
+        return resolveHotChatTabIds({
+            chatTabIds,
+            focusedPaneId: chatViewBudgetWorkspaceState.activePaneId,
+            panes,
+            recentActiveTabIds:
+                chatViewBudgetWorkspaceState.recentActiveTabIds,
+        });
+    }, [chatViewBudgetWorkspaceState]);
     const [externalDropTarget, setExternalDropTarget] =
         useState<WorkspacePaneDropTarget | null>(null);
     const workspaceRootRef = useRef<HTMLDivElement | null>(null);
@@ -1062,16 +1107,18 @@ export function WorkspaceView({
             onDropCapture={handleWorkspaceDrop}
             ref={workspaceRootRef}
         >
-            <WorkspaceNodeView
-                defaultProjectId={defaultProjectId}
-                defaultWorktreeId={defaultWorktreeId}
-                recentProjects={recentProjects}
-                nodeId={rootNodeId}
-                onOpenProject={onOpenProject}
-                onOpenProjects={onOpenProjects}
-                onRequestCreateFile={onRequestCreateFile}
-                tabDrag={tabDrag}
-            />
+            <ChatViewResourceBudgetContext.Provider value={hotChatTabIds}>
+                <WorkspaceNodeView
+                    defaultProjectId={defaultProjectId}
+                    defaultWorktreeId={defaultWorktreeId}
+                    recentProjects={recentProjects}
+                    nodeId={rootNodeId}
+                    onOpenProject={onOpenProject}
+                    onOpenProjects={onOpenProjects}
+                    onRequestCreateFile={onRequestCreateFile}
+                    tabDrag={tabDrag}
+                />
+            </ChatViewResourceBudgetContext.Provider>
             {!tabDrag.isDragging ? (
                 <WorkspaceDropTargetOverlay
                     target={externalDropTarget}
@@ -1641,6 +1688,7 @@ function WorkspacePaneView({
     readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
+    const hotChatTabIds = useContext(ChatViewResourceBudgetContext);
     const addDraftFileContext = useAiStore((s) => s.addDraftFileContext);
     const attachSelectionMention = useAiStore((s) => s.attachSelectionMention);
     const {
@@ -1863,9 +1911,10 @@ function WorkspacePaneView({
                 (tab): tab is RuntimeWorkspaceChatTab =>
                     tab.kind === "chat" &&
                     (retainedChatTabIds.includes(tab.id) ||
-                        tab.id === activeChatTab?.id),
+                        tab.id === activeChatTab?.id) &&
+                    hotChatTabIds.has(tab.id),
             ),
-        [activeChatTab?.id, paneTabs, retainedChatTabIds],
+        [activeChatTab?.id, hotChatTabIds, paneTabs, retainedChatTabIds],
     );
     const handleSelectTab = useCallback(
         (tabId: string) => {
