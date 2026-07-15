@@ -65,6 +65,16 @@ describe("file tree selection", () => {
         ).toBeNull();
     });
 
+    it("recognizes the primary checkout when its workspace context uses null", () => {
+        expect(
+            resolveActiveFileTreePath({
+                activeProjectId: "project-1",
+                activeWorkspaceTab: createFileTab({ worktreeId: null }),
+                activeWorktreeId: "project-1:primary",
+            }),
+        ).toBe("docs/guide.md");
+    });
+
     it("uses the active file when there is no manual tree selection", () => {
         expect(
             reconcileFileTreeSelection({

@@ -1,4 +1,5 @@
 import type { RuntimeWorkspaceTab } from "../workspace/tree";
+import { areGitWorktreeIdsEquivalent } from "../git/context-key";
 import {
     selectGitTreeRange,
     toggleGitTreePathSelection,
@@ -40,7 +41,11 @@ export function resolveActiveFileTreePath({
         activeWorkspaceTab?.kind !== "file" ||
         !activeProjectId ||
         activeWorkspaceTab.projectId !== activeProjectId ||
-        (activeWorkspaceTab.worktreeId ?? null) !== activeWorktreeId
+        !areGitWorktreeIdsEquivalent(
+            activeProjectId,
+            activeWorkspaceTab.worktreeId ?? null,
+            activeWorktreeId,
+        )
     ) {
         return null;
     }
