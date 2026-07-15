@@ -1,6 +1,14 @@
-import { memo, useMemo } from "react";
+import {
+    memo,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    useState,
+    type RefObject,
+} from "react";
 
 import { useSettingsStore } from "@renderer/app/store/settings-store";
+import { MeasuredVirtualList } from "@renderer/components/virtual/MeasuredVirtualList";
 
 import type {
     ChatTimelineActivitySegmentRow,
@@ -17,6 +25,14 @@ import {
     type ThinkingMessageProps,
 } from "./ChatMessageRow";
 import { usePersistentToolExpansion } from "./toolExpansionStore";
+import { calculateChatTimelineVirtualScrollMarginTop } from "./chatTimelineVirtualization";
+
+const ACTIVITY_SEGMENT_VIRTUALIZATION_THRESHOLD = 80;
+const ACTIVITY_SEGMENT_VIRTUALIZATION_OVERSCAN = 6;
+const ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT = 80;
+const ACTIVITY_SEGMENT_FALLBACK_RENDER_INCREMENT = 80;
+let nextActivitySegmentItemRevisionToken = 0;
+const activitySegmentItemRevisionTokens = new WeakMap<object, number>();
 
 type ToolActivitySegmentProps = Pick<
     ToolActivityItemProps,
@@ -30,6 +46,7 @@ type ToolActivitySegmentProps = Pick<
 > & {
     /** True only while this segment is the trailing activity of an active turn. */
     readonly isCurrentTurnTail?: boolean;
+    readonly scrollContainerRef?: RefObject<HTMLElement | null>;
     readonly segment: ChatTimelineActivitySegmentRow;
 } & Pick<
         ThinkingMessageProps,
@@ -132,6 +149,255 @@ function Chevron({ expanded }: { readonly expanded: boolean }) {
     );
 }
 
+type ActivitySegmentItemRendererProps = Pick<
+    ToolActivitySegmentProps,
+    | "canRenderFileReference"
+    | "chatFontFamily"
+    | "chatFontSize"
+    | "highlightQuery"
+    | "onAddFileReferenceToChat"
+    | "onOpenFile"
+    | "onOpenFileReference"
+    | "onOpenSession"
+    | "onRevealFileReference"
+    | "projectId"
+    | "resolveFileReference"
+    | "worktreeId"
+>;
+
+function getActivitySegmentItemId(
+    item: ChatTimelineActivitySegmentRow["items"][number],
+): string {
+    return item.kind === "thinking"
+        ? `thinking:${item.message.id}`
+        : `tool:${item.entry.reviewEntry.activity.sessionId}:${item.entry.reviewEntry.activity.id}`;
+}
+
+function getActivitySegmentItemMeasurementKey(
+    item: ChatTimelineActivitySegmentRow["items"][number],
+): string {
+    const source =
+        item.kind === "thinking"
+            ? item.message
+            : item.entry.reviewEntry.activity;
+    const revisionToken = getActivitySegmentItemRevisionToken(source);
+    if (item.kind === "thinking") {
+        return `${getActivitySegmentItemId(item)}:${revisionToken}`;
+    }
+
+    const { trackedFiles } = item.entry.reviewEntry;
+    return [
+        getActivitySegmentItemId(item),
+        revisionToken,
+        ...trackedFiles.map(
+            (trackedFile) =>
+                `${trackedFile.identityKey}:${trackedFile.updatedAt}`,
+        ),
+    ].join(":");
+}
+
+function getActivitySegmentItemRevisionToken(source: object): number {
+    const existing = activitySegmentItemRevisionTokens.get(source);
+    if (existing !== undefined) {
+        return existing;
+    }
+
+    const token = nextActivitySegmentItemRevisionToken;
+    nextActivitySegmentItemRevisionToken += 1;
+    activitySegmentItemRevisionTokens.set(source, token);
+    return token;
+}
+
+function estimateActivitySegmentItemHeight(
+    item: ChatTimelineActivitySegmentRow["items"][number],
+): number {
+    if (item.kind === "thinking") {
+        return 52;
+    }
+
+    const activity = item.entry.reviewEntry.activity;
+    if (item.entry.policy === "standalone-change") {
+        return 88;
+    }
+    if (activity.status === "failed" || activity.terminalOutput) {
+        return 64;
+    }
+    return 36;
+}
+
+function ActivitySegmentItemRow({
+    item,
+    ...props
+}: ActivitySegmentItemRendererProps & {
+    readonly item: ChatTimelineActivitySegmentRow["items"][number];
+}) {
+    const openThinkingFileReference = props.onOpenFileReference ?? (() => undefined);
+    const resolveThinkingFileReference = props.resolveFileReference ?? (() => null);
+
+    return (
+        <div
+            className="activity-tree-branch min-w-0 pl-10"
+            data-activity-rail-decoration="branch"
+            data-activity-rail-indent="child"
+            data-thinking-message-id={
+                item.kind === "thinking" ? item.message.id : undefined
+            }
+            data-tool-activity-id={
+                item.kind === "tool"
+                    ? item.entry.reviewEntry.activity.id
+                    : undefined
+            }
+            data-tool-activity-visibility={
+                item.kind === "tool" && item.entry.policy === "groupable"
+                    ? "expanded-only"
+                    : "always"
+            }
+            role="listitem"
+        >
+            <div className="min-w-0 py-0.5">
+                {item.kind === "thinking" ? (
+                    <ThinkingMessage
+                        canRenderFileReference={props.canRenderFileReference}
+                        chatFontFamily={props.chatFontFamily}
+                        chatFontSize={props.chatFontSize}
+                        content={item.message.content}
+                        highlightQuery={props.highlightQuery}
+                        inProgress={item.message.status === "streaming"}
+                        onAddFileReferenceToChat={props.onAddFileReferenceToChat}
+                        onOpenFile={openThinkingFileReference}
+                        onRevealFileReference={props.onRevealFileReference}
+                        resolveFileReference={resolveThinkingFileReference}
+                    />
+                ) : (
+                    <ToolActivityItem
+                        activity={item.entry.reviewEntry.activity}
+                        canRenderFileReference={props.canRenderFileReference}
+                        compactTerminal
+                        onOpenFile={props.onOpenFile}
+                        onOpenFileReference={props.onOpenFileReference}
+                        onOpenSession={props.onOpenSession}
+                        projectId={props.projectId}
+                        resolveFileReference={props.resolveFileReference}
+                        surface={
+                            item.entry.policy === "standalone-change"
+                                ? "card"
+                                : "rail-row"
+                        }
+                        trackedFiles={item.entry.reviewEntry.trackedFiles}
+                        worktreeId={props.worktreeId}
+                    />
+                )}
+            </div>
+        </div>
+    );
+}
+
+function ExpandedActivitySegmentItems({
+    contentId,
+    items,
+    scrollContainerRef,
+    segmentId,
+    ...itemRendererProps
+}: ActivitySegmentItemRendererProps & {
+    readonly contentId: string;
+    readonly items: readonly ChatTimelineActivitySegmentRow["items"][number][];
+    readonly scrollContainerRef?: RefObject<HTMLElement | null>;
+    readonly segmentId: string;
+}) {
+    const contentRef = useRef<HTMLDivElement | null>(null);
+    const [isVirtualListReady, setIsVirtualListReady] = useState(false);
+    const [fallbackRenderLimit, setFallbackRenderLimit] = useState(
+        ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT,
+    );
+    const [scrollMarginTop, setScrollMarginTop] = useState(0);
+    const shouldVirtualize =
+        items.length >= ACTIVITY_SEGMENT_VIRTUALIZATION_THRESHOLD;
+
+    useLayoutEffect(() => {
+        if (!shouldVirtualize || !scrollContainerRef?.current) {
+            setIsVirtualListReady(false);
+            return;
+        }
+
+        setIsVirtualListReady(true);
+        const nextScrollMarginTop = calculateChatTimelineVirtualScrollMarginTop({
+            historyElement: contentRef.current,
+            scrollContainer: scrollContainerRef.current,
+        });
+        setScrollMarginTop((current) =>
+            current === nextScrollMarginTop ? current : nextScrollMarginTop,
+        );
+    }, [scrollContainerRef, shouldVirtualize]);
+
+    const visibleItems =
+        shouldVirtualize && !isVirtualListReady
+            ? items.slice(0, fallbackRenderLimit)
+            : items;
+    const hasMoreFallbackItems = visibleItems.length < items.length;
+
+    return (
+        <div
+            aria-label="Full activity"
+            className="pt-1"
+            id={contentId}
+            ref={contentRef}
+            role="region"
+        >
+            <div className="activity-tree min-w-0" role="list">
+                {shouldVirtualize && isVirtualListReady && scrollContainerRef ? (
+                    <MeasuredVirtualList
+                        defaultViewportHeight={720}
+                        enabled
+                        estimateSize={estimateActivitySegmentItemHeight}
+                        getItemIdentityKey={getActivitySegmentItemMeasurementKey}
+                        getItemKey={getActivitySegmentItemId}
+                        getItemMeasurementKey={getActivitySegmentItemMeasurementKey}
+                        items={items}
+                        measurementCacheKey={`activity-segment:${segmentId}`}
+                        overscan={ACTIVITY_SEGMENT_VIRTUALIZATION_OVERSCAN}
+                        preserveScrollAnchorOnItemsChange={false}
+                        preserveScrollAnchorOnMeasure={false}
+                        renderItem={({ item }) => (
+                            <ActivitySegmentItemRow
+                                {...itemRendererProps}
+                                item={item}
+                            />
+                        )}
+                        scrollContainerRef={scrollContainerRef}
+                        scrollMarginTop={scrollMarginTop}
+                    />
+                ) : (
+                    <div className="flex min-w-0 flex-col gap-1.5">
+                        {visibleItems.map((item) => (
+                            <ActivitySegmentItemRow
+                                {...itemRendererProps}
+                                item={item}
+                                key={getActivitySegmentItemId(item)}
+                            />
+                        ))}
+                    </div>
+                )}
+            </div>
+            {hasMoreFallbackItems ? (
+                <button
+                    aria-controls={contentId}
+                    className="ml-10 mt-1 text-xs text-text-secondary underline-offset-2 hover:text-text-primary hover:underline focus-visible:outline-none focus-visible:underline"
+                    onClick={() =>
+                        setFallbackRenderLimit(
+                            (current) =>
+                                current +
+                                ACTIVITY_SEGMENT_FALLBACK_RENDER_INCREMENT,
+                        )
+                    }
+                    type="button"
+                >
+                    Show more activity
+                </button>
+            ) : null}
+        </div>
+    );
+}
+
 export const ToolActivitySegment = memo(function ToolActivitySegment({
     canRenderFileReference,
     chatFontFamily,
@@ -145,6 +411,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     projectId,
     resolveFileReference,
     isCurrentTurnTail = false,
+    scrollContainerRef,
     segment,
     worktreeId,
 }: ToolActivitySegmentProps) {
@@ -166,11 +433,6 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
         [segment.entries],
     );
     const hasChanges = segment.summary.changeCount > 0;
-    const visibleItems = expanded ? segment.items : [];
-    const openThinkingFileReference =
-        onOpenFileReference ?? (() => undefined);
-    const resolveThinkingFileReference =
-        resolveFileReference ?? (() => null);
     const activityState = isCurrentTurnTail
         ? "In progress"
         : "Completed";
@@ -278,95 +540,25 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                 </div>
             )}
 
-            {visibleItems.length > 0 ? (
-                <div
-                    aria-label="Full activity"
-                    className="pt-1"
-                    id={contentId}
-                    role="region"
-                >
-                    <div
-                        className="activity-tree flex min-w-0 flex-col gap-1.5"
-                        role="list"
-                    >
-                        {visibleItems.map((item) => {
-                            const atomicRowId =
-                                item.kind === "thinking"
-                                    ? `thinking:${item.message.id}`
-                                    : `tool:${item.entry.reviewEntry.activity.sessionId}:${item.entry.reviewEntry.activity.id}`;
-                            return (
-                                <div
-                                    className="activity-tree-branch min-w-0 pl-10"
-                                    data-activity-rail-decoration="branch"
-                                    data-activity-rail-indent="child"
-                                    data-thinking-message-id={
-                                        item.kind === "thinking"
-                                            ? item.message.id
-                                            : undefined
-                                    }
-                                    data-tool-activity-id={
-                                        item.kind === "tool"
-                                            ? item.entry.reviewEntry.activity.id
-                                            : undefined
-                                    }
-                                    data-tool-activity-visibility={
-                                        item.kind === "tool" &&
-                                        item.entry.policy === "groupable"
-                                            ? "expanded-only"
-                                            : "always"
-                                    }
-                                    key={atomicRowId}
-                                    role="listitem"
-                                >
-                                    <div className="min-w-0 py-0.5">
-                                        {item.kind === "thinking" ? (
-                                            <ThinkingMessage
-                                                canRenderFileReference={canRenderFileReference}
-                                                chatFontFamily={chatFontFamily}
-                                                chatFontSize={chatFontSize}
-                                                content={item.message.content}
-                                                highlightQuery={highlightQuery}
-                                                inProgress={
-                                                    item.message.status ===
-                                                    "streaming"
-                                                }
-                                                onAddFileReferenceToChat={onAddFileReferenceToChat}
-                                                onOpenFile={openThinkingFileReference}
-                                                onRevealFileReference={onRevealFileReference}
-                                                resolveFileReference={resolveThinkingFileReference}
-                                            />
-                                        ) : (
-                                            <ToolActivityItem
-                                                activity={
-                                                    item.entry.reviewEntry
-                                                        .activity
-                                                }
-                                                canRenderFileReference={canRenderFileReference}
-                                                compactTerminal
-                                                onOpenFile={onOpenFile}
-                                                onOpenFileReference={onOpenFileReference}
-                                                onOpenSession={onOpenSession}
-                                                projectId={projectId}
-                                                resolveFileReference={resolveFileReference}
-                                                surface={
-                                                    item.entry.policy ===
-                                                    "standalone-change"
-                                                        ? "card"
-                                                        : "rail-row"
-                                                }
-                                                trackedFiles={
-                                                    item.entry.reviewEntry
-                                                        .trackedFiles
-                                                }
-                                                worktreeId={worktreeId}
-                                            />
-                                        )}
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-                </div>
+            {expanded ? (
+                <ExpandedActivitySegmentItems
+                    canRenderFileReference={canRenderFileReference}
+                    chatFontFamily={chatFontFamily}
+                    chatFontSize={chatFontSize}
+                    contentId={contentId}
+                    highlightQuery={highlightQuery}
+                    items={segment.items}
+                    onAddFileReferenceToChat={onAddFileReferenceToChat}
+                    onOpenFile={onOpenFile}
+                    onOpenFileReference={onOpenFileReference}
+                    onOpenSession={onOpenSession}
+                    onRevealFileReference={onRevealFileReference}
+                    projectId={projectId}
+                    resolveFileReference={resolveFileReference}
+                    scrollContainerRef={scrollContainerRef}
+                    segmentId={segment.id}
+                    worktreeId={worktreeId}
+                />
             ) : null}
         </div>
     );

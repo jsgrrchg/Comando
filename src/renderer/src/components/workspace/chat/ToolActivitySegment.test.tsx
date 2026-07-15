@@ -184,12 +184,17 @@ const DEFAULT_PROPS = {
 function renderInteractive(segment: ChatTimelineActivitySegmentRow) {
     const container = document.createElement("div");
     document.body.appendChild(container);
+    Object.defineProperty(container, "clientHeight", {
+        configurable: true,
+        value: 720,
+    });
     const root = createRoot(container);
     mountedRoots.push(root);
     act(() => {
         root.render(
             createElement(ToolActivitySegment, {
                 ...DEFAULT_PROPS,
+                scrollContainerRef: { current: container },
                 segment,
             }),
         );
@@ -410,6 +415,29 @@ describe("ToolActivitySegment", () => {
             container
                 .querySelector('[role="region"]')
                 ?.getAttribute("aria-label"),
+        ).toBe("Full activity");
+    });
+
+    it("mounts only a virtual window for twenty thousand expanded tools", () => {
+        const entries = Array.from({ length: 20_000 }, (_, index) =>
+            createEntry(`read-${index + 1}`),
+        );
+        const container = renderInteractive(createSegment(entries));
+
+        act(() => container.querySelector<HTMLButtonElement>("button")?.click());
+
+        const mountedActivities = container.querySelectorAll(
+            "[data-child-activity]",
+        );
+        expect(mountedActivities.length).toBeGreaterThan(0);
+        expect(mountedActivities.length).toBeLessThan(1_000);
+        expect(
+            Array.from(container.querySelectorAll("button")).some(
+                (button) => button.textContent === "Show more activity",
+            ),
+        ).toBe(false);
+        expect(
+            container.querySelector('[role="region"]')?.getAttribute("aria-label"),
         ).toBe("Full activity");
     });
 

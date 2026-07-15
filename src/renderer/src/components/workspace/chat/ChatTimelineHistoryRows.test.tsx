@@ -415,17 +415,20 @@ describe("ChatTimelineHistoryRows", () => {
         expect(markup).toContain("activity-segment:session-1:read-1");
     });
 
-    it("keeps an activity-heavy single presentation row non-virtualized", () => {
+    it("virtualizes the outer timeline for an activity-heavy segment", () => {
         const rows = [
             createSegmentRow(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD),
         ];
         const markup = renderHistoryRows(rows);
 
-        // Virtualization only mounts and unmounts top-level timeline rows.
-        // A single segment would still render all of its entries either way.
-        expect(measuredVirtualListMock).not.toHaveBeenCalled();
+        expect(measuredVirtualListMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                firstKey: "activity-segment:session-1:read-1",
+                itemCount: 1,
+            }),
+        );
         expect(markup).toContain("activity-segment:session-1:read-1");
-        expect(markup).not.toContain("mock-measured-virtual-list");
+        expect(markup).toContain("mock-measured-virtual-list");
     });
 
     it("freezes content width during panel resize and re-syncs on release", () => {

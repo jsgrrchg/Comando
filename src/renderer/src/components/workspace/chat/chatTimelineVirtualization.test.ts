@@ -168,7 +168,7 @@ describe("chatTimelineVirtualization", () => {
         ).toBe(true);
     });
 
-    it("counts virtualizable presentation rows rather than segment entries", () => {
+    it("counts expanded segment entries and preview weight", () => {
         const segment = createActivitySegmentRow();
         if (segment.kind !== "activity-segment") {
             throw new Error("Expected an activity segment.");
@@ -181,9 +181,16 @@ describe("chatTimelineVirtualization", () => {
 
         expect(
             calculateChatTimelineVirtualizationCost([
-                { ...segment, entries: repeatedEntries },
+                {
+                    ...segment,
+                    entries: repeatedEntries,
+                    items: repeatedEntries.map((entry) => ({
+                        entry,
+                        kind: "tool" as const,
+                    })),
+                },
             ]),
-        ).toBe(1);
+        ).toBe(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD + 1);
     });
 
     it("preserves row ids as virtual keys", () => {
