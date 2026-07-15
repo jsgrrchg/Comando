@@ -1,6 +1,7 @@
 import type { AiFileDiff, AiToolActivity, AiTrackedFile } from "@shared/ipc";
 import { isAiTrackedFileUnresolved } from "@shared/ai-tracked-file";
 import { normalizePathKey } from "@shared/path-identity";
+import { measureChatPerformance } from "@renderer/app/debug/chatPerformanceProbe";
 
 import {
     areTrackedFilePathReferencesEquivalent,
@@ -79,6 +80,19 @@ const reviewEntryCacheByIndex = new WeakMap<
 >();
 
 export function createToolActivityReviewIndex(
+    trackedFiles: readonly AiTrackedFile[],
+): ToolActivityReviewIndex {
+    return measureChatPerformance(
+        "review_index_ms",
+        {
+            sessionId: trackedFiles[0]?.sessionId,
+            values: { trackedFileCount: trackedFiles.length },
+        },
+        () => createToolActivityReviewIndexUnmeasured(trackedFiles),
+    );
+}
+
+function createToolActivityReviewIndexUnmeasured(
     trackedFiles: readonly AiTrackedFile[],
 ): ToolActivityReviewIndex {
     const cached = reviewIndexByTrackedFiles.get(trackedFiles);

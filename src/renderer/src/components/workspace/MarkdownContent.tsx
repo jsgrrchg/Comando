@@ -1,6 +1,7 @@
 import {
     memo,
     useCallback,
+    useEffect,
     useMemo,
     useRef,
     useState,
@@ -16,6 +17,7 @@ import {
 } from "@shared/composer-display-markers";
 
 import { extractFenceLanguageToken } from "../../app/editor/codeLanguage";
+import { measureChatPerformance } from "@renderer/app/debug/chatPerformanceProbe";
 import { openExternalUrl } from "../../app/utils/external-url";
 import {
     parseMarkdownListItem,
@@ -52,6 +54,8 @@ interface MarkdownContentProps {
         reference: ResolvedProjectFileReference,
     ) => boolean;
     readonly content: string;
+    /** Coalesces live output and reuses only Markdown prefixes known to be safe. */
+    readonly live?: boolean;
     readonly chatFontSize?: number;
     readonly chatFontFamily?: string;
     readonly onAddFileReferenceToChat?: (
@@ -70,6 +74,13 @@ interface Block {
     readonly content: string;
     readonly info: string;
     readonly type: "code" | "text";
+}
+
+interface ParsedMarkdownBlocks {
+    readonly blocks: readonly Block[];
+    readonly content: string;
+    readonly stableBlocks: readonly Block[];
+    readonly stableContentLength: number;
 }
 
 interface MarkdownFenceOpening {
@@ -140,6 +151,14 @@ function rememberParsedBlocks(text: string, blocks: Block[]): Block[] {
 }
 
 function parseBlocks(text: string): Block[] {
+    return measureChatPerformance(
+        "markdown_parse_ms",
+        { values: { contentChars: text.length } },
+        () => parseBlocksUnmeasured(text),
+    );
+}
+
+function parseBlocksUnmeasured(text: string): Block[] {
     const cached = parsedBlockCache.get(text);
     if (cached) return cached;
     const blocks: Block[] = [];
@@ -180,6 +199,88 @@ function parseBlocks(text: string): Block[] {
     }
 
     return rememberParsedBlocks(text, blocks);
+}
+
+function hasUnsafeProgressiveMarkdownStructure(text: string): boolean {
+    return /^(?: {0,3}(?:`{3,}|~{3,})|\s*(?:[-+*]|\d+[.)])\s+.*|.*\|.*)$/m.test(
+        text,
+    );
+}
+
+function getProgressiveMarkdownStableContentLength(text: string): number {
+    if (hasUnsafeProgressiveMarkdownStructure(text)) {
+        return 0;
+    }
+
+    const boundary = text.lastIndexOf("\n\n");
+    return boundary === -1 ? 0 : boundary + 2;
+}
+
+export function parseMarkdownBlocksProgressively(
+    previous: ParsedMarkdownBlocks | null,
+    content: string,
+): ParsedMarkdownBlocks {
+    const stableContentLength = getProgressiveMarkdownStableContentLength(content);
+    if (!previous || !content.startsWith(previous.content)) {
+        const stableBlocks =
+            stableContentLength > 0
+                ? parseBlocks(content.slice(0, stableContentLength))
+                : [];
+        const mutableBlocks = parseBlocks(content.slice(stableContentLength));
+        return {
+            blocks: [...stableBlocks, ...mutableBlocks],
+            content,
+            stableBlocks,
+            stableContentLength,
+        };
+    }
+
+    const stableBlocks =
+        stableContentLength === previous.stableContentLength
+            ? previous.stableBlocks
+            : stableContentLength > 0
+              ? parseBlocks(content.slice(0, stableContentLength))
+              : [];
+    const mutableBlocks = parseBlocks(content.slice(stableContentLength));
+
+    return {
+        blocks: [...stableBlocks, ...mutableBlocks],
+        content,
+        stableBlocks,
+        stableContentLength,
+    };
+}
+
+function useFrameCoalescedMarkdownContent(
+    content: string,
+    live: boolean,
+): string {
+    const [coalescedContent, setCoalescedContent] = useState(content);
+
+    useEffect(() => {
+        if (!live || coalescedContent === content) {
+            return;
+        }
+
+        if (typeof window.requestAnimationFrame !== "function") {
+            const timeoutId = window.setTimeout(
+                () => setCoalescedContent(content),
+                0,
+            );
+            return () => {
+                window.clearTimeout(timeoutId);
+            };
+        }
+
+        const frameId = window.requestAnimationFrame(() => {
+            setCoalescedContent(content);
+        });
+        return () => {
+            window.cancelAnimationFrame(frameId);
+        };
+    }, [coalescedContent, content, live]);
+
+    return live ? coalescedContent : content;
 }
 
 function parseMarkdownFenceOpening(lineText: string): MarkdownFenceOpening | null {
@@ -1781,7 +1882,7 @@ function parseList(
 
 /* ─── Code block ─── */
 
-function CodeBlock({
+const CodeBlock = memo(function CodeBlock({
     block,
     chatFontSize = 14,
 }: {
@@ -1857,7 +1958,7 @@ function CodeBlock({
             </pre>
         </MarkdownCodeFrame>
     );
-}
+});
 
 /* ─── Table block ─── */
 
@@ -1926,7 +2027,7 @@ function TableBlock({ table }: { readonly table: ParsedTable }) {
 
 /* ─── Text block ─── */
 
-function TextBlock({
+const TextBlock = memo(function TextBlock({
     block,
     inlineOptions,
 }: {
@@ -2069,13 +2170,14 @@ function TextBlock({
     }
 
     return <>{elements}</>;
-}
+});
 
 /* ─── Main component ─── */
 
 export const MarkdownContent = memo(function MarkdownContent({
     canRenderFileReference,
     content,
+    live = false,
     chatFontFamily,
     chatFontSize = 14,
     onAddFileReferenceToChat,
@@ -2083,7 +2185,24 @@ export const MarkdownContent = memo(function MarkdownContent({
     onRevealFileReference,
     resolveFileReference,
 }: MarkdownContentProps) {
-    const blocks = useMemo(() => parseBlocks(content), [content]);
+    const renderedContent = useFrameCoalescedMarkdownContent(content, live);
+    const previousParsedBlocksRef = useRef<ParsedMarkdownBlocks | null>(null);
+    /* eslint-disable react-hooks/refs -- The previous parse is committed after render to avoid writing refs during a discarded StrictMode render. */
+    const parsedBlocks = useMemo(
+        () =>
+            live
+                ? parseMarkdownBlocksProgressively(
+                      previousParsedBlocksRef.current,
+                      renderedContent,
+                  )
+                : parseMarkdownBlocksProgressively(null, renderedContent),
+        [live, renderedContent],
+    );
+    /* eslint-enable react-hooks/refs */
+    useEffect(() => {
+        previousParsedBlocksRef.current = parsedBlocks;
+    }, [parsedBlocks]);
+    const blocks = parsedBlocks.blocks;
     const contentRef = useRef<HTMLDivElement | null>(null);
     const [fileReferenceContextMenu, setFileReferenceContextMenu] =
         useState<ContextMenuState<FileReferencePillContextMenuPayload> | null>(

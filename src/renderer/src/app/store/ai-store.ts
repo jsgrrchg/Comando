@@ -83,6 +83,11 @@ import {
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
 import { matchesTrackedFilePath } from "@renderer/app/ai/trackedFilePath";
+import {
+    getChatPerformanceTimestamp,
+    measureChatPerformance,
+    recordChatPerformanceMetric,
+} from "@renderer/app/debug/chatPerformanceProbe";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceReviewTab,
@@ -351,6 +356,7 @@ type BufferedSessionDeltaEvent = Extract<
 interface BufferedSessionDeltaBuffer {
     readonly events: Map<string, BufferedSessionDeltaEvent>;
     cancelScheduledFlush: (() => void) | null;
+    firstQueuedAt: number | null;
 }
 
 const bufferedSessionDeltasBySessionId = new Map<
@@ -409,6 +415,7 @@ function getBufferedSessionDeltaBuffer(
     const buffer: BufferedSessionDeltaBuffer = {
         cancelScheduledFlush: null,
         events: new Map(),
+        firstQueuedAt: null,
     };
     bufferedSessionDeltasBySessionId.set(sessionId, buffer);
     return buffer;
@@ -451,6 +458,9 @@ function bufferSessionDeltaEvent(
     const buffer = getBufferedSessionDeltaBuffer(event.sessionId);
     const key = sessionDeltaBufferKey(event);
     const existing = buffer.events.get(key);
+    if (buffer.firstQueuedAt === null) {
+        buffer.firstQueuedAt = getChatPerformanceTimestamp();
+    }
     buffer.events.set(
         key,
         existing ? mergeBufferedSessionDelta(existing, event) : event,
@@ -467,7 +477,15 @@ function flushBufferedSessionDeltas(get: GetAiState, sessionId: string): void {
     buffer.cancelScheduledFlush?.();
     buffer.cancelScheduledFlush = null;
     const events = Array.from(buffer.events.values());
+    const queuedAt = buffer.firstQueuedAt;
     bufferedSessionDeltasBySessionId.delete(sessionId);
+    if (queuedAt !== null) {
+        recordChatPerformanceMetric("delta_buffer_wait_ms", {
+            durationMs: performance.now() - queuedAt,
+            sessionId,
+            values: { payloadDepth: events.length },
+        });
+    }
     isFlushingBufferedSessionDeltas = true;
     try {
         for (const event of events) {
@@ -942,7 +960,19 @@ export const useAiStore = create<AiStore>((set, get) => ({
         }
 
         let syncedTitle: string | null = null;
-        set((state) => {
+        measureChatPerformance(
+            "apply_event_ms",
+            {
+                sessionId: normalizedEvent.sessionId,
+                values: {
+                    payloadDepth:
+                        bufferedSessionDeltasBySessionId.get(
+                            normalizedEvent.sessionId,
+                        )?.events.size ?? 0,
+                },
+            },
+            () =>
+                set((state) => {
             const session =
                 state.sessions[normalizedEvent.sessionId] ?? createSessionState();
             const existingCatalog =
@@ -950,9 +980,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
             const baseSnapshot =
                 session.snapshot ??
                 createSessionSnapshotFromEvent(normalizedEvent, existingCatalog);
-            const nextTranscript = applyAiSessionDomainEventToTranscript(
-                getSessionTranscript(session, baseSnapshot),
-                normalizedEvent,
+            const nextTranscript = measureChatPerformance(
+                "transcript_patch_ms",
+                { sessionId: normalizedEvent.sessionId },
+                () =>
+                    applyAiSessionDomainEventToTranscript(
+                        getSessionTranscript(session, baseSnapshot),
+                        normalizedEvent,
+                    ),
             );
             const nextSnapshot = writeAiSessionTranscriptToSnapshot(
                 applySessionDomainEventToSnapshot(baseSnapshot, normalizedEvent),
@@ -990,7 +1025,16 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     },
                 },
             };
-        });
+                }),
+        );
+
+        const eventUpdatedAt = Date.parse(normalizedEvent.updatedAt);
+        if (Number.isFinite(eventUpdatedAt)) {
+            recordChatPerformanceMetric("ack_lag_ms", {
+                durationMs: Math.max(0, Date.now() - eventUpdatedAt),
+                sessionId: normalizedEvent.sessionId,
+            });
+        }
 
         if (syncedTitle !== null) {
             void useWorkspaceStore

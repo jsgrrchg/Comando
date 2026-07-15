@@ -1,4 +1,5 @@
 import {
+    Profiler,
     memo,
     useCallback,
     useEffect,
@@ -49,6 +50,11 @@ import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexS
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
+import {
+    isChatPerformanceProbeEnabled,
+    measureChatPerformance,
+    recordChatPerformanceMetric,
+} from "@renderer/app/debug/chatPerformanceProbe";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceFileOpenLocation,
@@ -135,6 +141,27 @@ interface ChatTabViewProps {
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenReview: () => Promise<void>;
     readonly tab: RuntimeWorkspaceChatTab;
+}
+
+function ChatPerformanceProfiler({
+    children,
+    enabled,
+    id,
+    onRender,
+}: {
+    readonly children: ReactNode;
+    readonly enabled: boolean;
+    readonly id: string;
+    readonly onRender: (
+        id: string,
+        phase: "mount" | "nested-update" | "update",
+        actualDuration: number,
+        baseDuration: number,
+        startTime: number,
+        commitTime: number,
+    ) => void;
+}) {
+    return enabled ? <Profiler id={id} onRender={onRender}>{children}</Profiler> : children;
 }
 
 type ChatSessionViewState = Pick<
@@ -1034,18 +1061,29 @@ export const ChatTabView = memo(function ChatTabView({
             previousTimelineState.attentionToolCallIds === attentionToolCallIds &&
             previousTimelineState.status === snapshot.status &&
             previousTimelineState.trackedFiles === canonicalTrackedFiles;
-        return reconcileChatTimelineModelIncrementallyFromTranscript(
-            previousTimelineModel,
-            canReconcileIncrementally
-                ? previousTimelineState.transcript
-                : null,
+        return measureChatPerformance(
+            "timeline_reconcile_ms",
             {
-            activeTurnStartedAt,
-            attentionToolCallIds,
-            status: snapshot.status,
-            trackedFiles: canonicalTrackedFiles,
-            transcript,
+                sessionId: tab.sessionId,
+                values: {
+                    liveTailChars: transcript.messageOrder.length,
+                    transcriptRows: transcript.orderedEntryIds.length,
+                },
             },
+            () =>
+                reconcileChatTimelineModelIncrementallyFromTranscript(
+                    previousTimelineModel,
+                    canReconcileIncrementally
+                        ? previousTimelineState.transcript
+                        : null,
+                    {
+                        activeTurnStartedAt,
+                        attentionToolCallIds,
+                        status: snapshot.status,
+                        trackedFiles: canonicalTrackedFiles,
+                        transcript,
+                    },
+                ),
         );
     }, [
         activeTurnStartedAt,
@@ -1207,11 +1245,21 @@ export const ChatTabView = memo(function ChatTabView({
         scrollToBottom,
     ]);
 
-    const handleTimelineVirtualRangeChange = useCallback(() => {
+    const handleTimelineVirtualRangeChange = useCallback((range: MeasuredVirtualRange) => {
+        recordChatPerformanceMetric("virtual_range", {
+            sessionId: tab.sessionId,
+            values: {
+                mountedRows: Math.max(0, range.endIndex - range.startIndex + 1),
+                visibleRows: Math.max(
+                    0,
+                    range.visibleEndIndex - range.visibleStartIndex + 1,
+                ),
+            },
+        });
         if (shouldAutoFollowRef.current) {
             scheduleScrollToBottom();
         }
-    }, [scheduleScrollToBottom]);
+    }, [scheduleScrollToBottom, tab.sessionId]);
 
     const handleTimelineVirtualResizeAutoFollow = useCallback(() => {
         scheduleScrollToBottom();
@@ -2013,8 +2061,35 @@ export const ChatTabView = memo(function ChatTabView({
             markChatTabFocused(tab.id);
         }
     }, [active, markChatTabFocused, tab.id]);
+    const handleChatPerformanceRender = useCallback(
+        (_id: string, _phase: string, actualDuration: number) => {
+            recordChatPerformanceMetric("react_commit_ms", {
+                durationMs: actualDuration,
+                sessionId: tab.sessionId,
+                values: {
+                    historyRows: timelineModel.historyRows.length,
+                    liveTailRows: timelineModel.liveTailRow ? 1 : 0,
+                    toolRows: timelineModel.orderedAtomicRows.filter(
+                        (row) => row.kind === "tool",
+                    ).length,
+                },
+            });
+        },
+        [
+            tab.sessionId,
+            timelineModel.historyRows.length,
+            timelineModel.liveTailRow,
+            timelineModel.orderedAtomicRows,
+        ],
+    );
+    const chatPerformanceEnabled = isChatPerformanceProbeEnabled();
 
     return (
+        <ChatPerformanceProfiler
+            enabled={chatPerformanceEnabled}
+            id={`chat:${tab.sessionId}`}
+            onRender={handleChatPerformanceRender}
+        >
         <div
             className="flex h-full min-h-0 min-w-0"
             onFocusCapture={handleChatFocus}
@@ -2357,6 +2432,7 @@ export const ChatTabView = memo(function ChatTabView({
                 </div>
             </div>
         </div>
+        </ChatPerformanceProfiler>
     );
 });
 
