@@ -45,6 +45,7 @@ interface WorkspaceSurfaceHostRecord {
     contentLeftInset: number;
     readonly hostWindow: BrowserWindow;
     readonly hostWindowId: string;
+    pendingLayoutTimer: NodeJS.Timeout | null;
     snapshot: WorkspaceNavigationSnapshot;
     readonly surfaceIdsByContextKey: Map<string, string>;
 }
@@ -84,13 +85,14 @@ class WorkspaceSurfaceManager {
                 contentLeftInset: 0,
                 hostWindow,
                 hostWindowId: hostContext.windowId,
+                pendingLayoutTimer: null,
                 snapshot,
                 surfaceIdsByContextKey: new Map(),
             };
             this.#hostsByWindowId.set(host.hostWindowId, host);
             const createdHost = host;
             hostWindow.on("resize", () => {
-                this.#applyVisibility(createdHost);
+                this.#scheduleActiveSurfaceLayout(createdHost);
             });
         }
 
@@ -192,7 +194,7 @@ class WorkspaceSurfaceManager {
         }
 
         host.contentInset = nextContentInset;
-        this.#applyVisibility(host);
+        this.#scheduleActiveSurfaceLayout(host);
     }
 
     setContentLeftInset(hostWindowId: string, width: number): void {
@@ -207,7 +209,7 @@ class WorkspaceSurfaceManager {
         }
 
         host.contentLeftInset = nextContentLeftInset;
-        this.#applyVisibility(host);
+        this.#scheduleActiveSurfaceLayout(host);
     }
 
     setZoomFactor(zoomFactor: number): void {
@@ -368,6 +370,9 @@ class WorkspaceSurfaceManager {
         if (!host) {
             return;
         }
+        if (host.pendingLayoutTimer) {
+            clearTimeout(host.pendingLayoutTimer);
+        }
         for (const surfaceId of [...host.surfaceIdsByContextKey.values()]) {
             this.#destroySurface(host, surfaceId);
         }
@@ -489,31 +494,65 @@ class WorkspaceSurfaceManager {
         if (host.hostWindow.isDestroyed()) {
             return;
         }
-        const bounds = host.hostWindow.getContentBounds();
-        for (const [contextKey, surfaceId] of host.surfaceIdsByContextKey) {
+        const activeSurfaceId = host.activeContextKey
+            ? host.surfaceIdsByContextKey.get(host.activeContextKey)
+            : null;
+
+        for (const [, surfaceId] of host.surfaceIdsByContextKey) {
+            if (surfaceId === activeSurfaceId) {
+                continue;
+            }
             const surface = this.#surfacesById.get(surfaceId);
             if (!surface || surface.webContents.isDestroyed()) {
                 continue;
             }
-            const isActive = contextKey === host.activeContextKey;
-            const nextBounds: WorkspaceSurfaceBounds = {
-                height: Math.max(0, bounds.height - host.contentInset),
-                width: Math.max(0, bounds.width - host.contentLeftInset),
-                x: host.contentLeftInset,
-                y: host.contentInset,
-            };
-            if (!areWorkspaceSurfaceBoundsEqual(surface.bounds, nextBounds)) {
-                surface.view.setBounds(nextBounds);
-                surface.bounds = nextBounds;
-            }
-            if (surface.isVisible !== isActive) {
-                surface.view.setVisible(isActive);
-                surface.isVisible = isActive;
-            }
-            if (isActive && options.focusActive) {
-                surface.webContents.focus();
+            if (surface.isVisible) {
+                surface.view.setVisible(false);
+                surface.isVisible = false;
             }
         }
+
+        const activeSurface = activeSurfaceId
+            ? this.#surfacesById.get(activeSurfaceId)
+            : null;
+        if (!activeSurface || activeSurface.webContents.isDestroyed()) {
+            return;
+        }
+
+        const nextBounds = this.#getActiveSurfaceBounds(host);
+        if (!areWorkspaceSurfaceBoundsEqual(activeSurface.bounds, nextBounds)) {
+            activeSurface.view.setBounds(nextBounds);
+            activeSurface.bounds = nextBounds;
+        }
+        if (!activeSurface.isVisible) {
+            activeSurface.view.setVisible(true);
+            activeSurface.isVisible = true;
+        }
+        if (options.focusActive) {
+            activeSurface.webContents.focus();
+        }
+    }
+
+    #getActiveSurfaceBounds(
+        host: WorkspaceSurfaceHostRecord,
+    ): WorkspaceSurfaceBounds {
+        const bounds = host.hostWindow.getContentBounds();
+        return {
+            height: Math.max(0, bounds.height - host.contentInset),
+            width: Math.max(0, bounds.width - host.contentLeftInset),
+            x: host.contentLeftInset,
+            y: host.contentInset,
+        };
+    }
+
+    #scheduleActiveSurfaceLayout(host: WorkspaceSurfaceHostRecord): void {
+        if (host.pendingLayoutTimer || host.hostWindow.isDestroyed()) {
+            return;
+        }
+        host.pendingLayoutTimer = setTimeout(() => {
+            host.pendingLayoutTimer = null;
+            this.#applyVisibility(host);
+        }, 16);
     }
 
     #mergeKnownSurfaceSnapshots(

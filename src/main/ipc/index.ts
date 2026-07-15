@@ -1864,7 +1864,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         const surfaceContext = workspaceSurfaceManager.getSurfaceContext(
             event.sender,
         );
-        if (!surfaceContext) {
+        if (!surfaceContext?.hostWindowId) {
             return;
         }
         workspaceSurfaceManager
