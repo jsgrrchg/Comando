@@ -136,6 +136,7 @@ export const IPC_CHANNELS = {
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
     openWorkspaceSurfaceProjectMenu: "workspace:open-surface-project-menu",
     showWorkspaceContextMenu: "workspace:show-context-menu",
+    showFileTreeContextMenu: "projects:show-file-tree-context-menu",
     setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
     setWorkspaceSurfaceContentLeftInset: "workspace:set-surface-content-left-inset",
     notifyFileBuffer: "workspace:notify-file-buffer",
@@ -2183,6 +2184,23 @@ export type WorkspaceContextMenuAction =
     | "move_to_new_window"
     | "close";
 
+export type FileTreeContextMenuEntry =
+    | {
+          readonly type: "separator";
+      }
+    | {
+          readonly id: string;
+          readonly label: string;
+          readonly enabled: boolean;
+          readonly children?: readonly FileTreeContextMenuEntry[];
+      };
+
+export interface FileTreeContextMenuInput {
+    readonly entries: readonly FileTreeContextMenuEntry[];
+    readonly x: number;
+    readonly y: number;
+}
+
 export interface WindowWorkspaceRestoreRecord {
     readonly revision: number;
     readonly schemaVersion: 1;
@@ -3038,6 +3056,9 @@ export interface ComandoApi {
     showWorkspaceContextMenu: (
         input: WorkspaceContextMenuInput,
     ) => Promise<WorkspaceContextMenuAction | null>;
+    showFileTreeContextMenu: (
+        input: FileTreeContextMenuInput,
+    ) => Promise<string | null>;
     setWorkspaceSurfaceContentInset: (height: number) => Promise<void>;
     setWorkspaceSurfaceContentLeftInset: (width: number) => Promise<void>;
     setTrafficLightVisibility: (visible: boolean) => Promise<void>;

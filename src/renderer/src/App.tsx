@@ -14,6 +14,7 @@ import { createPortal } from "react-dom";
 import type {
     AppUpdateState,
     ComandoApi,
+    FileTreeContextMenuEntry,
     GitRepositorySnapshot,
     GitWorktreeSummary,
     PersistenceSnapshot,
@@ -187,6 +188,38 @@ type FileTreeContextMenuPayload =
           readonly node: GitTreeNode;
           readonly transientSelectionPath: string | null;
       };
+
+function serializeFileTreeContextMenuEntries(
+    entries: readonly ContextMenuEntry[],
+): {
+    readonly actions: ReadonlyMap<string, () => void>;
+    readonly entries: readonly FileTreeContextMenuEntry[];
+} {
+    const actions = new Map<string, () => void>();
+    let nextId = 0;
+
+    const serialize = (
+        sourceEntries: readonly ContextMenuEntry[],
+    ): readonly FileTreeContextMenuEntry[] =>
+        sourceEntries.map((entry) => {
+            if (entry.type === "separator") {
+                return { type: "separator" };
+            }
+
+            const id = `file-tree-menu-${nextId++}`;
+            if (entry.action) {
+                actions.set(id, entry.action);
+            }
+            return {
+                id,
+                label: entry.label,
+                enabled: !entry.disabled,
+                children: entry.children ? serialize(entry.children) : undefined,
+            };
+        });
+
+    return { actions, entries: serialize(entries) };
+}
 
 type FileTreeInlineEditorState = {
     readonly draftName: string;
@@ -528,6 +561,8 @@ export function App() {
     const [dragState, setDragState] = useState<DragState>(null);
     const [fileTreeContextMenu, setFileTreeContextMenu] =
         useState<ContextMenuState<FileTreeContextMenuPayload> | null>(null);
+    const activeNativeFileTreeMenuRef =
+        useRef<ContextMenuState<FileTreeContextMenuPayload> | null>(null);
     const [isFileTreeSearchOpen, setIsFileTreeSearchOpen] = useState(false);
     const [projectRootExpandedByContext, setProjectRootExpandedByContext] =
         useState<Record<string, boolean>>({});
@@ -3480,6 +3515,52 @@ export function App() {
         openFileTreeMovePicker,
         refreshProjectTree,
     ]);
+
+    const openNativeFileTreeContextMenu = useEffectEvent(
+        async (
+            menu: ContextMenuState<FileTreeContextMenuPayload>,
+            entries: readonly ContextMenuEntry[],
+        ) => {
+            const serialized = serializeFileTreeContextMenuEntries(entries);
+            let selectedId: string | null = null;
+            try {
+                selectedId =
+                    (await getComandoApi()?.showFileTreeContextMenu({
+                        entries: serialized.entries,
+                        x: menu.x,
+                        y: menu.y,
+                    })) ?? null;
+            } catch {
+                // Treat native menu failures like a dismissed menu.
+            } finally {
+                closeFileTreeContextMenu();
+            }
+
+            const action = selectedId
+                ? serialized.actions.get(selectedId)
+                : undefined;
+            if (action) queueMicrotask(action);
+        },
+    );
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer || !fileTreeContextMenu) {
+            activeNativeFileTreeMenuRef.current = null;
+            return;
+        }
+        if (
+            fileTreeContextMenuEntries.length === 0 ||
+            activeNativeFileTreeMenuRef.current === fileTreeContextMenu
+        ) {
+            return;
+        }
+
+        activeNativeFileTreeMenuRef.current = fileTreeContextMenu;
+        void openNativeFileTreeContextMenu(
+            fileTreeContextMenu,
+            fileTreeContextMenuEntries,
+        );
+    }, [fileTreeContextMenu, fileTreeContextMenuEntries]);
 
     const { stickyFolders, stickyFolderPaths } = useStickyFolders({
         scrollContainer: fileTreeScrollElement,

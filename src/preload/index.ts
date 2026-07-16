@@ -1069,6 +1069,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu),
     showWorkspaceContextMenu: (input) =>
         ipcRenderer.invoke(IPC_CHANNELS.showWorkspaceContextMenu, input),
+    showFileTreeContextMenu: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.showFileTreeContextMenu, input),
     setWorkspaceSurfaceContentInset: (height: number) =>
         ipcRenderer.invoke(IPC_CHANNELS.setWorkspaceSurfaceContentInset, height),
     setWorkspaceSurfaceContentLeftInset: (width: number) =>

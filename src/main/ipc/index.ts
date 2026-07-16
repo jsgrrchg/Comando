@@ -35,6 +35,7 @@ import {
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
     type FileBufferNotificationInput,
+    type FileTreeContextMenuInput,
     type EnqueueAiPromptInput,
     type GitBranchListInput,
     type GitBranchSummary as SharedGitBranchSummary,
@@ -176,6 +177,7 @@ import {
     nativeTheme,
     shell,
     type MessageBoxOptions,
+    type MenuItemConstructorOptions,
     type OpenDialogOptions,
 } from "electron";
 
@@ -363,6 +365,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu);
     ipcMain.removeHandler(IPC_CHANNELS.showWorkspaceContextMenu);
+    ipcMain.removeHandler(IPC_CHANNELS.showFileTreeContextMenu);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset);
     ipcMain.removeHandler(IPC_CHANNELS.notifyFileBuffer);
@@ -2065,6 +2068,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         },
     );
     ipcMain.handle(
+        IPC_CHANNELS.showFileTreeContextMenu,
+        (event, input: FileTreeContextMenuInput) => {
+            requireWindowContext(event.sender, "main");
+            const window = BrowserWindow.fromWebContents(event.sender);
+            if (!window || workspaceSurfaceManager.isSurface(event.sender)) {
+                return null;
+            }
+
+            return showFileTreeContextMenu(window, input);
+        },
+    );
+    ipcMain.handle(
         IPC_CHANNELS.setWorkspaceSurfaceContentInset,
         (event, height: number) => {
             const context = requireWindowContext(event.sender, "main");
@@ -2395,6 +2410,92 @@ async function resolveGeneratedImageIpcPath(imagePath: string): Promise<string> 
     }
 
     return resolvedPath;
+}
+
+function showFileTreeContextMenu(
+    window: BrowserWindow,
+    input: FileTreeContextMenuInput,
+): Promise<string | null> {
+    return new Promise((resolve) => {
+        let selected = false;
+        const select = (id: string) => {
+            selected = true;
+            resolve(id);
+        };
+        const template = normalizeFileTreeContextMenuEntries(
+            input?.entries,
+            select,
+        );
+        if (!template || template.length === 0) {
+            resolve(null);
+            return;
+        }
+
+        Menu.buildFromTemplate(template).popup({
+            callback: () => {
+                if (!selected) resolve(null);
+            },
+            window,
+            x: Number.isFinite(input.x) ? Math.max(0, Math.round(input.x)) : 0,
+            y: Number.isFinite(input.y) ? Math.max(0, Math.round(input.y)) : 0,
+        });
+    });
+}
+
+function normalizeFileTreeContextMenuEntries(
+    entries: unknown,
+    select: (id: string) => void,
+    depth = 0,
+): MenuItemConstructorOptions[] | null {
+    if (!Array.isArray(entries) || entries.length > 100 || depth > 4) {
+        return null;
+    }
+
+    const template: MenuItemConstructorOptions[] = [];
+    for (const rawEntry of entries as unknown[]) {
+        if (!rawEntry || typeof rawEntry !== "object") {
+            return null;
+        }
+        const entry = rawEntry as Record<string, unknown>;
+        if (entry.type === "separator") {
+            template.push({ type: "separator" });
+            continue;
+        }
+        const id = entry.id;
+        const label = entry.label;
+        const enabled = entry.enabled;
+        if (
+            typeof id !== "string" ||
+            id.length === 0 ||
+            id.length > 128 ||
+            typeof label !== "string" ||
+            label.length === 0 ||
+            label.length > 512 ||
+            typeof enabled !== "boolean"
+        ) {
+            return null;
+        }
+
+        let submenu: MenuItemConstructorOptions[] | undefined;
+        if (entry.children !== undefined) {
+            const normalizedChildren = normalizeFileTreeContextMenuEntries(
+                entry.children,
+                select,
+                depth + 1,
+            );
+            if (!normalizedChildren) {
+                return null;
+            }
+            submenu = normalizedChildren;
+        }
+        template.push({
+            click: submenu ? undefined : () => select(id),
+            enabled,
+            label,
+            submenu,
+        });
+    }
+    return template;
 }
 
 function broadcastProjectSettingsUpdated(
