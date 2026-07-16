@@ -18,6 +18,7 @@ afterEach(() => {
     root = null;
     container?.remove();
     container = null;
+    vi.restoreAllMocks();
 });
 
 describe("GitHubLabelPicker", () => {
@@ -62,5 +63,43 @@ describe("GitHubLabelPicker", () => {
         act(() => saveButton?.click());
 
         expect(onSave).toHaveBeenCalledWith(["legacy"]);
+    });
+
+    it("keeps the sidebar picker inside its right boundary", () => {
+        vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+            bottom: 210,
+            height: 200,
+            left: 300,
+            right: 620,
+            top: 10,
+            width: 320,
+            x: 300,
+            y: 10,
+            toJSON: () => undefined,
+        });
+        container = document.createElement("div");
+        document.body.append(container);
+        root = createRoot(container);
+
+        act(() => {
+            root?.render(
+                createElement(GitHubLabelPicker, {
+                    anchor: { x: 300, y: 10 },
+                    error: null,
+                    isLoading: false,
+                    isSaving: false,
+                    item: { labels: [], number: 7, title: "Bounded picker" },
+                    labels: [],
+                    onClose: () => undefined,
+                    onSave: () => undefined,
+                    rightBoundary: 340,
+                }),
+            );
+        });
+
+        const picker = document.querySelector<HTMLElement>(
+            "[data-context-menu-root='true']",
+        );
+        expect(picker?.style.left).toBe("12px");
     });
 });

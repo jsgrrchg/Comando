@@ -35,7 +35,7 @@ import {
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
     type FileBufferNotificationInput,
-    type FileTreeContextMenuInput,
+    type NativeContextMenuInput,
     type EnqueueAiPromptInput,
     type GitBranchListInput,
     type GitBranchSummary as SharedGitBranchSummary,
@@ -365,7 +365,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu);
     ipcMain.removeHandler(IPC_CHANNELS.showWorkspaceContextMenu);
-    ipcMain.removeHandler(IPC_CHANNELS.showFileTreeContextMenu);
+    ipcMain.removeHandler(IPC_CHANNELS.showNativeContextMenu);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset);
     ipcMain.removeHandler(IPC_CHANNELS.notifyFileBuffer);
@@ -2068,15 +2068,15 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         },
     );
     ipcMain.handle(
-        IPC_CHANNELS.showFileTreeContextMenu,
-        (event, input: FileTreeContextMenuInput) => {
+        IPC_CHANNELS.showNativeContextMenu,
+        (event, input: NativeContextMenuInput) => {
             requireWindowContext(event.sender, "main");
             const window = BrowserWindow.fromWebContents(event.sender);
             if (!window || workspaceSurfaceManager.isSurface(event.sender)) {
                 return null;
             }
 
-            return showFileTreeContextMenu(window, input);
+            return showNativeContextMenu(window, input);
         },
     );
     ipcMain.handle(
@@ -2412,9 +2412,9 @@ async function resolveGeneratedImageIpcPath(imagePath: string): Promise<string> 
     return resolvedPath;
 }
 
-function showFileTreeContextMenu(
+function showNativeContextMenu(
     window: BrowserWindow,
-    input: FileTreeContextMenuInput,
+    input: NativeContextMenuInput,
 ): Promise<string | null> {
     return new Promise((resolve) => {
         let selected = false;
@@ -2422,7 +2422,7 @@ function showFileTreeContextMenu(
             selected = true;
             resolve(id);
         };
-        const template = normalizeFileTreeContextMenuEntries(
+        const template = normalizeNativeContextMenuEntries(
             input?.entries,
             select,
         );
@@ -2442,7 +2442,7 @@ function showFileTreeContextMenu(
     });
 }
 
-function normalizeFileTreeContextMenuEntries(
+function normalizeNativeContextMenuEntries(
     entries: unknown,
     select: (id: string) => void,
     depth = 0,
@@ -2478,7 +2478,7 @@ function normalizeFileTreeContextMenuEntries(
 
         let submenu: MenuItemConstructorOptions[] | undefined;
         if (entry.children !== undefined) {
-            const normalizedChildren = normalizeFileTreeContextMenuEntries(
+            const normalizedChildren = normalizeNativeContextMenuEntries(
                 entry.children,
                 select,
                 depth + 1,

@@ -136,7 +136,7 @@ export const IPC_CHANNELS = {
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
     openWorkspaceSurfaceProjectMenu: "workspace:open-surface-project-menu",
     showWorkspaceContextMenu: "workspace:show-context-menu",
-    showFileTreeContextMenu: "projects:show-file-tree-context-menu",
+    showNativeContextMenu: "app:show-native-context-menu",
     setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
     setWorkspaceSurfaceContentLeftInset: "workspace:set-surface-content-left-inset",
     notifyFileBuffer: "workspace:notify-file-buffer",
@@ -2184,7 +2184,7 @@ export type WorkspaceContextMenuAction =
     | "move_to_new_window"
     | "close";
 
-export type FileTreeContextMenuEntry =
+export type NativeContextMenuEntry =
     | {
           readonly type: "separator";
       }
@@ -2192,11 +2192,11 @@ export type FileTreeContextMenuEntry =
           readonly id: string;
           readonly label: string;
           readonly enabled: boolean;
-          readonly children?: readonly FileTreeContextMenuEntry[];
+          readonly children?: readonly NativeContextMenuEntry[];
       };
 
-export interface FileTreeContextMenuInput {
-    readonly entries: readonly FileTreeContextMenuEntry[];
+export interface NativeContextMenuInput {
+    readonly entries: readonly NativeContextMenuEntry[];
     readonly x: number;
     readonly y: number;
 }
@@ -3056,8 +3056,8 @@ export interface ComandoApi {
     showWorkspaceContextMenu: (
         input: WorkspaceContextMenuInput,
     ) => Promise<WorkspaceContextMenuAction | null>;
-    showFileTreeContextMenu: (
-        input: FileTreeContextMenuInput,
+    showNativeContextMenu: (
+        input: NativeContextMenuInput,
     ) => Promise<string | null>;
     setWorkspaceSurfaceContentInset: (height: number) => Promise<void>;
     setWorkspaceSurfaceContentLeftInset: (width: number) => Promise<void>;

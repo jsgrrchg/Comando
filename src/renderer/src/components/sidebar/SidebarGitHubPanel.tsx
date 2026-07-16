@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useEffectEvent,
     useMemo,
     useRef,
     useState,
@@ -43,11 +44,12 @@ import {
     useGitHubStore,
 } from "@renderer/app/store/github-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
+import { useShellStore } from "@renderer/app/store/shell-store";
 import {
-    ContextMenu,
     type ContextMenuEntry,
     type ContextMenuState,
 } from "@renderer/components/context-menu/ContextMenu";
+import { requestNativeContextMenuAction } from "@renderer/components/context-menu/nativeContextMenu";
 import {
     formatGitHubRelativeTime,
     GitHubEmptyState,
@@ -332,8 +334,11 @@ export function SidebarGitHubPanel({
     const openGitHubPullRequestTab = useWorkspaceStore(
         (state) => state.openGitHubPullRequestTab,
     );
+    const sidebarWidth = useShellStore((state) => state.leftWidth);
     const [githubContextMenu, setGitHubContextMenu] =
         useState<ContextMenuState<SidebarGitHubContextMenuPayload> | null>(null);
+    const activeNativeContextMenuRef =
+        useRef<ContextMenuState<SidebarGitHubContextMenuPayload> | null>(null);
     const [labelPicker, setLabelPicker] =
         useState<SidebarGitHubLabelPickerState | null>(null);
     const [selectionAnchorNumber, setSelectionAnchorNumber] = useState<
@@ -789,6 +794,41 @@ export function SidebarGitHubPanel({
                       ),
               })
             : [];
+    const openNativeContextMenu = useEffectEvent(
+        async (menu: ContextMenuState<SidebarGitHubContextMenuPayload>) => {
+            if (contextMenuEntries.length === 0) {
+                setGitHubContextMenu(null);
+                return;
+            }
+            let action: (() => void) | null = null;
+            try {
+                action = await requestNativeContextMenuAction(
+                    contextMenuEntries,
+                    menu,
+                );
+            } catch {
+                // Treat native menu failures like a dismissed menu.
+            } finally {
+                setGitHubContextMenu(null);
+            }
+            if (action) queueMicrotask(action);
+        },
+    );
+
+    useEffect(() => {
+        if (!githubContextMenu) {
+            activeNativeContextMenuRef.current = null;
+            return;
+        }
+        if (
+            activeNativeContextMenuRef.current === githubContextMenu
+        ) {
+            return;
+        }
+
+        activeNativeContextMenuRef.current = githubContextMenu;
+        void openNativeContextMenu(githubContextMenu);
+    }, [githubContextMenu]);
     const handleItemClickSelection = useCallback(
         (
             event: ReactMouseEvent<HTMLElement>,
@@ -1212,14 +1252,6 @@ export function SidebarGitHubPanel({
                     </ul>
                 ) : null}
             </div>
-            {githubContextMenu && contextMenuEntries.length > 0 ? (
-                <ContextMenu
-                    entries={contextMenuEntries}
-                    menu={githubContextMenu}
-                    minWidth={230}
-                    onClose={() => setGitHubContextMenu(null)}
-                />
-            ) : null}
             {activeLabelPickerItem && labelPicker ? (
                 <GitHubLabelPicker
                     anchor={{ x: labelPicker.x, y: labelPicker.y }}
@@ -1231,6 +1263,7 @@ export function SidebarGitHubPanel({
                     labels={labels}
                     onClose={() => setLabelPicker(null)}
                     onSave={(labelNames) => void handleSaveLabels(labelNames)}
+                    rightBoundary={sidebarWidth}
                 />
             ) : null}
         </div>

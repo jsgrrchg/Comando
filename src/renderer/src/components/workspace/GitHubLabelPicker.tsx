@@ -26,6 +26,7 @@ export function GitHubLabelPicker({
     labels,
     onClose,
     onSave,
+    rightBoundary,
 }: {
     readonly anchor: { readonly x: number; readonly y: number };
     readonly error: string | null;
@@ -35,6 +36,7 @@ export function GitHubLabelPicker({
     readonly labels: readonly GitHubLabelSummary[];
     readonly onClose: () => void;
     readonly onSave: (labelNames: readonly string[]) => void;
+    readonly rightBoundary?: number;
 }) {
     const ref = useRef<HTMLDivElement | null>(null);
     const [query, setQuery] = useState("");
@@ -87,15 +89,31 @@ export function GitHubLabelPicker({
         }
 
         const rect = element.getBoundingClientRect();
-        setPosition(
-            getViewportSafeMenuPosition(
-                anchor.x,
-                anchor.y,
-                rect.width,
-                rect.height,
-            ),
+        const safePosition = getViewportSafeMenuPosition(
+            anchor.x,
+            anchor.y,
+            rect.width,
+            rect.height,
         );
-    }, [anchor.x, anchor.y, error, isLoading, labelOptions.length, visibleLabels.length]);
+        setPosition({
+            ...safePosition,
+            x:
+                rightBoundary === undefined
+                    ? safePosition.x
+                    : Math.min(
+                          safePosition.x,
+                          Math.max(8, rightBoundary - rect.width - 8),
+                      ),
+        });
+    }, [
+        anchor.x,
+        anchor.y,
+        error,
+        isLoading,
+        labelOptions.length,
+        rightBoundary,
+        visibleLabels.length,
+    ]);
 
     const toggleLabel = (labelName: string) => {
         setSelectedNames((current) => {
